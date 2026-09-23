@@ -614,7 +614,9 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     reversal entry for whatever the ledger currently holds.  Running it before
     the delete is load-bearing for a HARD delete: ``journal_entries``'
     ``transaction_id`` and ``transaction_entry_id`` are both ``ON DELETE SET
-    NULL`` (and ``transaction_entries`` CASCADE from their parent), so once the
+    NULL`` (and a row's ``transaction_entries`` are deleted just before it, by
+    the one removal act -- their keys are NO ACTION since migration
+    ``c4a4e7d1b9f2``), so once the
     rows are gone the links are severed and the original legs would be stranded
     on their ledger accounts with no offsetting reversal -- breaking per-account
     reconciliation.  Reversing first leaves each original entry and its reversal

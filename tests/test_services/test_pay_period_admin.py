@@ -36,6 +36,8 @@ from app.enums import RecurrenceUnitEnum, StatusEnum
 from app.exceptions import PayPeriodLocked, ValidationError
 from app.models.pay_period import PayPeriod
 from app.services import (
+    match_withdrawal,
+    movement_removal,
     pay_period_admin,
     pay_period_gates,
     pay_period_locks,
@@ -186,11 +188,41 @@ class TestClassifyPeriodLock:
         """A soft-deleted settled row does not lock -- the user removed it."""
         with app.app_context():
             periods = _make_future_periods(db.session, seed_user)
+            deleted = add_txn(
+                db.session, seed_user, periods[1], "Rent", "1200.00",
+                status_enum=StatusEnum.DONE, is_deleted=True,
+            )
+            # The state the delete door leaves (ruling R-CC75): its payment
+            # taken off through the one removal act.  Rule-5 re-expression,
+            # developer-confirmed 2026-09-23.
+            movement_removal.remove_movements(
+                list(deleted.entries), seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            assert _lock(periods[1], display_today()) is None
+
+    def test_a_hidden_row_still_holding_its_payment_locks(
+        self, app, db, seed_user,
+    ):
+        """The other side: a hidden row that still HOLDS money locks its period.
+
+        No door leaves one since ruling **R-CC75**, but the transfer's soft
+        delete does (ledger row **BAL-532**) and an archive did before plan
+        step ``credit_card:CC-5-4a-4`` -- and the period's delete would take
+        the payment with the row, which its key now refuses.  So the
+        classifier counts EVERY row, hidden or not (ruling **R-CC54**:
+        "truncate/regenerate lock its period").
+        """
+        with app.app_context():
+            periods = _make_future_periods(db.session, seed_user)
             add_txn(
                 db.session, seed_user, periods[1], "Rent", "1200.00",
                 status_enum=StatusEnum.DONE, is_deleted=True,
             )
-            assert _lock(periods[1], display_today()) is None
+            assert (
+                _lock(periods[1], display_today())
+                is PeriodLockReason.HOLDS_MOVEMENT
+            )
 
     def test_cancelled_transaction_not_settled_lock(self, app, db, seed_user):
         """A Cancelled txn is not settled, so it does not SETTLED_TXN-lock.

@@ -282,6 +282,13 @@ class TestForeignKeyActions:
             transfer_id = transfer.id
 
             # Delete the transfer at the storage tier (its shadows cascade).
+            # Its payments first, in the same raw SQL: a row holding one is no longer
+            # deleted with it (R-CC54; rule-5 re-expression, developer-confirmed
+            # 2026-09-23).
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.transaction_entries WHERE transaction_id IN "
+                "(SELECT id FROM budget.transactions WHERE transfer_id = :t)"
+            ), {"t": transfer_id})
             _db.session.execute(_db.text(
                 "DELETE FROM budget.transfers WHERE id = :t"
             ), {"t": transfer_id})

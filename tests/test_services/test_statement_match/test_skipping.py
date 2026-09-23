@@ -319,36 +319,6 @@ class TestRecordingASkip:
         assert "already explained by a match" in str(caught.value)
         assert db.session.query(StatementLineSkip).count() == 0
 
-    def test_a_line_whose_match_NO_LONGER_NAMES_A_ROW_may_be_skipped(
-        self, app, db, seed_user,
-    ):
-        """FIRING CONTROL: the refusal reads the pass's predicate, not membership.
-
-        ``act_still_names_a_row`` is why: destroying the last app row an act
-        names leaves the act holding its LINE alone, and the review pass
-        already treats such a line as unexplained -- so it is offered a card
-        again.  A door that tested bare membership instead would refuse the
-        very line the page had just offered, and the owner would meet a button
-        that does not work on a state nothing on screen explains.
-        """
-        statement = an_import(seed_user)
-        line = a_bank_line(seed_user, statement, amount="-180.00")
-        txn = a_transaction(seed_user, amount="180.00")
-        scope = a_scope(seed_user)
-        statement_match.accept_match(
-            a_submission(scope, lines=[line], transactions=[txn]), scope,
-        )
-        db.session.flush()
-        # The cascade a bulk hard-delete produces: the member goes with its
-        # transaction and the act is left naming only the line.
-        db.session.delete(txn)
-        db.session.flush()
-
-        recorded = _skip(seed_user, line)
-
-        assert recorded.was_already_skipped is False
-        assert db.session.query(StatementLineSkip).count() == 1
-
 
 class TestALinePayingAnAccountTheyHoldIsNotExplainedByNothing:
     """Ruling **bank_import:R-JI** (developer, 2026-09-02), at the DOOR.

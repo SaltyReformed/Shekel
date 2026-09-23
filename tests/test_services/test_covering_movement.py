@@ -294,6 +294,9 @@ class TestTheMovementIsTheBalance:
             # The CONTROL: delete the movement around the seam.  The row is
             # worth nothing to the matcher and the fold reads none of it.
             movement = _only_movement(txn)
+            # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+            # rule-5 re-expression, developer-confirmed 2026-09-23).
+            db.session.delete(movement)
             txn.entries.remove(movement)
             db.session.flush()
             db.session.expire(txn)
@@ -1051,6 +1054,9 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
             assert with_movement[txn.settled_on] == Decimal("2572.78")
             movement = _only_movement(txn)
+            # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+            # rule-5 re-expression, developer-confirmed 2026-09-23).
+            db.session.delete(movement)
             txn.entries.remove(movement)
             db.session.flush()
             db.session.expire(txn)
@@ -1214,6 +1220,9 @@ class TestATransferIsCoveredOnBothLegs:
                 with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
                 assert with_movement[leg.settled_on] == figure
                 movement = _only_movement(leg)
+                # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+                # rule-5 re-expression, developer-confirmed 2026-09-23).
+                db.session.delete(movement)
                 leg.entries.remove(movement)
                 db.session.flush()
                 db.session.expire(leg)
@@ -1525,6 +1534,9 @@ class TestALoanPaymentsLoanSideMovementIsItsRecord:
 
             assert row_valuation.settled_contribution(income) == Decimal("1910.95")
             with_movement = _read()
+            # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+            # rule-5 re-expression, developer-confirmed 2026-09-23).
+            db.session.delete(movement)
             income.entries.remove(movement)
             db.session.commit()
             db.session.expire_all()

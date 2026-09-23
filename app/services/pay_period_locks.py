@@ -116,10 +116,9 @@ def _resolve_lock(
 ) -> PeriodLockReason | None:
     """Apply the lock-reason precedence to four already-computed booleans.
 
-    The single source of truth for the ordering, shared by the
-    single-period and bulk classifiers so the two query strategies
-    (scalar EXISTS vs. set membership) can never disagree on which
-    reason wins.
+    The single source of truth for the ordering; :func:`classify_schedule_locks`
+    is its only caller (the module docstring says why the single-period
+    classifier this once also served is gone).
 
     **``ACCOUNT_ANCHOR`` left this set at plan step X-f1c3c** (ruling R-EO),
     and it left by becoming unreachable rather than by being relaxed.  It

@@ -41,9 +41,18 @@ door's own precondition, asked before the sequence starts.
    (developer ruling 2026-08-25): a match asserts that a bank line IS these
    rows, and when the last of them stops existing the line is unexplained
    again.  Over the WHOLE set in one call, so the dialog's figure and the
-   receipt's are one derivation.  Only the rows that LEAVE the table: a
-   soft-deleted row keeps its movements and its matches
-   (:func:`_leaves_the_table`).
+   receipt's are one derivation.  **On BOTH arms** (ruling **R-CC75**,
+   developer 2026-09-23: "Deleting the occurrence takes its payments and
+   purchases off the books through the one removal act, exactly as deleting
+   a one-off does"): the soft arm's tombstone stays in the table, but what
+   it held does not.  Until then a soft-deleted row KEPT its movements and
+   its matches, and the balance skips a hidden row's movements -- so
+   deleting one occurrence of a recurring envelope holding a bank-matched
+   `$40.00` purchase left settled cash `$40.00` above the bank while the
+   line read explained (measured 2026-09-23; ledger **N-290**'s soft-delete
+   half), and plan step ``credit_card:CC-5-4a-4``'s doors then refused to
+   remove that hidden row's period or definition with a sentence naming a
+   row the grid does not show.  A hidden row holds nothing now.
 3. **Take down the live CC payback chain** (``credit_workflow``), because
    ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
    this a projected payback survives its source and inflates the next period
@@ -142,17 +151,21 @@ class RowDeletion:
     disposes_definition: bool
 
 
-def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
-    """Return whether *txn* itself goes, and the payback chain that always does.
+def _leaves_the_table(
+    txn: Transaction,
+) -> "tuple[bool, list[Transaction], list[Transaction]]":
+    """Return whether *txn* stays as a tombstone, the rows emptied, and the rows that go.
 
-    **The soft arm removes NOTHING from the table**, and that distinction is
-    what the match withdrawal has to see: a member's foreign key CASCADES only
-    on a real ``DELETE``, so a soft-deleted row keeps its membership and the act
-    still names it.  Withdrawing there would destroy an accepted act for a
-    change that ``templates/crud`` un-archives with a shipped button.  A first
-    build derived the going set from the row alone and withdrew on the soft arm
-    too; the control that caught it is
-    ``TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow``.
+    **Two sets, because the soft arm empties a row it does not remove**
+    (ruling **R-CC75**).  EMPTIED is every row whose payments and purchases
+    leave the books in this press -- *txn* and its live CC-payback chain, on
+    either arm -- and is what the ONE removal act runs over.  LEAVING is
+    every row that really leaves the table -- the chain, and *txn* too
+    unless it recurs -- and is what the act and the dialog are told is going,
+    so a creation record naming a TOMBSTONE is reported as staying: the row
+    is still there, holding nothing.  Until that ruling the act ran over
+    LEAVING alone, so a soft-deleted row kept its movements and its matches
+    (the module docstring's step 2 carries the measurement).
 
     **The payback chain goes either way**, because
     :func:`~app.services.credit_workflow.delete_payback_on_source_delete` hard-
@@ -164,12 +177,13 @@ def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
         txn: The row being deleted.
 
     Returns:
-        ``(soft, leaving)`` -- whether the row stays as a tombstone, and every
-        row this commit really removes from the table.
+        ``(soft, emptied, leaving)`` -- whether the row stays as a tombstone,
+        every row whose movements go (*txn* first), and every row this commit
+        really removes from the table.
     """
     soft = txn.recurs
     chain = credit_workflow.live_payback_chain(txn)
-    return soft, ([] if soft else [txn]) + chain
+    return soft, [txn, *chain], ([] if soft else [txn]) + chain
 
 
 def preview_deletion(
@@ -194,13 +208,15 @@ def preview_deletion(
     """
     if last_row_of_definition is None:
         last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
-    soft, leaving = _leaves_the_table(txn)
+    soft, emptied, leaving = _leaves_the_table(txn)
     return RowDeletion(
         soft=soft,
         paybacks=tuple(
             row.name for row in leaving if row.id != txn.id
         ),
-        withdrawn=match_withdrawal.pending_for_rows(leaving),
+        withdrawn=match_withdrawal.pending_for_rows(
+            emptied, rows_leaving=leaving,
+        ),
         disposes_definition=last_row_of_definition,
     )
 
@@ -258,16 +274,18 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if refusal is not None:
         raise ValidationError(refusal)
 
-    soft, leaving = _leaves_the_table(txn)
+    soft, emptied, leaving = _leaves_the_table(txn)
     paybacks = tuple(row.name for row in leaving if row.id != txn.id)
     # The definition is read off the row BEFORE the row is deleted: the
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
     definition = txn.template if last_row_of_definition else None
-    for row in [txn, *(row for row in leaving if row is not txn)]:
+    for row in emptied:
         posting_service.reverse_postings_before_delete(row)
+    # Over EMPTIED, on both arms (ruling R-CC75): a tombstone keeps its place
+    # in the table and nothing it held.
     withdrawn = movement_removal.remove_movements(
-        [movement for row in leaving for movement in row.entries],
+        [movement for row in emptied for movement in row.entries],
         owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
         rows_leaving=leaving,
     )

@@ -17,22 +17,28 @@ loss is exactly what
 :attr:`~app.services.statement_match.AcceptedGroup.agrees` is for -- it fails
 the SUM, tints the act amber and offers the Undo -- so this writer fires on the
 one case that flag cannot repair by itself: an act with nothing left to
-re-review.  The two mechanisms now split on a predicate rather than shadowing
-each other, and the predicate is ``_still_holds``' own first branch.
+re-review.  The two mechanisms split on one predicate rather than shadowing
+each other -- :func:`_loses_every_row` -- which was also ``_still_holds``' own
+first branch until plan step ``credit_card:CC-5-4a-4`` made an act naming no
+app row unrepresentable and deleted that branch.
 
-**A SOFT delete withdraws nothing, and the CALLER is what says so** -- the
-going set is the rows that really leave the table
-(``transaction_service._delete._leaves_the_table``,
-``transfer_service.delete_transfer``'s ``if not soft``).  A member's foreign
-key CASCADES only on a real ``DELETE``, so a soft-deleted row keeps its
-membership and the act still names it; withdrawing anyway would destroy an
-accepted act for a change a shipped button reverses -- ``transfers.templates``
-un-archives through ``restore_transfer`` and ``transfer_recurrence`` restores
-soft-deleted shadows during a maintain pass.  A first build asserted this fell
-out of the cascade and it did not: the going set was the row regardless of arm,
-and a soft delete withdrew.  A soft-deleted row that records nothing is still
-:attr:`~app.services.statement_match.AcceptedGroup.agrees`' case, and that flag
-covers it.
+**Whether a SOFT delete withdraws is the CALLER's to say, and the two callers
+now say different things.**  A TRANSACTION's soft delete -- one occurrence of a
+recurring definition, kept as a tombstone -- takes the row's payments and
+purchases off through the one act exactly as its hard delete does (ruling
+**R-CC75**, developer 2026-09-23: *"Deleting the occurrence takes its payments
+and purchases off the books through the one removal act, exactly as deleting
+a one-off does"*), so an act the tombstone empties is withdrawn here and its
+line is unexplained again (``transaction_service._delete._leaves_the_table``'s
+EMPTIED set).  Until that ruling it withdrew nothing, on the argument that a
+shipped button reverses a soft delete; what that left was a hidden row holding
+money the balance does not count, under a match that read explained.  A
+TRANSFER's soft delete still withdraws nothing
+(``transfer_service.delete_transfer``'s ``if not soft``): its restore paths
+(``transfers.templates``' un-archive through ``restore_transfer``, and
+``transfer_recurrence``'s maintain pass) put the shadows back, and the kept
+payment a reverted leg holds under a soft-deleted shadow is ledger row
+**BAL-532**'s, owned by plan step ``balance:X-bi-6-4``.
 
 **What it does NOT do is remove rows the withdrawn act CREATED**, and the
 asymmetry is deliberate.  ``release_match`` is the owner's UNDO -- *withdraw
@@ -452,24 +458,32 @@ def _withdraw(
     )
 
 
-def pending_for_rows(rows) -> MatchWithdrawal:
+def pending_for_rows(rows, *, rows_leaving=None) -> MatchWithdrawal:
     """Return what deleting *rows* would withdraw, WITHOUT withdrawing it.
 
     The read half, for the confirm dialog on a delete control: what
     :func:`app.services.movement_removal.remove_movements` withdraws when
-    the delete verb hands it every movement of *rows* with *rows* leaving.
-    Runs on a popover render: one member query always, and the act and line
-    queries only where an act actually names one of these subjects.
+    the delete verb hands it every movement of *rows* with *rows_leaving*
+    leaving -- the act's own two inputs, so the dialog and the press are one
+    derivation.  Runs on a popover render: one member query always, and the
+    act and line queries only where an act actually names one of these
+    subjects.
 
     Args:
-        rows: The transactions a screen is offering to delete -- the row the
-            owner pressed AND everything that goes down with it.
+        rows: The transactions whose movements the press takes off -- the
+            row the owner pressed AND everything that goes down with it.
+        rows_leaving: Those of *rows* that leave the TABLE, when not all of
+            them do: a recurring row's tombstone is emptied but stays
+            (ruling **R-CC75**), so a creation naming it is reported as
+            kept.  ``None`` -- every row leaves.
 
     Returns:
         Its :class:`MatchWithdrawal`.  All zeroes when no act would be emptied,
         which is every row on a book nobody has matched.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
+    if rows_leaving is not None:
+        transaction_ids = {row.id for row in rows_leaving}
     return _summarise(
         _acts_emptied_by(entry_ids), transaction_ids, entry_ids,
     )

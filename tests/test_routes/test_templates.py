@@ -32,6 +32,7 @@ from app.models.ref import (
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.utils.archive_helpers import HeldMovements
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
@@ -2627,6 +2628,17 @@ class TestTemplateHardDelete:
             monkeypatch.setattr(
                 "app.routes.templates.crud.archive_helpers.template_has_paid_history",
                 lambda _template_id: False,
+            )
+            # ...and so does plan step credit_card:CC-5-4a-4's held-movements
+            # check, which the RECEIVED row's own payment would otherwise
+            # answer first (archiving before the database is reached).  Both
+            # switched off, so the database's refusal is still what this
+            # grades -- rule-5 re-expression, developer-confirmed 2026-09-23.
+            monkeypatch.setattr(
+                "app.routes.templates.crud.archive_helpers.template_holding_movements",
+                lambda _template_id: HeldMovements(
+                    payment=False, purchase=False, live_rows=0,
+                ),
             )
 
             with pytest.raises(IntegrityError) as exc:

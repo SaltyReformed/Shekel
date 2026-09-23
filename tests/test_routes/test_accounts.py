@@ -27,6 +27,7 @@ from app.enums import (
 from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.utils import archive_helpers
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
@@ -1379,8 +1380,11 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
     DELETE as a 500.  **A stated behaviour change**: such an account archives,
     as every other kind of history does.  The arm counts exactly the movements
     the cleanup cannot reach -- under a row neither on the account nor under
-    one of its definitions -- so a card whose only movements sit under its
-    OWN ghost row still deletes, as it did.
+    one of its definitions.  A card whose only movements sit under its OWN
+    ghost row deleted, as it did, until plan step ``credit_card:CC-5-4a-4``
+    (ruling **R-CC65**): a row holding a movement is history, so that card
+    ARCHIVES too, under the held-movements arm's own sentence -- and this arm
+    still does not count it, which the two controls below grade directly.
     """
 
     @staticmethod
@@ -1450,8 +1454,12 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             card = self._card(seed_user)
             row = self._checking_envelope(seed_user, seed_periods_today[0])
             swipe = self._swipe(row, seed_user, card)
-            db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
+            # Hidden with the swipe inside, staged directly: the delete door no
+            # longer leaves one (ruling R-CC75 takes the swipe with the
+            # occurrence) -- the state an archive left before plan step
+            # credit_card:CC-5-4a-4.  Rule-5 re-expression, developer-confirmed
+            # 2026-09-23.
+            row.is_deleted = True
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(Transaction, row.id).is_deleted is True
@@ -1466,18 +1474,21 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             assert archived is not None and archived.is_active is False
             assert db.session.get(TransactionEntry, swipe.id) is not None
 
-    def test_a_ghost_ON_the_card_holding_its_own_swipe_still_deletes(
+    def test_a_ghost_ON_the_card_holding_its_own_swipe_archives_as_held(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """CONTROL for the arm's first exclusion: a movement under the card's OWN row.
 
         A recurring checking definition's row moved onto the card, a swipe on
-        the card under it, then soft-deleted (a recurring row's delete is a
-        tombstone).  The row arm reads live rows only; step 2 deletes every
-        row ON the card and the movement cascades with it
-        (``fk_transaction_entries_owner_transaction``), so the arm must not
-        count it -- deleting ``Transaction.account_id != account_id`` from the
-        arm makes this case ARCHIVE, which is the mutation this exists to catch.
+        the card under it, the row hidden with the swipe inside -- the state
+        an archive left before plan step ``credit_card:CC-5-4a-4``, staged
+        directly because the delete door no longer leaves it (ruling
+        **R-CC75**).  The card ARCHIVES under the held-movements sentence
+        (ruling **R-CC65**), and the other-rows arm answers No -- deleting
+        ``Transaction.account_id != account_id`` from that arm makes it count
+        this swipe, which is the mutation this exists to catch.  Re-expressed
+        under rule 5, developer-confirmed 2026-09-23: this asserted the card
+        DELETED, the swipe cascading away with the ghost.
         """
         with app.app_context():
             card = self._card(seed_user)
@@ -1485,46 +1496,45 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             row.account_id = card.id
             db.session.commit()
             swipe = self._swipe(row, seed_user, card)
+            row.is_deleted = True
             db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transaction, row.id).is_deleted is True
-            assert db.session.get(TransactionEntry, swipe.id) is not None
-            # Ids read BEFORE the delete: afterwards the identity map holds
-            # expired instances whose refresh raises rather than answering.
             card_id, swipe_id = card.id, swipe.id
+            assert archive_helpers.account_holds_other_rows_movements(card_id) is False
 
             response = auth_client.post(
                 f"/accounts/{card_id}/hard-delete", follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert db.session.query(Account).filter_by(id=card_id).count() == 0
-            assert db.session.query(TransactionEntry).filter_by(
-                id=swipe_id,
-            ).count() == 0
+            assert b"holds a recorded purchase" in response.data
+            assert b"purchases recorded on it from other accounts" not in response.data
+            db.session.expire_all()
+            archived = db.session.get(Account, card_id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionEntry, swipe_id) is not None
 
-    def test_a_ghost_under_the_cards_rule_less_definition_still_deletes(
+    def test_a_ghost_under_the_cards_rule_less_definition_archives_as_held(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """CONTROL for the arm's second exclusion: a movement under a row of the card's OWN definition.
 
-        A checking row, soft-deleted while its definition still recurred,
-        holding a swipe on the card; then the definition's rule is cleared and
-        the definition itself moves onto the card.  Guard 3 lets a rule-less
-        definition through and step 2b disposes of it with every non-settled
-        row it names, the ghost on checking included, so the movement cascades
-        and the arm must not count it -- deleting the ``TransactionTemplate``
-        clause from the arm makes this case ARCHIVE.
+        A checking row, hidden with a swipe on the card inside while its
+        definition still recurred (staged directly: the delete door no longer
+        leaves a hidden row holding one, ruling **R-CC75**); then the
+        definition's rule is cleared and the definition itself moves onto the
+        card.  Step 2b would dispose of that definition's rows, the ghost
+        included, so the card ARCHIVES under the held-movements sentence
+        (ruling **R-CC65**) and the other-rows arm answers No -- deleting the
+        ``TransactionTemplate`` clause from that arm makes it count this swipe.
+        Re-expressed under rule 5, developer-confirmed 2026-09-23: this
+        asserted the card DELETED, the swipe cascading away with the ghost.
         """
         with app.app_context():
             card = self._card(seed_user)
             row = self._checking_envelope(seed_user, seed_periods_today[0])
             db.session.commit()
             swipe = self._swipe(row, seed_user, card)
-            db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
+            row.is_deleted = True
             db.session.commit()
             template = row.template
             template.recurrence_rule = None
@@ -1536,17 +1546,20 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             assert ghost.account_id == seed_user["account"].id
             assert ghost.template.account_id == card.id
             card_id, swipe_id, row_id = card.id, swipe.id, row.id
+            assert archive_helpers.account_holds_other_rows_movements(card_id) is False
 
             response = auth_client.post(
                 f"/accounts/{card_id}/hard-delete", follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert db.session.query(Account).filter_by(id=card_id).count() == 0
-            assert db.session.query(TransactionEntry).filter_by(
-                id=swipe_id,
-            ).count() == 0
-            assert db.session.query(Transaction).filter_by(id=row_id).count() == 0
+            assert b"holds a recorded purchase" in response.data
+            assert b"purchases recorded on it from other accounts" not in response.data
+            db.session.expire_all()
+            archived = db.session.get(Account, card_id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionEntry, swipe_id) is not None
+            assert db.session.get(Transaction, row_id) is not None
 
 
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────

@@ -68,6 +68,8 @@ from app.models.transfer import Transfer
 from app.services import (
     account_posting_service,
     loan_posting_service,
+    match_withdrawal,
+    movement_removal,
     pay_period_admin,
     pay_period_write,
     pay_schedule_service,
@@ -680,10 +682,17 @@ class TestResetRefusals:
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             periods = all_periods(user_id)
-            add_txn(
+            deleted = add_txn(
                 db.session, seed_user, periods[2], "Paycheck", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
                 is_deleted=True,
+            )
+            # The state the delete door leaves (ruling R-CC75): its payment
+            # taken off through the one removal act.  Rule-5 re-expression,
+            # developer-confirmed 2026-09-23.
+            movement_removal.remove_movements(
+                list(deleted.entries), user_id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
             )
             db.session.commit()
 

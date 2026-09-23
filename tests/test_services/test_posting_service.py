@@ -856,6 +856,14 @@ class TestFailLoud:
             _db.session.commit()
             # Remove the income shadow (the income-type row on the to-account)
             # via raw SQL.
+            # Its payments first, in the same raw SQL: a row holding one is no longer
+            # deleted with it (R-CC54; rule-5 re-expression, developer-confirmed
+            # 2026-09-23).
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.transaction_entries WHERE transaction_id IN "
+                "(SELECT id FROM budget.transactions "
+                "WHERE transfer_id = :t AND account_id = :a)"
+            ), {"t": transfer.id, "a": savings.id})
             _db.session.execute(_db.text(
                 "DELETE FROM budget.transactions "
                 "WHERE transfer_id = :t AND account_id = :a"

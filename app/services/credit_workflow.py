@@ -261,8 +261,10 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     because entry-level credit sources carry a live payback while their
     own ``status_id`` is NOT Credit -- a status guard would miss them.
     Entry links (``TransactionEntry.credit_payback_id``) are severed
-    before the delete: a template-linked source soft-deletes, so its
-    entries outlive it and must not point at a vanished payback.  No-op
+    before the delete -- a sever that finds nothing on the one caller's
+    path, which has taken every movement of the source off the books first
+    on both of its arms (ruling **R-CC75**: a soft-deleted source no longer
+    keeps its entries).  No-op
     (and no log event) when no live payback exists -- the common case for
     every ordinary delete.
 
@@ -298,11 +300,13 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     for depth in range(len(chain) - 1, -1, -1):
         payback = chain[depth]
         parent = txn if depth == 0 else chain[depth - 1]
-        # Sever entry links before the delete.  On a hard-deleted ad-hoc
-        # source the entries cascade away anyway; on a soft-deleted
-        # template-linked source they survive as rows and must not keep a
-        # pointer to the deleted payback (mirrors sync_entry_payback's
-        # delete branch).
+        # Sever entry links before the delete (mirrors sync_entry_payback's
+        # delete branch).  On this function's one caller's path there is
+        # nothing left to sever: ``transaction_service._delete`` has already
+        # taken every movement of the source and of each level off the books
+        # through the one removal act, on BOTH of its arms (plan step
+        # ``credit_card:CC-5-4a-4``: a row's entries no longer cascade with
+        # it, and ruling R-CC75: a soft-deleted source no longer keeps them).
         for entry in parent.entries:
             if entry.credit_payback_id == payback.id:
                 entry.credit_payback_id = None

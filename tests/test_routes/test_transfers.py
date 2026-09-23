@@ -5217,6 +5217,9 @@ class TestTransferActualBox:
             for leg in self._legs(xfer.id):
                 record_settle_day(leg, None)
                 for movement in leg.covering_movements:
+                    # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+                    # rule-5 re-expression, developer-confirmed 2026-09-23).
+                    db.session.delete(movement)
                     leg.entries.remove(movement)
             db.session.commit()
             db.session.expire_all()

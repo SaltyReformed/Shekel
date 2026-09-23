@@ -39,7 +39,12 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services import pay_period_admin, pay_period_gates, transfer_service
+from app.services import (
+    pay_period_admin,
+    pay_period_gates,
+    transaction_service,
+    transfer_service,
+)
 from app.services.cash_ledger import settled_cash_facts
 from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import (
@@ -465,3 +470,99 @@ class TestThePayPeriodDoors:
                 "or purchase; delete it from its row first."
             )
             assert db.session.get(Transaction, row.id) is not None
+
+
+def _recurring_groceries_holding_kroger(seed_user):
+    """R-CC75's own example: a recurring envelope holding a bank-filed $40.00.
+
+    Returns:
+        ``(template, row, created, line)`` -- the recurring definition, its
+        occurrence, the create door's ``CreatedPurchase`` and the bank line.
+    """
+    template = make_expense_template(
+        db.session, seed_user, amount="300.00", name="Groceries",
+        category_key="Groceries", is_envelope=True,
+    )
+    row = generate_row_of(template, seed_user["bootstrap_period"])
+    line = a_bank_line(
+        seed_user, an_import(seed_user), amount="-40.00",
+        posted_on=_day(seed_user), description="KROGER",
+    )
+    db.session.commit()
+    created = filed_by(seed_user, line, row, by_rule=False)
+    db.session.commit()
+    return template, row, created, line
+
+
+class TestTheRowDoorsSoftArm:
+    """Ruling **R-CC75**: deleting a recurring occurrence empties it as a one-off's delete does.
+
+    "Deleting the occurrence takes its payments and purchases off the books
+    through the one removal act, exactly as deleting a one-off does, and its
+    delete dialog first names the bank lines that frees" (developer
+    2026-09-23).  Until then the soft arm kept them: measured, the $40.00
+    stayed under the hidden row, the KROGER line read explained, Checking's
+    settled cash read $40.00 above the bank, and this step's doors then
+    refused the row's period and definition with a sentence naming a row the
+    grid does not show.
+    """
+
+    def test_the_occurrence_is_emptied_and_its_line_freed(
+        self, app, db, seed_user,
+    ):
+        """The press withdraws what the dialog said, and the tombstone holds nothing."""
+        with app.app_context():
+            _template, row, created, line = _recurring_groceries_holding_kroger(
+                seed_user,
+            )
+            assert row.recurs
+            cash_with_purchase = _settled_cash(seed_user)
+            preview = transaction_service.preview_deletion(row)
+
+            outcome = transaction_service.delete_transaction(
+                row, seed_user["user"].id,
+            )
+            db.session.commit()
+            db.session.expire_all()
+
+            assert outcome.soft is True
+            assert outcome.withdrawn == preview.withdrawn, (
+                "the dialog and the press are one derivation"
+            )
+            assert [freed.line_id for freed in outcome.withdrawn.lines] == [line.id]
+            assert db.session.get(Transaction, row.id).is_deleted is True
+            assert db.session.get(TransactionEntry, created.entry_id) is None
+            assert db.session.get(StatementMatch, created.match_id) is None
+            assert line.id not in matched_subjects(seed_user["account"].id).lines
+            assert _settled_cash(seed_user) == cash_with_purchase + Decimal("40.00")
+
+    def test_its_definition_then_deletes_and_its_period_does_not_lock(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A hidden row never holds money, so nothing refuses over one."""
+        with app.app_context():
+            periods = seed_periods_today
+            template = make_expense_template(
+                db.session, seed_user, amount="300.00", name="Gas",
+                is_envelope=True,
+            )
+            row = generate_row_of(template, periods[7])
+            db.session.commit()
+            add_entry(
+                db.session, seed_user, row, Decimal("40.00"),
+                periods[3].start_date,
+            )
+            db.session.commit()
+            transaction_service.delete_transaction(row, seed_user["user"].id)
+            db.session.commit()
+            user_id = seed_user["user"].id
+
+            locks = classify_schedule_locks(
+                calendar_for(user_id), as_of=periods[3].start_date,
+            )
+            assert locks[periods[7].id] is None
+
+            auth_client.post(f"/templates/{template.id}/hard-delete")
+            assert _flashes(auth_client) == [
+                "Recurring transaction 'Gas' permanently deleted.",
+            ]

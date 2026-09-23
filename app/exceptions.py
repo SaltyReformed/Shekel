@@ -262,8 +262,9 @@ class RecurrenceConflict(ShekelError):
                      would have destroyed or re-attributed.  Added at plan step
                      R10-a with finding **N-292**, in two shapes: the new rule
                      no longer fires in this row's period (the old behaviour
-                     deleted the row, and ``transaction_entries`` CASCADE, so
-                     the purchases went with it), or the template's ACCOUNT
+                     deleted the row, and ``transaction_entries`` CASCADED
+                     until plan step ``credit_card:CC-5-4a-4``, so the
+                     purchases went with it), or the template's ACCOUNT
                      moved, which drags every purchase onto the new account and
                      invalidates the statement link that cleared it.  A THIRD
                      shape joined at finding **REC-516**: the row answers no

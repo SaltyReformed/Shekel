@@ -1308,6 +1308,9 @@ class TestRestoreTransfer:
             # covered by ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
             record_settle_day(drifted, None)
             for movement in drifted.covering_movements:
+                # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+                # rule-5 re-expression, developer-confirmed 2026-09-23).
+                db.session.delete(movement)
                 drifted.entries.remove(movement)
             db.session.flush()
             assert sibling.settled_on == real_settle
