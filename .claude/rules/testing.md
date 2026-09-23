@@ -21,7 +21,7 @@ this file has not loaded; a change here updates that mirror in the same commit.
   `TEST_DB_PREFIX` and `TEST_TEMPLATE_DATABASE` are all gone rather than merely quieter.
 - **A migration needs no manual template rebuild.** The template is baked into the image and
   the wrapper re-verifies it on EVERY invocation, rebuilding when the cache key moved. Only
-  CI and the image builder run `scripts/build_test_template.py` directly.
+  the image builder runs `scripts/build_test_template.py` directly; CI runs the wrapper too.
 - **It REFUSES a daemon that is not rootless**, rather than falling back. A container per run
   on the system daemon is exactly the churn `docs/test-harness-isolation.md` exists to stop:
   that daemon runs the production database and the homelab wud/cadvisor/alloy stack watches
@@ -30,8 +30,8 @@ this file has not loaded; a change here updates that mirror in the same commit.
   deliberately, and CI sanctions its own throwaway daemon.
 - **It also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
   `tests/test_deploy` tests** -- deselected, not skipped, so they leave NO line in the
-  report and a green run says nothing about them; CI runs bare `pytest` and executes all
-  28. Locally the opt-in is now just `PYTEST_MARKER_EXPR=docker ./scripts/test.sh
+  report and a green run says nothing about them; CI's shards pass `-m ""` to the wrapper
+  and execute all 28. Locally the opt-in is now just `PYTEST_MARKER_EXPR=docker ./scripts/test.sh
   tests/test_deploy`, because the wrapper already exports an isolated `DOCKER_HOST` and the
   conftest guard sees it. Measured 2026-09-05: 25 passed, 3 skipped on the rootless daemon
   against 28 skipped on the system one; the 3 are a published-port collision in the nginx
@@ -46,8 +46,9 @@ this file has not loaded; a change here updates that mirror in the same commit.
   alone finished in 349 s, while with THREE running two of them reached ~38% in 13 minutes,
   at a run-queue of 32 and 28% iowait. **No test failed in either**; the slowest single test
   is 2.58 s against `pytest.ini`'s per-test timeout, so the headroom is roughly 11x and
-  that measurement sat on it (30 s then; 90 s since 2026-09-13, sized to CI's clock rather than
-  this host's -- the dated table is `docs/testing-standards.md`, Test Run Guidelines). So the
+  that measurement sat on it (30 s then; 90 s from 2026-09-13 and 50 s since 2026-09-22, sized
+  to CI's clock rather than this host's -- the dated table is `docs/testing-standards.md`, Test
+  Run Guidelines). So the
   wrapper REPORTS rather than serialises: it prints any
   other live pytest with its worktree and proceeds. **Read the cwd, never the argv** -- every
   worktree here shares one venv, so a peer's command line names the main checkout whatever
@@ -63,6 +64,9 @@ this file has not loaded; a change here updates that mirror in the same commit.
 - **Check for existing coverage** before writing a new test.
 - Tests are **independent** -- each sets up its own preconditions, no ordering or
   shared mutable state. Tests that mutate cluster state use `@pytest.mark.xdist_group`.
+- **Tests that must share ONE session share an `xdist_group`.** CI splits the suite across
+  six runners (`SHEKEL_TEST_SHARD`, `tests/_shard.py`) and only a group is kept whole: two
+  tests that read each other's session state without one can land on different machines.
 
 ## The ambient clock and calendar (a test that fails on some days is BROKEN, not flaky)
 

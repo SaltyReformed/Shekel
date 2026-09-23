@@ -31,7 +31,7 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   expression, and forwards all arguments verbatim.
   **There is no shared-container path and no flag to select one**; a run that cannot reach a
   rootless daemon exits 2 with instructions rather than falling back to the daemon that serves
-  production. CI is unaffected -- it invokes `pytest` directly against its own service container.
+  production. CI runs the same wrapper, on its runners' own throwaway daemons (see **CI** below).
 - **What the private cluster costs.** Measured 2026-09-05 on `tests/test_utils/` (385 tests), same
   host, back to back: 12.7 s against the shared cluster, 14.1 s in a private one with the image
   built and its layers warm, 22.0 s on the first run after a rebuild. The fixed part is the image
@@ -41,10 +41,10 @@ must-knows; a fact lives in one tier and the other tiers point at it.
 - **Container-spawning deploy tests are excluded by default.** The `tests/test_deploy` integration
   tests that drive a real `docker` daemon are marked `@pytest.mark.docker`, and `./scripts/test.sh`
   defaults to `-m "not docker"` so a routine local run never spawns containers on the host's
-  production Docker daemon (which the homelab `wud`/`cadvisor`/`alloy` stack watches). CI runs bare
-  `pytest`, so it still executes them. A `tests/test_deploy/conftest.py` guard also skips them if a
-  bare `pytest` reaches the system daemon outside CI. Since the wrapper selects and exports an
-  isolated `DOCKER_HOST` itself, the local opt-in is now just
+  production Docker daemon (which the homelab `wud`/`cadvisor`/`alloy` stack watches). CI's shards
+  pass `-m ""` to the wrapper, so they still execute them. A `tests/test_deploy/conftest.py` guard
+  also skips them if a bare `pytest` reaches the system daemon outside CI. Since the wrapper selects
+  and exports an isolated `DOCKER_HOST` itself, the local opt-in is now just
   `PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...` --
   `SHEKEL_ALLOW_HOST_DOCKER=1` is no longer part of it and means "accept the churn on the production
   daemon". Measured 2026-09-05: 25 passed, 3 skipped on the rootless daemon against 28 skipped on
@@ -80,7 +80,7 @@ must-knows; a fact lives in one tier and the other tiers point at it.
     **Neither produced a failing test**, and the slowest single test is 2.58 s against
     `pytest.ini`'s per-test timeout, 30 s at the time -- about 11x of headroom, which this
     measurement was sitting on. A fourth concurrent suite is roughly where a timeout would start
-    failing a test that is not broken; that has not been measured. (The cap is 90 s since 2026-09-13
+    failing a test that is not broken; that has not been measured. (The cap is 50 s since 2026-09-22
     and is sized to CI's clock, not this host's: see **Test timeout** below.)
 
   So what remains is a resource fact rather than a defect, and the instrument is information: the
@@ -91,7 +91,7 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   tagged image whose cache key is derived from every input the build reads, and the wrapper
   re-verifies that image on EVERY invocation rather than trusting the tag -- so a stale or damaged
   one is rebuilt at the door instead of being cloned from for the whole run. See "Building the test
-  template" below for the two callers that still run `scripts/build_test_template.py` directly.
+  template" below for the one caller that still runs `scripts/build_test_template.py` directly.
 - **Before reporting done:** every batch (or the single full- suite invocation) must end in
   `<N> passed`; any `failed`, `errors`, or `xfailed` lines block the "done" report.
 - **During development:** run only relevant test files; targeted runs typically finish in seconds.
@@ -100,33 +100,49 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   marginal speedup falls off because PostgreSQL's cluster- wide `pg_database` catalog lock (formerly
   the WAL/fsync pipeline pre-Phase-3) is the serialised resource; see
   `docs/audits/test_improvements/test-performance-research.md` for the full profile.
-- **Test timeout:** 90 s per test, configured in `pytest.ini`; it covers setup + call + teardown,
+- **CI: six shards, each through the wrapper at `-n logical`** (plan step `bank_import:X-gy`,
+  rulings R-BI38..R-BI41, 2026-09-22). `.github/workflows/ci.yml` runs a `scope` job (the change-set
+  classifier), `plan-gate`, `lint` and six `test` shards in parallel, and a `lint-and-test` job --
+  the check branch protection requires -- that needs them all, runs `if: always()` and fails closed
+  through `tools/plan_gate/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each
+  shard exports `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a
+  stable hash of each test's `xdist_group` or node id, so the shards partition the collection by
+  construction and every group lands whole on one shard --
+  **a test that depends on another test's session must share an `xdist_group` with it.** The weekly
+  `calendar-sweep.yml` runs the wrapper too, so every CI run has the one cluster configuration a
+  local run has. **Why, measured on the runner in a matched A/B** (draft PR #447, runs 35803297014,
+  35806759874, 35808935180): the hosted runner is CPU-BOUND -- 4 vCPUs that are 2 physical cores
+  with SMT, a fixed CPU benchmark 1.2-2.1x slower per core than this host, the fleet a mix of EPYC
+  7763 / 9V74 / 9V45 and Xeon 6973P. On one 1,230-test slice, arms run in sequence on ONE runner:
+  two or four postgres clusters per runner gained 0-7% over one; PGDATA on tmpfs saved 2-11%, and
+  the wrapper's cluster (socket, baked image, its flags) 8-15% over the TCP service container; and
+  it ran it at `-n 12` / `-n 6` / `-n 4` / `-n 3` in 285.1 / 265.8 / 259.1 / 301.4 s on one runner
+  and 310.4 / 276.5 / 272.6 / 311.2 s on another. Per-test wall clock scaled with the worker
+  count -- setup plus body 0.79 s at `-n 4`, 2.46 s at `-n 12` -- so the single job's 41-61 min (the
+  suite 35-52 of them at `-n 12`) was CPU time stretched by oversubscription, not a database or disk
+  defect. Ledger **BI-496**'s 5-13x per-test ratio is CONSISTENT with that rather than fully
+  measured: 3.1x from the worker count (2.46 / 0.79) times 1.2-2.1x per core is 3.7-6.5x, and the
+  top of the range fits SMT and postgres sharing two physical cores, which no arm measured apart.
+  Six shards ran 6.4-9.7 min per job; their union was the runner's own collection of that tree
+  exactly (15,166 items, none in two shards, the container tests included). Quote none of these
+  without the date.
+- **Test timeout:** 50 s per test, configured in `pytest.ini`; it covers setup + call + teardown,
   and anything past it raises a timeout error rather than hanging the suite.
   **The cap is a hang detector sized to CI's clock, and CI's clock is not this host's.** Measured
-  2026-09-13 over the twelve full CI runs from 2026-09-12 18:40Z to 2026-09-13 04:22Z, contiguous
-  (34711892311, 34715011327, 34720452065, 34721722432, 34723002840, 34725696007, 34729871811,
-  34733155344, 34735364929, 34735733027, 34736695029, 34737731259; each prints `--durations=25`, and
-  the last one's timed-out first attempt and green rerun are both counted): the suite takes
-  **26:39-47:38 on the hosted runner, 4 cores in every run, against 6:01-6:07 on this 24-core host**
-  (4.3x-7.9x), and the database-bound tests among the slowest 25 carry **5-13x**. The settled-bound
-  family (four cases, `filed_acts` = 51 real door calls each, in
+  2026-09-22 under the six-shard layout (run 35808935180, five of six shards on the slowest CPU the
+  fleet drew, an EPYC 7763): the slowest test was `test_pay_grid_month_kinds.py`'s
+  `test_the_semi_monthly_grid_matches_the_listing_on_every_pair` at a 16.16 s call, and the
+  settled-bound family (four cases, `filed_acts` = 51 real door calls each, in
   `tests/test_services/test_statement_match/test_reconcile.py::TestTheSettledBoundIsLIFTABLE` and
-  `tests/test_routes/test_statement_reconcile.py::TestTheSettledBoundIsWiredToThePage`) is 2.3-2.5 s
-  here and 12.7-28.1 s there;
-  `test_loan_fold_oracle.py::TestFoldMatchesPostingsAcrossTheShapeMatrix::test_escrow` 1.2 s and
-  8.2-15.5 s (the seven shape-matrix cases together span 6.5-15.5 s); `test_loan_ledger.py`'s
-  `TestFoldAgreesWithThePostedSum::test_fold_equals_the_ledger_reader_on_every_day` 1.1 s and
-  7.6-13.3 s. The local figures are `./scripts/test.sh -p no:randomly --durations=0` over those six
-  items alone, 2026-09-13. Under the 30 s cap that stood until then the family's slowest case per
-  run left 1.9-15.7 s (1.9-6.2 s on the ten slow runs), read off `call` rows, which the cap does not
-  measure alone, and it crossed once: run 34737731259 attempt 1 (call cut at 28.06 s; green on
-  rerun), the one crossing since the family's 2026-08-31 fixture fix (`filed_acts`'s docstring: four
-  crossings before it, at 4.7 s local, so the ratio is a snapshot of one shape and not a constant).
-  90 s is 3x the cap it crossed; the worst completed call is 27.39 s.
-  **A local `--durations` figure is never the basis for a CI budget.** About 2x of the ratio is the
-  3x oversubscription `pytest.ini`'s own A/B measured (1.17 s against 0.62 s for the largest arm at
-  `-n 12` against `-n 4`); the rest is unmeasured, ledger **BI-496** (`bank_import:X-gy`).
-  Re-measure from the durations table CI prints, never from this host.
+  `tests/test_routes/test_statement_reconcile.py::TestTheSettledBoundIsWiredToThePage`) 5.1-8.6 s.
+  50 s is 3x the slowest (ruling **R-BI41**), the same 3x the cap was sized by before.
+  **Its history, for the numbers it replaced:** 30 s until 2026-09-13; then 90 s, sized as 3x the 30
+  s that run 34737731259 attempt 1 crossed on an honest test (call cut at 28.06 s) when the single
+  job ran `-n 12` on 4 cores -- the twelve full CI runs 34711892311 .. 34737731259 (2026-09-12
+  18:40Z to 2026-09-13 04:22Z) took the suite 26:39-47:38 against 6:01-6:07 here, and the family's
+  call read 12.7-28.1 s there against 2.3-2.5 s here.
+  **A local `--durations` figure is never the basis for a CI budget.** Re-measure from the durations
+  table each CI shard prints, never from this host.
 
 ## Why the cluster is per-run, not shared
 
@@ -209,12 +225,12 @@ populated template is roughly two orders of magnitude faster than running migrat
 infrastructure + reference seed per session, which is what unlocks the parallel and concurrent-safe
 test runs documented above.
 
-**Two callers run it, and neither of them is you.** `scripts/build_test_db_image.py` runs it inside
-a bake container and commits the result as a tagged image, and CI runs it against its own postgres
-service. A local `./scripts/test.sh` clones from the baked image, so there is no first-time build to
-remember and no rebuild step after a migration: the image's cache key is derived from every input
-the build reads, and the wrapper re-verifies the image on EVERY invocation, so a key that moved
-rebuilds at the door.
+**One caller runs it, and it is not you.** `scripts/build_test_db_image.py` runs it inside a bake
+container and commits the result as a tagged image. `./scripts/test.sh` -- every local run, and
+since `bank_import:X-gy` every CI job -- clones from the baked image, so there is no first-time
+build to remember and no rebuild step after a migration: the image's cache key is derived from every
+input the build reads, and the wrapper re-verifies the image on EVERY invocation, so a key that
+moved rebuilds at the door.
 
 **The key is not a function of the migrations alone**, which is why it covers more than
 `migrations/`: `_populate_template` re-applies the in-code trigger definitions AFTER
@@ -229,13 +245,13 @@ argument.
 idempotent, dropping and recreating `shekel_test_template` on every run, and prints three steps --
 drop+create, populate (Alembic chain to `head` + audit infrastructure + reference seed +
 `TRUNCATE system.audit_log`), verify (account-type count, audit trigger count, `system.audit_log`
-row count). It reads `TEST_ADMIN_DATABASE_URL` for the admin DSN (default `postgresql:///postgres`);
-CI uses `postgresql://shekel_test:shekel_test@localhost:5432/postgres`. `SECRET_KEY` is defaulted by
-the script -- the template DB is never reachable through Gunicorn so the value is purely scaffolding
-for app construction. **The template's NAME is a constant, not a knob**: it was resolved from
-`TEST_TEMPLATE_DATABASE` so two checkouts on one postmaster could name their templates apart, and
-`balance:X-br-4` deleted that override with the shared postmaster. `tests/conftest.py` and this
-script now spell the same literal and MUST agree.
+row count). It reads `TEST_ADMIN_DATABASE_URL` for the admin DSN (default `postgresql:///postgres`).
+`SECRET_KEY` is defaulted by the script -- the template DB is never reachable through Gunicorn so
+the value is purely scaffolding for app construction.
+**The template's NAME is a constant, not a knob**: it was resolved from `TEST_TEMPLATE_DATABASE` so
+two checkouts on one postmaster could name their templates apart, and `balance:X-br-4` deleted that
+override with the shared postmaster. `tests/conftest.py` and this script now spell the same literal
+and MUST agree.
 
 **If the bootstrap raises `RuntimeError`** complaining the template is missing or has the wrong
 row/trigger count, the error message names the offending count and the likely root cause. Under the
