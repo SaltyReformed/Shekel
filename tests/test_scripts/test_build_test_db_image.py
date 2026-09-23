@@ -430,6 +430,31 @@ class TestTheFaultVerdictLineHoldsAtEverySite:
         )
 
 
+class TestAFailedTemplateBuildReportsBothStreams:
+    """Ruling R-BAL121: the failure report quotes the builder's log AND its error.
+
+    The template builder runs the migration chain through the deploy's own
+    runner (``app.migration_runner``), so ``migrations/env.py`` leaves its
+    logging to the app: each revision is logged as JSON on STDOUT and the
+    traceback goes to stderr.  A report quoting stderr alone would drop the
+    line naming the revision that was running.
+    """
+
+    def test_the_report_quotes_the_log_tail_and_the_error(self):
+        """The last revisions logged and the traceback both appear; older lines do not."""
+        log = "\n".join(
+            f'{{"message": "Running upgrade r{i} -> r{i + 1}"}}'
+            for i in range(100)
+        )
+        report = _MODULE._builder_failure(log, "Traceback: forged failure\n")
+
+        tail = _MODULE._FAILED_BUILD_LOG_LINES
+        assert "Running upgrade r99 -> r100" in report
+        assert f"Running upgrade r{100 - tail} -> r{101 - tail}" in report
+        assert f"Running upgrade r{99 - tail} -> r{100 - tail}" not in report
+        assert report.rstrip().endswith("Traceback: forged failure")
+
+
 class TestTheTemplateBuilderStartsUnderThePinnedLocale:
     """The scrubbed environment carries ``LC_ALL`` -- when there is one.
 

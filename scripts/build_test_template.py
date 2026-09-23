@@ -26,9 +26,10 @@ Three steps, in order:
    pytest worker connection does not block the rebuild.  PostgreSQL
    13+ required for ``WITH (FORCE)``.
 2. **Populate** the template.  Creates the five user-facing schemas,
-   runs the Alembic chain to ``head`` via ``alembic.command.upgrade``
-   (matches the production ``flask db upgrade head`` path so any
-   model-vs-migration drift surfaces on the next template rebuild),
+   runs the Alembic chain to ``head`` through the deploy's own runner,
+   :func:`app.migration_runner.upgrade_to_head` (ruling R-BAL114, so
+   any model-vs-migration drift, or a migration that cannot run inside
+   the deploy's transaction, surfaces on the next template rebuild),
    applies the audit infrastructure idempotently (so the LATEST
    in-code trigger definitions win over any migration-frozen state),
    and seeds reference data via :func:`app.ref_seeds.seed_reference_data`.
@@ -152,13 +153,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
 from psycopg2 import sql
 
-from alembic import command
-from alembic.config import Config
-
 from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
-from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
+from app.audit_infrastructure import (
+    AUDIT_TRIGGER_COUNT_SQL,
+    EXPECTED_TRIGGER_COUNT,
+    apply_audit_infrastructure,
+)
 from app.level_infrastructure import apply_level_infrastructure
+from app.migration_runner import upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
@@ -206,11 +209,22 @@ def _populate_template(app) -> None:
        :data:`_REQUIRED_SCHEMAS`.  Migrations expect the four
        user-facing schemas to exist; the rebuild migration creates
        the ``system`` schema conditionally but the others are assumed.
-    2. ``alembic.command.upgrade(..., 'head')``: same migration
-       runner ``scripts/init_database.py::migrate_existing_database``
-       uses.  Running against an empty database validates the
-       chain end-to-end on every template rebuild -- any model-
-       vs-migration drift surfaces here, not at test time.
+    2. :func:`app.migration_runner.upgrade_to_head`: the ONE runner
+       ``scripts/init_database.py::migrate_existing_database`` calls too
+       (plan step ``balance:X-cv``, ruling R-BAL114), on a connection
+       this build hands over inside a transaction it opened -- the
+       path the deploy takes, so a migration that cannot run inside the
+       deploy's one transaction fails HERE, on every template rebuild,
+       instead of at a release.  Running against an empty database
+       validates the chain end-to-end the same way: any model-vs-
+       migration drift surfaces here, not at test time.  Because the
+       connection is handed over, ``migrations/env.py`` leaves this
+       process's logging to the app, as the deploy's (ruling R-BAL121):
+       Alembic's per-revision lines print as the app's JSON log on
+       STDOUT, not alembic.ini's plain text on stderr, and
+       ``scripts/build_test_db_image.py`` reports stdout's tail with
+       stderr when this build fails, so the revision that was running
+       is still named.
     3. ``apply_audit_infrastructure``: idempotent re-application so
        the latest in-code trigger definitions win over any
        migration-frozen state.  Pulls in any trigger that was added
@@ -257,9 +271,8 @@ def _populate_template(app) -> None:
             )
         db.session.commit()
 
-        alembic_cfg = Config("alembic.ini")
-        alembic_cfg.set_main_option("script_location", "migrations")
-        command.upgrade(alembic_cfg, "head")
+        with db.engine.begin() as connection:
+            upgrade_to_head(connection)
 
         apply_audit_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
@@ -344,8 +357,9 @@ def _verify_template_state() -> None:
       :data:`_EXPECTED_ACCOUNT_TYPE_COUNT`.  Catches a seed list
       edit that removed or duplicated a row.
     * ``pg_trigger`` count of non-internal ``audit_*`` triggers
-      equals :data:`EXPECTED_TRIGGER_COUNT` from
-      :mod:`app.audit_infrastructure`.  Catches a new table that was
+      (:data:`app.audit_infrastructure.AUDIT_TRIGGER_COUNT_SQL`, the
+      query the deploy's check runs too) equals
+      :data:`EXPECTED_TRIGGER_COUNT` exactly.  Catches a new table that was
       added to ``AUDITED_TABLES`` but whose trigger never attached
       (or, less likely, a stray trigger left over from a previous
       template that the DROP did not wipe).
@@ -372,10 +386,7 @@ def _verify_template_state() -> None:
                     "and that seed_reference_data committed cleanly."
                 )
 
-            cur.execute(
-                "SELECT count(*) FROM pg_trigger "
-                "WHERE tgname LIKE 'audit_%' AND NOT tgisinternal"
-            )
+            cur.execute(AUDIT_TRIGGER_COUNT_SQL)
             trigger_count = cur.fetchone()[0]
             if trigger_count != EXPECTED_TRIGGER_COUNT:
                 raise RuntimeError(
