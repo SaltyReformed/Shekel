@@ -155,24 +155,13 @@ is on that step's own entry.
 - [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
       `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
       cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
-- [x] **X-gv** `88f38feb` -- `locked_for_write` composes `populate_existing()` beside the mode, so a
-      door reads the row the lock holds rather than the one `review_set` hydrated before it; vacuous
-      on `lock_lines` (id column only), acting at `load_lines` and `_line_on`. Closed **BI-493**,
-      REPRODUCED first at both doors: a skip landed on a line whose merchant now paid an account the
-      owner holds (**R-JI**), and a purchase took its posting day over a stated transaction day.
-      Graded by `test_locked_read_refresh.py` (4 cases, one firing control).
-- [x] **X-gx** `c2e22790` -- `FiledMerchant` on `CreatedPurchase` and `AppliedItem`;
-      `rules_worth_offering` takes the applied items and drops `review`; the press builds
-      `RuleDoorAccepts` off `RuleView.build` and no longer runs `review_set`. Closed **BI-495**,
-      REPRODUCED first (the door applied, the receipt offered nothing). Graded by
-      `test_offered_rules.py` (BI-495 class + the real door behind every case) and `test_batch.py`
-      (only the create arm names a merchant).
-- [x] **X-gz** `08a66901` -- the match pane shows the dates a human verifies by (**R-BI9** and its
-      two sub-rulings; closed **BI-498**; outcome O0 delivered 2026-09-16): each candidate row
-      carries its BUDGETED placement and, for an envelope entry, its `purchased_on`, every date
-      labelled by kind in the paycheck register's MM/DD, the gap to the bank's date printed, the
-      settle day never shown (`.rec-row-day` now names the per-fact span, `accounts.css:1205-1211`);
-      `CandidateRow` carries `period` and `purchased_on`; `_dating.py` presents; `_caveat.py` split.
+- [x] **X-gv** `88f38feb` -- a door reads the row its lock holds (`populate_existing()` beside the
+      mode). Closed **BI-493**.
+- [x] **X-gx** `c2e22790` -- the receipt offers rules from the applied items, not `review_set`.
+      Closed **BI-495**.
+- [x] **X-gz** `08a66901` -- the match pane shows the dates a human verifies by (**R-BI9**); outcome
+      O0 delivered 2026-09-16. Closed **BI-498**. The three entries in full:
+      `historical/bank_import_shipped_entries_condensed_2026-09-22.md`.
 - [ ] **X-hb** `fix(import): the delete confirmation names the placement that leaves` -- **BI-501**
       (was balance:BAL-489, re-homed 2026-09-18): the confirmation and the receipt read the level
       relation `balance:X-bj-1` built and say this import's own placement leaves and which import
@@ -180,11 +169,19 @@ is on that step's own entry.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
-- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
-      database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
-      A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
-      is re-sized from CI's own `--durations` table. Minted 2026-09-13 by the developer from the
-      coordinator's triage of PR #337's timeout.
+- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then split` -- **BI-496**, WIDENED
+      2026-09-22 by **R-BI38** from a fix to the job's shape. It starts with its measurement: a
+      matched A/B on the hosted runner names where its 5-13x per-test ratio comes from (the 3x
+      oversubscription of `-n 12` on 4 cores, the per-item drop-and-reclone, the service container's
+      disk). Then ONE change: the suite sharded across ~4-6 parallel jobs by an in-repo splitter,
+      the shards' node-id UNION graded equal to today's collected set (the `docker`-marked tests and
+      the serial audit-trigger benchmarks included); `-n` sized to the runner; lint (the plan gate,
+      pylint, the custom checkers, duplicate-code) its own parallel job; and an aggregate job named
+      `lint-and-test`, the context branch protection requires, failing on any failed, skipped or
+      cancelled shard. No check is weakened, and `ci_scope`'s registry-only scope, `fetch-depth: 0`,
+      the clock-skew `TZ` and the pinned postgres survive; `pytest.ini`'s per-test cap is re-sized
+      from CI's own `--durations`. Expected ~12-15 minutes a PR against 41-61 over four runs on
+      2026-09-22; merged alone, since every PR runs `ci.yml` and `pytest.ini`.
 - [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
       both classes in `_outcome.py`, built from the field names so a counter on one side and not the
       other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).

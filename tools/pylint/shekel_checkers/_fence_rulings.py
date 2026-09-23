@@ -516,7 +516,7 @@ _FENCED_MODULE_RULINGS = {
             "payment_installments",
         }),
     ),
-    # The genesis loan-ledger package.  Scoped WHOLE, not just ``_reader``: a new
+    # The genesis loan-ledger package.  Scoped WHOLE, not one submodule: a new
     # balance-at-T reader born in ``_display`` would reproduce exactly the hole
     # this check exists to kill.  Its producer set is EMPTY as of plan step E1e,
     # which DELETED the two sum-of-postings balance readers that were the last
@@ -537,12 +537,18 @@ _FENCED_MODULE_RULINGS = {
             "loan_balance_anchor_history",
             # WRITERS.  Everything below emits or reconciles postings; a writer
             # is not a balance reader, and the ledger-write path has its own
-            # seams (``posting_service._emit_balanced_entry``).
-            "reconcile_loan_anchor_corrections",
-            "sync_loan_anchor_corrections",
-            "reconcile_loan_payment_splits",
-            "sync_loan_payment_postings",
-            "reverse_loan_payment_postings_for_shadow",
+            # seams (``posting_service._emit_balanced_entry``).  The two
+            # single-half syncs, the per-half reconciles and the delete-side
+            # split reversal went at plan step ``balance:X-bi-6-3`` (ruling
+            # **R-BAL102**): ONE reconcile over the walk, driven by the one
+            # sync, and a split keyed by no row to reverse ahead of a delete.
+            "reconcile_loan_corrections",
+            # The two TARGET builders that reconcile consumes: each maps the
+            # walk's corrections or splits onto ``{(kind, period, date):
+            # {ledger: (amount, kind)}}`` -- what the ledger SHOULD hold, leg
+            # by leg, never what it does hold or what a loan owes.
+            "anchor_correction_targets",
+            "payment_split_targets",
             "sync_loan_postings",
             "sync_loan_postings_all_scenarios",
             "sync_all_scenarios_or_duplicate",

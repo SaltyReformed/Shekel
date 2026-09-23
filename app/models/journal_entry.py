@@ -84,10 +84,16 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     transactions; plan step X-f3b adds ``transaction_entry_id`` for a PURCHASE
     that has cleared the bank (ruling **R-FM**).  ``source_kind_id``
     disambiguates which is set: a ``transfer`` entry carries ``transfer_id``,
-    a ``transaction`` entry ``transaction_id``, a ``purchase`` entry
-    ``transaction_entry_id``, and each carries NULL in the other two.  Later
-    Build-Order steps add one concrete nullable FK per new source kind beside
-    these three.  (The one-set-FK-per-entry rule is maintained by the posting
+    a ``transaction`` entry ``transaction_id``, a ``purchase`` or
+    ``transfer_movement`` entry ``transaction_entry_id``, and each carries
+    NULL in the other two; a CORRECTION -- ``loan_opening`` / ``loan_trueup``
+    / ``loan_payment`` / ``account_opening`` / ``account_trueup`` -- carries
+    NULL in all three, because it is a derivation of a walk and keyed by its
+    ``(source kind, pay period, entry date)`` rather than by a row (the loan
+    payment split joined that family at plan step ``balance:X-bi-6-3``,
+    ruling **R-BAL102**; it linked the loan-side shadow before).  Later
+    Build-Order steps add one concrete nullable FK per new ROW-LINKED source
+    kind beside these three.  (The one-set-FK-per-entry rule is maintained by the posting
     builder, not a storage CHECK -- a CHECK would have to grow with every
     future source kind and reference ref-table IDs it cannot see; the
     reconciliation oracle is the cross-source correctness gate.  Plan step

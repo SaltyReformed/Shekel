@@ -16,21 +16,21 @@ ledger in step with a transfer mutation), routing every call through
 no loan-posting knowledge.  Flask-isolated like the parent service: plain data
 in, ORM objects or plain values out, no ``request`` / ``session``.
 
-A loan payment is a Transfer whose ``to_account`` is an amortizing loan; its
-income (to-account) shadow is where the payment-split correction books (by that
-shadow's ``transaction_id``).  Every loan correction -- payment splits and
-anchor corrections alike -- touches only the loan's own ledgers, never Checking,
-so it is invisible to the Step-2 cash path.
+A loan payment is a Transfer whose ``to_account`` is an amortizing loan
+(:func:`_pays_a_loan`, the ONE spelling).  Its split correction links no row
+(ruling **R-BAL102**, plan step ``balance:X-bi-6-3``): it is keyed by the
+payment's period and visible day on the loan's own chart rows, so a delete or
+an endpoint move owes it NO reversal first -- the loan sync the door runs
+AFTER finds the vacated key with no target and reverses it.  Every loan
+correction -- payment splits and anchor corrections alike -- touches only the
+loan's own ledgers, never Checking, so it is invisible to the cash path.
 """
 
 from datetime import date
 
-from app import ref_cache
-from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     loan_loaders,
@@ -70,7 +70,7 @@ def _reject_transfer_out_of_loan(from_account: Account) -> None:
     Raises:
         ValidationError: When *from_account* is an amortizing loan.
     """
-    if classify_account(from_account) is AccountProjectionKind.AMORTIZING:
+    if _is_loan(from_account):
         raise ValidationError(
             f"Cannot transfer money out of a loan: source account "
             f"'{from_account.name}' is an amortizing loan."
@@ -151,7 +151,7 @@ def _reject_payment_before_origination(
         ValidationError: When *to_account* is a configured loan and the
             payment's installment falls at or before its origination.
     """
-    if classify_account(to_account) is not AccountProjectionKind.AMORTIZING:
+    if not _is_loan(to_account):
         return
     params = loan_loaders.load_loan_params(to_account.id)
     if params is None:
@@ -264,32 +264,44 @@ def _reject_installment_move_before_loan(
     )
 
 
-def _income_shadow_for_transfer(xfer: Transfer) -> Transaction | None:
-    """Return a transfer's loan-side income shadow, soft-deleted or not.
+def _is_loan(account: Account) -> bool:
+    """Return whether *account* is an amortizing loan.
 
-    The income (to-account) shadow, loaded WITHOUT the ``is_deleted`` filter so
-    the delete path can reverse its Step-4 correction even on a hard delete of
-    an already-soft-deleted transfer (whose shadows carry ``is_deleted=True``).
-    ``None`` only for a corrupt transfer missing its income shadow, which the
-    caller treats as "nothing to reverse".
+    The ONE spelling of the classification this package asks at five doors:
+    the settle / revert / edit / restore sync and the delete door through
+    :func:`_pays_a_loan`, the vacated-destination re-sync
+    (:func:`_resync_vacated_loan`), the source refusal
+    (:func:`_reject_transfer_out_of_loan`) and the pre-origination refusal
+    (:func:`_reject_payment_before_origination`).
 
     Args:
-        xfer: The transfer whose income shadow to load.
+        account: The account, its ``account_type`` loaded.
 
     Returns:
-        The loan-side income :class:`~app.models.transaction.Transaction`, or
-        ``None`` if absent.
+        ``True`` for an amortizing loan.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    return (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == xfer.id,
-            Transaction.account_id == xfer.to_account_id,
-            Transaction.transaction_type_id == income_type_id,
-        )
-        .one_or_none()
-    )
+    return classify_account(account) is AccountProjectionKind.AMORTIZING
+
+
+def _pays_a_loan(xfer: Transfer) -> bool:
+    """Return whether *xfer* is a loan payment: its destination amortizes.
+
+    Asked by the settle / revert / edit / restore sync
+    (:func:`_sync_loan_postings_if_loan`) and the delete door
+    (``_delete.delete_transfer``, which captures the answer BEFORE the row
+    goes so it can re-sync the loan the payment left).  A loan reached as a
+    transfer's SOURCE is not one: a loan's payment set is its INCOME shadows
+    (:func:`app.services.loan_loaders.query_shadow_income`), and a transfer
+    OUT of a loan is refused at the source anyway
+    (:func:`_reject_transfer_out_of_loan`).
+
+    Args:
+        xfer: The transfer, its ``to_account`` (with ``account_type``) loaded.
+
+    Returns:
+        ``True`` when the destination is an amortizing loan.
+    """
+    return _is_loan(xfer.to_account)
 
 
 def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
@@ -308,65 +320,21 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
     settle / revert / restore chokepoints call it unconditionally after the
     Step-2 cash reconcile.
 
-    Every correction touches only the loan's own ledgers (never Checking) -- the
-    payment corrections link by the loan-side income shadow's ``transaction_id``
-    and the anchor corrections carry a NULL transfer_id / transaction_id -- so
-    the whole reconcile is structurally invisible to the Step-2 cash path and
-    cannot move a cash balance (plan Section 5 / 7).
+    Every correction touches only the loan's own ledgers (never Checking) --
+    the payment splits and the anchor corrections alike link no row and are
+    keyed on the loan's own chart rows (ruling **R-BAL102**) -- so the whole
+    reconcile is structurally invisible to the cash path and cannot move a
+    cash balance (plan Section 5 / 7).
 
     Args:
         xfer: The transfer just mutated.  Its ``to_account`` (with
             ``account_type``) drives the amortizing-loan classification and its
             ``scenario_id`` scopes the reconcile.
     """
-    if classify_account(xfer.to_account) is AccountProjectionKind.AMORTIZING:
+    if _pays_a_loan(xfer):
         loan_posting_service.sync_loan_postings(
             xfer.to_account_id, xfer.scenario_id,
         )
-
-
-def _reverse_loan_payment_before_it_leaves(xfer: Transfer) -> bool:
-    """Reverse a loan payment's split correction while it is still the loan's.
-
-    When *xfer* pays an amortizing loan, reconcile that payment's Step-4
-    correction to zero
-    (:func:`app.services.loan_posting_service.reverse_loan_payment_postings_for_shadow`)
-    while the income shadow is still ON the loan and still exists.
-    Mirrors the Step-2 cash reverse-before-delete run at the delete chokepoint.
-
-    **BOTH ways a payment leaves need it, and the second was measured** (plan
-    step R10-b).  A HARD DELETE needs it because ``ON DELETE SET NULL`` on
-    ``journal_entries.transaction_id`` would strand the correction's legs once
-    the shadow row is gone.  An ENDPOINT MOVE needs it because the loan-side
-    reconcile finds a loan's payments through the ACCOUNT its income shadow
-    sits on (``loan_loaders.query_shadow_income`` filters
-    ``Transaction.account_id == account_id``) -- so once the shadow has moved,
-    the correction is invisible to every later pass and the loan keeps a split
-    for a payment it no longer has.  Measured: re-pointing a settled `$250.00`
-    payment off a 5% loan left `-$4.17` of interest on the loan's linked
-    ledger, and the very next ``sync_loan_postings`` refused to commit --
-    *"the posted linked ledger diverges from the fold of the loan's events at 1
-    date(s) [walk 0.00 vs posted -4.17]"*.  The checked-projection assert was
-    right; what was missing was this call.
-
-    Args:
-        xfer: The transfer about to be deleted or re-pointed, still holding the
-            destination it is leaving.
-
-    Returns:
-        ``True`` when *xfer* pays an amortizing loan (so the caller re-splits
-        the downstream payments after the row has left, via
-        :func:`_resync_loan_after_payment_left`), ``False``
-        otherwise.
-    """
-    if classify_account(xfer.to_account) is not AccountProjectionKind.AMORTIZING:
-        return False
-    income_shadow = _income_shadow_for_transfer(xfer)
-    if income_shadow is not None:
-        loan_posting_service.reverse_loan_payment_postings_for_shadow(
-            income_shadow,
-        )
-    return True
 
 
 def _resync_loan_after_payment_left(
@@ -384,14 +352,25 @@ def _resync_loan_after_payment_left(
     hard-deleted ``xfer`` can no longer be read at all).
 
     **A payment leaves a loan in two ways, and it was named for only one of
-    them until plan step R10-b.**  It is DELETED (the transfer row goes, its
-    correction already reversed by
-    :func:`_reverse_loan_payment_before_it_leaves`), or its transfer's DESTINATION
-    is re-pointed at another account, which is what
+    them until plan step R10-b.**  It is DELETED (the transfer row goes), or
+    its transfer's DESTINATION is re-pointed at another account, which is what
     :func:`app.services.transfer_service.update_transfer`'s endpoint arm can now
     do.  The re-reconcile the loan needs is identical in both cases -- it reads
     the loan's remaining payment set rather than the departing row -- so the two
     callers share one body rather than the second growing a near-copy of it.
+
+    **And this AFTER-resync is the whole of what the departure owes the
+    ledger** (ruling **R-BAL102**, plan step ``balance:X-bi-6-3``).  Through
+    that step each caller ALSO reversed the departing payment's split
+    correction FIRST, while its income shadow still existed and still sat on
+    the loan, because the split was keyed by that shadow's ``transaction_id``
+    and the loan-side reconcile found a loan's payments through the account
+    the shadow sat on -- a hard delete SET-NULLed the link and an endpoint
+    move hid the row, either stranding the correction (the R10-b ``-$4.17``
+    that measured it).  The split links no row now and is keyed on the LOAN's
+    own chart rows by the payment's period and day, so the departed payment's
+    key is simply a posted key with no target when this walk runs, and the
+    one reconcile reverses it.
 
     Args:
         loan_account_id: The loan whose downstream ledger to re-reconcile.
@@ -425,9 +404,6 @@ def _resync_vacated_loan(account_id: int, scenario_id: int) -> None:
         scenario_id: The transfer's scenario.
     """
     account = db.session.get(Account, account_id)
-    if (
-        account is None
-        or classify_account(account) is not AccountProjectionKind.AMORTIZING
-    ):
+    if account is None or not _is_loan(account):
         return
     _resync_loan_after_payment_left(account_id, scenario_id)

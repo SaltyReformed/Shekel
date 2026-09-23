@@ -79,6 +79,16 @@ def _counter_row_count():
     )).scalar()
 
 
+# The frozen mint statement names the bucket flag by its own-revision name; the
+# column is ``is_owner_bucket`` at HEAD since plan step ``balance:X-bi-6-3``'s
+# migration ``c7d1e9a4b2f8`` renamed it (ruling R-BAL99).  A real downgrade
+# reaches ``e6b4a2d8c713`` only after ``c7d1e9a4b2f8`` has renamed the column
+# back, so the frozen text is right where it runs; this harness runs it at
+# HEAD, so it re-homes that one identifier, anchored on the frozen text.
+_FROZEN_FLAG_COLUMN = "(user_id, class_id, kind_id, account_id, is_fallback, name)"
+_HEAD_FLAG_COLUMN = "(user_id, class_id, kind_id, account_id, is_owner_bucket, name)"
+
+
 def _run_downgrade():
     """Execute the migration's downgrade statements, in ``downgrade()``'s order.
 
@@ -88,8 +98,12 @@ def _run_downgrade():
     itself part of what is under test.
     """
     module = _migration()
+    restore_sql = module._RESTORE_MISSING_ANCHOR_EQUITY_SQL
+    assert _FROZEN_FLAG_COLUMN in restore_sql, (
+        "the frozen e6b4a2d8c713 mint statement changed; update the anchor here"
+    )
     for statement in (
-        module._RESTORE_MISSING_ANCHOR_EQUITY_SQL,
+        restore_sql.replace(_FROZEN_FLAG_COLUMN, _HEAD_FLAG_COLUMN),
         module._MOVE_COUNTER_LEGS_TO_ANCHOR_EQUITY_SQL,
         module._DROP_TRUEUP_COUNTER_CHART_ROWS_SQL,
         module._DROP_TRUEUP_COUNTER_LEDGER_KINDS_SQL,

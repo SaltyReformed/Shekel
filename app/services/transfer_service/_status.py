@@ -121,10 +121,12 @@ def apply_status_to_all_three(
     # existing day, else stamp today", which is right for a lone transaction and
     # WRONG for a pair: two shadows whose days already differ would each keep
     # their own, and a pair where only one carries a day would have the other
-    # stamped with today.  Both outcomes break the equality
-    # ``posting_service._entry_date`` depends on -- it reads the INCOME shadow's
-    # ``settled_on`` and its docstring records that the two are always equal
-    # because the transfer service mirrors the day to both shadows.
+    # stamped with today.  Both outcomes break Transfer Invariant 3's one day
+    # per pair, which every reader of ``Transfer.settled_on`` (read off the
+    # INCOME shadow) depends on until ``X-bi-6-4`` deletes the mirror; the
+    # posting writer no longer does -- since plan step ``balance:X-bi-6-3``
+    # each side's entry is dated by its OWN covering movement (ruling
+    # **R-BAL45**), which is what lets the two days part at 6-4.
     # Preferring an EXISTING day over today is what stops a repair from
     # inventing a settle day: the sibling already knows when the money moved,
     # and that day is the ``entry_date`` the postings are filed under.
@@ -229,9 +231,10 @@ def apply_settle_day_to_pair(
         income_shadow: The income-side shadow :class:`Transaction`.
         day: The civil day both shadows record and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`; Transfer Invariant 3 --
-            the two legs are always equal, which
-            ``posting_service._entry_date`` depends on: it reads the INCOME
-            shadow's day for the pair).  ``None`` means the user's today on the
+            the two legs are always equal, which ``Transfer.settled_on``
+            depends on: it reads the INCOME shadow's day for the pair; the
+            posting writer dates each side by its own movement since plan
+            step ``balance:X-bi-6-3``).  ``None`` means the user's today on the
             ``entered`` basis, which is the F-048 / C-22 rule for a transfer
             created already settled: it settled at creation, on nobody's word
             but the owner's.  The default is resolved HERE rather than at the

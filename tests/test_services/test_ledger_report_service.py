@@ -752,6 +752,130 @@ class TestDisplayLabels:
 class TestResidueDropped:
     """A source-linked entry whose FK was SET-NULLed is excluded, whole."""
 
+    def test_a_sourceless_loan_payment_split_is_a_correction_not_residue(
+        self, app, db, seed_user,
+    ):
+        """A ``loan_payment`` entry with every link NULL is COUNTED, at its day.
+
+        The split is a date-keyed correction since plan step
+        ``balance:X-bi-6-3`` (ruling **R-BAL102**): it links no row by
+        design, so the correction bucket's positive allowlist names it beside
+        the four anchor kinds -- and the residue rule right below this test
+        (a ``transaction``-kind entry with its link SET NULL is dropped) must
+        NOT catch it.  The shape planted here is the split's own: sourceless,
+        ``loan_payment`` kind, dated by ``entry_date``.  With the kind missing
+        from the allowlist the -100 / +100 pair would vanish from both
+        statements as residue; with it present the attribution core places
+        the pair on the planted day and the balance sheet moves.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            linked = linked_ledger_account(db.session, checking.id)
+            equity = _find_line(
+                ledger_report_service.compute_balance_sheet(
+                    user_id, _ALL_ACTIVITY,
+                ).equity.lines,
+                "Checking -- Opening",
+            )
+
+            entry = make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=linked.id,
+                to_ledger_id=equity.ledger_account_id,
+                amount=Decimal("100.00"),
+                source_kind=PostingSourceEnum.LOAN_PAYMENT,
+                transaction_id=None,
+                posting_kind=PostingKindEnum.PRINCIPAL,
+            )
+            assert (entry.transaction_id, entry.transfer_id,
+                    entry.transaction_entry_id) == (None, None, None)
+
+            nets = dated_account_nets(user_id, scenario_id)
+            assert nets[(linked.id, entry.entry_date)] == Decimal("-100.00")
+            sheet = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.assets.lines, "Checking",
+            ).amount == Decimal("900.00")
+            assert sheet.tie_out.in_balance is True
+
+    def test_a_dual_linked_entry_is_attributed_exactly_once_as_a_movement(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An entry carrying BOTH ``transaction_id`` and ``transaction_entry_id`` counts once.
+
+        No writer produces the shape (``emit_typed_source_deltas`` sets exactly
+        one link), and nothing at the storage tier forbids it, so the readers'
+        partition decides what it would mean: the write-side walk classifies
+        it as MOVEMENT-linked (its transaction loader guards
+        ``transaction_entry_id IS NULL``; its movement loader guards nothing
+        against the transaction link), and this reader must agree.  The
+        leaf-2 adversarial review of plan step ``balance:X-bi-6-3`` found the
+        report with guards on BOTH buckets, so such an entry landed in
+        neither and was silently dropped -- an understated balance sheet.
+        Planted here against a settled purchase's movement: the entry's -100
+        on Checking lands exactly once, at the MOVEMENT's day and not the
+        parent's, and the balance sheet moves by it.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            linked = linked_ledger_account(db.session, checking.id)
+            txn = create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("40.00"),
+                account=checking, settled_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+            [movement] = txn.covering_movements
+            equity = _find_line(
+                ledger_report_service.compute_balance_sheet(
+                    user_id, _ALL_ACTIVITY,
+                ).equity.lines,
+                "Checking -- Opening",
+            )
+            before = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            checking_before = _find_line(before.assets.lines, "Checking").amount
+
+            entry = make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=linked.id,
+                to_ledger_id=equity.ledger_account_id,
+                amount=Decimal("100.00"),
+                source_kind=PostingSourceEnum.PURCHASE,
+                transaction_id=txn.id,
+                transaction_entry_id=movement.id,
+                posting_kind=PostingKindEnum.EXPENSE,
+                period_id=seed_periods[0].id,
+            )
+            assert (entry.transaction_id, entry.transaction_entry_id) == (
+                txn.id, movement.id,
+            )
+
+            nets = dated_account_nets(user_id, scenario_id)
+            checking_by_day = {
+                day: net for (la_id, day), net in nets.items()
+                if la_id == linked.id
+            }
+            # Once, at the MOVEMENT's day (the entry's own entry_date is a
+            # different day the movement bucket never reads).
+            assert checking_by_day[movement.settled_on] == (
+                Decimal("-40.00") - Decimal("100.00")
+            )
+            assert entry.entry_date not in checking_by_day
+            after = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(after.assets.lines, "Checking").amount == (
+                checking_before - Decimal("100.00")
+            )
+            assert after.tie_out.in_balance is True
+
     def test_residue_shape_excluded_from_reads(self, app, db, seed_user):
         """A transaction-source entry with a NULL ``transaction_id`` is dropped.
 

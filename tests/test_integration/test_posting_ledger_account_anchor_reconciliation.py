@@ -206,9 +206,10 @@ def _linked_ledger_sum_as_of(
 
     The "ledger through an assertion day" reader: every linked-ledger entry --
     a source OR an anchor correction -- carries an ``entry_date`` equal to the
-    civil day its money moved (``posting_service._entry_date`` /
-    ``_transaction_entry_date`` read the STORED ``transactions.settled_on``
-    since plan step X-f1; corrections take the anchor's observed day), so
+    civil day its money moved (a source entry is dated by its movement's own
+    STORED ``settled_on``, through ``_posting_purchases.emit_purchase_deltas``
+    since plan steps ``balance:X-bi-4a`` and ``balance:X-bi-6-3``;
+    corrections take the anchor's observed day), so
     summing legs with ``entry_date <= civil_date`` reconstructs the ledger as of
     the END of that civil day -- the ``TestLedgerThroughEachAssertionDay``
     invariant.  The fixture places every event on a DISTINCT, increasing civil
@@ -1842,12 +1843,15 @@ class TestOracleIsNotVacuous:
 
 
 def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
-    """Sum an account's transfer-linked LINKED-ledger legs in one pay period.
+    """Sum an account's transfer-cash LINKED-ledger legs in one pay period.
 
-    The transfer cash on *account_id*'s linked ledger (entries carrying a
-    ``transfer_id``) scoped to a single ``pay_period_id`` -- so a settled period
-    move can be checked to have moved the effect (R2): the old period nets to
-    zero and the new period carries it.
+    The transfer cash on *account_id*'s linked ledger -- entries of the
+    ``transfer_movement`` source, one per side's covering movement since plan
+    step ``balance:X-bi-6-3`` (it read entries carrying a ``transfer_id``
+    while the cash was one entry per transfer) -- scoped to a single
+    ``pay_period_id``, so a settled period move can be checked to have moved
+    the effect (R2): the old period nets to zero and the new period carries
+    it.
     """
     return (
         _db.session.query(
@@ -1863,7 +1867,9 @@ def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
             ),
             JournalEntry.scenario_id == scenario_id,
             JournalEntry.pay_period_id == period_id,
-            JournalEntry.transfer_id.isnot(None),
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER_MOVEMENT,
+            ),
         )
         .scalar()
     )

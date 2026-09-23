@@ -33,7 +33,7 @@ from ._common import ChartRowLink, get_or_create_chart_row, load_owned_account
 # once-per-loan opening-equity entry the loan read switch (Step 4, second half)
 # books at origination -- the loan's opening balance posted as Equity so the
 # ledger is authoritative for its confirmed balance; it is Equity class.
-# Spelled out here, like ``_FALLBACK_LEDGER_ACCOUNT_NAMES``, rather than
+# Spelled out here, like ``_buckets._OWNER_BUCKET_NAMES``, rather than
 # derived from the enum value so renaming a ``LedgerAccountKindEnum`` member can
 # never silently rewrite the class or the label on already-posted per-loan rows.
 #
@@ -126,7 +126,7 @@ def get_or_create_loan_ledger_account(
     Idempotent: an existing row for the ``(user, loan, kind)`` natural key is
     returned unchanged (the ``uq_ledger_accounts_loan`` partial unique would
     otherwise reject a duplicate).  The created row sets ``loan_account_id``,
-    leaves ``account_id`` / ``category_id`` NULL and ``is_fallback`` False (the
+    leaves ``account_id`` / ``category_id`` NULL and ``is_owner_bucket`` False (the
     per-loan column shape ``ck_ledger_accounts_loan_shape`` requires), and
     snapshots a display ``name`` (``"<loan name> -- Interest|Escrow|Refund|Opening"``)
     clipped to the column width -- like a category row the snapshot is frozen at

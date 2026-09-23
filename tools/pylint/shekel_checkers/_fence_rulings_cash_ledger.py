@@ -290,6 +290,14 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # per-movement leg.  Where one lands and what the plan holds at time T
     # are ``balance_at._cash_fold``'s, exactly as for ``planned_cash_rows``.
     "in_flight_movements",
+    # ``movements_with_parents`` (plan step ``balance:X-bi-6-3``) -- the ONE
+    # join of a movement to its parent row, returned as an unexecuted query:
+    # a LOADER on ``settled_cash_facts``'s ground, which SELECTS rows and
+    # returns them unchanged.  It exists because the posting writer's
+    # transfer-family loader spelled the same five lines as the fold's
+    # ``_movements_of`` and the cross-file duplicate-code gate said so; it
+    # values nothing and folds nothing.
+    "movements_with_parents",
     # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
     # ``account_openings`` row: returning a recorded balance is not
     # computing one.  The FOLD seeds from it.

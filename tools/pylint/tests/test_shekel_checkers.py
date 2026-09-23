@@ -55,7 +55,7 @@ def _fenced_module_sources(module_name: str) -> list[Path]:
     A flat module (``app.services.account_projection``) is one file.  A PACKAGE
     (``app.services.loan_posting_service``) is every ``.py`` file inside it --
     because the checker scopes a package by prefix, so a producer born in ANY
-    submodule (``_reader``, ``_display``, ``_walk``) is in scope and must be
+    submodule (``_display``, ``_corrections``, ``_walk``) is in scope and must be
     classified.  Enumerating them here is what makes the registry-vs-reality
     test see the same surface the checker does.
 
@@ -579,11 +579,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_flags_unclassified_public_function_in_ledger_reader(self) -> None:
-        """The same completeness rule binds on the genesis loan-ledger _reader."""
+        """The same completeness rule binds on a genesis loan-ledger submodule."""
         node = self._function_def(
             "def confirmed_loan_balance_somewhere(loan_id, scenario_id):\n"
             "    return None\n",
-            "app.services.loan_posting_service._reader",
+            "app.services.loan_posting_service._linked_ledger",
         )
         with self.assertAddsMessages(
             MessageTest(
@@ -1918,12 +1918,13 @@ class TestShekelLedgerModelFenceChecker(CheckerTestCase):
         """A submodule of an allowlisted PACKAGE stays inside the fence (prefix match).
 
         The loan / account posting packages and the report package are
-        allowlisted by prefix, so their real submodules (``_walk`` / ``_reader``
-        / ``_attribution``) that legitimately query the ledger must remain
+        allowlisted by prefix, so their real submodules (``_walk`` /
+        ``_linked_ledger`` / ``_attribution``) that legitimately query the
+        ledger must remain
         exempt -- the package-prefix arm of :func:`_module_in_allowlist`.
         """
         for module_name in (
-            "app.services.loan_posting_service._reader",
+            "app.services.loan_posting_service._linked_ledger",
             "app.services.account_posting_service._walk",
             "app.services.ledger_report_service._attribution",
         ):

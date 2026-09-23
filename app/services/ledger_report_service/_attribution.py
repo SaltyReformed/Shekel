@@ -16,36 +16,57 @@ Jan 1 it becomes in UTC).  There is no fallback: a settled row missing its day i
 refused by :func:`app.utils.balance_predicates.settled_day` rather than dated
 from its pay period, which is what the derivation this replaced did:
 
-* transaction-linked entries (``transaction`` and ``loan_payment`` sources, both
-  carrying ``transaction_id`` with ``transfer_id`` NULL): by the transaction's
-  ``settled_on`` -- for a loan payment, the loan-side income shadow it links;
-* transfer-linked entries (``transfer_id`` set): by the transfer's INCOME
-  shadow's ``settled_on`` (Transfer Invariant 3 mirrors the day onto both
-  shadows, and ``posting_service._entry_date`` dates the entry off exactly this
-  shadow), so a transfer's two legs land on one date;
-* purchase-linked entries (``transaction_entry_id`` set, both other FKs NULL):
-  by the PURCHASE's own ``transaction_entries.settled_on`` -- the fourth source
-  the write-side walk has partitioned since plan step X-f3b (ruling **R-FM**:
-  a purchase whose bank posting day is recorded is a cash movement of its own,
-  posted at its own day).  **This reader had no bucket for it until plan step
-  X-bi-3a**, so every posted purchase's legs were dropped from both statements
-  -- measured on the developer's 2026-09-06 snapshot at 148 journal entries and
-  `$6,224.21` of Expense-class net, a third of the recorded spending -- and the
-  covering movements X-bi-3a writes for every settled bill would have taken the
-  rest with them (finding **BAL-502**);
-* sourceless corrections (``loan_opening`` / ``loan_trueup`` / ``account_opening``
-  / ``account_trueup``, both concrete FKs NULL): by the stored ``entry_date`` (a
-  correction is an anchor fact dated by the anchor's observed civil day, and
-  never had a settle day of its own);
-* hard-delete residue (a ``transaction`` / ``transfer`` / ``loan_payment`` source
-  whose concrete FK was SET-NULLed): DROPPED, as whole entries -- each sums to
-  zero (the reverse-before-delete discipline), so dropping it leaves the trial
-  balance closed.
+* transaction-linked entries (the ``transaction`` source, carrying
+  ``transaction_id`` with the other two FKs NULL): by the transaction's
+  ``settled_on``.  LEGACY since plan step ``balance:X-bi-4a`` (a plan row
+  books nothing of its own) and, for the ``loan_payment`` entries that shared
+  the bucket by the loan-side shadow's id, since ``balance:X-bi-6-3``: every
+  entry it still reads is a reversed pair netting to zero, and the bucket goes
+  with the column at ``X-bi-6-5``;
+* movement-linked entries (``transaction_entry_id`` set, ``transfer_id`` NULL):
+  by the MOVEMENT's own ``transaction_entries.settled_on`` -- a purchase
+  (ruling **R-FM**, plan step X-f3b: a purchase whose bank posting day is
+  recorded is a cash movement of its own, posted at its own day), a bill's or
+  a paycheck's covering movement (``balance:X-bi-3b``), and since
+  ``balance:X-bi-6-3`` each side of a settled transfer (the
+  ``transfer_movement`` source, ruling **R-BAL45**: two entries per transfer,
+  each on its own bank day against the owner's Transfers-in-transit account,
+  which nets to zero once both have cleared and never reaches a statement's
+  Income / Expense filter).  **This reader had no bucket for it until plan
+  step X-bi-3a**, so every posted purchase's legs were dropped from both
+  statements -- measured on the developer's 2026-09-06 snapshot at 148
+  journal entries and `$6,224.21` of Expense-class net, a third of the
+  recorded spending -- and the covering movements X-bi-3a writes for every
+  settled bill would have taken the rest with them (finding **BAL-502**);
+* sourceless corrections (``loan_opening`` / ``loan_trueup`` / ``loan_payment``
+  / ``account_opening`` / ``account_trueup``, every concrete FK NULL): by the
+  stored ``entry_date``.  An anchor correction is a fact dated by the anchor's
+  observed civil day; a loan payment's SPLIT (its cash re-classified into
+  interest / escrow / refund against the loan) is a derivation of the loan
+  walk dated by the payment's visible day, keyed by that day and its period
+  with no row link since ruling **R-BAL102** (it linked the loan-side shadow
+  before, and read in the transaction bucket by that link at the same day);
+* hard-delete residue (a ``transaction`` / ``transfer`` / ``purchase`` /
+  ``transfer_movement`` source whose concrete FK was SET-NULLed): DROPPED, as
+  whole entries -- each sums to zero (the reverse-before-delete discipline),
+  so dropping it leaves the trial balance closed.  A ``loan_payment`` entry
+  is never residue: it has no link to lose.
 
-The ``transfer_id IS NULL`` guard on the transaction bucket makes the three
-buckets a PARTITION of the live ledger identical to the write-side walk's
-(:func:`app.services.account_posting_service._walk._transaction_source_days`):
-a hypothetical dual-linked entry classifies as transfer-linked, never both.
+The ``transaction_entry_id IS NULL`` guard on the transaction bucket makes the
+three buckets a PARTITION of the live ledger identical to the write-side
+walk's (:func:`app.services.account_posting_service._walk._transaction_source_days`
+carries the same guard, and neither movement loader guards against the
+transaction link): a hypothetical dual-linked entry classifies as
+movement-linked, never both and never neither, on both sides.  The
+``transfer_id IS NULL`` guards on all three exclude the legacy one-entry
+``transfer`` pairs, and that exclusion is a FENCE, not coverage: no bucket
+reads a ``transfer_id``-linked entry since ``balance:X-bi-6-3`` deleted the
+transfer bucket (ruling **R-BAL102**), so a legacy entry with a NONZERO net
+would be invisible here rather than refused as it was.  Safe only because the
+deploy resync brings every legacy pair to zero at its own date (leaf 1's
+third disjunct reaches every transfer the source ever posted for) and no
+writer posts under that source; the column and the guards go at
+``X-bi-6-5``.
 
 **One civil date, shared, since ruling R-DH.**  This reader and the write-side
 walk both attribute a source to :func:`app.utils.balance_predicates.settled_day`
@@ -83,7 +104,6 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transfer import Transfer
 from app.services.posting_reads import PostingError
 from app.utils.balance_predicates import settled_day
 
@@ -321,10 +341,10 @@ def dated_account_nets(
 ) -> dict[tuple[int, date], Decimal]:
     """Return every posting's net keyed by (ledger account, attribution date).
 
-    The shared attribution core: the union of the four source buckets
-    (transaction-linked, transfer-linked, purchase-linked, sourceless
-    corrections; residue dropped), each posting's net placed on its source's
-    attribution date per the module docstring's C-3 rule.  Sources landing on
+    The shared attribution core: the union of the three source buckets
+    (transaction-linked, movement-linked, sourceless corrections; residue
+    dropped), each posting's net placed on its source's attribution date per
+    the module docstring's C-3 rule.  Sources landing on
     the same (ledger account, date) are summed, so a caller folds the map by a
     date bound (as-of for the balance sheet, a calendar window for the income
     statement) with no per-account query.  Every entry's legs share one
@@ -344,13 +364,12 @@ def dated_account_nets(
         posting sums.
 
     Raises:
-        PostingError: If a transaction- or transfer-linked source with a nonzero
-            net cannot resolve its date (a broken SET-NULL or Transfer-Invariant
-            linkage that must fail loudly rather than mis-attribute real money).
+        PostingError: If a transaction- or movement-linked source with a
+            nonzero net cannot resolve its date (a broken SET-NULL linkage
+            that must fail loudly rather than mis-attribute real money).
     """
     contributions = (
         _transaction_dated_nets(user_id, scenario_id)
-        + _transfer_dated_nets(user_id, scenario_id)
         + _purchase_dated_nets(user_id, scenario_id)
         + _correction_dated_nets(user_id, scenario_id)
     )
@@ -363,12 +382,13 @@ def dated_account_nets(
 def _grouped_source_nets(user_id, scenario_id, source_id_column, extra_filters):
     """Return ``(ledger_account_id, source_id, net)`` over a bucket's postings.
 
-    The shared grouped query of the transaction and transfer buckets: sum
+    The shared grouped query of the transaction and movement buckets: sum
     ``account_postings.amount`` over the user's entries in *scenario_id* matching
     the bucket's *extra_filters*, grouped by leg ledger account and the bucket's
-    source-identity column (``transaction_id`` or ``transfer_id``).  Zero-net
-    groups are dropped -- a reverted / reversed-before-delete source nets to
-    zero and needs no date -- so the caller resolves dates only for live sources.
+    source-identity column (``transaction_id`` or ``transaction_entry_id``).
+    Zero-net groups are dropped -- a reverted / reversed-before-delete source
+    nets to zero and needs no date -- so the caller resolves dates only for
+    live sources.
     The ``(user_id, scenario_id)`` filter uses
     ``idx_journal_entries_user_scenario_period``.
 
@@ -376,7 +396,8 @@ def _grouped_source_nets(user_id, scenario_id, source_id_column, extra_filters):
         user_id: The owner whose ledger to read.
         scenario_id: The budget scenario to scope to.
         source_id_column: ``JournalEntry.transaction_id`` or
-            ``JournalEntry.transfer_id`` -- the column identifying the source.
+            ``JournalEntry.transaction_entry_id`` -- the column identifying
+            the source.
         extra_filters: The bucket's partition filters (linkage predicates).
 
     Returns:
@@ -410,13 +431,13 @@ def _transaction_dated_nets(
     """Return transaction-linked nets, each dated by its transaction's paid date.
 
     The transaction-linked bucket: entries carrying ``transaction_id`` with
-    ``transfer_id`` NULL (the ``transaction`` cash sources and the
-    ``loan_payment`` interest / escrow / refund / principal-split corrections),
-    grouped by (ledger account, transaction) and attributed to the transaction's
-    display-timezone paid date (falling back to its pay period ``start_date``
-    when the day is missing).  For a loan payment, ``transaction_id`` is the
-    loan-side income shadow, so the split is dated by the payment's paid date --
-    the same basis the loan tax reader uses.
+    the other two FKs NULL (the ``transaction`` cash source, legacy since plan
+    step ``balance:X-bi-4a`` and reversed to zero by the deploy resync; the
+    ``loan_payment`` split read here by the loan-side shadow's id until
+    ``balance:X-bi-6-3`` re-keyed it as a sourceless correction, ruling
+    **R-BAL102**), grouped by (ledger account, transaction) and attributed to
+    the transaction's stored settle day.  Reads nothing live once the resync
+    has run; the bucket and its column go at ``X-bi-6-5``.
 
     Args:
         user_id: The owner whose ledger to read.
@@ -435,6 +456,9 @@ def _transaction_dated_nets(
         [
             JournalEntry.transaction_id.isnot(None),
             JournalEntry.transfer_id.is_(None),
+            # The partition guard the write-side walk's twin carries: a
+            # dual-linked entry is the movement bucket's, on both sides.
+            JournalEntry.transaction_entry_id.is_(None),
         ],
     )
     if not nets:
@@ -493,16 +517,19 @@ def _transaction_attribution_dates(
 def _purchase_dated_nets(
     user_id: int, scenario_id: int,
 ) -> list[tuple[int, date, Decimal]]:
-    """Return purchase-linked nets, each dated by the purchase's own posting day.
+    """Return movement-linked nets, each dated by the movement's own posting day.
 
-    The purchase-linked bucket (module docstring; the reader's twin of the
+    The movement-linked bucket (module docstring; the reader's twin of the
     walk's ``_purchase_source_days``): entries carrying
-    ``transaction_entry_id`` with both other FKs NULL, grouped by (ledger
-    account, purchase) and attributed to the purchase's stored ``settled_on``.
-    A purchase's legs are NOT grouped under its parent's ``transaction_id``,
-    for the reason the walk states: that would date them at the parent's
-    settle day, which a still-projected envelope does not have, and the day
-    a purchase left the bank is its own fact.
+    ``transaction_entry_id`` with both other FKs NULL -- the ``purchase``
+    source (a purchase, a bill's or a paycheck's covering movement) and the
+    ``transfer_movement`` source (each side of a settled transfer, plan step
+    ``balance:X-bi-6-3``) -- grouped by (ledger account, movement) and
+    attributed to the movement's stored ``settled_on``.  A movement's legs are
+    NOT grouped under its parent's ``transaction_id``, for the reason the walk
+    states: that would date them at the parent's settle day, which a
+    still-projected envelope does not have, and the day money left the bank
+    is its own fact.
 
     Args:
         user_id: The owner whose ledger to read.
@@ -510,19 +537,24 @@ def _purchase_dated_nets(
 
     Returns:
         ``[(ledger_account_id, attribution_date, net), ...]``; empty when no
-        purchase-linked source is posted.
+        movement-linked source is posted.
 
     Raises:
         PostingError: If a nonzero net's ``transaction_entry_id`` resolves no
-            purchase, or one carrying no ``settled_on`` (a leg posted for a
-            purchase never seen to move) -- either must fail loudly rather
+            movement, or one carrying no ``settled_on`` (a leg posted for a
+            movement never seen to move) -- either must fail loudly rather
             than mis-attribute money.
     """
     nets = _grouped_source_nets(
         user_id, scenario_id, JournalEntry.transaction_entry_id,
         [
             JournalEntry.transaction_entry_id.isnot(None),
-            JournalEntry.transaction_id.is_(None),
+            # No ``transaction_id IS NULL`` here, deliberately, and the walk's
+            # twin carries none either: the partition guard against the
+            # transaction bucket sits on THAT bucket, so a dual-linked entry
+            # is this bucket's on both sides (the leaf-2 adversarial review
+            # of plan step ``balance:X-bi-6-3``: with guards on both buckets
+            # such an entry landed in neither and was silently dropped).
             JournalEntry.transfer_id.is_(None),
         ],
     )
@@ -578,138 +610,26 @@ def _purchase_attribution_dates(entry_ids: set[int]) -> dict[int, date]:
     return dates
 
 
-def _transfer_dated_nets(
-    user_id: int, scenario_id: int,
-) -> list[tuple[int, date, Decimal]]:
-    """Return transfer-linked nets, each dated by the income shadow's paid date.
-
-    The transfer-linked bucket: entries carrying ``transfer_id`` (a settled
-    transfer's two cash legs), grouped by (ledger account, transfer) and
-    attributed to the transfer's INCOME shadow's display-timezone paid date, so
-    a transfer's two legs land on one date.  Transfers only ever post onto the
-    two linked Asset/Liability accounts, so they never reach the income
-    statement (both legs sit outside its Income/Expense filter).
-
-    Args:
-        user_id: The owner whose ledger to read.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``[(ledger_account_id, attribution_date, net), ...]``; empty when no
-        transfer is posted.
-
-    Raises:
-        PostingError: If a nonzero net's transfer has no active income shadow,
-            or more than one (a Transfer-Invariant-1 violation).
-    """
-    nets = _grouped_source_nets(
-        user_id, scenario_id, JournalEntry.transfer_id,
-        [JournalEntry.transfer_id.isnot(None)],
-    )
-    if not nets:
-        return []
-    dates = _transfer_attribution_dates(
-        {transfer_id for _, transfer_id, _ in nets},
-    )
-    return [
-        (ledger_account_id, dates[transfer_id], net)
-        for ledger_account_id, transfer_id, net in nets
-    ]
-
-
-def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
-    """Return each transfer's income-shadow attribution date, keyed by transfer.
-
-    One batched load of the INCOME shadow (the ``to_account`` side, non-deleted)
-    per transfer -- its stored ``settled_on`` -- read through the shared
-    :func:`app.utils.balance_predicates.settled_day`.  Mirrors the write-side
-    walk's transfer loader: a settled transfer has exactly its two shadows
-    (Transfer Invariant 1), so a missing or duplicate income shadow is a broken
-    invariant that fails loudly rather than dating the transfer off an arbitrary
-    shadow.
-
-    Args:
-        transfer_ids: The transfer ids whose income-shadow dates to resolve.
-
-    Returns:
-        ``{transfer_id: attribution_date}`` over every id.
-
-    Raises:
-        PostingError: If any transfer resolves more than one active income
-            shadow, or none.
-    """
-    # Pylint: ``duplicate-code`` -- the income-shadow query mirrors the
-    # write-side walk's loader
-    # (``account_posting_service._walk._transfer_source_days``) by
-    # construction: the reader RESTATES the walk's transfer attribution rather
-    # than importing a write-package internal, keeping this read package
-    # decoupled from the write package (the same independent-restatement stance
-    # the reconciliation oracles rely on).  Both sides now READ the same stored
-    # day off the shadow through the same accessor (ruling R-DH deleted the
-    # walk's instant partition; plan step X-f1 deleted the derivation itself),
-    # so what is restated here is the LOADER, not the rule.  Re-measured at
-    # X-f1 with the disable stripped: R0801 still fires over 11 shared lines,
-    # so this suppression is load-bearing rather than stale residue.
-    # **Plan step 3 SHIPPED and deliberately did not resolve this**:
-    # it converged the partition RULE, and extracting a third shared home for
-    # these loaders would be scaffolding for a caller plan step X-d deletes --
-    # X-d retires the write-side walk onto the read walk, taking its twin of
-    # this query with it.  X-d owns it.  One-sided disable so the walk stays
-    # un-disabled.
-    # pylint: disable=duplicate-code
-    rows = (
-        db.session.query(
-            Transaction.transfer_id, Transaction.id, Transaction.settled_on,
-        )
-        .join(
-            Transfer,
-            db.and_(
-                Transaction.transfer_id == Transfer.id,
-                Transaction.account_id == Transfer.to_account_id,
-            ),
-        )
-        .filter(
-            Transaction.transfer_id.in_(transfer_ids),
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-    # pylint: enable=duplicate-code
-    dates = {
-        transfer_id: settled_day(shadow_id, stored_day)
-        for transfer_id, shadow_id, stored_day in rows
-    }
-    if len(rows) != len(dates):
-        raise PostingError(
-            "A transfer resolved more than one active income shadow; Transfer "
-            "Invariant 1 is broken and the attribution date would be arbitrary."
-        )
-    missing = transfer_ids - set(dates)
-    if missing:
-        raise PostingError(
-            f"Ledger holds a nonzero net for transfer ids {sorted(missing)} "
-            f"but no active income shadow resolves them; Transfer Invariant 1 "
-            f"is broken."
-        )
-    return dates
-
-
 def _correction_dated_nets(
     user_id: int, scenario_id: int,
 ) -> list[tuple[int, date, Decimal]]:
     """Return sourceless-correction nets, each dated by the entry's ``entry_date``.
 
-    The correction bucket: entries with both concrete source FKs NULL and a
+    The correction bucket: entries with every concrete source FK NULL and a
     correction source kind (``loan_opening`` / ``loan_trueup`` /
-    ``account_opening`` / ``account_trueup``), grouped by (ledger account,
-    ``entry_date``).  A correction is an anchor fact with no ``paid_at`` instant,
-    so it is dated by its stored civil ``entry_date`` (the anchor's civil date).
-    The ``source_kind_id`` filter is what DROPS hard-delete residue: a
-    residue entry is also both-FK-NULL but carries a transaction / transfer /
-    loan_payment source kind, so it falls outside this bucket and is excluded
-    whole.  Dropping residue is REQUIRED, not merely tidy: residue nets to zero
-    per account (reverse-before-delete), but its original and reversal entries
-    carry DIFFERENT ``entry_date`` s, so attributing them would land them on
+    ``loan_payment`` / ``account_opening`` / ``account_trueup``), grouped by
+    (ledger account, ``entry_date``).  A correction is a DERIVATION with no
+    row of its own -- an anchor's fact dated by the anchor's civil day, or a
+    loan payment's split dated by the payment's visible day (ruling
+    **R-BAL102**, plan step ``balance:X-bi-6-3``; the day the transaction
+    bucket dated it by while it linked the loan-side shadow) -- so it is dated
+    by its stored civil ``entry_date``.  The ``source_kind_id`` filter is what
+    DROPS hard-delete residue: a residue entry is also all-FK-NULL but carries
+    a transaction / transfer / purchase / transfer_movement source kind, so it
+    falls outside this bucket and is excluded whole.  Dropping residue is
+    REQUIRED, not merely tidy: residue nets to zero per account
+    (reverse-before-delete), but its original and reversal entries carry
+    DIFFERENT ``entry_date`` s, so attributing them would land them on
     different calendar days and a windowed reader could see one without the
     other -- dropping the whole (zero-sum) pair keeps every window's tie-out
     closed.
@@ -719,11 +639,10 @@ def _correction_dated_nets(
     treated as residue and dropped.  So a FUTURE sourceless correction kind must
     be added here or its (real, non-zero) legs are silently dropped -- an
     understated balance, not a broken tie-out (a dropped whole entry still sums
-    to zero).  A future transaction- or transfer-LINKED kind needs no change
-    here (its residue is correctly dropped).  The write-side walk's residue
-    loader uses the inverse (negative) list because it is per-non-loan-account
-    and never sees loan corrections; this reader spans the whole ledger, so it
-    lists all four.
+    to zero).  A future ROW-LINKED kind needs no change here (its residue is
+    correctly dropped).  The write-side walk's residue loader uses the inverse
+    (negative) list because it is per-non-loan-account and never sees loan
+    corrections; this reader spans the whole ledger, so it lists all five.
 
     Args:
         user_id: The owner whose ledger to read.
@@ -736,6 +655,7 @@ def _correction_dated_nets(
     correction_source_ids = [
         ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING),
         ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP),
+        ref_cache.posting_source_id(PostingSourceEnum.LOAN_PAYMENT),
         ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),
         ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_TRUEUP),
     ]
@@ -751,6 +671,7 @@ def _correction_dated_nets(
             JournalEntry.scenario_id == scenario_id,
             JournalEntry.transaction_id.is_(None),
             JournalEntry.transfer_id.is_(None),
+            JournalEntry.transaction_entry_id.is_(None),
             JournalEntry.source_kind_id.in_(correction_source_ids),
         )
         .group_by(Posting.ledger_account_id, JournalEntry.entry_date)

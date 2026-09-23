@@ -5,9 +5,10 @@ Removing a transfer, soft or hard, and with it both shadow
 :class:`~app.models.transaction.Transaction` rows -- Transfer Invariant 2, that
 a shadow is never orphaned, applied in the one direction that could orphan one.
 
-The ORDER inside is the whole of the module: the posted effect is reversed and
-the loan-payment split is taken back while the rows still exist to link
-against, because a hard delete SET-NULLs those links on its way out.
+The ORDER inside is the whole of the module: the posted cash effect is
+reversed while the rows still exist to link against, because a hard delete
+SET-NULLs those links on its way out; the loan-payment split links no row
+(ruling **R-BAL102**) and is re-derived AFTER the payment is gone.
 
 Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 ``request`` / ``session`` imports.  Flushes; does NOT commit.
@@ -19,8 +20,8 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import match_withdrawal, posting_service
 from app.services.transfer_service._loan_posting import (
+    _pays_a_loan,
     _resync_loan_after_payment_left,
-    _reverse_loan_payment_before_it_leaves,
 )
 from app.services.transfer_service._validation import _get_transfer_or_raise
 from app.utils.log_events import (
@@ -58,23 +59,28 @@ def delete_transfer(transfer_id, user_id, soft=False):
 
     # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
     # Reverse any posted effect BEFORE the row is removed, so a settled
-    # transfer's ledger entry nets to zero.  Runs first -- while xfer.id and
-    # the shadows still exist -- so the reversal entry can link ``transfer_id``
-    # and read the shadow settle date; a hard delete then SET-NULLs the link,
-    # leaving the immutable net-zero pair as history.  Idempotent no-op for a
-    # never-settled or already-reversed transfer (the account-delete and
+    # transfer's per-movement entries net to zero.  Runs first -- while
+    # xfer.id, the shadows and their covering movements still exist -- so each
+    # reversal entry can link its movement and read the posted legs back; a
+    # hard delete then SET-NULLs the links, leaving the immutable net-zero
+    # pairs as history.  The TEARDOWN door, not the pair's sync (plan step
+    # ``balance:X-bi-6-3``, ruling **R-BAL101**): the sync reads each
+    # movement's own state and would find two live, dated movements at this
+    # moment and leave them posted.  Idempotent no-op for a never-settled or
+    # already-reversed transfer (the account-delete and
     # recurrence-regeneration paths only ever reach those: Guard 4 in
     # ``accounts/crud.py`` archives any account with settled history).
-    posting_service.sync_transfer_postings(xfer, settled=False)
+    posting_service.reverse_transfer_postings_before_delete(xfer)
 
-    # ── Loan-payment split reversal (Build-Order Step 4) ───────────
-    # Reverse this payment's split correction while the income shadow id still
-    # exists -- load-bearing for a hard delete, whose CASCADE SET-NULLs the
-    # correction's ``transaction_id`` link.  Capture the loan coordinates now,
-    # before the row can be deleted, so the downstream payments (whose running
-    # balance the deletion changes) can be re-split afterwards.  A no-op for a
-    # non-loan transfer.
-    is_loan_payment = _reverse_loan_payment_before_it_leaves(xfer)
+    # ── Loan coordinates, captured while the row exists ────────────
+    # The loan this payment leaves is re-reconciled AFTER the delete (below):
+    # its split correction links no row (ruling **R-BAL102**, plan step
+    # ``balance:X-bi-6-3``), so nothing about it needs the shadow to still
+    # exist, and the departed payment's key reverses as a posted key with no
+    # target.  Through that step the split was reversed HERE, first, by the
+    # income shadow's ``transaction_id`` the CASCADE was about to SET NULL.
+    # What still has to be read before the row goes is WHICH loan to re-sync.
+    is_loan_payment = _pays_a_loan(xfer)
     loan_account_id = xfer.to_account_id
     scenario_id = xfer.scenario_id
 

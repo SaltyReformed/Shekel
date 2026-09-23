@@ -64,7 +64,8 @@ def confirmed_shadows_through(
     balance readers count as confirmed history at ``as_of`` (their shared
     visible-on bound).  The posted ledger's payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`)
-    consumes this so its rows match the balance readers' cut, and since plan
+    consumed this until plan step ``balance:X-bi-6-3``, when it began reading
+    the walk's outcomes by the same ``visible_on`` bound, and since plan
     step recurrence:R16-c-1 it is the payment half of a read pass's visibility
     bound (:func:`.._walk.load_loan_stream`'s ``visible_by``, ruling R-R91);
     the LEDGER's walk deliberately does NOT take it (it splits every settled
