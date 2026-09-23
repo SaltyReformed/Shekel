@@ -30,6 +30,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.account_category import account_category
+from app.services.savings_dashboard_service._tile import tile_balance_on
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     LoanDetail,
@@ -127,52 +128,6 @@ def _seam_batches(accounts, ctx):
     )
 
 
-def _current_balance_from_map(balances, acct, ctx):
-    """Read the current-period balance from a seam map, or today's from the seam.
-
-    With a current period the tile shows that period's balance from the map;
-    with no current period at all there is no column to read, so the same seam
-    is asked for the balance at ``ctx.balance_ctx.as_of`` instead.
-
-    **The no-current-period arm reads the SEAM, not a stored balance** (ruling
-    R-EM, plan step X-f1c3a).  It returned ``acct.current_anchor_balance`` --
-    the last figure the user ASSERTED -- under a tile that says what the account
-    holds now, so every settled movement since that assertion went missing from
-    it.  The seam has never needed a period to answer: it takes a DATE, and a
-    period was only ever being used to supply one.
-
-    **The map is INDEXED, not ``.get``-defaulted** (plan step X-v2, ruling
-    R-CA), which is the argument :func:`app.services.balance_at.build_maps`
-    already makes about its own total feed map: the seam builds a column for
-    EVERY period it is handed, so a missing key is a defect in the seam or in
-    the period list, and answering it with ``None`` renders a real account as
-    one the app has no figure for -- a wrong figure wearing a plausible shape.
-    The ``None`` this used to return was reduced to ``$0.00`` by seven callers
-    (finding N-113); a ``KeyError`` here fails loudly at the one place that can
-    explain it.
-
-    Its documented cause was also already false: "a cash account whose anchor is
-    after the current period" carries every period in its map since the plan
-    step X-c2b2 cutover, verified by probe on a future-anchored HYSA.
-
-    Args:
-        balances: The seam's period_id -> balance map, built over the pass's
-            own ``reported_periods()``.
-        acct: The account to value at ``as_of`` when no period contains today.
-        ctx: The shared :class:`_ProjectionContext`.
-
-    Returns:
-        The current-period ``Decimal`` balance.
-
-    Raises:
-        KeyError: When a current period exists and the map has no column for
-            it -- a seam or period-list defect, never a display state.
-    """
-    if ctx.current_period is None:
-        return balance_at.balance_at(acct, ctx.balance_ctx, ctx.balance_ctx.as_of)
-    return balances[ctx.current_period.period_id]
-
-
 def _compute_loan_account(acct, acct_loan_params, ctx):
     """Resolve current balance, payment, rate, and payoff for a loan.
 
@@ -219,8 +174,10 @@ def _compute_loan_account(acct, acct_loan_params, ctx):
     if figures is None:
         return None
     return _LoanAccountResult(
-        current_balance=balance_at.balance_at(
-            acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
+        # The tile's rule (:func:`.._tile.tile_balance_on`, ruling R-CC88): a
+        # configured loan is valued on the pass's day itself.
+        current_balance=tile_balance_on(
+            acct, ctx.balance_ctx, ctx.balance_ctx.as_of, is_loan=True,
         ),
         detail=LoanDetail(figures=figures, params=acct_loan_params),
     )
@@ -331,7 +288,13 @@ def _project_one_account(acct, ctx, batches):
     else:
         # Every non-loan kind picks the current balance and the horizons out of
         # that single map.
-        current_bal = _current_balance_from_map(balances, acct, ctx)
+        # The tile's rule (:func:`.._tile.tile_balance_on`, ruling R-CC88):
+        # the current period's column, or the seam at the pass's day when
+        # no saved period contains it.
+        current_bal = tile_balance_on(
+            acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
+            is_loan=False, balances=balances,
+        )
         # The horizon window is the pass's OWN reporting domain -- the same
         # window ``build_maps`` keyed ``balances`` by (pay-calendar plan step
         # C2-f2d-3), so a horizon period and its balance column cannot come

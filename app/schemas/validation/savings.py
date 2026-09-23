@@ -114,10 +114,15 @@ class SavingsGoalCreateSchema(BaseSchema):
 
     account_id = RowId(required=True)
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+    # ``>= 0``, the table's CHECK (``ck_savings_goals_nonnegative_target``),
+    # since plan step credit_card:CC-5-5d (ruling R-CC72): a DEBT goal may
+    # target $0.00.  Whether a goal is a debt goal is its account's category,
+    # which a schema cannot read, so the "above zero for a SAVINGS goal" half
+    # is the goal door's (``app.services.savings_goal_door``).
     target_amount = fields.Decimal(
         load_default=None, allow_none=True,
         places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
+        validate=validate.Range(min=0),
     )
     target_date = fields.Date()
     # F-106 / C-25: DB CHECK enforces ``contribution_per_period IS NULL
@@ -170,9 +175,11 @@ class SavingsGoalUpdateSchema(BaseSchema):
 
     account_id = RowId()
     name = fields.String(validate=validate.Length(min=1, max=100))
+    # ``>= 0`` for the reason :class:`SavingsGoalCreateSchema` states (ruling
+    # R-CC72); the goal door refuses $0.00 on a savings goal.
     target_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0, min_inclusive=False),
+        validate=validate.Range(min=0),
     )
     target_date = fields.Date(allow_none=True)
     # F-106 / C-25: see :class:`SavingsGoalCreateSchema` for the
@@ -182,7 +189,11 @@ class SavingsGoalUpdateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
-    is_active = fields.Boolean()
+    # No ``is_active``: deleting a goal is the only thing that writes it
+    # (plan step credit_card:CC-5-5d).  An edit that could re-activate a
+    # deleted goal would bring it back on an account whose type changed while
+    # nothing guarded it -- the type door counts only ACTIVE goals (rulings
+    # R-CC87, R-CC91) -- as a goal the goal door never judged.
     goal_mode_id = RowId()
     income_unit_id = RowId(allow_none=True)
     income_multiplier = fields.Decimal(

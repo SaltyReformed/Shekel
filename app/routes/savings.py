@@ -20,7 +20,6 @@ from app.utils.digit_strings import parse_row_id
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
 from app.routes._commit_helpers import (
@@ -31,8 +30,14 @@ from app.routes._commit_helpers import (
 )
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import account_service, savings_dashboard_service
+from app.services import (
+    account_service,
+    savings_dashboard_service,
+    savings_goal_door,
+)
+from app.services.account_category import is_liability_account
 from app.services.balance_at import BalanceContext
+from app.services.savings_goal_door import GoalProposal
 from app.services.savings_dashboard_service import NetWorthRegion
 
 logger = logging.getLogger(__name__)
@@ -257,11 +262,12 @@ def _serialize_sparklines(sparklines: dict) -> dict:
     return points_by_id
 
 # Fields allowed in goal updates.  Income-relative fields are included
-# so mode changes propagate correctly.
+# so mode changes propagate correctly.  ``is_active`` is NOT one: deleting a
+# goal is its only writer (plan step credit_card:CC-5-5d), so no edit can bring
+# a deleted goal back past the goal door and the type door.
 _GOAL_UPDATE_FIELDS = frozenset({
     "name", "target_amount", "target_date", "contribution_per_period",
-    "account_id", "is_active", "goal_mode_id", "income_unit_id",
-    "income_multiplier",
+    "account_id", "goal_mode_id", "income_unit_id", "income_multiplier",
 })
 
 
@@ -269,23 +275,61 @@ def _goal_form_context(goal=None):
     """Build common template context for the goal create/edit form.
 
     Loads the account list, goal mode ref table, and income unit ref
-    table that the form dropdowns need.
+    table that the form dropdowns need, and names which of the accounts are
+    DEBTS: a goal on a debt is a milestone to get under (plan step
+    credit_card:CC-5-5d), so the form relabels its target and hides the two
+    fields a debt goal cannot carry (the income-relative mode, ruling R-CC69's
+    premise, and the manual per-period contribution, ruling R-CC90).  The
+    classifier is the canonical id-based one, asked here rather than in the
+    template.
+
+    **The account list is what the goal door will accept** (ruling R-CC87): a
+    create offers every active account; an edit of a DEBT goal offers only its
+    own debt, and an edit of a savings goal only savings accounts.  An edit
+    always offers the goal's OWN account, archived or not -- the list held
+    active accounts only, so a goal on an archived account had no option for
+    its own account and the browser submitted the first one: a debt goal's
+    rename was refused as a move, and a savings goal silently moved.
 
     Args:
         goal: An existing SavingsGoal for edit mode, or None for create.
 
     Returns:
-        dict with keys: goal, accounts, goal_modes, income_units.
+        dict with keys: goal, accounts, debt_account_ids, goal_modes,
+        income_units.
     """
-    accounts = account_service.list_active_accounts(current_user.id)
+    accounts = _goal_form_accounts(goal)
     goal_modes = GoalMode.query.order_by(GoalMode.id).all()
     income_units = IncomeUnit.query.order_by(IncomeUnit.id).all()
     return {
         "goal": goal,
         "accounts": accounts,
+        "debt_account_ids": frozenset(
+            acct.id for acct in accounts if is_liability_account(acct)
+        ),
         "goal_modes": goal_modes,
         "income_units": income_units,
     }
+
+
+def _goal_form_accounts(goal):
+    """Return the accounts the goal form offers (see :func:`_goal_form_context`).
+
+    Args:
+        goal: The SavingsGoal being edited, or None for a create.
+
+    Returns:
+        The accounts to list, the goal's own first when it is not active.
+    """
+    active = account_service.list_active_accounts(current_user.id)
+    if goal is None:
+        return active
+    if is_liability_account(goal.account):
+        return [goal.account]
+    savings = [acct for acct in active if not is_liability_account(acct)]
+    if goal.account not in savings:
+        savings.insert(0, goal.account)
+    return savings
 
 
 def _clean_goal_form_data(form_data: Mapping[str, str]) -> dict[str, str]:
@@ -497,13 +541,26 @@ def create_goal():
 
     data = _create_schema.load(cleaned)
 
-    # Validate account ownership and active status.
-    acct = db.session.get(Account, data.get("account_id"))
-    if not acct or acct.user_id != current_user.id or not acct.is_active:
-        flash("Invalid account.", "danger")
+    # The ONE goal door (plan step credit_card:CC-5-5d): the account, the
+    # savings / debt rules and a debt goal's target against its tile.
+    verdict = savings_goal_door.judge_goal_save(
+        BalanceContext.build(current_user.id),
+        GoalProposal(
+            account_id=data["account_id"],
+            goal_mode_id=data["goal_mode_id"],
+            target_amount=data.get("target_amount"),
+            contribution_per_period=data.get("contribution_per_period"),
+        ),
+    )
+    if verdict.refusal is not None:
+        flash(verdict.refusal, "danger")
         return redirect(url_for("savings.new_goal"))
 
-    goal = SavingsGoal(user_id=current_user.id, **data)
+    # A new goal on a card or other non-loan debt records the start its
+    # target was just judged against (ruling R-CC91); ``None`` otherwise.
+    goal = SavingsGoal(
+        user_id=current_user.id, start_owed=verdict.start_owed, **data,
+    )
     db.session.add(goal)
 
     try:
@@ -578,13 +635,6 @@ def update_goal(goal_id):
             current=goal.version_id,
         )
 
-    # Validate account ownership if account is being changed.
-    if "account_id" in data:
-        acct = db.session.get(Account, data["account_id"])
-        if not acct or acct.user_id != current_user.id:
-            flash("Invalid account.", "danger")
-            return redirect(url_for("savings.edit_goal", goal_id=goal_id))
-
     # When switching modes, explicitly clear the now-irrelevant fields
     # so the update loop sets them to None on the goal object.
     if "goal_mode_id" in data:
@@ -594,6 +644,27 @@ def update_goal(goal_id):
             data.setdefault("income_multiplier", None)
         else:
             data.setdefault("target_amount", None)
+
+    # The ONE goal door (plan step credit_card:CC-5-5d), judging the goal this
+    # edit would leave behind: every field the form left out is the goal's own.
+    # It is also where the account is checked -- this route checked ownership
+    # alone, so an edit could move a goal onto an ARCHIVED account the create
+    # refuses.
+    verdict = savings_goal_door.judge_goal_save(
+        BalanceContext.build(current_user.id),
+        GoalProposal(
+            account_id=data.get("account_id", goal.account_id),
+            goal_mode_id=data.get("goal_mode_id", goal.goal_mode_id),
+            target_amount=data.get("target_amount", goal.target_amount),
+            contribution_per_period=data.get(
+                "contribution_per_period", goal.contribution_per_period,
+            ),
+        ),
+        goal,
+    )
+    if verdict.refusal is not None:
+        flash(verdict.refusal, "danger")
+        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     for field, value in data.items():
         if field in _GOAL_UPDATE_FIELDS:

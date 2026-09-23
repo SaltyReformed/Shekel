@@ -1,7 +1,7 @@
 """a pay stub is transcribed line by line
 
 Revision ID: 5641f7729b68
-Revises: 2eabfa596ee0
+Revises: 764461215480
 Create Date: 2026-09-23
 
 Plan step **salary:S11-a**, the tables leaf of ``S11`` ("a calibration is the
@@ -119,7 +119,7 @@ from app.pay_stub_infrastructure import (
 
 # Revision identifiers, used by Alembic.
 revision = "5641f7729b68"
-down_revision = "2eabfa596ee0"
+down_revision = "764461215480"
 branch_labels = None
 depends_on = None
 
