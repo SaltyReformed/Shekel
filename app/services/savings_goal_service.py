@@ -74,6 +74,8 @@ class GoalTrajectory:
             renders "behind" with no "Increase to $X/mo" line beside it.  The
             goal-met branch is the exception that proves the rule -- it returns
             ``0.00`` for the same date, because nothing more is required.
+            **Always ``None`` for a goal on a debt** (ruling R-CC73:
+            :func:`calculate_debt_trajectory` gives no per-period figure).
     """
 
     months_to_goal: int | None
@@ -558,3 +560,74 @@ def _compute_required_monthly(
         return None
 
     return round_money_ceiling(remaining / Decimal(str(months_available)))
+
+
+def calculate_debt_trajectory(
+    *,
+    owed_now: Decimal,
+    target_amount: Decimal,
+    crossing_date: date | None,
+    target_date: date | None,
+    as_of: date,
+) -> GoalTrajectory:
+    """Calculate a DEBT goal's trajectory: when it falls under its target, and the pace.
+
+    Ruling **R-CC73** ("Projected date only"): a debt goal says when the debt
+    is projected to fall to its target, from the plan's own forward figures,
+    and whether that is on pace for the goal's date -- and gives NO required
+    per-period figure, so :attr:`GoalTrajectory.required_monthly` is always
+    ``None`` here.  The date is found by the caller over the debt's plan (plan
+    step credit_card:CC-5-5d, ``savings_dashboard_service._tile``); this reads
+    it the way :func:`calculate_trajectory` reads a contribution rate, keeping
+    one record shape for both kinds of goal.
+
+    **The day is an ARGUMENT** (ledger row P55's rule for this module's
+    counts): the build's one clock, where :func:`calculate_trajectory` still
+    reads ``date.today()`` (row **P49**'s half, owned elsewhere).
+
+    Its fields keep :class:`GoalTrajectory`'s meanings, including the one the
+    cards branch on: ``months_to_goal`` is ``0`` ONLY for a goal already met.
+    A crossing inside the current calendar month is therefore one month away
+    rather than zero -- :func:`app.utils.dates.months_between` counts month
+    boundaries, and zero is taken -- and so is a crossing on an overdue loan
+    installment whose DUE date has passed while its payment has not.
+
+    Args:
+        owed_now: What the debt owes at *as_of*, as its tile shows it.
+        target_amount: The goal's target, as an amount owed (``>= 0``).
+        crossing_date: The first day the debt is projected to owe at most the
+            target, or ``None`` when the plan never gets it there.  Ignored
+            for a goal already met.
+        target_date: The goal's target date, or ``None``.
+        as_of: The build's day.
+
+    Returns:
+        The :class:`GoalTrajectory`.  Met: ``0`` months, completed today,
+        pace against the target date when one is actionable.  Not projected
+        to get there: no date, and ``'behind'`` against an actionable target
+        date.  Otherwise the crossing, its month count and its pace.
+    """
+    actionable_target = target_date is not None and target_date > as_of
+    if owed_now <= target_amount:
+        return GoalTrajectory(
+            months_to_goal=0,
+            projected_completion_date=as_of,
+            pace=_compute_pace(as_of, target_date) if actionable_target else None,
+            required_monthly=None,
+        )
+    if crossing_date is None:
+        return GoalTrajectory(
+            months_to_goal=None,
+            projected_completion_date=None,
+            pace="behind" if actionable_target else None,
+            required_monthly=None,
+        )
+    return GoalTrajectory(
+        months_to_goal=max(1, months_between(as_of, crossing_date)),
+        projected_completion_date=crossing_date,
+        pace=(
+            _compute_pace(crossing_date, target_date)
+            if actionable_target else None
+        ),
+        required_monthly=None,
+    )

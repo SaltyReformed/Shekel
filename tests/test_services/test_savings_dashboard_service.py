@@ -490,11 +490,14 @@ class TestIncomeRelativeGoalDashboard:
             gd = result["goal_data"][0]
             # pylint: disable=import-outside-toplevel
             from dataclasses import fields
+            # ``start_owed`` since plan step credit_card:CC-5-5d (a debt goal's
+            # start, read by ``savings/_debt_goal.html``), with the developer's
+            # rule-5 confirmation (2026-09-23).
             assert {f.name for f in fields(gd)} == {
                 "goal", "current_balance", "progress_pct", "remaining_periods",
                 "required_contribution", "resolved_target",
                 "income_descriptor", "has_salary_data", "trajectory",
-                "monthly_contribution",
+                "monthly_contribution", "start_owed",
             }
             assert not hasattr(gd, "goal_mode_id"), (
                 "the goal's mode is read through ``gd.goal``; a copy of it here "
@@ -5946,16 +5949,20 @@ class TestTheDenseMapIsTotalAndSaysSo:
                 compute_sparklines([ad], window + [_derived_period(99)])
 
     def test_the_projection_read_raises_on_a_missing_current_period(self, app):
-        """``_current_balance_from_map`` states ``Raises: KeyError`` -- it does.
+        """The tile's rule states ``Raises: KeyError`` -- it does.
 
         Its contract has said so since plan step X-v2 (ruling R-CA) and nothing
         asserted it; this is the third reader of the same invariant, so it is
-        pinned with the other two.
+        pinned with the other two.  The read moved from the deleted
+        ``_projections._current_balance_from_map`` into the tile rule's one
+        home, ``_tile.tile_balance_on``, at plan step credit_card:CC-5-5d
+        (ruling R-CC88); re-pointed with the developer's rule-5 confirmation
+        (2026-09-23), the assertion unchanged.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
-        from app.services.savings_dashboard_service._projections import (
-            _current_balance_from_map,
+        from app.services.savings_dashboard_service._tile import (
+            tile_balance_on,
         )
         with app.app_context():
             # The stand-in carried a ``current_anchor_balance`` for the
@@ -5963,12 +5970,19 @@ class TestTheDenseMapIsTotalAndSaysSo:
             # ruling R-EH deleted the column, so what this case pins is the
             # arm it always graded: with a current period the map is INDEXED.
             acct = SimpleNamespace()
-            ctx = SimpleNamespace(current_period=_derived_period(2))
-            assert _current_balance_from_map(
-                {2: Decimal("42.00")}, acct, ctx,
+            calendar = SimpleNamespace(
+                period_containing=lambda _day: _derived_period(2),
+            )
+            ctx = SimpleNamespace(calendar=lambda: calendar)
+            day = date(2026, 1, 20)
+            assert tile_balance_on(
+                acct, ctx, day, is_loan=False, balances={2: Decimal("42.00")},
             ) == Decimal("42.00")
             with pytest.raises(KeyError):
-                _current_balance_from_map({1: Decimal("42.00")}, acct, ctx)
+                tile_balance_on(
+                    acct, ctx, day, is_loan=False,
+                    balances={1: Decimal("42.00")},
+                )
 
 
 def _with_badging_predicate(account_data):
