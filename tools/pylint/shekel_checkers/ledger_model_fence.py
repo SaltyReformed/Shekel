@@ -66,8 +66,10 @@ _LEDGER_MODEL_NAMES = frozenset({"Posting", "JournalEntry", "LedgerAccount"})
 
 # Modules allowed to import a ledger model directly: the posting-ledger write
 # core (``posting_service`` + its ``_posting_write`` / ``_posting_reconcile`` /
-# ``_posting_purchases`` leaves -- the last added at plan step X-f3b, which made
-# a PURCHASE a posting source of its own), the readers (``posting_reads``, the
+# ``_posting_purchases`` / ``_posting_legacy`` leaves -- ``_posting_purchases``
+# added at plan step X-f3b, which made a PURCHASE a posting source of its own;
+# ``_posting_legacy`` at ``balance:X-bi-6-3`` leaf 3b, until ``X-bi-6-5``
+# deletes it), the readers (``posting_reads``, the
 # loan / account posting packages, the ledger report package), the
 # chart-of-accounts resolver
 # (``ledger_account_service``), the pay-period LOCK CLASSIFIER whose
@@ -87,6 +89,13 @@ _LEDGER_MODEL_ALLOWLIST = frozenset({
     "app.services._posting_reconcile",
     "app.services._posting_purchases",
     "app.services._posting_write",
+    # The LEGACY one-entry transfer source's arm, MOVED out of
+    # ``posting_service`` (not new ledger access: the same code, one module
+    # over) when that module reached the 1000-line gate (plan step
+    # ``balance:X-bi-6-3``, leaf 3b).  This entry DIES WITH THE MODULE at plan
+    # step ``balance:X-bi-6-5``, which drops ``journal_entries.transfer_id``
+    # and deletes the leaf whole.
+    "app.services._posting_legacy",
     "app.services.loan_posting_service",
     "app.services.account_posting_service",
     "app.services.ledger_account_service",

@@ -57,7 +57,9 @@ movement writer every purchase and covering movement posts through
 parent's shape) -- :func:`sync_transfer_postings` is the pair's door, not a
 second writer.  The one-entry ``transfer`` source is LEGACY: the deploy's
 first resync reverses whatever it posted, once, and every later sync leaves
-it at zero (the shape ``balance:X-bi-4a`` gave the transaction source).  The
+it at zero (the shape ``balance:X-bi-4a`` gave the transaction source); its
+arm is the leaf :mod:`app.services._posting_legacy`, which ``X-bi-6-5``
+deletes whole with the source.  The
 amount is still what the shadow RECORDED and never ``transfers.amount``: a
 movement's figure is the record, and ``cash_ledger.movement_cash_leg`` is
 the one producer of its signed cash.
@@ -67,8 +69,7 @@ import logging
 
 from sqlalchemy.orm import selectinload
 
-from app import ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum
+from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
@@ -78,6 +79,10 @@ from app.services import posting_reads
 from app.services.cash_ledger import movements_with_parents
 from app.services.posting_reads import PostingError
 from app.services.user_write_lock import lock_every_user_writes
+from app.services._posting_legacy import (
+    legacy_transfer_entry_exists_clause,
+    reverse_legacy_transfer_entry,
+)
 from app.services._posting_purchases import (
     dated_transfer_movement_exists_clause,
     emit_purchase_deltas,
@@ -86,9 +91,7 @@ from app.services._posting_purchases import (
 )
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    emit_source_deltas,
     emit_typed_source_deltas,
-    source_entry_builder,
 )
 from app.utils.balance_predicates import settled_status_ids
 
@@ -113,31 +116,6 @@ _ledger_account_for = posting_reads._ledger_account_for
 account_posting_total = posting_reads.account_posting_total
 settled_transfer_effect = posting_reads.settled_transfer_effect
 posted_purchase_effect = posting_reads.posted_purchase_effect
-
-
-# ── Private helpers ────────────────────────────────────────────────
-
-
-def _transfer_description(xfer: Transfer) -> str:
-    """Return the human label of a transfer's LEGACY one-entry journal entry.
-
-    ``"Transfer: <from> to <to>"``, truncated to the description column
-    width, matching the Commit-3 backfill byte-for-byte.  Since plan step
-    ``balance:X-bi-6-3`` only the legacy source's REVERSAL entries carry it
-    (:func:`_reverse_legacy_transfer_entry`); a per-movement entry carries its
-    movement's own description, as every movement does.  Display only --
-    never read for logic.
-
-    Args:
-        xfer: The transfer whose legacy entry is being reversed (its
-            ``from_account`` / ``to_account`` relationships supply the names).
-
-    Returns:
-        The truncated description string.
-    """
-    return (
-        f"Transfer: {xfer.from_account.name} to {xfer.to_account.name}"
-    )[:_MAX_DESCRIPTION_LENGTH]
 
 
 # ── Transaction (cash) posting helpers (Build-Order Step 3) ────────
@@ -231,9 +209,11 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
 
     **The legacy arm.**  Whatever the one-entry ``transfer`` source posted for
     *xfer* is reconciled to ZERO here, at its own ``(period, entry date)``, on
-    every call (:func:`_reverse_legacy_transfer_entry`): the deploy's first
-    resync after this step reverses every production legacy entry once (19
-    transfers on the 2026-09-22 17:06 dump), and every later sync finds
+    every call
+    (:func:`~app.services._posting_legacy.reverse_legacy_transfer_entry`, in
+    the leaf that holds the one-entry shape until ``X-bi-6-5``): the deploy's
+    first resync after this step reverses every production legacy entry once
+    (19 transfers on the 2026-09-22 17:06 dump), and every later sync finds
     nothing to do.  The reversal and the two per-movement
     entries land on the same day for every one of them (measured on the
     2026-09-20 restore: every movement's day equals its old entry's), so each
@@ -332,7 +312,7 @@ def _rebook_transfer_family(xfer: Transfer, posts) -> "tuple[list[JournalEntry],
     legs can touch.
     """
     movements = _transfer_family_movements(xfer)
-    entries = _reverse_legacy_transfer_entry(xfer)
+    entries = reverse_legacy_transfer_entry(xfer)
     for movement in movements:
         shadow = movement.transaction
         entries.extend(
@@ -372,68 +352,6 @@ def _transfer_family_movements(xfer: Transfer) -> "list[TransactionEntry]":
         )
         .order_by(TransactionEntry.id)
         .all()
-    )
-
-
-def legacy_transfer_entry_exists_clause():
-    """Return the SQL form of "this transfer holds a legacy one-entry posting".
-
-    An ``EXISTS`` over ``budget.journal_entries`` carrying the transfer's
-    ``transfer_id`` under the legacy ``transfer`` source kind, correlated to
-    ``Transfer`` -- reversed pairs included, so the deploy resync keeps
-    walking a re-booked transfer (a no-op) rather than deciding from a net
-    whether its residue is clean.  Goes with the column at ``X-bi-6-5``.
-
-    Returns:
-        A SQLAlchemy ``EXISTS`` clause, correlated to ``Transfer``.
-    """
-    return (
-        db.session.query(JournalEntry.id)
-        .filter(
-            JournalEntry.transfer_id == Transfer.id,
-            JournalEntry.source_kind_id
-            == ref_cache.posting_source_id(PostingSourceEnum.TRANSFER),
-        )
-        .exists()
-    )
-
-
-def _reverse_legacy_transfer_entry(xfer: Transfer) -> "list[JournalEntry]":
-    """Bring the LEGACY one-entry ``transfer`` source for *xfer* to zero.
-
-    The transfer analog of :func:`_emit_transaction_deltas` and the same
-    shape: an EMPTY target over the source's own ``(period, entry date)``
-    keys, read back from the ledger by ``transfer_id`` under the ``transfer``
-    source kind, so whatever the one-entry shape posted before plan step
-    ``balance:X-bi-6-3`` is reversed at its own date -- once, by the deploy
-    resync -- and a transfer this source never touched, or one already at
-    zero, emits nothing.  The reversal's header carries the legacy source kind
-    and link so the pair nets to zero under the same key every reader groups
-    by; ``journal_entries.transfer_id`` and this arm go at ``X-bi-6-5``.
-
-    Args:
-        xfer: The transfer whose legacy entry to reverse.
-
-    Returns:
-        The emitted reversal entries; ``[]`` when the ledger holds nothing
-        for this source.
-    """
-    legacy_source_id = ref_cache.posting_source_id(PostingSourceEnum.TRANSFER)
-    return emit_source_deltas(
-        targets={},
-        source_filter=db.and_(
-            JournalEntry.transfer_id == xfer.id,
-            JournalEntry.source_kind_id == legacy_source_id,
-        ),
-        kind_id=ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
-        build_entry=source_entry_builder(
-            user_id=xfer.user_id,
-            scenario_id=xfer.scenario_id,
-            source_kind_id=legacy_source_id,
-            description=_transfer_description(xfer),
-            transfer_id=xfer.id,
-        ),
-        log_label=f"transfer {xfer.id} (legacy one-entry source: none)",
     )
 
 
