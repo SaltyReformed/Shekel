@@ -141,9 +141,10 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       HALF 2: the DECOMPOSED parent, split 2026-09-21 by the developer (`R-CC45`) into 4a-1 (the
       writer), 4a-2 (the re-key migration; the member table's bill column dropped) and 4b (the card
       panel's settlements arm, `R-CC44`), and on 2026-09-22 given 4a-3 (one act takes a movement off
-      the books; the popovers' captions; `R-CC51`) and 4a-4 (a row holding a movement is history;
-      neither member subject key cascades; `R-CC55`); ticks with its last leaf. Must land before any
-      card import exists.
+      the books; the popovers' captions; `R-CC51`), 4a-4 (a row holding a movement is history;
+      neither member subject key cascades; `R-CC55`) and, on 2026-09-23, 4a-5 (the reconcile panel
+      and carry-forward say what they free first; `R-CC76`); ticks with its last leaf. Must land
+      before any card import exists.
   - [x] **CC-5-4a-1** `079524b0` -- the payment MOVEMENT is the matcher's subject on every screen
         (`R-CC43`): `RowKind.SETTLEMENT` (the movement's identity, the row's record: priced as a
         movement when dated, the row's paycheck as its window, dated through the row's own door with
@@ -173,6 +174,17 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       migration on `2eabfa596ee0`, its own release after the 4a-2 + 4a-3 release; its entry's own
       design questions (2026-09-22, extending part (2) to the archive, the object layer and the
       reset and transfer doors) are filed at its tick. Closes **CC-358**, **CC-363**.
+- [ ] **CC-5-4a-5** `fix(cards): the panel and carry-forward say what they free first` -- `R-CC76`:
+      the two doors that reach the status seam's `$0.00` / purchases withdrawal and undo a statement
+      match with no caption (**CC-364**) name the bank lines they would free BEFORE the press, from
+      the same read they act on, as the popovers do (`match_withdrawal.pending_for_movements`;
+      `R-CC56`, `R-CC59`). The reconcile panel (`accounts/_reconcile_panel.html`) says it on a row
+      whose kept payment an accepted match names: its per-row `settled_amount-<id>` box at `$0.00`,
+      a reverted envelope's tick (the seam's purchases arm) and a transfer row's box at `$0.00`,
+      which takes both legs' payments off as the transfer popover's Actual box does. Carry-forward's
+      confirmation (`grid/_carry_forward_preview_modal.html`) says it for each envelope
+      `settle_from_entries` would settle. Only the grid's one-click Mark Paid stays silent
+      (`R-CC56`). After 4a-4 (`R-CC76`). Closes **CC-364**.
 - [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
       of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
       another, listed under the bill's name in its paycheck block, ticked through the bill's own
