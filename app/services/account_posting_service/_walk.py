@@ -230,8 +230,17 @@ def _transaction_source_days(
     with a nonzero net would be invisible to ``ledger_before`` rather than
     refused as the deleted loader refused one with no shadow.  Safe only
     because the deploy resync brings every legacy pair to zero at its own
-    date and no writer posts under that source; the column and this filter go
-    at ``X-bi-6-5``.
+    date and no writer posts a net under that source -- ENFORCED there since
+    ruling **R-BAL104**: the resync refuses to finish (the deploy stops;
+    ruling **R-BAL105** states what that costs) while any transfer still holds
+    a nonzero ``transfer``-SOURCE net on some ``(period, date)``, a family it
+    skipped included (``_posting_legacy.transfers_holding_a_legacy_net``).
+    The refusal measures that source kind only, while this filter hides a
+    ``transfer_id``-linked entry of ANY source kind: no writer sets
+    ``transfer_id`` under another source kind (the legacy reversal is the
+    only setter; zero such entries on both 2026-09-22 rehearsals of the
+    re-book).  The column, this
+    filter and that refusal go at ``X-bi-6-5``.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.

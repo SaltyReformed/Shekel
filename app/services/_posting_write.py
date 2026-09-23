@@ -21,10 +21,11 @@ FROM ``posting_service`` would close an import cycle
 (``posting_service -> account_posting_service -> posting_service``);
 holding them in a leaf breaks it structurally -- the same resolution the
 accounts blueprint used (``app/routes/accounts/_bp.py``).
-``posting_service`` remains the ledger's one PUBLIC surface and re-exports
-everything here; only the correction packages
-(:mod:`app.services._posting_reconcile`,
-:mod:`app.services.account_posting_service`) import this module directly.
+``posting_service`` remains the ledger's one PUBLIC surface.  The modules
+that import this leaf directly are the writer and its own private leaves
+(:mod:`app.services._posting_purchases`, :mod:`app.services._posting_legacy`)
+and the correction core :mod:`app.services._posting_reconcile`, which the
+account and loan posting packages build on.
 
 Flask-isolated and commit-free like its consumers: flushes so the caller
 sees assigned ids; the caller owns the transaction boundary.
@@ -61,8 +62,9 @@ _MAX_DESCRIPTION_LENGTH = 200
 # A transfer's legs are its shadows' movements since plan step
 # ``balance:X-bi-6-3`` (ruling **R-BAL101**) and come through here like every
 # other movement; only the LEGACY one-entry transfer source, keyed
-# ``transfer_id``, is reconciled by ``posting_service.sync_transfer_postings``
-# directly.
+# ``transfer_id``, is reconciled outside them, by
+# ``_posting_legacy.reverse_legacy_transfer_entry`` (the pair's door's legacy
+# arm, until ``X-bi-6-5``).
 _TYPED_SOURCE_LINKS = frozenset({"transaction_id", "transaction_entry_id"})
 
 

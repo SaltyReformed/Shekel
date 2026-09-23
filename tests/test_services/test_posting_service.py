@@ -77,6 +77,7 @@ The ``settled_*_effect`` source-table readers are unchanged.
 # pattern; test bodies bind fixtures by name.
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -1053,11 +1054,24 @@ class TestTheDeployResyncReBooksTheLegacyShape:
         the TO-side movement re-pointed onto an account whose ledger pairing
         has been removed (an impossible state, the fail-loud fixture's) -- so
         the door reverses the legacy entry, posts the from side, and only
-        then is refused.  The resync reports (0, 0) and skips the transfer;
-        the legacy entry still stands un-reversed, no per-movement entry
-        exists, transit is untouched.  Mutation: without the savepoint the
-        reversal and the from-side entry survive the refusal, transit holds
-        +100.00 and the legacy entry is netted away.
+        then is refused.  The resync skips the transfer whole; the legacy
+        entry still stands un-reversed, no per-movement entry exists, transit
+        is untouched.  Mutation: without the savepoint the reversal and the
+        from-side entry survive the refusal and the legacy entry is netted
+        away -- so since leaf 3b the resync no longer refuses and the case
+        fails at the raise (DID NOT RAISE, observed); a savepoint rolling back
+        only PART of the door's writes is what the assertions after the raise
+        still catch.
+
+        **Re-expressed under rule 5 at leaf 3b, the developer confirming it
+        2026-09-22** (ruling **R-BAL104**): this skipped transfer keeps a
+        NONZERO legacy posting the account walk cannot see, so the resync no
+        longer returns (0, 0) -- it REFUSES after its loop, naming the
+        transfer as holder and as skipped, and the deploy's commit never
+        runs.  Every other assertion is unchanged and runs in the caller's
+        transaction right after the raise.  A skip holding no legacy net
+        still returns (the next case); a legacy net netting zero in total but
+        not per day still refuses (the one after).
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1116,8 +1130,14 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             })
             _db.session.commit()
 
-            assert posting_service.resync_all_cash_postings() == (0, 0)
-            _db.session.commit()
+            with pytest.raises(
+                PostingError,
+                match=(
+                    rf"transfer\(s\) \[{transfer.id}\] still hold a nonzero "
+                    rf"legacy .*\(skipped this pass: \[{transfer.id}\]\)"
+                ),
+            ):
+                posting_service.resync_all_cash_postings()
 
             # Nothing half-booked: the legacy SOURCE still nets its whole
             # effect (un-reversed -- the entry's own legs are append-only, so
@@ -1144,6 +1164,182 @@ class TestTheDeployResyncReBooksTheLegacyShape:
             ).count() == 0
             assert _ledger_total(transit_ledger) == Decimal("0.00")
             assert _ledger_total(checking_ledger) == Decimal("900.00")
+
+    def test_a_refused_transfer_holding_no_legacy_net_is_still_skipped(
+        self, app, db, seed_user, savings, caplog,
+    ):
+        """A skip with NO legacy net still returns, skipped whole and logged.
+
+        Ruling **R-BAL104** refuses the resync only for a transfer whose
+        LEGACY source still nets nonzero; every other family keeps the
+        2026-08-17 ruling -- one that cannot post is skipped and reported,
+        never allowed to make the deploy unbootable -- and this is the case
+        where the per-transfer SAVEPOINT still decides what the deploy
+        commits.  Arithmetic: a $100.00 Checking -> Savings transfer settled
+        go-forward (two movement entries, no legacy entry); the entry of the
+        movement the door reaches FIRST (the lower id) deleted by raw SQL, so
+        the door has a re-post to write, and the SECOND movement re-pointed
+        onto an account whose ledger pairing is removed, so the door is
+        refused after that write.  The resync returns (0, 0) and logs the
+        skip naming the transfer and why (the door's own message, naming the
+        account whose pairing is missing); the family still holds exactly
+        the second movement's original entry (the first's re-post rolled
+        back).
+        Mutations: a refusal on ANY skip raises here; without the savepoint
+        the first movement's re-post survives the refusal.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            first_id, second_id = sorted(
+                _covering_movement_of_side(transfer.id, account.id).id
+                for account in (checking, savings)
+            )
+            [second_entry_id] = [
+                entry.id for entry in _entries_for_transfer(transfer.id)
+                if entry.transaction_entry_id == second_id
+            ]
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.journal_entries "
+                "WHERE transaction_entry_id = :m"
+            ), {"m": first_id})
+            unpaired = create_account_of_type(
+                seed_user, _db.session, "Savings", "Unpaired Savings",
+            )
+            _db.session.commit()
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
+            ), {"a": unpaired.id})
+            _db.session.execute(_db.text(
+                "UPDATE budget.transaction_entries SET account_id = :u "
+                "WHERE id = :m"
+            ), {"u": unpaired.id, "m": second_id})
+            _db.session.commit()
+            _db.session.expire_all()
+
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.posting_service",
+            ):
+                assert posting_service.resync_all_cash_postings() == (0, 0)
+
+            assert (
+                f"skipped 1 transfer(s) whose family could not be posted: "
+                f"[{transfer.id}].  Why: transfer {transfer.id}: No ledger "
+                f"account is linked to account {unpaired.id};"
+            ) in caplog.text
+            assert [
+                entry.id for entry in _entries_for_transfer(transfer.id)
+            ] == [second_entry_id]
+
+    def test_a_legacy_net_zero_in_total_but_not_per_day_still_refuses(
+        self, app, db, seed_user, savings,
+    ):
+        """A skipped transfer's legacy residue refuses PER (period, day), not in total.
+
+        Ruling **R-BAL104** refuses while a transfer holds a nonzero legacy
+        posting "on any (period, day)", and the walk that cannot see it moves
+        each DAY's balance: a settle / reversal pair straddling two days (the
+        E1a review's H2 residue) nets zero in total and is still money on
+        each day.  Arithmetic: a $100.00 Checking -> Savings transfer settled
+        on D, its go-forward movement entries replaced by a straddling legacy
+        pair -- {Checking -100, Savings +100} at D and {Checking +100,
+        Savings -100} at D-8, $0.00 in total -- and its to-side movement
+        re-pointed onto an unpaired account so the resync skips it.  The
+        resync refuses naming the transfer and why it was skipped (the
+        unpaired account); the pair still stands on both days (Checking
+        -100.00 at D and +100.00 at D-8, Savings the opposite).  Mutation: a
+        refusal that sums each transfer's legacy legs across days reads $0.00
+        here and lets the resync finish.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            user_id = seed_user["user"].id
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            checking_ledger = _ledger_id(checking)
+            savings_ledger = _ledger_id(savings)
+            day = _covering_movement_of_side(transfer.id, checking.id).settled_on
+            earlier = day - timedelta(days=8)
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.journal_entries "
+                "WHERE transaction_entry_id IN ("
+                "  SELECT te.id FROM budget.transaction_entries te"
+                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
+                "  WHERE sh.transfer_id = :t)"
+            ), {"t": transfer.id})
+            transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            for entry_day, checking_leg in (
+                (day, Decimal("-100.00")),
+                (earlier, Decimal("100.00")),
+            ):
+                _emit_balanced_entry(
+                    JournalEntry(
+                        user_id=user_id,
+                        scenario_id=_scenario_id(seed_user),
+                        pay_period_id=seed_user["bootstrap_period"].id,
+                        entry_date=entry_day,
+                        source_kind_id=ref_cache.posting_source_id(
+                            PostingSourceEnum.TRANSFER,
+                        ),
+                        transfer_id=transfer.id,
+                        description="Transfer: Checking to Posting Savings",
+                    ),
+                    [
+                        _PostingLeg(checking_ledger, checking_leg, transfer_kind),
+                        _PostingLeg(savings_ledger, -checking_leg, transfer_kind),
+                    ],
+                )
+            unpaired = create_account_of_type(
+                seed_user, _db.session, "Savings", "Unpaired Savings",
+            )
+            _db.session.commit()
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
+            ), {"a": unpaired.id})
+            _db.session.execute(_db.text(
+                "UPDATE budget.transaction_entries SET account_id = :u "
+                "WHERE id = :m"
+            ), {
+                "u": unpaired.id,
+                "m": _covering_movement_of_side(transfer.id, savings.id).id,
+            })
+            _db.session.commit()
+
+            with pytest.raises(
+                PostingError,
+                match=(
+                    rf"transfer\(s\) \[{transfer.id}\] still hold a nonzero "
+                    rf"legacy .*\(skipped this pass: \[{transfer.id}\]\)\.  "
+                    rf"Why: transfer {transfer.id}: No ledger account is "
+                    rf"linked to account {unpaired.id};"
+                ),
+            ):
+                posting_service.resync_all_cash_postings()
+
+            legacy_by_day = {
+                (ledger_id, entry_day): net
+                for ledger_id, entry_day, net in _db.session.query(
+                    Posting.ledger_account_id, JournalEntry.entry_date,
+                    _db.func.sum(Posting.amount),
+                )
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(JournalEntry.transfer_id == transfer.id)
+                .group_by(Posting.ledger_account_id, JournalEntry.entry_date)
+                .all()
+            }
+            assert legacy_by_day == {
+                (checking_ledger, day): Decimal("-100.00"),
+                (savings_ledger, day): Decimal("100.00"),
+                (checking_ledger, earlier): Decimal("100.00"),
+                (savings_ledger, earlier): Decimal("-100.00"),
+            }
 
     def test_a_reverted_transfers_legacy_residue_heals_too(
         self, app, db, seed_user, savings,

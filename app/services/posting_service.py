@@ -82,6 +82,7 @@ from app.services.user_write_lock import lock_every_user_writes
 from app.services._posting_legacy import (
     legacy_transfer_entry_exists_clause,
     reverse_legacy_transfer_entry,
+    transfers_holding_a_legacy_net,
 )
 from app.services._posting_purchases import (
     dated_transfer_movement_exists_clause,
@@ -635,6 +636,23 @@ def _hold_for_the_re_check(held: dict, scenario_id: int, accounts, entries) -> N
     held_entries.extend(entries)
 
 
+def _skip_reasons(skipped: "dict[int, str]") -> str:
+    """Return the resync's skipped transfers and each one's reason, as one line.
+
+    Shared by the skip warning and the ruling **R-BAL104** refusal, so the
+    two tell the operator the same thing.  *skipped* maps a transfer id to
+    the ``PostingError`` message its family raised; it is empty when the
+    pass skipped nothing, and a refusal can still find a holder then, which
+    the refusal measures rather than rules out.
+    """
+    if not skipped:
+        return "No transfer was skipped this pass."
+    return "Why: " + "; ".join(
+        f"transfer {transfer_id}: {reason.rstrip('.')}"
+        for transfer_id, reason in skipped.items()
+    ) + "."
+
+
 def resync_all_cash_postings() -> tuple[int, int]:
     """Re-reconcile every settled cash source's postings (deploy resync).
 
@@ -694,6 +712,20 @@ def resync_all_cash_postings() -> tuple[int, int]:
     off the entries) reads the finished ledger.  The union's earliest day can
     only make the re-check run where one source alone would skip it.
 
+    **Until ``X-bi-6-5`` it REFUSES to finish while any transfer still holds a
+    nonzero legacy net** (ruling **R-BAL104**, amended by **R-BAL105**): a
+    family it skips (below) keeps its legacy posting, which the account walk
+    cannot see, so a later true-up would book a wrong correction.  After the
+    transfer loop, before the one re-check, it asks
+    :func:`~app.services._posting_legacy.transfers_holding_a_legacy_net` and
+    raises naming every holder, the skipped transfers and why each was
+    skipped; ``scripts/init_database.py`` exits before its own commit.
+    **That is NOT an automatic rollback**: it can fire only on a deploy that
+    has already committed migration ``c7d1e9a4b2f8``, which the previous
+    image cannot resolve, so the site is down until an operator intervenes
+    (``transfers_holding_a_legacy_net``'s docstring has the argument, the
+    ruled recovery and the gate).
+
     It stays wired on every deploy rather than being deleted after one run, for
     the same reason its two siblings are: reconcile-to-target makes it a no-op
     at target, so it costs one pass and converts any future drift -- a rule
@@ -735,13 +767,16 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     **The re-date is ONE-WAY, and that is a stated risk rather than a
     discovered one.**  ``entrypoint.sh`` runs ``set -eEuo pipefail`` and calls
-    ``scripts/init_database.py``, so a failure here aborts the container and the
-    auto-rollback fires before anything commits.  But if the healthcheck fails
-    AFTER this commits, the rolled-back image reads a display-dated ledger with
-    the previous image's UTC rules, and only the entries whose two days differ
-    are affected (on production at the cutover: one payment, one day).  Rolling
-    back ACROSS a dating change therefore needs this hook re-run under the old
-    image, not just a container swap.
+    ``scripts/init_database.py``, so a failure here aborts the container
+    before this hook commits -- though NOT before the release's migrations
+    have (they run first): ``deploy/shekel-deploy.sh`` re-pins the previous
+    image only when that image can resolve the stamp the database now holds,
+    and otherwise names the pre-deploy dump and stops.  And if the healthcheck
+    fails AFTER this commits, the rolled-back image reads a display-dated
+    ledger with the previous image's UTC rules, and only the entries whose two
+    days differ are affected (on production at the cutover: one payment, one
+    day).  Rolling back ACROSS a dating change therefore needs this hook
+    re-run under the old image, not just a container swap.
 
     **It is the THIRD multi-owner transaction, and it takes every per-user
     write lock up front** (plan step X-f1c3c, finding N-193).  It iterates every
@@ -765,6 +800,15 @@ def resync_all_cash_postings() -> tuple[int, int]:
     Returns:
         ``(transactions_changed, transfers_changed)`` -- how many sources this
         pass actually re-posted, for the deploy log.
+
+    Raises:
+        PostingError: If, after the transfer loop, any transfer still holds a
+            nonzero legacy one-entry posting on some ``(period, date)``
+            (ruling **R-BAL104**); if a ROW's family cannot post (the
+            transaction arm does not skip); or if the one anchor re-check
+            refuses an account (anchor history with no linked ledger, or a
+            posted net whose source it cannot resolve).  In every case the
+            caller's transaction must not commit.
     """
     lock_every_user_writes()
     settled_ids = settled_status_ids()
@@ -870,7 +914,11 @@ def resync_all_cash_postings() -> tuple[int, int]:
     # (``scripts/init_database.py``): one repairable row would make the app
     # unbootable for every user, and the operator could not even reach the
     # screen that shows which row it was.  Skipping keeps the failure loud in
-    # the log and bounded to the family that caused it.
+    # the log and bounded to the family that caused it -- EXCEPT while the
+    # skipped family still holds a LEGACY net (ruling **R-BAL104**, developer
+    # 2026-09-22): the account walk cannot see that money, so the resync
+    # refuses after this loop (below) until the pairing is repaired.  The
+    # skip holds for every other family.
     #
     # **Skipped WHOLE, under a SAVEPOINT** (the leaf-1 adversarial review of
     # plan step ``balance:X-bi-6-3``, finding 1).  The pair's door writes in
@@ -883,17 +931,39 @@ def resync_all_cash_postings() -> tuple[int, int]:
     # such moment, and the savepoint gives the batch the atomicity the door
     # cannot.
     transfers_changed = 0
-    skipped: list[int] = []
+    # Transfer id -> why its family could not post: the door's own message
+    # (which names the account whose pairing is broken) is the operator's
+    # only pointer to the repair, so it is carried to the log and the refusal.
+    skipped: dict[int, str] = {}
     for xfer in transfers:
         try:
             with db.session.begin_nested():
                 entries, accounts = _rebook_transfer_family(xfer, purchase_posts)
-        except PostingError:
-            skipped.append(xfer.id)
+        except PostingError as exc:
+            skipped[xfer.id] = str(exc)
             continue
         if entries:
             transfers_changed += 1
             _hold_for_the_re_check(held, xfer.scenario_id, accounts, entries)
+    # **Until X-bi-6-5 a legacy net left standing refuses the whole resync**
+    # (ruling **R-BAL104**; the docstring says why).  Asked BEFORE the one
+    # re-check, so no true-up is ever computed against a walk that cannot
+    # see the net, and the refusal names the root cause rather than whatever
+    # the re-check would trip on next.
+    legacy_holders = transfers_holding_a_legacy_net()
+    if legacy_holders:
+        raise PostingError(
+            f"Cash posting resync refused (ruling R-BAL104): transfer(s) "
+            f"{legacy_holders} still hold a nonzero legacy one-entry "
+            f"posting, which the account walk cannot see (skipped this "
+            f"pass: {list(skipped)}).  {_skip_reasons(skipped)}  Repair "
+            "each skipped transfer's movement-account ledger pairing before "
+            "deploying again; a holder that was NOT skipped is a re-book "
+            "defect, not a pairing: do not deploy.  If this deploy applied a "
+            "migration the previous image cannot resolve, shekel-deploy will "
+            "not re-pin it, and the ruled recovery is the pre-deploy dump it "
+            "names (ruling R-BAL105)."
+        )
     # The ONE anchor re-check, after every source is re-booked (ruling
     # **R-BAL103**; the docstring says why).  Outside the per-transfer
     # SAVEPOINT on purpose: the walk refuses only for the ACCOUNT
@@ -909,9 +979,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
     if skipped:
         logger.warning(
             "Cash posting resync skipped %d transfer(s) whose family could not "
-            "be posted: %s.  Each is a broken chart-of-accounts pairing on a "
-            "movement's account -- repair it, then re-run the resync.",
-            len(skipped), skipped,
+            "be posted: %s.  %s  Each is a broken chart-of-accounts pairing on "
+            "a movement's account -- repair it, then re-run the resync.",
+            len(skipped), list(skipped), _skip_reasons(skipped),
         )
 
     return transactions_changed, transfers_changed

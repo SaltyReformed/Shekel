@@ -90,11 +90,11 @@ _LEDGER_MODEL_ALLOWLIST = frozenset({
     "app.services._posting_purchases",
     "app.services._posting_write",
     # The LEGACY one-entry transfer source's arm, MOVED out of
-    # ``posting_service`` (not new ledger access: the same code, one module
-    # over) when that module reached the 1000-line gate (plan step
-    # ``balance:X-bi-6-3``, leaf 3b).  This entry DIES WITH THE MODULE at plan
-    # step ``balance:X-bi-6-5``, which drops ``journal_entries.transfer_id``
-    # and deletes the leaf whole.
+    # ``posting_service`` when that module reached the 1000-line gate (plan
+    # step ``balance:X-bi-6-3``, leaf 3b), plus the one reader ruling
+    # R-BAL104's deploy refusal asks of that same source.  This entry DIES
+    # WITH THE MODULE at plan step ``balance:X-bi-6-5``, which drops
+    # ``journal_entries.transfer_id`` and deletes the leaf whole.
     "app.services._posting_legacy",
     "app.services.loan_posting_service",
     "app.services.account_posting_service",
