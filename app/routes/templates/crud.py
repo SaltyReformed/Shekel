@@ -71,6 +71,7 @@ from app.routes._recurrence_form_helpers import (
 )
 from app.routes._recurrence_form_refusals import (
     RecurrenceFormContext,
+    StrandingCheck,
     refuse_stranding_save,
 )
 from app.routes._recurrence_form_render import (
@@ -402,6 +403,10 @@ def update_template(template_id):
     # none.  The pass is the PRE-WRITE one the refusals read (plan step
     # R7d-f); regeneration below builds its own after the write.
     pass_ctx = BalanceContext.build(current_user.id)
+    # What the stranded-row refusal below reads of the definition as it
+    # STANDS -- the rows its unarchive would restore -- asked before the edit
+    # touches it (rulings R-PC93, R-PC95).
+    stranding = StrandingCheck.before_the_edit(template, pass_ctx)
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
@@ -478,7 +483,7 @@ def update_template(template_id):
     # R-PC91), which is refused first: the edit is whole now, and the pass
     # that reaches that row retires it (this one, from ``effective_from``).
     diverted = refuse_stranding_save(
-        template, pass_ctx,
+        template, stranding,
         RedirectTarget("templates.edit_template", {"template_id": template_id}),
     ) or regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
@@ -605,19 +610,40 @@ def archive_template(template_id):
 def unarchive_template(template_id):
     """Unarchive a template and restore projected transactions.
 
+    **Restores the rows the archive hid, less any its books now drop**
+    (rulings **R-PC93** and **R-PC95**,
+    :class:`~app.services.definition_unarchive.UnarchiveScope`): a row its
+    owner deleted by hand is soft-deleted exactly as the archive hides one,
+    and a row the books have passed would come back inside the opening
+    balance, so it stays deleted and the flash names it.  **An unarchive of a
+    template that is not archived restores nothing**: its soft-deleted rows
+    are its owner's own deletions, and a stale tab's button is the only way
+    to post here for one.
+
     Optimistic locking: see :func:`archive_template`.
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
         abort(404)
+    if template.is_active:
+        flash(
+            f"Recurring transaction '{template.name}' is not archived, so "
+            "nothing was restored.",
+            "info",
+        )
+        return redirect(url_for("templates.list_templates"))
+
+    # What comes back and what stays deleted: the ONE scope the books
+    # refusals count too (``definition_unarchive``), read on a PRE-WRITE pass
+    # before anything is restored.  Generation below builds its own.
+    unarchive = definition_unarchive.unarchive_scope_on(
+        template, BalanceContext.build(current_user.id),
+    )
+    stays_deleted = definition_unarchive.stays_deleted_notice(unarchive)
 
     template.is_active = True
 
-    # Restore soft-deleted projected transactions: the ONE scope the books
-    # refusals count too (ruling R-PC93, ``definition_unarchive``).
-    restore_scope = definition_unarchive.rows_an_unarchive_restores(
-        Transaction, Transaction.template_id, template.id,
-    )
+    restore_scope = unarchive.restores()
     restored = definition_delete.rows_holding_purchase_postings(*restore_scope)
     restored_count = db.session.query(Transaction).filter(
         *restore_scope,
@@ -653,7 +679,8 @@ def unarchive_template(template_id):
 
     flash(
         f"Recurring transaction '{template.name}' unarchived. "
-        f"{restored_count} projected transaction(s) restored.",
+        f"{restored_count} projected transaction(s) restored."
+        + (f" {stays_deleted}" if stays_deleted else ""),
         "success",
     )
     return redirect(url_for("templates.list_templates"))

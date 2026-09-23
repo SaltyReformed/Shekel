@@ -78,8 +78,13 @@ class BooksWalk:
     an "after N times" rule finish once the books dropped one of its N, and
     the rule stayed in the monthly totals for good.  The closing reads both
     halves (:meth:`~._reading.RuleReading.bound_reading`), which together
-    are every occurrence the rule names through the horizon -- the set it
-    read before the books bound existed.
+    are every occurrence the rule names through the horizon under its
+    closing -- for an AUTHORED closing, the set it read before the books
+    bound existed.  A loan payment's DERIVED stop is its loan's payoff,
+    which the loan estimate computes over the same floored walk (ruling
+    **R-PC85**), so where the books drop an occurrence that estimate would
+    otherwise count, the stop -- and with it the set -- can differ (reasoned
+    by the C18-a round-3 review's L6; not measured).
 
     Attributes:
         kept: The occurrences whose rows land where the app keeps books,
@@ -368,9 +373,11 @@ def _lands_inside_the_books(
 
     **An UNPLACED occurrence is kept**, because it has no row day to compare
     and no row: ``period`` is ``None`` only below the owner's first payday
-    under ``CONTAINING_DATE`` or past the saved horizon, and no reader writes,
-    estimates or counts such an occurrence (ruling **R-R64**) -- keeping it is
-    the walk's answer before this bound, unchanged.  A value with no floor
+    under ``CONTAINING_DATE`` or past the saved horizon, and no reader writes
+    or estimates such an occurrence (ruling **R-R64**), though the rule's
+    CLOSING counts it, as it counts every occurrence the rule names (ruling
+    **R-PC94**) -- keeping it is the walk's answer before this bound,
+    unchanged.  A value with no floor
     (``None``: the pure resolver's, or a definition moving money in no
     account) is unbounded, as it always was.
 

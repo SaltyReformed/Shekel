@@ -42,7 +42,7 @@ from app.services.recurrence import (
 from app.services.recurrence import _reading
 # The same reason, one memo over: the pass walks a resolved recurrence through
 # the name ITS module imported (plan step R7d-f-2), so the walk-once control
-# patches ``_context.occurrence_placements``.
+# patches ``_context.occurrence_walk``.
 from app.services.balance_at import _context
 from app.services.balance_at import is_standing_loan_payment
 from app.services.recurring_definition import (

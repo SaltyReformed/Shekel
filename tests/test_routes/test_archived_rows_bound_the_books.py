@@ -16,6 +16,7 @@ The archive and the unarchive run through their ROUTES here, so what they
 hide and restore is theirs and not a fixture's imitation; the restatement runs
 through its service door, whose refusal is what R-PC93 changes.
 """
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -24,11 +25,12 @@ from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.account import Account
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes.accounts import opening as opening_route
 from app.services import planned_rows_books, transfer_recurrence
-from app.services.balance_at import BalanceContext
+from app.services.balance_at import BalanceContext, cash_balance_at
 from app.services.opening_service import (
     BooksOpening,
     OpeningRestatementOutcome,
@@ -37,8 +39,14 @@ from app.services.opening_service import (
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.balance_predicates import is_projected_clause
+from app.utils.dates import display_today
 from tests._test_helpers import make_cadence_rule, state_template_price
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from tests.test_routes.test_definition_edit_strands_no_row import (
+    _transaction_update_payload,
+    _transfer_template_with_rows,
+    _transfer_update_payload,
+)
 from tests.test_services.test_opening_restatement_planned_rows import (
     _ONE_DAY,
     _account_opened_early,
@@ -74,9 +82,10 @@ class TestATransactionDefinitionsHiddenRows:
                 "would bring back"
             ) in message
             assert (
-                "Unarchive it and mark it paid, cancel it or move it later, or "
-                'delete "Recurring rent" for good, then restate the books.'
+                "Unarchive it and mark it paid, cancel it or move it later, "
+                "then restate the books."
             ) in message
+            assert "for good" not in message, "M-1: the clause was dropped"
             _db.session.rollback()
             assert _opening_count(account) == before
             assert _hidden_rows(template_id), "the rows are still hidden"
@@ -111,17 +120,19 @@ class TestATransactionDefinitionsHiddenRows:
                 calendar_for(seed_user["user"].id),
             ) is None
 
-    def test_a_row_deleted_by_hand_BEFORE_the_archive_counts_too(
+    def test_a_row_deleted_by_hand_ABOVE_the_books_counts_because_it_comes_back(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """THE test that fails if the refusal and the unarchive disagree about their rows.
+        """A hand-deleted row the books have NOT passed is restorable, so it counts.
 
-        An unarchive restores EVERY still-Projected soft-deleted row of its
-        definition, including one its owner deleted by hand while it was
-        active -- so the refusal must count that row as well, and does,
-        because both read ``definition_unarchive.rows_an_unarchive_restores``.
-        Refused while archived, then unarchived: the hand-deleted row IS
-        restored, which is the fact the refusal counted on.
+        A hand delete is a soft delete no row column tells from the
+        archive's, so an unarchive still restores a row its owner deleted
+        while the definition was active whenever the books have not passed
+        it (ledger row REC-536, the recurrence arc's) -- and the refusal,
+        counting exactly what the unarchive restores, counts it.  Refused
+        while archived, then unarchived: the row IS restored.  The rows the
+        two leave OUT together are graded by
+        :class:`TestARowTheBooksHavePassedStaysDeleted`.
         """
         with app.app_context():
             account, rows = _account_with_projected_rows(seed_user, seed_periods)
@@ -166,18 +177,26 @@ class TestATransactionDefinitionsHiddenRows:
             template = _db.session.get(
                 Transaction, _hidden_rows(template_id)[0].id,
             ).template
+            ctx = BalanceContext.build(seed_user["user"].id)
+            restorable = planned_rows_books.restorable_before_the_edit(
+                template, ctx,
+            )
             template.account_id = later.id
 
             refusal = planned_rows_books.definition_edit_refusal(
-                template, BalanceContext.build(seed_user["user"].id),
+                template, ctx, restorable,
             )
 
             assert refusal is not None
             assert '"Recurring rent" is archived and still holds' in refusal
             template.is_active = True
             _db.session.flush()
+            active_ctx = BalanceContext.build(seed_user["user"].id)
+            assert planned_rows_books.restorable_before_the_edit(
+                template, active_ctx,
+            ) is None
             assert planned_rows_books.definition_edit_refusal(
-                template, BalanceContext.build(seed_user["user"].id),
+                template, active_ctx, None,
             ) is None, "an active definition's deleted rows are not planned"
 
     def test_the_cards_ceiling_stops_before_the_hidden_row(
@@ -236,6 +255,347 @@ class TestATransferDefinitionsHiddenRows:
             } == every_id
 
 
+class TestARowTheBooksHavePassedStaysDeleted:
+    """Ruling R-PC95 (the round-3 review's H-C): an unarchive never restores a row below the books.
+
+    A hand delete of a recurring row is a SOFT delete, which no row column
+    tells from the archive's hide.  Deleted while the definition was
+    active, the row is not planned, so the books may move past it; an
+    unarchive that restored every soft-deleted row then brought it back
+    INSIDE the opening -- measured on dev and on C18 alike, its amount
+    counted a second time.  It stays deleted, the unarchive says so, and
+    the refusals, counting exactly what the unarchive restores, never name
+    it.
+    """
+
+    def test_the_unarchive_leaves_it_deleted_and_names_it(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """H-C's path 1, through the routes: the forecast the move left is the one after."""
+        with app.app_context():
+            account, first_id, first_due, others = _rent_with_a_row_deleted_below_the_books(
+                auth_client, seed_user, seed_periods,
+            )
+            template_id = _db.session.get(Transaction, first_id).template_id
+            forecast = _forecast(seed_user, account)
+            assert auth_client.post(
+                f"/templates/{template_id}/archive",
+            ).status_code == 302
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert _flashed(
+                f"{len(others)} projected transaction(s) restored. 1 item due "
+                f"{first_due.isoformat()} stays deleted: it falls inside "
+                f"Planned-rows account's books, which open "
+                f"{first_due.isoformat()}."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transaction, first_id).is_deleted
+            assert {row.id for row in _live_rows(template_id)} == others
+            assert _forecast(seed_user, account) == forecast
+
+    def test_two_such_rows_are_named_as_one_span(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The notice counts every row it leaves and spans their days."""
+        with app.app_context():
+            account, rows = _account_with_projected_rows(seed_user, seed_periods)
+            _db.session.commit()
+            first, second = sorted(rows, key=lambda row: row.due_date)[:2]
+            template_id, first_due, second_due = (
+                first.template_id, first.due_date, second.due_date,
+            )
+            for row_id in (first.id, second.id):
+                assert auth_client.delete(
+                    f"/transactions/{row_id}",
+                ).status_code == 200
+            _restate_directly(account, second_due)
+            assert auth_client.post(
+                f"/templates/{template_id}/archive",
+            ).status_code == 302
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                f"2 items due {first_due.isoformat()} to {second_due.isoformat()} "
+                "stay deleted: they fall inside Planned-rows account's books, "
+                f"which open {second_due.isoformat()}."
+            ) in resp.data
+            _db.session.expire_all()
+            assert all(
+                _db.session.get(Transaction, row_id).is_deleted
+                for row_id in (first.id, second.id)
+            )
+
+    def test_a_transfer_stays_deleted_with_both_shadows(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The transfer twin: the later of its two books binds, and the notice names it."""
+        with app.app_context():
+            savings = _account_opened_early(seed_user, name="Hidden savings")
+            template_id = _monthly_save_into(seed_user, seed_periods, savings).id
+            first = min(_transfers(template_id), key=lambda row: row.due_date)
+            first_id, first_due = first.id, first.due_date
+            assert auth_client.delete(
+                f"/transfers/instance/{first_id}",
+            ).status_code == 200
+            _restate_directly(savings, first_due)
+            forecast = _forecast(seed_user, savings)
+            assert auth_client.post(
+                f"/transfers/{template_id}/archive",
+            ).status_code == 302
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                f"1 item due {first_due.isoformat()} stays deleted: it falls "
+                "inside Hidden savings's books, which open "
+                f"{first_due.isoformat()}."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transfer, first_id).is_deleted
+            shadows = _db.session.query(Transaction).filter(
+                Transaction.transfer_id == first_id,
+            ).all()
+            assert len(shadows) == 2
+            assert all(shadow.is_deleted for shadow in shadows)
+            assert _forecast(seed_user, savings) == forecast
+
+    def test_a_later_books_move_while_archived_is_not_refused_over_it(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The opening door leaves it out: the unarchive would not bring it back.
+
+        Counted, the refusal would say the archived rent "still holds an
+        unpaid item ... that unarchiving would bring back" -- false, and
+        unsatisfiable, since unarchiving leaves it deleted.  The move stops
+        the day before the first row the unarchive WOULD restore.
+        """
+        with app.app_context():
+            account, first_id, _first_due, others = _rent_with_a_row_deleted_below_the_books(
+                auth_client, seed_user, seed_periods,
+            )
+            template_id = _db.session.get(Transaction, first_id).template_id
+            assert auth_client.post(
+                f"/templates/{template_id}/archive",
+            ).status_code == 302
+            next_due = min(
+                _db.session.get(Transaction, row_id).due_date for row_id in others
+            )
+
+            outcome = apply_opening_restatement(
+                account=_fresh(account),
+                opening=BooksOpening(next_due - _ONE_DAY, Decimal("0.00")),
+            )
+
+            assert outcome is OpeningRestatementOutcome.COMMITTED
+            with pytest.raises(ValidationError, match=r"is archived and still holds"):
+                apply_opening_restatement(
+                    account=_fresh(account),
+                    opening=BooksOpening(next_due, Decimal("0.00")),
+                )
+
+    def test_an_edit_while_archived_is_not_refused_over_it(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The edit door leaves it out too: a rename of the archived rent saves."""
+        with app.app_context():
+            _account, first_id, _first_due, _others = _rent_with_a_row_deleted_below_the_books(
+                auth_client, seed_user, seed_periods,
+            )
+            template = _db.session.get(Transaction, first_id).template
+            assert auth_client.post(
+                f"/templates/{template.id}/archive",
+            ).status_code == 302
+            _db.session.expire_all()
+
+            resp = auth_client.post(
+                f"/templates/{template.id}",
+                data=_transaction_update_payload(template, name="Rent, renamed"),
+            )
+
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/templates")
+            _db.session.expire_all()
+            assert _db.session.get(
+                TransactionTemplate, template.id,
+            ).name == "Rent, renamed"
+
+
+class TestTheEditDoorsAskBeforeTheEdit:
+    """R-PC93 at the edit ROUTES: the restorable rows are read before the edit lands.
+
+    Read after it, the scope would already leave out every row the edit
+    moves below the books, and an archived definition's edit could never be
+    refused -- the controls that fail if a door asks late.
+    """
+
+    def test_an_archived_rents_account_move_is_refused(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The transaction door."""
+        with app.app_context():
+            _account, template_id, first_due = _archived_rent(
+                auth_client, seed_user, seed_periods,
+            )
+            later = _account_opened_early(seed_user, name="Later books")
+            _restate_directly(later, first_due)
+            template = _db.session.get(TransactionTemplate, template_id)
+
+            resp = auth_client.post(
+                f"/templates/{template_id}",
+                data=_transaction_update_payload(
+                    template, account_id=str(later.id),
+                ),
+                follow_redirects=True,
+            )
+
+            assert b"This change cannot be saved" in resp.data
+            assert (
+                "is archived and still holds an unpaid item due "
+                f"{first_due.isoformat()}"
+            ).encode() in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(
+                TransactionTemplate, template_id,
+            ).account_id != later.id
+
+    def test_an_archived_transfers_destination_move_is_refused(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The transfer door, whose capture sits before the destination settle."""
+        with app.app_context():
+            savings = _account_opened_early(seed_user, name="Hidden savings")
+            template = _transfer_template_with_rows(seed_user, savings)
+            template_id = template.id
+            first_due = min(row.due_date for row in _transfers(template_id))
+            assert auth_client.post(
+                f"/transfers/{template_id}/archive",
+            ).status_code == 302
+            later = _account_opened_early(seed_user, name="Late savings")
+            _restate_directly(later, first_due)
+            _db.session.expire_all()
+            template = _db.session.get(TransferTemplate, template_id)
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}",
+                data=_transfer_update_payload(
+                    template, to_account_id=str(later.id),
+                ),
+                follow_redirects=True,
+            )
+
+            assert b"This change cannot be saved" in resp.data
+            assert (
+                "is archived and still holds an unpaid item due "
+                f"{first_due.isoformat()}"
+            ).encode() in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(
+                TransferTemplate, template_id,
+            ).to_account_id == savings.id
+
+
+class TestAnUnarchiveOfAnActiveDefinitionRestoresNothing:
+    """R-PC95's second clause (H-C's path 2): a stale tab's Unarchive on an active definition.
+
+    Its soft-deleted rows are its owner's own deletions; the unarchive
+    brought them back, below the books or not, with only "unarchived".
+    """
+
+    def test_the_transaction_door(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Nothing restored, nothing written, and the flash says why."""
+        with app.app_context():
+            account, first_id, _first_due, others = _rent_with_a_row_deleted_below_the_books(
+                auth_client, seed_user, seed_periods,
+            )
+            template_id = _db.session.get(Transaction, first_id).template_id
+            forecast = _forecast(seed_user, account)
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                "Recurring transaction 'Recurring rent' is not archived, so "
+                "nothing was restored."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transaction, first_id).is_deleted
+            assert {row.id for row in _live_rows(template_id)} == others
+            assert _forecast(seed_user, account) == forecast
+
+    def test_the_transfer_door(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The twin, over a transfer deleted by hand above the books."""
+        with app.app_context():
+            savings = _account_opened_early(seed_user, name="Hidden savings")
+            template_id = _monthly_save_into(seed_user, seed_periods, savings).id
+            first_id = min(
+                _transfers(template_id), key=lambda row: row.due_date,
+            ).id
+            assert auth_client.delete(
+                f"/transfers/instance/{first_id}",
+            ).status_code == 200
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                "Recurring transfer 'Monthly save' is not archived, so nothing "
+                "was restored."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transfer, first_id).is_deleted
+
+
+class TestAnArchivedDefinitionsLIVERowCounts:
+    """The round-3 review's M-2: the state CC-5-4a-4's archive leaves.
+
+    That archive keeps a row holding a payment or purchase LIVE (ruling
+    R-CC63), so an archived definition can hold a live Projected row, and
+    the books may not move past it any more than an active one's.
+    """
+
+    def test_a_books_move_past_it_is_refused_naming_it_live(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Refused as a still-projected row, not as a hidden one."""
+        with app.app_context():
+            account, template_id, first_due = _archived_rent(
+                auth_client, seed_user, seed_periods,
+            )
+            kept = _hidden_rows(template_id)[0]
+            assert kept.due_date == first_due
+            kept.is_deleted = False
+            _db.session.commit()
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=_fresh(account),
+                    opening=BooksOpening(first_due, Decimal("0.00")),
+                )
+
+            message = str(refused.value)
+            assert (
+                f'"Recurring rent" is still projected and due '
+                f"{first_due.isoformat()}"
+            ) in message
+            assert "is archived" not in message
+
+
 class TestAnUnwalkableRuleCostsTheCardNotThePage:
     """Round 2's L-b: the account edit page is the only door to rename, archive or delete."""
 
@@ -278,6 +638,41 @@ def _archived_rent(auth_client, seed_user, seed_periods):
     _db.session.expire_all()
     assert not _live_rows(template_id), "precondition: the archive hid every row"
     return account, template_id, first_due
+
+
+def _rent_with_a_row_deleted_below_the_books(auth_client, seed_user, seed_periods):
+    """H-C's setup: the first rent row deleted by hand, then the books moved onto its day.
+
+    Both through their own doors while the rent is ACTIVE, which is why the
+    move commits: a deleted row is not planned.
+
+    Returns:
+        ``(account, first_id, first_due, others)`` -- the account, the deleted
+        row and its due day (also the books' new opening day), and the ids of
+        the rent's other rows, all still live.
+    """
+    account, rows = _account_with_projected_rows(seed_user, seed_periods)
+    _db.session.commit()
+    first = min(rows, key=lambda row: row.due_date)
+    first_id, first_due = first.id, first.due_date
+    others = {row.id for row in rows} - {first_id}
+    assert auth_client.delete(f"/transactions/{first_id}").status_code == 200
+    _restate_directly(account, first_due)
+    return account, first_id, first_due, others
+
+
+def _forecast(seed_user, account):
+    """*account*'s cash forecast thirty days out, on a fresh read pass."""
+    _db.session.expire_all()
+    return cash_balance_at(
+        _fresh(account), BalanceContext.build(seed_user["user"].id),
+        display_today() + timedelta(days=30),
+    )
+
+
+def _flashed(text):
+    """*text* as the page renders a flash: autoescaped, an apostrophe as ``&#39;``."""
+    return text.replace("'", "&#39;").encode()
 
 
 def _monthly_save_into(seed_user, seed_periods, savings):

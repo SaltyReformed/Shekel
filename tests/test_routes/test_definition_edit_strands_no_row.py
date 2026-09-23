@@ -294,11 +294,22 @@ class TestATransactionDefinitionsEditIsRefused:
                 unit=RecurrenceUnitEnum.MONTH, starts_on=books,
             ))
 
+            old_row_id = old_row.id
+
             resp = auth_client.post(f"/templates/{template.id}", data=payload)
 
             assert resp.status_code == 302
             saved = _reload(TransactionTemplate, template.id)
             assert saved.recurrence_rule.starts_on == books
+            # The money effect the ruling names: the old row is retired and
+            # the books stop its replacement, so the paycheck the books open
+            # in plans no rent at all.
+            live = _live_rows(saved)
+            assert old_row_id not in {row.id for row in live}
+            assert not [
+                row for row in live
+                if row.pay_period_id == seed_periods_today[4].id
+            ], "the replacement on the opening day is inside the books"
 
 
 @pytest.mark.usefixtures("seed_periods_today")

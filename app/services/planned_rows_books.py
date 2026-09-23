@@ -32,14 +32,20 @@ unarchiving brings them back, so a books move made while it was archived used
 to see nothing to strand -- and the unarchive then restored rows inside the
 opening, a transfer's deleting the current paycheck's row in its maintain
 pass (the round-2 review's H-B).  Both doors now count, for an archived
-definition, the rows its unarchive would restore
-(:func:`~app.services.definition_unarchive.rows_an_unarchive_restores`, the
-scope the unarchive routes restore by), and the refusal names such a row as
-the archived definition's with the remedy that reaches it: unarchive it first,
-or delete the definition for good.  So no unarchive can restore a row below
-the books, and it needs no check of its own.  **One way back is not covered**:
-the conflict chooser's "use the template" un-deletes a row its owner deleted
-without asking the walk (ledger row **REC-535**, the recurrence arc's).
+definition, the rows its unarchive would restore as it STANDS, before the
+save being graded (:class:`~app.services.definition_unarchive.UnarchiveScope`,
+the scope the unarchive routes restore by), and the refusal names such a row
+as the archived definition's with the remedy that reaches it: unarchive it
+first.  **The unarchive checks too** (ruling **R-PC95**, which revises
+R-PC93's "it needs no check of its own"): a hand delete of a recurring row is
+a soft delete indistinguishable from the archive's, so a row its owner deleted
+while the definition was active, and which the books have since passed, would
+otherwise come back inside the opening -- it stays deleted, and the unarchive
+says so.  The scope leaves such a row out, so the refusal never names a row
+the unarchive would not restore.  **Two ways back are not covered**: an
+unarchive still restores a row deleted by hand ABOVE the books, and the
+conflict chooser's "use the template" un-deletes one without asking the walk
+(ledger rows **REC-536** and **REC-535**, the recurrence arc's).
 
 **The WALK decides, never a stored day** (the adversarial review of this
 step, finding H1).  :func:`first_row_below_the_books` asks
@@ -76,20 +82,26 @@ from sqlalchemy import and_, or_
 
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services.balance_at import (
+    BalanceContext,
     definition_books,
     money_account_columns,
     resolved_with_books,
 )
-from app.services.definition_unarchive import rows_an_unarchive_restores
+from app.services.definition_unarchive import (
+    UnarchiveScope,
+    inside_the_books,
+    rows_of,
+    unarchive_scope,
+    unarchive_scope_on,
+)
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
+    RecurrenceGenerationError,
+    RecurrenceResolutionError,
     ResolvedRecurrence,
-    placements_below_the_books,
     recurrence_spec,
 )
 from app.services.recurring_definition import resolved_rule_of
@@ -101,7 +113,9 @@ class StrandedRow:
     """A still-projected recurring row a save would leave below the books.
 
     Attributes:
-        name: The row's name, for the refusal.
+        name: What the refusal calls it: the row's own name for a live row,
+            its DEFINITION's name for a hidden one (*is_hidden*), which the
+            owner finds on the archived list and nowhere else.
         books_day: The day the books are compared with, for the placement
             the walk gives the row
             (:meth:`~app.services.recurrence.ResolvedRecurrence.books_day`).
@@ -149,14 +163,15 @@ class StrandedRow:
         Returns:
             ``Mark it paid, cancel it or move it later first`` for a live row;
             for a hidden one, ``Unarchive it and mark it paid, cancel it or
-            move it later, or delete "Rent" for good`` -- the only doors that
-            reach a row the owner cannot see (ruling **R-PC93**).
+            move it later`` -- the one door that reaches a row the owner
+            cannot see (ruling **R-PC93**).  R-PC93's words ended "or delete
+            "Rent" for good", which the permanent delete refuses for any
+            definition with payment history, a merchant rule or a row holding
+            a movement; the developer dropped the clause (2026-09-23, the
+            round-3 review's M-1), so the remedy is true for every definition.
         """
         if self.is_hidden:
-            return (
-                "Unarchive it and mark it paid, cancel it or move it later, "
-                f'or delete "{self.name}" for good'
-            )
+            return "Unarchive it and mark it paid, cancel it or move it later"
         return "Mark it paid, cancel it or move it later first"
 
 
@@ -170,12 +185,19 @@ class DefinitionWalk:
         definition: The
             :class:`~app.models.transaction_template.TransactionTemplate` or
             :class:`~app.models.transfer_template.TransferTemplate` itself --
-            whose rows are asked after (:func:`_planned_rows`), whose name a
-            hidden row's refusal gives, and whether it is archived.
+            whose rows are asked after (:func:`_planned_rows`) and whose name
+            a hidden row's refusal gives.
+        restorable: The rows its unarchive would restore, read off the
+            definition as it stands BEFORE the save
+            (:class:`~app.services.definition_unarchive.UnarchiveScope`), or
+            ``None`` for an active definition, which has none.  No
+            default: a walk built without asking would count no hidden row,
+            which is the round-2 review's H-B.
     """
 
     resolved: ResolvedRecurrence
     definition: TransactionTemplate | TransferTemplate
+    restorable: UnarchiveScope | None
 
 
 def first_row_below_the_books(
@@ -192,10 +214,13 @@ def first_row_below_the_books(
     ``occurs_on``, the key the maintain pass matches by, so the rows found
     are exactly the ones the pass would stop naming.  Planned means still
     Projected and either live or, for an archived definition, one its
-    unarchive would bring back (:func:`_planned_rows`, ruling **R-PC93**),
-    in any scenario (one definition's rule walks the same in every scenario,
-    and an opening is scenario-free, ruling **R-GX**); a settled row is a
-    movement, and the movement rules speak for it.
+    unarchive would bring back (:func:`_planned_rows`, rulings **R-PC93**
+    and **R-PC95**), in any scenario (one definition's rule walks the same in
+    every scenario, and an opening is scenario-free, ruling **R-GX**); a
+    settled row is a movement, and the movement rules speak for it.  The
+    dropped occurrences are
+    :func:`~app.services.definition_unarchive.inside_the_books`', the one
+    reading the unarchive leaves rows deleted by.
 
     Args:
         calendar: The owner's pay calendar, which every walk places on.
@@ -209,13 +234,10 @@ def first_row_below_the_books(
     """
     candidates = []
     for walk in walks:
-        compared = {
-            placement.occurrence: walk.resolved.books_day(placement.period)
-            for placement in placements_below_the_books(walk.resolved, calendar)
-        }
+        compared = inside_the_books(walk.resolved, calendar)
         if not compared:
             continue
-        table_order, model, template_fk = _rows_of(walk.definition)
+        table_order, model, template_fk = rows_of(walk.definition)
         candidates.extend(
             (
                 compared[occurs_on], table_order, row_id, name,
@@ -226,7 +248,7 @@ def first_row_below_the_books(
                     model.id, model.name, model.occurs_on, model.is_deleted,
                 )
                 .filter(
-                    *_planned_rows(model, template_fk, walk.definition),
+                    *_planned_rows(model, template_fk, walk),
                     model.occurs_on.in_(list(compared)),
                 )
                 .all()
@@ -246,52 +268,77 @@ def first_row_below_the_books(
     )
 
 
-def _rows_of(definition) -> tuple:
-    """Return ``(table_order, model, template_fk)`` for *definition*'s rows.
-
-    Args:
-        definition: A transaction or transfer template.
-
-    Returns:
-        ``(0, Transaction, Transaction.template_id)`` or ``(1, Transfer,
-        Transfer.transfer_template_id)`` -- the order ties break in, the row
-        model, and the column naming the row's definition.
-    """
-    if isinstance(definition, TransferTemplate):
-        return 1, Transfer, Transfer.transfer_template_id
-    return 0, Transaction, Transaction.template_id
-
-
-def _planned_rows(model, template_fk, definition) -> tuple:
-    """Return the SQL criteria for *definition*'s rows a books move must not strand.
+def _planned_rows(model, template_fk, walk: DefinitionWalk) -> tuple:
+    """Return the SQL criteria for a definition's rows a books move must not strand.
 
     Its live, still-Projected rows; and, while it is ARCHIVED, the rows its
     unarchive would bring back as well (ruling **R-PC93**), read through
-    :func:`~app.services.definition_unarchive.rows_an_unarchive_restores` --
-    the scope both unarchive routes restore by, so this counts exactly what
-    an unarchive could put back below the books.  An ACTIVE definition's
-    soft-deleted rows are its owner's own deletions, which nothing restores
-    but the conflict chooser (ledger row **REC-535**).
+    :meth:`~app.services.definition_unarchive.UnarchiveScope.restores` over
+    the definition as it stands -- the scope both unarchive routes restore
+    by, so this counts exactly what an unarchive could put back below the
+    books, and never a row the unarchive would leave deleted (ruling
+    **R-PC95**).  An ACTIVE definition's soft-deleted rows are its owner's
+    own deletions, which no unarchive of it restores (the unarchive routes
+    refuse an active definition) and only the conflict chooser revives
+    (ledger row **REC-535**).
 
     Args:
         model: ``Transaction`` or ``Transfer``.
         template_fk: The column naming the row's definition.
-        definition: The definition, whose ``is_active`` says whether it is
-            archived.
+        walk: The definition's :class:`DefinitionWalk`, whose ``restorable``
+            is ``None`` for an active definition.
 
     Returns:
         The criteria, for ``query.filter(*criteria)``.
     """
     live = and_(
-        template_fk == definition.id,
+        template_fk == walk.definition.id,
         is_projected_clause(model),
         model.is_deleted.is_(False),
     )
-    if definition.is_active:
+    if walk.restorable is None:
         return (live,)
-    return (or_(live, and_(*rows_an_unarchive_restores(
-        model, template_fk, definition.id,
-    ))),)
+    return (or_(live, and_(*walk.restorable.restores())),)
+
+
+def restorable_before_the_edit(
+    template, ctx: BalanceContext,
+) -> UnarchiveScope | None:
+    """Return the rows *template*'s unarchive would restore, asked BEFORE its edit.
+
+    Only an ARCHIVED definition has rows an unarchive would bring back
+    (ruling **R-PC93**).  Each edit door asks this before it applies a
+    single field, and hands the answer to :func:`definition_edit_refusal`
+    once the edit is whole: that refusal grades the state the save would
+    LEAVE, and the rows an unarchive would restore are a fact about the
+    state it would REPLACE.  Read after the edit, the scope would already
+    leave out every row the edit moves below the books, and the refusal
+    could never fire for an archived definition.
+
+    **A stored rule the recurrence package cannot walk counts every hidden
+    row** (the scope of an unarchive that holds nothing back), because the
+    edit form is also where such a rule is repaired
+    (``_recurrence_form_refusals.UNREPAIRED_CADENCE_CANNOT_BE_CLEARED``),
+    and a refusal over rows it cannot place is the careful answer where a
+    500 would lock the owner out of the repair.
+
+    Args:
+        template: The owner-checked transaction or transfer template, no
+            field of the edit yet applied.
+        ctx: The edit door's PRE-WRITE read pass.  Its resolution memo is
+            keyed by the rule's spec and the definition's books, so the
+            edited rule resolves afresh afterwards.
+
+    Returns:
+        The :class:`~app.services.definition_unarchive.UnarchiveScope`, or
+        ``None`` for an active definition.
+    """
+    if template.is_active:
+        return None
+    try:
+        return unarchive_scope_on(template, ctx)
+    except (RecurrenceResolutionError, RecurrenceGenerationError):
+        return unarchive_scope(template, None, ctx.calendar())
 
 
 def first_row_an_opening_strands(
@@ -314,7 +361,10 @@ def first_row_an_opening_strands(
     after the definition's OWN rows, wherever they sit: a row left on an
     account the definition has since moved off (ruling **R-CC36** keeps a
     row outside the maintain window where it was) is bounded by the
-    definition's walk, not by the account it is filed under.
+    definition's walk, not by the account it is filed under.  An archived
+    definition's restorable rows are read off the SAME composition over the
+    books as they stand (ruling **R-PC95**): a row those already drop stays
+    deleted when it is unarchived, so this move cannot strand it.
 
     A rule-less definition is not asked: no walk names its rows, so no books
     can strand them.
@@ -337,16 +387,28 @@ def first_row_an_opening_strands(
     """
     # ONE memo for every definition, holding the candidate: the definitions'
     # other accounts are read once each, as they stand, and this one as it
-    # would.
+    # would.  A second holds every account as it stands, for the rows an
+    # archived definition's unarchive would restore.
     memo = {account_id: opened_on}
+    standing_memo: dict = {}
     walks = []
     for definition in _recurring_definitions_moving_money_in(account_id):
+        spec = recurrence_spec(definition.recurrence_rule)
         resolved = resolved_with_books(
-            recurrence_spec(definition.recurrence_rule), calendar,
-            definition_books(definition, memo),
+            spec, calendar, definition_books(definition, memo),
         )
-        if resolved is not None:
-            walks.append(DefinitionWalk(resolved, definition))
+        if resolved is None:
+            continue
+        restorable = None
+        if not definition.is_active:
+            restorable = unarchive_scope(
+                definition,
+                resolved_with_books(
+                    spec, calendar, definition_books(definition, standing_memo),
+                ),
+                calendar,
+            )
+        walks.append(DefinitionWalk(resolved, definition, restorable))
     return first_row_below_the_books(calendar, walks)
 
 
@@ -382,7 +444,9 @@ def _recurring_definitions_moving_money_in(account_id: int) -> list:
     return definitions
 
 
-def definition_edit_refusal(template, ctx) -> str | None:
+def definition_edit_refusal(
+    template, ctx, restorable: UnarchiveScope | None,
+) -> str | None:
     """Return why saving *template*'s edit would strand a row, or ``None``.
 
     Rulings **R-PC90** and **R-PC91** (developer, 2026-09-22): a recurring
@@ -394,7 +458,9 @@ def definition_edit_refusal(template, ctx) -> str | None:
     day moves back onto its scheduled day), or a row that already sat below
     its books: one check, on the saved state, so no field has to be
     remembered.  An ARCHIVED definition's edit counts the rows its unarchive
-    would bring back too (ruling **R-PC93**).
+    would bring back too (ruling **R-PC93**) -- as it stood BEFORE the edit
+    (*restorable*, :func:`restorable_before_the_edit`), since a row its books
+    already dropped stays deleted when it is unarchived (ruling **R-PC95**).
 
     **Asked after the edit is applied and before regeneration**, so the
     rule, the floor and the envelope flag are the save's own, all through
@@ -410,6 +476,8 @@ def definition_edit_refusal(template, ctx) -> str | None:
             field values and rule applied, not yet committed.
         ctx: The route's read pass
             (:class:`~app.services.balance_at.BalanceContext`) for the owner.
+        restorable: :func:`restorable_before_the_edit`'s answer, asked
+            before the edit was applied; ``None`` for an active definition.
 
     Returns:
         The refusal's sentence, or ``None`` when the save strands nothing --
@@ -420,7 +488,7 @@ def definition_edit_refusal(template, ctx) -> str | None:
     if resolved is None:
         return None
     row = first_row_below_the_books(
-        ctx.calendar(), (DefinitionWalk(resolved, template),),
+        ctx.calendar(), (DefinitionWalk(resolved, template, restorable),),
     )
     if row is None:
         return None
@@ -439,4 +507,5 @@ __all__ = [
     "definition_edit_refusal",
     "first_row_an_opening_strands",
     "first_row_below_the_books",
+    "restorable_before_the_edit",
 ]

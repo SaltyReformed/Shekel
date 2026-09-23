@@ -69,6 +69,7 @@ from app.routes._standing_payment import (
 )
 from app.routes.transfers._bp import transfers_bp
 from app.services import definition_unarchive, transfer_service
+from app.services.balance_at import BalanceContext
 from app.utils import archive_helpers
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.balance_predicates import is_projected_clause
@@ -196,7 +197,15 @@ def archive_transfer_template(template_id):
 def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
 
-    Restores soft-deleted transfers and their shadow transactions, then --
+    Restores the transfers the archive hid, and their shadow transactions,
+    less any the books now drop (rulings **R-PC93** and **R-PC95**,
+    :class:`~app.services.definition_unarchive.UnarchiveScope`): a transfer
+    its owner deleted by hand is soft-deleted exactly as the archive hides
+    one, and one the books have passed would come back inside the opening
+    balance, so it stays deleted and the flash names it.  **An unarchive of a
+    template that is not archived restores nothing**: its soft-deleted
+    transfers are its owner's own deletions, and a stale tab's button is the
+    only way to post here for one.  Then --
     BEFORE anything generates from it -- re-derives the standing payment of
     the loan it pays into (ruling **R-R85**): the restored definition is that
     payment once more, or newly if it is older than the live one, and its
@@ -223,6 +232,21 @@ def unarchive_transfer_template(template_id):
     template = get_or_404(TransferTemplate, template_id)
     if template is None:
         abort(404)
+    if template.is_active:
+        flash(
+            f"Recurring transfer '{template.name}' is not archived, so "
+            "nothing was restored.",
+            "info",
+        )
+        return redirect(url_for("transfers.list_transfer_templates"))
+
+    # What comes back and what stays deleted: the ONE scope the books
+    # refusals count too (``definition_unarchive``), read on a PRE-WRITE pass
+    # before anything is restored.  The maintain pass below builds its own.
+    unarchive = definition_unarchive.unarchive_scope_on(
+        template, BalanceContext.build(current_user.id),
+    )
+    stays_deleted = definition_unarchive.stays_deleted_notice(unarchive)
 
     ctx = _stale_context("unarchive_transfer_template", template_id)
     template.is_active = True
@@ -230,14 +254,8 @@ def unarchive_transfer_template(template_id):
     if stale is not None:
         return stale
 
-    # Find soft-deleted projected transfers to restore: the ONE scope the
-    # books refusals count too (ruling R-PC93, ``definition_unarchive``).
     transfers_to_restore = (
-        db.session.query(Transfer)
-        .filter(*definition_unarchive.rows_an_unarchive_restores(
-            Transfer, Transfer.transfer_template_id, template.id,
-        ))
-        .all()
+        db.session.query(Transfer).filter(*unarchive.restores()).all()
     )
 
     # Restore transfers and shadows via the service so all mutations
@@ -272,7 +290,8 @@ def unarchive_transfer_template(template_id):
         return conflict
     flash(
         f"Recurring transfer '{template.name}' unarchived. "
-        f"{restored_count} projected transfer(s) restored.",
+        f"{restored_count} projected transfer(s) restored."
+        + (f" {stays_deleted}" if stays_deleted else ""),
         "success",
     )
     return redirect(url_for("transfers.list_transfer_templates"))

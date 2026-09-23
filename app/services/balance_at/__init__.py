@@ -249,6 +249,7 @@ from ._confirmed_view import confirmed_view
 from ._context import BalanceContext
 from ._definition_books import (
     definition_books,
+    definition_money_accounts,
     money_account_columns,
     resolved_with_books,
 )
@@ -375,6 +376,7 @@ __all__ = [
     "confirmed_view",
     "debt_schedule_rows",
     "definition_books",
+    "definition_money_accounts",
     "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",

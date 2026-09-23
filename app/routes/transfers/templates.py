@@ -54,6 +54,7 @@ from app.routes._recurrence_form_helpers import (
 )
 from app.routes._recurrence_form_refusals import (
     RecurrenceFormContext,
+    StrandingCheck,
     refuse_stranding_save,
 )
 from app.routes._recurrence_form_render import (
@@ -565,6 +566,10 @@ def update_transfer_template(template_id):
     # loan-resolution memo.  Regeneration afterwards builds its own, as a
     # writer must.
     pass_ctx = BalanceContext.build(current_user.id)
+    # What the stranded-row refusal reads of the definition as it STANDS --
+    # the rows its unarchive would restore -- asked before the settle or the
+    # recurrence step below touches it (rulings R-PC93, R-PC95).
+    stranding = StrandingCheck.before_the_edit(template, pass_ctx)
     # The pre-write recurrence step, in two halves that share one refusal.
     # FIRST what the destination the edit LEAVES decides about the rule's
     # bounds (plan step R7d-f-4): the derived first occurrence is written
@@ -593,9 +598,7 @@ def update_transfer_template(template_id):
     if refusal is not None:
         return refusal
 
-    for field, value in data.items():
-        if field in _TEMPLATE_UPDATE_FIELDS:
-            setattr(template, field, value)
+    _apply_update_fields(template, data)
 
     # State the amount through its one write door, which moves the scalar and
     # the dated series together (plan step X-au-a).  ``effective_from`` is the
@@ -621,7 +624,7 @@ def update_transfer_template(template_id):
         return namedup_redirect
 
     return _regenerate_and_commit_template(
-        template, before, effective_from, template_id, pass_ctx,
+        template, before, effective_from, template_id, stranding,
     )
 
 
@@ -649,8 +652,27 @@ def delete_amount_version(template_id, version_id):
     return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
+def _apply_update_fields(template, data):
+    """Write the allowlisted fields of *data* onto *template*.
+
+    The update route's field loop, over :data:`_TEMPLATE_UPDATE_FIELDS` --
+    the columns a submission may set directly; the amount, the rule and
+    ``is_active`` each have their own door.  Its own function since plan
+    step ``pay_calendar:C18-a`` gave the route one more value to hold
+    (its :class:`~app.routes._recurrence_form_refusals.StrandingCheck`),
+    past pylint's local-variable threshold.
+
+    Args:
+        template: The owner-checked :class:`TransferTemplate` being edited.
+        data: The validated payload, the recurrence keys already popped.
+    """
+    for field, value in data.items():
+        if field in _TEMPLATE_UPDATE_FIELDS:
+            setattr(template, field, value)
+
+
 def _regenerate_and_commit_template(
-    template, before, effective_from, template_id, pass_ctx,
+    template, before, effective_from, template_id, stranding,
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
@@ -693,13 +715,13 @@ def _regenerate_and_commit_template(
             gates the sweep; see :func:`regenerate_or_conflict_chooser`.
         effective_from: Date from which regeneration applies.
         template_id: The template's id, used for redirect kwargs and logging.
-        pass_ctx: The route's PRE-WRITE read pass, which serves the
-            stranded-row refusal.  Its resolution memo is keyed by the rule's
-            spec and the definition's books, so the edited and synced rule
-            resolves afresh; the calendar and the per-account opening memos
-            are keyed by the owner and the account, and they serve the edited
-            state only because an edit moves no payday and no opening.
-            Regeneration still builds its own.
+        stranding: The route's
+            :class:`~app.routes._recurrence_form_refusals.StrandingCheck`,
+            built before the edit: its PRE-WRITE read pass, whose resolution
+            memo is keyed by the rule's spec and the definition's books so
+            the edited and synced rule resolves afresh, and the rows the
+            definition's unarchive would restore as it stood.  Regeneration
+            still builds its own pass.
 
     Returns:
         A ``Response`` -- the chooser, or the edit form on a stale-data or
@@ -718,7 +740,7 @@ def _regenerate_and_commit_template(
     refused = sync_loan_payment_start_or_refuse(
         template.to_account_id, redirect=edit_form, rows_follow=False,
     ) or refuse_stranding_save(
-        template, pass_ctx, edit_form,
+        template, stranding, edit_form,
     )
     if refused is not None:
         return refused

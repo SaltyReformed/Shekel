@@ -66,6 +66,7 @@ from app.services.recurrence import (
     end_bound_from_columns,
     stored_cadence,
 )
+from app.services.definition_unarchive import UnarchiveScope
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_templates,
 )
@@ -665,8 +666,55 @@ def refuse_recurrence_update(
     return None
 
 
+@dataclass(frozen=True)
+class StrandingCheck:
+    """What the stranded-row refusal reads, gathered BEFORE an edit is applied.
+
+    :func:`refuse_stranding_save` grades the state an edit would LEAVE, and
+    for an ARCHIVED definition it also needs a fact about the state the edit
+    REPLACES: the rows its unarchive would restore (rulings **R-PC93**,
+    **R-PC95**), which read after the edit would already leave out every row
+    the edit moves below the books.  One value, built by
+    :meth:`before_the_edit` where each edit door captures its before-image,
+    so no door can ask the refusal without having asked first.
+
+    Attributes:
+        pass_ctx: The door's PRE-WRITE read pass.  Its resolution memo is
+            keyed by the rule's spec and the definition's books, so the
+            edited rule resolves afresh; the calendar and the per-account
+            opening memos are keyed by the owner and the account, and they
+            serve the edited state only because an edit moves no payday and
+            no opening.
+        restorable: The rows the definition's unarchive would restore as it
+            stood
+            (:func:`app.services.planned_rows_books.restorable_before_the_edit`);
+            ``None`` for an active definition.
+    """
+
+    pass_ctx: BalanceContext
+    restorable: UnarchiveScope | None
+
+    @classmethod
+    def before_the_edit(
+        cls, template: Any, pass_ctx: BalanceContext,
+    ) -> "StrandingCheck":
+        """Return the check for *template*, asked before any field of its edit lands.
+
+        Args:
+            template: The owner-checked definition, unedited.
+            pass_ctx: The door's pre-write read pass.
+
+        Returns:
+            The :class:`StrandingCheck`.
+        """
+        return cls(
+            pass_ctx,
+            planned_rows_books.restorable_before_the_edit(template, pass_ctx),
+        )
+
+
 def refuse_stranding_save(
-    template: Any, pass_ctx: BalanceContext, redirect: RedirectTarget,
+    template: Any, check: StrandingCheck, redirect: RedirectTarget,
 ) -> Response | None:
     """Refuse an edit whose SAVED state strands a still-projected row below the books.
 
@@ -679,7 +727,8 @@ def refuse_stranding_save(
     (the save's own regeneration, for a paycheck ending on or after the
     edit's effective date; a later pass for an older one).  An ARCHIVED
     definition's hidden rows count, since its unarchive brings them back
-    (ruling **R-PC93**).  The
+    (ruling **R-PC93**) -- those it would bring back as the definition stood
+    before the edit (:class:`StrandingCheck`, ruling **R-PC95**).  The
     predicate is :func:`app.services.planned_rows_books
     .definition_edit_refusal`'s; this is the door half both edit doors share
     (``routes/templates/crud.update_template``, and
@@ -692,19 +741,16 @@ def refuse_stranding_save(
     Args:
         template: The edited definition -- rule, amount and fields applied,
             not committed.
-        pass_ctx: The door's PRE-WRITE read pass.  Its resolution memo is
-            keyed by the rule's spec and the definition's books, so the
-            edited rule resolves afresh; the calendar and the per-account
-            opening memos are keyed by the owner and the account, and they
-            serve the edited state only because an edit moves no payday and
-            no opening.
+        check: The door's :class:`StrandingCheck`, built before the edit.
         redirect: The edit form to send the owner back to.
 
     Returns:
         The edit form with the refusal flashed and the edit rolled back, or
         ``None`` when the save strands nothing.
     """
-    stranded = planned_rows_books.definition_edit_refusal(template, pass_ctx)
+    stranded = planned_rows_books.definition_edit_refusal(
+        template, check.pass_ctx, check.restorable,
+    )
     if stranded is None:
         return None
     db.session.rollback()
@@ -717,6 +763,7 @@ __all__ = [
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
     "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
     "RecurrenceFormContext",
+    "StrandingCheck",
     "bounds_are_the_loans",
     "is_loan_payment",
     "is_loan_payment_or_standing",

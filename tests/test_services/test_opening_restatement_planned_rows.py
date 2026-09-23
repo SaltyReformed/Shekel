@@ -259,9 +259,11 @@ class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
             '"Rent" is archived and still holds an unpaid item due 2026-03-01 '
             "that unarchiving would bring back"
         )
+        # The developer dropped R-PC93's "or delete "Rent" for good" (the
+        # round-3 review's M-1, 2026-09-23): the permanent delete refuses any
+        # definition with payment history, so the clause was often false.
         assert row.remedy() == (
-            "Unarchive it and mark it paid, cancel it or move it later, or "
-            'delete "Rent" for good'
+            "Unarchive it and mark it paid, cancel it or move it later"
         )
 
     def test_a_hidden_ENVELOPE_names_its_paychecks_last_day(self):
