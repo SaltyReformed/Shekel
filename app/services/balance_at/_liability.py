@@ -1,7 +1,7 @@
 """Balance-at-T seam -- the LIABILITY view (multi-date, forward-only).
 
 The seam's third shape, beside the period-keyed maps (:mod:`._kind_correct`)
-and the scalar-at-a-date: every liability's owed magnitude at a list of FORWARD
+and the scalar-at-a-date: what every liability OWES at a list of FORWARD
 calendar dates, answered in ONE loan-resolution pass.
 
 It exists because a long-horizon liability band needs each debt's owed balance
@@ -25,101 +25,40 @@ SPLICE (today reads the caller's confirmed figure, the future reads the
 producer) and the NO-BASELINE hold (no scenario, no plan to fold, every
 liability flat), which predates CC-1 and is named in the function's docstring.
 
-**It is also the home of the seam's ONE sign flip**, :func:`owed` (plan step
-credit_card:CC-5-5a, ruling R-CC47): what an account owes is minus the balance
-it holds.  The flip was ``card_statement.owed`` (ruling R-CC29), written for a
-statement producer no ``app/`` module calls yet; R-CC47 moved it here so the
-net-worth surfaces and that producer read ONE flip rather than two spellings
-of it.
+**The ONE sign flip is not here; this view reads it.**
+:func:`app.services.liability_sign.owed` (what an account owes is minus the
+balance it holds; ruling R-CC29's flip) lived in this module from plan step
+credit_card:CC-5-5a (ruling R-CC47) until CC-5-5b moved it out: the balance
+DOORS became its callers, and this module imports the configured-loan arms
+that read the flip, so keeping it here would be a circular import.  Since plan
+step CC-5-5c every balance the producer answers is HELD, a configured loan's
+included, so what a liability owes is ``owed()`` of it at every date -- and the
+``abs`` this view took in both halves of the splice is gone (ledger row
+**CC-354**): it read a card holding a ``$50.00`` credit as ``$50.00`` owed.
 """
 
 from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.liability_sign import owed
 from ._context import BalanceContext
 
 from ._inputs import ZERO
 from ._kind_correct import balance_at_dates
 
 
-def owed(balance: Decimal) -> Decimal:
-    """Return what an account OWES for the balance it HOLDS -- the ONE sign flip.
-
-    A balance here is what the account holds: positive for money in it,
-    negative for money owed on it.  So what it owes is ``-balance``: positive
-    when the owner owes, NEGATIVE when the account holds a credit -- a card the
-    issuer owes ``$50.00`` reads ``+50.00`` held and ``-50.00`` owed, which is
-    the answer ledger row CC-354 says the net-worth surfaces get wrong.
-
-    **Ruling R-CC29 ruled the flip for the card statement** ("ONE sign flip, in
-    the module every consumer reads"), and it lived in
-    :mod:`app.services.card_statement` as ``owed`` until plan step
-    credit_card:CC-5-5a moved it here under ruling **R-CC47** ("'Owed' is minus
-    the balance, R-CC29's one flip moved into the balance seam").  A statement
-    producer will state its figures as ``owed(cash_balance_at(...))`` (none is
-    wired in ``app/`` yet); today's one reader is the savings cockpit's
-    revolving-debt footer
-    (:func:`app.services.savings_dashboard_service._debt_line.debt_without_payoff_model`,
-    ruling R-CC49).
-
-    **Which balances are HELD today, precisely** -- in the seam's arithmetic.
-    The kind-correct seam's for every account that is NOT a configured loan (a
-    Credit Card, a loan with no ``LoanParams``, a custom liability, every
-    asset), and the cash fold's for every account that is NOT a configured loan.
-    Two exclusions, both measured on the production-shape clone at CC-5-5a:
-
-    * A CONFIGURED loan's kind-correct balance
-      (:func:`~app.services.balance_at.balance_at` and the period maps) is
-      reported as an OWED figure -- the Mortgage's ``176,719.77`` -- which is why
-      :func:`liability_owed_at_dates` and the net-worth hero still take ``abs``
-      rather than this.  Plan step credit_card:CC-5-5c re-signs that arm to the
-      held sign (R-CC47) and moves those readers onto this flip.
-    * A configured loan's CASH fold is not a balance of the loan in EITHER
-      sign, and never becomes one: it is the account-level assertion as typed
-      plus each whole payment INTO the loan (interest and escrow included),
-      with no interest accrued -- the same Mortgage's ``cash_balance_at`` reads
-      ``+185,747.21``, and the Van Loan's ``2,127.76`` is its ``0.00``
-      assertion plus four ``531.94`` payments.  Plan step CC-5-5c re-signs the
-      kind-correct arm only, so this stays true after it: a configured loan's
-      cash fold is NEVER an input to this function.
-
-    Until CC-5-5c a caller must not hand this the first figure, and it must
-    never hand it the second.  **What an owner TYPED is a further question the
-    arithmetic cannot answer**: of the doors that take a liability's balance,
-    the create form asks for "The account's real-world balance." with no sign,
-    the grid's anchor editor carries no help text at all, and only the
-    books-opening door says "Negative for something you owe." -- and the
-    Mortgage above was typed positive, so a liability with no loan terms
-    carries whatever sign was entered.  The developer ruled the
-    remedy after CC-5-5a's review (ruling R-CC52): those doors ask for the
-    amount OWED and store the held sign through this flip (plan step
-    credit_card:CC-5-5b), so the premise is true by construction rather than
-    by the owner's reading of a help text.
-
-    Args:
-        balance: A HELD balance (see above for which balances are).
-
-    Returns:
-        ``-balance``: positive when the owner owes, negative when the account
-        holds a credit, and an unsigned ``0.00`` at zero (``decimal`` negates a
-        zero to a positive zero outside ``ROUND_FLOOR``, which nothing here
-        sets).
-    """
-    return -balance
-
-
 def _spliced_owed_series(
     sample_dates: list[date],
     today: date,
     current: Decimal,
-    owed_by_date: dict[date, Decimal],
+    held_by_date: dict[date, Decimal],
 ) -> list[Decimal]:
     """Splice the confirmed present with the forward projection, per sample date.
 
     A date at or before *today* reads *current* -- the ledger-confirmed balance
     the caller supplied, which is the figure the net-worth hero renders -- and a
-    strictly-future date reads its OWN projected value out of *owed_by_date*.
+    strictly-future date reads its OWN projected value out of *held_by_date*.
 
     The join is BY DATE, not by position.  An earlier draft consumed the forward
     producer's list positionally, which was correct only because it happened to
@@ -131,26 +70,30 @@ def _spliced_owed_series(
     date-keyed dict, so keying on the date here makes that state impossible to
     reach by construction.
 
-    ``abs`` is applied to the projected value for the same reason it is applied
-    to *current*: this view's contract is a POSITIVE owed magnitude at every
-    date.  A schedule row's ``remaining_balance`` is non-negative, but the
-    folded balance has no zero floor (an overpaid payoff folds negative) -- so
-    without this an overpaid loan would ADD its overpayment to the liability
-    band today and SUBTRACT it at every future point.
+    Both halves are what the liability OWES, in one sign: *current* is
+    already owed (the caller crossed it), and each projected value is the
+    HELD balance the producer answers, crossed here through
+    :func:`~app.services.liability_sign.owed`.  An account holding a credit --
+    a card the issuer owes, or an overpaid loan folding past zero -- owes a
+    NEGATIVE amount at that date, so it lowers the band exactly as it raises
+    net worth.  This used to take ``abs`` of the projection (and the caller
+    ``abs`` of *current*) for a "POSITIVE owed magnitude", which turned every
+    credit into debt: a card holding ``$50.00`` read ``$50.00`` owed (ledger
+    row CC-354, ruling R-CC47).
 
     Args:
         sample_dates: The dates to build the series over (the output order).
         today: The present-vs-future boundary (the caller's as-of date).
-        current: The liability's current owed magnitude (the today value,
-            already an absolute magnitude).
-        owed_by_date: The projected owed balance keyed by each strictly-future
+        current: What the liability owes today (the today value, already
+            crossed from the held balance the caller supplied).
+        held_by_date: The projected HELD balance keyed by each strictly-future
             date among *sample_dates*.
 
     Returns:
-        The owed magnitude at each of *sample_dates*.
+        What the liability owes at each of *sample_dates*.
     """
     return [
-        abs(owed_by_date[sample_date]) if sample_date > today else current
+        owed(held_by_date[sample_date]) if sample_date > today else current
         for sample_date in sample_dates
     ]
 
@@ -161,7 +104,7 @@ def liability_owed_at_dates(
     sample_dates: list[date],
     current_balances: dict[int, Decimal],
 ) -> dict[int, list[Decimal]]:
-    """Return every liability's owed magnitude at each FORWARD sample date.
+    """Return what every liability OWES at each FORWARD sample date.
 
     The seam's multi-date, multi-account LIABILITY view.  It is KIND-BLIND: every
     liability's future reads the seam's one kind-correct multi-date producer,
@@ -192,20 +135,23 @@ def liability_owed_at_dates(
     call :func:`._inputs._require_scenario`.  That guard exists to turn a missing
     baseline into a loud failure instead of a silently wrong number; here a
     missing baseline has a correct answer of its own: with no baseline there is
-    no loan to resolve AND no plan to fold, so every liability holds FLAT at its
-    current owed magnitude.  Raising would force every caller to re-derive that
+    no loan to resolve AND no plan to fold, so every liability holds FLAT at what
+    it owes today.  Raising would force every caller to re-derive that
     flat hold, which is precisely the boundary-rule duplication the seam exists
     to prevent.  **This no-baseline hold is a gate of its own, older than CC-1
     and outside it**: whether the band should instead raise into ruling R-BW's
     one handler like every other seam entry is not a question this step
     answers.
 
-    Sign convention: the result is a POSITIVE owed magnitude per date, matching
-    the net-worth reduction's liability-minus rule (a liability contributes
-    ``abs(bal)``, subtracted from the asset side -- see
-    ``savings_dashboard_service._net_worth``).  *current_balances* may be
-    signed either way (a loan resolves positive-owed, a Credit Card's cash
-    balance is negative); ``abs`` is applied here.
+    Sign convention (ruling R-CC47, plan step credit_card:CC-5-5c): the result
+    is what each liability OWES per date --
+    :func:`~app.services.liability_sign.owed` of the HELD balance, positive
+    when the owner owes and NEGATIVE when the account holds a credit -- matching
+    the net-worth hero, whose liability total is the same ``owed()`` sum (see
+    ``savings_dashboard_service._net_worth``).  *current_balances* are HELD
+    balances, every kind in the one sign (a configured loan's included since
+    CC-5-5c); the flip is applied here.  It took ``abs`` of both until CC-5-5c,
+    which read a credit as debt (ledger row CC-354).
 
     The today point comes from *current_balances*, NOT from a fresh read, and
     that is load-bearing: the caller's current balance is the ledger-confirmed
@@ -244,12 +190,13 @@ def liability_owed_at_dates(
             desired output order (any order; the projection is joined BY DATE,
             not by position).  Every date must be on or after ``ctx.as_of``.
         current_balances: ``{account_id: Decimal}`` each liability's current
-            balance as the caller already resolved it (the figure its hero
-            renders).  A missing account is treated as ``0``.
+            HELD balance as the caller already resolved it (the balance its
+            hero figure is crossed from).  A missing account is treated as
+            ``0``.
 
     Returns:
-        ``{account_id: [Decimal owed magnitude at each sample date]}`` -- one
-        list per account in *liabilities*, aligned with *sample_dates*.
+        ``{account_id: [Decimal owed at each sample date]}`` -- one list per
+        account in *liabilities*, aligned with *sample_dates*.
 
     Raises:
         ValueError: When any sample date precedes *today*.  A past balance is a
@@ -287,12 +234,12 @@ def liability_owed_at_dates(
 
     result: dict[int, list[Decimal]] = {}
     for account in liabilities:
-        raw_current = current_balances.get(account.id)
-        current = abs(raw_current) if raw_current is not None else ZERO
+        held_current = current_balances.get(account.id)
+        current = owed(held_current) if held_current is not None else ZERO
         forward = forward_by_account.get(account.id)
         if forward is None:
             # No baseline scenario (or no future dates to project): nothing can
-            # be folded or resolved, so hold the current owed magnitude flat.
+            # be folded or resolved, so hold what it owes today flat.
             result[account.id] = [current] * len(sample_dates)
             continue
         result[account.id] = _spliced_owed_series(

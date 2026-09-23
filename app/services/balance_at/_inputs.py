@@ -61,6 +61,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services.investment_projection import AccountPayrollFeed
+from app.services.liability_sign import owed
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_payroll_feeds,
@@ -246,10 +247,13 @@ def _account_balance_map(
       future, from the ONE total loan producer
       (:func:`app.services.balance_at.positions`) -- so the scalar, the map, and
       the liability band all answer a loan from ``positions`` and cannot
-      disagree.  This one per-kind branch lives HERE in the seam, not in the
-      kernel's dispatcher, because ``positions`` sits ABOVE
-      :mod:`app.services.balance_at._kernel` (at its module-size cap, and it
-      cannot import the seam back).
+      disagree.  That map states what the loan OWES; this arm reports what it
+      HOLDS, :func:`app.services.liability_sign.owed` of each period's figure
+      (ruling **R-CC47**, plan step credit_card:CC-5-5c), as the date-keyed arm
+      in :func:`._kind_correct.balance_at_dates` does.  This one per-kind
+      branch lives HERE in the seam, not in the kernel's dispatcher, because
+      ``positions`` sits ABOVE :mod:`app.services.balance_at._kernel` (at its
+      module-size cap, and it cannot import the seam back).
     * **Every other kind** hands its
       :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
       to :func:`app.services.balance_at._kernel.build_account_balance_map`,
@@ -289,7 +293,8 @@ def _account_balance_map(
             models no contribution.
 
     Returns:
-        The OrderedDict period_id -> Decimal balance.  **Never ``None``**: it
+        The OrderedDict period_id -> Decimal HELD balance (negative when the
+        account owes, a configured loan included).  **Never ``None``**: it
         answered ``None`` for an account with ``current_anchor_period_id IS
         NULL``, a state the schema forbade and the column no longer exists to
         express (finding N-73, plan step X-f1c3a), so the arm reproduced a
@@ -301,7 +306,14 @@ def _account_balance_map(
     # fail-loud for an unconfigured loan.  Both halves of that rule live in the
     # predicate; see its docstring for why neither implies the other.
     if configured_loan(account, ctx) is not None:
-        return positions_period_map(account, ctx)
+        # The flip is its own inverse: owed() of an owed figure is the held
+        # balance (R-CC29's one flip at the loan arm, not a second spelling).
+        return OrderedDict(
+            (period_id, owed(owed_in_period))
+            for period_id, owed_in_period in positions_period_map(
+                account, ctx,
+            ).items()
+        )
     return _kernel.build_account_balance_map(account, ctx, inputs)
 
 

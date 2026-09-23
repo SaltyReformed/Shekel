@@ -81,6 +81,7 @@ from app.services.cash_flow_set import CashFlowSet
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
+from app.services.liability_sign import owed, shown_figure
 from app.services.savings_dashboard_service._display import LIABILITY_KEY
 from app.services.savings_dashboard_service._net_worth import _ASSET_BANDS
 from tests._test_helpers import (
@@ -964,10 +965,11 @@ class TestSeamInjectionLock:
 # is neutralised to $0) because two of the surfaces (year-end net worth and
 # the savings net-worth trend) are AGGREGATE-only: they sum over ALL of the
 # user's accounts, so a single-account fixture is the only way to read one
-# kind's contribution.  Each reader encapsulates the surface's sign
-# convention so the equality assertion stays uniform: the loan year-end
-# reader negates the liability aggregate, the loan trend reader reads the
-# (positive) ``liabilities`` lane, and the asset readers read ``assets``.
+# kind's contribution.  Each reader reads the figure its PAGE SHOWS, so the
+# equality assertion stays uniform: every loan reader reads what the loan
+# OWES (the seam reports a loan HELD, negative when owed, since plan step
+# credit_card:CC-5-5c, ruling R-CC47), the loan trend reader reads the
+# liability band, and the asset readers read the balance.
 
 
 def _match_account_data(dashboard_data, account_id):
@@ -1002,16 +1004,20 @@ def _net_worth_series(ctx):
 
 
 def _savings_tile_value(ctx):
-    """Read the ``/savings`` per-account tile current_balance for the account.
+    """Read the figure the ``/savings`` per-account tile SHOWS for the account.
 
     Shared by all three single-account kinds (loan / property / investment):
-    the per-account tile is a positive balance regardless of kind, so one
-    reader serves every kind's ``savings`` surface.
+    the tile shows ``AccountProjection.shown_balance`` -- what a debt OWES and
+    every other account's balance (ruling R-CC47) -- so one reader serves
+    every kind's ``savings`` surface.  It read ``current_balance`` until plan
+    step credit_card:CC-5-5c, when that was a loan's owed figure; it is HELD
+    since then (``-C`` for a loan owing C), and for a property or an
+    investment the shown figure IS that balance.
     """
     data = savings_dashboard_service.compute_dashboard_data(
         BalanceContext.build(ctx["user_id"]),
     )
-    return _match_account_data(data, ctx["account_id"]).current_balance
+    return _match_account_data(data, ctx["account_id"]).shown_balance
 
 
 def _trend_assets_value(ctx):
@@ -1035,8 +1041,10 @@ def _trend_assets_value(ctx):
 def _trend_liabilities_value(ctx):
     """Read the net-worth trend's LIABILITY band at the current index.
 
-    The band is the positive magnitude ``abs(balance)``, so for an isolated
-    loan it equals the loan's current balance directly.  It was also published
+    The band is what the liabilities OWE -- ``owed()`` of each HELD balance
+    since plan step credit_card:CC-5-5c, so a credit reads negative (it was
+    ``abs(balance)`` before) -- so for an isolated loan it equals what that
+    loan owes, the figure every other loan reader returns.  It was also published
     as a parallel ``liabilities`` total until plan step X-s1 deleted that copy
     (see :func:`_trend_assets_value`).
     """
@@ -1045,14 +1053,21 @@ def _trend_liabilities_value(ctx):
 
 
 def _loan_detail_value(ctx):
-    """Read the loan-detail balance (the seam scalar the page renders).
+    """Read what the loan-detail page shows: what the loan OWES today.
 
     The service-level equivalent of ``GET /accounts/<id>/loan``: since plan
-    step C4 the loan detail page reads ``balance_at.balance_at`` (the fold)
-    for its displayed balance, and since D2a the resolver bundle carries no
-    balance at all, so this window reads exactly what the page reads.
+    step C4 the loan detail page reads ``balance_at.balance_at`` (the fold),
+    and since D2a the resolver bundle carries no balance at all.  The seam
+    reports the loan HELD since plan step credit_card:CC-5-5c (ruling
+    R-CC47), and the page renders ``_RouteLoanContext.current_owed`` --
+    ``owed()`` of that scalar at today -- so this reads the same composition.
+    It cannot call the property itself: ``_load_route_context`` builds that
+    context from ``current_user`` plus the loan's ``LoanContext`` and figures,
+    not from ``(account, ctx)`` in one call.
     """
-    return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
+    return owed(
+        balance_at.balance_at(ctx["account"], _bctx(ctx), date.today()),
+    )
 
 
 def _property_detail_value(ctx):
@@ -1082,9 +1097,12 @@ def _loan_schedule_table_value(ctx):
     confirmed row's ``remaining_balance`` is the balance the table shows the
     user beside their most recent real payment.  Since the C11 history read
     switch those confirmed rows are ledger-derived, so this must equal the
-    loan card / tile to the penny.  A loan with no confirmed row yet reads
-    the card's seam-folded balance (an empty table shows no history), keeping
-    the reader total for the on-schedule kind test too.
+    loan card / tile to the penny.  A row's ``remaining_balance`` is what the
+    loan OWES.  A loan with no confirmed row yet reads what the card shows
+    (an empty table shows no history) -- ``owed()`` of the seam's scalar,
+    which is HELD since plan step credit_card:CC-5-5c (ruling R-CC47) --
+    keeping the reader total, and in one sign, for the on-schedule kind test
+    too.
     """
     resolved = resolved_loan(ctx["account"], _bctx(ctx))
     assert resolved is not None, (
@@ -1095,33 +1113,38 @@ def _loan_schedule_table_value(ctx):
         row for row in resolved.state.schedule if row.is_confirmed
     ]
     if not confirmed_rows:
-        return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
+        return owed(
+            balance_at.balance_at(ctx["account"], _bctx(ctx), date.today()),
+        )
     return confirmed_rows[-1].remaining_balance
 
 
 def _balance_at_scalar_value(ctx, target):
-    """Read the ``balance_at`` DATE-PRECISE loan scalar at *target* (C11 surface).
+    """Read what a loan OWES at *target* by the DATE-PRECISE scalar (C11 surface).
 
     The year-end debt-progress section values a loan at exact civil dates via
     ``balance_at.balance_at`` -- a walk over the resolver schedule's rows.
     Since the C11 history read switch those rows carry the ledger's REAL
     per-payment balances, so the date-precise scalar at any date through the
     LAST CONFIRMED payment equals the ledger balance (the C9-deferred scalar
-    half).  Evaluated at a caller-chosen date rather than today because the
-    scalar's walk keeps its pre-existing DUE-BASIS attribution beyond the
-    confirmed rows: a scheduled payment due before ``target`` but not yet
+    half).  The seam reports that scalar HELD since plan step
+    credit_card:CC-5-5c (ruling R-CC47), so this returns ``owed()`` of it --
+    the sign of the ledger balance it is compared against.  Evaluated at a
+    caller-chosen date rather than today because the scalar's walk keeps its
+    pre-existing DUE-BASIS attribution beyond the confirmed rows: a scheduled payment due before ``target`` but not yet
     made is counted as if paid (the period-end-keyed F-21 semantic), so at
     "today" with an overdue payment it deliberately reads below the card.
     """
-    return balance_at.balance_at(
+    return owed(balance_at.balance_at(
         ctx["account"], _bctx(ctx), target,
-    )
+    ))
 
 
 # Per-kind reader dicts.  Each maps a surface name to a reader returning the
-# SAME canonical positive quantity (the account's balance), so one
-# ``_assert_surfaces_equal`` call locks every kind.  The shared
-# ``_savings_tile_value`` serves the ``savings`` surface in all three.
+# figure that page SHOWS, which is ONE quantity per kind -- what the loan OWES
+# (positive when owed), and the account's balance for property and
+# investment -- so one ``_assert_surfaces_equal`` call locks every kind.  The
+# shared ``_savings_tile_value`` serves the ``savings`` surface in all three.
 _LOAN_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "loan_detail": _loan_detail_value,
@@ -1157,17 +1180,20 @@ class TestLoanCrossPageEquality:
 
     The boundary assertions additionally lock the balance rule at the three
     points a loan's per-period map is answered from, since each has a DIFFERENT
-    producer and only one of them can see any given defect:
+    producer and only one of them can see any given defect.  The map is HELD
+    since plan step credit_card:CC-5-5c (ruling R-CC47) -- the loan holds
+    ``-C`` -- so each assertion reads what the loan OWES through ``owed()``:
 
     * **A begun period at/after the true-up** (the anchor period) -- the confirmed
-      LEDGER.  Returns C, never the original principal P.
+      LEDGER.  It owes C, never the original principal P.
     * **A begun period that ended BEFORE the true-up** -- the confirmed ledger
       again, which reports what it knew then: the $240,000 opening, since this loan
       has no recorded payment.  A re-anchored schedule must never back-project
       today's balance over a past it has no evidence for.
     * **The first FUTURE period** -- the forward PROJECTION, which amortizes DOWN
-      from C, so it sits below C.  A map reporting the original principal here
-      (one that fell back to the whole-schedule walk) would sit far above C.
+      from C, so what it owes sits below C.  A map reporting the original
+      principal here (one that fell back to the whole-schedule walk) would sit
+      far above C.
 
     A note on what this test can NO LONGER catch, so nobody trusts it for more
     than it does.  Before the ledger read switch, EVERY period came from the
@@ -1192,10 +1218,13 @@ class TestLoanCrossPageEquality:
 
         C = $200,000 (trued up today) and P = $240,000 (origination principal)
         differ, so none of the boundary assertions is tautological.  All five
-        cross-page surfaces read C at today.  The seam then reports C at the anchor
-        period (never P), the ledger's $240,000 opening at a period that ended
-        before the true-up was asserted, and a value below C at the first future
-        period (the projection amortizing down from C).
+        cross-page surfaces read C at today -- each the figure its page shows,
+        which for a loan is what it owes.  The seam's map is HELD (the loan
+        holds ``-C``, plan step credit_card:CC-5-5c), so the boundaries read
+        what it owes through ``owed()``: C at the anchor period (never P), the
+        ledger's $240,000 opening at a period that ended before the true-up was
+        asserted, and a value below C at the first future period (the
+        projection amortizing down from C).
         """
         with app.app_context():
             ctx = cross_page_loan_ctx
@@ -1212,11 +1241,13 @@ class TestLoanCrossPageEquality:
 
             # Boundary lock (PR #44 / aba0242): at the anchor period -- the
             # period the true-up lands in, and still pre-first-payment -- the
-            # seam holds the current balance C flat.  Returning the original
-            # principal P for the loan's CURRENT balance is the exact PR #44 bug
-            # (its cause: the schedule map was seeded with original_principal).
-            # C != P is what makes this non-tautological.
-            anchor_balance = balances[ctx["anchor_period"].id]
+            # loan owes the current balance C flat (the seam's map holds -C;
+            # every boundary here reads what it owes through owed()).
+            # Returning the original principal P for the loan's CURRENT balance
+            # is the exact PR #44 bug (its cause: the schedule map was seeded
+            # with original_principal).  C != P is what makes this
+            # non-tautological.
+            anchor_balance = owed(balances[ctx["anchor_period"].id])
             assert anchor_balance == ctx["C"], (
                 f"anchor-period balance {anchor_balance!r} != current balance "
                 f"{ctx['C']!r}; the loan pre-payment boundary regressed"
@@ -1233,17 +1264,17 @@ class TestLoanCrossPageEquality:
             # across the past.  Verified against the real dev clone, whose
             # Mortgage likewise steps down at each recorded event rather than
             # carrying today's balance backward.
-            pre_balance = balances[ctx["pre_anchor_period"].id]
+            pre_balance = owed(balances[ctx["pre_anchor_period"].id])
             assert pre_balance == ctx["P"], (
                 f"pre-anchor balance {pre_balance!r} != the ledger's opening "
                 f"{ctx['P']!r}; the schedule is answering for the past again"
             )
 
             # The future belongs to the projection, and it amortizes DOWN from C:
-            # the first future period must sit strictly below C.  This catches a
-            # forward projection that reports the original principal -- e.g. one
-            # that carried today's balance backward -- which would land it near P,
-            # far ABOVE C.
+            # what the first future period owes must sit strictly below C.  This
+            # catches a forward projection that reports the original principal --
+            # e.g. one that carried today's balance backward -- which would land
+            # it near P, far ABOVE C.
             #
             # It does NOT catch a wrong forward SEED in isolation, and no assertion
             # on this fixture can: since step C6b the forward branch folds the
@@ -1259,7 +1290,7 @@ class TestLoanCrossPageEquality:
                 p for p in ctx["all_periods"] if p.start_date > date.today()
             ]
             assert future, "expected a future period"
-            first_future = balances[future[0].id]
+            first_future = owed(balances[future[0].id])
             assert first_future < ctx["C"], (
                 f"first future period {first_future!r} is not below the trued-up "
                 f"balance {ctx['C']!r}; the forward projection is not amortizing "
@@ -1323,12 +1354,13 @@ class TestLoanCrossPageEquality:
             # The per-period map agrees with the scalar the surfaces read -- at
             # today AND at a past period.  These are the two producers that
             # diverged: the scalar walked confirmed rows, its per-period sibling
-            # walked all of them.
+            # walked all of them.  The map is HELD (plan step
+            # credit_card:CC-5-5c), so it is read as what the loan owes.
             balances = balance_at.balance_map(
                 ctx["account"], bctx,
             )
-            assert balances[ctx["anchor_period"].id] == expected
-            assert balances[ctx["past_period"].id] == expected
+            assert owed(balances[ctx["anchor_period"].id]) == expected
+            assert owed(balances[ctx["past_period"].id]) == expected
 
             resp = auth_client.get(f"/accounts/{ctx['account_id']}/loan")
             assert resp.status_code == 200, (
@@ -1675,14 +1707,17 @@ class TestSecuredHomeEquityEquality:
             ).current_balance
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
-            ).current_balance
-            # The loan-detail balance is the seam scalar the page renders
-            # (plan step C4; the resolver bundle carries no balance since D2a).
-            loan_detail = balance_at.balance_at(
+            ).shown_balance
+            # The mortgage leg reads what each page SHOWS, which for a debt is
+            # what it owes: the tile's shown figure, and the loan-detail page's
+            # owed() of the seam scalar (plan step C4; the resolver bundle
+            # carries no balance since D2a), which is HELD since plan step
+            # credit_card:CC-5-5c -- see ``_loan_detail_value``.
+            loan_detail = owed(balance_at.balance_at(
                 ctx["mortgage_account"],
                 BalanceContext.build(ctx["mortgage_account"].user_id),
                 date.today(),
-            )
+            ))
 
             # Property leg: the equity producer still reads the cache column,
             # so it pins the ASSERTED PV, while the cockpit tile beside it now
@@ -1764,6 +1799,13 @@ class TestPerKindSeamInjectionLock:
     including it would leave the unpatched set non-uniform for a reason that
     has nothing to do with the injection.
 
+    **Since plan step credit_card:CC-5-5c the comparand is that balance in the
+    words the pages speak** -- ``shown_figure`` of it.  The seam reports the
+    loan HELD (``-$200,000.00``, ruling R-CC47) and every loan reader returns
+    what it OWES, so the loan's comparand is ``$200,000.00``; for the two asset
+    kinds the shown figure IS the balance.  The table above is the measurement
+    at the repair, when the seam still reported a loan owed.
+
     The control for the control is asserted in the test itself: the UNPATCHED
     set must pass before the patch is applied.  Without that premise a lock
     that fires for any reason reads exactly like a lock that fires for the
@@ -1808,7 +1850,11 @@ class TestPerKindSeamInjectionLock:
         ctx_fixture, readers, excluded, patched_surface = spec
         ctx = request.getfixturevalue(ctx_fixture)
         with app.app_context():
-            expected = _modelled_current_balance(ctx)
+            # The figure every page SHOWS for this account: what the loan
+            # owes, the modelled balance for an asset (see the class docstring).
+            expected = shown_figure(
+                ctx["account"].account_type, _modelled_current_balance(ctx),
+            )
 
             def _read(reader_dict):
                 """Read every surface this case locks, minus its known gaps."""

@@ -38,8 +38,10 @@ chart.  Including it under today's model would mean nobody carrying a
 card balance ever gets a date; the ruling is to keep the derivation over the
 debts that HAVE a payoff model and to caption the result as what it measures.
 **Those captions SHIPPED at plan step X-q3** (`bad97e6a`, closing finding
-N-99): the cockpit footer reads "Loans paid off <mon>" and names the revolving
-balance it excludes, the dashboard debt track reads "loans paid off <mon>", and
+N-99): the cockpit footer reads "Loans paid off <mon>" and names the debt it
+excludes, "with no payoff date" since plan step credit_card:CC-5-5c (ruling
+R-CC68; it said "revolving" until then, for a figure that also counts a loan
+with no terms and a custom liability), the dashboard debt track reads "loans paid off <mon>", and
 the Horizon's flag reads "All loans paid off".  (A milestone carried a machine
 ``kind`` beside that label until plan step X-s1 deleted it at both ends for
 having no consumer; the label is the flag's only identity now, and the ruling on
@@ -56,7 +58,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.services.balance_at import owed
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
@@ -245,8 +246,8 @@ def debt_without_payoff_model(
     ruling **R-CC49**, plan step credit_card:CC-5-5a): "A credit on one card is
     not debt and does not pay down another card; the footer counts the debt a
     payoff date leaves out."  A Credit Card is anchored owed-as-NEGATIVE, so
-    what it owes is :func:`app.services.balance_at.owed` of its balance, the
-    seam's one flip.  With a Visa owing ``$1,000.00``, an Amex holding a
+    what it owes is :func:`app.services.liability_sign.owed` of its balance,
+    the one flip.  With a Visa owing ``$1,000.00``, an Amex holding a
     ``$50.00`` credit, an auto loan with no terms owing ``$5,000.00`` and a
     family loan owing ``$2,000.00``, this is ``1,000.00 + 0.00 + 5,000.00 +
     2,000.00 = $8,000.00``.  It was ``abs()`` of each balance, which booked
@@ -258,9 +259,10 @@ def debt_without_payoff_model(
     re-sign plan step CC-5-5c owes** (ruling R-CC47): the filter keeps only a
     liability with no :attr:`~.._types.AccountProjection.loan`, and none of
     those is a configured loan, so each one's ``current_balance`` is the
-    seam's HELD figure -- the precondition :func:`~app.services.balance_at.owed`
-    states.  ``loan`` is set exactly when the seam's configured-loan test
-    holds: the params map it is built from carries amortizing types only
+    seam's HELD figure -- the precondition
+    :func:`~app.services.liability_sign.owed` states.  ``loan`` is set exactly
+    when the seam's configured-loan test holds: the params map it is built
+    from carries amortizing types only
     (``_data._load_loan_params_and_escrow``), and the projection fills it only
     when :func:`~app.services.balance_at.loan_figures` resolves -- the two
     halves ``balance_at._resolution.configured_loan`` tests.
@@ -280,8 +282,8 @@ def debt_without_payoff_model(
     configured loans, excluded here).
 
     Args:
-        account_data: The per-account projections (each answering
-            ``is_liability`` and carrying a ``current_balance``).
+        account_data: The per-account projections (the sum reads each one's
+            ``is_liability``, ``loan`` and ``owed``).
 
     Returns:
         The total owed on liabilities with no payoff model, each floored at
@@ -289,7 +291,7 @@ def debt_without_payoff_model(
     """
     return sum(
         (
-            max(owed(ad.current_balance), ZERO) for ad in account_data
+            max(ad.owed, ZERO) for ad in account_data
             if ad.is_liability and ad.loan is None
         ),
         ZERO,

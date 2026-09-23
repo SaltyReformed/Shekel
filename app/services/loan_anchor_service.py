@@ -6,8 +6,8 @@ The loan half of the anchor true-up service: every door that appends a
 (:func:`apply_loan_anchor_true_up`, a ``user_trueup``) and its tracking-start
 form (:func:`record_loan_tracking_start`, a ``tracking_start``).  Both return
 the :class:`~app.services.anchor_service.AnchorTrueUpOutcome` enum the cash
-door returns, so the route layer's response composition is uniform across
-account kinds.
+door's :class:`~app.services.anchor_service.AnchorTrueUpReport` carries, so
+the route layer's response composition is uniform across account kinds.
 
 **Split from :mod:`app.services.anchor_service` at plan step
 ``recurrence:R20``**, the moment that step's third loan door pushed the module
