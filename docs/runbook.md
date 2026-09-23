@@ -242,9 +242,9 @@ curl -s http://localhost/health
 
 #### Production (`shekel-deploy`): the re-read stamp decides
 
-When the new image fails (compose rejects it, or it is not healthy within 4 minutes),
-`shekel-deploy` stops the new container, so its entrypoint can commit nothing more, then re-reads
-the database's Alembic stamp. That stamp, not the release, decides what happens:
+When the new image fails (compose rejects it, its container reports unhealthy, or it is not healthy
+within 4 minutes), `shekel-deploy` stops the new container, so its entrypoint can commit nothing
+more, then re-reads the database's Alembic stamp. That stamp, not the release, decides what happens:
 
 - **The previous image can resolve the stamp.** The release migrated nothing, or entrypoint step 3
   failed and rolled back: since plan step `X-cv` the migrations, the reference and tax seeds, the
@@ -286,9 +286,13 @@ provisioning, which every image re-runs on each boot), so the fault predates the
 holds it too: restoring cannot help, and the fault is repaired in place. If step 3 did commit, what
 it wrote may be the fault, and restoring the dump (below) is a candidate. An image older than `X-cv`
 never prints that line and commits its seeds after step 3 (entrypoint steps 4 and 6), so for one the
-dump is a candidate either way. When `docker compose ps` shows the previous container restarting, it
-re-runs its entrypoint on every pass (an image older than plan step `X-cv` also commits its hooks
-and seeds each time), so stop it before repairing and start it after:
+dump is a candidate either way. A previous container that crash-loops re-runs its entrypoint on
+every pass (an image older than plan step `X-cv` also commits its hooks and seeds each time). Docker
+waits between passes, from a tenth of a second up to about a minute, so `docker compose ps` may show
+it `Up` for seconds at a time with `(health: starting)` during a pass or `Restarting` during a wait.
+The tell is `docker inspect shekel-prod-app --format '{{.State.Status}} {{.RestartCount}}'`: a state
+of `restarting`, or a restart count that grows between two readings two minutes apart. Stop it
+before repairing and start it after:
 
 ```bash
 cd /opt/docker/shekel
@@ -315,11 +319,17 @@ docker exec shekel-prod-db psql -U shekel_user -d shekel -v ON_ERROR_STOP=1 \
 
 If the refusal names a table newly added to `AUDITED_TABLES`, its migration did not attach the
 trigger, and the migration is the fix. An image older than `R-BAL129` prints only a count, and its
-`flask db upgrade` advice does not re-create a dropped trigger. (Measured 2026-09-23, before
-`R-BAL129`, on the 6-3 release image `876fbf5c5bf7`: one dropped trigger, re-created from the
-definition saved before it was dropped while the container crash-looped, and nothing else; the image
-came up under its restart policy and no table changed. The stop, repair and start above, and the
-statements `R-BAL129` prints, were not part of that run.)
+`flask db upgrade` advice does not re-create a dropped trigger. (Measured 2026-09-23 in the X-cv
+rehearsal's second pass, on a copy of production's data with one audit trigger dropped and the 6-3
+release image `876fbf5c5bf7` as the previous image: the release's saved log named
+`budget.transactions` and printed one statement; `docker compose ps` showed the crash-looping
+previous container as `Up 4 seconds (health: starting)` 51 seconds after the re-pin created it,
+after 5 restarts: its first pass ran 11 seconds and the next four about 8 seconds each, and the
+waits between them grew from 0.1 to 1.6 seconds, where an earlier rehearsal of the same image and
+fault ran 11 to 12 second passes with waits of at most a quarter of a second, so that container was
+up nearly all the time; the stop, that statement run through `psql` as printed, and the start above
+brought it up healthy in about 15 seconds, with the re-created trigger identical to the dropped one
+and no table changed.)
 
 **Restoring discards everything written since the dump was taken** -- minutes of real entries in a
 budgeting app. Capture the failed state first so that window stays recoverable.
