@@ -35,8 +35,10 @@ The shared filter applied here, in one place, by every consumer:
      where the cached column agrees with the derived stop on whether the
      payment has ended on the day asked, which is what both live loans do
      on the dev database today.
-  3. Skip if ``default_amount is None`` or ``default_amount == 0``
-     -- nothing to contribute.
+  3. Skip if what one occurrence commits is ``None`` or ``0`` -- nothing to
+     contribute.  That is the stored ``default_amount``, except for a salary
+     profile's definition, whose occurrence is its priced paycheck's net
+     (ruling **R-SAL71**, plan step salary:X-av-2).
 
 **There is no fourth rule, and its removal is plan step R7a-2b's.**  The filter
 used to end "skip if the conversion returns ``None`` -- a pattern this
@@ -197,11 +199,35 @@ def _todays_paycheck(
     ``span_containing`` rather than the saved ``period_containing``: it IS
     the savings page's current period wherever the saved schedule covers the
     day, and past the horizon it keeps answering with the projected paycheck,
-    so the row never falls back to the copy there.  ``None`` before the
-    owner's first payday -- there is no paycheck today to price -- and for
-    every definition no active profile drives, which keeps its stored amount.
-    A transfer template is never a paycheck, and neither is a duck-typed
-    test template (the module docstring's contract).
+    so the row never falls back to the copy there.  **Before the first
+    SAVED payday** (the calendar's ``opening_bound``) **it prices that first
+    saved paycheck** (ruling **R-SAL79**): there is no paycheck today to
+    price, and the copy is exactly the figure the ruling retires -- one a
+    salary EDIT made in that window leaves at GROSS pay, because the edit
+    door writes the gross and ``salary_regeneration`` restates the net only
+    once a saved period contains the day.  For an owner who has stated
+    ``history_opens_on`` the backward rhythm may hold earlier paydays, but
+    those are counts and never periods, so the first saved paycheck is the
+    next one priceable.  The savings page shows no current pay in that
+    window; this row shows that paycheck.
+
+    ``None`` -- the definition keeps its stored amount -- for every
+    definition no active profile drives in the pass's scenario, which is
+    every definition but a salary one, and for a transfer or a duck-typed
+    test template (the module docstring's contract).  Two further branches
+    answer ``None`` for a salary definition, and neither is a state the
+    application produces: a pass with NO baseline scenario
+    (``BaselineMissingError``'s docstring: every owner is registered with
+    one and nothing deletes it), where no profile is in scope; and a
+    calendar holding NO saved payday, where the guard only keeps
+    ``periods[0]`` from raising -- the Recurring page refuses that owner
+    earlier, describing the salary row's rule.  **The one place the page
+    still shows a salary definition's stored copy** is the Archived drawer,
+    for a salary template archived while its profile stays active: the
+    archive door allows that state, and ruling **R-SAL81** makes the door the
+    defect to fix rather than the drawer -- finding **SAL-579**, owned by plan
+    step salary:S13, which refuses the archive or archives the profile with
+    it so the state cannot arise.
 
     Args:
         template: The recurring definition.
@@ -216,9 +242,13 @@ def _todays_paycheck(
     basis = ctx.amounts_or_none()
     if basis is None:
         return None
-    today = ctx.calendar().span_containing(ctx.as_of)
+    calendar = ctx.calendar()
+    today = calendar.span_containing(ctx.as_of)
     if today is None:
-        return None
+        # Before the first payday (R-SAL79), or a calendar with no payday.
+        if not calendar.periods:
+            return None
+        today = calendar.periods[0]
     return basis.salary.paycheck_on(template.id, today)
 
 
@@ -234,7 +264,8 @@ def _commitment(
     other definition its stored amount at the owner's latest rhythm, which
     is the forward-looking count a recurring bill is paid at.  ``None`` when
     the definition does not repeat or commits nothing -- a salary one by its
-    priced net, so the stored copy decides nothing about it.
+    priced net, so the stored copy decides nothing about it in any state the
+    application produces (:func:`_todays_paycheck`).
 
     Args:
         template: The recurring definition.
@@ -259,9 +290,12 @@ def occurrence_amount(
     """Return what one occurrence of *template* commits, as the read pass prices it.
 
     The Recurring surface's Amount column (ruling **R-SAL73**): a salary
-    profile's definition shows TODAY's priced paycheck -- never the stored
-    copy, which goes stale when a raise date passes until the salary is next
-    saved -- and every other definition its stored amount.  The same
+    profile's definition shows TODAY's priced paycheck, or before the first
+    saved payday that first paycheck (**R-SAL79**) -- not the stored copy,
+    which goes stale when a raise date passes until the salary is next
+    saved (:func:`_todays_paycheck` names the one place the page still shows
+    it: the Archived drawer) -- and every other definition its stored
+    amount.  The same
     :func:`_todays_paycheck` its monthly figure is converted from, so the row
     cannot show one paycheck and total another; the pricer memoizes the
     paycheck by payday, so asking twice prices once.
@@ -320,7 +354,9 @@ def monthly_or_none(
             already holds.
         ctx: The read pass.  Its ``as_of`` is the day the expired filter asks
             about; its ``calendar()`` supplies the cadence the conversion
-            needs.  The horizon the filter needs rides on *reading* itself
+            needs -- except for a salary profile's definition, converted at
+            the rhythm its paycheck was priced at (ruling **R-SAL71**).  The
+            horizon the filter needs rides on *reading* itself
             since plan step R7d-f-2 (plan ledger row **N-514**), so the
             schedule a definition was walked against and the one its stop is
             judged against are one value rather than two arguments that agree.
@@ -399,8 +435,9 @@ def template_monthly_or_none(
             a bound nothing derived.  A definition with no loan behind it
             still resolves for such an owner.
     """
-    # The pre-door skip asks the STORED amount, schedule-free.  Its two callers
-    # (the emergency-fund floor: expense and transfer definitions; the goal
+    # The pre-door skip asks the STORED amount, schedule-free.  This function's
+    # one production caller is ``committed_monthly``, whose two callers (the
+    # emergency-fund floor: expense and transfer definitions; the goal
     # floors: transfer definitions) pass no income definition, so no salary
     # definition's stored copy decides anything here (ruling R-SAL71); a
     # nonzero one would be re-decided from the priced paycheck below anyway.

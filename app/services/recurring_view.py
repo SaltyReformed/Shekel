@@ -199,8 +199,10 @@ class RecurringRow:
         amount: What one occurrence commits, for the Amount column and its
             sort key (:func:`~app.services.obligations_aggregator
             .occurrence_amount`): a salary profile's definition shows TODAY's
-            priced paycheck, every other definition its stored amount
-            (rulings **R-SAL71** and **R-SAL73**, plan step salary:X-av-2).
+            priced paycheck -- before the first saved payday, that first
+            paycheck (**R-SAL79**) -- and every other definition its stored
+            amount (rulings **R-SAL71** and **R-SAL73**, plan step
+            salary:X-av-2).
             The template read ``default_amount`` itself until then, and for a
             salary definition that is a copy of the paycheck saved with the
             salary, stale once a raise date passes.  ``None`` when the

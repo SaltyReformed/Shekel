@@ -74,7 +74,12 @@ from app.services.paycheck_calculator._calendar_questions import (
 )
 from app.services.payroll_basis import PayrollBasis
 from app.utils.dates import display_today
-from tests._test_helpers import era_of, make_salary_profile, seed_fica_config
+from tests._test_helpers import (
+    era_of,
+    make_recurring_raise,
+    make_salary_profile,
+    seed_fica_config,
+)
 from tests.test_services.test_paycheck_calculator import (
     FakeBracket,
     FakeBracketSet,
@@ -614,34 +619,112 @@ class TestTheRecurringSalaryRow:
         saved at today's $1,847.00.
         """
         with app.app_context():
-            user_id = seed_user["user"].id
-            seed_fica_config(user_id)
-            last_payday = max(period.start_date for period in seed_periods_today)
-            pay_era_write.mint_era(
-                user_id, era_of(last_payday + timedelta(days=28), 7),
+            template = self._seed_with_a_stale_copy(
+                db, auth_client, seed_user, seed_periods_today,
             )
-            db.session.commit()
-            filing = db.session.query(FilingStatus).filter_by(name="single").one()
-            auth_client.post("/salary", data={
-                "name": "Main Job",
-                "annual_salary": "52000.00",
-                "filing_status_id": filing.id,
-                "state_code": "NC",
-            }, follow_redirects=True)
-            template = (
-                db.session.query(SalaryProfile)
-                .filter_by(user_id=user_id, name="Main Job").one().template
-            )
-            template.default_amount = Decimal("1.00")
-            db.session.commit()
-
             view = recurring_view.build_view(
-                [template], [], [], BalanceContext.build(user_id),
+                [template], [], [], BalanceContext.build(seed_user["user"].id),
             )
             (row,) = view.income.rows
             assert row.amount == Decimal("1847.00")
             assert row.equivalent.monthly == Decimal("4001.83")
             assert row.equivalent.per_paycheck == Decimal("923.50")
+
+    @staticmethod
+    def _seed_with_a_stale_copy(db, auth_client, seed_user, periods):
+        """The owner above through the salary form, then its copy made stale."""
+        user_id = seed_user["user"].id
+        seed_fica_config(user_id)
+        last_payday = max(period.start_date for period in periods)
+        pay_era_write.mint_era(
+            user_id, era_of(last_payday + timedelta(days=28), 7),
+        )
+        db.session.commit()
+        filing = db.session.query(FilingStatus).filter_by(name="single").one()
+        auth_client.post("/salary", data={
+            "name": "Main Job",
+            "annual_salary": "52000.00",
+            "filing_status_id": filing.id,
+            "state_code": "NC",
+        }, follow_redirects=True)
+        template = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=user_id, name="Main Job").one().template
+        )
+        template.default_amount = Decimal("1.00")
+        db.session.commit()
+        return template
+
+    def test_the_rendered_page_shows_the_priced_paycheck(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /templates: the salary row's Amount cell and sort key read $1,847.00.
+
+        Why: the case above grades :attr:`RecurringRow.amount` and never
+        renders the page, so the TEMPLATE could go on reading the stored copy
+        with the suite green -- an adversarial review of this step reverted
+        both template reads to ``default_amount`` and found every test that
+        loads the Recurring page passing.  This renders it.
+        """
+        with app.app_context():
+            self._seed_with_a_stale_copy(
+                db, auth_client, seed_user, seed_periods_today,
+            )
+            html = auth_client.get("/templates").get_data(as_text=True)
+
+            start = html.index('data-sort-name="main job"')
+            row = html[start:html.index("</tr>", start)]
+            assert 'data-sort-amount="1847.00"' in row
+            assert "$1,847.00" in row
+            assert "$1.00" not in row
+
+    def test_before_the_first_payday_the_first_paycheck(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A day before the first saved payday prices THAT paycheck (R-SAL79).
+
+        Input: the owner above, with a made-up 10% raise from the month after
+        the first saved payday, read on the day before that payday.
+        Expected: Amount $1,847.00 and Monthly 1,847 x 26 / 12 = $4,001.83 --
+        the first paycheck, the only one before the raise.  Every later
+        paycheck is 57,200 / 26 = 2,200.00 gross less 168.30 FICA =
+        $2,031.70, asserted as the control so the case tells the FIRST
+        paycheck from any other (an adversarial review of this step priced
+        the LAST saved paycheck instead and found the first draft green).
+        Why: there is no paycheck today, and until R-SAL79 the row fell back
+        to the stored copy at the LATEST (weekly) count: $1.00 and
+        1.00 x 52 / 12 = $4.33 here.
+        """
+        with app.app_context():
+            template = self._seed_with_a_stale_copy(
+                db, auth_client, seed_user, seed_periods_today,
+            )
+            user_id = seed_user["user"].id
+            first_payday = min(period.start_date for period in seed_periods_today)
+            raise_from = date(
+                first_payday.year + first_payday.month // 12,
+                first_payday.month % 12 + 1, 1,
+            )
+            make_recurring_raise(
+                template.salary_profiles[0].id, db.session,
+                effective_year=raise_from.year,
+                effective_month=raise_from.month,
+                percentage=Decimal("0.10"),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(
+                user_id, as_of=first_payday - timedelta(days=1),
+            )
+            calendar = ctx.calendar()
+            assert calendar.span_containing(ctx.as_of) is None
+            profile = template.salary_profiles[0]
+            assert ctx.paychecks().for_profile(profile).at(
+                calendar.periods[-1],
+            ).earnings.net_pay == Decimal("2031.70")
+
+            (row,) = recurring_view.build_view([template], [], [], ctx).income.rows
+            assert row.amount == Decimal("1847.00")
+            assert row.equivalent.monthly == Decimal("4001.83")
 
 
 class TestTheCockpitsThirdPaycheckChip:
