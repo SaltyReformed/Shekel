@@ -8,13 +8,11 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-av-1` (`fe054204`, one salary profile per paycheck definition in each scenario) shipped
-2026-09-23**, `$0.00`, closing **N-294** (**R-SAL63**, **R-SAL69**); `X-av`'s other leaves
-(**R-SAL67**) make the pay a dated per-paycheck gross, and `S12` (**R-SAL64**) dates a line's amount
-the same way. `S11-c-2`, the engine's calibrated path, MOVES MONEY, pricing from the stubs the
-developer transcribes (an operator act, **R-SAL40**) through `S11-a` (`8f744c33`), `S11-b`
-(`1d3a2574`) and `S11-c-1` (`dff66c5e`); **S11** (**R-SAL41** as amended by **R-SAL42**, absorbing
-`S1`) ticks with its last leaf, and `S9` (**R-SAL39**) waits on `recurrence:R21`. Each archived
+**`X-av-2` (`89a56168`, one engine walk for base pay at each payday's own rhythm) shipped
+2026-09-24**, closing **SAL-569** (**R-SAL66**, **R-SAL70**) with `$0.00` in stored money and one
+display moved, the Recurring page's salary row. `X-av`'s other leaves (**R-SAL67**) make the pay a
+dated per-paycheck gross; `S11-c-2`, the engine's calibrated path, MOVES MONEY, and **S11**
+(**R-SAL41** as amended by **R-SAL42**, absorbing `S1`) ticks with its last leaf. Each archived
 span's record is a `historical/salary_*` file, named in its parent's entry in section 4.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
@@ -170,9 +168,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       **D45**. Its leaves `R14-a` and `R14-b` left this document and the index 2026-09-24 (rule 5);
       the record is `historical/salary_r14_as_built_2026-09-11.md`.
 - [x] **S3** `329b663d` -- the engine prices the WHOLE horizon (**R-SAL10**, **R-SAL11**,
-      **R-SAL14**, **R-SAL15**; closed **N-541**); ticked with `S3-f-4`, the last leaf of its last
-      leaf. Its fourteen leaves left this document and the index 2026-09-18 (rule 5); the records
-      are the four `historical/salary_s3*` files (the span, S3-a..d, S3-f, S3-e-2).
+      **R-SAL14**, **R-SAL15**; closed **N-541**). Its fourteen leaves left this document and the
+      index 2026-09-18 (rule 5); the records are the four `historical/salary_s3*` files.
 - [x] **R15** `77901fe0` -- what a payroll deduction's own FREQUENCY means: a RECURRENCE RULE on the
       row (**R-SAL3**, **R-SAL29**-**R-SAL32**, **R-SAL35**-**R-SAL37**); ticked with `R15-c`, its
       last leaf. Its leaves `R15-a`..`R15-c` left this document and the index 2026-09-24 (rule 5);
@@ -243,11 +240,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **X-av-1** `fe054204` -- one salary profile per paycheck definition in each scenario, active
         or not (**R-SAL63** as scoped by **R-SAL69**; migration `9b2c5656eed9`). `$0.00`; closed
         **N-294**, opened **SAL-570**.
-  - [ ] **X-av-2 -- one engine walk for base pay, each payday at its own rhythm** (**R-SAL66**;
-        closes **SAL-569**): the base, spelled three times in `paycheck_calculator`, becomes ONE
-        `PayrollBasis` method, and paychecks a year comes from the rhythm in force on the payday,
-        for the base, the yearly figure and withholding. `$0.00`, no migration; graded
-        byte-identical on a production clone and by a two-rhythm fixture.
+  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm, the
+        priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money, one display
+        moved; closed **SAL-569**.
   - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**; closes
         **N-237**, **N-391**'s app half): dated per-paycheck gross entries, one per profile and
         payday, audited; `annual_salary` DROPPED by a migration writing each profile one entry
@@ -267,6 +262,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       amount gets the pay's dated list, its inflation forecast compounding from its latest entry, in
       place of `paycheck_calculator/_lines._inflation_years` counting from `profile.created_at`. A
       step of its own after `X-av`; `$0.00` (no line inflates).
+- [ ] **S13 -- the salary template's archive and delete doors** (**R-SAL81**; findings **SAL-579**,
+      **SAL-580**): the archive door and `hard_delete_template`'s archive fallback archive the
+      template under an ACTIVE salary profile, which the Archived drawer shows at its stored
+      paycheck, and the no-history arm deletes it outright; no door may leave that profile behind,
+      the archive refusing or archiving both together. `$0.00` today.
 - [ ] **X-at -- a substituted tax year says so, and a new year can be entered** (findings **N-235**,
       **N-236**). `tax_config_service.resolve_tax_year` answers an unconfigured year with the latest
       configured year's rules -- the only available answer -- and every surface renders the result
