@@ -531,8 +531,11 @@ class TestProdComposeOverrideAppDatabaseUrl:
         """``PGSSLMODE=require`` is the standard libpq env var.
 
         Every ``psql`` call in entrypoint.sh (init_db.sql apply,
-        role provisioning, audit-trigger health check) reads this
-        env var for its connection.  Setting it once on the app
+        role provisioning) reads this env var for its connection.
+        (The audit-trigger check left the shell for step 3's one
+        transaction at plan step balance:X-cv; it connects through
+        ``DATABASE_URL``, whose ``sslmode`` the test above pins.)
+        Setting it once on the app
         service means we do not have to thread ``--set
         sslmode=require`` through every psql invocation.
         """

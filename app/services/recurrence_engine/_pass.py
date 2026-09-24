@@ -3,7 +3,9 @@ Shekel Budget App -- Recurrence Engine: ONE regeneration pass, for both engines.
 
 :func:`regenerate_definition` -- what "bring this definition's rows into line
 with its current definition" MEANS -- and the record each engine states to say
-which five acts are its own (:class:`MaintainActs`).
+which five acts are its own (:class:`MaintainActs`).  Its decision is read
+without the write by :func:`preview_regeneration`, for an edit door grading
+the state a save would leave (plan step ``pay_calendar:C18-a``).
 
 **This module exists because plan step balance:X-au-d deleted the last
 difference between the two engines' regenerate paths.**  The transaction engine
@@ -207,48 +209,147 @@ def create_for_unclaimed_occurrences(selector, plan, build) -> list:
     ]
 
 
-def _maintain(acts: MaintainActs, template, scenario_id, plan, existing):
-    """Resolve and apply everything one regeneration does to a definition's rows.
+class RegenerationPreview(NamedTuple):
+    """What a regeneration WOULD do to a definition's existing rows, decided and not written.
 
-    Three steps: derive what the definition says for every occurrence the rule
-    names, classify each existing row against that, then write.  Private
-    because it is :func:`regenerate_definition`'s middle act rather than a door
-    -- a caller that ran it without the ownership check above it would maintain
-    another owner's rows, and one that ran it without the conflict raise below
-    it would report success over rows it had refused to touch.
+    :func:`preview_regeneration`'s answer, read by the edit doors' refusal to
+    strand a planned row below the books (plan step ``pay_calendar:C18-a``,
+    ``planned_rows_books.definition_edit_refusal``): that refusal grades the
+    state an edit would LEAVE (ruling **R-PC91**), and a row this pass brings
+    into line is left where the pass puts it, not where it is stored.  Read
+    off the SAME decision function the pass writes from (:func:`_decide`), so
+    asked over the state the pass will run on -- the edit doors build its
+    read pass after their last write before regenerating a definition with a
+    rule, as the regeneration does -- the rows a
+    refusal treats as rewritten or deleted are the ones the pass rewrites
+    and deletes.
+
+    Attributes:
+        rewrites: ``{row id: <the engine's derived fields>}`` for every row
+            the pass updates in place -- the fields its writer assigns onto
+            that row, looked up by the row's own occurrence exactly as the
+            writer looks them up.  A field the class does not carry (the
+            row's paycheck, its occurrence) the pass leaves as it is.
+        retires: The ids of the rows it deletes: those whose occurrence the
+            rule no longer names and which carry nothing of the owner's.
+    """
+
+    rewrites: dict
+    retires: frozenset
+
+
+class _Decision(NamedTuple):
+    """Everything one regeneration decides before it writes a row.
+
+    Attributes:
+        plan: The pass's :class:`~._plan.GenerationPlan`, or ``None`` for a
+            cleared recurrence.
+        work: The :class:`~app.services._recurrence_common.MaintainWork`.
+        derived: ``{occurs_on: <what the definition derives>}``
+            (:func:`derived_by_occurrence`).
+    """
+
+    plan: object
+    work: object
+    derived: dict
+
+
+def _decide(acts: MaintainActs, template, schedule, scenario_id, effective_from):
+    """Return what one regeneration decides, WITHOUT writing -- or ``None`` if refused.
+
+    **The one read both the pass and its preview take**
+    (:func:`regenerate_definition`, :func:`preview_regeneration`), so what a
+    refusal is told the pass would do and what the pass does are one
+    decision.  Three reads, in order: whose scenario it is, what the rule
+    names, which rows sit in the window; then each existing row is
+    classified against the rule, and what the definition derives for every
+    occurrence it names is stated.  Private because it is the pass's first
+    act rather than a door -- a caller that wrote from it without the
+    conflict raise in :func:`regenerate_definition` would report success
+    over rows it had refused to touch.
 
     Args:
         acts: The engine's own acts (:class:`MaintainActs`).
         template: The updated definition.
+        schedule: The owner's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
         scenario_id: The scenario being maintained.
-        plan: The pass's :class:`~._plan.GenerationPlan`, or ``None`` for a
-            cleared recurrence.
-        existing: Every row of this definition in the pass's WRITE WINDOW at or
-            after its bound.  The window half is the load-bearing one: it is
-            what keeps this domain a superset of the plan's, and so what makes
-            the RETIRE branch reachable.
+        effective_from: See :func:`regenerate_definition`.
 
     Returns:
-        The :class:`~app.services._recurrence_common.MaintainOutcome`.
+        The :class:`_Decision`, or ``None`` when *scenario_id* is not the
+        definition's owner's (the block is logged), which maintains nothing.
     """
+    if not check_scenario_ownership(
+        acts.reporting.logger, template, scenario_id,
+        block_message=acts.reporting.block_message,
+    ):
+        return None
+
+    plan = resolve_generation_plan(
+        template, schedule, scenario_id, effective_from,
+        block_message=acts.reporting.block_message,
+    )
+    # The two reads take the SAME bound and the same window, and the second's
+    # answer is a SUPERSET of the first's -- it is the window, where the plan is
+    # the window intersected with the occurrences the rule names.  That is what
+    # makes the RETIRE branch reachable at all.  Equal, not strictly wider, when
+    # the rule names every period of the window, which is the ordinary case.
+    existing = rows_this_pass_may_maintain(
+        acts.selector_for(template, scenario_id), schedule, effective_from,
+    )
     work = classify_maintain_work(
         acts.selector_for(template, scenario_id), existing,
         plan.placements if plan is not None else (),
         with_records=acts.owner_records(existing),
         reattributed=acts.reattributed(existing, template),
     )
-    created, updated = acts.write(
-        work,
+    return _Decision(
+        plan, work,
         derived_by_occurrence(
             plan,
             lambda rule, occurrence, period: acts.derive_for(
                 template, rule, occurrence, period,
             ),
         ),
-        template, scenario_id,
-        plan.projected_id if plan is not None else None,
     )
-    return MaintainOutcome.after(work, created, updated)
+
+
+def preview_regeneration(
+    acts: MaintainActs, template, schedule, scenario_id, effective_from=None,
+) -> RegenerationPreview:
+    """Return what :func:`regenerate_definition` would do to the existing rows, writing nothing.
+
+    The pass's own decision (:func:`_decide`), read and not applied: which
+    rows it would bring into line, with the fields it would write onto each,
+    and which it would delete.  Its caller is an edit door grading the state
+    the save would leave before the save regenerates (plan step
+    ``pay_calendar:C18-a``); each engine exposes it beside its own
+    ``regenerate_for_template``.  Costs one decision more per edit -- the
+    pass decides again when it runs, off the session the edit leaves.
+
+    Args:
+        acts: The engine's own acts (:class:`MaintainActs`).
+        template: The edited definition, its fields and rule applied.
+        schedule: The owner's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+        scenario_id: The scenario the save would regenerate.
+        effective_from: See :func:`regenerate_definition`.
+
+    Returns:
+        The :class:`RegenerationPreview`; empty when the scenario is not the
+        owner's, since the pass would then maintain nothing.
+    """
+    decision = _decide(acts, template, schedule, scenario_id, effective_from)
+    if decision is None:
+        return RegenerationPreview(rewrites={}, retires=frozenset())
+    return RegenerationPreview(
+        rewrites={
+            row.id: decision.derived[row.occurs_on]
+            for row in decision.work.update
+        },
+        retires=frozenset(row.id for row in decision.work.retire),
+    )
 
 
 def regenerate_definition(
@@ -306,26 +407,15 @@ def regenerate_definition(
             unasked.  The caller should catch it, present the options, and call
             its engine's ``resolve_conflicts``.
     """
-    if not check_scenario_ownership(
-        acts.reporting.logger, template, scenario_id,
-        block_message=acts.reporting.block_message,
-    ):
+    decision = _decide(acts, template, schedule, scenario_id, effective_from)
+    if decision is None:
         return []
 
-    plan = resolve_generation_plan(
-        template, schedule, scenario_id, effective_from,
-        block_message=acts.reporting.block_message,
+    created, updated = acts.write(
+        decision.work, decision.derived, template, scenario_id,
+        decision.plan.projected_id if decision.plan is not None else None,
     )
-    # The two reads take the SAME bound and the same window, and the second's
-    # answer is a SUPERSET of the first's -- it is the window, where the plan is
-    # the window intersected with the occurrences the rule names.  That is what
-    # makes the RETIRE branch reachable at all.  Equal, not strictly wider, when
-    # the rule names every period of the window, which is the ordinary case.
-    existing = rows_this_pass_may_maintain(
-        acts.selector_for(template, scenario_id), schedule, effective_from,
-    )
-
-    outcome = _maintain(acts, template, scenario_id, plan, existing)
+    outcome = MaintainOutcome.after(decision.work, created, updated)
     db.session.flush()
 
     # ONE event per pass.  It gained ``updated_count`` and

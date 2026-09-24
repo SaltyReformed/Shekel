@@ -2172,7 +2172,8 @@ class TestTracksDebt:
             # state (finding N-104).
             #
             # Measured limit, stated rather than left implied: this fixture
-            # carries no revolving liability and no salary, so ``revolving_debt``
+            # carries no non-loan liability and no salary, so
+            # ``debt_without_payoff_date``
             # and ``dti`` sit at their empty values on BOTH sides and a
             # substitution there would not be discriminating.  The firing
             # control therefore plants its defect in ``total_debt``, which the

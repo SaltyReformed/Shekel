@@ -32,6 +32,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurrence_engine, transfer_recurrence
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.planned_rows_books import SaveRegeneration
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -450,6 +451,19 @@ def _savings_account(seed_user):
     )
     db.session.commit()
     return account
+
+
+def _a_save_made_today():
+    """How the transaction edit door regenerates a save left at its default date.
+
+    What ``routes/templates/crud.update_template`` hands the stranded-row
+    refusal when the form states no effective date: the transaction engine's
+    preview, maintaining from today (``display_today``).  For the tests that
+    ask ``definition_edit_refusal`` directly of an edit staged by hand.
+    """
+    return SaveRegeneration(
+        recurrence_engine.preview_regeneration_for_template, display_today(),
+    )
 
 
 def _schedule(user_id):

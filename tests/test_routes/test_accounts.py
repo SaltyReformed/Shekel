@@ -8330,7 +8330,7 @@ class TestAccountTypeMultiTenantOwnership:
     Every test in this class exercises the per-user namespace policy:
 
       * Built-in types (``user_id IS NULL``) are seeded by
-        ``scripts/seed_ref_tables.py`` and are read-only to every
+        ``app.ref_seeds.seed_reference_data`` and are read-only to every
         owner.
       * Owner-scoped types carry ``user_id = <creator>``.  Only the
         creator may rename or delete them; other owners do not see

@@ -46,6 +46,7 @@ from app.services import (
 from app.services.pay_rhythm import FixedDays
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
@@ -2341,13 +2342,19 @@ class TestCreateBaseline:
         POSTING ledger (the general ledger the balance sheet and statements read)
         is out of sync until this reposts the opening.  So the recovery is pinned
         by reading the POSTINGS, not ``balance_at``: the posting window answers
-        ONLY when the opening was reposted, where ``balance_at`` folds $200,000
-        from source either way and cannot tell reposted from not.
+        ONLY when the opening was reposted, where ``balance_at`` folds the
+        $200,000 debt from source either way and cannot tell reposted from not.
 
         NEGATIVE CONTROL: drop the ``resync_user_loan_postings`` call from
         ``baseline_service.create_baseline_scenario`` and
         ``posted_loan_balance_at`` returns ``None`` (the opening is never
-        reposted), while ``balance_at`` still folds $200,000.00 from source.
+        reposted), while ``balance_at`` still folds the $200,000.00 debt from
+        source.
+
+        The two readers speak different signs, and the test reads each in its
+        own.  The posting reader answers what the loan OWES; the seam reports
+        what it HOLDS -- ``-200,000.00`` -- since plan step credit_card:CC-5-5c
+        (ruling R-CC47), so its figure is read through ``owed()``.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
@@ -2377,15 +2384,17 @@ class TestCreateBaseline:
             # The recovery REPOSTED the loan's opening: the posting reader answers
             # $200,000 from the reconciled general ledger (None if still missing).
             # This is what pins the recovery -- balance_at cannot, since it folds
-            # the same $200,000 from source whether or not the opening was reposted.
+            # the same $200,000 debt from source whether or not the opening was
+            # reposted.
             assert posted_loan_balance_at(
                 loan_id, new_baseline.id, bctx.as_of,
             ) == Decimal("200000.00")
             # And the user-facing balance is correct: no payment made, so the loan
-            # still owes its opening.
-            assert balance_at.balance_at(
+            # still owes its opening.  The seam holds it as -$200,000.00, so what
+            # it owes is read through ``owed()``.
+            assert owed(balance_at.balance_at(
                 reloaded, bctx, bctx.as_of,
-            ) == Decimal("200000.00")
+            )) == Decimal("200000.00")
 
     def test_create_baseline_requires_login(self, app, client):
         """POST /create-baseline without authentication redirects to login.

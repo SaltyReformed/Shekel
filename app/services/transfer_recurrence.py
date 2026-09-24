@@ -70,7 +70,9 @@ from app.services.recurrence import compute_due_date
 from app.services.recurrence_engine import (
     MaintainActs,
     PassReporting,
+    RegenerationPreview,
     create_for_unclaimed_occurrences,
+    preview_regeneration,
     regenerate_definition,
     resolve_generation_plan,
 )
@@ -506,6 +508,32 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
             :func:`resolve_conflicts`.
     """
     return regenerate_definition(
+        _PASS, template, schedule, scenario_id, effective_from,
+    )
+
+
+def preview_regeneration_for_template(
+    template, schedule, scenario_id, effective_from=None,
+) -> RegenerationPreview:
+    """Return what :func:`regenerate_for_template` would do to existing transfers, unwritten.
+
+    The pass's own decision, read and not applied
+    (:func:`~app.services.recurrence_engine.preview_regeneration`): the
+    transfers it would bring into line, with the fields it would send
+    ``transfer_service.update_transfer`` for each, and those it would
+    delete.  Read by the edit door's stranded-row refusal before the save
+    regenerates (plan step ``pay_calendar:C18-a``).
+
+    Args:
+        template: The edited TransferTemplate.
+        schedule: See :func:`regenerate_for_template`.
+        scenario_id: The scenario the save would regenerate.
+        effective_from: See :func:`regenerate_for_template`.
+
+    Returns:
+        The :class:`~app.services.recurrence_engine.RegenerationPreview`.
+    """
+    return preview_regeneration(
         _PASS, template, schedule, scenario_id, effective_from,
     )
 

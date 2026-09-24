@@ -171,9 +171,12 @@
         {% endif %}
       </div>
 
-      {# Click-to-edit balance: the cell DISPLAYS the resolver
-         current_balance (SSOT with the hero and the group subtotal) and
-         opens the shared anchor editor on click.  The wrapper -- not just
+      {# Click-to-edit balance: the cell DISPLAYS ad.shown_balance -- the
+         seam's held current_balance in the tile's words, what a liability
+         owes (ruling R-CC47) -- which is also what the group subtotal sums;
+         the net-worth hero sums the held current_balance itself.  One
+         projection behind all three.  It opens the shared anchor editor on
+         click.  The wrapper -- not just
          the inner cell -- carries the raised z-index, so the inline editor
          that REPLACES it (input + Save / Cancel) is also lifted above the
          cell's .stretched-link overlay and stays clickable. #}
@@ -202,8 +205,10 @@
           Monthly Payment <span class="font-mono">{{ money(ad.loan.figures.terms.monthly_payment) }}</span>
           {%- if ad.loan.figures.payoff_date is not none %} &middot; payoff {{ ad.loan.figures.payoff_date.strftime('%b %Y') }}{% endif %}
         </span>
-        {% elif ad.projected %}
-        {% set last_proj = ad.projected.items() | list | last %}
+        {% elif ad.shown_projected %}
+        {#- The tile's own words (ruling R-CC47): a liability's caption states
+           what it is projected to OWE, in the figure's sign above it. #}
+        {% set last_proj = ad.shown_projected.items() | list | last %}
         <span>{{ last_proj[0] }} <span class="font-mono">{{ money(last_proj[1], cents=false) }}</span></span>
         {% endif %}
         {% if property_equity %}
@@ -295,8 +300,12 @@
        loans at all the summary is None and this whole footer is absent. #}
     <span class="text-success">All loans paid off</span>
     {% endif %}
-    {% if debt_summary.revolving_debt > 0 %}
-    <span class="text-muted">excludes <span class="font-mono">{{ money(debt_summary.revolving_debt) }}</span> revolving</span>
+    {#- Ruling R-CC68 (ledger row CC-361, plan step credit_card:CC-5-5c): the
+       figure is every debt with no payoff model -- a card, a loan with no
+       terms entered, a custom liability -- so it is captioned by WHY it is
+       left out, not as "revolving", which two of the three kinds are not. #}
+    {% if debt_summary.debt_without_payoff_date > 0 %}
+    <span class="text-muted">excludes <span class="font-mono">{{ money(debt_summary.debt_without_payoff_date) }}</span> with no payoff date</span>
     {% endif %}
     {# ONE predicate for the DTI block (X-s3 / finding N-106): the ratio and
        the band label are populated together or absent together, so they are

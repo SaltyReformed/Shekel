@@ -23,9 +23,16 @@
 
       <div class="mb-3">
         <label for="account_id" class="form-label">Account</label>
+        {# ``data-is-debt`` (plan step credit_card:CC-5-5d): a goal on a debt
+           is a milestone to get UNDER, so goal_mode_toggle.js relabels the
+           target and hides the two fields a debt goal cannot carry -- the
+           income-relative mode (Fixed only) and the manual per-period
+           contribution (ruling R-CC90).  The goal door refuses both either
+           way; this only keeps the form from offering them. #}
         <select id="account_id" name="account_id" class="form-select" required>
           {% for acct in accounts %}
           <option value="{{ acct.id }}"
+            data-is-debt="{{ 'true' if acct.id in debt_account_ids else 'false' }}"
             {{ 'selected' if goal and goal.account_id == acct.id else '' }}>
             {{ acct.name }} ({{ acct.account_type.name if acct.account_type else '' }})
           </option>
@@ -40,7 +47,7 @@
                placeholder="e.g. Emergency Fund, Vacation">
       </div>
 
-      <div class="mb-3">
+      <div class="mb-3" id="goal-mode-group">
         <label for="goal_mode_id" class="form-label">Goal Type</label>
         <select id="goal_mode_id" name="goal_mode_id" class="form-select"
                 data-fixed-mode-id="{{ GOAL_MODE_FIXED }}">
@@ -61,12 +68,20 @@
       {# --- Fixed mode fields --- #}
       <div id="fixed-fields">
         <div class="mb-3">
-          <label for="target_amount" class="form-label">Target Amount</label>
+          <label for="target_amount" class="form-label" id="target-amount-label"
+                 data-savings-label="Target Amount"
+                 data-debt-label="Owe Less Than">Target Amount</label>
           <div class="input-group">
             <span class="input-group-text">$</span>
+            {# ``value`` is tested against ``none`` rather than for truth: a
+               debt goal may target $0.00 (ruling R-CC72), which is falsy. #}
             <input type="number" step="0.01" min="0.01" id="target_amount" name="target_amount"
                    class="form-control"
-                   value="{{ goal.target_amount if goal and goal.target_amount else '' }}">
+                   value="{{ goal.target_amount if goal and goal.target_amount is not none else '' }}">
+          </div>
+          <div class="form-text d-none" id="debt-target-help">
+            The goal is reached when this debt owes this amount or less.
+            It must be below what the debt owes today; $0 means paid off.
           </div>
         </div>
       </div>
@@ -105,7 +120,7 @@
         <div class="form-text">When do you want to reach this goal?</div>
       </div>
 
-      <div class="mb-3">
+      <div class="mb-3" id="contribution-group">
         <label for="contribution_per_period" class="form-label">
           Manual Contribution per Period <small class="text-muted">(optional)</small>
         </label>
@@ -127,6 +142,21 @@
         </a>
       </div>
     </form>
+    {% if goal %}
+    {# Delete: the goal door's refusals send the owner here ("delete the goal
+       first", "create a new goal instead"), and deleting is the only way a
+       goal stops (plan step credit_card:CC-5-5d, ruling R-CC94).  Its own form,
+       outside the edit form, posting to the existing route; ``data-confirm``
+       is the project's destructive-action prompt (static/js/confirm.js). #}
+    <form method="POST" action="{{ url_for('savings.delete_goal', goal_id=goal.id) }}"
+          class="mt-3"
+          data-confirm="Delete the goal &quot;{{ goal.name }}&quot;? It stops showing on your pages.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-outline-danger btn-sm">
+        <i class="bi bi-trash"></i> Delete goal
+      </button>
+    </form>
+    {% endif %}
     {% endcall %}
   </div>
 </div>

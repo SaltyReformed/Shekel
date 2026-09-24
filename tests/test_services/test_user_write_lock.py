@@ -701,7 +701,7 @@ class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
                 "the single per-owner key exists to remove (the repeats are "
                 "the same re-entrant key and are harmless)"
             )
-            # The INSERT specifically.  ``governing_anchor_on``'s SELECT names
+            # The INSERT specifically.  ``governing_anchor``'s SELECT names
             # the same table and comes first, so a build whose stager read the
             # table and returned without appending would satisfy a bare
             # "touched the table" check while writing nothing.

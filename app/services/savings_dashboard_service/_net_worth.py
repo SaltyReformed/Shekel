@@ -56,6 +56,7 @@ from app.services import home_equity_service
 from app.services.home_equity_service import HomeEquity
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed, shown_figure
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -92,9 +93,13 @@ class NetWorthToday:
     hero's contract lived in a template comment.
 
     Attributes:
-        net_worth: ``total_assets - total_liabilities`` -- the hero figure.
+        net_worth: The plain sum of every account's HELD balance today -- the
+            hero figure, equal to ``total_assets - total_liabilities`` by
+            arithmetic (ruling R-CC47, plan step credit_card:CC-5-5c).
         total_assets: The sum of every non-liability account's balance today.
-        total_liabilities: The POSITIVE magnitude owed across every liability.
+        total_liabilities: What every liability OWES today, summed --
+            :func:`~app.services.liability_sign.owed` of each balance, so a
+            card holding a credit lowers it (ledger row CC-354).
         liquid: The subset of assets in liquid account types (the
             emergency-fund basis), from :func:`.._metrics._sum_liquid_balances`.
     """
@@ -142,7 +147,7 @@ class NetWorthSeries:
     (``series["current_index"] = ...``) -- so the object a template and a
     serializer read was never fully constructed anywhere, and "which keys does
     the series have" needed both modules in call order to answer.  That is
-    byte-for-byte the shape ruling R-BD deleted from :class:`~.._metrics.DebtSummary`,
+    byte-for-byte the shape ruling R-BD deleted from :class:`~.._debt_summary.DebtSummary`,
     whose DTI keys were mutated in by a separate applier.
 
     Attributes:
@@ -261,9 +266,18 @@ def compute_net_worth_today(
     Reduces over each account's ``current_balance`` -- the entries-aware
     resolver figure already in ``account_data`` (E-25), NOT the raw
     ``current_anchor_balance`` cache (deleted at plan step X-f1c3a) -- so this hero agrees with the
-    per-tile balances the same page renders.  Assets add their balance;
-    liabilities accumulate their POSITIVE magnitude into
-    ``total_liabilities``.  Net worth is ``total_assets - total_liabilities``.
+    per-tile balances the same page renders.
+
+    **Net worth is the plain SUM of every balance** (ruling **R-CC47**, plan
+    step credit_card:CC-5-5c): every balance is HELD -- negative when owed, a
+    configured loan's included -- so there is no sign branch left to take.
+    ``total_assets`` sums the assets; ``total_liabilities`` is what the
+    liabilities OWE, :attr:`~.._types.AccountProjection.owed` summed, so
+    ``net_worth == total_assets - total_liabilities`` by arithmetic rather than
+    by a rule kept in step.  Until CC-5-5c this took ``abs`` of each liability,
+    because a configured loan reported owed and every other account held: a
+    card holding a ``$50.00`` credit counted as ``$50.00`` owed, net worth low
+    by twice the credit (ledger row CC-354).
 
     The liability question is the projection's own
     :attr:`~.._types.AccountProjection.is_liability` (plan step X-t1, finding
@@ -283,17 +297,17 @@ def compute_net_worth_today(
         The :class:`NetWorthToday` value object (a four-key dict until plan
         step X-w3, ruling R-CI).
     """
+    net_worth = sum((ad.current_balance for ad in account_data), ZERO)
     total_assets = ZERO
     total_liabilities = ZERO
     for ad in account_data:
-        balance = ad.current_balance
         if ad.is_liability:
-            total_liabilities += abs(balance)
+            total_liabilities += ad.owed
         else:
-            total_assets += balance
+            total_assets += ad.current_balance
 
     return NetWorthToday(
-        net_worth=total_assets - total_liabilities,
+        net_worth=net_worth,
         total_assets=total_assets,
         total_liabilities=total_liabilities,
         liquid=_sum_liquid_balances(account_data),
@@ -309,8 +323,10 @@ def _sum_composition_at_period(
     The per-band generalization of the old asset/liability split: each
     non-liability account adds its balance to its category band (asset /
     retirement / investment / other, from its own resolved category),
-    and each liability account accumulates its POSITIVE magnitude
-    (``abs(bal)``) into the liability band.
+    and each liability account accumulates what it OWES
+    (:func:`~app.services.liability_sign.owed` of its HELD balance; ruling
+    R-CC47, plan step credit_card:CC-5-5c) into the liability band -- a credit
+    lowering it.  It took ``abs(bal)`` until CC-5-5c (ledger row CC-354).
 
     **The SIGN comes from the projection's own
     :attr:`~.._types.AccountProjection.is_liability`, which is the predicate
@@ -330,8 +346,8 @@ def _sum_composition_at_period(
     left to disagree with.
 
     This is the ONE per-period net-worth reduction.  Summing the asset-side
-    bands and subtracting the liability band is exactly asset ``+bal`` /
-    liability ``-abs(bal)``, and :func:`compute_net_worth_series` derives its
+    bands and subtracting the liability band is exactly the plain sum of every
+    balance (``-owed(bal)`` is ``bal``), and :func:`compute_net_worth_series` derives its
     ``assets`` / ``liabilities`` / ``net`` from these bands rather than
     re-reducing the maps -- so the composition split reconciles to the series
     by construction, not by two producers agreeing.
@@ -367,7 +383,9 @@ def _sum_composition_at_period(
         # X-w1 applied to the category map one line down and not to this one.
         bal = ad.balances[period_id]
         if ad.is_liability:
-            sums[LIABILITY_KEY] += abs(bal)
+            # What it owes (R-CC47, plan step credit_card:CC-5-5c): the map is
+            # HELD, a configured loan's included, so a credit LOWERS the band.
+            sums[LIABILITY_KEY] += owed(bal)
         else:
             sums[category_key(ad.category)] += bal
     return sums
@@ -829,7 +847,14 @@ def compute_sparklines(
         # one point does not leave a gap -- it moves EVERY remaining point on
         # that card.  The forward window is a slice of the same period window
         # the maps are built over, so a missing column is a defect and says so.
-        series = [ad.balances[p.period_id] for p in window]
+        # In the tile's own words (ruling R-CC47): a liability's line traces
+        # what it OWES, so a loan amortizing down draws falling, as the figure
+        # beside it does.  The map is HELD since plan step
+        # credit_card:CC-5-5c; drawn raw, the same loan would climb.
+        series = [
+            shown_figure(ad.account.account_type, ad.balances[p.period_id])
+            for p in window
+        ]
         if _is_informative(series):
             result[ad.account.id] = series
     return result

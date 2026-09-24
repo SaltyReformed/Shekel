@@ -7,7 +7,10 @@ the amount model, the payroll feeds.  They carry no behaviour beyond the
 section totals that belong to the section owning the data (``taxes.total``,
 ``deductions.total_pre_tax``, ``earnings.total_taxable``,
 ``earnings.take_home_rate_pct``), so this leaf imports nothing of the engine
-and every other leaf may import it.
+and every other leaf may import it.  Two rules sit beside them:
+:func:`waterfall_gross` and :func:`waterfall_net`, the gross and the net a
+waterfall of those totals makes, which a priced paycheck and a transcribed pay
+stub share (plan step **salary:S11-b**).
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**), which is what put the package where the module had been; the
@@ -18,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from app.utils.money import ZERO
+from app.utils.money import ZERO, round_money
 
 
 @dataclass
@@ -31,10 +34,66 @@ class PricedLine:
     which list of the breakdown holds it.  ``target_account_id`` is the
     account a DEDUCTION funds (the contribution feed reads it) and ``None``
     for every earning.
+
+    ``paycheck_line_id`` is WHICH ``salary.paycheck_lines`` row was priced,
+    since plan step **salary:S11-b**: the pay stub entry door sets each stub
+    amount beside the line the app prices that payday and joins the two on
+    this key, never on the display name.  The engine copies the priced line's
+    ``id``; it is ``None`` only for a line that carries none -- the engine
+    suite's duck-typed line fakes and the display fakes tests build by hand.
     """
     name: str
     amount: Decimal
     target_account_id: int = None
+    paycheck_line_id: int | None = None
+
+
+def waterfall_gross(base_pay: Decimal, taxable_earnings: Decimal) -> Decimal:
+    """Return a paycheck's GROSS: base pay plus the taxable earnings.
+
+    The first step of the waterfall :func:`waterfall_net` finishes, written
+    once for the same two readers: the engine's
+    :func:`~._lines.priced_gross` (and the year-to-date wage cumulative that
+    replays it) and a transcribed pay stub's totals (plan step
+    **salary:S11-b**).
+
+    Args:
+        base_pay: What the salary pays for the paycheck.
+        taxable_earnings: The taxable earning lines' total.
+
+    Returns:
+        Their sum.
+    """
+    return base_pay + taxable_earnings
+
+
+def waterfall_net(
+    gross: Decimal, pre_tax: Decimal, taxes: Decimal, post_tax: Decimal,
+    after_tax: Decimal,
+) -> Decimal:
+    """Return the deposit a paycheck's waterfall makes: its NET pay.
+
+    Gross, less the pre-tax deductions, the withholding and the post-tax
+    deductions, plus the after-tax earnings.  **The rule written once** for
+    the two things that have a net: the paycheck the engine prices
+    (:func:`~._pricing.calculate_paycheck`) and the real pay stub whose
+    printed net the entry door checks (:mod:`app.services.pay_stub_service`,
+    plan step **salary:S11-b**).  With :func:`waterfall_gross` it is the whole
+    arithmetic the two share; which LINES feed each total is each caller's own
+    grouping (the engine's pass per kind, the stub's sum per kind), so a new
+    kind changes these signatures and both callers answer the change.
+
+    Args:
+        gross: Base pay plus the taxable earnings.
+        pre_tax: The pre-tax deductions' total.
+        taxes: The withholding's total.
+        post_tax: The post-tax deductions' total.
+        after_tax: The after-tax earnings' total.
+
+    Returns:
+        The net, rounded to the cent.
+    """
+    return round_money(gross - pre_tax - taxes - post_tax + after_tax)
 
 
 @dataclass

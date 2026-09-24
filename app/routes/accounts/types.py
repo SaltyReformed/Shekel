@@ -50,7 +50,7 @@ def create_account_type():
 
     The new row carries ``user_id = current_user.id`` (commit C-28 /
     F-044).  Seeded built-ins (``user_id IS NULL``) are only created
-    by ``scripts/seed_ref_tables.py`` and are read-only to every
+    by ``app.ref_seeds.seed_reference_data`` and are read-only to every
     owner; this route never inserts a built-in.
 
     The duplicate-name check is scoped to the caller's own types so

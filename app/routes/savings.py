@@ -20,7 +20,6 @@ from app.utils.digit_strings import parse_row_id
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
 from app.routes._commit_helpers import (
@@ -31,8 +30,14 @@ from app.routes._commit_helpers import (
 )
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
-from app.services import account_service, savings_dashboard_service
+from app.services import (
+    account_service,
+    savings_dashboard_service,
+    savings_goal_door,
+)
+from app.services.account_category import is_liability_account
 from app.services.balance_at import BalanceContext
+from app.services.savings_goal_door import GoalProposal
 from app.services.savings_dashboard_service import NetWorthRegion
 
 logger = logging.getLogger(__name__)
@@ -257,11 +262,12 @@ def _serialize_sparklines(sparklines: dict) -> dict:
     return points_by_id
 
 # Fields allowed in goal updates.  Income-relative fields are included
-# so mode changes propagate correctly.
+# so mode changes propagate correctly.  ``is_active`` is NOT one: deleting a
+# goal is its only writer (plan step credit_card:CC-5-5d), so no edit can bring
+# a deleted goal back past the goal door and the type door.
 _GOAL_UPDATE_FIELDS = frozenset({
     "name", "target_amount", "target_date", "contribution_per_period",
-    "account_id", "is_active", "goal_mode_id", "income_unit_id",
-    "income_multiplier",
+    "account_id", "goal_mode_id", "income_unit_id", "income_multiplier",
 })
 
 
@@ -269,23 +275,61 @@ def _goal_form_context(goal=None):
     """Build common template context for the goal create/edit form.
 
     Loads the account list, goal mode ref table, and income unit ref
-    table that the form dropdowns need.
+    table that the form dropdowns need, and names which of the accounts are
+    DEBTS: a goal on a debt is a milestone to get under (plan step
+    credit_card:CC-5-5d), so the form relabels its target and hides the two
+    fields a debt goal cannot carry (the income-relative mode, ruling R-CC69's
+    premise, and the manual per-period contribution, ruling R-CC90).  The
+    classifier is the canonical id-based one, asked here rather than in the
+    template.
+
+    **The account list is what the goal door will accept** (ruling R-CC87): a
+    create offers every active account; an edit of a DEBT goal offers only its
+    own debt, and an edit of a savings goal only savings accounts.  An edit
+    always offers the goal's OWN account, archived or not -- the list held
+    active accounts only, so a goal on an archived account had no option for
+    its own account and the browser submitted the first one: a debt goal's
+    rename was refused as a move, and a savings goal silently moved.
 
     Args:
         goal: An existing SavingsGoal for edit mode, or None for create.
 
     Returns:
-        dict with keys: goal, accounts, goal_modes, income_units.
+        dict with keys: goal, accounts, debt_account_ids, goal_modes,
+        income_units.
     """
-    accounts = account_service.list_active_accounts(current_user.id)
+    accounts = _goal_form_accounts(goal)
     goal_modes = GoalMode.query.order_by(GoalMode.id).all()
     income_units = IncomeUnit.query.order_by(IncomeUnit.id).all()
     return {
         "goal": goal,
         "accounts": accounts,
+        "debt_account_ids": frozenset(
+            acct.id for acct in accounts if is_liability_account(acct)
+        ),
         "goal_modes": goal_modes,
         "income_units": income_units,
     }
+
+
+def _goal_form_accounts(goal):
+    """Return the accounts the goal form offers (see :func:`_goal_form_context`).
+
+    Args:
+        goal: The SavingsGoal being edited, or None for a create.
+
+    Returns:
+        The accounts to list, the goal's own first when it is not active.
+    """
+    active = account_service.list_active_accounts(current_user.id)
+    if goal is None:
+        return active
+    if is_liability_account(goal.account):
+        return [goal.account]
+    savings = [acct for acct in active if not is_liability_account(acct)]
+    if goal.account not in savings:
+        savings.insert(0, goal.account)
+    return savings
 
 
 def _clean_goal_form_data(form_data: Mapping[str, str]) -> dict[str, str]:
@@ -412,42 +456,70 @@ def cockpit_section():
     )
 
 
+def render_cockpit_balance(account_id: int) -> str | None:
+    """Draw one account's cockpit balance cell, or ``None`` if the cockpit hides it.
+
+    The cockpit's DRAW (rulings R-CC74 / R-CC77, finding CC-365): the ONE
+    function behind :func:`cockpit_balance` -- the Cancel / Escape revert
+    ``accounts.anchor._anchor_revert_url`` maps ``revert=accounts`` to -- and
+    behind the anchor save opened from a cockpit card, so the saved cell and
+    the reverted one cannot differ.  They did: the save answered with the
+    grid's HELD cell, so a card owing $1,200.00 showed ``-$1,200.00`` until
+    ``balanceChanged`` redrew the section, because this cell shows what a debt
+    OWES (plan step credit_card:CC-5-5c).
+
+    Renders ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>``
+    cell the editor replaced -- with the SAME value the grid loop passes it
+    (plan step X-t1): the account's ``AccountProjection`` from the narrow
+    :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
+    producer, over a read pass this opens, as the GET always has.  It never
+    aborts, because the save calls it after its write has committed.
+
+    **It keys on the id, and the producer is the ownership gate**: the pass is
+    the current user's, so an id that is not among THEIR active accounts --
+    not found, not owned, or archived -- answers ``None``.  The save's
+    account is already ownership-checked; the GET needs no second lookup.
+
+    Args:
+        account_id: The account whose cell to draw.
+
+    Returns:
+        The rendered cell, or ``None`` when the account is not among the
+        owner's ACTIVE accounts -- which the GET answers with a 404 and the
+        save (archived between page load and now) with an empty cell.
+    """
+    projection = savings_dashboard_service.compute_account_balance_cell(
+        BalanceContext.build(current_user.id), account_id,
+    )
+    if projection is None:
+        return None
+    return render_template("savings/_cockpit_balance.html", ad=projection)
+
+
 @savings_bp.route("/savings/cockpit/<int:account_id>/balance")
 @require_owner
 def cockpit_balance(account_id):
     """HTMX partial: re-render one account's cockpit balance cell.
 
-    The Cancel / Escape (and 409-conflict retry) revert target for the
-    cockpit's per-card inline anchor editor: ``accounts._anchor_revert_url``
-    maps the editor's ``revert=accounts`` token here, mirroring how
-    ``revert=dashboard`` maps to ``dashboard.balance_section``.  Renders
-    ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>`` cell the
-    editor replaced -- with the seam-derived balance from the
-    narrow :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
-    producer, so the reverted cell shows the exact figure the grid showed.
+    The Cancel / Escape revert target for the cockpit's per-card inline anchor
+    editor: ``accounts._anchor_revert_url`` maps the editor's
+    ``revert=accounts`` token here, mirroring how ``revert=dashboard`` maps to
+    ``dashboard.balance_section``.  The cell is :func:`render_cockpit_balance`'s
+    -- the draw a save opened from that card answers with too.
 
-    The producer is the IDOR + active gate (as ``balance_section``'s
-    producer is for the dashboard): it returns ``None`` -- a 404 -- for an
-    account that is not among the user's active accounts (not found, not
-    owned, or archived between page load and the revert), satisfying the
-    404-for-both security rule.  Non-HTMX requests redirect to the
-    dashboard page.
-
-    The partial is rendered with the SAME value the grid loop passes it (plan
-    step X-t1): the producer returns the account's ``AccountProjection``, so
-    the reverted cell and the cell it replaces read one object rather than two
-    dicts that have to agree.
+    The draw's ``None`` is the IDOR + active gate (as ``balance_section``'s
+    producer is for the dashboard): a 404 for an account that is not among the
+    user's active accounts (not found, not owned, or archived between page
+    load and the revert), satisfying the 404-for-both security rule.
+    Non-HTMX requests redirect to the dashboard page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("savings.dashboard"))
 
-    projection = savings_dashboard_service.compute_account_balance_cell(
-        BalanceContext.build(current_user.id), account_id,
-    )
-    if projection is None:
+    cell = render_cockpit_balance(account_id)
+    if cell is None:
         abort(404)
-
-    return render_template("savings/_cockpit_balance.html", ad=projection)
+    return cell
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
@@ -469,13 +541,26 @@ def create_goal():
 
     data = _create_schema.load(cleaned)
 
-    # Validate account ownership and active status.
-    acct = db.session.get(Account, data.get("account_id"))
-    if not acct or acct.user_id != current_user.id or not acct.is_active:
-        flash("Invalid account.", "danger")
+    # The ONE goal door (plan step credit_card:CC-5-5d): the account, the
+    # savings / debt rules and a debt goal's target against its tile.
+    verdict = savings_goal_door.judge_goal_save(
+        BalanceContext.build(current_user.id),
+        GoalProposal(
+            account_id=data["account_id"],
+            goal_mode_id=data["goal_mode_id"],
+            target_amount=data.get("target_amount"),
+            contribution_per_period=data.get("contribution_per_period"),
+        ),
+    )
+    if verdict.refusal is not None:
+        flash(verdict.refusal, "danger")
         return redirect(url_for("savings.new_goal"))
 
-    goal = SavingsGoal(user_id=current_user.id, **data)
+    # A new goal on a card or other non-loan debt records the start its
+    # target was just judged against (ruling R-CC91); ``None`` otherwise.
+    goal = SavingsGoal(
+        user_id=current_user.id, start_owed=verdict.start_owed, **data,
+    )
     db.session.add(goal)
 
     try:
@@ -550,13 +635,6 @@ def update_goal(goal_id):
             current=goal.version_id,
         )
 
-    # Validate account ownership if account is being changed.
-    if "account_id" in data:
-        acct = db.session.get(Account, data["account_id"])
-        if not acct or acct.user_id != current_user.id:
-            flash("Invalid account.", "danger")
-            return redirect(url_for("savings.edit_goal", goal_id=goal_id))
-
     # When switching modes, explicitly clear the now-irrelevant fields
     # so the update loop sets them to None on the goal object.
     if "goal_mode_id" in data:
@@ -566,6 +644,27 @@ def update_goal(goal_id):
             data.setdefault("income_multiplier", None)
         else:
             data.setdefault("target_amount", None)
+
+    # The ONE goal door (plan step credit_card:CC-5-5d), judging the goal this
+    # edit would leave behind: every field the form left out is the goal's own.
+    # It is also where the account is checked -- this route checked ownership
+    # alone, so an edit could move a goal onto an ARCHIVED account the create
+    # refuses.
+    verdict = savings_goal_door.judge_goal_save(
+        BalanceContext.build(current_user.id),
+        GoalProposal(
+            account_id=data.get("account_id", goal.account_id),
+            goal_mode_id=data.get("goal_mode_id", goal.goal_mode_id),
+            target_amount=data.get("target_amount", goal.target_amount),
+            contribution_per_period=data.get(
+                "contribution_per_period", goal.contribution_per_period,
+            ),
+        ),
+        goal,
+    )
+    if verdict.refusal is not None:
+        flash(verdict.refusal, "danger")
+        return redirect(url_for("savings.edit_goal", goal_id=goal_id))
 
     for field, value in data.items():
         if field in _GOAL_UPDATE_FIELDS:

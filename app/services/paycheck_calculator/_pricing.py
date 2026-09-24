@@ -21,9 +21,9 @@ from collections.abc import Sequence
 from app.services.pay_calendar import DerivedPeriod
 from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
 from app.services.salary_raises import get_raise_event
-from app.utils.money import ZERO, round_money
+from app.utils.money import ZERO
 
-from ._breakdown import Earnings, PaycheckBreakdown, PeriodInfo
+from ._breakdown import Earnings, PaycheckBreakdown, PeriodInfo, waterfall_net
 from ._calendar_questions import (
     _get_cumulative_wages,
     _is_third_paycheck,
@@ -136,13 +136,11 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # after every deduction and withholding (plan step salary:R18-b).
     after_tax_lines = priced_after_tax(line_ctx)
 
-    # Step 9: Net pay.
-    net_pay = round_money(
-        gross_biweekly
-        - deductions.total_pre_tax
-        - taxes.total
-        - deductions.total_post_tax
-        + sum((line.amount for line in after_tax_lines), ZERO)
+    # Step 9: Net pay, through the waterfall a transcribed pay stub shares.
+    net_pay = waterfall_net(
+        gross_biweekly, deductions.total_pre_tax, taxes.total,
+        deductions.total_post_tax,
+        sum((line.amount for line in after_tax_lines), ZERO),
     )
 
     return PaycheckBreakdown(

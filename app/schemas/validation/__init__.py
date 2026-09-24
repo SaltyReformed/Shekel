@@ -138,6 +138,13 @@ from app.schemas.validation.pay_periods import (
     PayPeriodTruncateSchema,
     PayScheduleSchema,
 )
+from app.schemas.validation.pay_stubs import (
+    PayStubFigureSchema,
+    PayStubLineSchema,
+    PayStubOneOffSchema,
+    PayStubPaydaySchema,
+    PayStubSchema,
+)
 from app.schemas.validation.retirement import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
@@ -211,6 +218,11 @@ __all__ = [
     "DebtStrategyCalculateSchema",
     "PaycheckLineCreateSchema",
     "PaycheckLineUpdateSchema",
+    "PayStubFigureSchema",
+    "PayStubLineSchema",
+    "PayStubOneOffSchema",
+    "PayStubPaydaySchema",
+    "PayStubSchema",
     "EntryCreateSchema",
     "EntryUpdateSchema",
     "EscrowComponentSchema",

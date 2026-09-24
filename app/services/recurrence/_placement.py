@@ -367,8 +367,9 @@ def _lands_inside_the_books(
     paycheck the books open inside is kept.  Compared through the one strict
     :func:`~app.utils.books_boundary.books_hold`.  The doors that refuse to
     strand a still-projected row below the books
-    (``app.services.planned_rows_books``) ask :func:`placements_below_the_books`,
-    the other half of the same split -- so each refuses exactly the
+    (``app.services.planned_rows_books``) read the other half of the same
+    split, :func:`occurrence_walk`'s ``below_the_books``
+    (``definition_unarchive.books_reading``) -- so each refuses exactly the
     occurrences this stops keeping.
 
     **An UNPLACED occurrence is kept**, because it has no row day to compare
@@ -409,10 +410,13 @@ def placements_below_the_books(
     of the books -- ONE walk, ONE comparison, and no second spelling of
     either.  The maintain pass matches a row to the occurrence it answers
     (``occurs_on``), so a live row answering one of these is a row the next
-    pass to reach it retires, and the doors that refuse to strand an unpaid
-    row ask this rather than reading the row's stored due day, which the
-    save's regeneration re-dates by the NEW rule (a cleared due day moves a
-    bill's cash day onto its scheduled day, inside the books).
+    pass to reach it retires.  The doors that refuse to strand an unpaid row
+    read the same half off :func:`occurrence_walk` itself
+    (``definition_unarchive.books_reading``, one walk per check since plan
+    step ``pay_calendar:C18-a``'s ruling **R-PC98**) rather than the row's
+    stored due day, which the save's regeneration re-dates by the NEW rule (a
+    cleared due day moves a bill's cash day onto its scheduled day, inside
+    the books); this function states the half on its own.
 
     The closing is kept as *resolved* carries it, so an occurrence the
     closing stops is named by neither half and never reported here.

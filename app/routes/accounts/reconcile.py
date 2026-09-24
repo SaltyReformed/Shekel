@@ -264,9 +264,11 @@ def reconcile_statement(
 ) -> "reconcile_service.Statement | None":
     """Return the STATEMENT this account is being reconciled against.
 
-    The route tier's one construction of
+    The route tier's construction of
     :class:`~app.services.reconcile_service.Statement` -- the value both halves
-    of that package take (pay-calendar plan step C4-a-2).  It pairs the
+    of that package take (pay-calendar plan step C4-a-2) -- for every caller
+    that holds no assertion; :func:`prompt_fragment` holds the one its true-up
+    reported and builds its own from it (ruling R-CC79).  It pairs the
     governing assertion with the requester's pay calendar, which is what makes
     every row the panel offers datable and is the OWNERSHIP scope every arm
     narrows by.
@@ -317,7 +319,8 @@ def reconcile_context(
             swaps in place.  Named ``panel`` rather than ``panel_id`` because
             :func:`panel_id` is now a module-level function and a parameter
             shadowing it would make the two indistinguishable at a glance.
-        statement: What is being reconciled, from :func:`reconcile_statement`,
+        statement: What is being reconciled, from :func:`reconcile_statement`
+            or, for the prompt, from the assertion the true-up reported --
             resolved by the caller.  **Taken rather than resolved here**
             (finding **N-222**): the POST needs the SAME value for its writers,
             which stamp its assertion's id and date every settled row against
@@ -359,12 +362,24 @@ def reconcile_context(
     }
 
 
-def prompt_fragment(account: Account) -> str:
+def prompt_fragment(
+    account: Account, governing: "cash_ledger.AnchorPoint",
+) -> str:
     """Return the out-of-band reconcile prompt, or ``""`` when there is none.
 
     Appended to a successful true-up's body so the modal lands in
     ``#modal-mount`` (``base.html``) whichever of the five surfaces opened the
     editor.  It is empty whenever the account has nothing outstanding.
+
+    **It reconciles against the assertion its caller HOLDS, and reads none**
+    (ruling **R-CC79**).  The true-up's write door reports the assertion that
+    governs after its write, read under the owner's lock; this asked the ledger
+    the same question again after the commit, outside the lock -- a second
+    answer a concurrent save could make disagree with the first.  So it builds
+    its :class:`~app.services.reconcile_service.Statement` from that record
+    rather than through :func:`reconcile_statement`, which stays the one
+    construction for the callers that hold no assertion.  A just-written
+    account always has one, so there is no empty state to render here.
 
     **That used to be the steady state and since plan step X-f2-c2 it is not.**
     The sentence here read "the one-click true-up habit is not taxed by a
@@ -402,6 +417,8 @@ def prompt_fragment(account: Account) -> str:
 
     Args:
         account: The just-asserted account.
+        governing: The assertion that governs it after the write -- the write
+            door's ``AnchorTrueUpReport.governing_after``.
 
     Returns:
         The rendered fragment, or ``""`` -- for an account with nothing
@@ -409,13 +426,15 @@ def prompt_fragment(account: Account) -> str:
     """
     if cash_detail_wrong_type(account):
         return ""
-    # This fragment is appended to a true-up's response, which has already
-    # committed; nothing above it on that path holds a calendar to thread, so
-    # this is where the one read for it happens.
+    # The assertion arrives from the caller; the CALENDAR does not.  This
+    # fragment is appended to a true-up's response, whose write door holds no
+    # pay calendar and whose other draws open read passes of their own, so
+    # nothing on that path holds one to thread: this is where the one read of
+    # it happens.
     context = reconcile_context(
         account, panel="reconcile-panel-modal",
-        statement=reconcile_statement(
-            account, calendar_for(current_user.id),
+        statement=reconcile_service.Statement(
+            calendar_for(current_user.id), account.id, governing,
         ),
     )
     if context["outstanding"].is_empty:

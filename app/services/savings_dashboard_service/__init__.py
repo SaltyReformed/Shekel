@@ -38,12 +38,21 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._goals` -- savings-goal
   progress, contributions, and trajectory.
 * :mod:`app.services.savings_dashboard_service._metrics` -- emergency-fund
-  expenses, the debt summary + DTI, and the canonical current-pay producer.
+  expenses, the DTI block, and the canonical current-pay producer.
+* :mod:`app.services.savings_dashboard_service._debt_summary` -- the
+  aggregate debt summary (``DebtSummary``) and its one construction site.
 * :mod:`app.services.savings_dashboard_service._debt_line` -- the ONE
   derivation of "which loans still have a debt line" and "when does the last
-  of them end" (plan step X-q), read by both ``_metrics``' debt summary and
+  of them end" (plan step X-q), read by both ``_debt_summary``'s debt summary and
   ``_horizon``'s domain and milestone flags, which each used to answer it
   with a membership rule of their own.
+* :mod:`app.services.savings_dashboard_service._tile` -- the ONE statement of
+  what an account's tile shows on a day (plan step credit_card:CC-5-5d, ruling
+  R-CC88): a configured loan on the day, every other account at the end of
+  the day's pay period.  The live tile, the archived list, a debt goal and the
+  goal door (``app.services.savings_goal_door``) all read it, which is why
+  ``tile_balance_on`` and its loan test ``is_configured_loan`` are re-exported
+  below.
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping and the shared id-based category classifier.
 * :mod:`app.services.savings_dashboard_service._net_worth` -- the
@@ -74,7 +83,7 @@ Module map:
 #
 # ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
 # crosses this package's boundary, so naming it here is what keeps its consumer
-# off ``_metrics`` directly, which the W9910 package-privacy checker forbids.
+# off ``_debt_summary`` directly, which the W9910 package-privacy checker forbids.
 # There were TWO such consumers until plan step X-u: ``dashboard_service._pulse``
 # named the type to annotate the ``DebtTrack`` wrapper it composed, and X-u
 # deleted both the wrapper and that import.  ONE is left -- the dashboard
@@ -99,13 +108,17 @@ Module map:
 # ``.claude/rules/coding.md`` -- an out-of-package annotation had no name it was
 # allowed to say.
 from app.services.savings_dashboard_service._goals import GoalProgress
-from app.services.savings_dashboard_service._metrics import DebtSummary
+from app.services.savings_dashboard_service._debt_summary import DebtSummary
 from app.services.savings_dashboard_service._net_worth import NetWorthRegion
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
     compute_dashboard_data,
     compute_debt_summary,
     compute_goal_progress,
+)
+from app.services.savings_dashboard_service._tile import (
+    is_configured_loan,
+    tile_balance_on,
 )
 
 __all__ = [
@@ -116,4 +129,6 @@ __all__ = [
     "compute_dashboard_data",
     "compute_debt_summary",
     "compute_goal_progress",
+    "is_configured_loan",
+    "tile_balance_on",
 ]

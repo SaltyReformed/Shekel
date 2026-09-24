@@ -301,6 +301,7 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
         row, derived_amount_basis(row.account.user_id, row.scenario_id),
     ),
     regenerate_fn=recurrence_engine.regenerate_for_template,
+    preview_fn=recurrence_engine.preview_regeneration_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,
     update_endpoint="templates.update_template",
 )
@@ -477,12 +478,15 @@ def update_template(template_id):
     # an amount change would overwrite hand-edited upcoming instances (the
     # chooser rolls the pending edit back; its Apply re-runs this same edit)
     # -- unless the save would leave a still-projected row answering an
-    # occurrence its books drop, whatever field changed (rulings R-PC90 /
-    # R-PC91), which is refused first: the edit is whole now, and the pass
-    # that reaches that row retires it (this one, from ``effective_from``).
+    # occurrence its books drop, or sitting inside the books of the account
+    # it sits on, whatever field changed (rulings R-PC90 / R-PC91 / R-PC99),
+    # which is refused first: the edit is whole now, and the regeneration
+    # below (from ``effective_from``) is part of the state the save leaves,
+    # so the refusal reads that pass's own preview of it.
     diverted = refuse_stranding_save(
         template, stranding,
         RedirectTarget("templates.edit_template", {"template_id": template_id}),
+        kind=_TXN_TEMPLATE_KIND, effective_from=effective_from,
     ) or regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
         amount_drives_instances=not template_amount_service.is_salary_linked_template(

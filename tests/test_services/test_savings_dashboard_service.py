@@ -35,6 +35,7 @@ from app.services import balance_at, savings_dashboard_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
+from app.services.liability_sign import owed
 from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
 
@@ -489,11 +490,14 @@ class TestIncomeRelativeGoalDashboard:
             gd = result["goal_data"][0]
             # pylint: disable=import-outside-toplevel
             from dataclasses import fields
+            # ``start_owed`` since plan step credit_card:CC-5-5d (a debt goal's
+            # start, read by ``savings/_debt_goal.html``), with the developer's
+            # rule-5 confirmation (2026-09-23).
             assert {f.name for f in fields(gd)} == {
                 "goal", "current_balance", "progress_pct", "remaining_periods",
                 "required_contribution", "resolved_target",
                 "income_descriptor", "has_salary_data", "trajectory",
-                "monthly_contribution",
+                "monthly_contribution", "start_owed",
             }
             assert not hasattr(gd, "goal_mode_id"), (
                 "the goal's mode is read through ``gd.goal``; a copy of it here "
@@ -1314,14 +1318,17 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
                 ad for ad in result["account_data"]
                 if ad.account.id == acct.id
             )
-            # The ledger still owes, so the loan is NOT paid off ...
-            assert loan_ad.current_balance > Decimal("0.00")
+            # The ledger still owes, so the loan is NOT paid off ...  The
+            # tile's ``current_balance`` is HELD (negative when owed) since
+            # plan step credit_card:CC-5-5c, so what the loan owes is read
+            # through ``owed``, on both lines that ask it.
+            assert loan_ad.owed > Decimal("0.00")
             assert loan_ad.loan.figures.is_paid_off is False
             # ... and it therefore still counts toward the debt card's total.
             assert result["debt_summary"] is not None
             assert (
                 result["debt_summary"].total_debt
-                >= loan_ad.current_balance
+                >= loan_ad.owed
             )
 
 
@@ -1468,7 +1475,7 @@ class TestDebtSummary:
         The equivalence contract behind the narrow producer: with a loan
         account, a salary profile, AND the seed user's non-loan accounts
         present, the loan-only projection run must produce exactly the
-        :class:`~..._metrics.DebtSummary` the full ``compute_dashboard_data``
+        :class:`~..._debt_summary.DebtSummary` the full ``compute_dashboard_data``
         build emits -- every money figure, the payoff outlook, the revolving
         caveat and the DTI block, since both route through the shared
         ``_debt_summary_with_dti``.  The salary makes the DTI leg
@@ -2143,30 +2150,32 @@ class TestDebtSummaryMembershipRules:
             # loans would pass every assertion below for the wrong reason (the
             # X-t5 lesson -- a new fixture is a new control and it can be born
             # dead; this block claimed three loans and read one until X-u's own
-            # adversarial review counted them).
+            # adversarial review counted them).  The seam's balance is HELD
+            # (negative when owed) since plan step credit_card:CC-5-5c, so each
+            # premise reads what the loan OWES through ``owed``.
             owing_figures = balance_at.loan_figures(owing, bctx)
             assert owing_figures.terms.is_originated is True
             assert owing_figures.is_retired is False
-            assert balance_at.balance_at(
+            assert owed(balance_at.balance_at(
                 owing, bctx, bctx.as_of,
-            ) == self.OWING_BALANCE
+            )) == self.OWING_BALANCE
 
             # B: originated and retired -- owes nothing, off the debt line.
             retired_figures = balance_at.loan_figures(retired, bctx)
             assert retired_figures.terms.is_originated is True
             assert retired_figures.is_retired is True
-            assert balance_at.balance_at(
+            assert owed(balance_at.balance_at(
                 retired, bctx, bctx.as_of,
-            ) == Decimal("0.00")
+            )) == Decimal("0.00")
 
             # C: not borrowed -- owes nothing for the OTHER reason, and its
             # whole debt line is ahead of it.
             unborrowed_figures = balance_at.loan_figures(unborrowed, bctx)
             assert unborrowed_figures.terms.is_originated is False
             assert unborrowed_figures.is_retired is False
-            assert balance_at.balance_at(
+            assert owed(balance_at.balance_at(
                 unborrowed, bctx, bctx.as_of,
-            ) == Decimal("0.00")
+            )) == Decimal("0.00")
             # The two zero balances are the same number for different reasons,
             # which is the whole hazard the three rules exist to separate.
 
@@ -3216,21 +3225,25 @@ class TestNetWorthHero:
     """Tests for the cockpit's today net-worth figures.
 
     ``compute_net_worth_today`` reduces over each account's resolver
-    ``current_balance``: assets add their balance, liabilities accumulate
-    their positive magnitude, net worth is assets minus liabilities, and
-    liquid is the liquid-account balance sum.
+    ``current_balance``, which is HELD for every kind -- negative when owed, a
+    configured loan's included (ruling R-CC47, plan step credit_card:CC-5-5c):
+    total assets sums the assets' balances, total liabilities is what the
+    liabilities OWE (``liability_sign.owed`` of each balance, summed), net
+    worth is the plain sum of every balance -- equal to assets minus
+    liabilities by arithmetic -- and liquid is the liquid-account balance sum.
     """
 
     def test_assets_minus_liabilities(
         self, app, db, seed_user, seed_periods,
     ):
-        """Net worth is total assets minus the positive liability magnitude.
+        """Net worth is total assets minus what the liabilities owe.
 
         Checking ($1,000) + Savings ($4,000) are assets; a $240,000
-        mortgage is a liability.  With no transactions every
-        ``current_balance`` equals its flat anchor, so:
+        mortgage is a liability.  With no transactions each asset's
+        ``current_balance`` equals its flat anchor and the mortgage, never
+        paid, holds its -240,000.00 opening (it owes $240,000.00), so:
           total_assets       = 1000.00 + 4000.00 = 5000.00
-          total_liabilities  = 240000.00 (positive magnitude)
+          total_liabilities  = owed(-240000.00) = 240000.00
           net_worth          = 5000.00 - 240000.00 = -235000.00
         """
         with app.app_context():
@@ -3247,7 +3260,7 @@ class TestNetWorthHero:
 
             # 1000.00 + 4000.00 = 5000.00
             assert nw.today.total_assets == Decimal("5000.00")
-            # Mortgage resolver current balance = origination principal.
+            # The mortgage owes its origination principal (it holds minus it).
             assert nw.today.total_liabilities == Decimal("240000.00")
             # 5000.00 - 240000.00 = -235000.00
             assert nw.today.net_worth == Decimal("-235000.00")
@@ -3271,23 +3284,28 @@ class TestNetWorthHero:
     def test_a_negative_balance_liability_still_adds_its_magnitude(
         self, app, db, seed_user, seed_periods,
     ):
-        """A liability whose balance is stored NEGATIVE adds its magnitude.
+        """A liability that HOLDS a negative balance adds what it owes.
 
-        The reduction is ``total_liabilities += abs(balance)``, so the sign a
-        liability happens to be stored with must not change net worth.  A
-        Credit Card's cash balance is negative (money owed leaves the
-        account), unlike a mortgage's positive owed figure -- so this is the
-        shape that actually exercises the ``abs``.  Every other liability in
-        this file's fixtures is stored POSITIVE, where ``abs`` is a no-op and
-        a regression to a bare ``+= balance`` would pass green.
+        The reduction is ``total_liabilities += ad.owed`` --
+        ``liability_sign.owed`` of the held balance (ruling R-CC47, plan step
+        credit_card:CC-5-5c) -- and net worth is the plain sum of every held
+        balance.  A card owing $500.00 holds -500.00.  It is not the only
+        negatively-held liability in this file: since CC-5-5c every configured
+        loan holds its debt negative too, so a regression to a bare
+        ``+= balance`` also fails every mortgage case here.
 
         Checking ($1,000) is the only asset; the card anchors at -$500.00:
           total_assets       = 1000.00
-          total_liabilities  = abs(-500.00) = 500.00
-          net_worth          = 1000.00 - 500.00 = 500.00
+          total_liabilities  = owed(-500.00) = 500.00
+          net_worth          = 1000.00 + (-500.00) = 500.00
 
-        Without the ``abs`` the card would ADD to net worth
-        (1000.00 - -500.00 = 1500.00), reporting a debt as an asset.
+        Summed as the held balance instead the card would read -500.00 of
+        liabilities and ADD to net worth (1000.00 - -500.00 = 1500.00),
+        reporting a debt as an asset.  What this case cannot tell apart is
+        ``owed()`` from the ``abs()`` it replaced -- they agree on a card that
+        owes; the card holding a credit in
+        ``tests/test_services/test_one_liability_sign.py`` is the case that
+        parts them.
         """
         with app.app_context():
             cc_type = (
@@ -3309,9 +3327,9 @@ class TestNetWorthHero:
 
             # Seed Checking only.
             assert nw.today.total_assets == Decimal("1000.00")
-            # abs(-500.00) = 500.00 -- the magnitude, not the signed balance.
+            # owed(-500.00) = 500.00 -- what it owes, not the held balance.
             assert nw.today.total_liabilities == Decimal("500.00")
-            # 1000.00 - 500.00 = 500.00 (NOT 1500.00, the no-abs answer).
+            # 1000.00 - 500.00 = 500.00 (NOT 1500.00, the held-balance answer).
             assert nw.today.net_worth == Decimal("500.00")
 
     def test_liquid_excludes_non_liquid(
@@ -3436,22 +3454,25 @@ class TestNetWorthSeries:
     def test_series_liability_band_holds_a_negative_balance_magnitude(
         self, app, db, seed_user, seed_periods,
     ):
-        """A negative-balance liability adds its MAGNITUDE to the series band.
+        """A negatively-held liability adds what it OWES to the series band.
 
-        The per-period reduction (``_sum_composition_at_period``) has its own
-        ``abs`` -- a SECOND site from the hero's -- and this is what pins it.
-        A Credit Card's cash balance is stored negative, and with no rows its
+        The per-period reduction (``_sum_composition_at_period``) crosses each
+        liability's held balance through ``liability_sign.owed`` itself -- a
+        SECOND site from the hero's (ruling R-CC47, plan step
+        credit_card:CC-5-5c; both took ``abs`` until then) -- and this is what
+        pins it.  A card owing $500.00 holds -500.00, and with no rows its
         fold holds its anchor across every point:
-          liabilities[i]                = abs(-500.00) = 500.00
-          composition["liability"][i]   = 500.00
+          composition["liability"][i]   = owed(-500.00) = 500.00
           net[i]                        = 1000.00 - 500.00 = 500.00
 
-        Without the ``abs`` the band would read -500.00 and net[i] would read
-        1500.00 -- the card ADDING to net worth -- while the today hero on the
-        SAME page still read 500.00.  Two producers contradicting each other
-        on one screen is the failure this arc exists to end, so both ``abs``
-        sites need their own control; the hero's is
-        ``test_a_negative_balance_liability_still_adds_its_magnitude``.
+        Summing the held balance instead, the band would read -500.00 and
+        net[i] would read 1500.00 -- the card ADDING to net worth -- while the
+        today hero on the SAME page still read 500.00.  Two producers
+        contradicting each other on one screen is the failure this arc exists
+        to end, so both crossing sites need their own control; the hero's is
+        ``test_a_negative_balance_liability_still_adds_its_magnitude``.  Like
+        that one, this cannot tell ``owed()`` from ``abs()``; the card holding
+        a credit in ``tests/test_services/test_one_liability_sign.py`` does.
         """
         with app.app_context():
             cc_type = (
@@ -3473,7 +3494,7 @@ class TestNetWorthSeries:
 
             assert len(series.composition["liability"]) > 0
             for i in range(len(series.composition["liability"])):
-                # abs(-500.00) = 500.00 at every point (no rows move the fold).
+                # owed(-500.00) = 500.00 at every point (no rows move the fold).
                 assert series.composition["liability"][i] == Decimal(
                     "500.00",
                 )
@@ -3938,9 +3959,10 @@ class TestNetWorthProducerEdgeCases:
     def test_liabilities_only_today_is_negative(self):
         """An accounts-set of only liabilities yields negative net worth.
 
-        One liability account with a 500.00 current balance and no assets:
+        One liability account and no assets.  Its ``current_balance`` is HELD
+        (plan step credit_card:CC-5-5c), so it holds -500.00 and owes 500.00:
           total_assets      = 0.00
-          total_liabilities = 500.00
+          total_liabilities = owed(-500.00) = 500.00
           net_worth         = 0.00 - 500.00 = -500.00
         Classification is by the account type's category_id, so this test
         builds a stand-in account whose type's category is the LIABILITY
@@ -3960,7 +3982,7 @@ class TestNetWorthProducerEdgeCases:
         )
         account = SimpleNamespace(account_type=acct_type)
         today = compute_net_worth_today([
-            _projection(account, Decimal("500.00")),
+            _projection(account, Decimal("-500.00")),
         ])
         assert today.total_assets == Decimal("0.00")
         assert today.total_liabilities == Decimal("500.00")
@@ -4463,10 +4485,13 @@ class TestNetWorthHorizon:
         """The legend matches its chart band per category on the default view.
 
         The stream's legend renders ``group_subtotals[band]`` (summed from
-        each account's ``current_balance``) directly beneath the chart.  On
-        the default ``Horizon`` range, each band's index-0 value is the
-        horizon's today point -- built from the SAME ``current_balance`` -- so
-        the legend and the chart agree per band even for a loan holder
+        each account's ``shown_balance`` -- its ``current_balance``, and for a
+        liability what that HELD balance owes; ruling R-CC48, plan step
+        credit_card:CC-5-5c) directly beneath the chart.  On the default
+        ``Horizon`` range, each band's index-0 value is the horizon's today
+        point -- built from the SAME ``current_balance``, the liability band
+        through the same ``owed()`` -- so the legend and the chart agree per
+        band even for a loan holder
         (Checking $1,000 + Savings $4,000 asset $5,000, and a $240,000
         mortgage liability), and the legend can never disagree with the chart
         it labels.  (The ``2 years`` range's liability band is the loan's
@@ -4501,10 +4526,16 @@ class TestNetWorthHorizon:
 
         A liability with no amortization schedule (Credit Card, no
         ``loan_params``) reads its cash fold forward (plan step credit_card:CC-1),
-        which with no planned rows is its asserted magnitude at every date --
+        which with no planned rows holds its asserted balance at every date --
         and it must NOT vanish from the horizon: the today point
         still reconciles to the net-worth hero, and the $3,000 debt does not
         disappear when the range toggles from ``2 years`` to ``Horizon``.
+
+        The card is anchored at ``-3,000.00`` HELD, which is what the create
+        door stores for "$3,000.00 owed" (the route crosses the typed figure,
+        ruling R-CC52, and ``create_account`` stores the held balance it is
+        handed), so it holds -3,000.00 and owes 3,000.00 -- and the hero and
+        the liability band both report what it owes.
         """
         with app.app_context():
             # pylint: disable=import-outside-toplevel
@@ -4519,7 +4550,7 @@ class TestNetWorthHorizon:
                 user_id=seed_user["user"].id,
                 account_type_id=cc_type.id,
                 name="Visa",
-                anchor_balance=Decimal("3000.00"),
+                anchor_balance=Decimal("-3000.00"),
             ))
             db.session.add(card)
             db.session.commit()
@@ -4532,11 +4563,13 @@ class TestNetWorthHorizon:
             liability = horizon["composition"]["liability"]
 
             # Checking $1,000 + Savings $4,000 assets, $3,000 card liability:
-            #   total_liabilities = 3000.00 ; net = 5000 - 3000 = 2000.
+            #   total_liabilities = owed(-3000.00) = 3000.00 ;
+            #   net = 5000 - 3000 = 2000.
             assert hero.today.total_liabilities == Decimal("3000.00")
             assert horizon["net"][0] == hero.today.net_worth
             # The card is in the band at index 0, and with no planned rows its
-            # fold reads the asserted 3,000.00 at the far end too.
+            # fold holds the asserted -3,000.00 at the far end too, which the
+            # band reports as the 3,000.00 it owes.
             assert liability[0] == Decimal("3000.00")
             assert liability[-1] == Decimal("3000.00")
             # A card carries no payoff model, so the domain is the fixed
@@ -4838,9 +4871,11 @@ class TestGroupSubtotals:
     """Tests for the per-category grid subtotals (Loop B Phase 2).
 
     ``group_subtotals`` carries one ``Decimal`` per category in
-    ``grouped_accounts`` -- the sum of that group's account
-    ``current_balance`` figures -- computed in the service so the template
-    never does money math.
+    ``grouped_accounts`` -- the sum of the figures that group's tiles show,
+    :attr:`~.._types.AccountProjection.shown_balance`: the account's
+    ``current_balance``, and for a liability what that HELD balance owes
+    (ruling R-CC48, plan step credit_card:CC-5-5c) -- computed in the service
+    so the template never does money math.
     """
 
     def test_asset_subtotal_sums_group_balances(
@@ -4868,10 +4903,13 @@ class TestGroupSubtotals:
     ):
         """A liability group subtotals to the positive owed balance.
 
-        A $240,000 mortgage with no confirmed payments resolves to its
-        origination principal, so the liability subtotal is that positive
-        owed amount.  The template colors it with the danger token; the
-        sign is not negated in the figure (color is the display signal).
+        A $240,000 mortgage with no confirmed payments holds its origination
+        principal as -240,000.00 (ruling R-CC47, plan step
+        credit_card:CC-5-5c), and the liability subtotal is what that owes --
+        the held balance crossed once through ``shown_figure`` (ruling
+        R-CC48), the positive $240,000.00 the tile beside it shows.  The
+        template colors it with the danger token, keyed on the category: the
+        figure's sign says owed or credit, and the color says liability.
         """
         with app.app_context():
             _add_mortgage_account(
@@ -4991,9 +5029,14 @@ class TestComputeSparklines:
     def test_trending_account_is_included(self):
         """An account whose forward balance moves enough gets a series.
 
-        A loan amortizing 10000 -> 8000 over five periods is a 20% spread,
+        A balance moving 10000 -> 8000 over five periods is a 20% spread,
         far above the 0.5% relative threshold, so it is informative and the
-        full window series is returned.
+        full window series is returned.  The stand-in carries no account type,
+        so it is not a liability and its map is drawn as it stands; a real
+        loan's map is HELD (negative when owed) and its line is crossed to
+        what it owes (plan step credit_card:CC-5-5c), which
+        ``test_a_loans_sparkline_falls_as_what_it_owes_falls`` in
+        ``tests/test_services/test_one_liability_sign.py`` pins.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.savings_dashboard_service._net_worth import (
@@ -5906,16 +5949,20 @@ class TestTheDenseMapIsTotalAndSaysSo:
                 compute_sparklines([ad], window + [_derived_period(99)])
 
     def test_the_projection_read_raises_on_a_missing_current_period(self, app):
-        """``_current_balance_from_map`` states ``Raises: KeyError`` -- it does.
+        """The tile's rule states ``Raises: KeyError`` -- it does.
 
         Its contract has said so since plan step X-v2 (ruling R-CA) and nothing
         asserted it; this is the third reader of the same invariant, so it is
-        pinned with the other two.
+        pinned with the other two.  The read moved from the deleted
+        ``_projections._current_balance_from_map`` into the tile rule's one
+        home, ``_tile.tile_balance_on``, at plan step credit_card:CC-5-5d
+        (ruling R-CC88); re-pointed with the developer's rule-5 confirmation
+        (2026-09-23), the assertion unchanged.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
-        from app.services.savings_dashboard_service._projections import (
-            _current_balance_from_map,
+        from app.services.savings_dashboard_service._tile import (
+            tile_balance_on,
         )
         with app.app_context():
             # The stand-in carried a ``current_anchor_balance`` for the
@@ -5923,12 +5970,19 @@ class TestTheDenseMapIsTotalAndSaysSo:
             # ruling R-EH deleted the column, so what this case pins is the
             # arm it always graded: with a current period the map is INDEXED.
             acct = SimpleNamespace()
-            ctx = SimpleNamespace(current_period=_derived_period(2))
-            assert _current_balance_from_map(
-                {2: Decimal("42.00")}, acct, ctx,
+            calendar = SimpleNamespace(
+                period_containing=lambda _day: _derived_period(2),
+            )
+            ctx = SimpleNamespace(calendar=lambda: calendar)
+            day = date(2026, 1, 20)
+            assert tile_balance_on(
+                acct, ctx, day, is_loan=False, balances={2: Decimal("42.00")},
             ) == Decimal("42.00")
             with pytest.raises(KeyError):
-                _current_balance_from_map({1: Decimal("42.00")}, acct, ctx)
+                tile_balance_on(
+                    acct, ctx, day, is_loan=False,
+                    balances={1: Decimal("42.00")},
+                )
 
 
 def _with_badging_predicate(account_data):
@@ -6233,7 +6287,7 @@ class TestTheDebtFreeDateIsOneDerivation:
 
     Finding N-98, plan step X-q.  ``/savings`` renders both on one page and
     derived the date twice from the same ``account_data``: the cockpit's
-    ``Debt-free <month>`` caption through ``_metrics._compute_debt_summary``,
+    ``Debt-free <month>`` caption through ``_debt_summary._compute_debt_summary``,
     which selected loans by their current BALANCE, and the Horizon chart's
     ``Debt-free`` flag through ``_horizon._resolve_horizon_domain``, which
     selected them by the debt-line predicate.
@@ -6357,7 +6411,10 @@ class TestTheDebtFreeDateIsOneDerivation:
         """FIRING CONTROL: the replaced membership rule, on the same data.
 
         Before plan step X-q the caption's date was derived inside the
-        owed-today loop, so its membership was "current balance > 0".  This
+        owed-today loop, so its membership was "owes something today" --
+        spelled "current balance > 0" then, when a loan's balance was its owed
+        figure.  The balance is HELD since plan step credit_card:CC-5-5c, so the
+        control reads :attr:`~.._types.AccountProjection.owed`.  This
         substitutes that MEMBERSHIP into the new fold rather than resurrecting
         the deleted loop -- the fold itself (latest payoff, poisoned by an
         absent one) is unchanged between them, so the set is the whole
@@ -6381,7 +6438,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             owed_today = [
                 ad for ad in account_data
                 if ad.loan is not None
-                and (ad.current_balance or Decimal("0.00")) > Decimal("0.00")
+                and ad.owed > Decimal("0.00")
             ]
             assert loan_payoff_outlook(owed_today).all_clear_on == (
                 self._CAR_PAYOFF
@@ -6506,9 +6563,9 @@ class TestTheDebtFreeDateIsOneDerivation:
             # And it is not in the loan money aggregates either.
             assert summary.total_debt == Decimal("12000.00")
             # It IS named, at its owed magnitude.
-            assert summary.revolving_debt == Decimal("500.00")
+            assert summary.debt_without_payoff_date == Decimal("500.00")
 
-    def test_the_narrow_producer_reports_the_same_revolving_debt(
+    def test_the_narrow_producer_reports_the_same_debt_without_payoff_date(
         self, app, db, seed_user, seed_periods,
     ):
         """The two paths to the debt summary agree on EVERY key.
@@ -6548,8 +6605,8 @@ class TestTheDebtFreeDateIsOneDerivation:
                 BalanceContext.build(user_id),
             )
 
-            assert narrow.revolving_debt == Decimal("500.00")
-            assert narrow.revolving_debt == full.revolving_debt
+            assert narrow.debt_without_payoff_date == Decimal("500.00")
+            assert narrow.debt_without_payoff_date == full.debt_without_payoff_date
             # And every other key still agrees, which is the promise itself.
             assert narrow == full
 
@@ -6560,8 +6617,8 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
     Developer ruling **R-CC49** (plan step credit_card:CC-5-5a, ledger row
     **CC-354**): "Each account's owed amount, floored at zero, then summed. A
     credit on one card is not debt and does not pay down another card; the
-    footer counts the debt a payoff date leaves out."  Owed is the seam's one
-    flip, :func:`app.services.balance_at.owed`, of the held balance.
+    footer counts the debt a payoff date leaves out."  Owed is the one
+    flip, :func:`app.services.liability_sign.owed`, of the held balance.
 
     The three rules the ruling chose between each give a DIFFERENT figure on
     the second case, so it grades the choice and not just the sign: ``abs()``
@@ -6576,9 +6633,9 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
 
         Anchored at ``+50.00`` held (the issuer owes the owner), so::
 
-            owed           = -(+50.00)          = -50.00
-            floored        = max(-50.00, 0.00)  =   0.00
-            revolving_debt =                         0.00
+            owed                     = -(+50.00)          = -50.00
+            floored                  = max(-50.00, 0.00)  =   0.00
+            debt_without_payoff_date =                        0.00
 
         ``abs()`` reported ``$50.00`` here: a credit captioned as debt.  The
         configured loan is there because the footer is a caveat ON the loans'
@@ -6605,7 +6662,7 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
                 BalanceContext.build(seed_user["user"].id),
             )["debt_summary"]
 
-            assert summary.revolving_debt == Decimal("0.00")
+            assert summary.debt_without_payoff_date == Decimal("0.00")
 
     def test_a_credit_does_not_pay_down_another_accounts_debt(
         self, app, db, seed_user, seed_periods,
@@ -6621,7 +6678,7 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
             Family loan (custom type)    held -2,000.00  owed  2,000.00
             Car Loan (configured loan)   -- has a payoff model, excluded --
 
-            revolving_debt = 1,000.00 + 0.00 + 5,000.00 + 2,000.00 = 8,000.00
+            debt_without_payoff_date = 1,000.00 + 0.00 + 5,000.00 + 2,000.00 = 8,000.00
 
         The auto loan is an AMORTIZING type with no ``LoanParams``, so the
         seam answers it from the replay (held) and it has no payoff model; the
@@ -6674,7 +6731,7 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
             )["debt_summary"]
 
             # 1,000.00 + 0.00 + 5,000.00 + 2,000.00 (the Car Loan excluded).
-            assert summary.revolving_debt == Decimal("8000.00")
+            assert summary.debt_without_payoff_date == Decimal("8000.00")
 
     def test_only_what_a_liability_with_no_payoff_model_owes_counts(
         self, app, db, seed_user, seed_periods,
@@ -6688,7 +6745,7 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
         the ``is_liability`` clause admits the overdrawn checking, whose owed
         figure is ``+300.00``; an ``abs()`` on a non-card liability counts the
         auto loan's credit; and dropping the ``loan`` clause is graded by the
-        overpaid configured loan below::
+        configured Car Loan, which owes and so would count::
 
             Visa (card)                 held -1,000.00 -> owed 1,000.00  counted
             Overdrawn checking (ASSET)  held   -300.00 -> not a liability
@@ -6698,15 +6755,20 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
                 non-card liability would count 300.00)
             Car Loan (configured loan)  -- has a payoff model, excluded --
 
-            revolving_debt = 1,000.00
+            debt_without_payoff_date = 1,000.00
 
-        and a configured loan is excluded even when its figure is NEGATIVE (an
-        overpaid payoff folds below zero): owed() of ``-100.00`` is
-        ``+100.00``, which only the ``loan`` clause keeps out.  That half is
-        built from the REAL Car Loan projection with its figure replaced,
-        because an overpaid configured loan is not a state this suite's
-        factories reach -- only the figure is synthetic, the loan detail the
-        filter reads is the one production built.
+        and a configured loan OWING money is excluded: a held ``-100.00`` owes
+        ``+100.00`` (``owed()`` of it), which only the ``loan`` clause keeps
+        out.  That half is built from the REAL Car Loan projection with its
+        figure replaced -- only the figure is synthetic, the loan detail the
+        filter reads is the one production built.  It said an OVERPAID loan
+        until plan step credit_card:CC-5-5c, when a configured loan's figure
+        was its owed amount and a negative one meant overpaid; the seam
+        reports it HELD since then (ruling R-CC47), so ``-100.00`` is a loan
+        owing $100.00, and the real Car Loan (holding its -12,000.00 opening)
+        already makes the ``loan`` clause load-bearing in the first assertion
+        below.  An overpaid loan would now hold ``+100.00``, owe ``-100.00``,
+        and floor to ``0.00`` whether or not the clause stood.
         """
         with app.app_context():
             # Pylint: ``import-outside-toplevel`` -- test-local helpers,
@@ -6743,15 +6805,16 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
 
             # 1,000.00 (the Visa) + 0.00 (the auto loan's credit); the
             # overdrawn checking and the Car Loan are not in the rule.
-            assert data["debt_summary"].revolving_debt == Decimal("1000.00")
+            assert data["debt_summary"].debt_without_payoff_date == Decimal("1000.00")
 
             loan_ad = next(
                 ad for ad in data["account_data"] if ad.account.id == car_loan.id
             )
             assert loan_ad.loan is not None
-            overpaid = replace(loan_ad, current_balance=Decimal("-100.00"))
+            # A configured loan owing $100.00 holds -100.00 (R-CC47).
+            owing_100 = replace(loan_ad, current_balance=Decimal("-100.00"))
             # owed(-100.00) = +100.00 would count if the ``loan`` clause went.
-            assert debt_without_payoff_model([overpaid]) == Decimal("0.00")
+            assert debt_without_payoff_model([owing_100]) == Decimal("0.00")
 
 
 class TestTheTileHorizonsFollowTheOwnersCadence:

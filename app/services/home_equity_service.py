@@ -20,7 +20,7 @@ Flask imports.  All money is :class:`~decimal.Decimal`.
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.services import balance_at, cash_ledger
+from app.services import balance_at, cash_ledger, liability_sign
 from app.services.balance_at import BalanceContext
 
 ZERO = Decimal("0")
@@ -37,8 +37,8 @@ class HomeEquity:
     Attributes:
         market_value: The asset's user-set market value (its anchor
             balance).
-        total_debt: Sum of the resolved current balances of the
-            liabilities secured by the asset.
+        total_debt: What the liabilities secured by the asset OWE today,
+            summed.
         equity: ``market_value - total_debt``.  Negative when the asset is
             underwater (debt exceeds value); a numeric comparison, never a
             name-string, decides how the UI styles it.
@@ -54,26 +54,28 @@ class HomeEquity:
 
 
 def compute_home_equity(
-    market_value: Decimal, secured_loan_balances: list[Decimal],
+    market_value: Decimal, secured_loan_owed: list[Decimal],
 ) -> HomeEquity:
-    """Combine a market value and its securing loan balances into equity.
+    """Combine a market value and what its securing loans owe into equity.
 
     Pure arithmetic over already-resolved inputs -- the caller is
-    responsible for sourcing ``market_value`` and each balance from the
+    responsible for sourcing ``market_value`` and each owed amount from the
     canonical producers (the anchor balance and the loan resolver), so this
     function never queries or re-resolves.
 
     Args:
         market_value: The asset's market value.
-        secured_loan_balances: The current balances of the liabilities
-            secured by the asset (empty when none are linked).
+        secured_loan_owed: What each liability secured by the asset owes
+            today (empty when none are linked) -- OWED, positive when owed,
+            not the held balance the seam reports (plan step
+            credit_card:CC-5-5c, ruling R-CC47).
 
     Returns:
         A :class:`HomeEquity` snapshot.
     """
     total_debt = ZERO
-    for balance in secured_loan_balances:
-        total_debt += balance
+    for owed_today in secured_loan_owed:
+        total_debt += owed_today
     equity = market_value - total_debt
     ltv = (
         (total_debt / market_value).quantize(_LTV_QUANT, rounding=ROUND_HALF_UP)
@@ -140,9 +142,13 @@ def resolve_home_equity(
             ``7b7c909b``, when the balance moved to the seam.
     """
     market_value = cash_ledger.resolve_anchor(property_account).balance
-    balances: list[Decimal] = []
+    owed_amounts: list[Decimal] = []
     for loan in property_account.secured_loans:
         if balance_at.loan_figures(loan, ctx) is None:
             continue                       # not a configured loan: no debt leg
-        balances.append(balance_at.balance_at(loan, ctx, ctx.as_of))
-    return compute_home_equity(market_value, balances)
+        # What the loan OWES: the seam reports it HELD since plan step
+        # credit_card:CC-5-5c (ruling R-CC47), and equity subtracts debt.
+        owed_amounts.append(
+            liability_sign.owed(balance_at.balance_at(loan, ctx, ctx.as_of)),
+        )
+    return compute_home_equity(market_value, owed_amounts)

@@ -26,7 +26,12 @@ from app.extensions import db as _db
 from app.models.account_opening import AccountOpening
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services import recurrence_engine, status_seam, transfer_recurrence
+from app.services import (
+    planned_rows_books,
+    recurrence_engine,
+    status_seam,
+    transfer_recurrence,
+)
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import account_opening_fact
 from app.services.generation_schedule import GenerationSchedule
@@ -36,6 +41,10 @@ from app.services.opening_service import (
     apply_opening_restatement,
 )
 from app.services.planned_rows_books import StrandedRow
+from app.services.recurrence import (
+    RecurrenceGenerationError,
+    RecurrenceResolutionError,
+)
 from tests._test_helpers import (
     account_never_asserted,
     make_cadence_rule,
@@ -292,9 +301,6 @@ class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
         assert row.remedy() == "Mark it paid or cancel it first"
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
-
-
 class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
     """R-PC88 under R-PC89: an envelope's day is its paycheck's LAST day.
 
@@ -367,29 +373,60 @@ class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
 
 
 class TestTheDefinitionsAccountsBoundItsRows:
-    """Review L1: the walk bounds a row by its DEFINITION's accounts, not the row's.
+    """Both accounts bound a row its definition left behind (review L1, then ruling R-PC99).
 
     A definition moved to another account leaves the rows its pass did not
-    reach where they were (ruling R-CC36 keeps a row outside the maintain
-    window on its old account).  Those rows answer occurrences of the
-    definition's walk, which the NEW account's books bound; the old
-    account's books no longer bound it at all.  The first cut keyed rows by
-    their own account, so it refused the old account's restatement over rows
-    no walk of it names and let the new account's strand them.
+    reach where they were: on the OLD account, which the balance counts them
+    in.  Those rows still answer occurrences of the definition's walk, which
+    the NEW account's books bound -- so the new account's restatement past
+    them makes a later pass delete them (review L1).  And the old account's
+    books hold them where they sit: its restatement past them would count
+    them inside its opening a second time (ruling R-PC99, developer
+    2026-09-23, the round-6 review's H1, measured ``-$100.00`` against the
+    books rule's ``-$80.00``).  Round 1's fix keyed the refusal by the
+    definition alone and let that restatement through; R-PC99 asks both.
     """
 
-    def test_the_OLD_account_may_open_past_rows_its_definition_left_behind(
+    def test_the_OLD_account_is_refused_over_the_rows_its_definition_left_behind(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Nothing the old account's books bound is stranded by moving them."""
+        """Re-expressed under R-PC99 (developer-ruled): it asserted COMMITTED here.
+
+        The ruled outcome, verbatim from the chosen option: "Restating
+        Checking to 01-16 is refused ('Recurring rent' is still projected
+        and due 01-02: mark it paid or cancel it first)".
+        """
         with app.app_context():
             old, rows = _account_with_projected_rows(seed_user, seed_periods)
             _moved_to_a_new_account(seed_user, rows[0].template)
             first_due = min(row.due_date for row in rows)
             assert all(row.account_id == old.id for row in rows)
 
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=old,
+                    opening=BooksOpening(first_due, Decimal("0.00")),
+                )
+
+            assert (
+                f'"Recurring rent" is still projected and due '
+                f"{first_due.isoformat()}.  An opening is the balance at the "
+                "END of its day, so that unpaid item would sit inside it.  "
+                "Mark it paid or cancel it first"
+            ) in str(refused.value)
+
+    def test_the_OLD_account_may_open_the_day_BEFORE_them(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The other side of R-PC99's boundary, so ``>=`` for ``>`` fails one."""
+        with app.app_context():
+            old, rows = _account_with_projected_rows(seed_user, seed_periods)
+            _moved_to_a_new_account(seed_user, rows[0].template)
+            first_due = min(row.due_date for row in rows)
+
             outcome = apply_opening_restatement(
-                account=old, opening=BooksOpening(first_due, Decimal("0.00")),
+                account=old,
+                opening=BooksOpening(first_due - _ONE_DAY, Decimal("0.00")),
             )
 
             assert outcome is OpeningRestatementOutcome.COMMITTED
@@ -410,6 +447,54 @@ class TestTheDefinitionsAccountsBoundItsRows:
                 )
 
             assert f"and due {first.due_date.isoformat()}" in str(refused.value)
+
+
+class TestAScheduleThatCannotBeWalkedRefusesTheRestatement:
+    """The step's review, L7: a stored rule no walk can read reached the owner as a 500.
+
+    Both of the producer's failure points are driven -- resolving a
+    definition's rule and walking it -- each on the day BEFORE the first
+    row's due day, which the walkable schedule ACCEPTS
+    (``test_the_day_BEFORE_the_rows_due_day_is_accepted``), so the refusal
+    here is the unread schedule's and nothing else's.
+    """
+
+    @pytest.mark.parametrize(("seam", "error"), [
+        ("resolved_with_books", RecurrenceResolutionError),
+        ("books_reading", RecurrenceGenerationError),
+    ])
+    def test_it_is_refused_logged_and_nothing_is_written(
+        self, app, db, seed_user, seed_periods, monkeypatch, caplog, seam, error,
+    ):  # pylint: disable=unused-argument
+        """Fail closed: R-PC97's words, the opening unchanged, the log saying why."""
+        with app.app_context():
+            account, rows = _account_with_projected_rows(seed_user, seed_periods)
+            day = min(row.due_date for row in rows) - _ONE_DAY
+            before = _opening_count(account)
+
+            def refusing(*_args, **_kwargs):
+                raise error("a rule no door writes")
+
+            monkeypatch.setattr(planned_rows_books, seam, refusing)
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=account, opening=BooksOpening(day, Decimal("0.00")),
+                )
+
+            assert str(refused.value) == (
+                f"These books cannot open on {day.isoformat()} while a "
+                "recurring item moving money in this account has a schedule "
+                "that cannot be read: repair its schedule first."
+            )
+            assert _opening_count(account) == before
+            assert account_opening_fact(account.id).opened_on == _EARLY_OPENING
+            assert (
+                f"Refusing to restate account {account.id}'s books"
+            ) in caplog.text
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
 
 
 def _opening_count(account):

@@ -55,6 +55,7 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.liability_sign import owed
 from app.services.recurrence import compute_due_date
 from app.services.settle_day import SettleDay
 from tests._test_helpers import (
@@ -716,10 +717,12 @@ class TestTheLatestAssertionIsTheBoundary:
         def read():
             ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
             plan = loan_plan(account, ctx)
+            # The seam's balance is HELD, negative when owed (ruling
+            # R-CC47), so the read is what the loan owes, through owed().
             return (
                 min(p.due_date for p in plan.payments),
                 plan.charges[0].on_date,
-                balance_at.balance_at(account, ctx, _TOMORROW),
+                owed(balance_at.balance_at(account, ctx, _TOMORROW)),
                 balance_at.loan_payoff_date(account, ctx),
             )
 

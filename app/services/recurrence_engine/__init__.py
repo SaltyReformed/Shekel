@@ -84,14 +84,17 @@ from app.services.recurrence_engine._generate import (
     occurrences_in_period,
 )
 from app.services.recurrence_engine._maintain import (
+    preview_regeneration_for_template,
     propagate_to_unruled_definition,
     regenerate_for_template,
 )
 from app.services.recurrence_engine._pass import (
     MaintainActs,
     PassReporting,
+    RegenerationPreview,
     create_for_unclaimed_occurrences,
     derived_by_occurrence,
+    preview_regeneration,
     regenerate_definition,
 )
 from app.services.recurrence_engine._plan import (
@@ -107,12 +110,15 @@ __all__ = [
     "MaintainActs",
     "PassReporting",
     "PlannedOccurrence",
+    "RegenerationPreview",
     "can_generate_in_period",
     "create_for_unclaimed_occurrences",
     "definition_recurs",
     "derived_by_occurrence",
     "generate_for_template",
     "occurrences_in_period",
+    "preview_regeneration",
+    "preview_regeneration_for_template",
     "propagate_to_unruled_definition",
     "regenerate_definition",
     "regenerate_for_template",

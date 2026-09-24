@@ -186,21 +186,22 @@ def transfers_holding_a_legacy_net() -> "list[int]":
     one.  Goes with this module at ``X-bi-6-5``.
 
     **What a refusal costs, and what gates it** (ruling **R-BAL105**, which
-    amends R-BAL104's "the deploy auto-rolls back", developer 2026-09-22).
-    It can fire only on a deploy that re-books the legacy shape: a re-booked
-    legacy source nets zero on every key, and the one writer that posts a
-    net under it again is a rollback's OLD image, after which the next deploy
-    re-applies the migration.  That deploy has already COMMITTED migration
-    ``c7d1e9a4b2f8`` when the resync runs, and the previous image cannot
-    resolve it, so ``deploy/shekel-deploy.sh`` refuses to re-pin that image:
-    the container crash-loops on this refusal and the site is down until an
-    operator intervenes -- the ruled recovery is restoring the pre-deploy dump
-    the script names.  The gate that meets it first is the release rehearsal
-    on a same-day dump (a refusal there means do not deploy); plan step
-    ``X-cv`` (a future step, unshipped) will make a deploy all-or-nothing, so
-    a hook refusal leaves the stamp unmoved and the previous image re-pins on
-    its own.  Measured 2026-09-22: zero holders
-    after the re-book on both production dumps' rehearsals.
+    amends R-BAL104's "the deploy auto-rolls back", developer 2026-09-22; plan
+    step ``balance:X-cv`` makes that phrase true).  It can fire only on a
+    deploy that re-books the legacy shape: a re-booked legacy source nets zero
+    on every key, and the one writer that posts a net under it again is a
+    rollback's OLD image, after which the next deploy re-applies the
+    migration.  Until X-cv that deploy had already COMMITTED migration
+    ``c7d1e9a4b2f8`` when the resync ran, and the previous image cannot
+    resolve it, so ``deploy/shekel-deploy.sh`` refused to re-pin that image
+    and the site stayed down until an operator restored the pre-deploy dump.
+    Since X-cv the migrations and the three deploy hooks share ONE
+    transaction (``scripts/init_database.py``), so this refusal rolls the
+    migration back with everything else, the stamp stays where the previous
+    image can resolve it, and the script re-pins that image on its own.  The
+    gate that meets it first is still the release rehearsal on a same-day
+    dump (a refusal there means do not deploy).  Measured 2026-09-22: zero
+    holders after the re-book on both production dumps' rehearsals.
 
     Returns:
         The transfer ids, ascending; ``[]`` when every legacy entry is netted

@@ -263,16 +263,16 @@ class TestUpgradeExecutesEverySeed:
     ``upgrade`` leaves the whole suite green: the rows are present either
     way, and the idempotency test above would still see ``rowcount == 0``.
 
-    The production consequence is not hypothetical.  ``entrypoint.sh`` runs
-    ``scripts/init_database.py`` (line 259) BEFORE
-    ``scripts/seed_ref_tables.py`` (line 263), and the existing-database path
-    calls the strict ``ref_cache.init(db.session)`` immediately after
-    migrating (``scripts/init_database.py:232``).  A created-but-unseeded ref
-    table is a table that EXISTS with no row for its enum members, which
-    ``ref_cache.init`` treats as a genuine data error rather than a bootstrap
-    quirk -- so the deploy aborts with ``RuntimeError: ... RecurrenceUnit
-    .PERIOD (expected name='period')`` and rolls back.  Avoiding exactly that
-    is why the seed is inline in the first place.
+    **What the inline seed still protects.**  Until ruling R-BAL122 the deploy
+    read the strict ``ref_cache`` straight after migrating and before seeding,
+    so a created-but-unseeded ref table -- one that EXISTS with no row for its
+    enum members -- aborted it with ``RuntimeError: ... RecurrenceUnit
+    .PERIOD (expected name='period')``.  The deploy now seeds before that read
+    (``scripts/init_database.py``'s ``_bring_to_release``), so the reference
+    seed would supply the rows; what still needs them is any later migration
+    in the chain that reads them, and every chain run with no seed after it (a
+    bare ``flask db upgrade``).  The migration says it seeds; this pins that
+    it does.
 
     Source-level, like the downgrade check below, because the behavioural
     proof would require re-running DDL inside an xdist worker.
@@ -297,9 +297,8 @@ class TestUpgradeExecutesEverySeed:
             assert f"op.execute({constant})" in upgrade_body, (
                 f"upgrade() defines {constant} but never executes it -- a "
                 f"bare `flask db upgrade` would create the table empty, and "
-                f"the strict ref_cache.init() in scripts/init_database.py "
-                f"would abort the deploy before seed_ref_tables.py could "
-                f"cover for it."
+                f"anything that reads it before a reference seed runs would "
+                f"find no row for its enum members."
             )
 
 

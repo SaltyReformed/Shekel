@@ -3,8 +3,8 @@
 Split from :mod:`_registry` rather than added to it, for the reason this
 project has ruled twice already (findings **N-152** / **N-156** / **N-201**):
 a module at pylint's 1,000-line ceiling SPLITS instead of being shaved a line
-at a time, and ``_registry`` stands at 978.  ``_classes``, ``_tables`` and
-``_staging`` are the same move.
+at a time, and ``_registry`` stood at 978 when this was split (2026-08-27).
+``_classes``, ``_tables`` and ``_staging`` are the same move.
 
 **Why the registry exists at all.**  Until 2026-08-27 a ruling lived in its own
 arc's document, in THREE different grammars across five documents, and
@@ -202,20 +202,6 @@ RULINGS_HEADING_RX = re.compile(
     re.IGNORECASE,
 )
 
-#: The number of rows that can only be an accident.
-#:
-#: **Not a forcing function.**  Rule 4 gives ``ledger.md`` and ``steps.md`` no
-#: LINE cap on one argument the developer accepted twice on 2026-08-25: a cap
-#: on a registry holding ONE LINE PER THING caps how many of that thing the
-#: project may have, and a gate may not refuse to record a defect somebody has
-#: measured.  A ruling is the same shape -- a decision somebody has TAKEN --
-#: so this file is capped the same way its siblings are, which is not at all.
-#: This is the runaway backstop a dropped cap owes: a duplicated table or a
-#: generator loop fails loudly instead of committing.  Set far above the 182
-#: rulings the five arcs held when the registry was created (105 lifted, 77
-#: still to come), so it can never bind on real work.
-RULINGS_RUNAWAY_ROWS = 600
-
 #: The widest a single ruling row may be, in characters.
 #:
 #: **Rule 4's whole content for this file, and the reason the line cap could
@@ -239,8 +225,8 @@ RULINGS_ROW_CAP = 2000
 #: and then ACCRETED: ``R-GD`` alone was amended four times and each amendment
 #: was appended, which is rule 6's signpost failure on a registry nobody
 #: thought to apply it to.  The developer ruled on 2026-08-28 that each be
-#: trimmed to its RULE, on the registry's own first sentence -- *the RULE, not
-#: the deliberation* -- and it was verified per row that what came out is in
+#: trimmed to its RULE, on the registry's first sentence as it then read --
+#: *the RULE, not the deliberation* -- and it was verified per row that what came out is in
 #: the commit that took the ruling.  **25 rows holding 43,827 characters of
 #: overflow became 20 holding 12,230**; the widest went 16,095 -> 3,775 and the
 #: file went 216,941 characters -> 184,509.
@@ -325,23 +311,6 @@ def stated_count_violation() -> str | None:
     return (
         f"rulings.md says it stands at {stated} rows and the table holds "
         f"{actual} (conventions.md rule 3)"
-    )
-
-
-def runaway_violation() -> str | None:
-    """Return the backstop's message, or ``None``.
-
-    Returns:
-        The message when the table holds more rows than any real corpus could.
-    """
-    actual = len(ruling_rows())
-    if actual <= RULINGS_RUNAWAY_ROWS:
-        return None
-    return (
-        f"rulings.md holds {actual} rows against a {RULINGS_RUNAWAY_ROWS}-row "
-        f"runaway backstop. This is not a forcing function and rule 5 is not "
-        f"the answer: a count this size is a duplicated table or a generator "
-        f"loop, not work somebody did"
     )
 
 

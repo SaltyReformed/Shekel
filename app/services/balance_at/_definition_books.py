@@ -150,6 +150,35 @@ def definition_books(
     )
 
 
+def row_books_opened_on(row: object, memo: "dict[int, date | None]") -> date | None:
+    """Return the LATEST governing opening among the accounts *row* sits on.
+
+    Ruling **R-PC99** (developer 2026-09-23, the C18-a round-6 review's H1):
+    a planned row is judged against the books of the account it SITS ON as
+    well as by its definition's walk, because the balance counts it there --
+    and after a definition's account move the rows of paychecks that had
+    already ended stay on the account it left.  The same reading
+    :func:`definition_books` takes of a definition, taken of one of its rows:
+    a ``Transaction`` names ``account_id`` and a ``Transfer`` names
+    ``from_account_id`` and ``to_account_id``, the attribute names
+    :data:`_MONEY_ACCOUNT_ATTRIBUTES` reads off a definition, so a transfer's
+    row is held by the later of its two openings exactly as its definition
+    is.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`.
+        memo: An ``account_id -> opened_on`` memo, filled here.  A
+            restatement seeds it with the candidate day for the account it
+            restates, which then stands in for that account's own opening.
+
+    Returns:
+        The latest governing ``opened_on``, or ``None`` when no account the
+        row sits on carries an opening.
+    """
+    return definition_books_opened_on(definition_money_accounts(row), memo)
+
+
 def definition_money_accounts(definition: object | None) -> tuple[int, ...]:
     """Return the ids of every account *definition* moves money in.
 
@@ -159,7 +188,9 @@ def definition_money_accounts(definition: object | None) -> tuple[int, ...]:
             ``None`` -- a rule whose owner is a payroll LINE, whose cadence
             names which paychecks carry a deduction and creates no row of its
             own (the paycheck row it rides on is bounded by that row's own
-            definition).
+            definition).  A ``Transaction`` or ``Transfer`` ROW carries the
+            same names, and :func:`row_books_opened_on` reads the accounts it
+            sits on through here (ruling **R-PC99**).
 
     Returns:
         The account ids *definition* names, in attribute order, ``None``
@@ -188,7 +219,10 @@ def money_account_columns(model) -> tuple:
     which columns those are (the C18-a round-2 review's L-g).
 
     Args:
-        model: ``TransactionTemplate`` or ``TransferTemplate``.
+        model: ``TransactionTemplate`` or ``TransferTemplate`` -- or a row
+            model, ``Transaction`` or ``Transfer``, which carries the same
+            names: the restatement asks after the rows SITTING ON an account
+            with it (ruling **R-PC99**).
 
     Returns:
         The columns among the three names *model* carries, in attribute

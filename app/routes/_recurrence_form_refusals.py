@@ -25,7 +25,8 @@ they can be asked in:
 A FIFTH is asked later, by each door once its edit is applied, because it
 grades the state the save would LEAVE rather than the submission: no edit may
 leave a still-projected row of the definition answering an occurrence its
-books drop (:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
+books drop, or inside the books of the account it sits on
+(:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
 
 **:class:`RecurrenceFormContext` is DEFINED here**, one layer below the
 authoring helpers that also take it, and that is what keeps the split a
@@ -45,9 +46,11 @@ redirects (the latter via
 leading underscore marks the module as route-internal.
 """
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from flask import Response, flash
+from flask_login import current_user
 
 from app.extensions import db
 from app.routes._redirect_target import RedirectTarget
@@ -670,22 +673,17 @@ class StrandingCheck:
     **R-PC95**), which read after the edit would already leave out every row
     the edit moves below the books.  One value, built by
     :meth:`before_the_edit` where each edit door captures its before-image,
-    so no door can ask the refusal without having asked first.
+    so no door can ask the refusal without having asked first.  Everything
+    else the refusal reads is the state AFTER the edit, off a pass of its
+    own (the round-8 review's L1).
 
     Attributes:
-        pass_ctx: The door's PRE-WRITE read pass.  Its resolution memo is
-            keyed by the rule's spec and the definition's books, so the
-            edited rule resolves afresh; the calendar and the per-account
-            opening memos are keyed by the owner and the account, and they
-            serve the edited state only because an edit moves no payday and
-            no opening.
         restorable: The rows the definition's unarchive would restore as it
             stood
             (:func:`app.services.planned_rows_books.restorable_before_the_edit`);
             ``None`` for an active definition.
     """
 
-    pass_ctx: BalanceContext
     restorable: UnarchiveScope | None
 
     @classmethod
@@ -702,48 +700,65 @@ class StrandingCheck:
             The :class:`StrandingCheck`.
         """
         return cls(
-            pass_ctx,
             planned_rows_books.restorable_before_the_edit(template, pass_ctx),
         )
 
 
 def refuse_stranding_save(
-    template: Any, check: StrandingCheck, redirect: RedirectTarget,
+    template: Any, check: StrandingCheck, redirect: RedirectTarget, *,
+    kind: Any, effective_from: date,
 ) -> Response | None:
     """Refuse an edit whose SAVED state strands a still-projected row below the books.
 
     Rulings **R-PC90** / **R-PC91** (developer, 2026-09-22; plan step
     ``pay_calendar:C18-a``): a recurring definition's edit is refused when
     the state it would save leaves a still-projected row of that definition
-    answering an occurrence its books drop, WHATEVER field changed -- an
+    answering an occurrence its books drop, or sitting inside the books of
+    the account it sits on (ruling **R-PC99**), WHATEVER field changed -- an
     account moved onto books that open later, the envelope box unticked, a
-    due day cleared -- because a maintain pass reaching that row retires it
-    (the save's own regeneration, for a paycheck ending on or after the
-    edit's effective date; a later pass for an older one).  An ARCHIVED
-    definition's hidden rows count, since its unarchive brings them back
-    (ruling **R-PC93**) -- those it would bring back as the definition stood
-    before the edit (:class:`StrandingCheck`, ruling **R-PC95**).  The
-    predicate is :func:`app.services.planned_rows_books
+    due day cleared -- because a maintain pass reaching a dropped row
+    retires it (the save's own regeneration, for a paycheck ending on or
+    after the edit's effective date; a later pass for an older one), and a
+    row inside the books is counted twice.  The state the save leaves is
+    read with that regeneration applied: a row it rewrites is asked where
+    the rewrite moves it (*kind*'s ``preview_fn``, the round-7 review's M1).
+    An ARCHIVED definition's hidden rows count, since its unarchive brings
+    them back (ruling **R-PC93**) -- those it would bring back as the
+    definition stood before the edit (:class:`StrandingCheck`, ruling
+    **R-PC95**).  The predicate is :func:`app.services.planned_rows_books
     .definition_edit_refusal`'s; this is the door half both edit doors share
     (``routes/templates/crud.update_template``, and
     ``routes/transfers/templates._regenerate_and_commit_template``).
 
     **Asked once the edit is whole and before regeneration**, unlike the four
     rules above, because it reads what the save would LEAVE.  So the session
-    holds the edit, and a refusal ROLLS IT BACK before it flashes.
+    holds the edit, and a refusal ROLLS IT BACK before it flashes.  **It
+    reads a pass built HERE, after every write the door makes before
+    regenerating** (the round-8 review's L1), exactly as the regeneration
+    builds its own: the pre-write pass's loan caches are keyed by account
+    alone and go stale once the edit or the standing payment's sync writes,
+    so a preview read off it could decide over a state the save does not
+    leave.  For a definition with a rule -- the only one this refusal walks
+    -- nothing is written between this pass and the regeneration's.
 
     Args:
         template: The edited definition -- rule, amount and fields applied,
             not committed.
         check: The door's :class:`StrandingCheck`, built before the edit.
         redirect: The edit form to send the owner back to.
+        kind: The door's
+            :class:`~app.routes._recurrence_conflict_chooser.RecurrenceConflictKind`,
+            whose engine regenerates the save next.
+        effective_from: The edit's effective date, from which that
+            regeneration maintains.
 
     Returns:
         The edit form with the refusal flashed and the edit rolled back, or
         ``None`` when the save strands nothing.
     """
     stranded = planned_rows_books.definition_edit_refusal(
-        template, check.pass_ctx, check.restorable,
+        template, BalanceContext.build(current_user.id), check.restorable,
+        planned_rows_books.SaveRegeneration(kind.preview_fn, effective_from),
     )
     if stranded is None:
         return None

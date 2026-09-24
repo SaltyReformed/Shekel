@@ -231,8 +231,8 @@ def _transaction_source_days(
     refused as the deleted loader refused one with no shadow.  Safe only
     because the deploy resync brings every legacy pair to zero at its own
     date and no writer posts a net under that source -- ENFORCED there since
-    ruling **R-BAL104**: the resync refuses to finish (the deploy stops;
-    ruling **R-BAL105** states what that costs) while any transfer still holds
+    ruling **R-BAL104**: the resync refuses to finish (the deploy stops and,
+    since plan step ``balance:X-cv``, rolls back whole) while any transfer still holds
     a nonzero ``transfer``-SOURCE net on some ``(period, date)``, a family it
     skipped included (``_posting_legacy.transfers_holding_a_legacy_net``).
     The refusal measures that source kind only, while this filter hides a

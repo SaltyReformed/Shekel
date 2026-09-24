@@ -1,18 +1,19 @@
 """The test-db image's cache key covers everything that shapes the template.
 
 ``scripts/build_test_db_image.py`` bakes ``shekel_test_template`` into a
-tagged image so a test run can start a container instead of replaying 177
-migrations.  The tag is a hash of the inputs, and the tempting version of
-that hash -- "the migrations" -- is WRONG in a way that corrupts results
-rather than merely slowing them.
+tagged image so a test run can start a container instead of replaying the
+whole migration chain.  The tag is a hash of the inputs, and the tempting
+version of that hash -- "the migrations" -- is WRONG in a way that corrupts
+results rather than merely slowing them.
 
-``build_test_template._populate_template`` runs seven steps, and four of them
-re-apply IN-CODE definitions *after* ``alembic upgrade``, deliberately, so
-the latest trigger definition wins over the migration-frozen one.  So editing
-``app/audit_infrastructure.py``, ``app/posting_infrastructure.py`` or
-``app/opening_infrastructure/`` changes the template while ``migrations/``
-stays byte-identical.  A migrations-only key would hand back a stale image
-and every suite thereafter would run against the wrong triggers, green.
+``build_test_template._populate_template`` re-applies IN-CODE trigger and
+constraint definitions *after* ``alembic upgrade``, deliberately, so the
+latest definition wins over the migration-frozen one.  So editing
+``app/audit_infrastructure.py``, ``app/posting_infrastructure.py``,
+``app/opening_infrastructure/`` or any other module it re-applies changes
+the template while ``migrations/`` stays byte-identical.  A migrations-only
+key would hand back a stale image and every suite thereafter would run
+against the wrong triggers, green.
 
 These tests pin that: each derived input must move the key, and every
 ``app`` module the builder imports must be covered.  That second assertion
@@ -24,8 +25,9 @@ green.  They need no docker daemon and no database.
 
 The image's CONTENTS are not asserted here; that is done at bake time by
 ``_verify_image``, which starts the committed image and refuses it if the
-template is missing, unmigrated, or stamped at anything but the migration
-chain's head.  Three deliberately-bad images were fed to it and all three
+template is missing, unmigrated, stamped at anything but the migration
+chain's head, off any exact count ``template_checks`` names, or shipping
+audit rows.  Three deliberately-bad images were fed to it and all three
 were refused.
 """
 from __future__ import annotations
@@ -428,6 +430,31 @@ class TestTheFaultVerdictLineHoldsAtEverySite:
         assert "raise BuildError(" in body, (
             "ask() does not re-raise a failed query as a verdict"
         )
+
+
+class TestAFailedTemplateBuildReportsBothStreams:
+    """Ruling R-BAL121: the failure report quotes the builder's log AND its error.
+
+    The template builder runs the migration chain through the deploy's own
+    runner (``app.migration_runner``), so ``migrations/env.py`` leaves its
+    logging to the app: each revision is logged as JSON on STDOUT and the
+    traceback goes to stderr.  A report quoting stderr alone would drop the
+    line naming the revision that was running.
+    """
+
+    def test_the_report_quotes_the_log_tail_and_the_error(self):
+        """The last revisions logged and the traceback both appear; older lines do not."""
+        log = "\n".join(
+            f'{{"message": "Running upgrade r{i} -> r{i + 1}"}}'
+            for i in range(100)
+        )
+        report = _MODULE._builder_failure(log, "Traceback: forged failure\n")
+
+        tail = _MODULE._FAILED_BUILD_LOG_LINES
+        assert "Running upgrade r99 -> r100" in report
+        assert f"Running upgrade r{100 - tail} -> r{101 - tail}" in report
+        assert f"Running upgrade r{99 - tail} -> r{100 - tail}" not in report
+        assert report.rstrip().endswith("Traceback: forged failure")
 
 
 class TestTheTemplateBuilderStartsUnderThePinnedLocale:
