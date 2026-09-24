@@ -771,15 +771,22 @@ def blocked_by_violations() -> list[str]:
 #: **What replaces it, and why each piece.**  :data:`LEDGER_ROW_CAP` stays and
 #: is now the whole of rule 4 for this file -- it is the arm that actually
 #: prevents the failure the line cap was reached for, a row swelling into the
-#: arc document's argument.  :data:`LEDGER_RUNAWAY_ROWS` is a backstop set far
-#: above any real backlog, so an accident that duplicates the table still
-#: fails.  And :func:`open_findings_by_arc` puts the backlog in the FILE, where
-#: :func:`stated_arc_counts_violation` grades that the number is true -- because
-#: the thing worth forcing was never the file's length: it is that the pile is
-#: looked at.  *This said the function "PRINTS the backlog every run" until
-#: 2026-09-01, and it does not: the plan gate contains no ``print`` call at all,
-#: and a number on gate stdout would be read by nobody anyway.  The report lives
-#: where every reader of the registry meets it, which is the stronger form.*
+#: arc document's argument.  A row-count backstop stood beside it until
+#: 2026-09-23, when balance:R-BAL135 deleted it with its ``steps.md`` and
+#: ``rulings.md`` twins.  A table duplicated by accident still fails rule 10's
+#: unique key: :func:`unique_key_violations` here and in ``steps.md``,
+#: :func:`_rulings.key_violations` in ``rulings.md``.  Rows looped out under
+#: NEW ids are caught here and in ``rulings.md`` only by rule 3's stated
+#: counts, and not when the same script rewrites them; in ``steps.md`` rule 12
+#: catches them, because a new id has no specification in its arc document
+#: (:func:`index_agreement_violations`).  And :func:`open_findings_by_arc`
+#: puts the backlog in the FILE, where :func:`stated_arc_counts_violation`
+#: grades that the number is true -- because the thing worth forcing was never
+#: the file's length: it is that the pile is looked at.  *This said the
+#: function "PRINTS the backlog every run" until 2026-09-01, and it does not:
+#: the plan gate contains no ``print`` call at all, and a number on gate
+#: stdout would be read by nobody anyway.  The report lives where every reader
+#: of the registry meets it, which is the stronger form.*
 #: On the day of the ruling that pile was 227 rows, 156 of
 #: them ``balance``, with 21 blocked on nothing but a decision -- the same 21
 #: whose clearance the 250 -> 260 raise had been granted against.
@@ -802,9 +809,8 @@ def blocked_by_violations() -> list[str]:
 #: **What replaces it.**  :data:`~_order.DESCRIPTION_CAP` is the per-ROW cap and
 #: is now the whole of rule 4 for this file -- it prevents the failure a line
 #: cap was reached for, a row swelling into the arc document's specification.
-#: :data:`STEPS_RUNAWAY_ROWS` is the runaway backstop a dropped cap owes.  And
-#: what the length was ever a proxy for is graded directly and always was: rule
-#: 3's four counts in the header, and rule 14's dense ranks, which keep "the
+#: And what the length was ever a proxy for is graded directly and always was:
+#: rule 3's four counts in the header, and rule 14's dense ranks, which keep "the
 #: first row that is not done" the answer however long the table grows.  Nobody
 #: reads this file end to end; they read row one.
 REGISTRY_CAPS = {
@@ -819,24 +825,6 @@ REGISTRY_CAPS = {
     "verification.md": 120,
     "lessons.md": 340,
 }
-
-#: The number of ``steps.md`` rows that can only be an accident.
-#:
-#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
-#: for the reasons above.  This is the runaway backstop a dropped cap owes: a
-#: duplicated table or a generator loop fails loudly instead of committing.
-#: Set far above the 157 steps the index held when the cap was dropped; it has not bound
-#: yet, but the rulings total's 'can never bind' failed 2026-09-23 (balance:R-BAL131).
-STEPS_RUNAWAY_ROWS = 400
-
-#: The number of ``ledger.md`` rows that can only be an accident.
-#:
-#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
-#: for the reasons above.  This is the runaway backstop a dropped cap owes:
-#: a duplicated table or a generator loop fails loudly instead of committing.
-#: Set far above the 227 rows the ledger held when the cap was dropped; it has not bound
-#: yet, but the rulings total's 'can never bind' failed 2026-09-23 (balance:R-BAL131).
-LEDGER_RUNAWAY_ROWS = 400
 
 #: The widest a single ``ledger.md`` row may be, in characters.
 #:
@@ -884,44 +872,6 @@ def registry_line_cap_violations() -> list[str]:
             "Do not raise the cap and do not trim a live row."
         )
     return problems
-
-
-def ledger_runaway_violation() -> "str | None":
-    """The backstop a dropped line cap owes.
-
-    Returns:
-        The message when ``ledger.md`` holds more rows than any real backlog
-        could, or ``None``.
-    """
-    rows = len(ledger_rows())
-    if rows <= LEDGER_RUNAWAY_ROWS:
-        return None
-    return (
-        f"ledger.md holds {rows} rows against the {LEDGER_RUNAWAY_ROWS}-row "
-        "runaway backstop. This is not rule 4's forcing function -- that cap "
-        "was dropped 2026-08-25 -- it is the arm that says a table this size "
-        "is an accident. Check for a duplicated block before doing anything "
-        "else."
-    )
-
-
-def steps_runaway_violation() -> "str | None":
-    """The backstop ``steps.md``'s dropped line cap owes.
-
-    Returns:
-        The message when ``steps.md`` holds more step rows than any real plan
-        could, or ``None``.
-    """
-    rows = len(step_rows())
-    if rows <= STEPS_RUNAWAY_ROWS:
-        return None
-    return (
-        f"steps.md holds {rows} steps against the {STEPS_RUNAWAY_ROWS}-row "
-        "runaway backstop. This is not rule 4's forcing function -- that cap "
-        "was dropped 2026-08-25 -- it is the arm that says a table this size "
-        "is an accident. Check for a duplicated block before doing anything "
-        "else."
-    )
 
 
 def open_findings_by_arc() -> "list[tuple[str, int]]":

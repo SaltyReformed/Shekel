@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import exists
 from sqlalchemy.orm import selectinload
 
 from app import ref_cache
@@ -31,6 +32,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.escrow_line import EscrowLine
 from app.models.loan_anchor_event import LoanAnchorEvent
+from app.models.loan_anchor_withdrawal import LoanAnchorWithdrawal
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
@@ -117,9 +119,11 @@ class LoanAnchorFact:
             stored row and carries :data:`_ORIGINATION_EVENT_ID`.
         is_tracking_start: ``True`` for a ``tracking_start`` assertion (a
             mid-life import's balance-as-of-date), ``False`` for the origination
-            opening and every user true-up.  Display provenance only (the drift
-            scorecard labels the tracking-start row); the balance math never
-            branches on it.
+            opening and every user true-up.  The balance math never branches
+            on it: the drift scorecard labels the tracking-start row by it, and
+            the write door's duplicate rule scopes its comparison by it
+            (:func:`app.services.loan_anchor_service._governing_loan_anchor`,
+            ruling R-EQ).
     """
 
     account_id: int
@@ -138,10 +142,13 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
     resolver-input builder), so no two sites can disagree on what a loan's
     anchors are.  The single ``is_opening`` anchor is ALWAYS the synthesized
     origination (:func:`synthesize_origination_anchor` -- from the immutable
-    *params*, never a stored row; see :class:`LoanAnchorFact`).  Every stored
+    *params*, never a stored row; see :class:`LoanAnchorFact`).  Every STANDING
     ``tracking_start`` and ``user_trueup`` :class:`LoanAnchorEvent` is loaded as
     an ``is_opening=False`` balance ASSERTION -- the two differ only in
-    ``is_tracking_start`` (a display label; the walk resets on both identically).
+    ``is_tracking_start`` (a label; the walk resets on both identically) --
+    through :func:`load_standing_loan_assertions`, so a statement a
+    :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` names
+    resets nothing (plan step ``recurrence:R23``).
 
     **The returned order IS the loan's chronology, and stating it HERE is the
     point of this function** (plan step X-an-b, closing finding N-196).  Facts
@@ -194,24 +201,71 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
         refuse an assertion earlier than ``origination_date``; the sort does not
         depend on that guard holding.
     """
+    facts = [synthesize_origination_anchor(params)]
+    facts.extend(load_standing_loan_assertions(params.account_id))
+    facts.sort(key=anchor_chronology_key)
+    return facts
+
+
+def load_standing_loan_assertions(account_id: int) -> list[LoanAnchorFact]:
+    """Return a loan's STANDING stored assertions, in the loan's one chronology.
+
+    Every ``tracking_start`` and ``user_trueup`` :class:`LoanAnchorEvent` of
+    *account_id* that no
+    :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` names, as
+    ``is_opening=False`` :class:`LoanAnchorFact` values ascending by
+    :func:`~app.utils.dates.anchor_chronology_key`.  Legacy
+    ``origination``-source rows stay out, as they always have: the origination
+    is synthesized from the params (:func:`synthesize_origination_anchor`).
+
+    **The ONE reader of the statement table, and so the one place "stands" is
+    defined** (plan step ``recurrence:R23``, ruling **R-R98**).  Two questions
+    read a loan's stored statements, and both mean the standing ones:
+
+    * :func:`load_loan_anchor_facts` -- every balance, the walk, the posted
+      ledger -- adds the synthesized origination to this list.  A withdrawn
+      statement read there would reset the balance on a day it does not
+      describe, which is the defect the withdrawal exists to remove.
+    * The write door's duplicate rule
+      (:func:`app.services.loan_anchor_service._governing_loan_anchor`, ruling
+      **R-EQ**) takes the governing statement of one source from this list.  A
+      withdrawn statement read there would refuse a new, identical one as
+      "already recorded" -- the very correction a withdrawal makes room for.
+
+    They were two queries until this step, and a predicate added to one query
+    and not the other is the drift rule 14 names; so the predicate lives here
+    and both read the list.  The door used to order in SQL as well, a second
+    spelling of the chronology key; it now reads this order.
+
+    Args:
+        account_id: The loan account whose statements to load.
+
+    Returns:
+        The standing :class:`LoanAnchorFact` list ascending by ``(anchor_date,
+        created_at, event_id)``; empty when the loan has recorded no standing
+        statement.
+    """
     trueup_source_id = ref_cache.loan_anchor_source_id(
         LoanAnchorSourceEnum.USER_TRUEUP,
     )
     tracking_start_source_id = ref_cache.loan_anchor_source_id(
         LoanAnchorSourceEnum.TRACKING_START,
     )
+    withdrawn = exists().where(
+        LoanAnchorWithdrawal.anchor_event_id == LoanAnchorEvent.id,
+    )
     events = (
         db.session.query(LoanAnchorEvent)
         .filter(
-            LoanAnchorEvent.account_id == params.account_id,
+            LoanAnchorEvent.account_id == account_id,
             LoanAnchorEvent.source_id.in_(
                 [trueup_source_id, tracking_start_source_id],
             ),
+            ~withdrawn,
         )
         .all()
     )
-    facts = [synthesize_origination_anchor(params)]
-    facts.extend(
+    facts = [
         LoanAnchorFact(
             account_id=event.account_id,
             anchor_date=event.anchor_date,
@@ -222,7 +276,7 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
             is_tracking_start=(event.source_id == tracking_start_source_id),
         )
         for event in events
-    )
+    ]
     facts.sort(key=anchor_chronology_key)
     return facts
 
