@@ -1,6 +1,6 @@
 """Shekel Budget App -- the ORM half of an append-only table's refusal.
 
-**Four account tables record FACTS that are never edited**, each for the same
+**These account tables record FACTS that are never edited**, each for the same
 reason: a row states what was true at a moment, and saying something else means
 saying it again rather than rewriting what was said.
 
@@ -12,7 +12,9 @@ saying it again rather than rewriting what was said.
 * :class:`~app.models.account_opening.AccountOpening` -- what an account held
   before its records begin (ruling **R-GX**, latest restatement governs);
 * :class:`~app.models.loan_anchor_event.LoanAnchorEvent` -- a loan's owed
-  balance at a moment (decision D-A).
+  balance at a moment (decision D-A);
+* :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` -- the
+  withdrawal of one loan statement (plan step ``recurrence:R23``).
 
 **This module is the half that gives a programmer error a NAME; it is not the
 half that makes the rule true.**  That is
@@ -62,10 +64,11 @@ def install_append_only_guards(model, error: type[AppendOnlyViolation]) -> None:
     rather than a flush deep inside a commit.
 
     **The DELETE guard does not interfere with disposing of an ACCOUNT, an
-    IMPORT or a LEVEL.**  All four tables carry
+    IMPORT, a LEVEL or a STATEMENT.**  Every guarded table carries
     :class:`~app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``
-    foreign key, a bank level cascades with its import and a release with its
-    level, and a cascade is executed by PostgreSQL without loading a row into
+    foreign key, a bank level cascades with its import, a release with its
+    level and a loan statement's withdrawal with the statement, and a cascade
+    is executed by PostgreSQL without loading a row into
     the session, so no listener fires.  What the
     ORM must NOT do is delete those rows itself on the way to deleting the
     account: :class:`~app.models.account.Account` therefore declares

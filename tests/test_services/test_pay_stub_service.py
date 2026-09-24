@@ -8,7 +8,10 @@ What :mod:`app.services.pay_stub_service` decides, graded without a request:
 * what a stub's figures add up to, through the one waterfall a priced
   paycheck's net uses, and the printed-net check against it (**R-SAL42**);
 * the one-off name clash, ignoring capitals and extra spaces (**R-SAL45**,
-  **R-SAL51** (b));
+  **R-SAL51** (b)), asked only of a one-off a save adds or renames
+  (**R-SAL57**);
+* that a stub line adds up by the kind the STUB prints it under, a re-kind of
+  its paycheck line moving no saved stub (**R-SAL58**, finding SAL-567);
 * that a record on a held payday and an edit onto one are both refused
   (**R-SAL52**), every tax is required, and an edit writes the stub ROW once
   -- so its version guards a child-only change -- while an identical
@@ -35,6 +38,7 @@ no Vision; a one-off "Retro pay" ``$55.00`` (taxable earning); taxes
     net       = 2984.62 - 350.00 - 472.00 - 110.00 = 2052.62
 """
 
+import dataclasses
 from datetime import date
 from decimal import Decimal
 
@@ -49,7 +53,7 @@ from app.extensions import db
 from app.models.pay_stub import PayStub, PayStubLineAmount, PayStubOneOff
 from app.services import pay_stub_service
 from app.services.balance_at import BalanceContext
-from app.services.pay_stub_service import OneOffFigure, StubFigures
+from app.services.pay_stub_service import LineFigure, OneOffFigure, StubFigures
 from tests._test_helpers import (
     build_pay_stub_world,
     make_flat_paycheck_line,
@@ -88,16 +92,25 @@ def _ctx(world):
 
 
 def _figures(world, *, payday=_PAYDAY, roth="110.00", one_offs=None, base="2884.62"):
-    """The worked example's figures, with the named departures."""
+    """The worked example's figures, with the named departures.
+
+    Each line is printed under its own kind; :func:`_printed_under` moves one
+    under another heading.
+    """
     lines = world["lines"]
+
+    def printed(key, amount):
+        """The stub's figure for one line, under the line's own kind."""
+        return LineFigure(lines[key].paycheck_line_kind_id, Decimal(amount))
+
     return StubFigures(
         payday=payday,
         base_pay=Decimal(base),
         line_amounts={
-            lines["health"].id: Decimal("310.00"),
-            lines["dental"].id: Decimal("40.00"),
-            lines["roth"].id: Decimal(roth),
-            lines["phone"].id: Decimal("45.00"),
+            lines["health"].id: printed("health", "310.00"),
+            lines["dental"].id: printed("dental", "40.00"),
+            lines["roth"].id: printed("roth", roth),
+            lines["phone"].id: printed("phone", "45.00"),
         },
         withholdings={
             _tax(WithholdingKindEnum.FEDERAL_INCOME): Decimal("150.00"),
@@ -112,6 +125,25 @@ def _figures(world, *, payday=_PAYDAY, roth="110.00", one_offs=None, base="2884.
         ),
         notes=None,
     )
+
+
+def _printed_under(world, figures, **kinds):
+    """*figures* with each named line printed under another heading (ruling R-SAL58).
+
+    Args:
+        world: The worked example's world.
+        figures: The stub's figures.
+        **kinds: ``line key=PaycheckLineKindEnum`` for each line the stub
+            prints under a heading other than the line's own.
+
+    Returns:
+        A copy of *figures*; each named line keeps its amount.
+    """
+    line_amounts = dict(figures.line_amounts)
+    for key, member in kinds.items():
+        line_id = world["lines"][key].id
+        line_amounts[line_id] = LineFigure(_kind(member), line_amounts[line_id].amount)
+    return dataclasses.replace(figures, line_amounts=line_amounts)
 
 
 def _record(world, figures=None, printed_net=_NET):
@@ -195,6 +227,59 @@ class TestWhatAStubAddsUpTo:
         assert db.session.query(PayStub).count() == 0
         db.session.rollback()
 
+    def test_a_line_adds_up_by_the_kind_the_stub_prints_it_under(self, world):
+        """R-SAL58: Phone printed as a POST-TAX DEDUCTION, not the line's taxable earning.
+
+        gross 2884.62 + 55.00 = 2939.62; post-tax 110.00 + 45.00 = 155.00;
+        net 2939.62 - 350.00 - 472.00 - 155.00 = 1962.62.  The printed-net
+        check reads the same kinds, so that net records and the line's own
+        kind's $2,052.62 is refused.
+        """
+        figures = _printed_under(
+            world, _figures(world), phone=PaycheckLineKindEnum.POST_TAX_DEDUCTION,
+        )
+        totals = pay_stub_service.totals_of(world["profile"], figures)
+        assert (totals.gross, totals.post_tax, totals.net) == (
+            Decimal("2939.62"), Decimal("155.00"), Decimal("1962.62"),
+        )
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, figures)
+        assert set(refused.value.errors) == {"printed_net"}
+        db.session.rollback()
+        assert _record(world, figures, printed_net=Decimal("1962.62")) is not None
+
+    def test_re_kinding_a_line_moves_no_saved_stub(self, world):
+        """Finding SAL-567: Phone's LINE turns post-tax; the saved stub still nets $2,052.62.
+
+        Until R-SAL58 the stub borrowed each line's kind, and this re-kind
+        moved its net to $1,962.62 with no edit to the stub.
+        """
+        stub_id = _record(world).id
+        phone = world["lines"]["phone"]
+        phone.paycheck_line_kind_id = _kind(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+        db.session.commit()
+        db.session.expire_all()
+
+        stub = db.session.get(PayStub, stub_id)
+        figures = pay_stub_service.figures_of(stub)
+        assert figures.line_amounts[phone.id].paycheck_line_kind_id == (
+            _kind(PaycheckLineKindEnum.TAXABLE_EARNING)
+        )
+        assert pay_stub_service.totals_of(world["profile"], figures).net == _NET
+
+    def test_a_kind_the_app_does_not_hold_is_not_found(self, world):
+        """A tampered line kind is a 404, as a tampered one-off kind is, never a write."""
+        unknown = db.session.execute(
+            text("SELECT MAX(id) + 1 FROM ref.paycheck_line_kinds"),
+        ).scalar()
+        figures = _figures(world)
+        phone = world["lines"]["phone"].id
+        figures.line_amounts[phone] = LineFigure(unknown, Decimal("45.00"))
+        with pytest.raises(NotFoundError):
+            _record(world, figures)
+        db.session.rollback()
+        assert db.session.query(PayStub).count() == 0
+
     def test_a_missing_tax_is_refused_and_the_net_is_not_blamed(self, world):
         """Medicare left out of a stub whose printed net ($2,052.62) is right.
 
@@ -251,6 +336,80 @@ class TestTheOneOffNameClash:
         assert [(o.name, o.amount) for o in stub.one_offs] == [("Retro pay", Decimal("55.00"))]
 
 
+class TestTheClashIsAskedOnlyOfWhatASaveAdds:
+    """R-SAL57, "Check only what a save adds": a saved one-off never blocks its own stub.
+
+    Each case records the worked example (its one-off "Retro pay") and THEN
+    gives the profile a paycheck line named "Retro pay", which the line door
+    allows ("line names stay free").
+    """
+
+    @staticmethod
+    def _stub_whose_one_off_a_line_now_names(world):
+        """The recorded 03-27 stub, and a $5.00 taxable line named like its one-off."""
+        stub = _record(world)
+        make_flat_paycheck_line(
+            world["profile"], "Retro pay", "5.00", PaycheckLineKindEnum.TAXABLE_EARNING,
+        )
+        db.session.commit()
+        return stub
+
+    @staticmethod
+    def _one_offs(*rows):
+        """Taxable-earning one-offs from ``(name, amount)`` pairs."""
+        return tuple(
+            OneOffFigure(name, _kind(PaycheckLineKindEnum.TAXABLE_EARNING), Decimal(amount))
+            for name, amount in rows
+        )
+
+    def test_an_edit_that_keeps_the_one_off_is_saved(self, world):
+        """Roth 110 -> 100 (net +10.00): the kept "Retro pay" does not block the edit."""
+        stub = self._stub_whose_one_off_a_line_now_names(world)
+        pay_stub_service.edit_stub(
+            stub, _figures(world, roth="100.00"), _NET + 10, _ctx(world), _TODAY,
+        )
+        db.session.commit()
+        assert stub.version_id == 2
+        assert [o.name for o in stub.one_offs] == ["Retro pay"]
+
+    def test_re_casing_the_kept_one_off_is_not_a_new_clash(self, world):
+        """"RETRO PAY" is the saved one-off's own name in the clash's compared form."""
+        stub = self._stub_whose_one_off_a_line_now_names(world)
+        pay_stub_service.edit_stub(
+            stub, _figures(world, one_offs=self._one_offs(("RETRO PAY", "55.00"))),
+            _NET, _ctx(world), _TODAY,
+        )
+        db.session.commit()
+        assert [o.name for o in stub.one_offs] == ["RETRO PAY"]
+
+    def test_a_one_off_the_edit_adds_is_still_checked(self, world):
+        """A second one-off "vision" is new, and is the Vision line."""
+        stub = self._stub_whose_one_off_a_line_now_names(world)
+        with pytest.raises(PayStubRefused) as refused:
+            pay_stub_service.edit_stub(
+                stub,
+                _figures(world, one_offs=self._one_offs(
+                    ("Retro pay", "55.00"), ("vision", "0.00"),
+                )),
+                _NET, _ctx(world), _TODAY,
+            )
+        assert refused.value.errors == {"one_off:1": (
+            "'vision' is your paycheck line 'Vision'; enter it on the line instead."
+        )}
+
+    def test_renaming_the_one_off_onto_a_lines_name_is_checked(self, world):
+        """"Retro pay" renamed "dental" is a name the stub does not hold: the Dental line."""
+        stub = self._stub_whose_one_off_a_line_now_names(world)
+        with pytest.raises(PayStubRefused) as refused:
+            pay_stub_service.edit_stub(
+                stub, _figures(world, one_offs=self._one_offs(("dental", "55.00"))),
+                _NET, _ctx(world), _TODAY,
+            )
+        assert refused.value.errors == {"one_off:0": (
+            "'dental' is your paycheck line 'Dental'; enter it on the line instead."
+        )}
+
+
 class TestRecording:
     """What a record writes, and whose keys place it."""
 
@@ -286,7 +445,10 @@ class TestRecording:
         figures = _figures(world)
         figures = StubFigures(
             payday=figures.payday, base_pay=figures.base_pay,
-            line_amounts={**figures.line_amounts, foreign.id: Decimal("1.00")},
+            line_amounts={
+                **figures.line_amounts,
+                foreign.id: LineFigure(foreign.paycheck_line_kind_id, Decimal("1.00")),
+            },
             withholdings=figures.withholdings, one_offs=figures.one_offs, notes=None,
         )
         with pytest.raises(NotFoundError):
@@ -330,6 +492,21 @@ class TestEditing:
         )
         db.session.commit()
         assert stub.version_id == 2
+
+    def test_an_edit_of_a_lines_kind_alone_rewrites_it_and_bumps_once(self, world):
+        """Phone re-read as an after-tax earning (net unchanged): its row's kind moves, 1 -> 2."""
+        stub = _record(world)
+        pay_stub_service.edit_stub(
+            stub,
+            _printed_under(world, _figures(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING),
+            _NET, _ctx(world), _TODAY,
+        )
+        db.session.commit()
+        assert stub.version_id == 2
+        phone = world["lines"]["phone"].id
+        assert {row.paycheck_line_id: row.paycheck_line_kind_id for row in stub.line_amounts}[
+            phone
+        ] == _kind(PaycheckLineKindEnum.AFTER_TAX_EARNING)
 
     def test_an_identical_edit_writes_nothing(self, world):
         """The same figures again: no row changes and the counter stays at 1."""
@@ -436,6 +613,43 @@ class TestTheReport:
         assert [(o.name, o.amount) for o in report.one_offs] == [
             ("Retro pay", Decimal("55.00")),
         ]
+
+    def test_a_kind_the_stub_prints_differently_is_listed(self, world):
+        """R-SAL58: Phone printed as an AFTER-TAX earning, the line's a taxable one.
+
+        The net is the same either way -- an earning joins the deposit whether
+        it is taxed or not, once the taxes are typed: gross 2939.62, after-tax
+        45.00, net 2939.62 - 350.00 - 472.00 - 110.00 + 45.00 = 2052.62 -- so
+        the printed-net check passes it and the REPORT is what shows it.  The
+        figures agree; the row still counts as a disagreement.
+        """
+        figures = _printed_under(
+            world, _figures(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+        )
+        stub = _record(world, figures)
+        report = pay_stub_service.stub_report(world["profile"], stub, _ctx(world))
+        phone = {row.name: row for row in report.lines}["Phone Allowance"]
+        assert (phone.on_stub, phone.in_app) == (Decimal("45.00"), Decimal("45.00"))
+        assert (phone.stub_kind, phone.kind) == (
+            PaycheckLineKindEnum.AFTER_TAX_EARNING, PaycheckLineKindEnum.TAXABLE_EARNING,
+        )
+        assert (phone.stub_kind_label, phone.kind_label) == (
+            "After-tax earning", "Taxable earning",
+        )
+        assert phone.kind_agrees is False
+        assert phone.agrees is False
+        assert report.disagreements == 4
+        assert report.totals.net == _NET
+
+    def test_a_line_the_stub_does_not_print_has_no_kind_to_disagree(self, world):
+        """Vision is not on the stub: its row has no stub kind and fails on its figure alone."""
+        stub = _record(world)
+        report = pay_stub_service.stub_report(world["profile"], stub, _ctx(world))
+        vision = {row.name: row for row in report.lines}["Vision"]
+        assert vision.stub_kind is None
+        assert vision.stub_kind_label is None
+        assert vision.kind_agrees is True
+        assert vision.agrees is False
 
     def test_the_base_gap_is_the_stub_less_the_salary(self, world):
         """A stub printing $2,884.58 base is $0.04 under the salary's $2,884.62."""

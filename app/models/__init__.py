@@ -71,6 +71,10 @@ from app.models.savings_goal import SavingsGoal
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.loan_anchor_event import LoanAnchorEvent
+from app.models.loan_anchor_withdrawal import (
+    LoanAnchorWithdrawal,
+    LoanAnchorWithdrawalImmutableError,
+)
 from app.models.loan_features import RateHistory
 from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
@@ -172,6 +176,8 @@ __all__ = [
     "InterestParams",
     "LoanParams",
     "LoanAnchorEvent",
+    "LoanAnchorWithdrawal",
+    "LoanAnchorWithdrawalImmutableError",
     "RateHistory",
     "EscrowLine",
     "EscrowComponentVersion",

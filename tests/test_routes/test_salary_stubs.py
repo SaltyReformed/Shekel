@@ -71,6 +71,7 @@ def _world(seed_user, seed_periods):  # pylint: disable=unused-argument
     return {
         "profile_id": profile.id,
         "lines": {key: line.id for key, line in lines.items()},
+        "kinds": {key: line.paycheck_line_kind_id for key, line in lines.items()},
     }
 
 
@@ -98,9 +99,11 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", roth="110.00",
              one_off=("Retro pay", "55.00")):
     """The worked example as the form posts it: every field the template emits.
 
-    Vision is left blank (the stub does not print it).  A new stub's form
-    renders two one-off rows; the first carries the one-off and the second
-    is posted blank, as a browser posts it.
+    Vision is left blank (the stub does not print it).  Every line posts its
+    kind select at the line's own kind, as the form pre-sets it (ruling
+    R-SAL58; :func:`_printed_under` moves one).  A new stub's form renders two
+    one-off rows; the first carries the one-off and the second is posted
+    blank, as a browser posts it.
     """
     lines = world["lines"]
     taxable = str(ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.TAXABLE_EARNING))
@@ -112,6 +115,7 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", roth="110.00",
         f"line-{lines['dental']}": "40.00",
         f"line-{lines['roth']}": roth,
         f"line-{lines['phone']}": "45.00",
+        **{f"line-kind-{lines[key]}": str(world["kinds"][key]) for key in lines},
         _tax_field(WithholdingKindEnum.FEDERAL_INCOME): "150.00",
         _tax_field(WithholdingKindEnum.STATE_INCOME): "100.00",
         _tax_field(WithholdingKindEnum.SOCIAL_SECURITY): "180.00",
@@ -121,6 +125,24 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", roth="110.00",
         "one_off_amount": [one_off[1], ""],
         "notes": "",
         "printed_net": printed_net,
+    }
+
+
+def _printed_under(world, payload, **kinds):
+    """*payload* with each named line's kind select on another heading (ruling R-SAL58).
+
+    Args:
+        world: The worked example's world.
+        payload: A :func:`_payload`.
+        **kinds: ``line key=PaycheckLineKindEnum`` for each line the stub
+            prints under a heading other than the line's own.
+    """
+    return {
+        **payload,
+        **{
+            f"line-kind-{world['lines'][key]}": str(ref_cache.paycheck_line_kind_id(member))
+            for key, member in kinds.items()
+        },
     }
 
 
@@ -482,6 +504,108 @@ class TestTheSwitch:
         assert b"2026-03-27" in page.data
         assert b"$2,052.62 net" in page.data
         assert b"Used for pricing: turn off" in page.data
+
+
+def _selected(html, name):
+    """The values of the options selected in the select named *name*."""
+    start = html.index(f'name="{name}"')
+    select = html[start:html.index("</select>", start)]
+    return re.findall(r'<option value="([^"]+)" selected>', select)
+
+
+class TestTheKindAStubPrints:
+    """R-SAL58: each line's kind is the one the STUB prints it under, pre-set to the line's."""
+
+    def test_the_new_form_presets_each_line_to_its_own_kind(self, auth_client, world):
+        """All five lines, taken or not, offer their own kind selected."""
+        response = auth_client.get(
+            f"/salary/{world['profile_id']}/stubs/new?payday={_PAYDAY}",
+        )
+        html = response.data.decode()
+        for key, line_id in world["lines"].items():
+            assert _selected(html, f"line-kind-{line_id}") == [str(world["kinds"][key])], key
+
+    def test_a_line_printed_under_another_heading_is_recorded_and_reported(
+        self, auth_client, world,
+    ):
+        """Phone posted as an AFTER-TAX earning: stored so, listed, and pre-set so on its page.
+
+        The net is $2,052.62 either way (an earning joins the deposit whether
+        taxed or not, once the taxes are typed), so the record passes the
+        net check and the REPORT is what shows the heading differs.
+        """
+        after_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.AFTER_TAX_EARNING)
+        response = auth_client.post(
+            f"/salary/{world['profile_id']}/stubs",
+            data=_printed_under(
+                world, _payload(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+            ),
+        )
+        assert response.status_code == 302
+        phone = world["lines"]["phone"]
+        assert {
+            r.paycheck_line_id: r.paycheck_line_kind_id for r in _stub().line_amounts
+        }[phone] == after_tax
+        page = auth_client.get(response.headers["Location"]).data.decode()
+        assert "$2,052.62" in page
+        assert "4 paycheck lines" in page
+        assert "After-tax earning</span> on the stub" in page
+        assert "kind differs" in page
+        assert _selected(page, f"line-kind-{phone}") == [str(after_tax)]
+
+    def test_a_line_whose_kind_and_figure_both_differ_says_so(self, auth_client, world):
+        """Phone printed as an AFTER-TAX earning of $50.00; the app takes $45.00 taxable.
+
+        gross 2884.62 + 55.00 = 2939.62; net 2939.62 - 350.00 - 472.00 - 110.00
+        + 50.00 = 2057.62, the printed net the record carries.
+        """
+        phone = world["lines"]["phone"]
+        payload = _printed_under(
+            world, _payload(world, printed_net="2057.62"),
+            phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+        )
+        payload[f"line-{phone}"] = "50.00"
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 302
+        page = auth_client.get(response.headers["Location"]).data.decode()
+        assert "$2,057.62" in page
+        assert "kind and figure differ" in page
+
+    def test_a_filled_line_without_its_kind_is_refused_on_that_field(
+        self, auth_client, world,
+    ):
+        """A crafted post dropping Phone's kind is a 422 on that select, and nothing is written."""
+        payload = _payload(world)
+        phone = world["lines"]["phone"]
+        del payload[f"line-kind-{phone}"]
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 422
+        html = response.data.decode()
+        select = html[html.index(f'name="line-kind-{phone}"') - 200:]
+        assert "is-invalid" in select[:select.index("</select>")]
+        assert "Not a valid id." in html
+        assert db.session.query(PayStub).count() == 0
+
+    def test_the_stub_page_keeps_its_kinds_after_its_line_is_re_kinded(
+        self, auth_client, world,
+    ):
+        """Finding SAL-567: Phone's LINE turns post-tax; the stub still nets $2,052.62.
+
+        Its page lists the heading mismatch, and its form offers the kind the
+        STUB recorded, not the line's new one.
+        """
+        taxable = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.TAXABLE_EARNING)
+        _record(auth_client, world)
+        phone = world["lines"]["phone"]
+        db.session.get(PaycheckLine, phone).paycheck_line_kind_id = (
+            ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+        )
+        db.session.commit()
+        page = auth_client.get(f"/salary/stubs/{_stub().id}").data.decode()
+        assert "$2,052.62" in page
+        assert "Taxable earning</span> on the stub" in page
+        assert "Post-tax deduction</span> in the app" in page
+        assert _selected(page, f"line-kind-{phone}") == [str(taxable)]
 
 
 class TestTheLineDelete:

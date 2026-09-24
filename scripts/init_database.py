@@ -222,8 +222,8 @@ def init_fresh_database(connection):
     )
     print("Books-boundary constraint ready.")
 
-    # The append-only refusal on the four account-history tables (plan step
-    # X-f3c-2c, ruling R-HY; the fourth at balance:X-bj-1).  Same fresh-DB
+    # The append-only refusal on the account-history tables (plan step
+    # X-f3c-2c, ruling R-HY; every one in APPEND_ONLY_TABLES).  Same fresh-DB
     # reason as every block around it: the tables were created by
     # ``create_all`` above and the stamp below marks f4a7c2d9e51b applied
     # without running it, so this call is what installs the trigger on a

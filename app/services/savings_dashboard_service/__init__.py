@@ -38,10 +38,12 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._goals` -- savings-goal
   progress, contributions, and trajectory.
 * :mod:`app.services.savings_dashboard_service._metrics` -- emergency-fund
-  expenses, the debt summary + DTI, and the canonical current-pay producer.
+  expenses, the DTI block, and the canonical current-pay producer.
+* :mod:`app.services.savings_dashboard_service._debt_summary` -- the
+  aggregate debt summary (``DebtSummary``) and its one construction site.
 * :mod:`app.services.savings_dashboard_service._debt_line` -- the ONE
   derivation of "which loans still have a debt line" and "when does the last
-  of them end" (plan step X-q), read by both ``_metrics``' debt summary and
+  of them end" (plan step X-q), read by both ``_debt_summary``'s debt summary and
   ``_horizon``'s domain and milestone flags, which each used to answer it
   with a membership rule of their own.
 * :mod:`app.services.savings_dashboard_service._tile` -- the ONE statement of
@@ -81,7 +83,7 @@ Module map:
 #
 # ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
 # crosses this package's boundary, so naming it here is what keeps its consumer
-# off ``_metrics`` directly, which the W9910 package-privacy checker forbids.
+# off ``_debt_summary`` directly, which the W9910 package-privacy checker forbids.
 # There were TWO such consumers until plan step X-u: ``dashboard_service._pulse``
 # named the type to annotate the ``DebtTrack`` wrapper it composed, and X-u
 # deleted both the wrapper and that import.  ONE is left -- the dashboard
@@ -106,7 +108,7 @@ Module map:
 # ``.claude/rules/coding.md`` -- an out-of-package annotation had no name it was
 # allowed to say.
 from app.services.savings_dashboard_service._goals import GoalProgress
-from app.services.savings_dashboard_service._metrics import DebtSummary
+from app.services.savings_dashboard_service._debt_summary import DebtSummary
 from app.services.savings_dashboard_service._net_worth import NetWorthRegion
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
