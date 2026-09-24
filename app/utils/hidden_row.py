@@ -38,10 +38,13 @@ class HiddenRow:
     holds: the NAME, so a door holding one has no row to write money under --
     the refusal ruling **R-CC89** exists for stays structural rather than a
     check each door must remember -- and which act hid it, so the sentence can
-    say so (ruling **R-CC107**).  Every sentence that names a hidden row takes
-    one: the status seam's ``deleted_row_payment_refusal``,
+    say so (ruling **R-CC107**).  Every sentence an app door says about a
+    hidden row takes one: the status seam's ``deleted_row_payment_refusal``,
     ``entry_service.deleted_row_purchase_refusal`` and the Save door's
-    ``routes/transactions/_helpers._deleted_row_change_refusal``.
+    ``routes/transactions/_helpers._deleted_row_change_refusal``.  The
+    database's own refusal (``app/deleted_row_infrastructure``, which only a
+    writer that skips every door meets) takes none and says "was deleted"
+    whichever act hid the row (finding **CC-377**).
 
     Attributes:
         name: The row's name (ruling **R-CC98**: never its id).
@@ -80,18 +83,21 @@ class HiddenRow:
         those read fresh either way; the case is the SETTLE's sentence, which a
         service caller is told.
 
-        **Nothing is staged when it is asked, and it relies on that**: an ORM
-        statement first flushes what the session has staged, so a caller that
-        asked it holding a staged change to a row a delete had moved would meet
-        that version-pinned ``UPDATE``'s ``StaleDataError`` in place of the
-        sentence.  Each caller asks after a row lock's own statement has
-        flushed (the seam's and the settle verb's ``lock_row``, the purchase
-        door's ``lock_and_read``), after a rollback (the two route race arms),
-        or where nothing has been written yet (the ownership door; the settle
-        verb's first ask, ahead of its lock; ``settle_amount``'s pricing
-        reads) -- measured 2026-09-24 by a probe over the 1,653 tests of the
-        modules that reach the gone-row paths: 38 calls, none with a staged
-        change.
+        **The read flushes nothing** (``no_autoflush``), so asking writes none
+        of the caller's staged state.  The three settle verbs ask it FIRST,
+        through ``reject_unsettleable``, ahead of their lock and of every read
+        that would flush, so that a refused call leaves a caller's staged state
+        unwritten; an autoflushing read here broke that for a row loaded
+        deleted beside a staged change, and all three flushed it before
+        raising (review 7 of this step, measured 2026-09-24; graded by
+        ``test_cc5_4a4_hidden_row_doors.TestTheHiddenRowsWordsFlushNothing``).
+        What it reads is the definition's ``is_active`` as the database holds
+        it, so a caller that staged an archive and had not flushed it would
+        read the item active.  None does: the two route modules that write
+        ``TransactionTemplate.is_active`` (``routes/templates/crud``,
+        ``routes/salary/profiles``) reach no caller of this, directly or
+        through the services they call, before their commit (a caller
+        census, 2026-09-24).
 
         Args:
             row: A session-attached row the caller has found hidden.  A
@@ -103,10 +109,11 @@ class HiddenRow:
         """
         if row.template_id is None:
             return cls(row.name)
-        active = db.session.execute(
-            select(TransactionTemplate.is_active)
-            .where(TransactionTemplate.id == row.template_id)
-        ).scalar_one_or_none()
+        with db.session.no_autoflush:
+            active = db.session.execute(
+                select(TransactionTemplate.is_active)
+                .where(TransactionTemplate.id == row.template_id)
+            ).scalar_one_or_none()
         return cls(row.name, archived=active is False)
 
     @classmethod

@@ -523,7 +523,8 @@ def settle_transaction(
     # Checked FIRST and before any mutation, so a refused call leaves the row
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
     # its own three refusals, and for the same reason.  It reads the row's
-    # loaded columns and issues no statement, which is why it may precede the
+    # loaded columns -- and, for a deleted row's sentence, one read that
+    # flushes nothing (``HiddenRow.of``) -- which is why it may precede the
     # lock below: a caller's staged state is refused before any flush.
     reject_unsettleable(txn)
     # **The owner's write lock, then the row's, before anything reads the
@@ -801,7 +802,8 @@ def settle_from_entries(
     # triggers an autoflush of pending mutations on the txn.  Column
     # checks come before relationship accesses (which lazy-load and
     # therefore autoflush) to keep the failure path side-effect-free.
-    # The shared pair reads two columns, so it belongs at the front.
+    # The shared pair reads two columns (and, for a deleted row's sentence,
+    # one read that flushes nothing), so it belongs at the front.
     reject_unsettleable(txn)
     # Resolved purchase-tracking check: the DEFINITION's ``is_envelope``
     # (``tracks_purchases`` accesses the template exactly as the prior guard

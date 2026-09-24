@@ -585,7 +585,7 @@ def update_transaction(txn, _target):
     while this one waited, answers the red "Deleted" cell saying "Hotel was
     deleted: this change cannot be saved.  Reload the page." (rulings
     **R-CC101**, **R-CC102**, **R-CC104**, **R-CC105**) -- "Archived" and
-    "was archived" for a row its recurring item's archive hid (rulings
+    "was archived" for a row whose recurring item is archived (rulings
     **R-CC107**, **R-CC108**).  **It LOGS where the door it replaced was
     silent** (review 6, L7): ``_get_owned_transaction`` refused another
     user's id and a missing id without a record, where this door, through
@@ -828,8 +828,8 @@ def mark_done(txn, target):
     or while this one waited for the row's lock, answers the cell's red
     "Deleted" or the card's banner saying "Hotel was deleted: a payment
     cannot be recorded under it.  Reload the page." (rulings **R-CC101**,
-    **R-CC102**, **R-CC104**) -- "Archived" and "was archived" for a row its
-    recurring item's archive hid (rulings **R-CC107**, **R-CC108**).
+    **R-CC102**, **R-CC104**) -- "Archived" and "was archived" for a row
+    whose recurring item is archived (rulings **R-CC107**, **R-CC108**).
     """
     # Validate the optional ``settled_amount`` form field once.
     # ``MarkDoneSchema`` strips empty

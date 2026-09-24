@@ -34,7 +34,7 @@ no index on ``template_id``), issued only for a rule-less definition's row.
 Since plan step ``credit_card:CC-5-4a-4``, :func:`reject_unsettleable`'s
 deleted-row refusal asks one by primary key -- whether the row's recurring
 item is archived, for its sentence (ruling **R-CC107**) -- issued only for a
-row it is refusing.
+row it is refusing, and flushing nothing.
 """
 
 from app.exceptions import ValidationError
@@ -337,8 +337,9 @@ def reject_unsettleable(txn: Transaction) -> None:
     routes it somewhere else rather than the one that refuses it outright.  Both
     tests are column reads, so neither triggers the relationship lazy-load
     :func:`settles_from_entries`' cheap-first precondition ordering avoids; the
-    deleted row's sentence adds one read, on the refusal alone
-    (:meth:`~app.utils.hidden_row.HiddenRow.of`).
+    deleted row's sentence adds one read, on the refusal alone, and it flushes
+    nothing (:meth:`~app.utils.hidden_row.HiddenRow.of`), so a refused call
+    still writes none of a caller's staged state.
 
     Args:
         txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.

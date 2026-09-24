@@ -4,22 +4,23 @@
    "Red 'Deleted'"): "The amount is replaced by a red icon and the word
    'Deleted'. Hovering, or a screen reader, gives the full sentence ... The
    checkmark disappears, and clicking the cell opens nothing."  The word is
-   "Archived" for a row its recurring item's archive hid, ruling R-CC108
+   "Archived" for a row whose recurring item is archived, ruling R-CC108
    (developer 2026-09-24, "Say 'Archived'"): "The cell reads 'Archived' when
    its hover sentence says archived, and 'Deleted' otherwise: a row you
    deleted, and a row the app can't name ('This transaction no longer
    exists'). The word on the cell always agrees with the sentence behind it."
 
    Rendered by `routes/transactions/_helpers._gone_transaction_response` when
-   Mark Paid or the popover's Save is refused because the row was deleted or
-   archived -- in another tab minutes ago (ruling R-CC104), or while the
-   request waited for the row's lock (ruling R-CC101).  It is the cell's own
-   refusal grammar (`_transaction_cell.html`'s `error`: the red octagon, the
-   reason on hover and for a screen reader) with the amount replaced by one
-   visible word, because a gone row has no amount left to draw.  No
-   `.txn-open` opener and no Mark Paid button: the row's doors answer it "not
-   found" now, so the cell offers none of them.  Swapped into
-   `#txn-cell-<id>` (innerHTML); a reload drops the row from the grid.
+   Mark Paid or the popover's Save is refused because the row is hidden --
+   deleted, or its recurring item archived -- in another tab minutes ago
+   (ruling R-CC104), or while the request waited for the row's lock (ruling
+   R-CC101).  It is the cell's own refusal grammar (`_transaction_cell.html`'s
+   `error`: the red octagon, the reason on hover and for a screen reader)
+   with the amount replaced by one visible word, because a gone row has no
+   amount left to draw.  No `.txn-open` opener and no Mark Paid button: the
+   row's doors answer it "not found" now, so the cell offers none of them.
+   Swapped into `#txn-cell-<id>` (innerHTML); a reload drops the row from
+   the grid.
 
    Expected context:
      message  -- the refusal: naming the row (ruling R-CC98), or

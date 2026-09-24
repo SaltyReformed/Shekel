@@ -578,7 +578,7 @@ def _gone_transaction_response(gone, refusal, txn_id, target=None):
     The cell or the card, keyed by the id in the URL -- the only thing left
     of a one-off row its delete removed.  The desktop cell becomes the red
     "Deleted" of ruling **R-CC102** (``grid/_transaction_cell_gone.html``) --
-    "Archived" for a row its recurring item's archive hid, so the word agrees
+    "Archived" for a row whose recurring item is archived, so the word agrees
     with the sentence behind it (ruling **R-CC108**) -- and the phone card the
     banner-only card the cancelled-row refusal already uses
     (``grid/_mobile_card_error.html``), each carrying the sentence
@@ -638,10 +638,10 @@ def _door_naming_a_gone_row(refusal):
       reason, such as a companion's request for the owner-only desktop cell
       -- is answered "not found", as before.
 
-    In both moments a row hidden by its recurring item's archive says so
-    (ruling **R-CC107**).  The view is called as ``view(txn, target)``: the
-    row as the door served it, and the :class:`_RenderTarget` read off the
-    form.
+    In both moments a row whose recurring item is archived says so, however
+    the row was hidden (ruling **R-CC107**).  The view is called as
+    ``view(txn, target)``: the row as the door served it, and the
+    :class:`_RenderTarget` read off the form.
 
     Args:
         refusal: The door's sentence for its act, taking a
