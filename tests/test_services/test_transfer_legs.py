@@ -767,15 +767,21 @@ class TestAStatusDriftIsCountedOnce:
 
             assert _balance_on(checking, scenario, day) == checking_before
 
-    def test_the_loan_feed_lists_a_drifted_payment_in_both_halves(
+    def test_the_loan_feed_lists_a_drifted_payment_once(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Drift A on a loan: one payment, two installments in the feed.
+        """Drift A on a loan, nothing moved: one payment, ONE planned installment.
 
-        The settled shadow arrives in the record half with its settle day and
-        the still-Projected parent in the plan half as a leg, so the
-        amortization feed sees the payment twice; the replay drops the
-        unsettled one (``has_settled_by``), the collision slotting does not.
+        The twin is settled around the service with no movement and its
+        parent stays Projected.  Since plan step balance:X-bi-6-4b both halves
+        of the feed are legs of the transfer and the settled half is the plan
+        half's exact complement (ruling **R-BAL140**): the parent is Projected
+        and no money moved, so the payment is planned, once.  *Re-expressed
+        under rule 5 (developer approval, 2026-09-24): it pinned the feed
+        listing this payment TWICE -- the settled twin in the record half with
+        its settle day and the still-Projected parent in the plan half --
+        while the settled half keyed on the twin's status (X-bi-6a to
+        X-bi-6-4b).*
         """
         with app.app_context():
             loan = create_loan_account(
@@ -805,7 +811,7 @@ class TestAStatusDriftIsCountedOnce:
             assert [
                 (isinstance(i.source, TransferLeg), i.dates.settled_on)
                 for i in installments
-            ] == [(False, period.start_date), (True, None)]
+            ] == [(True, None)]
 
 
 # ── The grid's legs (plan step balance:X-bi-6-1, ruling R-BAL87) ────────

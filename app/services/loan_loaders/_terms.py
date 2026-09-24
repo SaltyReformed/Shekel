@@ -573,17 +573,18 @@ def loan_payment_due_date(
     the forward plan's PLANNED tier and the settled-payment guards below, so no
     two of them can disagree on a payment's due date.
 
-    **It takes a settled SHADOW or a projected LEG** (plan step
-    balance:X-bi-6a).  A still-projected payment is a
-    :class:`~app.services.transfer_legs.TransferLeg` derived from its
-    parent transfer, and the two facts this reads -- the row's own ``due_date``
-    and its pay period's start -- are the PARENT's columns, which a leg
-    exposes under the same two names.  A transfer carries both facts a shadow
-    does (``16f83aa0`` recorded that neither producer's signature would accept
-    one; this signature does), so the derivation is one function over two
-    row shapes rather than a second spelling per shape.
+    **It takes a LEG, settled or projected, from every production caller
+    since plan step balance:X-bi-6-4b** (a projected one since X-bi-6a).  A
+    payment is a :class:`~app.services.transfer_legs.TransferLeg` of its
+    parent transfer, and the two facts this reads -- the ``due_date`` and the
+    pay period's start -- are the PARENT's columns, which a leg exposes under
+    the same two names.  A shadow row carries both facts too
+    (``16f83aa0`` recorded that neither producer's signature would accept a
+    transfer; this signature does), so the derivation is one function over
+    two row shapes rather than a second spelling per shape, and it keeps
+    accepting a shadow until ``X-bi-6-4d`` deletes the shadows.
 
-    The shadow's OWN ``due_date`` is the answer: the recurrence engine stamps
+    The payment's OWN ``due_date`` is the answer: the recurrence engine stamps
     each generated instance with the date its rule produced
     (:func:`app.services.recurrence_engine`), so it is the installment's
     identity as a stored fact.  It is deliberately NOT re-derived from the
@@ -597,9 +598,11 @@ def loan_payment_due_date(
     history and stamps a CONFIRMED schedule row with a FUTURE date, breaking
     every date-basis balance walk that reads it.
 
-    ``monthly_due_date`` remains the fallback for a shadow with no stored
-    ``due_date`` (a hand-created or carried-forward row --
-    :attr:`app.models.transaction.Transaction.due_date` is nullable).  It
+    ``monthly_due_date`` remains the fallback for a payment with no stored
+    ``due_date`` -- an AD-HOC transfer, since
+    ``ck_transfers_template_row_needs_due_date`` dates every transfer of a
+    definition and :attr:`app.models.transfer.Transfer.due_date` is nullable
+    for the rest.  It
     reconstructs the due date from the pay-period start, which is correct
     exactly while the payment's period still contains its due date.
 
@@ -641,22 +644,19 @@ def loan_payment_due_date(
 
     Its ``pay_period`` is read on EVERY call since the derivation moved into the
     shared :func:`installment_for` (previously only the no-``due_date`` branch
-    touched it), so a caller must hand it a shadow whose ``pay_period`` is
-    loaded.  **:func:`._shadows.income_shadows` is what guarantees that, not
-    :func:`._shadows.query_shadow_income`**: since plan step **balance:X-bl-2a**
-    the query loads only what its caller asks for, and the partition adds the
-    period because it sorts on it.  A caller reaching the raw query with
-    ``options=()`` and passing rows here would pay a lazy load per row, so every
-    production caller comes through the partition; a shadow fetched by a bare
-    ``session.get`` costs one here rather than only on the fallback path.
+    touched it), so a caller must hand it a payment whose ``pay_period`` is
+    loaded.  **:func:`._shadows.income_shadows`' two producers are what
+    guarantee that**: each adds the parent's period to its load because it
+    sorts on it, so every production caller comes through the partition; a
+    transfer fetched by a bare ``session.get`` costs a lazy load here rather
+    than only on the fallback path.
 
     Args:
-        shadow: The loan-payment income shadow, or the projected leg of its
-            parent transfer.  Its ``pay_period`` must be loaded:
+        shadow: The payment's leg -- settled or projected -- or, until
+            ``X-bi-6-4d``, a shadow row.  Its ``pay_period`` must be loaded:
             :func:`._shadows.settled_income_shadows` and
-            :func:`._shadows.projected_income_legs` each eager-load it -- see
-            the note above, and NOT :func:`._shadows.query_shadow_income`,
-            which loads only what its caller asks for.
+            :func:`._shadows.projected_income_legs` each eager-load it (see
+            the note above).  The name is the shadow era's.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
             by the fallback.
@@ -681,9 +681,9 @@ def _settled_payment_due_dates(
     so the guard, the walk, and the Schedule A interest merge
     (:func:`app.services.balance_at.loan_interest_in_year`, which derives its
     settled slots from that same fold walk) provably agree on WHICH payments are
-    settled and on each one's due date.  Each shadow is dated by
-    :func:`loan_payment_due_date` (its stored ``due_date``, falling back to a
-    derivation from its pay-period start).  It also served
+    settled and on each one's due date.  Each settled payment's leg is dated by
+    :func:`loan_payment_due_date` (its parent's stored ``due_date``, falling
+    back to a derivation from its pay-period start).  It also served
     ``earliest_settled_payment_due_date``, the tracking-start door's ordering
     guard, until plan step ``recurrence:R20`` deleted that refusal (ruling
     **R-R72** part 3) and the loader with it.
@@ -701,12 +701,12 @@ def _settled_payment_due_dates(
     if params is None:
         return []
     return [
-        loan_payment_due_date(shadow, params.payment_day)
-        # ``options=()``: this reads each shadow's stored due date and its pay
-        # period, and ``income_shadows`` loads the period itself.  It paid for
-        # the amount model's five-chain eager set until plan step
+        loan_payment_due_date(leg, params.payment_day)
+        # ``options=()``: this reads each leg's parent's stored due date and
+        # its pay period, and the producer loads the period itself.  It paid
+        # for the amount model's five-chain eager set until plan step
         # balance:X-bl-2a made the load the caller's statement.
-        for shadow in settled_income_shadows(
+        for leg in settled_income_shadows(
             account_id, scenario_id, options=(),
         )
     ]
@@ -749,7 +749,7 @@ def latest_settled_payment_due_date(
             recorded payments live).
 
     Returns:
-        The greatest due date over the loan's settled income shadows, or ``None``
+        The greatest due date over the loan's settled payments, or ``None``
         when the loan is unconfigured (no :class:`LoanParams`) or has no settled
         payment.
     """
