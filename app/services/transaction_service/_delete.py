@@ -296,16 +296,19 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {txn.id} not found.")
 
-    # **The row's lock, before anything reads what the row holds** (ruling
-    # **R-CC96**: "your delete waits a moment, then removes the occurrence and
-    # its $12.34 purchase, as if it was there when you pressed Delete").  A
-    # purchase committed while this waited is then in ``entries`` -- expired
-    # here, so the set the one removal act runs over is read under the lock
-    # -- and goes with the rest; without the lock the delete read the row
-    # empty, hid it over the purchase, and the database's hiding arm refused
-    # the commit as a raw error (the step's fourth review, P15).  ``FOR
-    # UPDATE``, the strength a hard delete ends at, whichever arm this takes:
-    # the arm is read below, off the row as it stands locked.
+    # **The owner's write lock, then the row's, before anything reads what the
+    # row holds** (rulings **R-CC96**: "your delete waits a moment, then
+    # removes the occurrence and its $12.34 purchase, as if it was there when
+    # you pressed Delete"; **R-CC100**: the owner's lock first, which a posted
+    # row's reversal below takes again).  A purchase committed while this
+    # waited is then in ``entries`` -- expired here, so the set the one
+    # removal act runs over is read under the lock even by a caller that
+    # loaded it earlier -- and goes with the rest; without the lock the delete
+    # read the row empty, hid it over the purchase, and the database's hiding
+    # arm refused the commit as a raw error (the step's fourth review, P15).
+    # ``FOR UPDATE``, the strength a hard delete ends at, whichever arm this
+    # takes: the arm (``txn.recurs``, the row's definition link) is not known
+    # until below, and a door takes first the strongest lock it will take.
     row_write_lock.lock_row(txn, removing=True)
     db.session.expire(txn, ["entries"])
 

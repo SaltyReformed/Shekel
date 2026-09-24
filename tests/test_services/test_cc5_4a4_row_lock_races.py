@@ -8,7 +8,14 @@ sentence.  Delete first: the companion sees 'Groceries was deleted: a purchase
 cannot be recorded under it' and nothing is written.  Purchase first: your
 delete waits a moment, then removes the occurrence and its $12.34 purchase, as
 if it was there when you pressed Delete."*  Built "with a two-connection race
-test for each order", which is this module.
+test for each order", which is this module -- for these pairs: purchase x
+Delete, Mark Paid x Delete, purchase x Archive, purchase x Mark Paid and Mark
+Credit x Delete in both orders; the popover's Actual correction x Delete in
+the delete-first order only.  NOT raced: Mark Paid x Archive, Delete x
+Archive, and any pair on a ONE-OFF row, whose delete removes it from the
+table (the step's fifth review, L5 and M3).  Ruling **R-CC100**'s order --
+the owner's write lock before the row's -- is
+:class:`TestTheOwnersLockComesFirst`.
 
 The step's fourth review measured the race the ruling closes: a recurring $300
 Groceries occurrence deleted in one session while another added a $12.34 KROGER
@@ -44,14 +51,16 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Callable
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.enums import SettledDayBasisEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import credit_workflow, entry_service, transaction_service
+from app.services.settle_day import SettleDay
 from tests._test_helpers import generate_row_of, make_expense_template, typed
 
 #: How long a race waits for the second click to block, or to finish, before
@@ -205,12 +214,18 @@ def _add_kroger(seed_user, row_id):
     return click
 
 
-def _delete(seed_user, row_id):
-    """Return the owner's Delete on *row_id*, through the one delete door."""
+def _delete(seed_user, row_id, *, movements_read_first=False):
+    """Return the owner's Delete on *row_id*, through the one delete door.
+
+    *movements_read_first* stands for a caller that read the row's movements
+    earlier in its request, before the delete took the lock -- the case the
+    door's ``entries`` re-read exists for, and the only one that can grade it.
+    """
     def click():
-        transaction_service.delete_transaction(
-            _db.session.get(Transaction, row_id), seed_user["user"].id,
-        )
+        row = _db.session.get(Transaction, row_id)
+        if movements_read_first:
+            assert row.entries is not None  # loads the collection pre-lock
+        transaction_service.delete_transaction(row, seed_user["user"].id)
         _db.session.flush()
     return click
 
@@ -244,8 +259,9 @@ def _archive(template_id):
     )
 
     def click():
-        _db.session.get(TransactionTemplate, template_id).is_active = False
-        _soft_delete_projected_rows(template_id)
+        template = _db.session.get(TransactionTemplate, template_id)
+        template.is_active = False
+        _soft_delete_projected_rows(template)
         _db.session.flush()
     return click
 
@@ -347,6 +363,26 @@ class TestPurchaseAgainstDelete:
             _template, row_id = _groceries(seed_user)
             purchase, delete = _race(
                 app, _add_kroger(seed_user, row_id), _delete(seed_user, row_id),
+            )
+            assert purchase.committed
+            assert delete.waited
+            assert delete.committed, delete.result
+            assert _state(row_id) == (True, 0)
+
+    def test_purchase_first_a_delete_that_read_the_movements_takes_it_off_too(
+        self, app, db, seed_user,
+    ):
+        """The same, when the delete's caller had loaded Groceries' movements before the lock.
+
+        The door re-reads them under the lock, so the $12.34 that committed
+        while it waited goes with the row; read once, before, the delete saw
+        none, hid the row over the purchase, and the hiding arm refused it.
+        """
+        with app.app_context():
+            _template, row_id = _groceries(seed_user)
+            purchase, delete = _race(
+                app, _add_kroger(seed_user, row_id),
+                _delete(seed_user, row_id, movements_read_first=True),
             )
             assert purchase.committed
             assert delete.waited
@@ -633,4 +669,256 @@ class TestActualCorrectionAgainstDelete:
                 correction.result
             )
             assert _PAYMENT_REFUSED in str(correction.result)
+            assert _state(row_id) == (True, 0)
+
+
+def _posted_groceries(seed_user):
+    """Groceries ($300.00) holding a DATED $40.00 KROGER purchase, so its postings exist; returns its id."""
+    _template, row_id = _groceries(seed_user)
+    day = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+    entry_service.create_entry(
+        row_id, seed_user["user"].id,
+        entry_service.EntryDetails(
+            figure=typed(Decimal("40.00")), description="KROGER",
+            purchased_on=day,
+            settle_day=SettleDay(day=day, basis=SettledDayBasisEnum.OBSERVED),
+        ),
+    )
+    _db.session.commit()
+    return row_id
+
+
+def _settle_both(first_id, then_id):
+    """Return the reconcile tick's shape: ONE transaction settling *first_id*, then *then_id*."""
+    def click():
+        transaction_service.settle_transaction(_db.session.get(Transaction, first_id))
+        transaction_service.settle_transaction(_db.session.get(Transaction, then_id))
+        _db.session.flush()
+    return click
+
+
+def _race_paused_at_the_owners_lock(app, first, second):
+    """Run *first*, stopped at its FIRST request for the owner's write lock; run *second*; release.
+
+    The interleaving review 5 measured and :func:`_race` cannot stage: the
+    first click has done everything it does before it asks for the owner's
+    lock -- under ruling R-CC100 nothing, so it holds no lock at all; before
+    it, the Delete held its row -- and the second click runs to its end (or
+    waits) meanwhile.  Both clicks commit on their own threads.
+
+    Returns ``(first_outcome, second_outcome)``.
+    """
+    first_outcome, second_outcome = _Outcome(), _Outcome()
+    paused, release = threading.Event(), threading.Event()
+    box = {"thread": None, "paused": False}
+    pid_box = {}
+
+    def stop_at_the_owners_lock(_conn, _cursor, statement, _params, _ctx, _many):
+        if (threading.get_ident() == box["thread"] and not box["paused"]
+                and "pg_advisory_xact_lock" in statement):
+            box["paused"] = True
+            paused.set()
+            release.wait(_WAIT)
+
+    def run(click, outcome, is_first):
+        if is_first:
+            box["thread"] = threading.get_ident()
+        with app.app_context():
+            try:
+                if not is_first:
+                    pid_box["pid"] = _db.session.execute(
+                        text("SELECT pg_backend_pid()"),
+                    ).scalar_one()
+                click()
+                _db.session.commit()
+                outcome.result = "committed"
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                # Recorded for the assertion, as in :func:`_race`: the loser's
+                # sentence, a version pin, or the deadlock this class exists
+                # to rule out.
+                _db.session.rollback()
+                outcome.result = exc
+            finally:
+                _db.session.remove()
+                if is_first:
+                    paused.set()
+
+    event.listen(_db.engine, "before_cursor_execute", stop_at_the_owners_lock)
+    try:
+        one = threading.Thread(target=run, args=(first, first_outcome, True))
+        one.start()
+        assert paused.wait(_WAIT) and box["paused"], (
+            "the first click never asked for the owner's lock -- the harness "
+            "is not measuring the order"
+        )
+        two = threading.Thread(target=run, args=(second, second_outcome, False))
+        two.start()
+        deadline = time.monotonic() + _WAIT
+        while time.monotonic() < deadline and two.is_alive():
+            pid = pid_box.get("pid")
+            if pid is not None and _db.session.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_locks "
+                     "WHERE pid = :pid AND NOT granted)"),
+                {"pid": pid},
+            ).scalar_one():
+                second_outcome.waited = True
+                break
+            time.sleep(0.02)
+        _db.session.rollback()
+        release.set()
+        one.join(_WAIT * 3)
+        two.join(_WAIT * 3)
+    finally:
+        event.remove(_db.engine, "before_cursor_execute", stop_at_the_owners_lock)
+    _db.session.expire_all()
+    return first_outcome, second_outcome
+
+
+def _no_deadlock(*outcomes):
+    """Assert no outcome is PostgreSQL's ``DeadlockDetected``."""
+    for outcome in outcomes:
+        assert "DeadlockDetected" not in repr(outcome.result), outcome.result
+
+
+class TestTheOwnersLockComesFirst:
+    """Ruling **R-CC100**: every door this step locks takes the owner's write lock FIRST.
+
+    *"Every door this step locks (add purchase, Mark Paid, the popover's
+    Actual, Delete, Archive, Mark Credit) takes the owner's write lock before
+    the row's lock, from the one lock module."*  Review 5 (M1) measured the
+    cycle the order closes: a Delete holding its row and then asking for the
+    owner's lock (its ledger reversal) against the reconcile tick holding the
+    owner's lock and then asking for the row ended ``DeadlockDetected``.
+
+    Graded two ways.  Each door's statements, in order: the owner's lock comes
+    before any statement that locks or writes a row.  And the two pairs, raced
+    with the first click stopped where it first asks for the owner's lock --
+    the one moment a door that locked its row first would hold it while
+    waiting.
+    """
+
+    @staticmethod
+    def _statements(click):
+        """Run *click* in this session, uncommitted; return every statement it issued, in order."""
+        seen = []
+        here = threading.get_ident()
+
+        def record(_conn, _cursor, statement, _params, _ctx, _many):
+            if threading.get_ident() == here:
+                seen.append(statement)
+
+        event.listen(_db.engine, "before_cursor_execute", record)
+        try:
+            click()
+        finally:
+            event.remove(_db.engine, "before_cursor_execute", record)
+            _db.session.rollback()
+        return seen
+
+    @classmethod
+    def _assert_the_owners_lock_first(cls, click):
+        """Assert *click*'s first row lock or row write comes after its first owner's lock."""
+        statements = cls._statements(click)
+        owners = [i for i, sql in enumerate(statements) if "pg_advisory_xact_lock" in sql]
+        rows = [
+            i for i, sql in enumerate(statements)
+            if sql.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE"))
+            or " FOR " in sql.upper()
+        ]
+        assert owners, "the door never took the owner's write lock"
+        assert rows, "the door locked and wrote no row -- nothing was measured"
+        assert owners[0] < rows[0], statements[rows[0]]
+
+    def test_the_purchase_door(self, app, db, seed_user):
+        """A $12.34 purchase on Groceries asks for the owner's lock before it locks the row."""
+        with app.app_context():
+            _template, row_id = _groceries(seed_user)
+            self._assert_the_owners_lock_first(_add_kroger(seed_user, row_id))
+
+    def test_mark_paid(self, app, db, seed_user):
+        """Mark Paid on the $120.00 Hotel asks for the owner's lock before it locks the row."""
+        with app.app_context():
+            self._assert_the_owners_lock_first(_mark_paid(_hotel(seed_user)))
+
+    def test_the_popover_actual(self, app, db, seed_user):
+        """A $125.00 Actual correction on a Paid Hotel asks for the owner's lock first."""
+        with app.app_context():
+            row_id = _hotel(seed_user)
+            transaction_service.settle_transaction(_db.session.get(Transaction, row_id))
+            _db.session.commit()
+            paid_status = _db.session.get(Transaction, row_id).status_id
+
+            def correct_actual():
+                transaction_service.apply_requested_status(
+                    _db.session.get(Transaction, row_id), paid_status,
+                    submitted=typed(Decimal("125.00")),
+                )
+                _db.session.flush()
+
+            self._assert_the_owners_lock_first(correct_actual)
+
+    def test_delete(self, app, db, seed_user):
+        """Delete of a posted Groceries asks for the owner's lock before it locks the row."""
+        with app.app_context():
+            self._assert_the_owners_lock_first(
+                _delete(seed_user, _posted_groceries(seed_user)),
+            )
+
+    def test_archive(self, app, db, seed_user):
+        """Archive asks for the owner's lock before its rows' locks AND before its own UPDATE."""
+        with app.app_context():
+            template, _row_id = _groceries(seed_user)
+            self._assert_the_owners_lock_first(_archive(template.id))
+
+    def test_mark_credit(self, app, db, seed_user, seed_periods):
+        """Mark Credit on an $80.00 Dinner asks for the owner's lock before it locks the row."""
+        with app.app_context():
+            row_id = TestMarkCreditAgainstDelete._dinner(  # pylint: disable=protected-access
+                seed_user, seed_periods,
+            )
+            self._assert_the_owners_lock_first(
+                TestMarkCreditAgainstDelete._mark_credit(  # pylint: disable=protected-access
+                    seed_user, row_id,
+                ),
+            )
+
+    def test_reconcile_against_the_delete_of_a_posted_envelope(
+        self, app, db, seed_user,
+    ):
+        """Review 5's M1 pair: the Delete stopped at its owner's lock, the two-row settle runs.
+
+        Before ruling R-CC100 the Delete held Groceries' row here and the
+        settle, holding the owner's lock from Hotel, waited on it: the release
+        closed the cycle and the settle ended ``DeadlockDetected``.  Now the
+        Delete holds nothing, the settle lands, and the Delete meets the row
+        Paid under a moved version: the route's 409.
+        """
+        with app.app_context():
+            row_id = _posted_groceries(seed_user)
+            hotel_id = _hotel(seed_user)
+            delete, settle = _race_paused_at_the_owners_lock(
+                app, _delete(seed_user, row_id), _settle_both(hotel_id, row_id),
+            )
+            _no_deadlock(delete, settle)
+            assert settle.committed, settle.result
+            assert isinstance(delete.result, StaleDataError), delete.result
+            assert _status_name(row_id) == "Paid"
+            assert _state(row_id) == (False, 1)
+
+    def test_mark_paid_against_the_delete(self, app, db, seed_user):
+        """Mark Paid stopped at its owner's lock, the Delete runs: Mark Paid then meets the sentence.
+
+        The pair a Delete ALONE taking the owner's lock first would have
+        broken (measured: ``DeadlockDetected``), because Mark Paid then held
+        Hotel's row while it asked for the owner's lock.
+        """
+        with app.app_context():
+            row_id = _hotel(seed_user)
+            paid, delete = _race_paused_at_the_owners_lock(
+                app, _mark_paid(row_id), _delete(seed_user, row_id),
+            )
+            _no_deadlock(paid, delete)
+            assert delete.committed, delete.result
+            assert isinstance(paid.result, ValidationError), paid.result
+            assert _PAYMENT_REFUSED in str(paid.result)
             assert _state(row_id) == (True, 0)

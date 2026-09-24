@@ -511,6 +511,11 @@ def settle_transaction(
         NotFoundError: When *tender_account_id* names no account of the ROW's
             owner (the security response rule: one answer for "not found"
             and "not yours").  A 404 at the route.
+        StaleDataError: When the row left the table while this waited for its
+            lock -- another tab's hard delete won
+            (:func:`app.services.row_write_lock.lock_row`).  The ORM's own
+            answer when a version-pinned write finds its row gone, so the
+            route answers it as it answers that: the 409 and re-fetch.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
@@ -521,21 +526,24 @@ def settle_transaction(
     # loaded columns and issues no statement, which is why it may precede the
     # lock below: a caller's staged state is refused before any flush.
     reject_unsettleable(txn)
-    # **The row's write lock before anything reads the database for it**
-    # (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC96** -- Mark Paid
-    # "takes that lock first" -- and **R-CC99** (a)).  Everything below decides
+    # **The owner's write lock, then the row's, before anything reads the
+    # database for it** (plan step ``credit_card:CC-5-4a-4``, rulings
+    # **R-CC96** -- Mark Paid "takes that lock first" --, **R-CC99** (a) and
+    # **R-CC100**, the owner's lock first).  Everything below decides
     # from the row: whether it settles from its purchases, and at what figure.
     # Decided from a read taken before a racing purchase committed, a Groceries
     # envelope with nothing spent settled at its $300.00 plan while the
     # companion's $12.34 purchase landed beside it -- $312.34 recorded against
     # a $300.00 envelope, measured 2026-09-23.  Locked here and its movements
-    # re-read (``entries`` expired; the lock's statement has flushed anything
-    # staged), the purchase is either in before the decision, which then
-    # settles at the purchases, or waits and meets the purchase door's
+    # re-read (``entries`` expired; the row lock's statement has flushed
+    # anything staged), the purchase is either in before the decision, which
+    # then settles at the purchases, or waits and meets the purchase door's
     # settled-row refusal.  ``is_deleted`` is re-read by the lock, so a delete
-    # that won is refused further down in words (the envelope branch's own
-    # ``reject_unsettleable``, or the seam's, one sentence).  The seam takes
-    # the same lock again for its other callers, which costs nothing once held.
+    # that won is refused further down in words by ``reject_unsettleable`` --
+    # the envelope branch's own call, or ``settle_amount``'s on the manual
+    # branch -- whose sentence is the seam's (one sentence).  The seam takes
+    # the same locks again for its other callers, which costs nothing once
+    # held.
     row_write_lock.lock_row(txn)
     db.session.expire(txn, ["entries"])
     # The tender's reading and its gate, before any mutation for the same

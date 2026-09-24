@@ -226,7 +226,7 @@ def _reject_settled_parent(
     if not changing & _COST_BEARING_FIELDS:
         return
     raise ValidationError(
-        f"Transaction {txn.id} has settled; its purchases are closed and "
+        f"{txn.name} has settled; its purchases are closed and "
         "cannot be removed or re-priced. Doing so would change what "
         "the row cost after its money moved -- and a carry-forward has "
         "already rolled its leftover into a later period, so the same dollars "
@@ -466,7 +466,7 @@ def removal_refusal(txn: Transaction) -> "str | None":
     # from every status a row can hold when it gets here.
     if txn.covering_movements:
         return (
-            f"Transaction {txn.id} has settled and records a fixed figure, so "
+            f"{txn.name} has settled and records a fixed figure, so "
             "a purchase cannot be removed from it: the row's cost would not "
             "fall by the purchase, and the figure it records would go on "
             "counting cash the purchase no longer explains. Set the "

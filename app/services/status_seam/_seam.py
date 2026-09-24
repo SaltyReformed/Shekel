@@ -479,7 +479,13 @@ def apply_status_change(
             supplied for a *new_status_id* that is not settled (propagated from
             :func:`reject_settle_day_without_settled_status`), or if
             *settlement* is (propagated from
-            :func:`reject_settlement_without_settled_status`).
+            :func:`reject_settlement_without_settled_status`), or if *row* is
+            a deleted ``Transaction`` and *settlement* would record money
+            under it (:func:`reject_settlement_on_a_deleted_row`, ruling
+            **R-CC89**).
+        StaleDataError: When *row* is a ``Transaction`` carrying a record and
+            it left the table while this waited for its lock -- another tab's
+            hard delete won (:func:`app.services.row_write_lock.lock_row`).
         ValueError: If a ``Transaction`` ENTERS the settled band with no
             *settlement*.  A programming error at the call site -- no form can
             express it -- so it is not a ``ValidationError``.
@@ -525,16 +531,18 @@ def apply_status_change(
 
     # A deleted row takes no money (ruling **R-CC89**): the record is what the
     # covering writer below turns into a payment under the row, so it is
-    # refused here, ahead of any mutation like the three above.  **The row's
-    # write lock comes first** (ruling **R-CC96**), before the refusal reads
-    # ``is_deleted`` and before this act's first write to the row: Mark Paid
-    # racing the row's delete then waits here and meets the refusal in words.
-    # Without this line it read the row as live, waited at its own status
-    # ``UPDATE`` instead, and answered the delete's moved version with the
-    # route's 409 -- measured by removing it, against
-    # ``test_cc5_4a4_row_lock_races``.  Only a ``Transaction`` recording a
-    # record takes it: a record of ``None`` writes no money, and a
-    # ``Transfer``'s money is its shadows', each of which comes through here.
+    # refused here, ahead of any mutation like the three above.  **The owner's
+    # write lock and then the row's come first** (rulings **R-CC96**,
+    # **R-CC100**), before the refusal reads ``is_deleted`` and before this
+    # act's first write to the row: the popover's Actual correction racing the
+    # row's delete then waits here and meets the refusal in words.  Without
+    # this line the correction read the row as live and met the delete's moved
+    # version as a ``StaleDataError`` -- measured by removing it, against
+    # ``test_cc5_4a4_row_lock_races``'s ``TestActualCorrectionAgainstDelete``.
+    # Mark Paid has already taken the same locks in the settle verb, so here
+    # they cost it nothing.  Only a ``Transaction`` recording a record takes
+    # them: a record of ``None`` writes no money, and a ``Transfer``'s money is
+    # its shadows', each of which comes through here.
     if settlement is not None and isinstance(row, Transaction):
         row_write_lock.lock_row(row)
     reject_settlement_on_a_deleted_row(row, settlement)

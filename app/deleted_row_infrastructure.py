@@ -42,12 +42,17 @@ so either can move without the other.
   transfer's soft delete hides a ``budget.transfers`` row no attachment here
   watches -- so R-CC92's "until X-bi-6-4" would become permanent without
   anyone deciding it.  What X-bi-6-4 owes the rule is three changes together:
-  the arrival arm also refuses a movement whose TRANSFER parent is deleted;
-  the hiding arm gains an attachment on ``budget.transfers``, excepting
-  nothing; and the ``transfer_id IS NULL`` clause goes from this arm's
-  ``WHEN`` and its function.  ``transfer_id`` is watched as well as
-  ``is_deleted``, so a raw ``UPDATE`` re-pointing a hidden leg away from its
-  transfer cannot walk out of the exception.
+  the arrival arm also refuses a movement whose TRANSFER parent is deleted,
+  reading that parent's ``is_deleted`` under the same :data:`ROW_WRITE_LOCK`
+  on ``budget.transfers`` (a read without it reopens, for transfers, the race
+  ruling R-CC96 closed below); the hiding arm gains an attachment on
+  ``budget.transfers``, excepting nothing; and the ``transfer_id IS NULL``
+  clause goes from this arm's ``WHEN`` and its function.  (The payment
+  refusal's sentence names its row, and ``budget.transfers.name`` is
+  nullable: unreachable while no transfer reaches that sentence.)
+  ``transfer_id`` is watched as well as ``is_deleted``, so a raw ``UPDATE``
+  re-pointing a hidden leg away from its transfer cannot walk out of the
+  exception.
 
 **This module is the rule's database half.**  The arrival arm's words are the
 two writers' own refusals -- :func:`app.services.entry_service.create_entry`
@@ -83,17 +88,20 @@ hide.
 
 **Why ``FOR NO KEY UPDATE`` and not the weaker ``FOR SHARE``.**  Either
 conflicts with a hide; the difference is what the same transaction does NEXT.
-Every money writer in the app goes on to take the row's write lock -- the
-purchase door's payback sync
-(``credit_workflow.lock_source_transaction_for_payback``) and Mark Paid's
-status ``UPDATE`` -- so a ``FOR SHARE`` taken first must be upgraded, and two
-writers each holding it then wait on each other.  Measured 2026-09-23 on two
-raw connections, ``FOR SHARE`` then ``FOR NO KEY UPDATE`` on one row:
-``DeadlockDetected`` for one of the two, where taking ``FOR NO KEY UPDATE``
-first let both commit.  One strength is also what lets the app's four doors
-take the SAME lock first (:mod:`app.services.row_write_lock`), so the second
-click of a race meets a door's sentence instead of this arm's raw error; for a
-door already holding it the arm's lock is its own, and waits on nothing.
+A writer that inserts a movement and then writes the row -- a record's
+insert followed by its status ``UPDATE``, or a purchase followed by the
+payback sync's lock -- would have to upgrade a ``FOR SHARE`` this arm took,
+and two such writers each holding it then wait on each other.  Measured
+2026-09-23 on two raw connections, ``FOR SHARE`` then ``FOR NO KEY UPDATE`` on
+one row: ``DeadlockDetected`` for one of the two, where taking ``FOR NO KEY
+UPDATE`` first let both commit.  The app's own doors never reach that shape:
+they take the owner's write lock and then this same row lock BEFORE their
+insert (:mod:`app.services.row_write_lock`, rulings R-CC96 and R-CC100), so
+for them the arm's lock is their own and waits on nothing, and the second
+click of a race meets a door's sentence instead of this arm's raw error.  So
+the strength is graded by the raw measurement alone: with ``FOR SHARE`` here
+the app's race module still passes (the step's fifth review).  It is the RAW
+writer's guarantee.
 
 **The arrival arm is an immediate ``BEFORE`` row trigger**, as
 :mod:`app.level_infrastructure` chose and for a sharper reason here.  A

@@ -549,7 +549,7 @@ def archive_template(template_id):
         abort(404)
 
     template.is_active = False
-    deleted_count, kept = _soft_delete_projected_rows(template.id)
+    deleted_count, kept = _soft_delete_projected_rows(template)
 
     conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
@@ -573,7 +573,7 @@ def archive_template(template_id):
     return redirect(url_for("templates.list_templates"))
 
 
-def _soft_delete_projected_rows(template_id):
+def _soft_delete_projected_rows(template):
     """Hide a definition's projected rows that hold NOTHING; keep the rest.
 
     The archive's write, shared by :func:`archive_template` and the permanent
@@ -597,7 +597,8 @@ def _soft_delete_projected_rows(template_id):
     unarchive's restore scope is.
 
     Args:
-        template_id: The definition being archived.
+        template: The definition being archived; its owner is whose write
+            lock the rows' locks queue behind (ruling **R-CC100**).
 
     Returns:
         ``(hidden, kept)`` -- how many rows the statement hid, and the
@@ -605,19 +606,21 @@ def _soft_delete_projected_rows(template_id):
         rows it kept.
     """
     projected = (
-        Transaction.template_id == template_id,
+        Transaction.template_id == template.id,
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
     )
-    # **The rows' locks FIRST, then both reads as NEW statements** (ruling
-    # **R-CC96**: the archive is one of the two hiders that take the row lock
-    # before anything else).  A purchase added to one of these rows while the
-    # archive ran was invisible to the reads below -- each reads committed
-    # data only -- so the row was hidden over it and the database's hiding arm
-    # refused the whole commit as a raw error.  Locked first, the archive
-    # waits for that purchase to commit and then reads it: the row is KEPT
-    # and named in the flash with the rest.
-    row_write_lock.lock_rows(*projected)
+    # **The owner's write lock, then the rows' locks, FIRST, then both reads
+    # as NEW statements** (rulings **R-CC96**: the archive is one of the two
+    # hiders that take the row lock before anything else; **R-CC100**: the
+    # owner's lock before the rows', and before the ``is_active`` change the
+    # route staged reaches the database).  A purchase added to one of these
+    # rows while the archive ran was invisible to the reads below -- each
+    # reads committed data only -- so the row was hidden over it and the
+    # database's hiding arm refused the whole commit as a raw error.  Locked
+    # first, the archive waits for that purchase to commit and then reads it:
+    # the row is KEPT and named in the flash with the rest.
+    row_write_lock.lock_rows(template.user_id, *projected)
     kept = archive_helpers.rows_holding_movements(*projected)
     hidden = db.session.query(Transaction).filter(
         *projected, archive_helpers.holds_nothing(),
@@ -795,7 +798,7 @@ def hard_delete_template(template_id):
             # pylint: enable=duplicate-code
             # The archive's own write, so the fallback hides exactly the rows
             # the archive button would (:func:`_soft_delete_projected_rows`).
-            _soft_delete_projected_rows(template.id)
+            _soft_delete_projected_rows(template)
             conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
                 log_label="hard_delete_template archive-fallback",

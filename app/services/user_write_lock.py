@@ -51,8 +51,16 @@ browser tabs, and it did not exist before this lock did.
 the FIRST lock a transaction takes.**  The pay-period paths already satisfy it.
 The settle paths do not, and closing that means acquiring at the write-service
 entry rather than inside the reconcile -- a change with its own blast radius,
-recorded as finding **N-193** rather than smuggled in here.  Shipping the lock
-with a detected-and-rolled-back deadlock is strictly better than shipping the
+recorded as finding **N-193** rather than smuggled in here.  *Since plan step
+``credit_card:CC-5-4a-4`` (ruling **R-CC100**) every door that locks a
+transaction row through :mod:`app.services.row_write_lock` -- add purchase,
+Mark Paid, the status seam's lock on a row carrying a record, Delete, Archive,
+Mark Credit -- takes this lock first; the write paths that never reach that
+module, or reach it only after writing a row (``update_transfer``,
+``create_account``, the transfer restore, ``statement_match.apply_reviewed``'s
+line locks), are plan step ``balance:X-bn``'s.*
+Shipping the lock with a detected-and-rolled-back deadlock is strictly better
+than shipping the
 silent ledger divergence it replaces; shipping it with a docstring claiming the
 deadlock is impossible is not.
 
