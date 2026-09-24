@@ -476,7 +476,10 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
         baseline is the degenerate case of their own rule rather than an error:
 
         * :meth:`amounts_or_none` -- the nullable form of this pass's amount
-          basis, and its ONE caller is the loan bundle.  ``resolve_loan_bundle``
+          basis.  Its callers are the loan bundle and, since plan step
+          salary:X-av-2, the Recurring surface's salary row
+          (``obligations_aggregator._todays_paycheck``; see that method).
+          ``resolve_loan_bundle``
           read THIS accessor directly until plan step X-au-g-2c, for the same
           reason and about the same loan: a loan's payment feed is the ONE
           scenario-scoped input to its resolution; its params, anchors and rate
@@ -746,8 +749,15 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
         so it adds no third reader of the nullable attribute ruling **R-BY**
         bounds to two.
 
-        **One caller, and it is the one whose own rule has an answer here**
-        (plan step X-au-g-2c): :func:`._resolution.resolve_loan_bundle`, which
+        **Two callers, and each is one whose own rule has an answer here.**
+        The second, since plan step salary:X-av-2, is
+        ``obligations_aggregator._todays_paycheck``: with no baseline no salary
+        profile is in scope, so no definition is priced as a paycheck and a
+        salary row shows its stored amount (ruling **R-SAL71**), where
+        :meth:`amounts` would refuse the whole page for an owner missing a
+        baseline -- which ruling **R-R30** does only when a definition pays
+        into a configured loan.  The first (plan step X-au-g-2c):
+        :func:`._resolution.resolve_loan_bundle`, which
         already spelled the nullable for the SAME loan and the SAME reason.  A
         loan's payment feed is its one scenario-scoped input; its params,
         anchors and rate history are contract facts.  With no baseline the feed

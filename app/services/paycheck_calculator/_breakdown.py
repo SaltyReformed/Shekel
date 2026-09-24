@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
+from app.services.pay_calendar import PayCadence
 from app.utils.money import ZERO, round_money
 
 
@@ -141,8 +142,10 @@ class Earnings:
     Attributes:
         annual_salary: The post-raise annual salary in effect on the payday.
         base_biweekly: What the SALARY pays for one paycheck -- the rate
-            :func:`~app.services.payroll_basis.gross_per_paycheck` derives,
-            and the base every PERCENTAGE line is a percentage of
+            :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`
+            derives (the annual over the paychecks a year of the rhythm in
+            force on the payday, since plan step salary:X-av-2), and the
+            base every PERCENTAGE line is a percentage of
             (R-SAL38: never of gross, so a percentage earning is not circular
             and no existing line moves when an earning joins).
         gross_biweekly: ``base_biweekly`` plus the TAXABLE earning lines --
@@ -216,11 +219,28 @@ class PeriodInfo:
             calendar month, which is what a 24-per-year deduction skips.
         raise_event: The raise taking effect in this period, as the label
             :func:`get_raise_event` composes, or ``""``.
+        cadence: The rhythm this paycheck was PRICED at -- the era in force
+            on :attr:`payday` (:func:`~app.services.pay_calendar.cadence_on`),
+            whose count divided :attr:`Earnings.annual_salary` into
+            :attr:`Earnings.base_biweekly` and annualised the withholding.
+            **The one count any reader turns this paycheck into a monthly or
+            yearly figure with** (ruling **R-SAL70**, plan step
+            salary:X-av-2): debt-to-income, a goal stated in months of
+            income, the retirement gap's current-pay fallback.  Those readers
+            multiplied by the LATEST era's count, which was right only while
+            the engine divided by the same wrong one; with the division per
+            payday they would have read a monthly-era paycheck of
+            ``$5,000.00`` as ``$10,833.33`` a month under a later biweekly era
+            (made-up figures).  A fact of the PAYDAY, so it sits here beside
+            it rather than among the figures it converts.  REQUIRED and
+            keyword-only, so no constructor can forget it and none can slip a
+            figure into it by position.
     """
     payday: date
     period_id: "int | None"
     is_third_paycheck: bool = False
     raise_event: str = ""
+    cadence: PayCadence = field(kw_only=True)
 
 
 @dataclass

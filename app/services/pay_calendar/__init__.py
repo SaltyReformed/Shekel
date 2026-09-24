@@ -120,6 +120,7 @@ from ._loader import (
     schedule_for,
 )
 from ._rhythm import (
+    cadence_on,
     paydays_in_month_through,
     paydays_in_year_before,
     saved_paydays_in_month_through,
@@ -147,6 +148,7 @@ __all__ = [
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
+    "cadence_on",
     "cadence_steps_to",
     "calendar_at_schedule",
     "calendar_for",
