@@ -168,7 +168,8 @@ class TestArchivingFreezesWhatItWasPricing:
       salary) and unreachable, because no code in ``app/`` creates a
       non-baseline scenario; there the freeze, which walks the template's rows
       in every scenario, would take the other scenario's rows to OWN while
-      its profile still priced them.  It is NOT covered here because a case
+      its profile still priced them -- one of the five template-keyed doors
+      ledger row **SAL-570** records.  It is NOT covered here because a case
       asserting behaviour in a state no door can produce grades the fixture
       rather than the app.
     """

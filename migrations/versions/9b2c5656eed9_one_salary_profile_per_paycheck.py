@@ -11,9 +11,10 @@ evening), closing finding **N-294**::
     salary.salary_profiles               + uq_salary_profiles_scenario_template
 
 **Within a scenario, a paycheck definition belongs to at most one salary
-profile, active or not.**  The amount model looks a row's profile up within
-the row's scenario (``income_service.SalaryPricing._profile_by_template``), and
-two profiles there naming one ``budget.transaction_templates`` row gave its
+profile, active or not.**  The amount model's PRICING lookup finds a row's
+profile within the row's scenario
+(``income_service.SalaryPricing._profile_by_template``), and two profiles
+there naming one ``budget.transaction_templates`` row gave its
 ``{template_id: profile}`` map two candidates for one key: it kept whichever
 the query returned last, and nothing on screen said which profile priced the
 paycheck.  No door produces the state -- ``routes/salary/profiles
@@ -25,8 +26,20 @@ can never meet a second profile on that definition.
 
 **Per scenario, not database-wide** (R-SAL69, revising R-SAL63's scope; the
 database-wide form was not picked).  A template belongs to no scenario, while
-a profile and every generated row do, so a what-if scenario may give the same
-paycheck its own salary, and the lookup never crosses scenarios.
+a profile and every generated row do, so the rule lets a what-if scenario give
+the same paycheck its own salary, and the pricing lookup never crosses
+scenarios.  **Five doors that reach a paycheck through its TEMPLATE still
+ignore scenario** and would be wrong in that state: the salary-link predicate
+(``template_amount_service.is_salary_linked_template``, read by amount rule
+2's classifier), ``salary_profile_service.archive_profile``'s freeze,
+``delete_profile``'s template archive, ``update_profile``'s template rename
+and restate, and ``salary_regeneration``, which regenerates into the read
+pass's BASELINE scenario and restates the shared template's amount.  Every
+reader that loads profiles by owner alone (the salary cockpit, the retirement
+and investment dashboards, and the savings dashboard's current pay, which sums
+them) would also count the what-if profile beside the baseline's.  Ledger row
+**SAL-570** records them; none is reachable while no code creates a
+non-baseline scenario.
 
 **NULLs stay distinct** (PostgreSQL's default, stated so nobody adds
 ``NULLS NOT DISTINCT``): ``template_id``'s key is ``ON DELETE SET NULL``, so

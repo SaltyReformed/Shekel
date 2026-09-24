@@ -239,6 +239,26 @@ class TestTheUpgrade:
             run_migration_callable(migration.upgrade, db.session)
             assert _template_rule() == _DEFINITION
 
+    def test_profiles_with_no_template_do_not_refuse_the_upgrade(
+        self, app, db, seed_user,
+    ):
+        """Two template-less profiles in one scenario share nothing: the rule is added.
+
+        A template's hard delete sets ``template_id`` NULL, so the state is
+        reachable, and the refusal's ``template_id IS NOT NULL`` clause is
+        what keeps it from failing a deploy.
+        """
+        with app.app_context():
+            migration = load_migration_module(_MIGRATION)
+            run_migration_callable(migration.downgrade, db.session)
+
+            _profile_on(seed_user, None, "Old job")
+            _profile_on(seed_user, None, "Older job")
+            db.session.commit()
+
+            run_migration_callable(migration.upgrade, db.session)
+            assert _template_rule() == _DEFINITION
+
 
 class TestTheDowngrade:
     """Drops the rule; the upgrade restores it exactly."""
