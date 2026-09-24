@@ -59,9 +59,9 @@ logger = logging.getLogger(__name__)
 
 
 def _governing_loan_anchor(
-    account_id: int, source_id: int, anchor_date: date,
+    account_id: int, source: LoanAnchorSourceEnum, anchor_date: date,
 ) -> loan_loaders.LoanAnchorFact | None:
-    """Return the standing statement of ``source_id`` governing ``anchor_date``.
+    """Return the standing statement of ``source`` governing ``anchor_date``.
 
     The loan twin of :func:`app.services.cash_ledger.governing_anchor_on`, and
     the WRITER's question rather than a reader's (ruling **R-EQ**, plan step
@@ -95,10 +95,12 @@ def _governing_loan_anchor(
 
     Args:
         account_id: The loan account whose statements to search.
-        source_id: The ``ref.loan_anchor_sources`` id to scope to (see
+        source: The source to scope to (see
             :func:`_append_loan_anchor_and_sync` for why the scope is per
-            source) -- ``user_trueup`` or ``tracking_start``, the two sources
-            the producer loads, told apart by ``is_tracking_start``.
+            source): ``USER_TRUEUP`` or ``TRACKING_START``, the two stored
+            assertion sources and the only two the producer loads, told apart
+            by ``is_tracking_start``.  The origination is synthesized, never a
+            submission, so it is never asked for.
         anchor_date: The date the submission asserts for -- the comparison's
             horizon.
 
@@ -108,9 +110,7 @@ def _governing_loan_anchor(
         or before *anchor_date* -- in which case the submission is necessarily
         new.
     """
-    is_tracking_start = source_id == ref_cache.loan_anchor_source_id(
-        LoanAnchorSourceEnum.TRACKING_START,
-    )
+    is_tracking_start = source is LoanAnchorSourceEnum.TRACKING_START
     governing = None
     for fact in loan_loaders.load_standing_loan_assertions(account_id):
         if (
@@ -264,7 +264,7 @@ def _stage_loan_anchor(
     # caller runs takes the same re-entrant lock again, harmlessly.
     lock_user_writes(account.user_id)
     source_id = ref_cache.loan_anchor_source_id(source)
-    governing = _governing_loan_anchor(account.id, source_id, anchor_date)
+    governing = _governing_loan_anchor(account.id, source, anchor_date)
     if governing is not None and (
         (governing.anchor_date, Decimal(str(governing.anchor_balance)))
         == (anchor_date, anchor_balance)

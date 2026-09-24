@@ -4,11 +4,12 @@ Two questions read a loan's stored statements -- the walk (through
 :func:`app.services.loan_loaders.load_loan_anchor_facts`) and the write door's
 duplicate rule (``loan_anchor_service._governing_loan_anchor``, ruling
 **R-EQ**) -- and since this step both read ONE producer,
-:func:`app.services.loan_loaders.load_standing_loan_assertions`.  Each case
-here grades one reader against a withdrawal, with the same case run with the
-statement STANDING as its control, so a producer that ignored the withdrawal
-fails and one that dropped the statement for another reason cannot pass for
-the right one.
+:func:`app.services.loan_loaders.load_standing_loan_assertions`.  Each
+withdrawal case carries a control -- the same read while the statement still
+stands, or a standing statement beside the withdrawn one -- so a producer that
+ignored the withdrawal fails and one that dropped statements for another reason
+cannot pass for the right one.  The tie and the source-scope cases involve no
+withdrawal: they grade the door's rewritten selection itself.
 
 The door's order moved too: it spelled ``(anchor_date, created_at, id) DESC``
 in SQL and now takes the LAST match of the producer's ascending order.  The tie

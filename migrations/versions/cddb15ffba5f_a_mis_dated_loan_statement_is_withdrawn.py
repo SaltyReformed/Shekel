@@ -9,10 +9,16 @@ downgrade); closes ledger row **FU-1**.
 
 **The defect.**  Migration ``d3d25212504b`` copied a loan's stored
 ``current_principal`` into a ``user_trueup`` dated the day THAT MIGRATION RAN,
-wherever the stored value disagreed with a replay.  The owner had stated that
-balance at SETUP, so the copy asserts it for the wrong day: every payment
-between the setup day and the run day sits inside a statement that did not see
-it, and the walk charges each of them against the balance before setup.  Plan
+wherever the stored value disagreed with a replay.  A balance stated at SETUP
+is then asserted for the wrong day: every payment between the setup day and
+the run day sits inside a statement that did not see it, and the walk charges
+each of them against the balance before setup.  **What the predicate below
+cannot test is WHEN the balance was stated** -- the params form could also
+edit the column after setup, and ``system.audit_log`` begins after that
+window -- so the re-dating rests on the one production row's evidence: its
+servicer's statements show the balance holding from the payment before the
+setup day to the first payment after it, and the loan records no payment in
+between (checked 2026-09-23).  Plan
 step ``recurrence:R20`` (``22b23085394d``) records the balance an owner states
 at setup as a ``tracking_start`` on the setup day, but its backfill skipped any
 loan carrying a ``user_trueup`` of any date -- the copied loan included.
@@ -67,9 +73,12 @@ that account, dated its setup day, carrying the withdrawn copy's balance --
 with the append-only refusal lifted for the statement (the ``d2e9f4a17c63``
 precedent); ``system.audit_log`` keeps the deleted row.  It then drops the
 relation and the superkey and re-installs the refusal exactly as
-``5641f7729b68`` left it, so the database is the one this revision found and a
-re-upgrade selects the same copy again.  Production never runs a downgrade: a
-genuine one restores the pre-deploy dump (``deploy/shekel-deploy.sh``).
+``5641f7729b68`` left it, so the database is the one this revision found.  A
+re-upgrade selects the same copy again UNLESS the owner recorded a statement
+earlier than the copy in between -- then the copy is no longer the loan's
+earliest statement, the predicate passes it by, and it stands again.
+Production never runs a downgrade: a genuine one restores the pre-deploy dump
+(``deploy/shekel-deploy.sh``).
 
 Review: solo developer, 2026-09-23 (rulings R-R98, R-R99; the downgrade
 deletes the row the upgrade appended and drops the relation it created).
@@ -176,7 +185,6 @@ _PREVIOUS_APPEND_ONLY_TABLES = (
 #: ``d2e9f4a17c63``), for the downgrade -- the revision the chain lands on
 #: installed exactly this.
 _PREVIOUS_APPEND_ONLY_FUNCTION = """
-
 CREATE OR REPLACE FUNCTION budget.refuse_append_only_change()
 RETURNS TRIGGER AS $$
 BEGIN
