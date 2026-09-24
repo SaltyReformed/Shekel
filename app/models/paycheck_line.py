@@ -100,6 +100,15 @@ class PaycheckLine(
             "salary_profile_id", "name",
             name="uq_paycheck_lines_profile_name",
         ),
+        # The superkey a transcribed pay stub's line amount keys onto (plan
+        # step salary:S11-a): ``fk_pay_stub_line_amounts_paycheck_line`` names
+        # ``(id, salary_profile_id)`` so a stub can only name a line of its own
+        # profile.  Unique by construction (``id`` is the key); it exists
+        # because a composite foreign key must target a declared unique.
+        db.UniqueConstraint(
+            "id", "salary_profile_id",
+            name="uq_paycheck_lines_id_profile",
+        ),
         # F-071 / F-079 / C-42: child-FK index restored after the
         # 22b3dd9d9ed3 migration dropped it without restoration.  The
         # paycheck calculator joins paycheck_lines to its parent

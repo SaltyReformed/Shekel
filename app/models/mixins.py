@@ -184,7 +184,10 @@ class SalaryProfileScopedMixin:
     ``calibration_override``, whose ``salary_profile_id`` blocks are
     byte-identical and form a duplicate-code clique.  EXCLUDES
     ``pension_profile``, whose FK is ``ON DELETE SET NULL`` and
-    ``nullable=True`` (a pension can outlive the linked salary profile).
+    ``nullable=True`` (a pension can outlive the linked salary profile),
+    and ``pay_stub``, whose FK is ``ON DELETE RESTRICT`` (a transcribed stub
+    is a record, so a profile holding one cannot be deleted; plan step
+    salary:S11-a).
 
     Same mid-table reorder + order-independence argument as
     :class:`UserScopedMixin`.

@@ -1,0 +1,49 @@
+{% from "_money_macros.html" import money %}
+{# The profile's transcribed PAY STUBS (plan step salary:S11-b; ruling
+   R-SAL51 (a)): newest payday first, each with its net, a link to its page and
+   its own "Use for pricing" switch, so switching never asks for the net again.
+   A stub switched off is kept, greyed and still editable (fork 8a'); there is
+   no delete.  Every figure arrives from app.services.pay_stub_service. #}
+<div class="card mb-3" id="stubs-section">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-receipt"></i> Pay stubs</h6>
+    <a href="{{ url_for('salary.new_stub', profile_id=profile.id) }}"
+       class="btn btn-sm btn-outline-primary">
+      <i class="bi bi-plus"></i> Enter a pay stub
+    </a>
+  </div>
+  <div class="card-body">
+    {% if stub_summaries %}
+    <ul class="list-unstyled mb-0">
+      {% for summary in stub_summaries %}
+      <li class="d-flex justify-content-between align-items-center py-1{% if not summary.use_for_pricing %} text-muted opacity-75{% endif %}">
+        <a href="{{ url_for('salary.view_stub', stub_id=summary.stub_id) }}">
+          {{ summary.payday.isoformat() }}
+        </a>
+        <span class="font-mono">{{ money(summary.net) }} net</span>
+        <form method="POST" class="d-inline"
+              action="{{ url_for('salary.set_stub_pricing', stub_id=summary.stub_id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="version_id" value="{{ summary.version_id }}">
+          {% if summary.use_for_pricing %}
+          <input type="hidden" name="use_for_pricing" value="off">
+          <button type="submit" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-check-circle"></i> Used for pricing: turn off
+          </button>
+          {% else %}
+          <input type="hidden" name="use_for_pricing" value="on">
+          <button type="submit" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-pause-circle"></i> Not used for pricing: turn on
+          </button>
+          {% endif %}
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted mb-0">
+      No pay stubs yet.  Enter one line by line to check your paycheck lines against it.
+    </p>
+    {% endif %}
+  </div>
+</div>

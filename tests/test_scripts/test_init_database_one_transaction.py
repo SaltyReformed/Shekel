@@ -49,6 +49,7 @@ from app.models.category import Category
 from app.ref_seeds import ACCT_TYPE_SEEDS
 from app.services.posting_reads import PostingError
 from app.services.tax_seed_data import DEFAULT_FICA
+from scripts.build_test_db_image import template_checks
 from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
@@ -874,6 +875,36 @@ class TestAFreshBuildIsOneTransaction:
         _INIT_DB.initialise_database()
 
         assert _committed_builtin_account_types(db) == len(ACCT_TYPE_SEEDS)
+
+    def test_a_clean_build_installs_every_family_the_image_is_verified_for(
+        self, app, db,
+    ):
+        """A first boot installs each trigger family the test image is verified for.
+
+        The tests above read ``auth.users``, the stamp and the account types,
+        so the pay-stub or the sighting block deleted from
+        ``init_fresh_database`` left them green while a new install lost that
+        rule -- a pay stub that can be deleted, a bank line that outlives its
+        last sighting (review L1 of the ``salary:S11-a`` carry-merge).  The
+        checks are the image verifier's own
+        (:func:`scripts.build_test_db_image.template_checks`): one list, so a
+        family added there is graded here with nothing to remember.  NOT
+        counted, here or in the image: the balanced-journal trigger
+        (``apply_posting_infrastructure``) and the books-boundary triggers
+        (``apply_opening_infrastructure``), whose modules export no constant
+        naming their triggers (finding BAL-542).
+        """
+        _empty_the_database(db)
+
+        _INIT_DB.initialise_database()
+
+        checks = template_checks()
+        with db.engine.connect() as conn:
+            found = {
+                label: conn.execute(text(sql)).scalar_one()
+                for label, sql, _expected in checks
+            }
+        assert found == {label: expected for label, _sql, expected in checks}
 
 
 class TestTheDeployKeepsTheAppsLogging:

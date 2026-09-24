@@ -102,6 +102,7 @@ from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import stamp_head, upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
+from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.append_only_infrastructure import (
     apply_append_only_infrastructure,
@@ -141,14 +142,14 @@ def is_fresh_database():
 def init_fresh_database(connection):
     """Create the schema, the integrity infrastructure, and stamp Alembic.
 
-    The steps below run in order -- with the append-only, level-within-file
-    and last-sighting blocks between 4 and 5, each documented where it runs --
-    every one on the deploy's ONE connection and none of them committing (plan
-    step balance:X-cv): :func:`initialise_database` commits them together.  A
-    failure part-way therefore leaves the database as empty as it found it,
-    instead of a half-built schema that the next boot reads as "existing"
-    (:func:`is_fresh_database` asks only for ``auth.users``) and tries to
-    migrate from no stamp.
+    The steps below run in order -- with the append-only, level-within-file,
+    last-sighting and pay-stub blocks between 4 and 5, each documented where
+    it runs -- every one on the deploy's ONE connection and none of them
+    committing (plan step balance:X-cv): :func:`initialise_database` commits
+    them together.  A failure part-way therefore leaves the database as
+    empty as it found it, instead of a half-built schema that the next boot
+    reads as "existing" (:func:`is_fresh_database` asks only for
+    ``auth.users``) and tries to migrate from no stamp.
 
     1. ``db.metadata.create_all`` on that connection -- materialise every
        SQLAlchemy-modeled table.  This covers the ``ref``, ``auth``,
@@ -172,12 +173,14 @@ def init_fresh_database(connection):
        registry, so ``db.create_all`` (which made the
        ``budget.account_postings`` table) does not create them.
     4. ``apply_opening_infrastructure`` -- materialise
-       ``budget.account_books_opened_on`` and the two deferred
-       constraint triggers that make a cash movement dated on or
-       before its account's ``opened_on`` unstorable (plan step
-       X-f3c-2b).  Raw SQL outside the model registry, exactly like
-       the two above, so ``db.create_all`` does not produce it.  There
-       is nothing to legalise on this path: the database is empty.
+       ``budget.account_books_opened_on`` and the five deferred
+       constraint triggers of every arm in ``ALL_ARMS`` that make a
+       settled movement (plan step X-f3c-2b) or a matched bank line dated
+       on or before its account's books open unstorable, graded from the
+       row's side and from the opening's.  Raw SQL outside the model
+       registry, exactly like the two above, so ``db.create_all`` does not
+       produce it.  There is nothing to legalise on this path: the
+       database is empty.
     5. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
        on the two ledger tables from ``shekel_app`` (review M1/R4).
        Required on this path specifically: ``init_db_role.sql`` ran
@@ -249,6 +252,16 @@ def init_fresh_database(connection):
         lambda sql: db.session.execute(db.text(sql))
     )
     print("Last-sighting rule ready.")
+
+    # A transcribed pay stub is never deleted and never moved (plan step
+    # salary:S11-a, ruling R-SAL44).  Same fresh-DB reason, same three-caller
+    # contract: ``create_all`` made the four stub tables and the stamp below
+    # marks 5641f7729b68 applied without running it.
+    print("Applying pay-stub refusal (transcribed pay stubs)...")
+    apply_pay_stub_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    print("Pay-stub refusal ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded
@@ -370,9 +383,8 @@ def backfill_loan_payment_postings_after_migration():
     Runs only on the existing-database path (the fresh-database branch stamps
     Alembic without running migrations and has no loan payments to post).
     Idempotent and self-healing (reconcile-to-target), so it is safe on every
-    deploy -- a
-    payment already carrying a go-forward correction is at target and nothing is
-    re-posted.  Commits nothing itself: the corrections commit in the deploy's
+    deploy -- a payment already carrying a go-forward correction is at target
+    and nothing is re-posted.  Commits nothing itself: the corrections commit in the deploy's
     ONE transaction (plan step balance:X-cv), where the deferred
     balanced-journal trigger validates every entry, so an unbalanced correction
     aborts the deploy loud.
@@ -614,15 +626,16 @@ def initialise_database():
     either way.  Only a ``commit()`` after the last session statement is
     harmless, and it saves nothing this commit would not.  A rollback
     followed by Alembic rather than the session (the first-boot build's
-    stamp comes after its seven session-routed infrastructure steps) meets
+    stamp comes after its eight session-routed infrastructure steps) meets
     :func:`app.migration_runner._config`, which puts the connection back
     inside a transaction nobody commits.  ``ref_cache.init`` rolls back when a
     ref table is missing (``_load_rows``), but since ruling R-BAL122 the
     reference seed reads every table the cache reads before it does (measured
-    2026-09-23: the cache's 27 tables are all among the seed's 28), so a
-    missing table fails the seed first; the cache's rollback is unreachable
-    from the deploy while that holds.  None of the three hooks' services, and
-    neither seed, commits or rolls back (census re-run 2026-09-23: the two
+    2026-09-23, again at salary:S11-a's merge: the cache's 28 tables are all
+    among the seed's 29), so a missing table fails the seed first; the cache's
+    rollback is unreachable from the deploy while that holds.  None of the
+    three hooks' services, and neither seed, commits or rolls back (census
+    re-run 2026-09-23: the two
     ``rollback()`` calls a hook's module holds --
     ``loan_posting_service._sync.sync_all_scenarios_or_duplicate`` and
     ``ref_cache._state._load_rows`` -- are the rate-history door's and the
@@ -636,11 +649,11 @@ def initialise_database():
     altogether; ``db.session.connection().commit()`` or a migration's
     ``op.get_bind().commit()`` would commit the deploy's transaction in place;
     and a ``COMMIT`` sent as SQL would end it at the server without SQLAlchemy
-    knowing.  The census (2026-09-23, over ``app/``,
-    ``migrations/versions/`` and ``scripts/seed_tax_brackets.py``, which all
-    run inside the transaction) finds none of the three: no ``db.engine``, ``create_engine`` or
-    ``engine.connect``, no ``.commit()`` on a connection or bind, and no
-    ``COMMIT`` / ``ROLLBACK`` statement text.
+    knowing.  The census (2026-09-23, re-run at salary:S11-a's merge, over
+    ``app/``, ``migrations/versions/`` and ``scripts/seed_tax_brackets.py``,
+    which all run inside the transaction) finds none of the three: no
+    ``db.engine``, ``create_engine`` or ``engine.connect``, no ``.commit()`` on
+    a connection or bind, and no ``COMMIT`` / ``ROLLBACK`` statement text.
 
     The session is FLUSHED before the commit, never committed: its pending ORM
     state reaches the connection, and the deploy commits the connection.

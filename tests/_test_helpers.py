@@ -10072,3 +10072,75 @@ def unseeded_replay_balance(loan_id, scenario_id, as_of):
             as_of=as_of,
         ).balance_as_of
     )
+
+
+def make_flat_paycheck_line(profile, name, amount, kind):
+    """Build, add and flush one FLAT paycheck line of *kind* on *profile*.
+
+    Args:
+        profile: The owning :class:`~app.models.salary_profile.SalaryProfile`.
+        name: The line's name.
+        amount: Its per-paycheck amount, as a string.
+        kind: A :class:`~app.enums.PaycheckLineKindEnum` member.
+
+    Returns:
+        The flushed :class:`~app.models.paycheck_line.PaycheckLine`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app import ref_cache
+    from app.enums import CalcMethodEnum
+    from app.extensions import db
+    from app.models.paycheck_line import PaycheckLine
+
+    line = PaycheckLine(
+        salary_profile=profile,
+        paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(kind),
+        calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
+        name=name,
+        amount=Decimal(amount),
+    )
+    db.session.add(line)
+    db.session.flush()
+    return line
+
+
+def build_pay_stub_world(owner):
+    """The pay stub entry door's worked example (plan step salary:S11-b), committed.
+
+    A ``$75,000.00`` profile of *owner* (base pay ``$2,884.62`` at 26 a year)
+    with five flat lines: Health Insurance ``$310.00`` and Vision ``$12.00``
+    (pre-tax, every paycheck), Dental ``$40.00`` (pre-tax, 12 a year: a
+    month's first paycheck), Roth IRA ``$100.00`` (post-tax) and Phone
+    Allowance ``$45.00`` (taxable earning).  Both of the door's suites
+    (``test_pay_stub_service.py``, ``test_salary_stubs.py``) price their
+    worked example over it; the owner needs pay periods for the Dental rule.
+
+    Args:
+        owner: The ``seed_user``-shaped fixture dict.
+
+    Returns:
+        ``(profile, {"health", "vision", "dental", "roth", "phone": line})``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.enums import PaycheckLineKindEnum
+    from app.extensions import db
+
+    profile = make_salary_profile(owner, db.session, name="Day Job")
+    db.session.flush()
+    pre_tax = PaycheckLineKindEnum.PRE_TAX_DEDUCTION
+    lines = {
+        "health": make_flat_paycheck_line(profile, "Health Insurance", "310.00", pre_tax),
+        "vision": make_flat_paycheck_line(profile, "Vision", "12.00", pre_tax),
+        "dental": make_flat_paycheck_line(profile, "Dental", "40.00", pre_tax),
+        "roth": make_flat_paycheck_line(
+            profile, "Roth IRA", "100.00", PaycheckLineKindEnum.POST_TAX_DEDUCTION,
+        ),
+        "phone": make_flat_paycheck_line(
+            profile, "Phone Allowance", "45.00", PaycheckLineKindEnum.TAXABLE_EARNING,
+        ),
+    }
+    make_line_cadence_rule(db.session, lines["dental"], 12)
+    db.session.commit()
+    return profile, lines

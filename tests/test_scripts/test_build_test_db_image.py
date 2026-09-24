@@ -1,18 +1,19 @@
 """The test-db image's cache key covers everything that shapes the template.
 
 ``scripts/build_test_db_image.py`` bakes ``shekel_test_template`` into a
-tagged image so a test run can start a container instead of replaying 177
-migrations.  The tag is a hash of the inputs, and the tempting version of
-that hash -- "the migrations" -- is WRONG in a way that corrupts results
-rather than merely slowing them.
+tagged image so a test run can start a container instead of replaying the
+whole migration chain.  The tag is a hash of the inputs, and the tempting
+version of that hash -- "the migrations" -- is WRONG in a way that corrupts
+results rather than merely slowing them.
 
-``build_test_template._populate_template`` runs seven steps, and four of them
-re-apply IN-CODE definitions *after* ``alembic upgrade``, deliberately, so
-the latest trigger definition wins over the migration-frozen one.  So editing
-``app/audit_infrastructure.py``, ``app/posting_infrastructure.py`` or
-``app/opening_infrastructure/`` changes the template while ``migrations/``
-stays byte-identical.  A migrations-only key would hand back a stale image
-and every suite thereafter would run against the wrong triggers, green.
+``build_test_template._populate_template`` re-applies IN-CODE trigger and
+constraint definitions *after* ``alembic upgrade``, deliberately, so the
+latest definition wins over the migration-frozen one.  So editing
+``app/audit_infrastructure.py``, ``app/posting_infrastructure.py``,
+``app/opening_infrastructure/`` or any other module it re-applies changes
+the template while ``migrations/`` stays byte-identical.  A migrations-only
+key would hand back a stale image and every suite thereafter would run
+against the wrong triggers, green.
 
 These tests pin that: each derived input must move the key, and every
 ``app`` module the builder imports must be covered.  That second assertion
@@ -24,8 +25,9 @@ green.  They need no docker daemon and no database.
 
 The image's CONTENTS are not asserted here; that is done at bake time by
 ``_verify_image``, which starts the committed image and refuses it if the
-template is missing, unmigrated, or stamped at anything but the migration
-chain's head.  Three deliberately-bad images were fed to it and all three
+template is missing, unmigrated, stamped at anything but the migration
+chain's head, off any exact count ``template_checks`` names, or shipping
+audit rows.  Three deliberately-bad images were fed to it and all three
 were refused.
 """
 from __future__ import annotations

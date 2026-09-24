@@ -32,7 +32,7 @@ from app.services import (
     salary_profile_service,
     template_amount_service,
 )
-from app.services import pay_schedule_service
+from app.services import pay_schedule_service, pay_stub_service
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, cadence_for
 from app.services.recurrence import RecurrenceSpec, author_rule
@@ -406,6 +406,7 @@ def edit_profile(profile_id):
         inactive_profiles=inactive_profiles,
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
+        stub_summaries=pay_stub_service.stub_summaries(profile),
         **_line_cadence_context(profile),
     )
 

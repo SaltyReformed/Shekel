@@ -8,16 +8,16 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`R18-c` shipped 2026-09-16 (`34ad4bda`, ticked 2026-09-18): every payroll line carries a start and
-an optional end on its own rule** -- after `R18-a` (`ef0dc831`) renamed the storage to
-`salary.paycheck_lines` and `R18-b` (`ad9fed61`) seeded the two EARNING kinds with the engine's one
-line pass. `R18-d`, the operator act, was PERFORMED 2026-09-19 (`0345fbae`; the line nets `$40.73`
-in the app against `$39.54` on the stub, **SAL-564**, a fork for the developer); **S11** (the stub
-transcribed, **R-SAL41** as amended by **R-SAL42**, absorbing `S1`) is decomposed into five leaves;
-`S9` (the blank start stored as blank, **R-SAL39**) waits on `recurrence:R21`. Before `R18`, `R15`
-(`77901fe0`) made a deduction's FREQUENCY a recurrence rule on the row and `S3-f-4` (`329b663d`)
-shipped `S3`. Archived spans, all under `historical/`: `R15` (`salary_r15_as_built_2026-09-14.md`),
-`S3` and `S3-f` (`salary_s3_as_built_2026-09-13.md`, `salary_s3f_as_built_2026-09-13.md`), `C12`
+**`S11-a` (`8f744c33`, the pay stub's tables) and `S11-b` (`1d3a2574`, its entry door) shipped
+2026-09-23**, `$0.00` both and released together (**R-SAL42**); before `S11-c`, the engine's
+calibrated path and the leaf that MOVES MONEY, the developer transcribes his stubs in production (an
+operator act, **R-SAL40**). **S11** (the stub transcribed, **R-SAL41** as amended by **R-SAL42**,
+absorbing `S1`) ticks with the last of its five leaves. Before it `R18` (`0345fbae`) made a paycheck
+base pay plus a list of lines, `R15` (`77901fe0`) made a deduction's FREQUENCY a recurrence rule on
+the row and `S3-f-4` (`329b663d`) shipped `S3`; `S9` (the blank start stored as blank, **R-SAL39**)
+waits on `recurrence:R21`. Archived spans, all under `historical/`: `R18`
+(`salary_r18_as_built_2026-09-23.md`), `R15` (`salary_r15_as_built_2026-09-14.md`), `S3` and `S3-f`
+(`salary_s3_as_built_2026-09-13.md`, `salary_s3f_as_built_2026-09-13.md`), `C12`
 (`salary_c12_as_built_2026-09-18.md`), `R14` (`salary_r14_as_built_2026-09-11.md`), `S3-e-2`
 (`salary_s3e2_as_built_2026-09-11.md`) and `S2` (`salary_s2_as_built_2026-09-04.md`). Nine steps
 were re-filed or minted into this arc when it was created (**R-SAL1**), with their ledger rows and
@@ -141,22 +141,24 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       nothing is RESTORED (an old row holds five figures and no line; the one entered 2026-08-28,
       deleted 2026-09-19, mis-read the 2026-08-27 stub), the history is TRANSCRIBED, and "all 12
       settled paychecks re-derive" becomes fork 8c's grade against each RECORD.
-  - [ ] **S11-a -- the tables** (round 4): `salary.pay_stubs` (payday UNIQUE per profile, base pay
-        above zero, the "Use for pricing" switch) over one amount per PAYCHECK LINE (FK RESTRICT),
-        per TAX (a new `ref.withholding_kinds`) and per named ONE-OFF, every column required; gross,
-        taxable and net derived, never stored; audited; an additive migration, `$0.00`.
-  - [ ] **S11-b -- the door**: line-by-line entry and edit, owner-scoped; the printed net typed once
-        as a check; a non-payday refused; one stub per payday; the four taxes required; each line
-        disagreeing with its paycheck line, and the base gap, shown; the "Use for pricing" switch
-        (8a'), no delete door; `delete_line` refuses a line a stub names ("end it instead").
-        `$0.00`, RELEASED with S11-a; his stubs are transcribed next (an operator act, **R-SAL40**).
+  - [x] **S11-a** `8f744c33` -- the tables: `salary.pay_stubs` over one amount per paycheck line
+        (keyed onto its own profile's line, RESTRICT), per tax (`ref.withholding_kinds`) and per
+        one-off; a trigger refuses a stub's DELETE, a move of its profile and any TRUNCATE
+        (**R-SAL44**, **R-SAL46**); migration `5641f7729b68`, its downgrade refusing while stubs
+        exist (**R-SAL47**). `$0.00`.
+  - [x] **S11-b** `1d3a2574` -- the door: the payday picked first (**R-SAL50**), one the app holds
+        up to the next (**R-SAL48**, **R-SAL49**; a kept date unchecked, **R-SAL53**), a new stub on
+        a payday already holding one refused (**R-SAL52**), the printed net checked, one-off clashes
+        refused (**R-SAL45**, **R-SAL51**), the comparison and the switch; `delete_line` refuses a
+        named line. `$0.00`; opened **SAL-567**, **SAL-568**.
   - [ ] **S11-c -- the engine's calibrated path**: the latest switched-on stub on or before the
-        payday with the SAME LINES supplies the four taxes and the formulas the difference;
-        `PricedLine` gains the line's identity; every reader switched, the rates path and
+        payday with the SAME LINES supplies the four taxes and the formulas the difference
+        (`PricedLine`'s line identity shipped at `S11-b`); every reader switched, the rates path and
         `calibrate_*` deleted. **MOVES MONEY**, graded on a clone holding the stubs: fork 8c, the
         projected diff, `tests/manual/measure_r18d_phone_line.py` before and after (within a cent of
         the pair), each stub beside the old calibrations of its date (fork 9). Asks first: fork 8b's
-        one-off fallback; a floor for a Social Security line below `$0.00`. Closes **SAL-565**.
+        one-off fallback; a floor for a Social Security line below `$0.00`; what a line's KIND or
+        NAME change means for the stubs naming it (**SAL-567**). Closes **SAL-565**.
   - [ ] **S11-d -- the old table goes**: a migration drops `salary.calibration_overrides` and every
         reference, REFUSING while any calibration the data has held (live, or deleted per the audit
         log) has no stub on its date, and printing any differing figures (fork 9).
@@ -229,25 +231,17 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       `compute_gap_net_biweekly` and the take-home-rate chip scale BASE by a net-over-gross ratio
       that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`
       until an earning line exists; its own step because R18's leaves were ruled.
-- [x] **R18 -- a paycheck is BASE PAY plus a LIST OF LINES.** `0345fbae` -- ticked with R18-d, its
-      last leaf (finding **D59** closed; ruling **R-SAL38**, six forks, 2026-09-15): the DECOMPOSED
-      parent, R-SAL35's shape, four leaves. A line's kind is its position in the waterfall (taxable
-      earning, pre-tax deduction, post-tax deduction, after-tax earning); a percentage line is a
-      percentage of BASE PAY, never of gross (worked: base `$3,631.74`, +`$45` taxable, 6% of base
-      `$217.90` against `$220.60` of gross). One deposit is one app row (`bank_import:X-gj-3a`).
-  - [x] **R18-a** `ef0dc831` -- the storage rename (`paycheck_lines`, `paycheck_line_kinds`;
-        migration `0a4d2c3e89f8`), byte-identical over the 64 saved paychecks; `$0.00`.
-  - [x] **R18-b** `ad9fed61` -- the two earning kinds (migration `6c15d2a97b78`), the engine's one
-        line pass (`priced_gross`; a percentage line is % of BASE), the line door, the cockpit
-        groups; byte-identical over the 64 saved paychecks; opened **SAL-561**.
-  - [x] **R18-c** `34ad4bda` -- every line's start and optional end on its own rule (R-SAL30 /
-        R-SAL31 amended; no migration, no engine change: the door was missing); the drive
-        `d97ca1b5`; `$0.00`. Surfaced the blank-start question -> **R-SAL39**, **SAL-562**, `S9`.
-  - [x] **R18-d** `0345fbae` -- the OPERATOR act, performed 2026-09-19: the Phone template ends
-        2026-09-18 after its Received September row; the `$45.00` taxable line runs from the 09-10
-        period, first paycheck of a month. **MOVED MONEY** (23 projected paychecks `+$40.73`; the
-        stub nets `$39.54`, **SAL-564**). Record:
-        `historical/salary_r18d_as_performed_2026-09-19.md`.
+- [x] **R18** `0345fbae` -- a paycheck is BASE PAY plus a LIST OF LINES (**R-SAL38**, six forks);
+      closed **D59**; ticked with `R18-d`, its last leaf. The span as it stood:
+      `historical/salary_r18_as_built_2026-09-23.md`.
+  - [x] **R18-a** `ef0dc831` -- the storage rename (migration `0a4d2c3e89f8`); `$0.00`. Archived
+        with `R18`.
+  - [x] **R18-b** `ad9fed61` -- the two earning kinds and the engine's one line pass (migration
+        `6c15d2a97b78`); opened **SAL-561**. Archived with `R18`.
+  - [x] **R18-c** `34ad4bda` -- every line's start and optional end on its own rule; opened
+        **SAL-562** (**R-SAL39**, `S9`). Archived with `R18`.
+  - [x] **R18-d** `0345fbae` -- the OPERATOR act, performed 2026-09-19; **MOVED MONEY**; opened
+        **SAL-564**. Record: `historical/salary_r18d_as_performed_2026-09-19.md`.
 - [x] **C12** `945651c2` -- one current-paycheck producer (**R-SAL25**-**R-SAL28**); closed **P62**,
       **P63**, **P64**'s engine half. As it stood: `historical/salary_c12_as_built_2026-09-18.md`.
 - [x] **C12-a** `26a7b816` -- the engine package (**R-SAL27**, **R-SAL28**); NO FIGURE MOVED.

@@ -47,6 +47,7 @@ from app.enums import (
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
+    WithholdingKindEnum,
 )
 
 from ._state import cache, require_init
@@ -350,6 +351,31 @@ def paycheck_line_kind_member(kind_id):
     """
     require_init()
     return cache().enum_members[PaycheckLineKindEnum].get(kind_id)
+
+
+def withholding_kind_id(member):
+    """Return the integer primary key for a WithholdingKindEnum member.
+
+    WHICH TAX a transcribed pay stub's withholding figure is (plan step
+    **salary:S11-a**, ruling **R-SAL42**), stamped on
+    ``salary.pay_stub_withholdings.withholding_kind_id`` -- always via the
+    integer ID, never the string ``name``.  What the members mean, and why they
+    are a list rather than four columns, is
+    :class:`app.enums.WithholdingKindEnum`'s to say.
+
+    Args:
+        member: A ``WithholdingKindEnum`` member
+                (e.g. ``WithholdingKindEnum.FEDERAL_INCOME``).
+
+    Returns:
+        int -- the ``ref.withholding_kinds.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid WithholdingKindEnum member.
+    """
+    require_init()
+    return cache().enum_ids[WithholdingKindEnum][member]
 
 
 def calc_method_id(member):
