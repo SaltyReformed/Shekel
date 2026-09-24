@@ -22,7 +22,12 @@ tables make true BY STRUCTURE, so the entry door (``S11-b``) and the engine
 * the four tables are audited, the model and the migration state the same
   CHECKs, autogenerate sees no drift, the migration round-trips with every
   trigger re-installed by DEFINITION, and its downgrade refuses while a stub
-  exists (ruling **R-SAL47**).
+  exists (ruling **R-SAL47**);
+* a stub line records the kind it is printed under, which may differ from its
+  line's and outlives a re-kind of the line; its kind key refuses an unknown
+  kind by name and is RESTRICT; and ``9b64df71cc34`` fills each existing row
+  from its line and refuses its downgrade while a row differs (ruling
+  **R-SAL58**, plan step ``S11-c-1``).
 
 The figures are the developer's 2026-08-27 paycheck as reconstructed in the
 S11 handoff (base ``$3,631.70``; federal / state / Social Security / Medicare
@@ -30,6 +35,7 @@ S11 handoff (base ``$3,631.70``; federal / state / Social Security / Medicare
 this leaf stores figures and prices nothing.
 """
 
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
@@ -62,6 +68,11 @@ from app.models.salary_profile import SalaryProfile
 from tests._test_helpers import load_migration_module, make_salary_profile
 
 _MIGRATION = load_migration_module("5641f7729b68_a_pay_stub_is_transcribed_line_by_line.py")
+
+#: Its child, which gives a stub line its own kind (plan step S11-c-1).
+_KIND_MIGRATION = load_migration_module(
+    "9b64df71cc34_a_stub_records_the_kind_it_prints_each_line_under.py",
+)
 
 #: The four ``salary`` tables this leaf creates, each audited.
 _STUB_TABLES = (
@@ -98,13 +109,11 @@ def _profile(owner, name="Primary"):
     return profile
 
 
-def _line(profile, name, amount="310.00"):
-    """A flushed flat pre-tax paycheck line on *profile*."""
+def _line(profile, name, amount="310.00", kind=PaycheckLineKindEnum.PRE_TAX_DEDUCTION):
+    """A flushed flat paycheck line on *profile*, pre-tax unless *kind* says otherwise."""
     line = PaycheckLine(
         salary_profile=profile,
-        paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
-            PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
-        ),
+        paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(kind),
         calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
         name=name,
         amount=Decimal(amount),
@@ -112,6 +121,19 @@ def _line(profile, name, amount="310.00"):
     db.session.add(line)
     db.session.flush()
     return line
+
+
+def _amount(line, amount):
+    """An unattached line amount naming *line*, printed under *line*'s own kind.
+
+    A stub line records the kind it is printed under (ruling R-SAL58); these
+    cases print each line under the line's own.
+    """
+    return PayStubLineAmount(
+        paycheck_line_id=line.id,
+        paycheck_line_kind_id=line.paycheck_line_kind_id,
+        amount=amount,
+    )
 
 
 def _stub(profile, payday=_PAYDAY, base_pay=_BASE_PAY):
@@ -151,9 +173,7 @@ def _whole_stub(profile, lines):
     """
     stub = _stub(profile)
     for line, amount in lines.items():
-        stub.line_amounts.append(
-            PayStubLineAmount(paycheck_line_id=line.id, amount=amount),
-        )
+        stub.line_amounts.append(_amount(line, amount))
     for kind, amount in _WITHHOLDINGS.items():
         stub.withholdings.append(_withholding(kind, amount))
     stub.one_offs.append(_one_off())
@@ -169,6 +189,37 @@ def _refused(excinfo):
 def _scalar(sql, **params):
     """Run a single-value SQL query on this test's connection."""
     return db.session.execute(sqlalchemy.text(sql), params).scalar()
+
+
+@contextmanager
+def _statements_sent():
+    """Record every SQL statement this test's connection sends inside the block.
+
+    A refused downgrade's writes cannot be read back afterwards: PostgreSQL's
+    DDL is transactional, so the rollback that follows the refusal would
+    undo a ``DROP`` that ran before it.  What the refusal must prove is that
+    no such statement was SENT, which is what this records.
+
+    Yields:
+        The list the statements are appended to, in order.
+    """
+    connection = db.session.connection()
+    sent = []
+
+    def record(_connection, _cursor, statement, *_rest):
+        """Keep one statement's text."""
+        sent.append(statement)
+
+    sqlalchemy.event.listen(connection, "before_cursor_execute", record)
+    try:
+        yield sent
+    finally:
+        sqlalchemy.event.remove(connection, "before_cursor_execute", record)
+
+
+def _writes(sent):
+    """The statements in *sent* other than a ``SELECT``."""
+    return [statement for statement in sent if not statement.lstrip().upper().startswith("SELECT")]
 
 
 def _run(step):
@@ -262,7 +313,7 @@ class TestTheDomainIsTheDatabases:
             line = _line(profile, "Health")
             stub = _stub(profile, base_pay=Decimal("0.01"))
             stub.line_amounts.append(
-                PayStubLineAmount(paycheck_line_id=line.id, amount=Decimal("0.00")),
+                _amount(line, Decimal("0.00")),
             )
             stub.withholdings.append(
                 _withholding(WithholdingKindEnum.MEDICARE, Decimal("0.00")),
@@ -305,7 +356,7 @@ class TestTheDomainIsTheDatabases:
             stub = _stub(profile, base_pay=base_pay)
             if case == "line_amount_negative":
                 stub.line_amounts.append(
-                    PayStubLineAmount(paycheck_line_id=line.id, amount=Decimal("-0.01")),
+                    _amount(line, Decimal("-0.01")),
                 )
             elif case == "withholding_negative":
                 stub.withholdings.append(
@@ -446,10 +497,10 @@ class TestOneOfEachPerStub:
             line = _line(profile, "Health")
             stub = _stub(profile)
             stub.line_amounts.append(
-                PayStubLineAmount(paycheck_line_id=line.id, amount=Decimal("310.00")),
+                _amount(line, Decimal("310.00")),
             )
             stub.line_amounts.append(
-                PayStubLineAmount(paycheck_line_id=line.id, amount=Decimal("300.00")),
+                _amount(line, Decimal("300.00")),
             )
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.flush()
@@ -502,9 +553,7 @@ class TestAStubNamesOnlyItsOwnProfilesLines:
             second_jobs_line = _line(second, "Health")
             stub = _stub(first)
             stub.line_amounts.append(
-                PayStubLineAmount(
-                    paycheck_line_id=second_jobs_line.id, amount=Decimal("310.00"),
-                ),
+                _amount(second_jobs_line, Decimal("310.00")),
             )
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.flush()
@@ -519,7 +568,7 @@ class TestAStubNamesOnlyItsOwnProfilesLines:
             their_line = _line(theirs, "Health")
             stub = _stub(mine)
             stub.line_amounts.append(
-                PayStubLineAmount(paycheck_line_id=their_line.id, amount=Decimal("310.00")),
+                _amount(their_line, Decimal("310.00")),
             )
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.flush()
@@ -546,11 +595,13 @@ class TestAStubNamesOnlyItsOwnProfilesLines:
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.execute(sqlalchemy.text(
                     "INSERT INTO salary.pay_stub_line_amounts "
-                    "(pay_stub_id, paycheck_line_id, salary_profile_id, amount) "
-                    "VALUES (:stub_id, :line_id, :profile_id, 310.00)"
+                    "(pay_stub_id, paycheck_line_id, salary_profile_id, "
+                    "paycheck_line_kind_id, amount) "
+                    "VALUES (:stub_id, :line_id, :profile_id, :kind_id, 310.00)"
                 ), {
                     "stub_id": stub.id, "line_id": second_jobs_line.id,
                     "profile_id": second.id,
+                    "kind_id": second_jobs_line.paycheck_line_kind_id,
                 })
             db.session.rollback()
             assert "fk_pay_stub_line_amounts_pay_stub" in _refused(excinfo)
@@ -943,6 +994,105 @@ class TestTheRemainingKeysAndChecks:
             assert "fk_pay_stub_one_offs_paycheck_line_kind_id" in _refused(excinfo)
 
 
+class TestAStubLineRecordsItsOwnKind:
+    """Ruling R-SAL58: a stub line keeps the kind the stub prints it under.
+
+    The line's kind is the app's plan and stays editable; the stub's is what
+    the document printed.  The figures are made up.
+    """
+
+    def test_a_stub_line_may_record_a_kind_its_line_does_not_have(self, app, seed_user):
+        """A pre-tax line printed under post-tax deductions is stored as printed."""
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            stub = _stub(profile)
+            post_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+            stub.line_amounts.append(PayStubLineAmount(
+                paycheck_line_id=health.id, paycheck_line_kind_id=post_tax,
+                amount=Decimal("200.00"),
+            ))
+            db.session.commit()
+            db.session.expire_all()
+
+            assert [
+                a.paycheck_line_kind_id for a in db.session.get(PayStub, stub.id).line_amounts
+            ] == [post_tax]
+            assert db.session.get(PaycheckLine, health.id).paycheck_line_kind_id == (
+                ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
+            )
+
+    def test_re_kinding_a_line_a_stub_names_moves_nothing_on_the_stub(self, app, seed_user):
+        """Finding SAL-567 at the table: the line's kind changes, the stub's stays as printed.
+
+        A raw ``UPDATE`` -- a writer no door sees -- goes through, because
+        nothing refuses it: R-SAL58's "A line's kind stays editable, stub or
+        not".  The stub line keeps the kind it was entered under.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            stub_id = _whole_stub(profile, {health: Decimal("200.00")}).id
+            pre_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
+            post_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+
+            db.session.execute(sqlalchemy.text(
+                "UPDATE salary.paycheck_lines SET paycheck_line_kind_id = :kind "
+                "WHERE id = :id"
+            ), {"kind": post_tax, "id": health.id})
+            db.session.commit()
+
+            assert _scalar(
+                "SELECT paycheck_line_kind_id FROM salary.paycheck_lines WHERE id = :id",
+                id=health.id,
+            ) == post_tax
+            assert _scalar(
+                "SELECT paycheck_line_kind_id FROM salary.pay_stub_line_amounts "
+                "WHERE pay_stub_id = :id",
+                id=stub_id,
+            ) == pre_tax
+
+    def test_a_kind_the_catalogue_does_not_hold_is_refused_by_name(self, app, seed_user):
+        """``fk_pay_stub_line_amounts_paycheck_line_kind_id`` refuses an unknown kind."""
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health")
+            unknown = _scalar("SELECT MAX(id) + 1 FROM ref.paycheck_line_kinds")
+            stub = _stub(profile)
+            stub.line_amounts.append(PayStubLineAmount(
+                paycheck_line_id=health.id, paycheck_line_kind_id=unknown,
+                amount=Decimal("310.00"),
+            ))
+            with pytest.raises(IntegrityError) as excinfo:
+                db.session.flush()
+            db.session.rollback()
+            assert "fk_pay_stub_line_amounts_paycheck_line_kind_id" in _refused(excinfo)
+
+    def test_a_kind_a_stub_line_records_cannot_be_deleted(self, app, seed_user):
+        """The kind key is RESTRICT, like the one-off's.
+
+        The stub line records an AFTER-TAX EARNING, its line is pre-tax and no
+        other row here is of that kind, so the stub line's key is the only one
+        that can refuse.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health")
+            after_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.AFTER_TAX_EARNING)
+            stub = _stub(profile)
+            stub.line_amounts.append(PayStubLineAmount(
+                paycheck_line_id=health.id, paycheck_line_kind_id=after_tax,
+                amount=Decimal("310.00"),
+            ))
+            db.session.commit()
+            with pytest.raises(IntegrityError) as excinfo:
+                db.session.execute(sqlalchemy.text(
+                    "DELETE FROM ref.paycheck_line_kinds WHERE id = :id"
+                ), {"id": after_tax})
+            db.session.rollback()
+            assert "fk_pay_stub_line_amounts_paycheck_line_kind_id" in _refused(excinfo)
+
+
 class TestTheTablesAreAudited:
     """The four tables are in the audited set and each write lands in the log."""
 
@@ -1044,6 +1194,11 @@ class TestTheMigrationRoundTrips:
         present.  It carries no withholding: the recreated catalogue's ids are
         assigned afresh, and this process's ref cache still holds the ones it
         read at start.
+
+        The chain is driven IN ORDER from head: ``9b64df71cc34`` (the stub
+        line's own kind, ruling R-SAL58) is this revision's child, so it is
+        stepped down first and back up last, and the stored amount carries the
+        kind the model now requires.
         """
         with app.app_context():
             assert all(_schema_objects().values()), _schema_objects()
@@ -1053,11 +1208,13 @@ class TestTheMigrationRoundTrips:
                 "WHERE tgname = 'audit_paycheck_lines'"
             )
 
+            _run(_KIND_MIGRATION.downgrade)
             _run(_MIGRATION.downgrade)
             db.session.commit()
             assert not any(_schema_objects().values()), _schema_objects()
 
             _run(_MIGRATION.upgrade)
+            _run(_KIND_MIGRATION.upgrade)
             db.session.commit()
             assert all(_schema_objects().values()), _schema_objects()
             installed = _trigger_definitions()
@@ -1076,7 +1233,7 @@ class TestTheMigrationRoundTrips:
             health = _line(profile, "Health")
             stub = _stub(profile)
             stub.line_amounts.append(
-                PayStubLineAmount(paycheck_line_id=health.id, amount=Decimal("310.00")),
+                _amount(health, Decimal("310.00")),
             )
             db.session.commit()
             assert _scalar(
@@ -1086,19 +1243,151 @@ class TestTheMigrationRoundTrips:
             ) == 1
 
     def test_the_downgrade_refuses_while_a_stub_exists(self, app, seed_user):
-        """Ruling R-SAL47: with one stub stored the downgrade raises, naming the count, and writes nothing.
+        """R-SAL47: with one stub stored the downgrade raises, naming the count, sending nothing.
 
         The schema the downgrade returns to has nowhere to hold a stub, so a
-        rollback after the owner has transcribed one would destroy it.  The
-        refusal comes before any DDL, so every object this revision created is
-        still there afterwards, and so is the stub.
+        rollback after the owner has transcribed one would destroy it.  That
+        the refusal comes before any DDL is read off the connection -- it sends
+        no statement but a ``SELECT`` -- since the rollback after it would
+        restore a dropped object either way; every object and the stub are
+        still there afterwards.
         """
         with app.app_context():
             profile = _profile(seed_user)
             _stub(profile)
             db.session.commit()
-            with pytest.raises(RuntimeError, match=r"1 transcribed pay stub\(s\) exist"):
+            with _statements_sent() as sent, pytest.raises(
+                RuntimeError, match=r"1 transcribed pay stub\(s\) exist",
+            ):
                 _run(_MIGRATION.downgrade)
             db.session.rollback()
+            assert _writes(sent) == []
             assert all(_schema_objects().values()), _schema_objects()
             assert _scalar("SELECT COUNT(*) FROM salary.pay_stubs") == 1
+
+
+def _kind_column():
+    """The stub line's kind column and its key, as the catalogue sees them.
+
+    Returns:
+        ``(is_nullable, key_present)``: ``is_nullable`` is the column's
+        ``information_schema`` answer (``"NO"`` when required), or ``None``
+        when the column does not exist.
+    """
+    nullable = _scalar(
+        "SELECT is_nullable FROM information_schema.columns "
+        "WHERE table_schema = 'salary' AND table_name = 'pay_stub_line_amounts' "
+        "AND column_name = 'paycheck_line_kind_id'"
+    )
+    key = bool(_scalar(
+        "SELECT COUNT(*) FROM pg_constraint WHERE conname = :name",
+        name="fk_pay_stub_line_amounts_paycheck_line_kind_id",
+    ))
+    return nullable, key
+
+
+class TestTheKindMigrationRoundTrips:
+    """``9b64df71cc34`` (ruling R-SAL58): the stub line's own kind, filled from its line.
+
+    Driven over this test's own clone.  While the revision is stepped down the
+    model is AHEAD of the table, so every write in that window is raw SQL.  The
+    figures are made up.
+    """
+
+    def test_the_upgrade_fills_each_stub_lines_kind_from_the_line_it_names(
+        self, app, seed_user,
+    ):
+        """Down: column and key gone.  Up: both back, required, each row its line's kind.
+
+        The row written while stepped down has no kind at all, so only the
+        upgrade's fill can give it one; the two lines are of two different
+        kinds, so a fill that wrote one constant would fail one of them.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            roth = _line(profile, "Roth", "100.00", kind=PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+            stub_id = _whole_stub(profile, {health: Decimal("200.00")}).id
+            assert _kind_column() == ("NO", True)
+
+            _run(_KIND_MIGRATION.downgrade)
+            db.session.commit()
+            assert _kind_column() == (None, False)
+            db.session.execute(sqlalchemy.text(
+                "INSERT INTO salary.pay_stub_line_amounts "
+                "(pay_stub_id, paycheck_line_id, salary_profile_id, amount) "
+                "VALUES (:stub_id, :line_id, :profile_id, 100.00)"
+            ), {"stub_id": stub_id, "line_id": roth.id, "profile_id": profile.id})
+            db.session.commit()
+
+            _run(_KIND_MIGRATION.upgrade)
+            db.session.commit()
+            assert _kind_column() == ("NO", True)
+            filled = dict(db.session.execute(sqlalchemy.text(
+                "SELECT paycheck_line_id, paycheck_line_kind_id "
+                "FROM salary.pay_stub_line_amounts WHERE pay_stub_id = :id"
+            ), {"id": stub_id}).all())
+            assert filled == {
+                health.id: ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION),
+                roth.id: ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION),
+            }
+
+    def test_the_upgrade_refuses_to_require_a_kind_the_fill_left_empty(
+        self, app, seed_user,
+    ):
+        """The database rules' zero-NULL check, forced to fire: a fill that writes nothing.
+
+        No database this chain builds can reach it (the upgrade's docstring
+        argues why), so the fill is replaced by a statement that writes
+        nothing, leaving the row written while stepped down without a kind.
+        The upgrade must then refuse, naming the row, before the column is
+        required.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            stub_id = _whole_stub(profile, {health: Decimal("200.00")}).id
+            _run(_KIND_MIGRATION.downgrade)
+            db.session.commit()
+            with patch.object(_KIND_MIGRATION, "_BACKFILL_SQL", "SELECT 1"), pytest.raises(
+                RuntimeError,
+                match=r"1 pay stub line\(s\) were left without a kind by the fill",
+            ) as refused:
+                _run(_KIND_MIGRATION.upgrade)
+            db.session.rollback()
+            assert f"{stub_id}, {health.id})" in str(refused.value)
+
+    def test_the_downgrade_refuses_while_a_stub_line_records_its_own_kind(
+        self, app, seed_user,
+    ):
+        """The one lossy case: the older schema would re-kind the row to its line's.
+
+        It raises naming the count having SENT no statement but a ``SELECT``
+        -- read off the connection, since the rollback after it would undo a
+        ``DROP`` either way -- and the column, its key and the row's own kind
+        are all still there afterwards.  The control is the previous test, whose
+        downgrade over a stub whose kinds agree succeeds.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            post_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
+            stub = _stub(profile)
+            stub.line_amounts.append(PayStubLineAmount(
+                paycheck_line_id=health.id, paycheck_line_kind_id=post_tax,
+                amount=Decimal("200.00"),
+            ))
+            db.session.commit()
+
+            with _statements_sent() as sent, pytest.raises(
+                RuntimeError, match=r"1 pay stub line\(s\) record a kind their paycheck line",
+            ):
+                _run(_KIND_MIGRATION.downgrade)
+            db.session.rollback()
+            assert _writes(sent) == []
+            assert _kind_column() == ("NO", True)
+            assert _scalar(
+                "SELECT paycheck_line_kind_id FROM salary.pay_stub_line_amounts "
+                "WHERE pay_stub_id = :id",
+                id=stub.id,
+            ) == post_tax
