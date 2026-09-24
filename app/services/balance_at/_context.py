@@ -94,9 +94,9 @@ if TYPE_CHECKING:
 class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (14/7) -- suppressed because the
-    fourteen ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and eleven
+    Pylint: ``too-many-instance-attributes`` (15/7) -- suppressed because the
+    fifteen ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and twelve
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
@@ -105,14 +105,16 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
     passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
     cash fold), 11 at balance:X-au-d (the paycheck pricing), 12 at
     recurrence:**R16-b-2** (a rule's resolution), 13 at
-    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk) and 14 at
+    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk), 14 at
+    recurrence:**R16-c-1** (the loan's timeline) and 15 at
     pay_calendar:**C18-a** (each account's books floor); plan step
     **X-i1** raises it further, because that step's remaining inputs (the contribution feed, the
     standing extra, the contractual schedule) are memos of exactly this kind.
     The count is a property of what a read pass IS rather than a threshold
     this class is drifting past.  *The figure read ``(8/7)`` and "five MEMOS"
-    until X-i4, and ``(10/7)`` and "seven" until R16-b-2's adversarial review:
-    each time a memo had joined without it being updated, which is the class
+    until X-i4, ``(10/7)`` and "seven" until R16-b-2's adversarial review, and
+    ``(14/7)`` and "eleven" until ruling R-BAL146's review counted R16-c-1's
+    ``_timelines``: each time a memo had joined without it being updated, which is the class
     of claim this file's own ``scenario_id`` docstring already warns about.*
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
