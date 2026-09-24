@@ -55,10 +55,16 @@ recorded as finding **N-193** rather than smuggled in here.  *Since plan step
 ``credit_card:CC-5-4a-4`` (ruling **R-CC100**) every door that locks a
 transaction row through :mod:`app.services.row_write_lock` -- add purchase,
 Mark Paid, the status seam's lock on a row carrying a record, Delete, Archive,
-Mark Credit -- takes this lock first; the write paths that never reach that
-module, or reach it only after writing a row (``update_transfer``,
-``create_account``, the transfer restore, ``statement_match.apply_reviewed``'s
-line locks), are plan step ``balance:X-bn``'s.*
+Mark Credit -- asks for this lock before that row lock.  That is not "first"
+for a request that wrote a row before reaching the module, and the list of
+such paths this paragraph gave (``update_transfer``, ``create_account``, the
+transfer restore, ``statement_match.apply_reviewed``'s line locks) was four of
+at least 27: a census over the whole suite (2026-09-24) found 27 endpoints
+that lock a row and then ask for this lock in the same request, among them
+the popover's Save, a purchase's edit and delete, carry-forward and the
+reconcile tick.  Ruling **R-CC106** (developer 2026-09-24) makes it one
+place instead of a list: plan step ``balance:X-bn`` takes this lock at the
+start of every request that can write.*
 Shipping the lock with a detected-and-rolled-back deadlock is strictly better
 than shipping the
 silent ledger divergence it replaces; shipping it with a docstring claiming the

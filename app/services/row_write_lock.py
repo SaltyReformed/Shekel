@@ -37,8 +37,17 @@ the write paths that do not reach this module.  "First" holds only while the
 door has flushed nothing before it: the lock's own statement flushes nothing
 (a Core ``SELECT``), so a change the door has STAGED -- the archive's
 ``is_active`` -- reaches the database after it, but a write a caller had
-already flushed would precede it.  No door here has; the race module grades
-each door's statement order.  The owner is the ROW's, whoever clicks: a
+already flushed would precede it.  **Three callers have, and this paragraph
+said none did** (review 6, M1, measured 2026-09-23): the popover's Save
+flushes a typed note -- or a revert its status -- before its status arm
+reaches here, and carry-forward's bulk ``UPDATE`` precedes the owner's lock
+its envelope's settle takes; each, racing the owner-first Delete, ended that
+Delete in ``DeadlockDetected``.  The race module grades each door's order
+through the SERVICE, which cannot see a route's earlier flush.  Ruling
+**R-CC106** (developer 2026-09-24, "Both layers, one leaf") ends the class
+rather than this list: plan step ``balance:X-bn`` takes the owner's lock at
+the start of every request that can write, in one place, and the per-door
+calls here go with it.  The owner is the ROW's, whoever clicks: a
 companion's purchase queues behind the owner's Delete.
 
 **One row strength, and the reason is a deadlock.**  Every door here takes

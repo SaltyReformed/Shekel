@@ -818,13 +818,19 @@ def delete_entry(txn_id, entry_id):
     ``StaleDataError`` into a 409 + conflict entry list.
 
     **A refused removal is the list's banner** (finding **CC-376**, plan step
-    ``credit_card:CC-5-4a-4``): the door refuses a purchase under a settled
-    row whose close records a fixed figure
-    (``entry_service._refusals.removal_refusal``), and that
-    ``ValidationError`` had no arm here, so it was a 500 (measured by the
-    step's lane probe on a settled envelope holding one purchase).  It is
-    answered as the purchase list's other refusals are, where the delete
-    button stood.
+    ``credit_card:CC-5-4a-4``): the door's ``ValidationError`` had no arm
+    here, so each was a 500 (measured by the step's lane probe on a settled
+    envelope holding one purchase).  The arm answers every refusal the door
+    raises, as the purchase list's other refusals are answered, where the
+    delete button stood: a purchase under a settled row whose close records a
+    fixed figure (``entry_service._refusals.removal_refusal``); a card
+    purchase whose payback has already settled, or whose removal would leave
+    the row's card refunds larger than its card purchases
+    (``entry_credit_workflow.sync_entry_payback``) -- the first reached in an
+    ordinary flow, paying the card and then removing a card purchase; and a
+    row's own payment record, reached only by a crafted id
+    (``_refusals._reject_settlement_record``).  Each names its row and prints
+    its dollars (ruling **R-CC98**; review 6, M3).
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:

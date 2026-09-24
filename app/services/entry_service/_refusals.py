@@ -770,8 +770,8 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     """
     if entry.covers_settlement:
         raise ValidationError(
-            f"Entry {entry.id} is the payment record of transaction "
-            f"{entry.transaction_id}, written when that row was marked paid. "
+            f"This is the payment record of {entry.transaction.name}, "
+            "written when that row was marked paid. "
             "It is not a purchase: to change the day its money moved, edit "
             "the row's settle day; to change the figure, correct the row's "
             "actual or revert it and mark it paid again. It is withdrawn "

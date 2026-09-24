@@ -80,6 +80,10 @@ from tests._test_helpers import (
     typed,
 )
 from tests.test_routes._statement_forms import ReconcileFormReader
+from tests.test_routes.test_transfer_leg_cells import (
+    _create_savings,
+    _create_transfer,
+)
 # Pylint: ``shekel-private-module-import`` -- the statement-match builders are
 # the one way a test stages an act that MINTS an envelope as the app does (the
 # convention ``test_cc5_4a3_captions`` keeps).
@@ -1008,6 +1012,121 @@ class TestADeleteThatWinsTheRaceIsNamed:
             ).count() == 0
 
 
+#: The five places a gone row is answered (review 6, M2): Mark Paid on the
+#: desktop cell and on the phone card, the popover's Save, and add purchase on
+#: the popover's list and on the phone's (``?host=tp``).
+_SURFACES = ("cell", "card", "save", "list", "list_tp")
+
+
+def _press(client, surface, row_id):
+    """Press *surface*'s door on *row_id* the way its control posts."""
+    if surface == "cell":
+        return client.post(f"/transactions/{row_id}/mark-done")
+    if surface == "card":
+        return _card_mark_paid(client, row_id)
+    if surface == "save":
+        return client.patch(
+            f"/transactions/{row_id}", data={"estimated_amount": "1.00"},
+        )
+    host = "tp" if surface == "list_tp" else ""
+    return client.post(
+        f"/transactions/{row_id}/entries?host={host}", data=_a_purchase_form(),
+    )
+
+
+def _is_the_nameless_answer(response, surface, row_id, name):
+    """Assert *surface*'s gone-row answer, in the words that name no row, never *name*."""
+    assert name not in response.get_data(as_text=True)
+    if surface in ("cell", "save"):
+        _is_the_deleted_cell(response, ROW_NO_LONGER_EXISTS_MSG)
+    elif surface == "card":
+        _is_the_banner_card(response, row_id, ROW_NO_LONGER_EXISTS_MSG)
+    else:
+        root = (
+            f"entry-list-tp-{row_id}" if surface == "list_tp"
+            else f"entry-list-{row_id}"
+        )
+        _is_the_banner_list(response, root, ROW_NO_LONGER_EXISTS_MSG)
+
+
+class TestNothingLeaksThroughTheName:
+    """R-CC104: only a row the requester could reach is ever named.
+
+    Review 6's M2: the uniform answer was graded for another user's LIVE row
+    alone, so three reorderings of
+    ``auth_helpers.get_accessible_transaction_or_deleted`` passed every test
+    -- naming a deleted row before the access check, naming a companion's
+    hidden deleted row, and calling a live transfer shadow "deleted".  Each
+    case below is the one row a reordering would name, at every surface.
+    """
+
+    @pytest.mark.parametrize("surface", _SURFACES)
+    def test_another_users_deleted_row_is_not_named(
+        self, app, db, auth_client, seed_user, seed_second_user, surface,
+    ):
+        """Another user's made-up $81.00 Gym, deleted by them: its name never reaches you."""
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_second_user, amount="81.00", name="Gym",
+                category_key="Groceries",
+            )
+            theirs = generate_row_of(template, seed_second_user["bootstrap_period"])
+            db.session.commit()
+            transaction_service.delete_transaction(
+                theirs, seed_second_user["user"].id,
+            )
+            db.session.commit()
+            theirs_id = theirs.id
+            assert db.session.get(Transaction, theirs_id).is_deleted is True
+
+            response = _press(auth_client, surface, theirs_id)
+
+            _is_the_nameless_answer(response, surface, theirs_id, "Gym")
+
+    @pytest.mark.parametrize("surface", ("card", "list", "list_tp"))
+    def test_a_companions_hidden_deleted_row_is_not_named(
+        self, app, db, companion_client, seed_user, seed_periods_today, surface,
+    ):
+        """The owner's deleted Spa, never shown to the companion: the companion's controls.
+
+        The phone card and both purchase lists are what a companion's page
+        posts; the desktop cell and the Save are the owner's alone.
+        """
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="60.00", name="Spa",
+                category_key="Groceries", companion_visible=False,
+            )
+            row = generate_row_of(template, seed_periods_today[3])
+            db.session.commit()
+            transaction_service.delete_transaction(row, seed_user["user"].id)
+            db.session.commit()
+            row_id = row.id
+
+            response = _press(companion_client, surface, row_id)
+
+            _is_the_nameless_answer(response, surface, row_id, "Spa")
+
+    @pytest.mark.parametrize("surface", _SURFACES)
+    def test_a_live_transfer_leg_is_never_called_deleted(
+        self, app, db, auth_client, seed_user, seed_periods_today, surface,
+    ):
+        """A made-up transfer's live shadow, asked for by a crafted id: gone, but not "deleted"."""
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            transfer = _create_transfer(seed_user, seed_periods_today[4], savings)
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ).first()
+            shadow_id, shadow_name = shadow.id, shadow.name
+            assert shadow.is_deleted is False
+
+            response = _press(auth_client, surface, shadow_id)
+
+            assert "was deleted" not in response.get_data(as_text=True)
+            _is_the_nameless_answer(response, surface, shadow_id, shadow_name)
+
+
 class TestTheOtherDoorsStillSayNotFound:
     """R-CC104 names three doors; every other door keeps R-CC89's bare answer."""
 
@@ -1127,3 +1246,80 @@ class TestARefusedRemovalIsTheListsBanner:
             assert f'id="entry-list-{envelope_id}"' in body
             db.session.expire_all()
             assert db.session.get(TransactionEntry, purchase_id) is not None
+
+    def test_a_paid_payback_is_named_with_its_dollars(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Review 6's M3, an ordinary flow: pay the card, then remove the card purchase.
+
+        A made-up $50.00 card purchase on a $120.00 Groceries envelope creates
+        its payback, the payback is marked Paid, and the purchase's delete is
+        refused.  Before: "Payback 2 has settled at 50.00 ..." -- an id, and a
+        figure with no dollar sign (ruling R-CC98).
+        """
+        with app.app_context():
+            _template, envelope = _occurrence(
+                seed_user, seed_periods_today[3], name="Groceries",
+                amount="120.00", is_envelope=True,
+            )
+            envelope_id = envelope.id
+            purchase = entry_service.create_entry(
+                envelope_id, seed_user["user"].id, entry_service.EntryDetails(
+                    figure=typed(Decimal("50.00")), description="Made-up store",
+                    purchased_on=display_today(), is_credit=True,
+                ),
+            )
+            db.session.commit()
+            purchase_id = purchase.id
+            payback = db.session.query(Transaction).filter_by(
+                credit_payback_for_id=envelope_id,
+            ).one()
+            payback_id = payback.id
+            settle_transaction(payback)
+            db.session.commit()
+
+            response = auth_client.delete(
+                f"/transactions/{envelope_id}/entries/{purchase_id}",
+            )
+
+            body = response.get_data(as_text=True)
+            assert response.status_code == 400
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+            assert "CC Payback: Groceries" in body
+            assert "has settled at $50.00, so it cannot be removed" in body
+            assert f"Payback {payback_id}" not in body
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, purchase_id) is not None
+
+    def test_a_payment_record_is_named_by_its_row(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A Paid $120.00 Hotel's own payment record, asked to go by a crafted id.
+
+        The list never draws the record, so only a crafted request reaches
+        this.  Before: "Entry 1 is the payment record of transaction 1 ...".
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, bill = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            _settle(bill, period.start_date)
+            bill_id = bill.id
+            record_id = db.session.query(TransactionEntry).filter_by(
+                transaction_id=bill_id,
+            ).one().id
+
+            response = auth_client.delete(
+                f"/transactions/{bill_id}/entries/{record_id}",
+            )
+
+            body = response.get_data(as_text=True)
+            assert response.status_code == 400
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+            assert "This is the payment record of Hotel" in body
+            assert f"Entry {record_id} is" not in body
+            assert "record of transaction" not in body
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, record_id) is not None

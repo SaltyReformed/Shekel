@@ -185,8 +185,9 @@ def sync_entry_payback(
         recorded = settled_figure(existing_payback)
         if moves_credit_total and recorded is not None and recorded != total_credit:
             raise ValidationError(
-                f"Payback {existing_payback.id} has settled at {recorded}, so "
-                f"it cannot be re-derived to {total_credit}: a settled row "
+                f"The payback '{existing_payback.name}' has settled at "
+                f"${recorded:,.2f}, so it cannot be re-derived to "
+                f"${total_credit:,.2f}: a settled row "
                 "records what MOVED. Set the payback back to Projected, then "
                 "record this purchase -- the figure it recorded is kept, and "
                 "marking it paid again books the new total.",
@@ -262,8 +263,9 @@ def sync_entry_payback(
         recorded = settled_figure(existing_payback)
         if recorded is not None:
             raise ValidationError(
-                f"Payback {existing_payback.id} has settled at {recorded}, so "
-                "it cannot be removed: that money has already left the "
+                f"The payback '{existing_payback.name}' has settled at "
+                f"${recorded:,.2f}, so it cannot be removed: that money has "
+                "already left the "
                 "account. Set the payback back to Projected first -- the "
                 "figure it recorded is kept -- and then remove the purchase.",
             )
@@ -341,7 +343,7 @@ def _reject_card_owing_the_owner(
         return
     raise ValidationError(
         f"The card refunds on '{txn.name}' now exceed its card purchases by "
-        f"{-total_credit}, which would mean the card owes YOU rather than the "
+        f"${-total_credit:,.2f}, which would mean the card owes YOU rather than the "
         "other way round. Shekel records a CC Payback as money you owe, so it "
         "cannot hold that. Record the refund against the envelope it came from "
         "as an ordinary (non-card) purchase, or split it across the card "

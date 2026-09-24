@@ -841,7 +841,13 @@ class TestTheOwnersLockComesFirst:
             self._assert_the_owners_lock_first(_mark_paid(_hotel(seed_user)))
 
     def test_the_popover_actual(self, app, db, seed_user):
-        """A $125.00 Actual correction on a Paid Hotel asks for the owner's lock first."""
+        """A $125.00 Actual correction on a Paid Hotel asks for the owner's lock first.
+
+        Through the SERVICE, so it grades the status arm's order alone: the
+        route's own field write -- a typed note -- flushes before this arm
+        runs and precedes the owner's lock (review 6, M1), which is plan step
+        ``balance:X-bn``'s to end (ruling R-CC106).
+        """
         with app.app_context():
             row_id = _hotel(seed_user)
             transaction_service.settle_transaction(_db.session.get(Transaction, row_id))
