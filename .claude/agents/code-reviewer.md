@@ -73,8 +73,8 @@ Transfer invariants (critical -- violating any one is a critical bug):
   of the cash fold and, since balance:X-bi-6-4b, once by the loan walk, as a $0.00
   payment; a settled parent over a shadow reverted alone, whose kept movement is
   un-dated, makes the loan walk refuse (UndatedSettleError, naming the shadow's
-  row). That is pinned, not a new defect, but any door that could WRITE such a
-  drift is one.
+  row; R-BAL147). That is pinned, not a new defect, but any door that could WRITE
+  such a drift is one.
 
 Design (DRY / SOLID / pythonic):
 - Duplicated logic should be extracted, not copy-pasted. `duplicate-code`

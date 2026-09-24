@@ -77,9 +77,9 @@ that touches this file, the way the `starts` column is reconciled. A row on no o
 **REWARD or UPKEEP by the developer's GENEROUS test**: above the horizon when a figure he reads
 moves to the correct one, a failure he can hit stops (a 500, a deadlock, a lost definition), a door,
 screen or control he would use appears, or it is structural financial-correctness work that makes a
-wrong state unrepresentable though no figure moves today (`X-au-m`, `X-bp`, `X-au-l`, `X-bq` and
-their kind); structural work that moves no figure -- pure moves, splits, censuses, checkers,
-tooling, and the rule-14 deletions that leave every state representable -- is upkeep.
+wrong state unrepresentable though no figure moves today (`X-bp`, `X-au-l`, `X-bq` and their kind);
+structural work that moves no figure -- pure moves, splits, censuses, checkers, tooling, and the
+rule-14 deletions that leave every state representable -- is upkeep.
 **The horizon opens at `balance:X-cg`.** It is a KEY, never a count, and the arm holds it to an open
 ranked row outside the path. Two rulings of the same day ride as rows in `rulings.md`:
 `credit_card:R-CC13` (the card rows' blanket wait on `balance:X-f4` is re-derived per leaf; the
