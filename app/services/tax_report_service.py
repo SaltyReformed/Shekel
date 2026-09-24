@@ -397,15 +397,13 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     # calendar reaching this line always carries a cadence and the read above
     # is total.
     periods = year_paydays(calendar, year)
-    configs = load_tax_configs_for_year(user_id, primary, year)
+    configs = load_tax_configs_for_year(primary, year)
 
-    withholding = _aggregate_withholding(user_id, year, profiles, calendar)
-    modeled_pretax = _aggregate_modeled_pretax(
-        user_id, year, profiles, periods, calendar,
-    )
+    withholding = _aggregate_withholding(year, profiles, calendar)
+    modeled_pretax = _aggregate_modeled_pretax(year, profiles, periods, calendar)
 
     liability = compute_annual_liability(
-        user_id, primary, year, withholding.total.gross, modeled_pretax,
+        primary, year, withholding.total.gross, modeled_pretax,
     )
     box1_wages = withholding.total.gross - modeled_pretax
     next_stub = _next_stub(periods, today)
@@ -435,7 +433,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 
 
 def _aggregate_withholding(
-    user_id: int, year: int, profiles: list, calendar: PayCalendar,
+    year: int, profiles: list, calendar: PayCalendar,
 ) -> WithholdingSummary:
     """Sum withholding-to-date across the active profiles (one filer).
 
@@ -447,7 +445,6 @@ def _aggregate_withholding(
     through (``None`` when all are fully modeled).
 
     Args:
-        user_id: The owning user (per-user tax configs).
         year: The tax year.
         profiles: The active salary profiles.
         calendar: The owner's pay calendar -- the paycheck count each
@@ -465,7 +462,7 @@ def _aggregate_withholding(
     has_checkpoint = False
 
     for profile in profiles:
-        wtd = compute_withholding_to_date(user_id, profile, year, calendar)
+        wtd = compute_withholding_to_date(profile, year, calendar)
         totals.append(wtd.total)
         measures.append(wtd.measured)
         models.append(wtd.projected)
@@ -484,8 +481,7 @@ def _aggregate_withholding(
 
 
 def _aggregate_modeled_pretax(
-    user_id: int, year: int, profiles: list, periods: list,
-    calendar: PayCalendar,
+    year: int, profiles: list, periods: list, calendar: PayCalendar,
 ) -> Decimal:
     """Sum the FULL-year modeled pre-tax across the active profiles.
 
@@ -497,8 +493,7 @@ def _aggregate_modeled_pretax(
     calibration overrides only the tax lines, never the pre-tax deductions.
 
     Args:
-        user_id: The owning user (per-user tax configs).
-        year: The tax year (single-year config set).
+        year: The tax year (one year of the law applies).
         profiles: The active salary profiles.
         periods: The year's pay periods.
         calendar: The owner's pay calendar -- the paycheck count the
@@ -516,7 +511,7 @@ def _aggregate_modeled_pretax(
     if not periods:
         return total
     for profile in profiles:
-        tax_configs = load_tax_configs_for_year(user_id, profile, year)
+        tax_configs = load_tax_configs_for_year(profile, year)
         breakdowns = paycheck_calculator.project_salary(
             PayrollBasis(profile, calendar), periods, tax_configs,
             calibration=profile.calibration,
@@ -594,7 +589,8 @@ def _build_w2_preview(
     Args:
         withholding: The summed withholding-to-date.
         box1_wages: Hybrid gross less the modeled annual pre-tax.
-        fica_config: The year's FicaConfig (or ``None``) for the SS cap.
+        fica_config: The year's :class:`app.tax_law.FicaRules` (or ``None``)
+            for the SS cap.
 
     Returns:
         The populated :class:`W2Preview`.
@@ -741,7 +737,8 @@ def _build_chips(
     Args:
         liability: The liability (federal taxable + both liabilities).
         box1_wages: The effective-rate denominator.
-        bracket_set: The year's TaxBracketSet (or ``None``).
+        bracket_set: The year's :class:`app.tax_law.FederalRules` (or
+            ``None``).
         next_stub: The precomputed next-payday date (or ``None``).
 
     Returns:

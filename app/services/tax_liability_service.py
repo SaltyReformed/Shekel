@@ -4,8 +4,8 @@ Shekel Budget App -- Annual Tax Liability Service
 Computes a salary profile's filing-time FEDERAL and NC-STATE income tax
 liability for a full tax year -- the missing piece the analytics Taxes tab
 needs to estimate a refund (refund = withheld - liability, produced later
-in T-P3).  This module is orchestration only: it loads the per-year tax
-configs (via the ``load_tax_configs_for_year`` SSOT), reads the W-4 inputs
+in T-P3).  This module is orchestration only: it resolves the year's tax
+law (via the ``load_tax_configs_for_year`` SSOT), reads the W-4 inputs
 off the profile, and delegates every arithmetic step to the pure engine in
 ``tax_calculator``.  It never touches projections -- the year's wage and
 pre-tax figures are PASSED IN (the T-P3 producer computes them from elapsed
@@ -39,10 +39,7 @@ from app.services.tax_calculator import (
     calculate_state_tax,
     resolve_child_deduction_per_child,
 )
-from app.services.tax_config_service import (
-    load_state_child_deductions,
-    load_tax_configs_for_year,
-)
+from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
 
@@ -117,21 +114,20 @@ class AnnualLiability:
 
 
 def compute_annual_liability(
-    user_id, profile, year, annual_wage_income, annual_pretax,
+    profile, year, annual_wage_income, annual_pretax,
 ) -> AnnualLiability:
     """Compute a profile's filing-time federal + NC-state liability for *year*.
 
-    Loads the year's tax configs through the shared
+    Resolves the year's tax law through the shared
     :func:`load_tax_configs_for_year` SSOT (the same per-year resolution --
-    the latest CONFIGURED year at or before the requested one -- that the
-    recurrence engine and salary projection use), reads
+    the latest year the law carries at or before the requested one -- that
+    the salary projection uses), reads
     the additional-income and dependent counts off *profile*, and delegates
     the arithmetic to the pure ``tax_calculator`` engine.
 
     Args:
-        user_id: The owning user's ID (tax configs are per-user).
         profile: The SalaryProfile.  Supplies ``filing_status_id`` and
-            ``state_code`` (for config lookup) plus ``additional_income``
+            ``state_code`` (which slice of the law applies) plus ``additional_income``
             (W-4 4(a)), ``qualifying_children``, and ``other_dependents``.
             Its ``additional_deductions`` (4(b)) is deliberately NOT read.
         year: The tax year to compute liability for.
@@ -149,7 +145,7 @@ def compute_annual_liability(
             (raised by :func:`calculate_annual_federal_liability` on a None
             bracket set -- consistent with the withholding engine).
     """
-    configs = load_tax_configs_for_year(user_id, profile, year)
+    configs = load_tax_configs_for_year(profile, year)
     wage = Decimal(str(annual_wage_income))
     pretax = Decimal(str(annual_pretax))
     additional_income = Decimal(str(profile.additional_income))
@@ -162,12 +158,7 @@ def compute_annual_liability(
     taxable_base = max(ZERO, wage + additional_income - pretax)
     state_config = configs["state_config"]
     child_tiers = (
-        load_state_child_deductions(
-            user_id, state_config.state_code, state_config.tax_year,
-            state_config.filing_status_id,
-        )
-        if state_config is not None
-        else []
+        state_config.child_deduction_tiers if state_config is not None else ()
     )
     state = _state_layer(
         state_config, taxable_base, child_tiers,
@@ -195,8 +186,8 @@ def _federal_layer(
     cannot move the liability.
 
     Args:
-        bracket_set: The year's TaxBracketSet, or None (raises via the
-            engine).
+        bracket_set: The year's :class:`app.tax_law.FederalRules`, or None
+            (raises via the engine).
         profile: The SalaryProfile supplying the dependent counts.
         wage: The year's wage income (Decimal).
         pretax: The year's pre-tax deductions (Decimal).
@@ -248,9 +239,11 @@ def _state_layer(
     deduction.
 
     Args:
-        state_config: The year's StateTaxConfig, or None (no state tax).
+        state_config: The year's
+            :class:`~app.services.tax_config_service.StateTaxRules`, or None
+            (no state tax).
         taxable_base: The NC base / AGI proxy (Decimal, already floored).
-        child_tiers: The state's child-deduction tier rows (possibly empty).
+        child_tiers: The state's child-deduction tiers (possibly empty).
         qualifying_children: The primary filer's qualifying-child count.
 
     Returns:

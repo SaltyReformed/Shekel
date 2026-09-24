@@ -22,9 +22,11 @@ Detects fresh vs. existing databases and initializes accordingly:
 
 Both paths then run the same sequence (ruling R-BAL122): the reference
 rows are seeded, ``ref_cache`` is loaded from them, the hooks run (an
-existing database only), every user's missing tax defaults are seeded,
-and the audit triggers are counted -- the work entrypoint steps 4, 6
-and 7 used to do after this script had committed (:func:`_bring_to_release`).
+existing database only), and the audit triggers are counted -- the work
+entrypoint steps 4 and 7 used to do after this script had committed
+(:func:`_bring_to_release`).  Entrypoint step 6 seeded every user's missing
+tax rows until plan step salary:X-at-1 gave the tax law one home in the code
+(:mod:`app.tax_law`), which no deploy copies.
 
 **All of it is ONE transaction, committed once** (plan step
 balance:X-cv, ruling R-BAL105).  The deploy opens that transaction on a
@@ -117,7 +119,6 @@ from app.services import (
     loan_posting_service,
     posting_service,
 )
-from scripts.seed_tax_brackets import seed_tax_brackets
 # pylint: enable=wrong-import-position
 
 
@@ -470,11 +471,7 @@ def _bring_to_release(connection):
     3. ``ref_cache``, loaded ONCE, from those rows.
     4. The three deploy hooks (:func:`_reconcile_the_ledger`), on an existing
        database only: a new one has no ledger to reconcile.
-    5. The tax defaults any user lacks
-       (:func:`scripts.seed_tax_brackets.seed_tax_brackets`).  On a first boot
-       there is no user yet; entrypoint step 5 then seeds the owner, whose
-       registration writes their tax data itself.
-    6. The audit-trigger check
+    5. The audit-trigger check
        (:func:`app.audit_infrastructure.require_audit_triggers`).
 
     **Why the seed precedes the cache.**  ``ref_cache.init`` refuses a ref
@@ -493,8 +490,9 @@ def _bring_to_release(connection):
     (SELECT ...)`` that finds nothing) would quietly do nothing there and in a
     deploy alike; no gate sees that case.
 
-    Steps 2, 5 and 6 were entrypoint steps 4, 6 and 7, each run after step 3
-    had committed, so a failure in one left the release's stamp behind a dead
+    Steps 2 and 5 were entrypoint steps 4 and 7 (entrypoint step 6, the tax
+    seed, was deleted at plan step salary:X-at-1), each run after step 3 had
+    committed, so a failure in one left the release's stamp behind a dead
     container: the case ``deploy/shekel-deploy.sh`` cannot re-pin.  Here a
     failure in any step rolls back with the rest.
 
@@ -518,8 +516,6 @@ def _bring_to_release(connection):
     seed_reference_data(db.session, verbose=True)
     ref_cache.init(db.session)
     completed = [] if fresh else _reconcile_the_ledger()
-    print("Seeding tax configuration...")
-    seed_tax_brackets()
     found = require_audit_triggers(connection)
     print(
         f"Audit trigger health OK: {found} triggers "
@@ -603,7 +599,7 @@ def initialise_database():
     left a stamp the previous image could not resolve, and
     ``deploy/shekel-deploy.sh`` refused to re-pin it: a manual dump restore.
     Now the deploy opens a connection and a transaction of its OWN, and the
-    fresh-database build or the migrations, the reference and tax seeds,
+    fresh-database build or the migrations, the reference seed,
     ``ref_cache``, the three hooks and the audit-trigger check
     (:func:`_bring_to_release`) all run inside it: Alembic on the connection,
     everything else through a session joined to it
@@ -634,14 +630,14 @@ def initialise_database():
     2026-09-23, again at salary:S11-a's merge: the cache's 28 tables are all
     among the seed's 29), so a missing table fails the seed first; the cache's
     rollback is unreachable from the deploy while that holds.  None of the
-    three hooks' services, and neither seed, commits or rolls back (census
+    three hooks' services, and not the seed, commits or rolls back (census
     re-run 2026-09-23: the two
     ``rollback()`` calls a hook's module holds --
     ``loan_posting_service._sync.sync_all_scenarios_or_duplicate`` and
     ``ref_cache._state._load_rows`` -- are the rate-history door's and the
     missing-table path; their SAVEPOINTs are ``begin_nested`` blocks, which
-    never end the deploy's transaction; the seeds' only commits are their
-    scripts' own wrappers, which the deploy does not call).
+    never end the deploy's transaction; the seed's only commit is its
+    script's own wrapper, which the deploy does not call).
 
     **What neither can see is a second CONNECTION, a CONNECTION-level commit,
     or a raw ``COMMIT``.**  A hook that opened a connection of its own
@@ -650,8 +646,9 @@ def initialise_database():
     ``op.get_bind().commit()`` would commit the deploy's transaction in place;
     and a ``COMMIT`` sent as SQL would end it at the server without SQLAlchemy
     knowing.  The census (2026-09-23, re-run at salary:S11-a's merge, over
-    ``app/``, ``migrations/versions/`` and ``scripts/seed_tax_brackets.py``,
-    which all run inside the transaction) finds none of the three: no
+    ``app/`` and ``migrations/versions/``, which run inside the transaction,
+    and over ``scripts/seed_tax_brackets.py`` until plan step salary:X-at-1
+    deleted it) finds none of the three: no
     ``db.engine``, ``create_engine`` or ``engine.connect``, no ``.commit()`` on
     a connection or bind, and no ``COMMIT`` / ``ROLLBACK`` statement text.
 

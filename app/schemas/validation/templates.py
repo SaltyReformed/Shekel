@@ -191,10 +191,9 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     # and the consequence is permanent: an adversarial review submitted
     # ``0202-08-11`` and it became the series' EARLIEST version, which
     # anchors every date before the series and which the withdrawal door
-    # refuses to remove.  The window matches the tax-config year bound
-    # (``routes/salary/tax_config.py``), and
-    # ``ck_template_amount_versions_effective_date_range`` mirrors it at
-    # the storage tier for raw-SQL writers.
+    # refuses to remove.
+    # ``ck_template_amount_versions_effective_date_range`` mirrors the
+    # window at the storage tier for raw-SQL writers.
     effective_from = fields.Date(validate=_EFFECTIVE_DATE_RANGE)
 
     # Optimistic-locking pin (commit C-18).

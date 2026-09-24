@@ -1,23 +1,28 @@
 {% from "_money_macros.html" import money %}
-{# Shared tax configuration sections: state tax, FICA, federal brackets.
-   Included by settings/_tax_config.html (the salary section links tax
-   settings straight to Settings; the former salary/tax_config.html page
-   was retired in the Fable 5 salary rebuild).
+{# The tax law the app prices against, read-only (plan step salary:X-at-1,
+   ruling R-SAL74): state tax, FICA, federal brackets, then each year's
+   sources.  The law lives in app/tax_law and changes only with a release, so
+   nothing here is a form.  Included by settings/_tax_config.html.
 
    Required template variables:
-     state_configs  -- list of StateTaxConfig objects
-     fica_configs   -- list of FicaConfig objects
-     bracket_sets   -- list of TaxBracketSet objects
+     tax_years -- tuple of app.tax_law.TaxYearLaw, newest year first
 #}
 
-{# -- State Tax Configuration -- #}
+{% if tax_years %}
+<p class="text-muted small mb-3">
+  These are the published figures every paycheck and the Taxes tab are priced on.
+  The newest tax year in the app is {{ tax_years[0].tax_year }}; a later year is
+  priced on its figures until that year's are added in an app release.
+</p>
+{% endif %}
+
+{# -- State Tax -- #}
 <div class="card mb-4">
   <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-geo-alt"></i> State Tax Configuration</h6>
+    <h6 class="mb-0"><i class="bi bi-geo-alt"></i> State Tax</h6>
   </div>
   <div class="card-body">
-    {% if state_configs %}
-    <table class="table table-sm table-bordered mb-3 mw-px-600">
+    <table class="table table-sm table-bordered mb-0 mw-px-700">
       <thead>
         <tr>
           <th>Year</th>
@@ -28,65 +33,33 @@
         </tr>
       </thead>
       <tbody>
-        {% for sc in state_configs %}
+        {% for year in tax_years %}
+        {% for state_code, state in year.states.items() %}
         <tr>
-          <td>{{ sc.tax_year }}</td>
-          <td>{{ sc.state_code }}</td>
-          <td>{{ sc.tax_type.name|title if sc.tax_type else '--' }}</td>
-          <td>{{ "%.2f"|format((sc.flat_rate|to_percent)) if sc.flat_rate is not none else '--' }}%</td>
-          <td>{{ money(sc.standard_deduction, cents=false) if sc.standard_deduction is not none else '--' }}</td>
+          <td>{{ year.tax_year }}</td>
+          <td>{{ state_code }}</td>
+          <td>{{ state.tax_type.value|title }}</td>
+          <td>{{ "%.2f"|format((state.flat_rate|to_percent)) if state.flat_rate is not none else '--' }}%</td>
+          <td>
+            {% for status, deduction in state.standard_deduction.items() %}
+            <div>{{ status.value|replace('_', ' ')|title }}: {{ money(deduction, cents=false) }}</div>
+            {% endfor %}
+          </td>
         </tr>
+        {% endfor %}
         {% endfor %}
       </tbody>
     </table>
-    {% endif %}
-
-    <h6>{{ 'Update' if state_configs else 'Add' }} State Tax</h6>
-    <form method="POST" action="{{ url_for('salary.update_tax_config') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end mw-px-700">
-        <div class="col">
-          <label class="form-label" for="state_tax_year">Year</label>
-          <input type="number" id="state_tax_year" name="tax_year" class="form-control form-control-sm"
-                 required value="{{ state_configs[0].tax_year if state_configs else '' }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="state_code">State</label>
-          <input type="text" id="state_code" name="state_code" class="form-control form-control-sm text-uppercase"
-                 maxlength="2" required
-                 value="{{ state_configs[0].state_code if state_configs else '' }}"
-                 placeholder="NC">
-        </div>
-        <div class="col">
-          <label class="form-label" for="state_flat_rate">Flat Rate %</label>
-          <input type="number" step="0.01" id="state_flat_rate" name="flat_rate"
-                 class="form-control form-control-sm" required
-                 value="{{ "%.2f"|format((state_configs[0].flat_rate|to_percent)) if state_configs and state_configs[0].flat_rate is not none else '' }}"
-                 placeholder="e.g. 3.99">
-        </div>
-        <div class="col">
-          <label class="form-label" for="state_standard_deduction">Std. Deduction</label>
-          <input type="number" step="0.01" id="state_standard_deduction" name="standard_deduction"
-                 class="form-control form-control-sm"
-                 value="{{ state_configs[0].standard_deduction if state_configs and state_configs[0].standard_deduction is not none else '' }}"
-                 placeholder="e.g. 12750">
-        </div>
-        <div class="col">
-          <button type="submit" class="btn btn-sm btn-primary">Save</button>
-        </div>
-      </div>
-    </form>
   </div>
 </div>
 
-{# -- FICA Configuration -- #}
+{# -- FICA -- #}
 <div class="card mb-4">
   <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-shield-check"></i> FICA Configuration</h6>
+    <h6 class="mb-0"><i class="bi bi-shield-check"></i> FICA</h6>
   </div>
   <div class="card-body">
-    {% if fica_configs %}
-    <table class="table table-sm table-bordered mw-px-700">
+    <table class="table table-sm table-bordered mb-0 mw-px-700">
       <thead>
         <tr>
           <th>Year</th>
@@ -98,62 +71,18 @@
         </tr>
       </thead>
       <tbody>
-        {% for fc in fica_configs %}
+        {% for year in tax_years %}
         <tr>
-          <td>{{ fc.tax_year }}</td>
-          <td>{{ "%.2f"|format((fc.ss_rate|to_percent)) }}%</td>
-          <td>{{ money(fc.ss_wage_base, cents=false) }}</td>
-          <td>{{ "%.2f"|format((fc.medicare_rate|to_percent)) }}%</td>
-          <td>{{ "%.2f"|format((fc.medicare_surtax_rate|to_percent)) }}%</td>
-          <td>{{ money(fc.medicare_surtax_threshold, cents=false) }}</td>
+          <td>{{ year.tax_year }}</td>
+          <td>{{ "%.2f"|format((year.fica.ss_rate|to_percent)) }}%</td>
+          <td>{{ money(year.fica.ss_wage_base, cents=false) }}</td>
+          <td>{{ "%.2f"|format((year.fica.medicare_rate|to_percent)) }}%</td>
+          <td>{{ "%.2f"|format((year.fica.medicare_surtax_rate|to_percent)) }}%</td>
+          <td>{{ money(year.fica.medicare_surtax_threshold, cents=false) }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-
-    <hr>
-    <h6>Update FICA</h6>
-    <form method="POST" action="{{ url_for('salary.update_fica_config') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-2 align-items-end mw-px-700">
-        <div class="col">
-          <label class="form-label" for="fica_tax_year">Year</label>
-          <input type="number" id="fica_tax_year" name="tax_year" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].tax_year if fica_configs else 2025 }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="fica_ss_rate">SS Rate %</label>
-          <input type="number" step="0.01" id="fica_ss_rate" name="ss_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].ss_rate|to_percent)) if fica_configs else '6.20' }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="fica_ss_wage_base">SS Wage Base</label>
-          <input type="number" step="0.01" id="fica_ss_wage_base" name="ss_wage_base" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].ss_wage_base if fica_configs else '184500' }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="fica_medicare_rate">Medicare %</label>
-          <input type="number" step="0.01" id="fica_medicare_rate" name="medicare_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].medicare_rate|to_percent)) if fica_configs else '1.45' }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="fica_medicare_surtax_rate">Surtax %</label>
-          <input type="number" step="0.01" id="fica_medicare_surtax_rate" name="medicare_surtax_rate" class="form-control form-control-sm"
-                 required value="{{ "%.2f"|format((fica_configs[0].medicare_surtax_rate|to_percent)) if fica_configs else '0.90' }}">
-        </div>
-        <div class="col">
-          <label class="form-label" for="fica_medicare_surtax_threshold">Threshold</label>
-          <input type="number" step="0.01" id="fica_medicare_surtax_threshold" name="medicare_surtax_threshold" class="form-control form-control-sm"
-                 required value="{{ fica_configs[0].medicare_surtax_threshold if fica_configs else '200000' }}">
-        </div>
-        <div class="col">
-          <button type="submit" class="btn btn-sm btn-primary">Save</button>
-        </div>
-      </div>
-    </form>
-    {% else %}
-    <p class="text-muted">No FICA configuration. Run the seed script to populate.</p>
-    {% endif %}
   </div>
 </div>
 
@@ -169,28 +98,27 @@
   </div>
   <div class="collapse" id="federal-brackets-collapse">
     <div class="card-body">
-      {% if bracket_sets %}
-      {% for group in bracket_sets|groupby('tax_year')|reverse %}
+      {% for year in tax_years %}
       <div class="{{ 'mb-4' if not loop.last else '' }}">
         <h6 class="border-bottom pb-1 mb-2">
           <button class="btn btn-sm btn-link text-decoration-none p-0" type="button"
                   data-bs-toggle="collapse"
-                  data-bs-target="#federal-brackets-{{ group.grouper }}"
+                  data-bs-target="#federal-brackets-{{ year.tax_year }}"
                   aria-expanded="{{ 'true' if loop.first else 'false' }}"
-                  aria-controls="federal-brackets-{{ group.grouper }}">
-            <i class="bi bi-chevron-down me-1"></i>{{ group.grouper }}
+                  aria-controls="federal-brackets-{{ year.tax_year }}">
+            <i class="bi bi-chevron-down me-1"></i>{{ year.tax_year }}
           </button>
         </h6>
-        <div class="{{ 'collapse show' if loop.first else 'collapse' }}" id="federal-brackets-{{ group.grouper }}">
-          {% for bs in group.list %}
+        <div class="{{ 'collapse show' if loop.first else 'collapse' }}" id="federal-brackets-{{ year.tax_year }}">
+          {% for status, rules in year.federal.items() %}
           <div class="mb-3">
             <h6>
-              {{ bs.filing_status.name|replace('_', ' ')|title }}
-              <small class="text-muted">(Std. Deduction: {{ money(bs.standard_deduction) }})</small>
+              {{ status.value|replace('_', ' ')|title }}
+              <small class="text-muted">(Std. Deduction: {{ money(rules.standard_deduction) }})</small>
             </h6>
             <div class="mb-2 small">
-              <span class="text-muted">Child Credit:</span> {{ money(bs.child_credit_amount) }}
-              <span class="ms-3 text-muted">Other Dependent Credit:</span> {{ money(bs.other_dependent_credit_amount) }}
+              <span class="text-muted">Child Credit:</span> {{ money(rules.child_credit_amount) }}
+              <span class="ms-3 text-muted">Other Dependent Credit:</span> {{ money(rules.other_dependent_credit_amount) }}
             </div>
             <table class="table table-sm table-bordered mb-2 mw-px-500">
               <thead>
@@ -201,10 +129,10 @@
                 </tr>
               </thead>
               <tbody>
-                {% for b in bs.brackets|sort(attribute='sort_order') %}
+                {% for b in rules.brackets %}
                 <tr>
                   <td>{{ money(b.min_income, cents=false) }}</td>
-                  <td>{{ money(b.max_income, cents=false) if b.max_income else 'No limit' }}</td>
+                  <td>{{ money(b.max_income, cents=false) if b.max_income is not none else 'No limit' }}</td>
                   <td>{{ "%.1f"|format((b.rate|to_percent)) }}%</td>
                 </tr>
                 {% endfor %}
@@ -215,9 +143,23 @@
         </div>
       </div>
       {% endfor %}
-      {% else %}
-      <p class="text-muted">No federal brackets configured. Run the seed script to populate.</p>
-      {% endif %}
     </div>
+  </div>
+</div>
+
+{# -- Sources -- #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-journal-text"></i> Sources</h6>
+  </div>
+  <div class="card-body">
+    {% for year in tax_years %}
+    <h6 class="{{ 'mt-3' if not loop.first else '' }}">{{ year.tax_year }}</h6>
+    <ul class="small mb-0">
+      {% for source in year.sources %}
+      <li>{{ source }}</li>
+      {% endfor %}
+    </ul>
+    {% endfor %}
   </div>
 </div>

@@ -27,6 +27,7 @@ from app.enums import (
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
+    FilingStatusEnum,
     PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     GoalModeEnum,
@@ -388,6 +389,32 @@ def tax_type_id(member):
     """Return the integer primary key for a TaxTypeEnum member."""
     require_init()
     return cache().enum_ids[TaxTypeEnum][member]
+
+
+def filing_status_member(filing_status_id):
+    """Return the FilingStatusEnum member a stored ``filing_status_id`` names.
+
+    The tax law (:mod:`app.tax_law`, ruling **salary:R-SAL74**) is keyed on
+    :class:`~app.enums.FilingStatusEnum` members, and a salary profile stores
+    ``salary.salary_profiles.filing_status_id``; this is the one step between
+    them, so no reader builds a member out of the ref row's ``name``.
+
+    It answers ``None`` rather than raising, for the reason
+    :func:`acct_category_member` gives: ``init`` requires the four member rows
+    and does not forbid others, so an id this application does not model is a
+    state the schema permits, and the caller decides what that means.
+
+    Args:
+        filing_status_id: A ``ref.filing_statuses`` primary key.
+
+    Returns:
+        The member, or ``None`` for an id the cache does not hold.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    require_init()
+    return cache().enum_members[FilingStatusEnum].get(filing_status_id)
 
 
 def raise_type_id(member):
