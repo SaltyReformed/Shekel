@@ -8,10 +8,10 @@ wrote a row.  This module is about what changed and what must not have.
 **The three properties that carry the money risk:**
 
 1. **Isolation.**  A refused item leaves NOTHING behind and the rest still
-   land.  Measured on the developer's own data, 5 of 124 proposals refuse
-   today and will keep refusing (a settled credit-card payback whose derived
-   figure has drifted), so a pass that failed whole would lose 119 good
-   corrections to one divergence.
+   land.  On the developer's own statement (2026-08-19) a few proposals were
+   refused -- a settled credit-card payback whose derived figure had drifted
+   -- so a pass that failed whole would have lost every good correction to
+   one divergence.
 2. **Freshness.**  One derivation serves the whole pass, so an item must not be
    handed a row or an envelope an EARLIER item in the same pass has claimed.
    That is what :func:`~app.services.statement_match.matched_subjects` being
@@ -19,9 +19,9 @@ wrote a row.  This module is about what changed and what must not have.
 3. **Failing loud.**  A ``PostingError`` is a broken ledger invariant rather
    than one item's refusal, so it takes the whole request down.
 
-**What the collision cases here fix in place is a REAL number**: 4 envelopes on
-the developer's own statement are both named by a proposal and offered as a
-destination, so 15 of the 91 creatable lines aim at one.
+**What the collision cases here fix in place is a REAL case**: on the
+developer's own statement some envelopes are both named by a proposal and
+offered as a destination, so some of the creatable lines aim at one.
 """
 
 from datetime import timedelta
@@ -270,8 +270,9 @@ class TestARefusedItemDoesNotCostTheOthers:
         """A match can refuse AFTER it has already moved one of its members.
 
         The accept door applies each member in turn, and a settle verb can
-        refuse on the second -- which is exactly the developer's own 5 refusing
-        proposals, where a settled credit-card payback cannot be re-derived.
+        refuse on the second -- which is exactly the refusal the developer's
+        own statement met, where a settled credit-card payback cannot be
+        re-derived.
         Here the shape is narrower and buildable: a purchase whose recorded day
         the bank's stated day would move PAST the day the bank posted, which
         ``entry_service.update_entry`` refuses because money cannot clear
