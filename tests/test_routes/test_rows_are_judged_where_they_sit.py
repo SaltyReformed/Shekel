@@ -35,7 +35,7 @@ from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
-from app.services import definition_unarchive, status_seam
+from app.services import definition_unarchive, planned_rows_books, status_seam
 from app.services.balance_at import BalanceContext
 from app.services.definition_unarchive import (
     books_reading,
@@ -52,6 +52,7 @@ from app.services.planned_rows_books import (
     definition_edit_refusal,
     reject_revert_below_the_books,
 )
+from app.services.recurrence import RecurrenceResolutionError
 from app.services.recurring_definition import resolved_rule_of
 from tests.test_routes.test_a_revert_below_the_books import _projected
 from tests.test_routes.test_an_orphan_is_judged_by_its_own_day import (
@@ -66,7 +67,10 @@ from tests.test_routes.test_archived_rows_bound_the_books import (
     _restate_directly,
     _transfers,
 )
-from tests.test_routes.test_definition_edit_strands_no_row import _account_opened_on
+from tests.test_routes.test_definition_edit_strands_no_row import (
+    _a_save_made_today,
+    _account_opened_on,
+)
 from tests.test_services.test_opening_restatement_planned_rows import (
     _ONE_DAY,
     _account_opened_early,
@@ -154,6 +158,71 @@ class TestTheOldAccountsRestatement:
 
             assert outcome is OpeningRestatementOutcome.COMMITTED
 
+    def test_a_moved_off_definitions_rule_is_not_read(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):  # pylint: disable=unused-argument
+        """Asked only where its rows sit, it needs no walk (the round-7 review's L2).
+
+        No door writes an unreadable rule, so one is forced for the
+        definition that moved off.  Restated onto the day before every row
+        left on the old account, the move is committed; read, the rule's
+        error refused it, calling the item one moving money in the account.
+        """
+        with app.app_context():
+            old, rows = _account_with_projected_rows(seed_user, seed_periods)
+            moved_id = rows[0].template_id
+            _moved_to_a_new_account(seed_user, rows[0].template)
+            _db.session.commit()
+            real = planned_rows_books.recurrence_spec
+
+            def unreadable_for_the_moved(rule):
+                if rule.transaction_template_id == moved_id:
+                    raise RecurrenceResolutionError("forced: no door writes it")
+                return real(rule)
+
+            monkeypatch.setattr(
+                planned_rows_books, "recurrence_spec", unreadable_for_the_moved,
+            )
+
+            outcome = apply_opening_restatement(
+                account=_fresh(old),
+                opening=BooksOpening(
+                    min(row.due_date for row in rows) - _ONE_DAY, Decimal("0.00"),
+                ),
+            )
+
+            assert outcome is OpeningRestatementOutcome.COMMITTED
+
+    def test_a_hidden_row_its_schedule_drops_names_no_pass(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """No pass reaches a hidden row (the round-7 review's L1): the sentence stops at its schedule.
+
+        Its unarchive, not a pass, is what would find it -- and would leave
+        it deleted once these books drop it.
+        """
+        with app.app_context():
+            template_id, _old, (first, _second) = _archived_then_moved(
+                auth_client, seed_user, seed_periods,
+            )
+            new = _moved_to_a_new_account(seed_user, _fresh_template(template_id))
+            _db.session.commit()
+            day = first.due_date.isoformat()
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=_fresh(new),
+                    opening=BooksOpening(first.due_date, Decimal("0.00")),
+                )
+
+            assert str(refused.value) == (
+                f'These books cannot open on {day}: the recurring "Recurring '
+                f'rent" is archived and still holds an unpaid item due {day} '
+                "that unarchiving would bring back.  Its schedule would stop "
+                'producing that unpaid item.  Unarchive "Recurring rent", mark '
+                "that item paid or cancel it, then restate the books."
+            )
+
 
     def test_a_row_another_accounts_books_hold_does_not_block_this_one(
         self, app, db, seed_user, seed_periods,
@@ -196,6 +265,7 @@ class TestTheEditDoor:
 
             refusal = definition_edit_refusal(
                 template, BalanceContext.build(seed_user["user"].id), None,
+                _a_save_made_today(),
             )
 
             assert refusal == (
@@ -225,6 +295,7 @@ class TestTheEditDoor:
 
             assert definition_edit_refusal(
                 template, BalanceContext.build(seed_user["user"].id), None,
+                _a_save_made_today(),
             ) is None
 
 
@@ -265,7 +336,14 @@ class TestTheRevert:
 
 
 class TestTheUnarchive:
-    """Hidden rows left on the old account, named by the books that hold each (R-PC99)."""
+    """Hidden rows left on the old account, named by the books that hold each (R-PC99).
+
+    Staged directly.  Through the doors this state arises only from rows
+    the owner DELETED by hand while the definition was active -- no refusal
+    counts a deleted row -- then the move, the old account's restatement,
+    the archive and the unarchive, which cannot tell a hand delete from the
+    archive's hide (ledger row REC-536).
+    """
 
     def test_rows_inside_the_old_accounts_books_stay_deleted_and_are_named(
         self, app, auth_client, db, seed_user, seed_periods,

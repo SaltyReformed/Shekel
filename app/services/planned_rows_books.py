@@ -26,60 +26,46 @@ refuse the save until they have:
   transfer-template edit routes AFTER the edit is applied, so it reads the
   state the save would leave.
 
-**A row the books already drop may not become unpaid again** (ruling
-**R-PC97**, developer 2026-09-23, the round-4 review's H2).  Another way a
-still-Projected row comes to answer an occurrence below the books is the
-REVERSE move: a paid, received, credited or cancelled row set back to
-Projected, which the database's books boundary cannot see (its movement
-trigger watches a row only while it carries a settle day, and a revert
-clears it) and which no door above asked about.  Measured: a cancelled row
+**A row the books already hold may not become unpaid again** (ruling
+**R-PC97**, developer 2026-09-23, the round-4 review's H2): a paid, received,
+credited or cancelled row set back to Projected, which the database's books
+boundary cannot see (its movement trigger watches a row only while it
+carries a settle day, and a revert clears it).  Measured: a cancelled row
 reverted onto its books day took $10.00 off the forecast (-90.00 ->
--100.00), and such a row is one the maintain pass deletes without a word
-once a pass reaches its paycheck (plan step R10-a).  Round 9's door census
-found this and the conflict chooser (below) as the doors left for a
-recurring row; a census, not an argument, so a new writer is not covered by
-it.  :func:`reject_revert_below_the_books` asks the same
-walk the doors above ask, and the status seam refuses a revert it answers
-(``status_seam.apply_status_change`` for a transaction,
-``transfer_service.apply_status_to_all_three`` for a transfer, each row
-type's one status door).  **A stopgap by design**: plan step
-``recurrence:R22`` designs the model under which no unpaid copy is stored, so
-a revert only deletes a record and there is nothing to refuse.
+-100.00).  Round 9's door census found this and the conflict chooser (below)
+as the doors left for a recurring row -- a census, not an argument, so a new
+writer is not covered by it.  :func:`reject_revert_below_the_books` asks the
+two questions the doors above ask, and each row type's one status door
+refuses a revert it answers (``status_seam.apply_status_change``,
+``transfer_service.apply_status_to_all_three``).  **A stopgap by design**:
+plan step ``recurrence:R22`` designs the model under which no unpaid copy is
+stored, so a revert only deletes a record and there is nothing to refuse.
 
 **An ARCHIVED definition's hidden rows count** (ruling **R-PC93**, developer
-2026-09-23).  Archiving hides a definition's still-Projected rows and
-unarchiving brings them back, so a books move made while it was archived used
-to see nothing to strand -- and the unarchive then restored rows inside the
-opening, a transfer's deleting the current paycheck's row in its maintain
-pass (the round-2 review's H-B).  Both doors now count, for an archived
-definition, the rows its unarchive would restore as it STANDS, before the
-save being graded (:class:`~app.services.definition_unarchive.UnarchiveScope`,
-the scope the unarchive routes restore by), and the refusal names such a row
-as the archived definition's with the remedy that reaches it: unarchive it
-first.  **The unarchive checks too** (ruling **R-PC95**, which revises
-R-PC93's "it needs no check of its own"): a hand delete of a recurring row is
-a soft delete indistinguishable from the archive's, so a row its owner deleted
-while the definition was active, and which the books have since passed, would
-otherwise come back inside the opening -- it stays deleted, and the unarchive
-says so.  The scope leaves such a row out, so the refusal never names a row
-the unarchive would not restore.  **Two ways back are not covered**: an
+2026-09-23; the round-2 review's H-B: a books move made while it was
+archived saw nothing to strand, and the unarchive then restored rows inside
+the opening).  Both doors count the rows its unarchive would restore as it
+STANDS, before the save being graded
+(:class:`~app.services.definition_unarchive.UnarchiveScope`, the scope the
+unarchive routes restore by), and name such a row as the archived
+definition's, with the remedy that reaches it.  The unarchive leaves
+deleted, and names, a row the books already drop or hold (ruling
+**R-PC95**), so the refusal never names a row it would not restore.  **Not covered**: an
 unarchive still restores a row deleted by hand ABOVE the books, and the
 conflict chooser's "use the template" un-deletes one without asking the walk
-(ledger rows **REC-536** and **REC-535**, the recurrence arc's, both closed
-by plan step ``recurrence:R22``).  **Neither are rows added by hand** -- a
-rule-less definition's rows and link-less ones: no door bounds them by the
-books at all (ledger row **PC-519**).
+(ledger rows **REC-536** and **REC-535**, closed by plan step
+``recurrence:R22``); rows added by hand -- a rule-less definition's and
+link-less ones -- are bounded by no door (ledger row **PC-519**).
 
 **Two questions per planned row, and either one refuses** (ruling **R-PC99**,
 developer 2026-09-23, the round-6 review's H1).
 
-*Does its schedule drop it?*  The WALK decides, never a stored day (the
-adversarial review of this step, finding H1).
-:func:`first_row_below_the_books` asks
-:func:`~app.services.definition_unarchive.books_reading` which occurrences
-the books drop from the walk the save would leave, and matches a row to the
-occurrence it answers by ``occurs_on`` -- the key the maintain pass itself
-matches by -- so a door refuses exactly the rows the pass would stop naming.
+*Does its schedule drop it?*  The WALK decides, never a stored day (this
+step's first review, H1): :func:`~app.services.definition_unarchive
+.books_reading` names the occurrences the books drop from the walk the save
+would leave, and a row is matched to its occurrence by ``occurs_on``, the
+key the maintain pass matches by, so a door refuses exactly the rows the
+pass would stop naming.
 Reading a row's STORED due day instead let a save through that strands one:
 the regeneration re-dates every still-named row by the NEW rule, so clearing
 a bill's due day moves its cash day back onto its scheduled day, inside the
@@ -103,12 +89,11 @@ of the account it sits on rather than its definition's: a definition's
 account move leaves the rows of paychecks that had already ended on the
 account it left, and that account's restatement past them committed with
 ``-$100.00`` in the forecast where the books rule gives ``-$80.00``
-(measured, orphans and named rows alike).  Each door asks it -- the opening
-and edit doors through :func:`first_row_below_the_books`, the revert through
-:func:`reject_revert_below_the_books`, as the unarchive does -- and the
-refusal names the books it asked of: a row its schedule would drop without
-sitting inside the books that drop it is refused for the pass that would
-delete it, never described as sitting inside them.
+(measured, orphans and named rows alike).  Every door asks it -- an edit
+door of each row as the save LEAVES it, its regeneration applied (the
+round-7 review's M1) -- and the refusal names the books it asked of: a row
+its schedule would drop without sitting inside the books that drop it is
+refused for the pass that would delete it, never as sitting inside them.
 
 **An OVERRIDDEN row is refused over too.**  The pass keeps a row the owner
 re-priced as a conflict rather than retiring it, but the conflict chooser's
@@ -153,6 +138,7 @@ from app.services.definition_unarchive import (
     unarchive_scope,
     unarchive_scope_on,
 )
+from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
     RecurrenceGenerationError,
@@ -172,8 +158,9 @@ class BooksHolding(NamedTuple):
     Attributes:
         opened_on: Those books' opening day.
         holder: What they are read off, for :meth:`StrandedRow.books`: the
-            ROW when the books of the account it sits on hold its own day,
-            else its definition, whose walk drops it.
+            ROW when the books of the account it sits on hold its own day --
+            as an edit's regeneration rewrites it, where it does -- else its
+            definition, whose walk drops it.
         sits_inside: Whether it sits on those books: ``False`` for a row its
             schedule would drop although it sits on another account -- one
             its definition left behind by an account move -- which is
@@ -275,13 +262,15 @@ class StrandedRow:
             that unpaid item, so the next pass to reach it would delete it
             without a word`` -- the developer's reason such a row still
             blocks the move; that pass is the save's own regeneration for a
-            row in its paycheck window, a later one for a row before it.
+            row in its paycheck window, a later one for a row before it.  No
+            pass reaches a HIDDEN row (the round-7 review's L1): its sentence
+            stops at its schedule.
         """
         if self.holding is not None and not self.holding.sits_inside:
-            return (
-                "Its schedule would stop producing that unpaid item, so the "
-                "next pass to reach it would delete it without a word."
+            then = "" if self.is_hidden else (
+                ", so the next pass to reach it would delete it without a word"
             )
+            return f"Its schedule would stop producing that unpaid item{then}."
         tail = " and stop being planned" if self.dropped else ""
         return (
             "An opening is the balance at the END of its day, so that unpaid "
@@ -307,8 +296,12 @@ class DefinitionWalk:
     """One recurring definition as a save would leave it.
 
     Attributes:
-        resolved: The definition's recurrence, carrying the books floor and
-            the envelope flag the save would leave.
+        resolved: The definition's recurrence, carrying the books floor the
+            save would leave -- or ``None`` for a definition a restatement
+            reaches only through the rows it left ON the account (ruling
+            **R-PC99**): its walk is bounded by other accounts' books, which
+            the restatement does not move, so only where its rows sit is
+            asked, and no rule is read (the round-7 review's L2).
         definition: The
             :class:`~app.models.transaction_template.TransactionTemplate` or
             :class:`~app.models.transfer_template.TransferTemplate` itself --
@@ -320,18 +313,31 @@ class DefinitionWalk:
             ``None`` for an active definition, which has none.  No
             default: a walk built without asking would count no hidden row,
             which is the round-2 review's H-B.
-        asks_schedule: Whether the door asks its schedule which occurrences
-            its books drop.  ``False`` only for a definition a restatement
-            reaches through the rows it left ON the account (ruling
-            **R-PC99**): its walk is bounded by other accounts' books, which
-            the restatement does not move, so only where its rows sit is
-            asked.
+        save_pass: At an edit door, what the save's own regeneration does
+            to the definition's rows
+            (:class:`~app.services.recurrence_engine.RegenerationPreview`);
+            ``None`` where it regenerates nothing, every row asked as stored.
     """
 
-    resolved: ResolvedRecurrence
+    resolved: ResolvedRecurrence | None
     definition: TransactionTemplate | TransferTemplate
     restorable: UnarchiveScope | None
-    asks_schedule: bool = True
+    save_pass: object | None = None
+
+
+class SaveRegeneration(NamedTuple):
+    """How an edit's save regenerates its definition's rows.
+
+    Handed in by the edit door: this module cannot import the transfer
+    engine, which imports the two status doors that import it.
+
+    Attributes:
+        preview_fn: The engine's ``preview_regeneration_for_template``.
+        effective_from: The date the save's regeneration maintains from.
+    """
+
+    preview_fn: object
+    effective_from: date
 
 
 def first_row_below_the_books(
@@ -402,7 +408,7 @@ def first_row_below_the_books(
     return StrandedRow(
         name=first.walk.definition.name if first.is_hidden else first.name,
         books_day=first.books_day,
-        is_envelope=first.walk.resolved.is_envelope,
+        is_envelope=definition_books(first.walk.definition, memo).is_envelope,
         is_hidden=first.is_hidden,
         holding=first.holding,
         dropped=first.dropped,
@@ -444,25 +450,37 @@ def _stranded_by(
         row the books it sits on hold is named by its own day and those
         books; one only its schedule drops, by the walk's day and the
         definition's books, and as sitting inside them only when it sits on
-        the definition's own accounts.
+        the definition's own accounts.  At an edit door the second question
+        asks each row as the save LEAVES it (the round-7 review's M1): one
+        its regeneration rewrites as rewritten, one it deletes not at all
+        (the first question still asks that one: R-PC90's loss).
     """
     table_order, model, template_fk = rows_of(walk.definition)
     planned = _planned_rows(model, template_fk, walk)
     dropped = (
-        _dropped_rows(calendar, walk, model, planned)
-        if walk.asks_schedule else {}
+        {} if walk.resolved is None
+        else _dropped_rows(calendar, walk, model, planned)
+    )
+    rewrites, retires = (
+        ({}, frozenset()) if walk.save_pass is None
+        else (walk.save_pass.rewrites, walk.save_pass.retires)
     )
     held = rows_held_where_they_sit(
         walk.definition,
-        (*planned, model.occurs_on.isnot(None), *_sitting(model, sitting_on)),
-        calendar, memo,
+        (
+            *planned, model.occurs_on.isnot(None),
+            *_sitting(model, sitting_on),
+            *((model.id.notin_(list(retires)),) if retires else ()),
+        ),
+        calendar, memo, rewrites=rewrites,
     )
     its_accounts = set(definition_money_accounts(walk.definition))
     return [
         *(
             _Candidate(
                 own.day, table_order, row_id, row.name, row.is_deleted, walk,
-                BooksHolding(own.opened_on, row, True), row_id in dropped,
+                BooksHolding(own.opened_on, rewrites.get(row_id, row), True),
+                row_id in dropped,
             )
             for row_id, (own, row) in held.items()
         ),
@@ -592,15 +610,30 @@ def restorable_before_the_edit(
     """
     if template.is_active:
         return None
+    return _scope_or_every_hidden_row(
+        template, lambda: unarchive_scope_on(template, ctx),
+    )
+
+
+def _scope_or_every_hidden_row(definition, scope_of) -> UnarchiveScope:
+    """Return ``scope_of()``, or every hidden row when the rule cannot be walked.
+
+    Args:
+        definition: The archived transaction or transfer template.
+        scope_of: Reads its :class:`UnarchiveScope` through a walk.
+
+    Returns:
+        The scope, or :func:`scope_holding_nothing_back`'s.
+    """
     try:
-        return unarchive_scope_on(template, ctx)
+        return scope_of()
     except (RecurrenceResolutionError, RecurrenceGenerationError):
         logger.warning(
             "Counting every hidden row of archived %s %d: its stored "
             "recurrence rule cannot be walked.",
-            type(template).__name__, template.id, exc_info=True,
+            type(definition).__name__, definition.id, exc_info=True,
         )
-        return scope_holding_nothing_back(template)
+        return scope_holding_nothing_back(definition)
 
 
 def first_row_an_opening_strands(
@@ -620,19 +653,16 @@ def first_row_an_opening_strands(
     (:func:`~app.services.balance_at.definition_books`, the candidate
     standing in for this account's own), composed by the ONE composition
     (:func:`~app.services.balance_at.resolved_with_books`).  That walk is
-    asked after the definition's OWN rows, wherever they sit: a row left on
-    an account the definition has since moved off keeps its occurrence in
-    the definition's walk, which a later pass drops it from.  And every row
+    asked after the definition's OWN rows, wherever they sit.  And every row
     SITTING ON the account is asked whether the candidate books hold its own
-    day (ruling **R-PC99**) -- a definition that moved off it included,
-    whose rows of paychecks that had already ended stayed behind: the
-    balance counts them here.  An archived definition's restorable rows are
-    read off the SAME composition over the books as they stand (ruling
-    **R-PC95**): a row those already drop stays deleted when it is
-    unarchived, so this move cannot strand it.
-
-    A rule-less definition is not asked: no walk names its rows, and ruling
-    **R-PC96** judges them at the unarchive alone.
+    day (ruling **R-PC99**), a definition that moved off it included: its
+    rows of paychecks that had already ended stayed here, and the balance
+    counts them here.  Such a definition's rule is NOT read (the round-7
+    review's L2): nothing it could say bounds rows by this account's books.
+    An archived definition's restorable rows are read off the SAME
+    composition over the books as they stand (ruling **R-PC95**), or every
+    hidden row where its rule cannot be walked.  A rule-less definition is
+    not asked (ruling **R-PC96** judges its rows at the unarchive alone).
 
     Args:
         account_id: The account whose books would open on *opened_on*.
@@ -644,11 +674,10 @@ def first_row_an_opening_strands(
         The earliest stranded row, or ``None``.
 
     Raises:
-        RecurrenceResolutionError: A definition's stored rule cannot be
-            resolved (:func:`~app.services.recurrence.resolved_spec`).
+        RecurrenceResolutionError: The stored rule of a definition moving
+            money in the account cannot be resolved.
         RecurrenceGenerationError: Its resolved value names something the
-            walk cannot place (:func:`~app.services.recurrence
-            .occurrence_walk`).
+            walk cannot place.
     """
     # ONE memo for every definition and every row, holding the candidate:
     # the other accounts are read once each, as they stand, and this one as
@@ -658,24 +687,28 @@ def first_row_an_opening_strands(
     standing_memo: dict = {}
     walks = []
     for definition, moves_money_in in _recurring_definitions_bounding(account_id):
-        spec = recurrence_spec(definition.recurrence_rule)
-        resolved = resolved_with_books(
-            spec, calendar, definition_books(definition, memo),
-        )
-        if resolved is None:
-            continue
+        resolved = None
+        if moves_money_in:
+            resolved = resolved_with_books(
+                recurrence_spec(definition.recurrence_rule), calendar,
+                definition_books(definition, memo),
+            )
+            if resolved is None:
+                continue
         restorable = None
         if not definition.is_active:
-            restorable = unarchive_scope(
+            restorable = _scope_or_every_hidden_row(
                 definition,
-                resolved_with_books(
-                    spec, calendar, definition_books(definition, standing_memo),
+                lambda held=definition: unarchive_scope(
+                    held,
+                    resolved_with_books(
+                        recurrence_spec(held.recurrence_rule), calendar,
+                        definition_books(held, standing_memo),
+                    ),
+                    calendar,
                 ),
-                calendar,
             )
-        walks.append(DefinitionWalk(
-            resolved, definition, restorable, asks_schedule=moves_money_in,
-        ))
+        walks.append(DefinitionWalk(resolved, definition, restorable))
     return first_row_below_the_books(
         calendar, walks, books_memo=memo, sitting_on=account_id,
     )
@@ -729,7 +762,7 @@ def _recurring_definitions_bounding(account_id: int) -> list:
 
 
 def reject_revert_below_the_books(row, new_status_id: int) -> None:
-    """Refuse setting *row* back to Projected when its books drop its occurrence.
+    """Refuse setting *row* back to Projected when the books hold it (R-PC97, R-PC99).
 
     **Ruling R-PC97's one refusal** (developer 2026-09-23, the C18-a
     round-4 review's H2), asked by each row type's one status door ahead of
@@ -764,14 +797,11 @@ def reject_revert_below_the_books(row, new_status_id: int) -> None:
     transfer's settle day,
     ``transfer_service._status.apply_settle_day_correction``.)  Production
     held SIX such recurring rows on 2026-09-23, measured by this refusal
-    itself over every settled templated row -- transactions 781, 865 and
-    1069 (due 2026-03-26, settled 2026-03-27), transfer 322 (due 2026-04-22,
-    settled 2026-04-23), transfer 102 (due 2026-03-26, settled 2026-04-06,
-    inside its destination's books of 2026-04-05) and the CANCELLED
-    transaction 788, which cannot be reactivated: its rule places its
-    2026-03-01 occurrence into the paycheck starting 2026-03-26
-    (``PERIOD_STARTING_ON_OR_AFTER``), a compared day inside Checking's
-    books of that day.  **A stopgap by design**: plan step
+    itself over every settled templated row: four transactions (one of them
+    CANCELLED, so it cannot be reactivated) and two transfers, every one
+    held on its own due day by the books of an account it sits on (the
+    rows are named in the lane's records, not here: ruling **R-BAL132**).
+    **A stopgap by design**: plan step
     ``recurrence:R22`` designs the model in which no unpaid copy is stored,
     under which a revert deletes a record and this refuses nothing.
 
@@ -884,6 +914,7 @@ def _revert_sentence(
 
 def definition_edit_refusal(
     template, ctx, restorable: UnarchiveScope | None,
+    regeneration: SaveRegeneration,
 ) -> str | None:
     """Return why saving *template*'s edit would strand a row, or ``None``.
 
@@ -895,11 +926,18 @@ def definition_edit_refusal(
     open later, an envelope box unticked (its rows then compare on their due
     day, not their paycheck's last day), a due day cleared (the row's cash
     day moves back onto its scheduled day), or a row that already sat below
-    its books: one check, on the saved state, so no field has to be
-    remembered.  An ARCHIVED definition's edit counts the rows its unarchive
-    would bring back too (ruling **R-PC93**) -- as it stood BEFORE the edit
-    (*restorable*, :func:`restorable_before_the_edit`), since a row its books
-    already dropped stays deleted when it is unarchived (ruling **R-PC95**).
+    its books: one check, of the state the save LEAVES, so no field has to
+    be remembered.  An ARCHIVED definition's edit counts the rows its
+    unarchive would bring back too (ruling **R-PC93**) -- as it stood BEFORE
+    the edit (*restorable*, :func:`restorable_before_the_edit`), since a row
+    its books already dropped stays deleted when it is unarchived (ruling
+    **R-PC95**).
+
+    **The state the save leaves includes its own regeneration** (the round-7
+    review's M1, :func:`_stranded_by`), read off that pass's OWN decision
+    (*regeneration*'s preview), never a second spelling of its window: the
+    rows asked as stored are exactly those it leaves alone -- paychecks
+    ending before the effective date, other scenarios, its conflicts.
 
     **Asked after the edit is applied and before regeneration**, so the
     rule, the floor and the envelope flag are the save's own, all through
@@ -914,9 +952,13 @@ def definition_edit_refusal(
             :class:`~app.models.transfer_template.TransferTemplate`, its new
             field values and rule applied, not yet committed.
         ctx: The route's read pass
-            (:class:`~app.services.balance_at.BalanceContext`) for the owner.
+            (:class:`~app.services.balance_at.BalanceContext`) for the owner:
+            its baseline scenario and calendar are the ones the save's
+            regeneration runs over (an edit moves no payday).
         restorable: :func:`restorable_before_the_edit`'s answer, asked
             before the edit was applied; ``None`` for an active definition.
+        regeneration: How the save regenerates (:class:`SaveRegeneration`),
+            previewed only once the definition has a rule to walk.
 
     Returns:
         The refusal's sentence, or ``None`` when the save strands nothing --
@@ -926,8 +968,15 @@ def definition_edit_refusal(
     resolved = resolved_rule_of(template, ctx)
     if resolved is None:
         return None
+    save_pass = None
+    if ctx.scenario is not None:
+        save_pass = regeneration.preview_fn(
+            template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
+            effective_from=regeneration.effective_from,
+        )
     row = first_row_below_the_books(
-        ctx.calendar(), (DefinitionWalk(resolved, template, restorable),),
+        ctx.calendar(),
+        (DefinitionWalk(resolved, template, restorable, save_pass=save_pass),),
     )
     if row is None:
         return None
@@ -941,6 +990,7 @@ def definition_edit_refusal(
 
 __all__ = [
     "DefinitionWalk",
+    "SaveRegeneration",
     "StrandedRow",
     "definition_edit_refusal",
     "first_row_an_opening_strands",

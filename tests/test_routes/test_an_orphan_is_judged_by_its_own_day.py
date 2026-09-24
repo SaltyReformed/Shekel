@@ -49,7 +49,10 @@ from tests.test_routes.test_archived_rows_bound_the_books import (
     _fresh,
     _restate_directly,
 )
-from tests.test_routes.test_definition_edit_strands_no_row import _account_opened_on
+from tests.test_routes.test_definition_edit_strands_no_row import (
+    _a_save_made_today,
+    _account_opened_on,
+)
 from tests.test_services.test_opening_restatement_planned_rows import (
     _ONE_DAY,
     _account_opened_early,
@@ -202,6 +205,7 @@ class TestTheEditDoor:
 
             assert definition_edit_refusal(
                 template, BalanceContext.build(seed_user["user"].id), None,
+                _a_save_made_today(),
             ) is None
             assert ordered[1].account_id != later.id
 
@@ -224,6 +228,7 @@ class TestTheEditDoor:
             refusal = definition_edit_refusal(
                 ordered[0].template,
                 BalanceContext.build(seed_user["user"].id), None,
+                _a_save_made_today(),
             )
 
             assert refusal is not None
@@ -249,6 +254,7 @@ class TestTheEditDoor:
             assert definition_edit_refusal(
                 ordered[0].template,
                 BalanceContext.build(seed_user["user"].id), None,
+                _a_save_made_today(),
             ) is None
 
 

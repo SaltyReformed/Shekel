@@ -335,8 +335,8 @@ def books_opening_context(account: Account) -> "dict | None":
     # The fifth (ruling R-PC88), from the one producer the door refuses by --
     # and, like the opening above, a broken invariant costs the card and not
     # the page: a stored rule the recurrence package cannot resolve or walk
-    # (none a door writes) raises there, for ANY definition touching the
-    # account, archived ones included.
+    # (none a door writes) raises there, for any definition moving money in
+    # the account, archived ones included.
     try:
         first_planned = first_row_an_opening_strands(
             account.id, display_today(), calendar_for(account.user_id),

@@ -75,6 +75,7 @@ from app.routes._standing_payment import (
     sync_loan_payment_start_or_refuse,
 )
 from app.routes._transfer_creation_helpers import (
+    TRANSFER_TEMPLATE_KIND,
     flush_template_or_namedup_redirect,
 )
 from app.routes.transfers._bp import transfers_bp
@@ -689,11 +690,17 @@ def _regenerate_and_commit_template(
 
     THEN refuses a save that would STRAND a still-projected transfer of this
     definition -- one answering an occurrence the books drop, the later
-    opening of its two accounts -- whatever field the edit changed (plan
+    opening of its two accounts, or sitting inside the books of the accounts
+    it sits on (ruling **R-PC99**) -- whatever field the edit changed (plan
     step ``pay_calendar:C18-a``, rulings **R-PC90** / **R-PC91**;
     :func:`app.services.planned_rows_books.definition_edit_refusal`), because
-    a maintain pass reaching that transfer retires it -- the one below, for
-    a paycheck ending on or after *effective_from*.  AFTER the sync, because
+    a maintain pass reaching a dropped transfer retires it -- the one below,
+    for a paycheck ending on or after *effective_from* -- and one inside the
+    books is counted twice.  The regeneration below is part of the state
+    the save leaves, so the refusal reads that pass's own preview
+    (:data:`~app.routes._transfer_creation_helpers.TRANSFER_TEMPLATE_KIND`'s
+    ``preview_fn``) and asks a transfer it rewrites where the rewrite moves
+    it (the round-7 review's M1).  AFTER the sync, because
     the sync can move the rule's first occurrence, and that moves which
     occurrences the save would leave: graded before it, the refusal would
     read a rule the save does not keep.  A refusal rolls the whole pending
@@ -741,6 +748,7 @@ def _regenerate_and_commit_template(
         template.to_account_id, redirect=edit_form, rows_follow=False,
     ) or refuse_stranding_save(
         template, stranding, edit_form,
+        kind=TRANSFER_TEMPLATE_KIND, effective_from=effective_from,
     )
     if refused is not None:
         return refused

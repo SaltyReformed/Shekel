@@ -43,6 +43,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import make_cadence_rule, state_template_price
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 from tests.test_routes.test_definition_edit_strands_no_row import (
+    _a_save_made_today,
     _transaction_update_payload,
     _transfer_template_with_rows,
     _transfer_update_payload,
@@ -186,7 +187,7 @@ class TestATransactionDefinitionsHiddenRows:
             template.account_id = later.id
 
             refusal = planned_rows_books.definition_edit_refusal(
-                template, ctx, restorable,
+                template, ctx, restorable, _a_save_made_today(),
             )
 
             assert refusal is not None
@@ -198,7 +199,7 @@ class TestATransactionDefinitionsHiddenRows:
                 template, active_ctx,
             ) is None
             assert planned_rows_books.definition_edit_refusal(
-                template, active_ctx, None,
+                template, active_ctx, None, _a_save_made_today(),
             ) is None, "an active definition's deleted rows are not planned"
 
     def test_the_cards_ceiling_stops_before_the_hidden_row(

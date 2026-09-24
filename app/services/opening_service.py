@@ -319,7 +319,8 @@ def _reject_books_open_on_or_after_planned_rows(
     that moved off the account left the rows of paychecks that had already
     ended on it.  The sentence says what the move does to the row it names:
     sits inside the opening, or -- a row its schedule drops while it sits on
-    another account -- is deleted by the next pass to reach it.
+    another account -- is deleted by the next pass to reach it (a hidden one,
+    which no pass reaches, is named without that clause).
 
     No figure is named: the refusal is about a DAY, so the opening door's
     HELD-figure contract (ruling **R-CC52**) is untouched.

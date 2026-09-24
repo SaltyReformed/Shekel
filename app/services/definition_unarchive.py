@@ -294,7 +294,9 @@ def books_reading(
     })
 
 
-def own_books_day(row, calendar: PayCalendar, *, is_envelope: bool) -> date:
+def own_books_day(
+    row, calendar: PayCalendar, *, is_envelope: bool, rewrite=None,
+) -> date:
     """Return the day the books are compared with for a row judged by its own day.
 
     Rulings **R-PC96**, **R-PC98** and **R-PC99**: a row is judged where it
@@ -302,18 +304,23 @@ def own_books_day(row, calendar: PayCalendar, *, is_envelope: bool) -> date:
     and the balance counts every row on its own day -- and the one picker
     (:func:`~app.utils.books_boundary.row_books_day`) chooses between its
     due day and its paycheck's last day (an envelope, ruling **R-PC89**).
+    A row the save being graded REWRITES is judged on the due day the
+    rewrite gives it, in the paycheck it keeps: the pass writes no paycheck.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
             :class:`~app.models.transfer.Transfer`.
         calendar: The owner's pay calendar, which gives the paycheck's end.
         is_envelope: Whether its definition is an envelope.
+        rewrite: See :func:`own_day_held`.
 
     Returns:
         The day :func:`~app.utils.books_boundary.books_hold` is asked of.
     """
+    placed = row if rewrite is None else rewrite
     return row_books_day(
-        row.due_date, calendar.require_period(FiledRow.for_row(row)).end_date,
+        placed.due_date,
+        calendar.require_period(FiledRow.for_row(row)).end_date,
         is_envelope=is_envelope,
     )
 
@@ -334,6 +341,7 @@ class OwnDayHeld(NamedTuple):
 
 def own_day_held(
     row, calendar: PayCalendar, memo: dict, *, is_envelope: bool,
+    rewrite=None,
 ) -> OwnDayHeld | None:
     """Return *row*'s own day when the books of the account it sits on hold it.
 
@@ -347,6 +355,14 @@ def own_day_held(
     opening and is counted a second time, whether or not its definition's
     walk still names it and whichever account its definition names now.
 
+    **Asked of the row as the save being graded LEAVES it** (ruling
+    **R-PC91**, the C18-a round-7 review's M1): an edit's own regeneration
+    rewrites the due day and accounts of every row it brings into line, so
+    such a row is judged on those (*rewrite*), in the paycheck it keeps.
+    Judged as stored instead, one save that unticked an envelope and moved
+    its due day was refused over a day the save itself moves the row off,
+    where the same two edits as two saves passed.
+
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
             :class:`~app.models.transfer.Transfer`.
@@ -357,22 +373,28 @@ def own_day_held(
             it restates.
         is_envelope: Whether the row's definition is an envelope (ruling
             **R-PC89**), as the save being graded would leave it.
+        rewrite: The fields the save's own regeneration writes onto *row*
+            (a value of
+            :attr:`~app.services.recurrence_engine.RegenerationPreview.rewrites`:
+            its due day and the accounts it moves money in), or ``None`` for
+            a row the save leaves as stored.
 
     Returns:
         The :class:`OwnDayHeld`, or ``None`` when no account it sits on has
         an opening or the books open before its day.
     """
-    opened_on = row_books_opened_on(row, memo)
+    opened_on = row_books_opened_on(row if rewrite is None else rewrite, memo)
     if opened_on is None:
         return None
-    day = own_books_day(row, calendar, is_envelope=is_envelope)
+    day = own_books_day(row, calendar, is_envelope=is_envelope, rewrite=rewrite)
     if books_hold(opened_on, day):
         return None
     return OwnDayHeld(day=day, opened_on=opened_on)
 
 
 def rows_held_where_they_sit(
-    definition, criteria: tuple, calendar: PayCalendar, memo: dict,
+    definition, criteria: tuple, calendar: PayCalendar, memo: dict, *,
+    rewrites: dict | None = None,
 ) -> dict:
     """Return *definition*'s rows matching *criteria* that :func:`own_day_held` holds.
 
@@ -391,10 +413,16 @@ def rows_held_where_they_sit(
         calendar: The owner's pay calendar.
         memo: The ``account_id -> opened_on`` memo :func:`own_day_held`
             reads through; a restatement's holds its candidate day.
+        rewrites: At an edit door, ``{row id: the fields the save's own
+            regeneration writes onto it}``
+            (:attr:`~app.services.recurrence_engine.RegenerationPreview.rewrites`),
+            each such row judged as rewritten (:func:`own_day_held`); ``None``
+            elsewhere, where nothing rewrites a row.
 
     Returns:
         ``{row id: (its OwnDayHeld, the row)}``.
     """
+    rewrites = {} if rewrites is None else rewrites
     _table_order, model, _template_fk = rows_of(definition)
     is_envelope = definition_books(definition, memo).is_envelope
     held = {}
@@ -403,7 +431,10 @@ def rows_held_where_they_sit(
         .filter(*criteria, _could_be_held(model, definition.user_id, memo))
         .all()
     ):
-        own = own_day_held(row, calendar, memo, is_envelope=is_envelope)
+        own = own_day_held(
+            row, calendar, memo, is_envelope=is_envelope,
+            rewrite=rewrites.get(row.id),
+        )
         if own is not None:
             held[row.id] = (own, row)
     return held
@@ -417,7 +448,12 @@ def _could_be_held(model, user_id: int, memo: dict):
     on open after the latest of the owner's account openings and any day
     *memo* holds (a restatement's candidate).  So a row due after that day
     in a paycheck starting after it is never held -- a bound the query
-    filters by, never a books floor.
+    filters by, never a books floor.  **It reads the STORED columns, and a
+    row an edit's regeneration rewrites is still never wrongly dropped**:
+    rewritten, it sits on its definition's accounts on the day its walk
+    names for an occurrence the books did not drop, so as a bill it is
+    never held, and as an envelope its own day is still the last day of the
+    paycheck it keeps, which starts no later.
 
     Args:
         model: ``Transaction`` or ``Transfer``.
@@ -666,16 +702,18 @@ def books_named(holder, books_opened_on: date) -> str:
     a definition -- whose floor is the latest opening among the accounts it
     moves money in -- or one of its rows, held by the books of the accounts
     it SITS ON (:func:`own_day_held`), which after its definition's account
-    move are not the definition's.  A floor carries the latest opening day,
-    not which account set it, and naming that account is what makes the
-    sentence one the owner can check.  The openings are read here and only
-    when a sentence is being written, so a door that refuses nothing reads
-    nothing more.
+    move are not the definition's -- or, at an edit door, the fields the
+    save's regeneration rewrites onto a row, naming where it will sit.  A
+    floor carries the latest opening day, not which account set it, and
+    naming that account is what makes the sentence one the owner can check.
+    The openings are read here and only when a sentence is being written, so
+    a door that refuses nothing reads nothing more.
 
     Args:
-        holder: The transaction or transfer template, or a
+        holder: The transaction or transfer template, a
             :class:`~app.models.transaction.Transaction` or
-            :class:`~app.models.transfer.Transfer` row.
+            :class:`~app.models.transfer.Transfer` row, or a rewrite (a value
+            of ``RegenerationPreview.rewrites``, :func:`own_day_held`).
         books_opened_on: The governing opening day of at least one of the
             accounts *holder* names.
 
