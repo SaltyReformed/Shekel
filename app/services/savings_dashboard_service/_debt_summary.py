@@ -4,10 +4,13 @@ Shekel Budget App -- Savings Dashboard: the aggregate debt summary.
 What is owed across the owner's loans, what it costs each month, when the
 last debt line ends and how much of the original principal is repaid -- the
 :class:`DebtSummary` value object and its one construction site,
-:func:`_compute_debt_summary`, with the three reducers it composes.  Moved
-out of :mod:`._metrics` below pylint's module line cap; the DTI block the
-summary carries (:class:`~._metrics.DtiMetrics`) is still built there.  No
-Flask imports.
+:func:`_compute_debt_summary`, with the two reducers of its own that site
+composes (:func:`_accumulate_loan_debt`, :func:`_compute_principal_paid_fraction`)
+and the former's owed-today predicate (:func:`_loan_ad_current_principal`);
+its other two reducers are :mod:`._debt_line`'s.  Moved out of
+:mod:`._metrics` below pylint's module line cap; the DTI block the summary
+carries (:class:`~._metrics.DtiMetrics`) is still built there.  No Flask
+imports.
 """
 
 from dataclasses import dataclass
@@ -131,7 +134,7 @@ class DebtSummary:
             at the dashboard route's serialization boundary.  Its rule is the
             third row of the table above; :func:`_compute_principal_paid_fraction`
             carries WHY that rule and not another.
-        dti: The :class:`DtiMetrics` block, or ``None`` when the user has no
+        dti: The :class:`~._metrics.DtiMetrics` block, or ``None`` when the user has no
             income data to compute it from.
     """
 
