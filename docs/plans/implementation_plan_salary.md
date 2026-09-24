@@ -9,11 +9,11 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 ## Where this stands
 
 **`X-av-2` (`89a56168`, one engine walk for base pay at each payday's own rhythm) shipped
-2026-09-24**, closing **SAL-569** (**R-SAL66**, **R-SAL70**) with `$0.00` in stored money and one
-display moved, the Recurring page's salary row. `X-av`'s other leaves (**R-SAL67**) make the pay a
-dated per-paycheck gross; `S11-c-2`, the engine's calibrated path, MOVES MONEY, and **S11**
-(**R-SAL41** as amended by **R-SAL42**, absorbing `S1`) ticks with its last leaf. Each archived
-span's record is a `historical/salary_*` file.
+2026-09-24**, closing **SAL-569** (**R-SAL66**, **R-SAL70**), `$0.00` in stored money; the Recurring
+page's salary row moved, with the four totals it feeds (Net committed hero, Income chip, Expenses %
+of income, Income subtotal). `X-av`'s other leaves (**R-SAL67**) make the pay a dated per-paycheck
+gross; `S11-c-2`, the engine's calibrated path, MOVES MONEY, and **S11** (**R-SAL41**, **R-SAL42**)
+ticks with its last leaf. Each archived span's record is a `historical/salary_*` file.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -34,8 +34,8 @@ model's INPUT side is the salary; and `balance:X-au-d` then measured three defec
 itself and could name no step for any of them (**N-441**, **N-442**, **N-443**), which is
 conventions rule 1's retired value spelled as a whole subsystem. The developer ruled on 2026-09-03
 that the engine is a sixth arc with its own document, and on 2026-09-03 named it `salary` and moved
-C12 in with the others; N-443, the three spellings of the paycheck projection, closes at R14's first
-leaf, which memoizes the breakdown map, and C12 collapses the dashboards' readers onto it.
+C12 in with the others; N-443, the three spellings of the paycheck projection, closed at R14's first
+leaf, which memoized the breakdown map, and C12 collapsed the dashboards' readers onto it.
 
 **Why each step sits where `steps.md` puts it, which is that table's to say and not this
 document's.** `S2` is the arc's cheapest first act, because a derivation that moves `-$19.28` for no
@@ -199,7 +199,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (`history_opens_on` when stated, else the recorded one; R-SAL36's unit-zero); a typed start
       pinned; every payroll line becomes a rule, deleting R-SAL29's no-rule rewrite in
       `_settle_line_cadence`, `line_applies_on`'s `cadence is None` arm, `EVERY_PAYCHECK` as the
-      no-rule phrase and R18's typed-opening carve-out. Its migration gives every rule-less line a
+      no-rule phrase and R18-c's typed-opening carve-out. Its migration gives every rule-less line a
       BLANK rule and blanks the starts `R15-b` derived; the stored columns cannot tell a derived
       opening from a typed one, so the predicate is the step's first fork. Its own step outside
       every outcome (S8's precedent); after `recurrence:R21`. Worked year (biweekly, recorded
@@ -234,13 +234,14 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         or not (**R-SAL63** as scoped by **R-SAL69**; migration `9b2c5656eed9`). `$0.00`; closed
         **N-294**, opened **SAL-570**.
   - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm, the
-        priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money, one display
-        moved; closed **SAL-569**.
+        priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money; the Recurring
+        salary row moved, with the four totals it feeds (Net committed hero, Income chip, Expenses %
+        of income, Income subtotal); closed **SAL-569**.
   - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**; closes
-        **N-237**, **N-391**'s app half): dated per-paycheck gross entries, one per profile and
-        payday, audited; `annual_salary` DROPPED by a migration writing each profile one entry
-        (yearly over paychecks a year, to the cent) dated on or before every raise's first landing
-        and the first priced payday, else refusing; its downgrade refuses a profile with two
+        **N-237**, **N-391**'s app half, **SAL-572**): dated per-paycheck gross entries, one per
+        profile and payday, audited; `annual_salary` DROPPED by a migration writing each profile one
+        entry (yearly over paychecks a year, to the cent) dated on or before every raise's first
+        landing and the first priced payday, else refusing; its downgrade refuses a profile with two
         entries. A payday's base is the latest entry on or before it (else the first), each forecast
         raise landing after that entry's date rounding to the cent; a flat raise adds its yearly
         dollars over paychecks a year. Doors: Record, Fix, Remove (never the only entry); the yearly
@@ -260,12 +261,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       template under an ACTIVE salary profile, which the Archived drawer shows at its stored
       paycheck, and the no-history arm deletes it outright; no door may leave that profile behind,
       the archive refusing or archiving both together. `$0.00` today.
-- [ ] **S14 -- the remaining conversions read each payday's own rhythm** (**R-SAL72**; findings
-      **SAL-571**, **SAL-573**): across a recorded rhythm change the retirement page's contribution
-      headroom (`retirement_levers._headroom_per_period`) and the savings dashboard's monthly
-      expense average (`_metrics._compute_avg_monthly_expenses`) convert at the LATEST rhythm's
-      count; both read `X-av-2`'s one walk instead, the headroom once the developer rules what "per
-      paycheck" means across a switch. `$0.00` on production (one rhythm).
+- [ ] **S14 -- two conversions across a recorded rhythm change** (**R-SAL72**; findings **SAL-571**,
+      **SAL-573**): with the developer, decide what "per paycheck" means in the retirement page's
+      contribution headroom (`retirement_levers._headroom_per_period`), per year or per current
+      paycheck; convert each period the savings dashboard's monthly expense average
+      (`_metrics._compute_avg_monthly_expenses`) averages at the rhythm it was paid at
+      (`pay_calendar.cadence_on`). `$0.00` on production.
 - [ ] **X-at -- a substituted tax year says so, and a new year can be entered** (findings **N-235**,
       **N-236**). `tax_config_service.resolve_tax_year` answers an unconfigured year with the latest
       configured year's rules -- the only available answer -- and every surface renders the result
