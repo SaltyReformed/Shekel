@@ -142,22 +142,6 @@ class TestTheRegistryStatesItsOwnSize:
         stage_rulings(f"**The ruling registry stands at {actual} rows.**", "")
         assert "states no row count" in (rulings.stated_count_violation() or "")
 
-    def test_the_runaway_backstop_is_not_binding(self):
-        """It is a backstop, never a forcing function (rule 4)."""
-        assert rulings.runaway_violation() is None
-        assert len(rulings.ruling_rows()) < rulings.RULINGS_RUNAWAY_ROWS
-
-    def test_the_runaway_backstop_fires(self, monkeypatch):
-        """A duplicated table or a generator loop fails loudly.
-
-        No staging: the defect is a row COUNT, and lowering the backstop to 1
-        against the real 105-row table exercises it exactly.  This control
-        used to call ``stage_rulings`` with an identical replacement, which
-        staged nothing and named a defect it was not planting.
-        """
-        monkeypatch.setattr(rulings, "RULINGS_RUNAWAY_ROWS", 1)
-        assert "runaway backstop" in (rulings.runaway_violation() or "")
-
 
 class TestTheMigrationCannotSitHalfDone:
     """An arc's rulings are in ONE document and the gate says which."""

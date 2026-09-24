@@ -8,14 +8,12 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S11-a` (`8f744c33`, the pay stub's tables) and `S11-b` (`1d3a2574`, its entry door) shipped
-2026-09-23**, `$0.00` both and released together (**R-SAL42**); before `S11-c`, the engine's
-calibrated path and the leaf that MOVES MONEY, the developer transcribes his stubs in production (an
-operator act, **R-SAL40**). **S11** (the stub transcribed, **R-SAL41** as amended by **R-SAL42**,
-absorbing `S1`) ticks with the last of its five leaves. Before it `R18` (`0345fbae`) made a paycheck
-base pay plus a list of lines, `R15` (`77901fe0`) made a deduction's FREQUENCY a recurrence rule on
-the row and `S3-f-4` (`329b663d`) shipped `S3`; `S9` (the blank start stored as blank, **R-SAL39**)
-waits on `recurrence:R21`. Archived spans, all under `historical/`: `R18`
+**`S11-c-1` (`dff66c5e`, a stub line's own kind) shipped 2026-09-23**, `$0.00`, closing **SAL-567**
+(**R-SAL57**, **R-SAL58**); `S11-c`'s other leaf, `S11-c-2`, is the engine's calibrated path and the
+leaf that MOVES MONEY, pricing from the stubs the developer transcribes in production (an operator
+act, **R-SAL40**) through `S11-a` (`8f744c33`) and `S11-b` (`1d3a2574`). **S11** (the stub
+transcribed, **R-SAL41** as amended by **R-SAL42**, absorbing `S1`) ticks with the last of its
+leaves; `S9` (**R-SAL39**) waits on `recurrence:R21`. Archived spans, all under `historical/`: `R18`
 (`salary_r18_as_built_2026-09-23.md`), `R15` (`salary_r15_as_built_2026-09-14.md`), `S3` and `S3-f`
 (`salary_s3_as_built_2026-09-13.md`, `salary_s3f_as_built_2026-09-13.md`), `C12`
 (`salary_c12_as_built_2026-09-18.md`), `R14` (`salary_r14_as_built_2026-09-11.md`), `S3-e-2`
@@ -132,8 +130,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       As-built: `historical/salary_s2_as_built_2026-09-04.md`.
 - [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41** and
       **R-SAL9** as amended by **R-SAL42**; **SAL-564**; absorbs `S1`'s **N-441**, **N-535**,
-      **N-530**): the DECOMPOSED parent of five leaves (2026-09-23), ticking with its last. Today
-      one dated stub's four EFFECTIVE rates price every paycheck; the row stores that date
+      **N-530**): the DECOMPOSED parent of six leaves (2026-09-23), ticking with its last. Today one
+      dated stub's four EFFECTIVE rates price every paycheck; the row stores that date
       (`pay_stub_date`) and only displays it; no pricing reader consults it; both calibration doors
       destroy a row. A paycheck copies the latest same-lines stub's four taxes and the app's
       formulas, run on both sides, price the difference, superseding the spec's "federal bracket's
@@ -151,14 +149,21 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         a payday already holding one refused (**R-SAL52**), the printed net checked, one-off clashes
         refused (**R-SAL45**, **R-SAL51**), the comparison and the switch; `delete_line` refuses a
         named line. `$0.00`; opened **SAL-567**, **SAL-568**.
-  - [ ] **S11-c -- the engine's calibrated path**: the latest switched-on stub on or before the
-        payday with the SAME LINES supplies the four taxes and the formulas the difference
-        (`PricedLine`'s line identity shipped at `S11-b`); every reader switched, the rates path and
-        `calibrate_*` deleted. **MOVES MONEY**, graded on a clone holding the stubs: fork 8c, the
-        projected diff, `tests/manual/measure_r18d_phone_line.py` before and after (within a cent of
-        the pair), each stub beside the old calibrations of its date (fork 9). Asks first: fork 8b's
-        one-off fallback; a floor for a Social Security line below `$0.00`; what a line's KIND or
-        NAME change means for the stubs naming it (**SAL-567**). Closes **SAL-565**.
+  - [ ] **S11-c -- the engine's calibrated path**: the DECOMPOSED parent of two leaves (the salary
+        lane's decomposition, accepted by the coordinator 2026-09-23), ticking with its last.
+  - [x] **S11-c-1** `dff66c5e` -- a stub line records the kind it is printed under (**R-SAL58**,
+        retiring **R-SAL56**; migration `9b64df71cc34`), and the one-off clash asks only what a save
+        adds (**R-SAL57**). `$0.00`; closed **SAL-567**.
+  - [ ] **S11-c-2 -- the engine prices from the stubs**: the latest switched-on stub on or before
+        the payday with the SAME LINES supplies the four taxes and the formulas the difference
+        (`PricedLine`'s line identity shipped at `S11-b`); with no such stub, the latest switched-on
+        stub on or before it, of ANY lines, and with none at all the formulas alone (**R-SAL54**,
+        settling fork 8b); the stub's side priced by the kinds it records, never its lines' current
+        ones (**R-SAL58**); every priced tax floored at `$0.00` (**R-SAL55**); every reader
+        switched, the rates path and `calibrate_*` deleted. **MOVES MONEY**, graded on a clone
+        holding the stubs: fork 8c, the projected diff, `tests/manual/measure_r18d_phone_line.py`
+        before and after (within a cent of the pair), each stub beside the old calibrations of its
+        date (fork 9). Closes **SAL-565**.
   - [ ] **S11-d -- the old table goes**: a migration drops `salary.calibration_overrides` and every
         reference, REFUSING while any calibration the data has held (live, or deleted per the audit
         log) has no stub on its date, and printing any differing figures (fork 9).
