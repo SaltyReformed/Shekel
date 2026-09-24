@@ -28,8 +28,9 @@ copy of it on the rule would be a second home needing a reconciler
 (``CLAUDE.md`` rule 14); reading it here, on every pass, is what makes the
 bound follow a restatement with nothing to keep in step.
 
-**Why it is a module of its own**: ``_context.py`` stands within a hundred
-lines of pylint's 1,000-line ceiling, and the two questions below -- which
+**Why it is a module of its own**: ``_context.py`` stood within a hundred
+lines of pylint's 1,000-line ceiling at this step (the next merge crossed it,
+and ruling R-BAL146 split it), and the two questions below -- which
 accounts a definition moves money in, and where the latest of their books
 opens -- are this step's, not the pass's.  The pass keeps the MEMO (one read
 per account per pass) and the one composition; this keeps the reading.
