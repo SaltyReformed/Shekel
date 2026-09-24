@@ -8,18 +8,14 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S11-c-1` (`dff66c5e`, a stub line's own kind) shipped 2026-09-23**, `$0.00`, closing **SAL-567**
-(**R-SAL57**, **R-SAL58**); `S11-c`'s other leaf, `S11-c-2`, is the engine's calibrated path and the
-leaf that MOVES MONEY, pricing from the stubs the developer transcribes in production (an operator
-act, **R-SAL40**) through `S11-a` (`8f744c33`) and `S11-b` (`1d3a2574`). **S11** (the stub
-transcribed, **R-SAL41** as amended by **R-SAL42**, absorbing `S1`) ticks with the last of its
-leaves; `S9` (**R-SAL39**) waits on `recurrence:R21`. Archived spans, all under `historical/`: `R18`
-(`salary_r18_as_built_2026-09-23.md`), `R15` (`salary_r15_as_built_2026-09-14.md`), `S3` and `S3-f`
-(`salary_s3_as_built_2026-09-13.md`, `salary_s3f_as_built_2026-09-13.md`), `C12`
-(`salary_c12_as_built_2026-09-18.md`), `R14` (`salary_r14_as_built_2026-09-11.md`), `S3-e-2`
-(`salary_s3e2_as_built_2026-09-11.md`) and `S2` (`salary_s2_as_built_2026-09-04.md`). Nine steps
-were re-filed or minted into this arc when it was created (**R-SAL1**), with their ledger rows and
-the four `balance:X-au-d` findings that had no arc to go to.
+**`X-av-1` (`fe054204`, one salary profile per paycheck definition in each scenario) shipped
+2026-09-23**, `$0.00`, closing **N-294** (**R-SAL63**, **R-SAL69**); `X-av`'s other leaves
+(**R-SAL67**) make the pay a dated per-paycheck gross, and `S12` (**R-SAL64**) dates a line's amount
+the same way. `S11-c-2`, the engine's calibrated path, MOVES MONEY, pricing from the stubs the
+developer transcribes (an operator act, **R-SAL40**) through `S11-a` (`8f744c33`), `S11-b`
+(`1d3a2574`) and `S11-c-1` (`dff66c5e`); **S11** (**R-SAL41** as amended by **R-SAL42**, absorbing
+`S1`) ticks with its last leaf, and `S9` (**R-SAL39**) waits on `recurrence:R21`. Each archived
+span's record is a `historical/salary_*` file, named in its parent's entry in section 4.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -64,9 +60,10 @@ its row stores that date (`pay_stub_date`) and only displays it; no pricing read
 (**N-441**). A deduction's inflation escalation is anchored on the row's `created_at` (**N-240**). A
 deduction's cadence is a biweekly COUNT used as a three-valued MODE (**F-21**), one reader ignores
 it (**N-395**), and the earnings side has no lines at all, so an employer allowance with a cadence
-becomes a separate income template that misfiles (**D59**). Two active profiles on one template are
-priced by whichever `ORDER BY id` returns (**N-294**). A substituted tax year is never shown and a
-new year's brackets have no door (**N-235**, **N-236**).
+becomes a separate income template that misfiles (**D59**). Two profiles on one template in one
+scenario were priced by whichever `ORDER BY id` returned, until `X-av-1` made that state unstorable
+(**N-294**, closed). A substituted tax year is never shown and a new year's brackets have no door
+(**N-235**, **N-236**).
 
 **The answer.** `project_salary` is run by three readers over the same calendar --
 `income_service.SalaryPricing._net_by_period`, `routes/salary/views.py` and
@@ -106,8 +103,8 @@ Every figure is dated and rests on the developer's own data; re-measure before c
 2. **Every time-varying input is effective-dated, and the base is per paycheck.** The stored fact is
    what ONE paycheck pays, dated, with the annual figure derived beside it (**balance:R-HW(b)**,
    X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1)
-   and calibrations ACCUMULATE, none destroyed (**R-SAL9**); inflation escalation anchors on the
-   line's own date, not a row timestamp (X-av).
+   and calibrations ACCUMULATE, none destroyed (**R-SAL9**); a line's amount is dated too, its
+   inflation compounding from its latest entry (S12).
 3. **A line's cadence is a recurrence RULE against the pay calendar** (**R-SAL3**): a deduction or
    an earnings line names a rule, `NULL` meaning every paycheck, and the engine that already places
    recurring rows decides which paychecks a line lands on. `_deduction_applies_at` and the 26 / 24 /
@@ -170,24 +167,16 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [ ] **S11-e -- the FICA treatment** (fork 7): a pre-tax line says if it reduces FICA wages, stub
         or no stub; the developer sets the backfill from his stubs. Closes **SAL-566**.
 - [x] **R14** `e0f0c05f` -- the DECOMPOSED parent of a deduction's gross (**R-SAL6**); closed
-      **D45**. Archived: `historical/salary_r14_as_built_2026-09-11.md`.
-  - [x] **R14-a** `9e81d9e7` -- an employer contribution NAMES its funding profile (**R-SAL5**);
-        closed **N-443**, **N-533**, **N-534**. Archived with `R14`.
-  - [x] **R14-b** `e0f0c05f` -- the contribution tier CONSUMES the engine's breakdown (**R-SAL2**),
-        `+$452.42`; closed **D45**, **N-532**. Archived with `R14`.
+      **D45**. Its leaves `R14-a` and `R14-b` left this document and the index 2026-09-24 (rule 5);
+      the record is `historical/salary_r14_as_built_2026-09-11.md`.
 - [x] **S3** `329b663d` -- the engine prices the WHOLE horizon (**R-SAL10**, **R-SAL11**,
       **R-SAL14**, **R-SAL15**; closed **N-541**); ticked with `S3-f-4`, the last leaf of its last
       leaf. Its fourteen leaves left this document and the index 2026-09-18 (rule 5); the records
       are the four `historical/salary_s3*` files (the span, S3-a..d, S3-f, S3-e-2).
 - [x] **R15** `77901fe0` -- what a payroll deduction's own FREQUENCY means: a RECURRENCE RULE on the
       row (**R-SAL3**, **R-SAL29**-**R-SAL32**, **R-SAL35**-**R-SAL37**); ticked with `R15-c`, its
-      last leaf. The span as it stood: `historical/salary_r15_as_built_2026-09-14.md`.
-- [x] **R15-a** `bdd77055` -- the per-month CEILING as the cadence's third value (**R-SAL29** as
-      amended); migration `ef32dfe4cd8e`; NO FIGURE MOVED. Archived with `R15`.
-- [x] **R15-b** `4ed9b5b3` -- the third owning arm, one rule per line (migration `542c61e48ee8`),
-      byte-identical over 63 paychecks; closed **F-21**, **SAL-549**, **SAL-556**. With `R15`.
-- [x] **R15-c** `77901fe0` -- the deduction form's CADENCE controls (**R-SAL31**, **R-SAL36**,
-      **R-SAL37**). Opened **SAL-557** (owner `S6`), **SAL-558** (owner `S5`). Archived with `R15`.
+      last leaf. Its leaves `R15-a`..`R15-c` left this document and the index 2026-09-24 (rule 5);
+      the span as it stood: `historical/salary_r15_as_built_2026-09-14.md`.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates
@@ -239,33 +228,45 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [x] **R18** `0345fbae` -- a paycheck is BASE PAY plus a LIST OF LINES (**R-SAL38**, six forks);
       closed **D59**; ticked with `R18-d`, its last leaf. The span as it stood:
       `historical/salary_r18_as_built_2026-09-23.md`.
-  - [x] **R18-a** `ef0dc831` -- the storage rename (migration `0a4d2c3e89f8`); `$0.00`. Archived
-        with `R18`.
-  - [x] **R18-b** `ad9fed61` -- the two earning kinds and the engine's one line pass (migration
-        `6c15d2a97b78`); opened **SAL-561**. Archived with `R18`.
-  - [x] **R18-c** `34ad4bda` -- every line's start and optional end on its own rule; opened
-        **SAL-562** (**R-SAL39**, `S9`). Archived with `R18`.
-  - [x] **R18-d** `0345fbae` -- the OPERATOR act, performed 2026-09-19; **MOVED MONEY**; opened
-        **SAL-564**. Record: `historical/salary_r18d_as_performed_2026-09-19.md`.
+  - [x] **R18-a** `ef0dc831` -- the storage rename (migration `0a4d2c3e89f8`). With `R18`.
+  - [x] **R18-b** `ad9fed61` -- two earning kinds, one line pass; opened **SAL-561**. With `R18`.
+  - [x] **R18-c** `34ad4bda` -- each line's own start and end; opened **SAL-562**. With `R18`.
+  - [x] **R18-d** `0345fbae` -- the OPERATOR act; **MOVED MONEY**; opened **SAL-564**. With `R18`.
 - [x] **C12** `945651c2` -- one current-paycheck producer (**R-SAL25**-**R-SAL28**); closed **P62**,
-      **P63**, **P64**'s engine half. As it stood: `historical/salary_c12_as_built_2026-09-18.md`.
-- [x] **C12-a** `26a7b816` -- the engine package (**R-SAL27**, **R-SAL28**); NO FIGURE MOVED.
-      Archived with `C12`.
-- [x] **C12-b** `945651c2` -- `/savings` through the pass's pricer (**R-SAL25**, **R-SAL26**); MOVED
-      MONEY (the figures in R-SAL25). Archived with `C12`.
-- [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
-      **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
-      effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside
-      the entry, never a second stored figure -- so the app can tell a raise from a correction, and
-      the owner can enter the `$3,526.00` the stub actually pays instead of an annual figure that
-      divides to four cents less. **It does not presume the gross is the culprit**: a `$0.04` error
-      in any of the twelve hand-entered deductions reproduces the same net, so the step opens with
-      the operator re-reading one stub (N-391's operator half, committed 2026-09-03). It also
-      anchors a deduction's inflation escalation on the line's own date rather than
-      `profile.created_at` (N-240), rules which of two active profiles on one template prices it or
-      refuses the second at the door (N-294), and reads the salary template's price from the amount
-      series once `balance:X-bp` deletes `default_amount`, which two salary routes wrote as two
-      different quantities (**N-446**). A value-splitting migration; own PR.
+      **P63**, **P64**'s engine half. Its leaves `C12-a` and `C12-b` left this document and the
+      index 2026-09-24 (rule 5); as it stood: `historical/salary_c12_as_built_2026-09-18.md`.
+- [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**, **R-SAL59**;
+      findings **N-237**, **N-294**, **N-391**, **SAL-569**): the DECOMPOSED parent of four leaves
+      (**R-SAL67**), ticking with its last; built beside `S11-c`, neither waiting (**R-SAL62**,
+      amending **R-SAL43**'s order). The stub transcription (**R-SAL40**) subsumes the one-stub
+      re-read that opened it; **N-240** moved to `S12`; **N-446** stays `balance:X-bp`'s.
+  - [x] **X-av-1** `fe054204` -- one salary profile per paycheck definition in each scenario, active
+        or not (**R-SAL63** as scoped by **R-SAL69**; migration `9b2c5656eed9`). `$0.00`; closed
+        **N-294**, opened **SAL-570**.
+  - [ ] **X-av-2 -- one engine walk for base pay, each payday at its own rhythm** (**R-SAL66**;
+        closes **SAL-569**): the base, spelled three times in `paycheck_calculator`, becomes ONE
+        `PayrollBasis` method, and paychecks a year comes from the rhythm in force on the payday,
+        for the base, the yearly figure and withholding. `$0.00`, no migration; graded
+        byte-identical on a production clone and by a two-rhythm fixture.
+  - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**; closes
+        **N-237**, **N-391**'s app half): dated per-paycheck gross entries, one per profile and
+        payday, audited; `annual_salary` DROPPED by a migration writing each profile one entry
+        (yearly over paychecks a year, to the cent) dated on or before every raise's first landing
+        and the first priced payday, else refusing; its downgrade refuses a profile with two
+        entries. A payday's base is the latest entry on or before it (else the first), each forecast
+        raise landing after that entry's date rounding to the cent; a flat raise adds its yearly
+        dollars over paychecks a year. Doors: Record, Fix, Remove (never the only entry); the yearly
+        figure shown beside each entry; the GROSS `default_amount` writes go. A yearly edit
+        re-prices EVERY projected paycheck since `balance:X-au-d`, past-dated ones too.
+        **MOVES MONEY** by cents, projected only; own PR and release. The developer's pay history is
+        entered after it, an operator act.
+  - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
+        differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
+        entry through `X-av-3`'s Record door, one function both call. `$0.00` until used.
+- [ ] **S12 -- a paycheck line's amount is dated too** (**R-SAL64**; finding **N-240**): a line's
+      amount gets the pay's dated list, its inflation forecast compounding from its latest entry, in
+      place of `paycheck_calculator/_lines._inflation_years` counting from `profile.created_at`. A
+      step of its own after `X-av`; `$0.00` (no line inflates).
 - [ ] **X-at -- a substituted tax year says so, and a new year can be entered** (findings **N-235**,
       **N-236**). `tax_config_service.resolve_tax_year` answers an unconfigured year with the latest
       configured year's rules -- the only available answer -- and every surface renders the result
@@ -295,5 +296,5 @@ eventually reach it, and a prefix that sequence cannot produce cannot collide wi
 ## 7. Document rules (GATED)
 
 **`conventions.md`, one copy for every arc**, graded by `tools/plan_gate/` through a pre-commit hook
-scoped to this file, so EDITING IT runs the gate; its caps (260 lines, a 20-line signpost) were set
-by the developer on 2026-09-03 and live in the gate's constants beside the other arcs'.
+scoped to this file, so EDITING IT runs the gate; its caps (320 lines since the developer raised it
+on 2026-09-05, a 20-line signpost) live in the gate's constants beside the other arcs'.
