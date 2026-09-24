@@ -1243,12 +1243,14 @@ class TestTheMigrationRoundTrips:
             ) == 1
 
     def test_the_downgrade_refuses_while_a_stub_exists(self, app, seed_user):
-        """Ruling R-SAL47: with one stub stored the downgrade raises, naming the count, and writes nothing.
+        """R-SAL47: with one stub stored the downgrade raises, naming the count, sending nothing.
 
         The schema the downgrade returns to has nowhere to hold a stub, so a
-        rollback after the owner has transcribed one would destroy it.  The
-        refusal comes before any DDL, so every object this revision created is
-        still there afterwards, and so is the stub.
+        rollback after the owner has transcribed one would destroy it.  That
+        the refusal comes before any DDL is read off the connection -- it sends
+        no statement but a ``SELECT`` -- since the rollback after it would
+        restore a dropped object either way; every object and the stub are
+        still there afterwards.
         """
         with app.app_context():
             profile = _profile(seed_user)
@@ -1330,15 +1332,40 @@ class TestTheKindMigrationRoundTrips:
                 roth.id: ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION),
             }
 
+    def test_the_upgrade_refuses_to_require_a_kind_the_fill_left_empty(
+        self, app, seed_user,
+    ):
+        """The database rules' zero-NULL check, forced to fire: a fill that writes nothing.
+
+        No database this chain builds can reach it (the upgrade's docstring
+        argues why), so the fill is replaced by a statement that writes
+        nothing, leaving the row written while stepped down without a kind.
+        The upgrade must then refuse, naming the row, before the column is
+        required.
+        """
+        with app.app_context():
+            profile = _profile(seed_user)
+            health = _line(profile, "Health", "200.00")
+            stub_id = _whole_stub(profile, {health: Decimal("200.00")}).id
+            _run(_KIND_MIGRATION.downgrade)
+            db.session.commit()
+            with patch.object(_KIND_MIGRATION, "_BACKFILL_SQL", "SELECT 1"), pytest.raises(
+                RuntimeError,
+                match=r"1 pay stub line\(s\) were left without a kind by the fill",
+            ) as refused:
+                _run(_KIND_MIGRATION.upgrade)
+            db.session.rollback()
+            assert f"{stub_id}, {health.id})" in str(refused.value)
+
     def test_the_downgrade_refuses_while_a_stub_line_records_its_own_kind(
         self, app, seed_user,
     ):
         """The one lossy case: the older schema would re-kind the row to its line's.
 
-        It raises naming the count having SENT nothing but its count -- read
-        off the connection, since the rollback after it would undo a ``DROP``
-        either way -- and the column, its key and the row's own kind are all
-        still there afterwards.  The control is the previous test, whose
+        It raises naming the count having SENT no statement but a ``SELECT``
+        -- read off the connection, since the rollback after it would undo a
+        ``DROP`` either way -- and the column, its key and the row's own kind
+        are all still there afterwards.  The control is the previous test, whose
         downgrade over a stub whose kinds agree succeeds.
         """
         with app.app_context():

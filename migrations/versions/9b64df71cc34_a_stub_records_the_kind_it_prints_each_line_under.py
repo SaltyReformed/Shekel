@@ -45,7 +45,7 @@ cannot be removed from the catalogue under it.
 user-entered data).  The schema it returns to reads every line amount's kind
 off the paycheck line, so a stub recording a different kind would silently
 take the line's -- and what it adds up to by kind would move: its gross, its
-net, or the split between its before-tax and after-tax deductions, depending
+net, or the split between its pre-tax and post-tax deductions, depending
 on which two kinds differ.  That is the one lossy case, so it is the one
 refused: it raises a ``RuntimeError`` naming the count before writing
 anything.  Where every row agrees with its line the column is a
@@ -78,6 +78,12 @@ _BACKFILL_SQL = (
     "WHERE line.id = amount.paycheck_line_id"
 )
 
+#: The rows the fill left without a kind, listed for the refusal's diagnosis.
+_UNFILLED_SQL = (
+    "SELECT id, pay_stub_id, paycheck_line_id FROM salary.pay_stub_line_amounts "
+    "WHERE paycheck_line_kind_id IS NULL ORDER BY id"
+)
+
 #: The rows the older schema would re-kind: a stub line recording a kind its
 #: paycheck line does not have.
 _MISMATCH_COUNT_SQL = (
@@ -85,6 +91,28 @@ _MISMATCH_COUNT_SQL = (
     "JOIN salary.paycheck_lines AS line ON line.id = amount.paycheck_line_id "
     "WHERE amount.paycheck_line_kind_id <> line.paycheck_line_kind_id"
 )
+
+
+def _refuse_if_the_fill_left_a_row_empty(bind) -> None:
+    """Stop the upgrade before the column is required if any row has no kind.
+
+    The zero-NULL check ``.claude/rules/database.md`` asks of every NOT NULL
+    on a populated table, with the diagnostic SELECT in the message.
+
+    Args:
+        bind: A SQLAlchemy connection to read the rows on.
+
+    Raises:
+        RuntimeError: When any stub line was left without a kind, naming
+            each one.
+    """
+    unfilled = bind.execute(sa.text(_UNFILLED_SQL)).all()
+    if unfilled:
+        raise RuntimeError(
+            f"{len(unfilled)} pay stub line(s) were left without a kind by the "
+            f"fill from their paycheck lines: {[tuple(row) for row in unfilled]} "
+            f"(id, pay_stub_id, paycheck_line_id).  Diagnose with: {_UNFILLED_SQL}"
+        )
 
 
 def _refuse_while_a_kind_differs(bind) -> None:
@@ -112,11 +140,13 @@ def upgrade():
     """Add the stub line's own kind, fill it from each named line, then require it.
 
     Order is load-bearing: the column arrives nullable so the rows that already
-    exist can be filled, and becomes required only once every one is.  No row
-    can be left unfilled, so the ``NOT NULL`` needs no zero-NULL check first:
-    each row's ``paycheck_line_id`` is ``NOT NULL`` and keyed onto an existing
-    paycheck line (``fk_pay_stub_line_amounts_paycheck_line``), whose own
-    ``paycheck_line_kind_id`` is ``NOT NULL``, so the join matches every row.
+    exist can be filled, and becomes required only once every one is -- after
+    the zero-NULL check the database rules ask for.  That check cannot fire on
+    a database this chain built: each row's ``paycheck_line_id`` and
+    ``salary_profile_id`` are both ``NOT NULL``, so the composite
+    ``fk_pay_stub_line_amounts_paycheck_line`` holds every row to an existing
+    paycheck line, whose own ``paycheck_line_kind_id`` is ``NOT NULL``, and the
+    join matches every row.
     """
     op.add_column(
         _TABLE,
@@ -124,6 +154,7 @@ def upgrade():
         schema=_SCHEMA,
     )
     op.execute(_BACKFILL_SQL)
+    _refuse_if_the_fill_left_a_row_empty(op.get_bind())
     op.alter_column(_TABLE, _COLUMN, nullable=False, schema=_SCHEMA)
     op.create_foreign_key(
         _FK, _TABLE, "paycheck_line_kinds",

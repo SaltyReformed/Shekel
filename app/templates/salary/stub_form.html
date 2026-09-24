@@ -192,7 +192,7 @@
 
       <h6 class="mt-3">Paycheck lines the app takes on this payday</h6>
       <p class="text-muted small">Copy each figure from the stub.  Leave a line blank if the stub does not print it.
-        Each line's kind starts as the stub's heading for it, or your paycheck line's on a new stub; change it only where the stub prints the line under a different heading.</p>
+        Each line's kind starts as the heading this stub was saved with, or your paycheck line's where it has none; change it only where the stub prints the line under a different heading.</p>
       {% if lines.taken %}
       <div class="row">
         {% for line in lines.taken %}{{ line_input(line) }}{% endfor %}
