@@ -147,10 +147,10 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         (**R-SAL44**, **R-SAL46**); migration `5641f7729b68`, its downgrade refusing while stubs
         exist (**R-SAL47**). `$0.00`.
   - [x] **S11-b** `1d3a2574` -- the door: the payday picked first (**R-SAL50**), one the app holds
-        up to the next (**R-SAL48**, **R-SAL49**; a kept date unchecked, **R-SAL53**), a held one
-        refused (**R-SAL52**), the printed net checked, one-off clashes refused (**R-SAL45**,
-        **R-SAL51**), the comparison and the switch; `delete_line` refuses a named line. `$0.00`;
-        opened **SAL-567**, **SAL-568**.
+        up to the next (**R-SAL48**, **R-SAL49**; a kept date unchecked, **R-SAL53**), a new stub on
+        a payday already holding one refused (**R-SAL52**), the printed net checked, one-off clashes
+        refused (**R-SAL45**, **R-SAL51**), the comparison and the switch; `delete_line` refuses a
+        named line. `$0.00`; opened **SAL-567**, **SAL-568**.
   - [ ] **S11-c -- the engine's calibrated path**: the latest switched-on stub on or before the
         payday with the SAME LINES supplies the four taxes and the formulas the difference
         (`PricedLine`'s line identity shipped at `S11-b`); every reader switched, the rates path and
