@@ -581,10 +581,10 @@ def _soft_delete_projected_rows(template):
     **A row holding a payment or purchase is NOT hidden** (plan step
     ``credit_card:CC-5-4a-4``, ruling **R-CC63**: "Archive hides only rows
     that hold nothing"): a soft-deleted row contributes to no balance, so
-    hiding one took its money off the books -- measured on the 2026-09-22
-    production dump, archiving 'Clothes' lifted Checking's 09-10-period
-    projection from $187.12 to $787.12 with a $107.57 purchase inside it,
-    exactly what the permanent delete did.  The row stays as it is, visible,
+    hiding one took its money off the books -- measured 2026-09-22 on a copy
+    of production: archiving a definition whose row held a recorded purchase
+    moved its account's projection for that period, exactly as the permanent
+    delete did.  The row stays as it is, visible,
     for the owner to close, lower or delete through its own door.
 
     **No posting reversal precedes the statement any more, and none is
@@ -750,10 +750,10 @@ def hard_delete_template(template_id):
     # filing into it, under a flash that mentioned only the template.  Under
     # ruling R-GS a rule is never un-stated by its owner, which made that
     # cascade the only way one could disappear at all.  Measured 2026-08-26
-    # on the developer's DEV data: template 19 carried a rule there.  *The
-    # 2026-09-22 production dump carries none, so its permanent arm WAS live
-    # on production -- and destroyed the $107.57 purchase its current row
-    # holds, which the second reason now refuses.*
+    # on the developer's DEV data: template 19 carried a rule there.  *A copy
+    # of production taken 2026-09-22 carries none, so its permanent arm WAS
+    # live there -- and destroyed, on that copy, the recorded purchase its
+    # current row holds, which the second reason now refuses.*
     #
     # **The movement reason is plan step ``credit_card:CC-5-4a-4``'s**
     # (rulings **R-CC54**, **R-CC66**, closing finding **CC-363**): a row

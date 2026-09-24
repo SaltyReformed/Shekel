@@ -197,8 +197,8 @@ class TestTheKeysRefuse:
 
         ``cascade="all, delete-orphan"`` on ``Transaction.entries`` had the
         unit of work DELETE the purchase before the row, so the database never
-        saw a row holding one; a later door deleting the Clothes row directly
-        would have erased the $107.57 silently.
+        saw a row holding one; a later door deleting such a row directly
+        would have erased its purchase silently.
         """
         with app.app_context():
             row = _unmatched_purchase(seed_user)

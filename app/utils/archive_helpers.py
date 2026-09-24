@@ -32,8 +32,8 @@ definition, a recurring transfer and an account, and :func:`holds_nothing` is
 the clause an archive keeps such rows OUT of; the pay-period doors ask it per
 period (``pay_period_locks``).  Until that step these doors judged "history"
 by row STATUS alone, and a permanent delete permitted on that answer
-destroyed the purchase with its row (finding **CC-363**): template 19
-'Clothes' on the 2026-09-22 production dump, a $107.57 purchase.  The keys
+destroyed the purchase with its row (finding **CC-363**, measured 2026-09-22
+on a copy of production: one recorded purchase under one definition).  The keys
 refuse such a delete now (``fk_transaction_entries_transaction_id``, NO
 ACTION), so these predicates are what turn the refusal into a designed one.
 """

@@ -25,9 +25,9 @@ that deleted a row deleted the payments and purchases under it -- and three
 doors did that as a SIDE EFFECT of deleting something else: the template and
 account permanent deletes in bulk SQL, and the pay-period truncate /
 regenerate / reset through ``transactions.pay_period_id``'s own cascade.
-Measured on the production dump of 2026-09-22 17:06: permanently deleting
-template 19 'Clothes' destroyed a $107.57 purchase recorded 09-20 and moved
-Checking's 09-10-period projection from $187.12 to $787.12.  And a match's
+Measured 2026-09-22 on a copy of production: permanently deleting one
+definition destroyed the recorded purchase under its current row and moved
+its account's projection for that period.  And a match's
 key to its movement cascaded too, so a destroyed movement left its act naming
 a bank line alone -- a false "explained" a predicate in the one read that
 decides (``_candidates.act_still_names_a_row``) stopped counting rather than

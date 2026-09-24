@@ -5,18 +5,19 @@ Rulings **R-CC54** part (2), **R-CC63**, **R-CC65** and **R-CC66**
 the template, account and pay-period doors destroyed a payment or purchase as
 a SIDE EFFECT of deleting something else, judging "history" by a row's STATUS
 rather than by what it held -- and the archive hid it, which took its money
-off the books just the same (measured on the 2026-09-22 production dump:
-archiving 'Clothes' moved Checking's 09-10-period projection from $187.12 to
-$787.12, exactly what its permanent delete did).
+off the books just the same (measured 2026-09-22 on a copy of production:
+archiving one definition moved its account's projection for that period,
+exactly as its permanent delete did).
 
 Every class grades the door the owner presses, through its route or its
 service, and asserts the MONEY as well as the sentence: the purchase still
 exists, still counts toward the account's settled cash, and its bank match
 still stands.  The sentences are ruling **R-CC66**'s, verbatim where it gave
-one ("'Clothes' holds a recorded purchase and cannot be permanently deleted.
-It has been archived instead; the row holding it stays on your budget." --
-"Pay period 9/10 holds a recorded payment or purchase; delete it from its
-row first." -- the lock badge "Holds a recorded payment or purchase"), read
+one, in its shape ("'<name>' holds a recorded purchase and cannot be
+permanently deleted.  It has been archived instead; the row holding it stays
+on your budget." -- "Pay period <m/d> holds a recorded payment or purchase;
+delete it from its row first." -- the lock badge "Holds a recorded payment or
+purchase"; the ruling's own example named a real row), read
 off the session's flashes so no HTML escaping stands between the test and
 the text.
 """
