@@ -917,3 +917,29 @@ class StatementBalanceEvidence(db.Model):
 
     def __repr__(self):
         return f"<StatementBalanceEvidence {self.name}>"
+
+
+class WithholdingKind(db.Model):
+    """WHICH TAX a transcribed pay stub's withholding figure is (**salary:S11-a**).
+
+    The catalogue behind ``salary.pay_stub_withholdings.withholding_kind_id``
+    (ruling **R-SAL42**): federal income, state income, Social Security and
+    Medicare.  A tax a stub may print and this list does not yet name (a city
+    income tax) is a new ROW here and a new enum member, never a table change;
+    :class:`app.enums.WithholdingKindEnum` carries why it is a list rather than
+    four columns.
+
+    Application code resolves these via ``ref_cache.withholding_kind_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "withholding_kinds"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<WithholdingKind {self.name}>"

@@ -89,14 +89,23 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+#: The block every session's commit ends with, spelled with no real session.
+#: The ``Ships:`` controls put the trailer in it or beside it, because WHERE
+#: the line sits relative to this block is what decides whether git reads it.
+_SIGN_OFF = (
+    "Co-Authored-By: a session <session@localhost>\n"
+    "Claude-Session: https://session.invalid/0"
+)
+
+
 def _build_merge_in_waiting(monkeypatch, root: Path, claim: str) -> str:
     """Build the scratch repository the merge-in-progress controls grade.
 
     ``main`` holds A then C; ``other`` holds A then B.  C keeps the merge from
     fast-forwarding, which is what leaves ``MERGE_HEAD`` behind when the merge
-    is stopped before its commit.  B carries ``claim`` in its body, so the
-    unticked-leaf arm -- which reads history through its own ``git log`` --
-    has something to find only once B is carried.  Returns B's sha.
+    is stopped before its commit.  B carries ``claim`` as its last paragraph,
+    so the unticked-leaf arm -- which reads history through its own ``git
+    log`` -- has something to find only once B is carried.  Returns B's sha.
 
     The isolation is done HERE and not by the caller, so the control that
     plants a hostile environment grades the builder every fixture uses.
@@ -113,6 +122,24 @@ def _build_merge_in_waiting(monkeypatch, root: Path, claim: str) -> str:
     return other
 
 
+def _build_history(monkeypatch, root: Path, *messages: str) -> list[str]:
+    """Commit each message in a fresh scratch repository, point the module at it.
+
+    Isolated first, for the reason :func:`_isolate` gives.  ``steps.md`` is
+    still read from the live tree, since the registry paths are bound at
+    import and only the git root moves -- so a scratch commit can claim a live
+    row by its key.  Returns the commits' shas, oldest first.
+    """
+    _isolate(monkeypatch, root)
+    _git(root, "init", "-q", "-b", "main")
+    shas = []
+    for message in messages:
+        _git(root, "commit", "-q", "--allow-empty", "-m", message)
+        shas.append(_git(root, "rev-parse", "HEAD"))
+    monkeypatch.setattr(registry, "REPO", root)
+    return shas
+
+
 def _live(ident: str) -> registry.StepRow:
     """Return a live step row by bare ident, failing the control if it is gone."""
     for row in registry.step_rows():
@@ -122,12 +149,13 @@ def _live(ident: str) -> registry.StepRow:
     raise AssertionError  # unreachable, and pylint wants a return path
 
 
-def _open_leaf() -> registry.StepRow:
-    """Return a live ranked leaf, so a scratch commit can claim it by name."""
+def _open_row(*, container: bool = False) -> registry.StepRow:
+    """Return a live open leaf -- or container -- so a scratch commit can claim it by key."""
     for row in registry.step_rows():
-        if not row.shipped and not row.is_container:
+        if not row.shipped and row.is_container == container:
             return row
-    pytest.fail("steps.md has no open leaf left; these controls need one to claim")
+    kind = "container" if container else "leaf"
+    pytest.fail(f"steps.md has no open {kind} left; these controls need one to claim")
     raise AssertionError  # unreachable, and pylint wants a return path
 
 
@@ -219,55 +247,110 @@ class TestNoOpenLeafHasAlreadyShipped:
         """No commit in this tree claims a step steps.md still ranks."""
         assert not _shipped.unticked_leaf_violations()
 
-    def test_the_control_fires_on_the_specimen_this_arm_exists_for(self, stage):
-        """Un-ticking a shipped leaf whose commit names it is refused.
+    def test_the_specimens_prose_is_no_longer_a_claim(self, stage):
+        """Un-ticking the leaf whose commit only NAMES it in prose raises nothing.
 
-        ``balance:X-au-f-2`` is the live specimen: its commit ``cb4239a2`` says
-        ``Plan step balance:X-au-f-2`` in its own body, so putting the row back
-        the way 2026-09-10 left it reproduces the exact defect.
+        ``balance:X-au-f-2`` is the specimen the arm was built for: its commit
+        ``cb4239a2`` says ``Plan step balance:X-au-f-2`` in its own body, and
+        the prose reading refused exactly this staged row.  Since **R-BAL134**
+        a sentence is not a claim, so the same row now passes; the firing half
+        is :class:`TestOnlyTheShipsTrailerIsAClaim`, where the claim is a
+        trailer.
         """
         row = _live("X-au-f-2")
         stage("steps", f"| SHIPPED | {row.commit.strip()} | -- |", "| #17 | -- | NOW |")
         problems = _shipped.unticked_leaf_violations()
-        assert any("X-au-f-2" in p for p in problems), problems
+        assert not [p for p in problems if row.key in p], problems
 
-    def test_a_container_is_never_graded(self):
-        """A commit naming a container is naming its SPAN, not a step it shipped.
 
-        The exemption is measured, not assumed: grading containers raised five
-        false positives on the live corpus against one true finding, each a leaf
-        commit citing the family it belongs to.
+class TestOnlyTheShipsTrailerIsAClaim:
+    """Ruling R-BAL134: a claim is a ``Ships: <arc>:<id>`` trailer, parsed by git.
+
+    Each control commits a message in a scratch repository and asks the arm
+    about a live open leaf -- the same row in every case -- so the only thing
+    that differs between a case that fires and one that does not is the
+    message.  The ``prose`` case is ``ec1a5b28``'s shape, the C18 checkpoint
+    whose sentence naming the open ``recurrence:R22`` blocked C18's merge with
+    ``dev`` under the prose reading.
+    """
+
+    @staticmethod
+    def _claims_of(monkeypatch, root: Path, message: str, row: registry.StepRow) -> list[str]:
+        """Commit ``message`` in a scratch repository; return the arm's messages naming ``row``."""
+        sha = _build_history(monkeypatch, root, message)[-1]
+        claimed = [p for p in _shipped.unticked_leaf_violations() if p.startswith(f"{row.key} ")]
+        assert all(sha[:9] in p for p in claimed), claimed
+        return claimed
+
+    @pytest.mark.parametrize("body", [
+        "Body.\n\nShips: {key}\n" + _SIGN_OFF,
+        "Body.\n\nShips: {key}",
+        "Body.\n\nships: {key}\n" + _SIGN_OFF,
+        "Body.\n\nShips: nothing:NOTHING\nShips: {key}\n" + _SIGN_OFF,
+    ], ids=["beside-the-sign-off", "alone-as-the-last-paragraph", "lowercase-key",
+            "second-of-two"])
+    def test_a_trailer_naming_an_open_leaf_fires(self, tmp_path, monkeypatch, body):
+        """A ``Ships:`` line in git's trailer block claims the leaf it names."""
+        row = _open_row()
+        message = "feat(x): the leaf\n\n" + body.format(key=row.key)
+        assert self._claims_of(monkeypatch, tmp_path, message, row)
+
+    @pytest.mark.parametrize("body", [
+        "Plan step {key}, NOT COMPLETE: a checkpoint.\n\nPlan step {key} (the from-scratch "
+        "design) deletes it.\n\n" + _SIGN_OFF,
+        "Body.\n\nShips: {key}\n\n" + _SIGN_OFF,
+        "Ships: {key}\nis a line in the body.\n\n" + _SIGN_OFF,
+        "Body.\n\nShips: {bare}\n" + _SIGN_OFF,
+        "Body.\n\nShips: {key} (the leaf)\n" + _SIGN_OFF,
+        "Body.\n\nShipped: {key}\n" + _SIGN_OFF,
+    ], ids=["prose", "own-paragraph-above-the-sign-off", "in-the-body", "bare-id",
+            "trailing-note", "near-miss-key"])
+    def test_anything_but_that_trailer_is_not_a_claim(self, tmp_path, monkeypatch, body):
+        """Prose, a ``Ships:`` line git reads as no trailer, or a value that is not a key."""
+        row = _open_row()
+        message = "feat(x): the leaf\n\n" + body.format(key=row.key, bare=row.bare_ident)
+        assert not self._claims_of(monkeypatch, tmp_path, message, row)
+
+    def test_a_trailer_naming_a_container_is_not_graded(self, tmp_path, monkeypatch):
+        """A container ticks with its last leaf, so the leaf's trailer is its claim.
+
+        The pair with the first case above: the same message shape, a
+        container in place of the leaf, and the arm must answer differently.
         """
-        containers = [r for r in registry.step_rows() if r.is_container]
-        assert containers, "no container left to grade this exemption against"
-        claimed = {p.split(":")[1].split(" ")[0] for p in _shipped.unticked_leaf_violations()}
-        assert not claimed & {r.ident for r in containers}
+        row = _open_row(container=True)
+        message = f"feat(x): the leaf\n\nBody.\n\nShips: {row.key}\n{_SIGN_OFF}"
+        assert not self._claims_of(monkeypatch, tmp_path, message, row)
 
-    def test_a_commit_that_declines_the_tick_is_not_a_violation(self, monkeypatch):
-        """A commit saying it does NOT tick its step is honest, not a miss.
+    def test_a_trailer_naming_a_shipped_step_passes(self, tmp_path, monkeypatch):
+        """A leaf that shipped AND was ticked is the case every future leaf ends in.
 
-        ``1cd4e61b`` is the live specimen: it shipped a rehearsed runbook for
-        ``balance:X-f3c-2b-2c`` and states that the tick waits on a production
-        deploy.  An arm that graded it would punish the one behaviour it wants.
+        The pair with the first case above: the same message shape, a SHIPPED
+        row in place of the open leaf.  Grading it would block every branch
+        carrying the leaf's commit the moment its tick landed -- the wedge
+        R-BAL134 was ruled to remove -- and no trailer existed on the day this
+        was written, so the live corpus could not have caught it.
         """
-        row = _live("X-f3c-2b-2c")
-        monkeypatch.setattr(_shipped, "_commits", lambda: [
-            ("0" * 40, f"test(x): a runbook\n\nPlan step {row.arc}:{row.ident}. "
-                       "It does NOT tick its step: the repair needs a deploy."),
-        ])
-        assert not _shipped.unticked_leaf_violations()
+        row = next(r for r in registry.step_rows() if r.shipped)
+        message = f"feat(x): the leaf\n\nBody.\n\nShips: {row.key}\n{_SIGN_OFF}"
+        assert not self._claims_of(monkeypatch, tmp_path, message, row)
 
-    def test_the_control_fires_when_that_disclaimer_is_absent(self, monkeypatch):
-        """The same commit without its disclaimer IS a violation.
+    def test_a_step_claimed_twice_names_its_latest_claimant(self, tmp_path, monkeypatch):
+        """Two commits claim one open leaf; the message cites the newer."""
+        row = _open_row()
+        claim = f"Body.\n\nShips: {row.key}\n{_SIGN_OFF}"
+        shas = _build_history(
+            monkeypatch, tmp_path, f"feat(x): first\n\n{claim}", f"feat(x): second\n\n{claim}",
+        )
+        claimed = [p for p in _shipped.unticked_leaf_violations() if p.startswith(f"{row.key} ")]
+        assert len(claimed) == 1 and shas[-1][:9] in claimed[0], (shas, claimed)
 
-        The pair is what proves the exemption discriminates: one staged string
-        apart, and the arm must answer differently.
-        """
-        row = _live("X-f3c-2b-2c")
-        monkeypatch.setattr(_shipped, "_commits", lambda: [
-            ("0" * 40, f"test(x): a runbook\n\nPlan step {row.arc}:{row.ident}."),
-        ])
-        assert any(row.ident in p for p in _shipped.unticked_leaf_violations())
+    def test_a_walk_git_cannot_run_raises_rather_than_passing(self, tmp_path, monkeypatch):
+        """A failed ``git log`` is an error, not an empty history that claims nothing."""
+        row = _open_row()
+        _build_history(monkeypatch, tmp_path, f"feat(x): the leaf\n\nShips: {row.key}")
+        monkeypatch.setattr(_shipped, "graded_heads", lambda: ("refs/heads/no-such-branch",))
+        with pytest.raises(RuntimeError, match="could not read"):
+            _shipped.unticked_leaf_violations()
 
 
 class TestAMergeBeingCommittedIsGradedAgainstBothParents:
@@ -291,10 +374,8 @@ class TestAMergeBeingCommittedIsGradedAgainstBothParents:
     @pytest.fixture(name="scratch")
     def _scratch(self, tmp_path, monkeypatch) -> dict[str, str]:
         """The scratch repository, with the module's git root pointed at it."""
-        leaf = _open_leaf()
-        other = _build_merge_in_waiting(
-            monkeypatch, tmp_path, f"Plan step {leaf.arc}:{leaf.ident}.",
-        )
+        leaf = _open_row()
+        other = _build_merge_in_waiting(monkeypatch, tmp_path, f"Ships: {leaf.key}")
         monkeypatch.setattr(registry, "REPO", tmp_path)
         return {"root": str(tmp_path), "other": other, "claimed": leaf.key}
 
@@ -376,7 +457,7 @@ class TestTheScratchRepositoryCannotReachTheDevelopersRepository:
 
         scratch = tmp_path / "scratch"
         scratch.mkdir()
-        _build_merge_in_waiting(monkeypatch, scratch, "Plan step nothing:NOTHING.")
+        _build_merge_in_waiting(monkeypatch, scratch, "Ships: nothing:NOTHING")
 
         _isolate(monkeypatch, victim)
         bare = subprocess.run(
@@ -416,7 +497,7 @@ class TestTheScratchRepositoryCannotReachTheDevelopersRepository:
 
         scratch = tmp_path / "scratch"
         scratch.mkdir()
-        _build_merge_in_waiting(monkeypatch, scratch, "Plan step nothing:NOTHING.")
+        _build_merge_in_waiting(monkeypatch, scratch, "Ships: nothing:NOTHING")
 
         assert not marker.exists(), "the developer's global hook ran against the scratch"
         assert _git(scratch, "rev-parse", "--verify", "other"), "the builder did not finish"

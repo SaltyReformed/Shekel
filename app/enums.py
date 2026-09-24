@@ -143,6 +143,35 @@ class PaycheckLineKindEnum(enum.Enum):
     AFTER_TAX_EARNING = "after_tax_earning"
 
 
+class WithholdingKindEnum(enum.Enum):
+    """WHICH TAX a pay stub's withholding figure is (plan step **salary:S11-a**).
+
+    Values match ``ref.withholding_kinds.name``, the catalogue behind
+    ``salary.pay_stub_withholdings.withholding_kind_id`` (ruling **R-SAL42**,
+    round 4, fork 11: "a table per kind of line").  A transcribed stub
+    carries one amount per TAX it prints, and this says which tax each
+    amount is::
+
+        FEDERAL_INCOME   -- federal income tax withheld
+        STATE_INCOME     -- state income tax withheld
+        SOCIAL_SECURITY  -- the employee's Social Security (OASDI) share
+        MEDICARE         -- the employee's Medicare share
+
+    **A reference list and not four columns, and the difference is the
+    document's.**  A real stub can lack one of these (a state with no income
+    tax) or carry one more (a city income tax, a state disability line), so
+    "exactly these four" is the app's paycheck model and not a fact of the
+    stub.  A new tax is a new member and a new row here, never a table
+    change.  The four members are the four withholding lines the paycheck
+    engine computes today (``paycheck_calculator._breakdown.TaxLines``).
+    """
+
+    FEDERAL_INCOME = "federal_income"
+    STATE_INCOME = "state_income"
+    SOCIAL_SECURITY = "social_security"
+    MEDICARE = "medicare"
+
+
 class CalcMethodEnum(enum.Enum):
     """Calculation method values.
 
