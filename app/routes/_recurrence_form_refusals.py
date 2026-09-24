@@ -50,6 +50,7 @@ from datetime import date
 from typing import Any
 
 from flask import Response, flash
+from flask_login import current_user
 
 from app.extensions import db
 from app.routes._redirect_target import RedirectTarget
@@ -678,22 +679,17 @@ class StrandingCheck:
     **R-PC95**), which read after the edit would already leave out every row
     the edit moves below the books.  One value, built by
     :meth:`before_the_edit` where each edit door captures its before-image,
-    so no door can ask the refusal without having asked first.
+    so no door can ask the refusal without having asked first.  Everything
+    else the refusal reads is the state AFTER the edit, off a pass of its
+    own (the round-8 review's L1).
 
     Attributes:
-        pass_ctx: The door's PRE-WRITE read pass.  Its resolution memo is
-            keyed by the rule's spec and the definition's books, so the
-            edited rule resolves afresh; the calendar and the per-account
-            opening memos are keyed by the owner and the account, and they
-            serve the edited state only because an edit moves no payday and
-            no opening.
         restorable: The rows the definition's unarchive would restore as it
             stood
             (:func:`app.services.planned_rows_books.restorable_before_the_edit`);
             ``None`` for an active definition.
     """
 
-    pass_ctx: BalanceContext
     restorable: UnarchiveScope | None
 
     @classmethod
@@ -710,7 +706,6 @@ class StrandingCheck:
             The :class:`StrandingCheck`.
         """
         return cls(
-            pass_ctx,
             planned_rows_books.restorable_before_the_edit(template, pass_ctx),
         )
 
@@ -743,7 +738,14 @@ def refuse_stranding_save(
 
     **Asked once the edit is whole and before regeneration**, unlike the four
     rules above, because it reads what the save would LEAVE.  So the session
-    holds the edit, and a refusal ROLLS IT BACK before it flashes.
+    holds the edit, and a refusal ROLLS IT BACK before it flashes.  **It
+    reads a pass built HERE, after every write the door makes before
+    regenerating** (the round-8 review's L1), exactly as the regeneration
+    builds its own: the pre-write pass's loan caches are keyed by account
+    alone and go stale once the edit or the standing payment's sync writes,
+    so a preview read off it could decide over a state the save does not
+    leave.  For a definition with a rule -- the only one this refusal walks
+    -- nothing is written between this pass and the regeneration's.
 
     Args:
         template: The edited definition -- rule, amount and fields applied,
@@ -761,7 +763,7 @@ def refuse_stranding_save(
         ``None`` when the save strands nothing.
     """
     stranded = planned_rows_books.definition_edit_refusal(
-        template, check.pass_ctx, check.restorable,
+        template, BalanceContext.build(current_user.id), check.restorable,
         planned_rows_books.SaveRegeneration(kind.preview_fn, effective_from),
     )
     if stranded is None:

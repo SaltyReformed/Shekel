@@ -50,7 +50,8 @@ STANDS, before the save being graded
 unarchive routes restore by), and name such a row as the archived
 definition's, with the remedy that reaches it.  The unarchive leaves
 deleted, and names, a row the books already drop or hold (ruling
-**R-PC95**), so the refusal never names a row it would not restore.  **Not covered**: an
+**R-PC95**), so the refusal names none it would not restore -- save where
+the rule cannot be walked, and every hidden row is counted.  **Not covered**: an
 unarchive still restores a row deleted by hand ABOVE the books, and the
 conflict chooser's "use the template" un-deletes one without asking the walk
 (ledger rows **REC-536** and **REC-535**, closed by plan step
@@ -299,9 +300,9 @@ class DefinitionWalk:
         resolved: The definition's recurrence, carrying the books floor the
             save would leave -- or ``None`` for a definition a restatement
             reaches only through the rows it left ON the account (ruling
-            **R-PC99**): its walk is bounded by other accounts' books, which
-            the restatement does not move, so only where its rows sit is
-            asked, and no rule is read (the round-7 review's L2).
+            **R-PC99**): its walk is bounded by books the restatement does
+            not move, so only where its rows sit is asked (the round-7
+            review's L2; an archived one's scope still walks its rule).
         definition: The
             :class:`~app.models.transaction_template.TransactionTemplate` or
             :class:`~app.models.transfer_template.TransferTemplate` itself --
@@ -657,8 +658,8 @@ def first_row_an_opening_strands(
     SITTING ON the account is asked whether the candidate books hold its own
     day (ruling **R-PC99**), a definition that moved off it included: its
     rows of paychecks that had already ended stayed here, and the balance
-    counts them here.  Such a definition's rule is NOT read (the round-7
-    review's L2): nothing it could say bounds rows by this account's books.
+    counts them here.  Nothing such a definition's rule says bounds rows by
+    this account's books, so it is walked only if archived, for its scope.
     An archived definition's restorable rows are read off the SAME
     composition over the books as they stand (ruling **R-PC95**), or every
     hidden row where its rule cannot be walked.  A rule-less definition is
@@ -762,7 +763,7 @@ def _recurring_definitions_bounding(account_id: int) -> list:
 
 
 def reject_revert_below_the_books(row, new_status_id: int) -> None:
-    """Refuse setting *row* back to Projected when the books hold it (R-PC97, R-PC99).
+    """Refuse setting *row* back to Projected when the books drop or hold it (R-PC97, R-PC99).
 
     **Ruling R-PC97's one refusal** (developer 2026-09-23, the C18-a
     round-4 review's H2), asked by each row type's one status door ahead of
@@ -951,10 +952,9 @@ def definition_edit_refusal(
             :class:`~app.models.transaction_template.TransactionTemplate` or
             :class:`~app.models.transfer_template.TransferTemplate`, its new
             field values and rule applied, not yet committed.
-        ctx: The route's read pass
-            (:class:`~app.services.balance_at.BalanceContext`) for the owner:
-            its baseline scenario and calendar are the ones the save's
-            regeneration runs over (an edit moves no payday).
+        ctx: A read pass for the owner built after the door's writes, as
+            the regeneration builds its own (for a definition with a rule,
+            nothing is written between them): the state the save leaves.
         restorable: :func:`restorable_before_the_edit`'s answer, asked
             before the edit was applied; ``None`` for an active definition.
         regeneration: How the save regenerates (:class:`SaveRegeneration`),

@@ -211,8 +211,11 @@ class RegenerationPreview(NamedTuple):
     ``planned_rows_books.definition_edit_refusal``): that refusal grades the
     state an edit would LEAVE (ruling **R-PC91**), and a row this pass brings
     into line is left where the pass puts it, not where it is stored.  Read
-    off the SAME decision the pass writes from (:func:`_decide`), so the rows
-    a refusal treats as rewritten or deleted are the ones the pass rewrites
+    off the SAME decision function the pass writes from (:func:`_decide`), so
+    asked over the state the pass will run on -- the edit doors build its
+    read pass after their last write before regenerating a definition with a
+    rule, as the regeneration does -- the rows a
+    refusal treats as rewritten or deleted are the ones the pass rewrites
     and deletes.
 
     Attributes:

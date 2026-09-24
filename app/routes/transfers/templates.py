@@ -724,11 +724,9 @@ def _regenerate_and_commit_template(
         template_id: The template's id, used for redirect kwargs and logging.
         stranding: The route's
             :class:`~app.routes._recurrence_form_refusals.StrandingCheck`,
-            built before the edit: its PRE-WRITE read pass, whose resolution
-            memo is keyed by the rule's spec and the definition's books so
-            the edited and synced rule resolves afresh, and the rows the
-            definition's unarchive would restore as it stood.  Regeneration
-            still builds its own pass.
+            built before the edit: the rows the definition's unarchive would
+            restore as it stood.  The refusal builds its own read pass after
+            the sync, and the regeneration its own after that.
 
     Returns:
         A ``Response`` -- the chooser, or the edit form on a stale-data or
