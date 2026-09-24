@@ -313,8 +313,8 @@ def next_third_after(pairs: list[PeriodPair], today: date) -> dict[str, object] 
     Returns:
         ``{"period_start": date, "net": Decimal, "delta": Decimal}`` where
         ``delta`` is the third-paycheck net minus the base regular net at
-        the same salary level, or ``None`` when no future third paycheck
-        exists in the projection.
+        the same base pay (:func:`base_regular_net`), or ``None`` when no
+        future third paycheck exists in the projection.
     """
     for idx, (period, breakdown) in enumerate(pairs):
         if period.start_date > today and breakdown.period.is_third_paycheck:

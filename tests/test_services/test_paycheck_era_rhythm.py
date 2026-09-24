@@ -37,8 +37,11 @@ derived by the code under test:
 goals, the retirement gap's current-pay fallback and the salary cockpit's
 third-paycheck chip all turned today's paycheck into a month at the LATEST
 era's count, which agreed with the engine only while it divided every payday
-by that count.  The last class grades each surface for an owner paid biweekly
-today with a weekly rhythm recorded to start later.
+by that count.  :class:`TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm` and
+:class:`TestTheRecurringSalaryRow` grade each surface for an owner paid
+biweekly today with a weekly rhythm recorded to start later (rulings
+**R-SAL71** and **R-SAL73** for the Recurring page's salary row, which reads
+today's priced paycheck rather than the template's stored copy).
 """
 
 from datetime import date, timedelta
@@ -47,7 +50,14 @@ from decimal import ROUND_HALF_UP, Decimal
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum, GoalModeEnum, IncomeUnitEnum
 from app.models.savings_goal import SavingsGoal
-from app.services import pay_era_write, salary_cockpit_service, savings_dashboard_service
+from app.models.ref import FilingStatus
+from app.models.salary_profile import SalaryProfile
+from app.services import (
+    pay_era_write,
+    recurring_view,
+    salary_cockpit_service,
+    savings_dashboard_service,
+)
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import (
     PayCadence,
@@ -533,12 +543,18 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
         At the latest count it read 2,000 x 52 / 12 = $8,666.67, which halves
         the ratio.  The numerator is the debt summary's own payment total
         (not under test), so the ratio is asserted over the denominator the
-        way the savings page's own DTI cases pin it, and asserted apart from
-        the latest-count ratio so the equality graded the denominator.
+        way the savings page's own DTI cases pin it.  **The loan is made-up
+        $50,000**, so the ratio sits near 50% and its one-decimal quantum
+        resolves the denominator to about 0.2% (roughly $4 either side); an
+        adversarial review of this step found the first draft's $1,000 loan
+        put the ratio at 1.0%, where any denominator within about 5% read
+        the same.
         """
         with app.app_context():
             self._seed(db, seed_user, seed_periods_today)
-            _create_small_loan(seed_user, db.session)
+            _create_small_loan(
+                seed_user, db.session, principal=Decimal("50000.00"),
+            )
             db.session.commit()
             summary = savings_dashboard_service.compute_debt_summary(
                 BalanceContext.build(seed_user["user"].id),
@@ -552,6 +568,9 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
                 ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
             assert summary.dti.ratio == ratio_over(Decimal("4333.33"))
+            assert summary.dti.ratio > Decimal("20.0"), (
+                "the ratio is too coarse to grade the denominator"
+            )
             assert summary.dti.ratio != ratio_over(Decimal("8666.67"))
 
     def test_the_retirement_gaps_current_pay_fallback(
@@ -569,6 +588,60 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
             picture = _picture(seed_user["user"].id)
             assert picture.retirement_date is None
             assert picture.net.pre_retirement_net_monthly == Decimal("4001.83")
+
+
+class TestTheRecurringSalaryRow:
+    """The Recurring page's salary row is TODAY's priced paycheck (R-SAL71, R-SAL73).
+
+    The owner is :class:`TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm`'s --
+    $52,000.00 paid every 14 days, FICA seeded, a weekly era recorded to take
+    effect after the saved record -- with the profile created through the
+    salary form, so its template is the real one (``POST /salary``).  The
+    template's stored ``default_amount`` is then overwritten with a made-up
+    STALE $1.00, which is what a stored copy becomes when a raise date passes
+    between saves: the row must not read it.
+    """
+
+    def test_amount_monthly_and_the_forward_per_paycheck_unit(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Amount $1,847.00; Monthly 1,847 x 26 / 12 = $4,001.83; per paycheck $923.50.
+
+        The per-paycheck toggle keeps the page's one unit, a paycheck at the
+        LATEST rhythm (R-SAL73): 4,001.83... x 12 / 52 = $923.50.  Read off the
+        stored copy at the latest count, the row showed $1.00 and
+        1.00 x 52 / 12 = $4.33 a month -- and $8,003.67 with a copy freshly
+        saved at today's $1,847.00.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            seed_fica_config(user_id)
+            last_payday = max(period.start_date for period in seed_periods_today)
+            pay_era_write.mint_era(
+                user_id, era_of(last_payday + timedelta(days=28), 7),
+            )
+            db.session.commit()
+            filing = db.session.query(FilingStatus).filter_by(name="single").one()
+            auth_client.post("/salary", data={
+                "name": "Main Job",
+                "annual_salary": "52000.00",
+                "filing_status_id": filing.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+            template = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=user_id, name="Main Job").one().template
+            )
+            template.default_amount = Decimal("1.00")
+            db.session.commit()
+
+            view = recurring_view.build_view(
+                [template], [], [], BalanceContext.build(user_id),
+            )
+            (row,) = view.income.rows
+            assert row.amount == Decimal("1847.00")
+            assert row.equivalent.monthly == Decimal("4001.83")
+            assert row.equivalent.per_paycheck == Decimal("923.50")
 
 
 class TestTheCockpitsThirdPaycheckChip:

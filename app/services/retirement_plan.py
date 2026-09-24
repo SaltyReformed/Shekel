@@ -614,11 +614,20 @@ class RetirementPicture:
 
     @property
     def pay_cadence(self) -> PayCadence:
-        """How often the owner is paid.
+        """How often the owner is paid going forward: the LATEST era's rhythm.
+
+        Off the gap inputs.  Its reader spreads each account's contribution
+        limit over a year's paychecks for the lever's headroom (where the
+        contribution it is set against is today's paycheck's, priced at
+        today's rhythm -- finding **SAL-571**, ruling **R-SAL72**).  **It no
+        longer turns a paycheck into monthly income**, which is what this
+        docstring said until plan step salary:X-av-2: the gap converts at the
+        rhythm of the paycheck it compares against
+        (:class:`~app.services.retirement_dashboard_service.GapPaycheck`,
+        ruling **R-SAL70**).
 
         Returns:
-            The owner's :class:`~app.services.pay_calendar.PayCadence`, which is
-            what turns one paycheck into monthly income.
+            The owner's :class:`~app.services.pay_calendar.PayCadence`.
         """
         return self.inputs.gap.pay_cadence
 

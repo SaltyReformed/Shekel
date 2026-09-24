@@ -100,7 +100,7 @@ pass in, Decimal results out.  No Flask imports.
 """
 
 from decimal import Decimal
-from typing import Iterable, Union
+from typing import TYPE_CHECKING, Iterable, Union
 
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -108,6 +108,10 @@ from app.services.balance_at import BalanceContext
 from app.services.recurrence import RuleReading, cadence_of, has_ended
 from app.services.recurring_definition import read_definition
 from app.utils.money import round_money
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import PayCadence
+    from app.services.paycheck_calculator import PaycheckBreakdown
 
 # Either ORM template class exposes ``recurrence_rule`` and
 # ``default_amount`` -- the aggregator reads them via attribute
@@ -174,6 +178,108 @@ def _committed_amount(template: RecurringTemplate) -> Decimal | None:
     return amount
 
 
+def _todays_paycheck(
+    template: RecurringTemplate, ctx: BalanceContext,
+) -> "PaycheckBreakdown | None":
+    """TODAY's paycheck when *template* is an active salary profile's, else ``None``.
+
+    Ruling **R-SAL71** (plan step salary:X-av-2): a salary definition's
+    ``default_amount`` is a STORED copy of a paycheck the engine priced when
+    the salary was last saved, which records neither which payday it was nor
+    the rhythm that payday was paid at -- so a reader converting it to a
+    month has to guess the count, and guessed the LATEST era's.  That was
+    right only while the engine divided every payday by that count too.  The
+    definition's figure is read from the pricer instead: the pass's
+    :class:`~app.services.income_service.SalaryPricing`, which knows which
+    profile drives the template in this scenario, prices the paycheck of the
+    span containing the pass's day.
+
+    ``span_containing`` rather than the saved ``period_containing``: it IS
+    the savings page's current period wherever the saved schedule covers the
+    day, and past the horizon it keeps answering with the projected paycheck,
+    so the row never falls back to the copy there.  ``None`` before the
+    owner's first payday -- there is no paycheck today to price -- and for
+    every definition no active profile drives, which keeps its stored amount.
+    A transfer template is never a paycheck, and neither is a duck-typed
+    test template (the module docstring's contract).
+
+    Args:
+        template: The recurring definition.
+        ctx: The read pass: its pricer, its scenario, its calendar and its day.
+
+    Returns:
+        The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`, or
+        ``None``.
+    """
+    if not isinstance(template, TransactionTemplate):
+        return None
+    basis = ctx.amounts_or_none()
+    if basis is None:
+        return None
+    today = ctx.calendar().span_containing(ctx.as_of)
+    if today is None:
+        return None
+    return basis.salary.paycheck_on(template.id, today)
+
+
+def _commitment(
+    template: RecurringTemplate, ctx: BalanceContext,
+) -> "tuple[Decimal, PayCadence] | None":
+    """What one occurrence of *template* commits and the rhythm it converts at.
+
+    The pair a monthly equivalent is computed from, answered ONCE for both
+    kinds of definition (ruling **R-SAL71**): a salary profile's definition
+    commits today's priced paycheck at the rhythm the engine priced it at
+    (:attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`); every
+    other definition its stored amount at the owner's latest rhythm, which
+    is the forward-looking count a recurring bill is paid at.  ``None`` when
+    the definition does not repeat or commits nothing -- a salary one by its
+    priced net, so the stored copy decides nothing about it.
+
+    Args:
+        template: The recurring definition.
+        ctx: The read pass.
+
+    Returns:
+        ``(amount, pay cadence)``, or ``None``.
+    """
+    if template_rule(template) is None:
+        return None
+    paycheck = _todays_paycheck(template, ctx)
+    if paycheck is not None:
+        net = paycheck.earnings.net_pay
+        return None if net == 0 else (net, paycheck.period.cadence)
+    amount = _committed_amount(template)
+    return None if amount is None else (amount, ctx.calendar().cadence)
+
+
+def occurrence_amount(
+    template: RecurringTemplate, ctx: BalanceContext,
+) -> Decimal | None:
+    """Return what one occurrence of *template* commits, as the read pass prices it.
+
+    The Recurring surface's Amount column (ruling **R-SAL73**): a salary
+    profile's definition shows TODAY's priced paycheck -- never the stored
+    copy, which goes stale when a raise date passes until the salary is next
+    saved -- and every other definition its stored amount.  The same
+    :func:`_todays_paycheck` its monthly figure is converted from, so the row
+    cannot show one paycheck and total another; the pricer memoizes the
+    paycheck by payday, so asking twice prices once.
+
+    Args:
+        template: The recurring definition.
+        ctx: The read pass.
+
+    Returns:
+        The amount, or ``None`` when the definition states none.
+    """
+    paycheck = _todays_paycheck(template, ctx)
+    if paycheck is not None:
+        return paycheck.earnings.net_pay
+    amount = getattr(template, "default_amount", None)
+    return None if amount is None else Decimal(str(amount))
+
+
 def monthly_or_none(
     template: RecurringTemplate, reading: RuleReading, ctx: BalanceContext,
 ) -> Decimal | None:
@@ -232,8 +338,8 @@ def monthly_or_none(
             this module feeds while the Recurring surface 500'd on the same
             row.
     """
-    amount = _committed_amount(template)
-    if amount is None:
+    commitment = _commitment(template, ctx)
+    if commitment is None:
         return None
 
     rule = template_rule(template)
@@ -246,8 +352,11 @@ def monthly_or_none(
     # per-month ceiling binds, the amount times the ceiling exactly.  The
     # division was spelled inline here until that step gave it a second arm;
     # ``Cadence.monthly_equivalent`` carries both and the 31,072-cent
-    # measurement of why neither may round twice.
-    return cadence_of(rule).monthly_equivalent(amount, ctx.calendar().cadence)
+    # measurement of why neither may round twice.  The pay cadence is the one
+    # the amount is paid at (ruling R-SAL71): today's paycheck's own rhythm for
+    # a salary definition, the owner's latest for every other.
+    amount, pay_cadence = commitment
+    return cadence_of(rule).monthly_equivalent(amount, pay_cadence)
 
 
 def template_monthly_or_none(
@@ -290,6 +399,11 @@ def template_monthly_or_none(
             a bound nothing derived.  A definition with no loan behind it
             still resolves for such an owner.
     """
+    # The pre-door skip asks the STORED amount, schedule-free.  Its two callers
+    # (the emergency-fund floor: expense and transfer definitions; the goal
+    # floors: transfer definitions) pass no income definition, so no salary
+    # definition's stored copy decides anything here (ruling R-SAL71); a
+    # nonzero one would be re-decided from the priced paycheck below anyway.
     if _committed_amount(template) is None:
         return None
     return monthly_or_none(template, read_definition(template, ctx), ctx)
