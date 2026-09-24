@@ -70,15 +70,15 @@ from app.services.loan_ledger import (
 )
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.recurrence import (
-    OccurrencePlacement,
+    BooksWalk,
     RecurrenceSpec,
     ResolvedRecurrence,
-    occurrence_placements,
+    occurrence_walk,
     recurrence_spec,
-    resolved_spec,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
+from ._definition_books import DefinitionBooks, definition_books, resolved_with_books
 from ._memoize import _memoize_once, require_scenario
 
 if TYPE_CHECKING:
@@ -95,9 +95,9 @@ if TYPE_CHECKING:
 class BalanceContext:  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (13/7) -- suppressed because the
-    thirteen ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and ten
+    Pylint: ``too-many-instance-attributes`` (14/7) -- suppressed because the
+    fourteen ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and eleven
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
@@ -105,8 +105,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     calendar became a pass-level derivation instead of an argument every caller
     passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
     cash fold), 11 at balance:X-au-d (the paycheck pricing), 12 at
-    recurrence:**R16-b-2** (a rule's resolution) and 13 at
-    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk); plan step
+    recurrence:**R16-b-2** (a rule's resolution), 13 at
+    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk) and 14 at
+    pay_calendar:**C18-a** (each account's books floor); plan step
     **X-i1** raises it further, because that step's remaining inputs (the contribution feed, the
     standing extra, the contractual schedule) are memos of exactly this kind.
     The count is a property of what a read pass IS rather than a threshold
@@ -280,17 +281,24 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             exactly as :meth:`calendar` and :meth:`amounts` are for the two
             memos above.
         _recurrences: The pass's rule-resolution memo, keyed by the rule's
-            SPEC (what it authors, not which row it is -- see
-            :meth:`resolved_recurrence_of`).  Private because this module owns
-            the derivation (it imports the pure resolver, a leaf below the
+            SPEC and its definition's BOOKS (what it authors, where its
+            accounts' books open and whether it is an envelope, not which row
+            it is; :meth:`resolved_for`).  Private
+            because this module owns the derivation (it imports the pure resolver, a leaf below the
             seam), and a ``None`` value is a MEMOIZED "the owner has no pay
             periods", not an empty slot.
         _placements: The pass's occurrence-walk memo, keyed by the COMPOSED
             resolved recurrence the walk is a function of (see
             :meth:`placements_of`).  Private for the reason ``_recurrences``
-            is; every stored value is a tuple, and an empty one is a
+            is; every stored value is a ``BooksWalk``, and empty halves are a
             legitimate answer (a definition its destination closed before it
             ever fires), so membership rather than truthiness is the test.
+        _books_opened_on: ``account_id -> governing opened_on`` (plan step
+            ``pay_calendar:C18-a``): the books floor :meth:`resolved_for`
+            attaches, one read per account per pass; ``None`` is a memoized
+            "no opening record".  Keyed by rows, so stale after a restatement
+            inside the pass -- the convention :meth:`resolved_recurrence_of`
+            states for its row-keyed siblings.
     """
 
     user_id: int
@@ -320,13 +328,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _recurrences: "dict[RecurrenceSpec, ResolvedRecurrence | None]" = field(
+    _recurrences: (
+        "dict[tuple[RecurrenceSpec, DefinitionBooks], ResolvedRecurrence | None]"
+    ) = field(default_factory=dict, repr=False, compare=False)
+    _placements: "dict[ResolvedRecurrence, BooksWalk]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _placements: "dict[ResolvedRecurrence, tuple[OccurrencePlacement, ...]]" = (
-        field(default_factory=dict, repr=False, compare=False)
-    )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _books_opened_on: "dict[int, date | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -639,18 +650,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         under its authored closing to sum the definition's occurrences -- so
         one page reading one loan payment resolved its rule twice on one pass
         (plan ledger row **N-511**'s shape; rule 14's ONE WALK forbids it).
-        Both readers take the pure resolution from here and each applies its
-        own closing to the value.
+        Both readers take the resolution (books attached) from here and each
+        applies its own closing to the value.
 
         **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
         gives, and filled here because ``app.services.recurrence`` is a leaf
         below the seam.
 
         **Keyed by what the rule SAYS, not by which row it is.**  The
-        resolution is a pure function of the rule's authored columns and the
-        pass's calendar (:func:`~app.services.recurrence.resolved_spec`), so
-        the spec IS the rule's input and an entry keyed by it cannot be served
-        for a different one.  A first cut keyed by ``rule.id``, and the merge
+        resolution is a function of the rule's authored columns, the pass's
+        calendar and its definition's books (:meth:`resolved_for`'s key), so
+        an entry keyed by those inputs cannot be served for a different one.
+        A first cut keyed by ``rule.id``, and the merge
         of plan step R7d-c-2 -- which has GENERATION read a rule through this
         memo -- measured the proxy's cost: ``reauthor_rule`` rewrites columns
         IN PLACE, so a rule edited and regenerated on one pass regenerated on
@@ -688,14 +699,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         names the pairing; :func:`~._memoize._memoize_once` carries its own check because
         the derivations it stores do not refuse for themselves.
 
+        **Its books floor is its OWNER's accounts'** (plan step
+        ``pay_calendar:C18-a``): :meth:`resolved_for` over the rule's
+        template; a payroll line's rule has none and gets no floor.
+
         Args:
             rule: The :class:`~app.models.recurrence_rule.RecurrenceRule` to
                 resolve, stored or transient.
 
         Returns:
             The :class:`~app.services.recurrence.ResolvedRecurrence` with the
-            AUTHORED closing alone, or ``None`` when the owner has no pay
-            periods -- the two answers
+            AUTHORED closing alone and its books floor attached, or ``None``
+            when the owner has no pay periods -- the two answers
             :func:`~app.services.recurrence.resolved_spec` gives.
 
         Raises:
@@ -704,15 +719,60 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 with another owner's pass is refused there, and an unmodelled
                 stored cadence reading the key, as ``resolved_recurrence``.
         """
-        spec = recurrence_spec(rule)
-        if spec not in self._recurrences:
-            self._recurrences[spec] = resolved_spec(spec, self.calendar())
-        return self._recurrences[spec]
+        # ``getattr``: a rule is duck-typed on this seam (fixtures build one
+        # as a namespace); ``is None``, not ``or``: an ORM row's truthiness is
+        # not the question asked.
+        owner = getattr(rule, "transaction_template", None)
+        if owner is None:
+            owner = getattr(rule, "transfer_template", None)
+        return self.resolved_for(recurrence_spec(rule), owner)
 
-    def placements_of(
-        self, resolved: ResolvedRecurrence,
-    ) -> tuple[OccurrencePlacement, ...]:
-        """Return every occurrence *resolved* names on this owner's calendar, walking once.
+    def resolved_for(
+        self, spec: RecurrenceSpec, definition: object | None,
+    ) -> "ResolvedRecurrence | None":
+        """Return what *spec* MEANS for *definition*, its books floor attached.
+
+        **The ONE composition of a definition's resolved value with where its
+        books open** (plan step ``pay_calendar:C18-a``, rulings **R-PC85**,
+        **R-PC86**; the argument is :mod:`._definition_books`'), so every
+        reader of its occurrences takes the floor from one call: the composed
+        door and the loan estimate's walk through
+        :meth:`resolved_recurrence_of`, and the form preview's unsaved
+        definition (``recurring_definition.resolved_submission``).
+
+        Memoised by ``(spec, books)``: two definitions stating one spec
+        over accounts that open on one day, both envelopes or neither, share
+        one value (so repeated reads are the SAME object, which the walk
+        memo keys by); over different openings, or an envelope beside a bill
+        (ruling **R-PC89**), they mean different occurrences and walk apart.
+        The floor is read first -- a memo hit per account -- so a foreign
+        spec costs one opening read (memoised) before the resolver refuses
+        it; no resolution is stored for it, and the refusal names the rule.
+
+        Args:
+            spec: The authored recurrence.
+            definition: What moves the money -- a transaction or transfer
+                template, an unsaved definition, or ``None`` (a payroll
+                line's rule, which creates no row of its own).
+
+        Returns:
+            The resolved value with ``books_opened_on`` and ``is_envelope``
+            set, or ``None`` when the owner has no pay periods.
+
+        Raises:
+            RecurrenceResolutionError: See
+                :func:`~app.services.recurrence.resolved_spec`.
+        """
+        books = definition_books(definition, self._books_opened_on)
+        key = (spec, books)
+        if key not in self._recurrences:
+            self._recurrences[key] = resolved_with_books(
+                spec, self.calendar(), books,
+            )
+        return self._recurrences[key]
+
+    def placements_of(self, resolved: ResolvedRecurrence) -> BooksWalk:
+        """Return every occurrence *resolved* names, split by its books, walking once.
 
         The memo that collapses a read pass's N walks of one resolved
         recurrence to one, and the other half of what
@@ -739,8 +799,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         measured one memo over.
 
         **Through the saved horizon and no further**: this is
-        :func:`~app.services.recurrence.occurrence_placements` with its
-        default window, the walk the display readers and generation take.
+        :func:`~app.services.recurrence.occurrence_walk`, whose ``kept`` half
+        is the walk the display readers and generation take and whose other
+        half the closing also counts (plan step ``pay_calendar:C18-a``, ruling
+        **R-PC94**: the books decide which occurrences become rows, never when
+        the rule ends).
         The seam's ESTIMATED loan tier walks PAST the horizon
         (``projected_occurrence_placements``, ``through=``) and is a different
         function of different inputs; it is not memoised here.
@@ -751,11 +814,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 .resolved_definition` returns.  Must have been resolved
                 against THIS pass's calendar, which every producer of one
                 guarantees by reading :meth:`resolved_recurrence_of` or
-                ``resolved_spec(spec, ctx.calendar())``.
+                :meth:`resolved_for`, never the bare ``resolved_spec``.
 
         Returns:
-            One :class:`~app.services.recurrence.OccurrencePlacement` per
-            occurrence through the calendar's horizon, ascending; empty for a
+            The :class:`~app.services.recurrence.BooksWalk` through the
+            calendar's horizon, each half ascending; both empty for a
             definition its composed closing admits nothing of.
 
         Raises:
@@ -765,7 +828,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 call rather than being swallowed after the first.
         """
         if resolved not in self._placements:
-            self._placements[resolved] = occurrence_placements(
+            self._placements[resolved] = occurrence_walk(
                 resolved, self.calendar(),
             )
         return self._placements[resolved]

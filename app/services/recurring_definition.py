@@ -109,7 +109,6 @@ from app.services.recurrence import (
     RecurrenceSpec,
     ResolvedRecurrence,
     RuleReading,
-    resolved_spec,
 )
 
 
@@ -134,6 +133,15 @@ class UnsavedDefinition:
     word by construction -- the form never reads the stored column.  Nothing
     else about a definition's identity reaches the derived stop.
 
+    **It carries the SOURCE accounts too, since plan step
+    ``pay_calendar:C18-a``** (ruling **R-PC85**): the other end of the
+    composition is where the definition's books open, and that is every
+    account it moves money in -- a transaction form's ``account_id``, a
+    transfer form's ``from_account_id`` beside its ``to_account_id`` --
+    named exactly as a template names them, so the read pass reads a stored
+    template and this by one rule (``balance_at._definition_books``).  Without
+    them the preview would list a date saving would not generate.
+
     Attributes:
         to_account_id: The destination account the form names, or ``None``
             for a transaction template (which pays into no account) and for a
@@ -143,9 +151,65 @@ class UnsavedDefinition:
             missing and for foreign alike), and the pass refuses a foreign
             account a second time when it memoises the loan
             (``ForeignAccountError`` from ``_memoize_once``, plan step X-i4).
+        account_id: The account a transaction form names, or ``None`` (a
+            transfer form, or a transaction form with none chosen yet).  The
+            owner's, by the same gate.
+        from_account_id: The account a transfer form draws from, or ``None``.
+            The owner's, by the same gate.
+        is_envelope: Whether a transaction form's envelope box is ticked
+            (ruling **R-PC89**): an envelope's row is compared with the books
+            on its paycheck's LAST day, a bill's on its due day, so the box
+            decides which dates saving would generate.  Named as the
+            template names it, for the reason the accounts are.  ``False``
+            on the transfer form, which has no box.
     """
 
     to_account_id: int | None
+    account_id: int | None = None
+    from_account_id: int | None = None
+    is_envelope: bool = False
+
+
+def resolved_rule_of(
+    template: RecurrenceOwner, ctx: BalanceContext,
+) -> ResolvedRecurrence | None:
+    """Return what *template*'s RULE means on *ctx*, its books attached, or ``None``.
+
+    The pass's memoised resolution of the rule
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_recurrence_of`)
+    under its AUTHORED closing alone -- the half :func:`resolved_definition`
+    narrows by the destination, and the whole of what the edit door's
+    stranded-row refusal walks (``planned_rows_books.definition_edit_refusal``,
+    plan step ``pay_calendar:C18-a``), which asks only what the books drop
+    and needs no loan's stop to ask it.  One function for the two, because
+    the None-guarded read was spelled in both and pylint's ``duplicate-code``
+    measured it.
+
+    ``getattr`` rather than attribute access, and NOT
+    ``obligations_aggregator.template_rule``: that module reads THIS door
+    since plan step R7d-e (its expired filter judges the composed closing),
+    so importing it here would be a cycle one step out -- the same "move the
+    leaf" problem plan step R7d-d solved one layer down, recreated one layer
+    up.  The read is one ``getattr`` and the duck-typed contract is the
+    recurrence package's own
+    (:data:`~app.services.recurrence.RecurrenceOwner`).
+
+    Args:
+        template: The recurring definition; see :func:`resolved_definition`
+            for the ownership contract.
+        ctx: The read pass.
+
+    Returns:
+        The resolved value, or ``None`` when the definition does not repeat
+        (no rule names it) or the owner has no pay periods.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`resolved_definition`.
+    """
+    rule = getattr(template, "recurrence_rule", None)
+    if rule is None:
+        return None
+    return ctx.resolved_recurrence_of(rule)
 
 
 def resolved_definition(
@@ -212,21 +276,10 @@ def resolved_definition(
             still resolves for such an owner: the not-a-loan answer is reached
             before the scenario guard.
     """
-    # ``getattr`` rather than attribute access, and NOT
-    # ``obligations_aggregator.template_rule``: that module reads THIS door
-    # since plan step R7d-e (its expired filter judges the composed closing),
-    # so importing it here would be a cycle one step out -- the same "move the
-    # leaf" problem plan step R7d-d solved one layer down, recreated one layer
-    # up.  The read is one ``getattr`` and the duck-typed contract is the
-    # recurrence package's own
-    # (:data:`~app.services.recurrence.RecurrenceOwner`).
-    rule = getattr(template, "recurrence_rule", None)
-    if rule is None:
-        return None
     # The pass's memo, not a fresh resolution: the forward plan behind the
     # derived stop below walks this same rule to sum the definition's
     # occurrences (plan step R16-b-2), and one pass resolves one rule once.
-    resolved = ctx.resolved_recurrence_of(rule)
+    resolved = resolved_rule_of(template, ctx)
     if resolved is None:
         return None
     # The occurrence walk is deliberately NOT run first.  ``resolved_recurrence``
@@ -273,11 +326,13 @@ def resolved_submission(
     posts nothing, which is what the loan's standing payment posts -- so it
     is taken as stated.  (Until R7d-g a stored definition's went through
     ruling **R-R56**'s arm, because its column could hold the chokepoints'
-    cache.)  Resolved through
-    :func:`~app.services.recurrence.resolved_spec`, the producer the pass's
-    own memo wraps, rather than through that memo: the memo is keyed by a
-    rule's spec and this caller resolves one spec once per request, so there
-    is one producer either way and nothing here to collapse.
+    cache.)  **Resolved through the pass's**
+    :meth:`~app.services.balance_at.BalanceContext.resolved_for` **since plan
+    step ``pay_calendar:C18-a``**, the one composition that attaches where
+    the definition's books open (ruling **R-PC85**), so the preview and the
+    save it previews bound by one floor.  It called ``resolved_spec`` directly
+    until then -- one producer either way, the memo adding nothing but a key;
+    the floor is what the memo's method adds now.
 
     Args:
         spec: What the form states, unresolved.
@@ -304,7 +359,7 @@ def resolved_submission(
             has no baseline scenario (ruling **R-R30**); see
             :func:`resolved_definition`.
     """
-    resolved = resolved_spec(spec, ctx.calendar())
+    resolved = ctx.resolved_for(spec, definition)
     if resolved is None:
         return None
     return _narrowed(
@@ -379,7 +434,9 @@ def read_definition(
     hits end to end -- the resolution, the destination's loan state, the
     identity behind ruling R-R56, and the walk.  The reading also carries the
     horizon the walk reached (plan ledger row **N-514**), read off the same
-    calendar the memo walked against.
+    calendar the memo walked against, and the occurrences the definition's
+    books drop, which its closing counts and no row answers (plan step
+    ``pay_calendar:C18-a``, ruling **R-PC94**).
 
     Args:
         template: The recurring definition.  See :func:`resolved_definition`
@@ -401,10 +458,16 @@ def read_definition(
         BaselineMissingError: See :func:`resolved_definition`.
     """
     resolved = resolved_definition(template, ctx)
+    if resolved is None:
+        return RuleReading(
+            resolved=None, placements=(), horizon=ctx.calendar().horizon(),
+        )
+    walk = ctx.placements_of(resolved)
     return RuleReading(
         resolved=resolved,
-        placements=() if resolved is None else ctx.placements_of(resolved),
+        placements=walk.kept,
         horizon=ctx.calendar().horizon(),
+        below_the_books=walk.below_the_books,
     )
 
 
@@ -412,5 +475,6 @@ __all__ = [
     "UnsavedDefinition",
     "read_definition",
     "resolved_definition",
+    "resolved_rule_of",
     "resolved_submission",
 ]
