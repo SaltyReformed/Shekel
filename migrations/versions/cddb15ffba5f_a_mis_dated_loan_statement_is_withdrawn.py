@@ -1,7 +1,7 @@
 """a mis-dated loan statement is withdrawn; the stated balance takes its setup day
 
 Revision ID: cddb15ffba5f
-Revises: 5641f7729b68
+Revises: 9b64df71cc34
 Create Date: 2026-09-23 21:30:00.000000
 
 Plan step **recurrence:R23**, rulings **R-R98** (the act) and **R-R99** (the
@@ -73,7 +73,8 @@ that account, dated its setup day, carrying the withdrawn copy's balance --
 with the append-only refusal lifted for the statement (the ``d2e9f4a17c63``
 precedent); ``system.audit_log`` keeps the deleted row.  It then drops the
 relation and the superkey and re-installs the refusal exactly as
-``5641f7729b68`` left it, so the database is the one this revision found.  A
+``5641f7729b68`` left it (``9b64df71cc34``, the revision this one now
+follows, does not touch it), so the database is the one this revision found.  A
 re-upgrade selects the same copy again UNLESS the owner recorded a statement
 earlier than the copy in between -- then the copy is no longer the loan's
 earliest statement, the predicate passes it by, and it stands again.
@@ -95,7 +96,7 @@ from app.append_only_infrastructure import (
 
 # revision identifiers, used by Alembic.
 revision = "cddb15ffba5f"
-down_revision = "5641f7729b68"
+down_revision = "9b64df71cc34"
 branch_labels = None
 depends_on = None
 
@@ -182,8 +183,9 @@ _PREVIOUS_APPEND_ONLY_TABLES = (
 )
 
 #: ``5641f7729b68``'s function body, verbatim (last changed by
-#: ``d2e9f4a17c63``), for the downgrade -- the revision the chain lands on
-#: installed exactly this.
+#: ``d2e9f4a17c63``), for the downgrade -- the chain lands on
+#: ``9b64df71cc34``, which does not touch it, so this is still exactly what it
+#: finds.
 _PREVIOUS_APPEND_ONLY_FUNCTION = """
 CREATE OR REPLACE FUNCTION budget.refuse_append_only_change()
 RETURNS TRIGGER AS $$
