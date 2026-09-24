@@ -2,18 +2,15 @@
 
 ## Where this stands
 
-**JUST LANDED: `C20-a` (`51a905b6`)**, the shared form macros taking their attributes as a mapping
-so every browser-side hint and the ARIA state reach the page (**PC-515** closed), cut the same
-morning `C17-d-3` (`4420df87`) shipped `C17-d` whole (the day-of-month cadence: the value, the kinds
-with their migration, the doors as radio arms; archived in
-`historical/pay_calendar_c17d_as_built_2026-09-14.md`). **NEXT: `C17-e`** (**R-PC77**) and `C20-b`
-(the clamp's one producer, the manage card's residue), both NOW; `steps.md` carries the order.
+**JUST LANDED: `C18-a` (`22f3d85b`)**, the books bound (**PC-500** closed; section 4 says what it
+does). **NEXT: `C18-b`** (**R-PC87**, the "Add earlier paychecks" door), which ticks `C18`;
+`steps.md` carries the order.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C13-a`, `C13-b`; `C14` whole, archived
-2026-09-11; `C17-a`, `C17-b-1` and `C17-d`. Section 4 carries each commit, and `steps.md` alone
-carries the ORDER. **A cold session starts at section 4**; the shared registries are `ledger.md`,
-`steps.md`, `conventions.md` and `verification.md`.
+2026-09-11; `C17-a`, `C17-b-1`, `C17-d`, `C20-a` and `C18-a`. Section 4 carries each commit, and
+`steps.md` alone carries the ORDER. **A cold session starts at section 4**; the shared registries
+are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
@@ -286,13 +283,21 @@ their only live specimen from them, which both `_staging` docstrings predict and
 - [x] **C14-f -- the generate door asks one job's questions.** `5d14e4d4`. **P80** re-pointed at
       `C17` as an era question; **N-493**, **N-494** narrowed.
 - [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
-      generates nothing** (ruling **R-PC62**; closes **PC-499**, **PC-500**).
-      `_reject_backward_payday` bounds a batch after the LATEST payday, where its own docstring says
-      the only thing left to refuse is one INSIDE a paycheck (**C6**'s); it narrows to
-      *strictly inside `[min(paydays), the last paycheck's end)`*, tested on EVERY new payday, since
-      the narrowed rule is not monotone. And what it admits must not GENERATE: a prepend wrote a
-      `$531.94` Van Payment moving 173 figures. The bound is PER ACCOUNT (openings stagger 03-26 to
-      06-26); the date lives on `budget.transfers.occurs_on`.
+      generates nothing** (ruling **R-PC62**): the DECOMPOSED parent of two leaves, cut 2026-09-22
+      by the coordinator when **R-PC85**-**R-PC88** were ruled; it ticks with `C18-b`.
+- [x] **C18-a** `22f3d85b` -- the books bound: a recurring item's occurrences start above the books
+      of every account it moves money in (**R-PC85**, **R-PC86**, **R-PC89**, **R-PC94**); the
+      restatement, both template edit doors and the revert refuse to leave an unpaid recurring row
+      inside the books it sits on, and the unarchive keeps one deleted (**R-PC88**,
+      **R-PC90**-**R-PC93**, **R-PC95**-**R-PC102**). The revert refusal (**R-PC97**) is a stopgap
+      `recurrence:R22` deletes. Closed **PC-500**.
+- [ ] **C18-b -- "Add earlier paychecks"** (ruling **R-PC87**; closes **PC-499**). An action beside
+      Extend asks only how many paychecks to add before the first and records the paydays the
+      EARLIEST era projects just below it: it states no date or rhythm, and deletes, moves and
+      re-files nothing, so it reaches no paycheck regenerate's lock protects. The new periods are
+      populated (**R-R38**); since `C18-a` a period before the books fills with nothing.
+      `pay_period_batch.reject_backward_payday` stays for the forms that state a start, its
+      docstring and refusal message corrected.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
       2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per
       *how I have been paid since* -- `effective_from`, `kind_id`, `cadence_days`, `shift_id` --

@@ -133,6 +133,15 @@ function initRecurrenceForm() {
     'data-loan-account-ids-without-payment'
   );
   var destinationSelect = document.getElementById('to_account_id');
+  // The controls naming where the money COMES FROM -- the transaction form's
+  // account, the transfer form's source -- read by name so the preview and
+  // its change listeners list them once (plan step pay_calendar:C18-a).
+  var SOURCE_ACCOUNT_FIELDS = ['account_id', 'from_account_id'];
+  // The transaction form's envelope box (ruling R-PC89): an envelope's row
+  // is compared with the books on its paycheck's LAST day, a bill's on its
+  // due day, so the box decides which dates saving would generate.  Absent
+  // on the transfer form -- a transfer is never an envelope.
+  var envelopeBox = document.getElementById('is_envelope');
 
   // The one question ``starts_on`` cannot answer: a date that is its own
   // month's LAST day in a month shorter than 31 days could mean that day or
@@ -674,6 +683,17 @@ function initRecurrenceForm() {
     if (destinationSelect && destinationSelect.value) {
       params.set('to_account_id', destinationSelect.value);
     }
+    // The SOURCE accounts (plan step pay_calendar:C18-a, ruling R-PC85).  A
+    // save bounds a definition's occurrences by the books of EVERY account it
+    // moves money in -- no row may land on or before an account's opening day
+    // -- so the transaction form's account and the transfer form's source
+    // ride beside the destination, and the endpoint drops the dates saving
+    // would not generate.  Absent on the other form, and sent only when set.
+    SOURCE_ACCOUNT_FIELDS.forEach(function(field) {
+      var el = document.getElementById(field);
+      if (el && el.value) params.set(field, el.value);
+    });
+    if (envelopeBox && envelopeBox.checked) params.set('is_envelope', '1');
 
     // Abort any preview still in flight, then reject non-2xx so a 4xx/5xx or
     // session-expiry login page is never injected as if it were the dates.
@@ -725,8 +745,11 @@ function initRecurrenceForm() {
       loansWithoutPayment.length > 0 ? toggleFields : fetchPreview
     );
   }
+  // The source accounts and the envelope box re-preview too (plan step
+  // pay_calendar:C18-a): the books floor the endpoint bounds by is theirs,
+  // and the box picks which of a row's days it is compared on.
   ['due_day_of_month', 'nominal_day', 'max_per_month', 'end_date',
-   'max_occurrences'].forEach(function(id) {
+   'max_occurrences', 'is_envelope'].concat(SOURCE_ACCOUNT_FIELDS).forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);
   });

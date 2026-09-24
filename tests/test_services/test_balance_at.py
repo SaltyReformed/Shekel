@@ -6752,6 +6752,15 @@ class TestTheReadPassResolvesARuleByWhatItSays:
         The resolver cannot tell two rules with the same spec apart, so
         neither does the memo; and a transient rule (``id`` ``None``) needs
         no special case, because its spec is the key like any other's.
+
+        **Its third assertion was re-expressed at plan step
+        ``pay_calendar:C18-a``** under ``CLAUDE.md`` rule 5, the developer
+        confirming it 2026-09-22 ("Yes: same cadence, no floor"): since
+        ruling **R-PC85** the resolved value carries its definition's BOOKS
+        floor, and an owner-less transient rule has no definition, so it
+        resolves to the owned value with no books day -- equal in every other
+        field -- rather than to the same object.  The two OWNED rules, on one
+        account, still share one value.
         """
         with app.app_context():
             first = make_expense_template(db.session, seed_user, name="Rent")
@@ -6769,7 +6778,12 @@ class TestTheReadPassResolvesARuleByWhatItSays:
 
             resolved = ctx.resolved_recurrence_of(first.recurrence_rule)
             assert ctx.resolved_recurrence_of(second.recurrence_rule) is resolved
-            assert ctx.resolved_recurrence_of(transient) is resolved
+            assert resolved.books_opened_on is not None, (
+                "precondition: the owned rules carry their account's books"
+            )
+            assert ctx.resolved_recurrence_of(transient) == replace(
+                resolved, books_opened_on=None,
+            )
 
 
 class TestTheReadPassProjectsOverOneCalendar:

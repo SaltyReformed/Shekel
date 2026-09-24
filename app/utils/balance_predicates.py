@@ -276,6 +276,34 @@ def enters_settled_band(row, new_status_id: int) -> bool:
     return row.status_id not in settled and new_status_id in settled
 
 
+def reverts_to_projected(row, new_status_id: int) -> bool:
+    """Return whether moving *row* to *new_status_id* sets it BACK to Projected.
+
+    **The predicate that tells a revert from a re-submit** (plan step
+    ``pay_calendar:C18-a``, ruling **R-PC97**): a paid, received, credited or
+    cancelled row asked back into Projected -- each of which the state machine
+    admits, since no status is terminal -- and not a Projected row asked for
+    Projected again, which is the identity move (:func:`is_identity_move`)
+    and changes nothing.  Asked by
+    ``planned_rows_books.reject_revert_below_the_books``, the refusal each row
+    type's status door runs before it writes.  Polymorphic over both
+    status-bearing models for the reason :func:`enters_settled_band` states.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when *row* is not Projected and the move would make it so.
+    """
+    return (
+        new_status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+        and not is_projected(row)
+    )
+
+
 def settled_day(transaction_id: int, settled_on: date | None) -> date:
     """Return the civil day a SETTLED transaction's money moved, or refuse.
 
