@@ -13,7 +13,7 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 display moved, the Recurring page's salary row. `X-av`'s other leaves (**R-SAL67**) make the pay a
 dated per-paycheck gross; `S11-c-2`, the engine's calibrated path, MOVES MONEY, and **S11**
 (**R-SAL41** as amended by **R-SAL42**, absorbing `S1`) ticks with its last leaf. Each archived
-span's record is a `historical/salary_*` file, named in its parent's entry in section 4.
+span's record is a `historical/salary_*` file.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -164,9 +164,6 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         log) has no stub on its date, and printing any differing figures (fork 9).
   - [ ] **S11-e -- the FICA treatment** (fork 7): a pre-tax line says if it reduces FICA wages, stub
         or no stub; the developer sets the backfill from his stubs. Closes **SAL-566**.
-- [x] **R14** `e0f0c05f` -- the DECOMPOSED parent of a deduction's gross (**R-SAL6**); closed
-      **D45**. Its leaves `R14-a` and `R14-b` left this document and the index 2026-09-24 (rule 5);
-      the record is `historical/salary_r14_as_built_2026-09-11.md`.
 - [x] **S3** `329b663d` -- the engine prices the WHOLE horizon (**R-SAL10**, **R-SAL11**,
       **R-SAL14**, **R-SAL15**; closed **N-541**). Its fourteen leaves left this document and the
       index 2026-09-18 (rule 5); the records are the four `historical/salary_s3*` files.
@@ -202,7 +199,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (`history_opens_on` when stated, else the recorded one; R-SAL36's unit-zero); a typed start
       pinned; every payroll line becomes a rule, deleting R-SAL29's no-rule rewrite in
       `_settle_line_cadence`, `line_applies_on`'s `cadence is None` arm, `EVERY_PAYCHECK` as the
-      no-rule phrase and R18-c's typed-opening carve-out. Its migration gives every rule-less line a
+      no-rule phrase and R18's typed-opening carve-out. Its migration gives every rule-less line a
       BLANK rule and blanks the starts `R15-b` derived; the stored columns cannot tell a derived
       opening from a typed one, so the predicate is the step's first fork. Its own step outside
       every outcome (S8's precedent); after `recurrence:R21`. Worked year (biweekly, recorded
@@ -223,12 +220,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`
       until an earning line exists; its own step because R18's leaves were ruled.
 - [x] **R18** `0345fbae` -- a paycheck is BASE PAY plus a LIST OF LINES (**R-SAL38**, six forks);
-      closed **D59**; ticked with `R18-d`, its last leaf. The span as it stood:
-      `historical/salary_r18_as_built_2026-09-23.md`.
-  - [x] **R18-a** `ef0dc831` -- the storage rename (migration `0a4d2c3e89f8`). With `R18`.
-  - [x] **R18-b** `ad9fed61` -- two earning kinds, one line pass; opened **SAL-561**. With `R18`.
-  - [x] **R18-c** `34ad4bda` -- each line's own start and end; opened **SAL-562**. With `R18`.
-  - [x] **R18-d** `0345fbae` -- the OPERATOR act; **MOVED MONEY**; opened **SAL-564**. With `R18`.
+      closed **D59**. Its leaves `R18-a`..`R18-d` left this document and the index 2026-09-24 (rule
+      5); the span as it stood: `historical/salary_r18_as_built_2026-09-23.md`.
 - [x] **C12** `945651c2` -- one current-paycheck producer (**R-SAL25**-**R-SAL28**); closed **P62**,
       **P63**, **P64**'s engine half. Its leaves `C12-a` and `C12-b` left this document and the
       index 2026-09-24 (rule 5); as it stood: `historical/salary_c12_as_built_2026-09-18.md`.
@@ -267,6 +260,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       template under an ACTIVE salary profile, which the Archived drawer shows at its stored
       paycheck, and the no-history arm deletes it outright; no door may leave that profile behind,
       the archive refusing or archiving both together. `$0.00` today.
+- [ ] **S14 -- the remaining conversions read each payday's own rhythm** (**R-SAL72**; findings
+      **SAL-571**, **SAL-573**): across a recorded rhythm change the retirement page's contribution
+      headroom (`retirement_levers._headroom_per_period`) and the savings dashboard's monthly
+      expense average (`_metrics._compute_avg_monthly_expenses`) convert at the LATEST rhythm's
+      count; both read `X-av-2`'s one walk instead, the headroom once the developer rules what "per
+      paycheck" means across a switch. `$0.00` on production (one rhythm).
 - [ ] **X-at -- a substituted tax year says so, and a new year can be entered** (findings **N-235**,
       **N-236**). `tax_config_service.resolve_tax_year` answers an unconfigured year with the latest
       configured year's rules -- the only available answer -- and every surface renders the result

@@ -246,11 +246,11 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       clock by a stated per-period diff (`verify_grid_cutover.py`) and on the posted ledger for the
       reversed legs. **MOVES MONEY on the budget clock, `$0.00` on checking's cash fold.** Closes
       **CC-352**, **N-337**, **N-350**, **N-351**.
-- [ ] **CC-7o** `docs(runbook): the card's release` -- design 3.10 (`R-CC21`; `salary:R18-d`'s shape
-      under `R-HJ`): the prerequisite act (the card paid in full, every payback marked paid, no new
-      charges), the release, the card created through the account door with its books opened on the
-      payment day at that day's balance verbatim, the payment definition set up, the first cycle on
-      the feed reconciled; no per-row door act.
+- [ ] **CC-7o** `docs(runbook): the card's release` -- design 3.10 (`R-CC21`; `salary:R18`'s runbook
+      shape under `R-HJ`): the prerequisite act (the card paid in full, every payback marked paid,
+      no new charges), the release, the card created through the account door with its books opened
+      on the payment day at that day's balance verbatim, the payment definition set up, the first
+      cycle on the feed reconciled; no per-row door act.
 - [ ] **CC-8** `feat(cards): the finance-charge definition` -- design 3.6: the definition the card
       owns (`credit_card_params.finance_charge_template_id`) and its rule, monthly on the statement
       close, `$0.00` when grace held; `template_id` is the pricing link `balance:R-IY` names, so no
