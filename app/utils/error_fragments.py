@@ -58,22 +58,24 @@ def refusal_for_a_gone_row(answer, refusal) -> str:
     """Return what a stale page is told about a row its door no longer serves.
 
     The one choice between the two answers ruling **R-CC104** gives, for the
-    three doors it names: a deleted row the requester may reach is named, in
-    the door's own words for the act it refused; anything else gets
-    :data:`ROW_NO_LONGER_EXISTS_MSG`, the same words whichever it was.
+    three doors it names: a hidden row the requester may reach is named, in
+    the door's own words for the act it refused and saying how it went
+    (ruling **R-CC107**); anything else gets :data:`ROW_NO_LONGER_EXISTS_MSG`,
+    the same words whichever it was.
 
     Args:
         answer: What ``auth_helpers.get_accessible_transaction_or_deleted``
-            answered when it was not a live row: a ``DeletedRow``, or
-            ``None``.
-        refusal: The door's sentence for its act, taking the row's name --
+            answered when it was not a live row: a
+            :class:`~app.utils.hidden_row.HiddenRow`, or ``None``.
+        refusal: The door's sentence for its act, taking the
+            :class:`~app.utils.hidden_row.HiddenRow` --
             ``deleted_row_payment_refusal``,
             ``deleted_row_purchase_refusal`` or the Save door's.
 
     Returns:
         The sentence to show.
     """
-    return ROW_NO_LONGER_EXISTS_MSG if answer is None else refusal(answer.name)
+    return ROW_NO_LONGER_EXISTS_MSG if answer is None else refusal(answer)
 
 
 def designed_error(

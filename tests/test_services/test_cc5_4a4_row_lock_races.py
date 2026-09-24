@@ -11,7 +11,8 @@ if it was there when you pressed Delete."*  Built "with a two-connection race
 test for each order", which is this module -- for these pairs: purchase x
 Delete, Mark Paid x Delete, purchase x Archive, purchase x Mark Paid and Mark
 Credit x Delete in both orders; the popover's Actual correction x Delete in
-the delete-first order only.  NOT raced: Mark Paid x Archive, Delete x
+the delete-first order only; Mark Paid x Archive in the archive-first order
+only, for the words ruling **R-CC107** gives it.  NOT raced: Delete x
 Archive, and any pair on a ONE-OFF row, whose delete removes it from the
 table (the step's fifth review, L5 and M3).  Ruling **R-CC100**'s order --
 the owner's write lock before the row's -- is
@@ -69,6 +70,16 @@ _WAIT = 8.0
 
 #: The purchase door's refusal of a deleted row, naming it (ruling R-CC98).
 _PURCHASE_REFUSED = "Groceries was deleted: a purchase cannot be recorded under it"
+
+#: The same refusal for a row its recurring item's ARCHIVE hid (ruling R-CC107).
+_PURCHASE_REFUSED_ARCHIVED = (
+    "Groceries was archived: a purchase cannot be recorded under it"
+)
+
+#: The settle's refusal for a row its recurring item's ARCHIVE hid (R-CC107).
+_PAYMENT_REFUSED_ARCHIVED = (
+    "Hotel was archived: a payment cannot be recorded under it"
+)
 
 #: The settle's refusal of a payment on a deleted row, naming it.
 _PAYMENT_REFUSED = "Hotel was deleted: a payment cannot be recorded under it"
@@ -430,7 +441,13 @@ class TestPurchaseAgainstArchive:
     """A purchase on one of a definition's rows against the definition's archive."""
 
     def test_archive_first_the_purchase_is_refused_in_words(self, app, db, seed_user):
-        """Archive lands first: the row is hidden empty, and the purchase meets the sentence."""
+        """Archive lands first: the row is hidden empty, and the purchase meets the sentence.
+
+        The sentence says "was archived" since ruling **R-CC107** (developer
+        2026-09-24, "Say archived": *"(and the same for a Save or a
+        purchase)"*); it said "was deleted" before, for a row the owner had
+        archived rather than deleted.
+        """
         with app.app_context():
             template, row_id = _groceries(seed_user)
             archive, purchase = _race(
@@ -439,7 +456,7 @@ class TestPurchaseAgainstArchive:
             assert archive.committed
             assert purchase.waited
             assert isinstance(purchase.result, ValidationError), purchase.result
-            assert _PURCHASE_REFUSED in str(purchase.result)
+            assert _PURCHASE_REFUSED_ARCHIVED in str(purchase.result)
             assert _state(row_id) == (True, 0)
 
     def test_purchase_first_the_archive_keeps_the_row(self, app, db, seed_user):
@@ -453,6 +470,49 @@ class TestPurchaseAgainstArchive:
             assert archive.waited
             assert archive.committed, archive.result
             assert _state(row_id) == (False, 1)
+
+
+class TestMarkPaidAgainstArchive:
+    """Mark Paid on a Hotel occurrence against its definition's archive (ruling R-CC107).
+
+    Raced for the one read the archive's WORDS depend on: Mark Paid holds the
+    row it read -- and the definition that row loaded -- across its wait, and
+    the settle verb's row lock re-reads ``is_deleted`` alone
+    (``row_write_lock.lock_row``), so the row's ``template`` is still the
+    definition as it was read before the archive committed.  ``HiddenRow.of``
+    asks the definition's ``is_active`` by a statement of its own.  The
+    purchase door cannot grade that read: ``lock_and_read`` reloads the row
+    and drops its ``template``, and the identity map holds its objects
+    weakly, so its lazy load reads fresh either way (measured 2026-09-24:
+    no ``TransactionTemplate`` left in the map at its refusal).
+    """
+
+    def test_archive_first_mark_paid_says_archived_though_it_read_the_item_active(
+        self, app, db, seed_user,
+    ):
+        """Mark Paid read Hotel and its definition, active, then waited on the archive."""
+        with app.app_context():
+            template = make_expense_template(
+                _db.session, seed_user, amount="120.00", name="Hotel",
+                category_key="Rent",
+            )
+            row_id = generate_row_of(template, seed_user["bootstrap_period"]).id
+            _db.session.commit()
+
+            def mark_paid_having_read_the_item():
+                row = _db.session.get(Transaction, row_id)
+                assert row.template.is_active  # the definition, read pre-lock
+                transaction_service.settle_transaction(row)
+                _db.session.flush()
+
+            archive, paid = _race(
+                app, _archive(template.id), mark_paid_having_read_the_item,
+            )
+            assert archive.committed
+            assert paid.waited
+            assert isinstance(paid.result, ValidationError), paid.result
+            assert _PAYMENT_REFUSED_ARCHIVED in str(paid.result)
+            assert _state(row_id) == (True, 0)
 
 
 class TestNoDoorPairDeadlocks:

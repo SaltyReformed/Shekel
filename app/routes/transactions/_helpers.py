@@ -54,6 +54,7 @@ from app.utils.error_fragments import (
     designed_error,
     refusal_for_a_gone_row,
 )
+from app.utils.hidden_row import HiddenRow
 
 # Name of the partial unique index that backstops commit C-19's
 # duplicate CC Payback fix.  Mirrors the literal in
@@ -534,7 +535,9 @@ def _row_gone_is_not_found(_exc):
     Ruling **R-CC89**'s answer, and what the two helpers that raise
     :class:`_RowGone` returned themselves until plan step
     ``credit_card:CC-5-4a-4``: Delete, Mark Credit, Undo CC and Cancel keep
-    it.  The three doors ruling **R-CC101** names catch the signal first.
+    it.  Two of the three doors ruling **R-CC101** names -- Mark Paid and the
+    popover's Save -- catch the signal first (:func:`_door_naming_a_gone_row`);
+    the third, add purchase, is the entries blueprint's and never raises it.
 
     Returns:
         ``("Not found", 404)``.
@@ -542,49 +545,59 @@ def _row_gone_is_not_found(_exc):
     return "Not found", 404
 
 
-def _deleted_row_change_refusal(name):
-    """Return the sentence a Save on a deleted row is refused with.
+def _deleted_row_change_refusal(gone):
+    """Return the sentence a Save on a hidden row is refused with.
 
     Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC105** (developer
     2026-09-23, "One Save sentence"): *"Every Save on a deleted row, paid or
     unpaid, with or without an Actual, shows the red 'Deleted' cell. Hovering
     gives 'Hotel was deleted: this change cannot be saved.  Reload the
     page.' Each button names what it tried to do, and the words are true for
-    every Save."*  Mark Paid's is the status seam's
-    ``deleted_row_payment_refusal`` and add purchase's
+    every Save."*  It says "was archived" where the row's recurring item is
+    (ruling **R-CC107**: "the same for a Save").  Mark Paid's is the status
+    seam's ``deleted_row_payment_refusal`` and add purchase's
     ``entry_service.deleted_row_purchase_refusal``; this one lives with the
     route because no service refuses a Save as such.
 
     Args:
-        name: The deleted row's name (ruling **R-CC98**: never its id).
+        gone: The :class:`~app.utils.hidden_row.HiddenRow` -- the row's name
+            (ruling **R-CC98**: never its id), and how it went.
 
     Returns:
         The refusal, naming the row.
     """
-    return f"{name} was deleted: this change cannot be saved.  Reload the page."
+    return (
+        f"{gone.name} {gone.went}: this change cannot be saved.  "
+        "Reload the page."
+    )
 
 
-def _gone_transaction_response(message, txn_id, target=None):
+def _gone_transaction_response(gone, refusal, txn_id, target=None):
     """Render the surface a request targeted for a row that is gone, saying why.
 
     The cell or the card, keyed by the id in the URL -- the only thing left
     of a one-off row its delete removed.  The desktop cell becomes the red
-    "Deleted" of ruling **R-CC102** (``grid/_transaction_cell_gone.html``)
-    and the phone card the banner-only card the cancelled-row refusal
-    already uses (``grid/_mobile_card_error.html``), each carrying *message*
-    (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC104**).
-    Designed and a 404: the door answers the row "not found" (ruling
-    **R-CC89**), and the body now says why rather than being dropped.
+    "Deleted" of ruling **R-CC102** (``grid/_transaction_cell_gone.html``) --
+    "Archived" for a row its recurring item's archive hid, so the word agrees
+    with the sentence behind it (ruling **R-CC108**) -- and the phone card the
+    banner-only card the cancelled-row refusal already uses
+    (``grid/_mobile_card_error.html``), each carrying the sentence
+    :func:`~app.utils.error_fragments.refusal_for_a_gone_row` chooses (plan
+    step ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC104**,
+    **R-CC107**).  Designed and a 404: the door answers the row "not found"
+    (ruling **R-CC89**), and the body now says why rather than being dropped.
 
     Args:
-        message: The sentence -- the door's refusal naming the row, or
-            :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+        gone: The :class:`~app.utils.hidden_row.HiddenRow` the door may name,
+            or ``None`` for a row it may not.
+        refusal: The door's sentence for its act, taking the ``HiddenRow``.
         txn_id: The row id the request named.
         target: The :class:`_RenderTarget`, or ``None`` for the desktop cell.
 
     Returns:
         A designed-fragment Flask response tuple at 404.
     """
+    message = refusal_for_a_gone_row(gone, refusal)
     if target is not None and target.render_mode == "mobile_card":
         body = render_template(
             "grid/_mobile_card_error.html",
@@ -596,6 +609,7 @@ def _gone_transaction_response(message, txn_id, target=None):
     else:
         body = render_template(
             "grid/_transaction_cell_gone.html", message=message,
+            archived=gone is not None and gone.archived,
         )
     return designed_error(body, 404)
 
@@ -617,17 +631,21 @@ def _door_naming_a_gone_row(refusal):
       words whichever it was;
     * **while it runs** -- the delete won the race for the row's lock
       (ruling **R-CC96**) and the refusal's re-fetch found nothing
-      (:class:`_RowGone`): the row is named by the name read here while it
-      was live, which a one-off's delete takes out of the table.  A row
-      that still stands undeleted -- the door refused it for another reason,
-      such as a companion's request for the owner-only desktop cell -- is
-      answered "not found", as before.
+      (:class:`_RowGone`): a row still in the table is named as it now
+      stands, and one a one-off's delete took out of it by the name read here
+      while it was live (:meth:`~app.utils.hidden_row.HiddenRow.of_reread`).
+      A row that still stands undeleted -- the door refused it for another
+      reason, such as a companion's request for the owner-only desktop cell
+      -- is answered "not found", as before.
 
-    The view is called as ``view(txn, target)``: the row as the door served
-    it, and the :class:`_RenderTarget` read off the form.
+    In both moments a row hidden by its recurring item's archive says so
+    (ruling **R-CC107**).  The view is called as ``view(txn, target)``: the
+    row as the door served it, and the :class:`_RenderTarget` read off the
+    form.
 
     Args:
-        refusal: The door's sentence for its act, taking the row's name.
+        refusal: The door's sentence for its act, taking a
+            :class:`~app.utils.hidden_row.HiddenRow`.
 
     Returns:
         The decorator.
@@ -639,7 +657,7 @@ def _door_naming_a_gone_row(refusal):
             answer = get_accessible_transaction_or_deleted(txn_id)
             if not isinstance(answer, Transaction):
                 return _gone_transaction_response(
-                    refusal_for_a_gone_row(answer, refusal), txn_id, target,
+                    answer, refusal, txn_id, target,
                 )
             # Read while the row is live: a one-off's delete takes the row,
             # and its name with it, before a refusal can re-read it.
@@ -651,7 +669,7 @@ def _door_naming_a_gone_row(refusal):
                 if row is not None and not row.is_deleted:
                     return "Not found", 404
                 return _gone_transaction_response(
-                    refusal(name), txn_id, target,
+                    HiddenRow.of_reread(row, name), refusal, txn_id, target,
                 )
         return door
     return decorator

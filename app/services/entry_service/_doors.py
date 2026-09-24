@@ -51,6 +51,7 @@ from app.services.entry_service._refusals import (
     deleted_row_purchase_refusal,
 )
 from app.utils.balance_predicates import is_cancelled
+from app.utils.hidden_row import HiddenRow
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -379,9 +380,10 @@ def create_entry(
     # :mod:`app.deleted_row_infrastructure` refuses the write in the database
     # for one that skips this line too.
     if txn.is_deleted:
-        # Named, never numbered (ruling **R-CC98**); the one sentence the
+        # Named, never numbered (ruling **R-CC98**), and "was archived" where
+        # its recurring item is (ruling **R-CC107**); the one sentence the
         # add-purchase route also shows for a row that is gone.
-        raise ValidationError(deleted_row_purchase_refusal(txn.name))
+        raise ValidationError(deleted_row_purchase_refusal(HiddenRow.of(txn)))
 
     # Entry-capable: purchase tracking must be enabled on the row's
     # DEFINITION (its ``is_envelope``).  Resolved by

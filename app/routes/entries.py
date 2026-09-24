@@ -46,6 +46,7 @@ from app.utils.error_fragments import (
     flatten_schema_errors,
     refusal_for_a_gone_row,
 )
+from app.utils.hidden_row import HiddenRow
 
 logger = logging.getLogger(__name__)
 
@@ -308,11 +309,13 @@ def _purchase_refused_response(
     rulings **R-CC101**, **R-CC103**).  After the rollback the row is read
     again: when the delete won the race for the row's lock (ruling
     **R-CC96**), soft or hard, the list has nothing left to draw, and the
-    banner alone says so, naming the row by the *name* the route read while
-    it was live -- a one-off's delete takes the row out of the table, and
-    rendering the vanished instance was a 500 (review 5, M3).  Otherwise the
-    list re-renders with the refusal, as every entries refusal does
-    (:func:`_error_entry_response`), off the row as it now stands.
+    banner alone says so -- naming a row still in the table as it now stands,
+    "was archived" where its recurring item is (ruling **R-CC107**), and one
+    a one-off's delete took out of the table by the *name* the route read
+    while it was live, since rendering the vanished instance was a 500
+    (review 5, M3).  Otherwise the list re-renders with the refusal, as every
+    entries refusal does (:func:`_error_entry_response`), off the row as it
+    now stands.
 
     Args:
         txn_id: The row id the request named.
@@ -329,7 +332,9 @@ def _purchase_refused_response(
     row = db.session.get(Transaction, txn_id)
     if row is None or row.is_deleted:
         return _gone_entry_list_response(
-            txn_id, host, entry_service.deleted_row_purchase_refusal(name),
+            txn_id, host, entry_service.deleted_row_purchase_refusal(
+                HiddenRow.of_reread(row, name),
+            ),
         )
     return _error_entry_response(row, message, host, status=status)
 
@@ -529,8 +534,9 @@ def create_entry(txn_id):
     **R-CC104**): a purchase on a row deleted in another tab, or while this
     one waited for the row's lock, answers "Groceries was deleted: a purchase
     cannot be recorded under it.  Reload the page." where the list stood --
-    :func:`_gone_entry_list_response` before the door serves the row,
-    :func:`_purchase_refused_response` after.
+    "Groceries was archived: ..." where its recurring item is (ruling
+    **R-CC107**) -- :func:`_gone_entry_list_response` before the door serves
+    the row, :func:`_purchase_refused_response` after.
     """
     host = _request_host()
     answer = get_accessible_transaction_or_deleted(txn_id)

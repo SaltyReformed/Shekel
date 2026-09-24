@@ -35,7 +35,6 @@ volume.
 """
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -49,6 +48,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.utils.hidden_row import HiddenRow
 from app.utils.log_events import (
     ACCESS,
     EVT_ACCESS_DENIED_CROSS_USER,
@@ -426,9 +426,16 @@ def is_not_found_to_transaction_doors(txn) -> bool:
       it Credit and created a live $80.00 card payback the owner could never
       trace.  No route serves a deleted row on purpose: a deleted row leaves
       the grid, and the un-archive that brings one back is a template door.
+      What the page is TOLD at three doors is ruling **R-CC104**'s amendment
+      (developer 2026-09-23): Mark Paid, the popover's Save and add purchase
+      name the row -- "Hotel was deleted: ..." -- through
+      :func:`get_accessible_transaction_or_deleted`, and say "was archived"
+      where its recurring item is (ruling **R-CC107**); every other door still
+      answers "not found".
 
     Ordered shadow-then-deleted, so a deleted shadow logs as the fence it met
-    first.  Both are column reads.
+    first -- and is never named for it (review 6, L2).  Both are column
+    reads.
 
     Args:
         txn: A loaded :class:`Transaction` the requester may otherwise access.
@@ -451,29 +458,6 @@ def is_not_found_to_transaction_doors(txn) -> bool:
         path=request.path,
     )
     return True
-
-
-@dataclass(frozen=True)
-class DeletedRow:
-    """A DELETED row the requester could otherwise reach: its name, and nothing to write under.
-
-    What :func:`get_accessible_transaction_or_deleted` answers for a row
-    ruling **R-CC89** refuses because it is deleted (plan step
-    ``credit_card:CC-5-4a-4``, ruling **R-CC104**, developer 2026-09-23:
-    *"Case (2) shows the same sentence in the same place. A recurring row is
-    only hidden, so its name is known"*).  The door still refuses the row;
-    what a stale tab's Mark Paid, Save or add purchase gets is a sentence
-    naming it rather than a bare "not found" the screen drops.  It carries the
-    NAME alone, so a door holding one has no row to write money under -- the
-    refusal R-CC89 exists for stays structural rather than a check each door
-    must remember.
-
-    Attributes:
-        name: The row's name, for the refusal that names it (ruling
-            **R-CC98**: never its id).
-    """
-
-    name: str
 
 
 def get_accessible_transaction(txn_id):
@@ -545,24 +529,29 @@ def get_accessible_transaction_or_deleted(txn_id):
     :func:`get_accessible_transaction`'s access rules, logging and "not found"
     predicate exactly (its docstring states them); what differs is the answer
     for a row the predicate refuses because it is DELETED.  That row is a
-    :class:`DeletedRow` rather than ``None``, so the three doors ruling
-    **R-CC101** names -- Mark Paid, the popover's Save, add purchase -- can
-    say "Hotel was deleted: ..." where the page acted on a row deleted
-    minutes ago (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC104**).
-    Every other refusal stays ``None``: a missing id, another user's row, a
-    companion's hidden row, a live transfer shadow -- and a one-off row whose
-    delete removed it from the table, which is a missing id by then.  That is
-    what keeps the uniform 404 uniform: only a row the requester may already
-    reach is ever named, and the rest share
-    :data:`app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+    :class:`~app.utils.hidden_row.HiddenRow` rather than ``None``, so the
+    three doors ruling **R-CC101** names -- Mark Paid, the popover's Save, add
+    purchase -- can say "Hotel was deleted: ..." where the page acted on a row
+    deleted minutes ago (plan step ``credit_card:CC-5-4a-4``, ruling
+    **R-CC104**, developer 2026-09-23: *"Case (2) shows the same sentence in
+    the same place. A recurring row is only hidden, so its name is known"*),
+    or "Gym was archived: ..." where the row's recurring item is archived
+    (ruling **R-CC107**).  It carries the NAME alone, so a door holding one
+    has no row to write money under.  Every other refusal stays ``None``: a
+    missing id, another user's row, a companion's hidden row, a transfer
+    shadow, live or deleted -- the shadow fence is the one it met first
+    (review 6, L2) -- and a one-off row whose delete removed it from the
+    table, which is a missing id by then.  That is what keeps the uniform 404
+    uniform: only a row the requester may already reach is ever named, and
+    the rest share :data:`app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
 
     Args:
         txn_id: Integer primary key of the transaction.
 
     Returns:
         The :class:`Transaction` when found, accessible and served; a
-        :class:`DeletedRow` when found and accessible but deleted; else
-        ``None``.
+        :class:`~app.utils.hidden_row.HiddenRow` when found and accessible
+        but deleted, and not a transfer shadow; else ``None``.
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
@@ -613,10 +602,14 @@ def get_accessible_transaction_or_deleted(txn_id):
     # probe naming another owner's shadow or deleted row is an access denial
     # first (WARNING, the F-144 contract above) and "not found" second, exactly
     # as ``routes/transactions/_helpers._get_owned_transaction`` orders it --
-    # which is also why a DeletedRow is only ever handed to a requester who
-    # may reach the row.
+    # which is also why a HiddenRow is only ever handed to a requester who
+    # may reach the row.  A shadow is refused as a shadow, deleted or not: it
+    # met that fence first, and "a payment cannot be recorded under it" is
+    # the wrong door's sentence for a transfer's leg.
     if is_not_found_to_transaction_doors(txn):
-        return DeletedRow(txn.name) if txn.is_deleted else None
+        if txn.transfer_id is None and txn.is_deleted:
+            return HiddenRow.of(txn)
+        return None
     return txn
 
 

@@ -29,6 +29,7 @@ from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.dates import display_today
+from app.utils.hidden_row import HiddenRow
 
 #: The purchase facts that change what its PARENT ROW COST, named by what
 #: actually reads them.
@@ -496,8 +497,8 @@ def _reject_settled_removal(txn: Transaction) -> None:
         raise ValidationError(refusal)
 
 
-def deleted_row_purchase_refusal(name: str) -> str:
-    """Return the sentence a purchase on a deleted row is refused with.
+def deleted_row_purchase_refusal(gone: HiddenRow) -> str:
+    """Return the sentence a purchase on a hidden row is refused with.
 
     **One sentence for the two places that refuse it**: the purchase door
     (:func:`app.services.entry_service.create_entry`, ruling **R-CC89**'s
@@ -506,20 +507,23 @@ def deleted_row_purchase_refusal(name: str) -> str:
     **R-CC103**, **R-CC104**).  The status seam's
     ``deleted_row_payment_refusal`` is its twin for a payment.  Named, never
     numbered (ruling **R-CC98**), in the words ruling **R-CC96** quotes:
-    *"Groceries was deleted: a purchase cannot be recorded under it"*.
+    *"Groceries was deleted: a purchase cannot be recorded under it"* -- or
+    "was archived" where the row's recurring item is (ruling **R-CC107**).
 
-    It takes the NAME rather than the row because a one-off row's delete
-    removes the row from the table: the route read the name while the row was
-    live, and after the delete there is no row left to hand over.
+    It takes a :class:`~app.utils.hidden_row.HiddenRow` rather than the row
+    because a one-off row's delete removes the row from the table: the route
+    read the name while the row was live, and after the delete there is no row
+    left to hand over.  Whoever builds the value asks the one read it needs;
+    this module reads nothing.
 
     Args:
-        name: The deleted row's name.
+        gone: The hidden row's name, and how it went.
 
     Returns:
         The refusal, naming the row.
     """
     return (
-        f"{name} was deleted: a purchase cannot be recorded under it.  "
+        f"{gone.name} {gone.went}: a purchase cannot be recorded under it.  "
         "Reload the page."
     )
 

@@ -24,8 +24,11 @@ WORDS of a trigger: :func:`reject_settlement_on_a_deleted_row` says what
 ``ck_transactions_settle_day_needs_a_record`` said in words -- and went with
 that CHECK and the row's figure columns at plan step ``balance:X-bi-4b-2``.)
 
-Pure: reads columns and the settled-status predicate, raises or returns.  No
-session, no mutation, no Flask.
+Pure but for one read: each reads columns and the settled-status predicate,
+raises or returns.  No mutation, no Flask, and one session read, in the
+deleted-row refusal's words -- whether the row's recurring item is archived
+(:meth:`app.utils.hidden_row.HiddenRow.of`, ruling **R-CC107**), asked only of
+a row it is refusing.
 """
 
 from datetime import date
@@ -38,6 +41,7 @@ from app.services.settle_day import SettleDay
 from app.services.status_seam._record import Settlement
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
+from app.utils.hidden_row import HiddenRow
 
 
 #: The rows this seam accepts.  ``Transfer`` carries no ``settled_on`` column --
@@ -310,6 +314,9 @@ def reject_settlement_on_a_deleted_row(
     transfer itself, and :mod:`app.deleted_row_infrastructure` states what the
     database must then refuse (a movement arriving under a deleted TRANSFER);
     a transfer carrying its own record would meet this refusal, by its name.
+    A ``Transaction`` is told how it went -- deleted, or hidden by its
+    recurring item's archive (ruling **R-CC107**) -- and a ``Transfer``, which
+    cannot arrive here with a record today, is named as deleted.
 
     Args:
         row: The row being written.
@@ -326,11 +333,14 @@ def reject_settlement_on_a_deleted_row(
     """
     if settlement is None or not row.is_deleted:
         return
-    raise ValidationError(deleted_row_payment_refusal(row.name))
+    raise ValidationError(deleted_row_payment_refusal(
+        HiddenRow.of(row) if isinstance(row, Transaction)
+        else HiddenRow(row.name),
+    ))
 
 
-def deleted_row_payment_refusal(name: str) -> str:
-    """Return the sentence a payment on a deleted row is refused with.
+def deleted_row_payment_refusal(gone: HiddenRow) -> str:
+    """Return the sentence a payment on a hidden row is refused with.
 
     **One sentence for the three places that refuse it** -- this seam's
     :func:`reject_settlement_on_a_deleted_row`, the settle verbs'
@@ -342,20 +352,24 @@ def deleted_row_payment_refusal(name: str) -> str:
     **R-CC98**, developer 2026-09-23: *"never show a user a system ID. A user
     will not know what that is and only be confused. Use the name of the
     transaction"*), in the words ruling R-CC96 quotes for the purchase door's
-    twin: *"Groceries was deleted: a purchase cannot be recorded under it"*.
+    twin: *"Groceries was deleted: a purchase cannot be recorded under it"*
+    -- or "was archived" where the row's recurring item is (ruling
+    **R-CC107**, developer 2026-09-24: *"Gym was archived: a payment cannot
+    be recorded under it.  Reload the page."*).
 
-    It takes the NAME rather than the row because a one-off row's delete
-    removes the row from the table: the route read the name while the row was
-    live, and after the delete there is no row left to hand over.
+    It takes a :class:`~app.utils.hidden_row.HiddenRow` rather than the row
+    because a one-off row's delete removes the row from the table: the route
+    read the name while the row was live, and after the delete there is no row
+    left to hand over.
 
     Args:
-        name: The deleted row's name.
+        gone: The hidden row's name, and how it went.
 
     Returns:
         The refusal, naming the row.
     """
     return (
-        f"{name} was deleted: a payment cannot be recorded under it.  "
+        f"{gone.name} {gone.went}: a payment cannot be recorded under it.  "
         "Reload the page."
     )
 

@@ -109,6 +109,19 @@ def lock_source_transaction_for_payback(
     ``rollback()`` -- the caller's route handler always performs
     one.  Audit reference: F-008 (High) / commit C-19.
 
+    **The ROW owner's write lock comes before the ownership check below**
+    (review 6, L8): ``lock_and_read`` takes the owner's write lock first
+    (ruling **R-CC100**), and the owner it reads is the row's, so a caller
+    passing another user's id would queue on that user's write lock, and
+    hold it until its transaction ends, before the ``owner_id`` comparison
+    refuses it.  No caller can today: each hands it a row already proved the
+    requester's -- a route's ownership door, the entry doors' own ownership
+    check ahead of their payback sync, or the statement matcher's
+    owner-scoped reads -- and a new caller must too.  Plan step
+    ``balance:X-bn`` moves the
+    owner's lock to the start of the request (ruling **R-CC106**), where it is
+    always the requester's owner, and the per-door lock here goes with it.
+
     Args:
         transaction_id: Primary key of the row to lock.
         owner_id: Resolved owner user ID; the loaded txn's

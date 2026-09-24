@@ -5,8 +5,8 @@ pushed that module past ``max-module-lines``.  The cut is by what each function
 DECIDES rather than by size, which is this package's own rule (see the package
 docstring), and it is the same seam :mod:`app.services.status_seam._refusals`
 was cut on at plan step X-au-c3 -- *"they are gathered here because they are
-one subject"*.  Nothing here settles anything, resolves an amount or touches
-the session.  Each answers
+one subject"*.  Nothing here settles anything, resolves an amount or writes
+(two arms read; see below).  Each answers
 one question about a row that constrains what a door may then do with it.
 
 **Shaving prose to stay under the cap was the alternative and this package has
@@ -26,11 +26,15 @@ refusal here that RAISES rather than returning its sentence, because no screen
 asks it.
 
 Boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a bool or a
-raise out; no Flask import, no writes.  **One arm READS** since plan step
-``balance:X-bi-7b``: :func:`deletion_refusal`'s merchant-rule refusal asks two
+raise out; no Flask import, no writes.  **Two arms READ.**  Since plan step
+``balance:X-bi-7b``, :func:`deletion_refusal`'s merchant-rule refusal asks two
 small reads (is this a one-off's last row -- indexed; does a standing rule
 name its definition -- a scan of the owner's few merchant rules, which carry
 no index on ``template_id``), issued only for a rule-less definition's row.
+Since plan step ``credit_card:CC-5-4a-4``, :func:`reject_unsettleable`'s
+deleted-row refusal asks one by primary key -- whether the row's recurring
+item is archived, for its sentence (ruling **R-CC107**) -- issued only for a
+row it is refusing.
 """
 
 from app.exceptions import ValidationError
@@ -38,6 +42,7 @@ from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
 from app.services.status_seam import deleted_row_payment_refusal
 from app.utils.archive_helpers import template_has_standing_rule
+from app.utils.hidden_row import HiddenRow
 
 
 def settles_from_entries(txn: Transaction) -> bool:
@@ -325,12 +330,15 @@ def reject_unsettleable(txn: Transaction) -> None:
     door read it live -- the settle verb's row lock, ruling **R-CC96**, is
     what lets it see the winner -- and a service caller still can.  The words
     are the seam's own for the same refusal, one sentence naming the row,
-    ruling **R-CC98**.)
+    ruling **R-CC98**, and saying "was archived" where its recurring item is,
+    ruling **R-CC107**.)
 
     Ordered shadow-then-deleted so a row that is both reports the rule that
     routes it somewhere else rather than the one that refuses it outright.  Both
-    are column reads, so neither triggers the relationship lazy-load
-    :func:`settles_from_entries`' cheap-first precondition ordering avoids.
+    tests are column reads, so neither triggers the relationship lazy-load
+    :func:`settles_from_entries`' cheap-first precondition ordering avoids; the
+    deleted row's sentence adds one read, on the refusal alone
+    (:meth:`~app.utils.hidden_row.HiddenRow.of`).
 
     Args:
         txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.
@@ -345,4 +353,4 @@ def reject_unsettleable(txn: Transaction) -> None:
             "legs and the parent move together.",
         )
     if txn.is_deleted:
-        raise ValidationError(deleted_row_payment_refusal(txn.name))
+        raise ValidationError(deleted_row_payment_refusal(HiddenRow.of(txn)))

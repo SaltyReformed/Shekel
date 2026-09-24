@@ -40,7 +40,13 @@ whoever's it was) and **R-CC105** (one sentence for every Save) are pinned in
 :class:`TestADeleteThatWinsTheRaceIsNamed`; the doors those rulings do not
 name keep R-CC89's bare "not found" (:class:`TestTheOtherDoorsStillSayNotFound`).
 Finding **CC-376** -- a refused purchase removal was a 500 -- is
-:class:`TestARefusedRemovalIsTheListsBanner`.  Every figure is made up.
+:class:`TestARefusedRemovalIsTheListsBanner`.
+
+Review 6 found a row its recurring item's ARCHIVE hid told "was deleted"
+(L1), and a deleted transfer shadow named where a live one is not (L2).
+Rulings **R-CC107** ("Say archived") and **R-CC108** (the desktop cell's word
+"Archived") are :class:`TestAnArchivedItemsRowSaysArchived`; L2 is the deleted
+leg in :class:`TestNothingLeaksThroughTheName`.  Every figure is made up.
 """
 
 from __future__ import annotations
@@ -59,11 +65,17 @@ from app.extensions import db
 from app.models.statement_match import StatementMatch, StatementMatchCreation
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.transaction_template import TransactionTemplate
+# The archive's write is the route module's helper, shared by its two archive
+# doors; a thread cannot hold a ROUTE's transaction open, so the other tab
+# calls the write the route makes (the race module's ``_archive`` does too).
+from app.routes.templates.crud import _soft_delete_projected_rows
 from app.services import (
     entry_service,
     pay_period_gates,
     row_write_lock,
     transaction_service,
+    transfer_service,
 )
 from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.pay_calendar import calendar_for
@@ -110,6 +122,20 @@ _PURCHASE_REFUSED = (
     "Groceries was deleted: a purchase cannot be recorded under it.  "
     "Reload the page."
 )
+
+#: What each door says about the made-up $120.00 Gym envelope's occurrence
+#: once Gym is ARCHIVED (ruling R-CC107), keyed by the surface pressed.
+_GYM_ARCHIVED = {
+    "cell": "Gym was archived: a payment cannot be recorded under it.  "
+            "Reload the page.",
+    "card": "Gym was archived: a payment cannot be recorded under it.  "
+            "Reload the page.",
+    "save": "Gym was archived: this change cannot be saved.  Reload the page.",
+    "list": "Gym was archived: a purchase cannot be recorded under it.  "
+            "Reload the page.",
+    "list_tp": "Gym was archived: a purchase cannot be recorded under it.  "
+               "Reload the page.",
+}
 
 
 def _occurrence(seed_user, period, *, name, amount, is_envelope):
@@ -178,8 +204,10 @@ class TestADeletedRowTakesNoPurchase:
         Before review 2's guard: 200, the hidden row held the $12.34, its
         period locked ``HOLDS_MOVEMENT`` and Reset was refused, with no screen
         able to reach the row.  Review 2's guard answered 400 with a sentence;
-        since ruling **R-CC89** the ownership door answers first, "not found",
-        exactly as for another user's row.
+        since ruling **R-CC89** the ownership door answers first, a 404 --
+        whose body names the row since ruling **R-CC104**, graded in
+        :class:`TestAStaleTabIsToldTheRowWasDeleted`.  This test grades the
+        status and that nothing was written.
         """
         with app.app_context():
             period = seed_periods_today[3]
@@ -253,7 +281,13 @@ class TestADeletedRowTakesNoPurchase:
 
 
 class TestADeletedRowIsNotFound:
-    """R-CC89 layer 2: every page and button treats a deleted row as not found."""
+    """R-CC89 layer 2: every page and button treats a deleted row as not found.
+
+    Each answers 404 and writes nothing.  What the body SAYS at the three
+    doors ruling R-CC104 amended -- Mark Paid, the popover's Save, add
+    purchase, which name the row -- is :class:`TestAStaleTabIsToldTheRowWasDeleted`'s;
+    these grade the status and the state.
+    """
 
     def test_a_stale_popovers_actual_correction_is_not_found(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -266,7 +300,9 @@ class TestADeletedRowIsNotFound:
         ``HOLDS_MOVEMENT`` and Reset was refused for good.  The form is the
         popover's own (read while the row was live), carrying the version the
         delete left, so only the ownership door stands between it and the
-        seam.
+        seam.  Both answer 404; the PATCH's body names the row (ruling
+        R-CC105's Save sentence, graded in
+        :class:`TestAStaleTabIsToldTheRowWasDeleted`).
         """
         with app.app_context():
             period = seed_periods_today[3]
@@ -561,8 +597,8 @@ def _placed_one_off(seed_user, period, *, name, amount, is_envelope):
     return row
 
 
-def _deleted_in_another_tab(app, row_id, owner_id):
-    """Commit the app's own Delete of *row_id* from a session of its own, now.
+def _in_another_tab(app, act):
+    """Run *act* and commit it from a session of its own, now.
 
     The other tab is another thread with its own app context, so its session
     is its own; ``result`` re-raises anything it raised here, in the test.
@@ -570,9 +606,7 @@ def _deleted_in_another_tab(app, row_id, owner_id):
     def other_tab():
         with app.app_context():
             try:
-                transaction_service.delete_transaction(
-                    db.session.get(Transaction, row_id), owner_id,
-                )
+                act()
                 db.session.commit()
             finally:
                 db.session.remove()
@@ -581,35 +615,72 @@ def _deleted_in_another_tab(app, row_id, owner_id):
         pool.submit(other_tab).result(timeout=8.0)
 
 
-def _delete_lands_before_the_lock(monkeypatch, app, lock_name, row_id, owner_id):
-    """Make another tab's Delete of *row_id* commit just before the door locks it.
+def _deleted_in_another_tab(app, row_id, owner_id):
+    """Commit the app's own Delete of *row_id* from a session of its own, now."""
+    _in_another_tab(app, lambda: transaction_service.delete_transaction(
+        db.session.get(Transaction, row_id), owner_id,
+    ))
+
+
+def _archived_in_another_tab(app, template_id):
+    """Commit the archive of *template_id* from a session of its own, now.
+
+    The archive route's own write -- the definition off, then its empty
+    Projected rows hidden (``_soft_delete_projected_rows``, which both archive
+    doors share) -- because a thread cannot hold a ROUTE's transaction open.
+    """
+    def archive():
+        template = db.session.get(TransactionTemplate, template_id)
+        template.is_active = False
+        _soft_delete_projected_rows(template)
+
+    _in_another_tab(app, archive)
+
+
+def _lands_before_the_lock(monkeypatch, lock_name, row_id, other_tab):
+    """Make *other_tab* commit just before the door locks row *row_id*.
 
     Ruling R-CC96's race, the technique review 5 used: the route's door has
-    read the row live, then the delete commits, then the door's row lock
-    (``row_write_lock.<lock_name>``) sees the winner.  Returns a list that
-    holds the row id once the delete has fired, so a test can assert its race
-    was staged rather than skipped.
+    read the row live, then the other tab's act commits, then the door's row
+    lock (``row_write_lock.<lock_name>``) sees the winner.  The act commits
+    BEFORE the lock is requested, so the door never waits: under READ
+    COMMITTED the outcome is the waiting interleaving's, which the race
+    module grades at service level.  Returns a list that holds the row id
+    once the act has fired, so a test can assert its race was staged rather
+    than skipped.
     """
     real = getattr(row_write_lock, lock_name)
     fired = []
 
-    def delete_first(target, *args, **kwargs):
+    def act_first(target, *args, **kwargs):
         target_id = target if isinstance(target, int) else target.id
         if not fired and target_id == row_id:
             fired.append(target_id)
-            _deleted_in_another_tab(app, row_id, owner_id)
+            other_tab()
         return real(target, *args, **kwargs)
 
-    monkeypatch.setattr(row_write_lock, lock_name, delete_first)
+    monkeypatch.setattr(row_write_lock, lock_name, act_first)
     return fired
 
 
-def _is_the_deleted_cell(response, sentence):
-    """Assert *response* is R-CC102's red "Deleted" cell saying *sentence*."""
+def _delete_lands_before_the_lock(monkeypatch, app, lock_name, row_id, owner_id):
+    """Make another tab's Delete of *row_id* commit just before the door locks it."""
+    return _lands_before_the_lock(
+        monkeypatch, lock_name, row_id,
+        lambda: _deleted_in_another_tab(app, row_id, owner_id),
+    )
+
+
+def _is_the_deleted_cell(response, sentence, word="Deleted"):
+    """Assert *response* is R-CC102's red cell, showing *word* and saying *sentence*.
+
+    *word* is "Deleted", or "Archived" for a row its item's archive hid
+    (ruling R-CC108).
+    """
     body = response.get_data(as_text=True)
     assert response.status_code == 404
     assert response.headers.get("Shekel-Designed-Fragment") == "1"
-    assert '<span aria-hidden="true">Deleted</span>' in body
+    assert f'<span aria-hidden="true">{word}</span>' in body
     assert f'title="{sentence}"' in body
     assert f'<span class="visually-hidden">{sentence}</span>' in body
     # Nothing left to press: no opener, no checkmark.
@@ -846,7 +917,13 @@ class TestAStaleTabIsToldTheRowWasDeleted:
 
 
 class TestADeleteThatWinsTheRaceIsNamed:
-    """R-CC101: the delete commits while the click waits for the row's lock."""
+    """R-CC101: the delete commits after the door read the row live, before its lock.
+
+    Staged by :func:`_delete_lands_before_the_lock`, which commits the delete
+    before the door requests the row's lock, so the door does not wait; the
+    waiting interleaving is graded at service level, in
+    ``tests/test_services/test_cc5_4a4_row_lock_races.py``.
+    """
 
     def test_mark_paid_on_the_cell(
         self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
@@ -1034,19 +1111,24 @@ def _press(client, surface, row_id):
     )
 
 
-def _is_the_nameless_answer(response, surface, row_id, name):
-    """Assert *surface*'s gone-row answer, in the words that name no row, never *name*."""
-    assert name not in response.get_data(as_text=True)
+def _is_the_gone_answer(response, surface, row_id, sentence, word="Deleted"):
+    """Assert *surface*'s gone-row answer saying *sentence*; the desktop cells show *word*."""
     if surface in ("cell", "save"):
-        _is_the_deleted_cell(response, ROW_NO_LONGER_EXISTS_MSG)
+        _is_the_deleted_cell(response, sentence, word)
     elif surface == "card":
-        _is_the_banner_card(response, row_id, ROW_NO_LONGER_EXISTS_MSG)
+        _is_the_banner_card(response, row_id, sentence)
     else:
         root = (
             f"entry-list-tp-{row_id}" if surface == "list_tp"
             else f"entry-list-{row_id}"
         )
-        _is_the_banner_list(response, root, ROW_NO_LONGER_EXISTS_MSG)
+        _is_the_banner_list(response, root, sentence)
+
+
+def _is_the_nameless_answer(response, surface, row_id, name):
+    """Assert *surface*'s gone-row answer, in the words that name no row, never *name*."""
+    assert name not in response.get_data(as_text=True)
+    _is_the_gone_answer(response, surface, row_id, ROW_NO_LONGER_EXISTS_MSG)
 
 
 class TestNothingLeaksThroughTheName:
@@ -1126,6 +1208,203 @@ class TestNothingLeaksThroughTheName:
             assert "was deleted" not in response.get_data(as_text=True)
             _is_the_nameless_answer(response, surface, shadow_id, shadow_name)
 
+    @pytest.mark.parametrize("surface", _SURFACES)
+    def test_a_deleted_transfer_leg_is_not_named(
+        self, app, db, auth_client, seed_user, seed_periods_today, surface,
+    ):
+        """Review 6's L2: a made-up transfer soft-deleted, then its shadow's id pressed.
+
+        Before: "Transfer to Savings was deleted: a payment cannot be recorded
+        under it." -- the wrong door's sentence for a transfer's leg, and a
+        name the live leg above is never told.  The door met the shadow fence
+        first, so the answer is the shadow's: the words that name no row.
+        """
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            transfer = _create_transfer(seed_user, seed_periods_today[4], savings)
+            shadow = db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ).first()
+            shadow_id, shadow_name = shadow.id, shadow.name
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transaction, shadow_id).is_deleted is True
+
+            response = _press(auth_client, surface, shadow_id)
+
+            assert "was deleted" not in response.get_data(as_text=True)
+            _is_the_nameless_answer(response, surface, shadow_id, shadow_name)
+
+
+class TestAnArchivedItemsRowSaysArchived:
+    """R-CC107 and R-CC108: a row its recurring item's archive hid is told "was archived".
+
+    Review 6's L1, measured: archiving the made-up $120.00 Gym and then
+    pressing Mark Paid on its hidden occurrence said "Gym was deleted: a
+    payment cannot be recorded under it." -- but the owner archived Gym, and
+    Unarchive can bring the row back (ruling R-CC86).  A row deleted while
+    its item stays active keeps "was deleted"
+    (:class:`TestAStaleTabIsToldTheRowWasDeleted`).
+    """
+
+    @staticmethod
+    def _gym(seed_user, period):
+        """The made-up $120.00 Gym envelope and its occurrence in *period*."""
+        return _occurrence(
+            seed_user, period, name="Gym", amount="120.00", is_envelope=True,
+        )
+
+    @pytest.mark.parametrize("surface", _SURFACES)
+    def test_a_stale_tab_is_told_the_item_was_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today, surface,
+    ):
+        """Gym is archived, then a stale page presses each door on its hidden occurrence."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = self._gym(seed_user, period)
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.post(
+                f"/templates/{template.id}/archive",
+            ).status_code == 302
+            db.session.expire_all()
+            assert db.session.get(Transaction, row_id).is_deleted is True
+
+            response = _press(auth_client, surface, row_id)
+
+            _is_the_gone_answer(
+                response, surface, row_id, _GYM_ARCHIVED[surface],
+                word="Archived",
+            )
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_row_deleted_and_then_archived_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """R-CC107's last sentence: one Gym row deleted, and later the whole item archived.
+
+        *"If you deleted one row and later archived the whole item, it says
+        'archived', which is also true."*
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = self._gym(seed_user, period)
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            assert auth_client.post(
+                f"/templates/{template.id}/archive",
+            ).status_code == 302
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            _is_the_deleted_cell(response, _GYM_ARCHIVED["cell"], "Archived")
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_mark_paid_losing_to_the_archive_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The archive commits after the door read Gym's row live, before its lock.
+
+        The refusal's re-read after its rollback is what names the row here
+        (``HiddenRow.of_reread``), so this grades that arm's archive reading.
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = self._gym(seed_user, period)
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _lands_before_the_lock(
+                monkeypatch, "lock_row", row_id,
+                lambda: _archived_in_another_tab(app, template.id),
+            )
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            assert fired == [row_id]
+            _is_the_deleted_cell(response, _GYM_ARCHIVED["cell"], "Archived")
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_purchase_losing_to_the_archive_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The same race at add purchase: the banner alone, saying archived."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = self._gym(seed_user, period)
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _lands_before_the_lock(
+                monkeypatch, "lock_and_read", row_id,
+                lambda: _archived_in_another_tab(app, template.id),
+            )
+
+            response = auth_client.post(
+                f"/transactions/{row_id}/entries", data=_a_purchase_form(),
+            )
+
+            assert fired == [row_id]
+            _is_the_banner_list(
+                response, f"entry-list-{row_id}", _GYM_ARCHIVED["list"],
+            )
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_the_settle_verb_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A service caller that skipped the door settles Gym's hidden occurrence.
+
+        The words a SERVICE caller reads (``reject_unsettleable``); the
+        routes' own answer is the door's, graded above.
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = self._gym(seed_user, period)
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.post(
+                f"/templates/{template.id}/archive",
+            ).status_code == 302
+            db.session.expire_all()
+
+            with pytest.raises(ValidationError, match=(
+                "Gym was archived: a payment cannot be recorded under it"
+            )):
+                settle_transaction(db.session.get(Transaction, row_id))
+            db.session.rollback()
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_the_seam_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The correction arm on a Paid Hotel deleted, then its item archived.
+
+        :class:`TestTheSeamRefusesADeletedRow`'s case with the archive after
+        the delete: the status seam's own refusal says "was archived".
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            _settle(row, period.start_date)
+            row_id, user_id = row.id, seed_user["user"].id
+            paid = row.status_id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            assert auth_client.post(
+                f"/templates/{template.id}/archive",
+            ).status_code == 302
+            db.session.expire_all()
+
+            with pytest.raises(ValidationError, match=(
+                "Hotel was archived: a payment cannot be recorded under it"
+            )):
+                transaction_service.apply_requested_status(
+                    db.session.get(Transaction, row_id), paid,
+                    submitted=typed(Decimal("125.00")),
+                )
+            db.session.rollback()
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
 
 class TestTheOtherDoorsStillSayNotFound:
     """R-CC104 names three doors; every other door keeps R-CC89's bare answer."""
@@ -1189,7 +1468,14 @@ class TestTheOtherDoorsStillSayNotFound:
     def test_a_stale_cancel_is_not_found(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Cancel on a deleted row: the ownership door's bare "Not found", unchanged."""
+        """Cancel on a deleted row: the ownership door's bare "Not found", unchanged.
+
+        A PIN, not a grader (review 6, L6): Cancel's own door
+        (``_get_owned_transaction``) answers the deleted row before any code
+        this step's gone-row answers touched runs, so it passed before them
+        too.  It holds Cancel to R-CC89's bare answer against a later change
+        that would name the row at a door ruling R-CC104 does not.
+        """
         with app.app_context():
             _template, row = _occurrence(
                 seed_user, seed_periods_today[3], name="Phone",
