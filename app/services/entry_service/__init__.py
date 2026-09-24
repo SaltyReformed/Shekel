@@ -54,7 +54,7 @@ from ._doors import (
     resolve_owner_id,
     update_entry,
 )
-from ._refusals import removal_refusal
+from ._refusals import deleted_row_purchase_refusal, removal_refusal
 from ._sums import (
     build_entry_lists_dict,
     build_entry_sums_dict,
@@ -77,6 +77,7 @@ __all__ = [
     "compute_remaining",
     "create_entry",
     "delete_entry",
+    "deleted_row_purchase_refusal",
     "entry_list_view",
     "get_entries_for_transaction",
     "pct_complete",

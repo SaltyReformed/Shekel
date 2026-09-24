@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money, retained_badge %}
+{% from "grid/_refusal_banner.html" import refusal_banner %}
 {# Grid row macros -- the grid's shared display rules, stated once each.
 
    TWO groups, and they share only this file:
@@ -453,11 +454,7 @@
   {% set _aid = _card_id | replace("card-", "card-expansion-", 1) %}
   <div class="mobile-card-wrapper" id="{{ _card_id }}">
     {% if error %}
-    <div class="alert alert-danger py-1 px-2 mb-0 small d-flex align-items-center gap-1"
-         role="alert">
-      <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
-      <span>{{ error }}</span>
-    </div>
+    {{ refusal_banner(error) }}
     {% endif %}
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
         {% if is_leg %}data-mobile-leg="{{ txn.transfer.id }}-{{ txn.account_id }}"{% else %}data-mobile-txn-id="{{ txn.id }}"{% endif %}

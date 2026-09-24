@@ -35,6 +35,7 @@ volume.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -452,6 +453,29 @@ def is_not_found_to_transaction_doors(txn) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class DeletedRow:
+    """A DELETED row the requester could otherwise reach: its name, and nothing to write under.
+
+    What :func:`get_accessible_transaction_or_deleted` answers for a row
+    ruling **R-CC89** refuses because it is deleted (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC104**, developer 2026-09-23:
+    *"Case (2) shows the same sentence in the same place. A recurring row is
+    only hidden, so its name is known"*).  The door still refuses the row;
+    what a stale tab's Mark Paid, Save or add purchase gets is a sentence
+    naming it rather than a bare "not found" the screen drops.  It carries the
+    NAME alone, so a door holding one has no row to write money under -- the
+    refusal R-CC89 exists for stays structural rather than a check each door
+    must remember.
+
+    Attributes:
+        name: The row's name, for the refusal that names it (ruling
+            **R-CC98**: never its id).
+    """
+
+    name: str
+
+
 def get_accessible_transaction(txn_id):
     """Load a transaction the current user may access (owner or companion).
 
@@ -500,11 +524,45 @@ def get_accessible_transaction(txn_id):
     denies-and-logs (``user_id`` ``None`` => "anonymous probe") rather
     than raising ``AttributeError`` -- exactly like the sibling helpers.
 
+    **Its body is :func:`get_accessible_transaction_or_deleted`**, and this is
+    that door's answer for every caller that serves a live row alone: the row,
+    or ``None`` for everything else, a deleted row included.  One walk, so the
+    two cannot come to disagree about which rows they serve.
+
     Args:
         txn_id: Integer primary key of the transaction.
 
     Returns:
         The :class:`Transaction` if found and accessible, else ``None``.
+    """
+    answer = get_accessible_transaction_or_deleted(txn_id)
+    return answer if isinstance(answer, Transaction) else None
+
+
+def get_accessible_transaction_or_deleted(txn_id):
+    """The transaction door, telling a deleted row the requester could reach by its NAME.
+
+    :func:`get_accessible_transaction`'s access rules, logging and "not found"
+    predicate exactly (its docstring states them); what differs is the answer
+    for a row the predicate refuses because it is DELETED.  That row is a
+    :class:`DeletedRow` rather than ``None``, so the three doors ruling
+    **R-CC101** names -- Mark Paid, the popover's Save, add purchase -- can
+    say "Hotel was deleted: ..." where the page acted on a row deleted
+    minutes ago (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC104**).
+    Every other refusal stays ``None``: a missing id, another user's row, a
+    companion's hidden row, a live transfer shadow -- and a one-off row whose
+    delete removed it from the table, which is a missing id by then.  That is
+    what keeps the uniform 404 uniform: only a row the requester may already
+    reach is ever named, and the rest share
+    :data:`app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+
+    Args:
+        txn_id: Integer primary key of the transaction.
+
+    Returns:
+        The :class:`Transaction` when found, accessible and served; a
+        :class:`DeletedRow` when found and accessible but deleted; else
+        ``None``.
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
@@ -554,9 +612,11 @@ def get_accessible_transaction(txn_id):
     # AFTER both access branches, deliberately: a stranger's or a companion's
     # probe naming another owner's shadow or deleted row is an access denial
     # first (WARNING, the F-144 contract above) and "not found" second, exactly
-    # as ``routes/transactions/_helpers._get_owned_transaction`` orders it.
+    # as ``routes/transactions/_helpers._get_owned_transaction`` orders it --
+    # which is also why a DeletedRow is only ever handed to a requester who
+    # may reach the row.
     if is_not_found_to_transaction_doors(txn):
-        return None
+        return DeletedRow(txn.name) if txn.is_deleted else None
     return txn
 
 

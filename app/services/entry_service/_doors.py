@@ -48,6 +48,7 @@ from app.services.entry_service._refusals import (
     _reject_settled_removal,
     _reject_settlement_record,
     cost_fields_changing,
+    deleted_row_purchase_refusal,
 )
 from app.utils.balance_predicates import is_cancelled
 # ``is_credit`` from balance_predicates collides with the
@@ -378,13 +379,9 @@ def create_entry(
     # :mod:`app.deleted_row_infrastructure` refuses the write in the database
     # for one that skips this line too.
     if txn.is_deleted:
-        # Named, never numbered (ruling **R-CC98**), in the words ruling
-        # **R-CC96** quotes: "Groceries was deleted: a purchase cannot be
-        # recorded under it".
-        raise ValidationError(
-            f"{txn.name} was deleted: a purchase cannot be recorded under it.  "
-            "Reload the page.",
-        )
+        # Named, never numbered (ruling **R-CC98**); the one sentence the
+        # add-purchase route also shows for a row that is gone.
+        raise ValidationError(deleted_row_purchase_refusal(txn.name))
 
     # Entry-capable: purchase tracking must be enabled on the row's
     # DEFINITION (its ``is_envelope``).  Resolved by

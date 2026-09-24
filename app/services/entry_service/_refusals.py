@@ -496,6 +496,34 @@ def _reject_settled_removal(txn: Transaction) -> None:
         raise ValidationError(refusal)
 
 
+def deleted_row_purchase_refusal(name: str) -> str:
+    """Return the sentence a purchase on a deleted row is refused with.
+
+    **One sentence for the two places that refuse it**: the purchase door
+    (:func:`app.services.entry_service.create_entry`, ruling **R-CC89**'s
+    third layer), and the add-purchase route, which shows it where the
+    purchase list stood for a row that is gone (rulings **R-CC101**,
+    **R-CC103**, **R-CC104**).  The status seam's
+    ``deleted_row_payment_refusal`` is its twin for a payment.  Named, never
+    numbered (ruling **R-CC98**), in the words ruling **R-CC96** quotes:
+    *"Groceries was deleted: a purchase cannot be recorded under it"*.
+
+    It takes the NAME rather than the row because a one-off row's delete
+    removes the row from the table: the route read the name while the row was
+    live, and after the delete there is no row left to hand over.
+
+    Args:
+        name: The deleted row's name.
+
+    Returns:
+        The refusal, naming the row.
+    """
+    return (
+        f"{name} was deleted: a purchase cannot be recorded under it.  "
+        "Reload the page."
+    )
+
+
 def _reject_zero_amount(amount: Decimal | None) -> None:
     """Refuse a purchase worth nothing -- ruling **bank_import:R-II**.
 

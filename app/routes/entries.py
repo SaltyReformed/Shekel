@@ -34,13 +34,17 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from app.exceptions import NotFoundError, ValidationError
-from app.utils.auth_helpers import get_accessible_transaction
+from app.utils.auth_helpers import (
+    get_accessible_transaction,
+    get_accessible_transaction_or_deleted,
+)
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 from app.utils.error_fragments import (
     INVALID_REFERENCE_MSG,
     designed_error,
     flatten_schema_errors,
+    refusal_for_a_gone_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,6 +266,74 @@ def _error_entry_response(
     )
 
 
+def _gone_entry_list_response(
+    txn_id: int, host: str, message: str,
+) -> ResponseReturnValue:
+    """Render the purchase list of a row that is GONE: the red banner alone.
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC103** (developer
+    2026-09-23, "Banner only, both kinds"): *"For recurring and one-off rows
+    alike, the list and its Add form are replaced by the red banner alone"*
+    (``grid/_transaction_entries_gone.html``).  Keyed by the id in the URL,
+    the only thing left of a one-off row its delete removed; the root keeps
+    the list's id, so the request's outerHTML swap lands.  Designed and a
+    404: the door answers the row "not found" (ruling **R-CC89**), and the
+    body says why rather than being dropped.
+
+    Args:
+        txn_id: The row id the request named.
+        host: The validated host prefix from :func:`_request_host`.
+        message: The sentence -- the purchase refusal naming the row, or
+            :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+
+    Returns:
+        A designed-fragment Flask response tuple at 404.
+    """
+    return designed_error(
+        render_template(
+            "grid/_transaction_entries_gone.html",
+            entry_list_host_id=_entry_list_host_id(txn_id, host),
+            error=message,
+        ),
+        404,
+    )
+
+
+def _purchase_refused_response(
+    txn_id: int, name: str, message: str, host: str, status: int = 400,
+) -> ResponseReturnValue:
+    """Answer a refused purchase: the list with its banner, or the banner alone.
+
+    The add-purchase door's refusals (plan step ``credit_card:CC-5-4a-4``,
+    rulings **R-CC101**, **R-CC103**).  After the rollback the row is read
+    again: when the delete won the race for the row's lock (ruling
+    **R-CC96**), soft or hard, the list has nothing left to draw, and the
+    banner alone says so, naming the row by the *name* the route read while
+    it was live -- a one-off's delete takes the row out of the table, and
+    rendering the vanished instance was a 500 (review 5, M3).  Otherwise the
+    list re-renders with the refusal, as every entries refusal does
+    (:func:`_error_entry_response`), off the row as it now stands.
+
+    Args:
+        txn_id: The row id the request named.
+        name: The row's name, read while it was live.
+        message: The refusal, for a row that still stands.
+        host: The validated host prefix from :func:`_request_host`.
+        status: The HTTP status for a row that still stands (400 refusal,
+            422 validation, 404 foreign account).
+
+    Returns:
+        A designed-fragment Flask response tuple.
+    """
+    db.session.rollback()
+    row = db.session.get(Transaction, txn_id)
+    if row is None or row.is_deleted:
+        return _gone_entry_list_response(
+            txn_id, host, entry_service.deleted_row_purchase_refusal(name),
+        )
+    return _error_entry_response(row, message, host, status=status)
+
+
 def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue:
     """Build the shared success response for an entries mutation.
 
@@ -451,16 +523,33 @@ def create_entry(txn_id):
     Returns the refreshed entry list with a balanceChanged trigger
     (plus, on the desktop popover surface, the OOB grid-cell
     re-render -- see :func:`_entry_mutation_response`).
+
+    **A row that is gone gets the banner alone** (plan step
+    ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC103**,
+    **R-CC104**): a purchase on a row deleted in another tab, or while this
+    one waited for the row's lock, answers "Groceries was deleted: a purchase
+    cannot be recorded under it.  Reload the page." where the list stood --
+    :func:`_gone_entry_list_response` before the door serves the row,
+    :func:`_purchase_refused_response` after.
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
-        return "Not found", 404
     host = _request_host()
+    answer = get_accessible_transaction_or_deleted(txn_id)
+    if not isinstance(answer, Transaction):
+        return _gone_entry_list_response(
+            txn_id, host,
+            refusal_for_a_gone_row(
+                answer, entry_service.deleted_row_purchase_refusal,
+            ),
+        )
+    txn = answer
+    # Read while the row is live: a one-off's delete takes the row, and its
+    # name with it, before a refusal can re-read it.
+    name = txn.name
 
     errors = _create_schema.validate(request.form)
     if errors:
-        return _error_entry_response(
-            txn, flatten_schema_errors(errors), host, status=422,
+        return _purchase_refused_response(
+            txn_id, name, flatten_schema_errors(errors), host, status=422,
         )
 
     data = _create_schema.load(request.form)
@@ -504,10 +593,15 @@ def create_entry(txn_id):
         # Through CC-5-1 no ``NotFoundError`` could reach this arm at all:
         # the row is resolved above, so every 404 the door could raise was
         # already answered, and the 400 this shared with ``ValidationError``
-        # was never exercised.
-        return _error_entry_response(txn, str(exc), host, status=404)
+        # was never exercised.  The row lock's own "not found" -- a one-off
+        # deleted while this waited -- lands here too, and
+        # :func:`_purchase_refused_response` tells the two apart by reading
+        # the row again.
+        return _purchase_refused_response(
+            txn_id, name, str(exc), host, status=404,
+        )
     except ValidationError as exc:
-        return _error_entry_response(txn, str(exc), host)
+        return _purchase_refused_response(txn_id, name, str(exc), host)
 
     return _entry_mutation_response(txn, host)
 
@@ -722,6 +816,15 @@ def delete_entry(txn_id, entry_id):
     delete button; the SQLAlchemy ``version_id_col`` lock catches
     concurrent races at flush time and the handler converts
     ``StaleDataError`` into a 409 + conflict entry list.
+
+    **A refused removal is the list's banner** (finding **CC-376**, plan step
+    ``credit_card:CC-5-4a-4``): the door refuses a purchase under a settled
+    row whose close records a fixed figure
+    (``entry_service._refusals.removal_refusal``), and that
+    ``ValidationError`` had no arm here, so it was a 500 (measured by the
+    step's lane probe on a settled envelope holding one purchase).  It is
+    answered as the purchase list's other refusals are, where the delete
+    button stood.
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:
@@ -748,5 +851,7 @@ def delete_entry(txn_id, entry_id):
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404
+    except ValidationError as exc:
+        return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)

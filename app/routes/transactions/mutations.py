@@ -40,7 +40,7 @@ from app.services import (
 )
 from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
-from app.utils.auth_helpers import get_accessible_transaction, require_owner
+from app.utils.auth_helpers import require_owner
 from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._field_updates import (
@@ -59,13 +59,14 @@ from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
+    _deleted_row_change_refusal,
+    _door_naming_a_gone_row,
     _error_transaction_response,
     _finalised_edit_response,
     _get_owned_transaction,
     _INVALID_REFERENCE_MSG,
     _mark_done_schema,
     _mark_done_success_response,
-    _RenderTarget,
     _stale_transaction_response,
     _update_schema_for,
     _verify_owned_fks_in_update,
@@ -537,7 +538,8 @@ def _stale_form_conflict(txn, data):
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
 @require_owner
-def update_transaction(txn_id):
+@_door_naming_a_gone_row(_deleted_row_change_refusal)
+def update_transaction(txn, _target):
     """Update a transaction's fields (inline edit save).
 
     Returns the updated cell fragment.  Sends an HX-Trigger header
@@ -577,11 +579,13 @@ def update_transaction(txn_id):
     ``transfers.update_transfer`` received in commit C-27.  (It ran
     before the transfer-shadow branch as well, until leaf
     ``balance:X-bi-6-1`` deleted that branch.)
-    """
-    txn = _get_owned_transaction(txn_id)
-    if txn is None:
-        return "Not found", 404
 
+    **The door is** :func:`_door_naming_a_gone_row` (plan step
+    ``credit_card:CC-5-4a-4``): a Save on a row deleted in another tab, or
+    while this one waited, answers the red "Deleted" cell saying "Hotel was
+    deleted: this change cannot be saved.  Reload the page." (rulings
+    **R-CC101**, **R-CC102**, **R-CC104**, **R-CC105**).
+    """
     # Parse and validate input.  WHICH schema is the row's shape's to say
     # (plan step balance:X-bi-7b): the flags are declared only for a row
     # whose item is editable here, so a recurring row's crafted flag is
@@ -621,7 +625,7 @@ def update_transaction(txn_id):
     if conflict is not None:
         return conflict
 
-    return _apply_regular_update(txn, txn_id, data, target_period=target_period)
+    return _apply_regular_update(txn, txn.id, data, target_period=target_period)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
@@ -787,7 +791,8 @@ def _mark_done_regular(txn, txn_id, submitted, tender_account_id, target):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-done", methods=["POST"])
-def mark_done(txn_id):
+@_door_naming_a_gone_row(status_seam.deleted_row_payment_refusal)
+def mark_done(txn, target):
     """Set a transaction's status to 'done' (expenses) or 'received' (income).
 
     Automatically picks the correct status based on transaction type.
@@ -808,25 +813,15 @@ def mark_done(txn_id):
     at flush time.  ``StaleDataError`` is converted to a 409 +
     conflict cell so the user retries against fresh state instead
     of seeing a 500.
+
+    **The door is** :func:`_door_naming_a_gone_row` (plan step
+    ``credit_card:CC-5-4a-4``), which also reads the rendering surface
+    (``target``) off the form: a Mark Paid on a row deleted in another tab,
+    or while this one waited for the row's lock, answers the cell's red
+    "Deleted" or the card's banner saying "Hotel was deleted: a payment
+    cannot be recorded under it.  Reload the page." (rulings **R-CC101**,
+    **R-CC102**, **R-CC104**).
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
-        return "Not found", 404
-
-    # Rendering surface for the response.  The mobile / companion card
-    # action bar posts ``render=mobile_card`` plus the per-tab
-    # ``card_prefix`` and the ``can_edit`` flag so the response is a
-    # single re-rendered card (in-place swap, no reload); the desktop
-    # grid and full-edit popover omit these, so the response defaults
-    # to the cell + gridRefresh reload.  Read off ``request.form``
-    # directly -- these are render-routing fields, not part of the
-    # money-only ``MarkDoneSchema``.  Resolved BEFORE schema validation
-    # so the 422 below can render the correct surface too.
-    render_mode = request.form.get("render", "")
-    card_prefix = request.form.get("card_prefix", "")
-    card_can_edit = request.form.get("can_edit") == "1"
-    target = _RenderTarget(render_mode, card_prefix, card_can_edit)
-
     # Validate the optional ``settled_amount`` form field once.
     # ``MarkDoneSchema`` strips empty
     # strings via its pre_load hook so the missing-field UX (a
@@ -854,7 +849,7 @@ def mark_done(txn_id):
     # ``transaction_service.settled_status_id``, inside the verb.
 
     return _mark_done_regular(
-        txn, txn_id, submitted,
+        txn, txn.id, submitted,
         # WHICH ACCOUNT the money moved through, when the surface said (the
         # popover's "Paid from" picker, plan step ``credit_card:CC-5-3``);
         # gated by the verb against the ROW's owner, never ``current_user``

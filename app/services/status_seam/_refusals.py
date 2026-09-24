@@ -326,31 +326,36 @@ def reject_settlement_on_a_deleted_row(
     """
     if settlement is None or not row.is_deleted:
         return
-    raise ValidationError(deleted_row_payment_refusal(row))
+    raise ValidationError(deleted_row_payment_refusal(row.name))
 
 
-def deleted_row_payment_refusal(row: StatusBearingRow) -> str:
+def deleted_row_payment_refusal(name: str) -> str:
     """Return the sentence a payment on a deleted row is refused with.
 
-    **One sentence for the two doors that refuse it** -- this seam's
-    :func:`reject_settlement_on_a_deleted_row` and the settle verbs'
-    ``transaction_service`` ``reject_unsettleable``, which since ruling
-    **R-CC96** is what a Mark Paid that lost a race to the row's delete meets
-    -- so the owner reads one answer whichever door refused.  It names the
-    row and never its id (ruling **R-CC98**, developer 2026-09-23: *"never
-    show a user a system ID. A user will not know what that is and only be
-    confused. Use the name of the transaction"*), in the words ruling R-CC96
-    quotes for the purchase door's twin: *"Groceries was deleted: a purchase
-    cannot be recorded under it"*.
+    **One sentence for the three places that refuse it** -- this seam's
+    :func:`reject_settlement_on_a_deleted_row`, the settle verbs'
+    ``transaction_service`` ``reject_unsettleable`` (since ruling **R-CC96**
+    what a Mark Paid that lost a race to the row's delete meets), and the Mark
+    Paid route, which shows it on the cell or the card for a row that is gone
+    (rulings **R-CC101**, **R-CC104**) -- so the owner reads one answer
+    whichever of them refused.  It names the row and never its id (ruling
+    **R-CC98**, developer 2026-09-23: *"never show a user a system ID. A user
+    will not know what that is and only be confused. Use the name of the
+    transaction"*), in the words ruling R-CC96 quotes for the purchase door's
+    twin: *"Groceries was deleted: a purchase cannot be recorded under it"*.
+
+    It takes the NAME rather than the row because a one-off row's delete
+    removes the row from the table: the route read the name while the row was
+    live, and after the delete there is no row left to hand over.
 
     Args:
-        row: The deleted row.
+        name: The deleted row's name.
 
     Returns:
-        The refusal, naming *row*.
+        The refusal, naming the row.
     """
     return (
-        f"{row.name} was deleted: a payment cannot be recorded under it.  "
+        f"{name} was deleted: a payment cannot be recorded under it.  "
         "Reload the page."
     )
 

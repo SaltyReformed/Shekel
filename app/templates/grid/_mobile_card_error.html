@@ -1,23 +1,30 @@
+{% from "grid/_refusal_banner.html" import refusal_banner %}
 {# Mobile card rejection fallback -- HTMX error fragment.
 
-   Rendered by ``_render_mobile_card`` when a card-targeted mutation is
-   refused AND the row no longer yields a card row-key (e.g. a
-   Cancelled row: the card lists filter cancelled rows out, so the
-   stale card that fired the request has nothing to re-render into).
-   The wrapper keeps the requesting card's ``#card-<prefix-><id>`` id
-   so the outerHTML swap resolves, and the banner replaces the card
-   body: the row is gone from this surface, and the banner says why
-   the action was refused.  A page refresh (or the next tab switch)
-   drops the wrapper along with the rest of the stale list.
+   Rendered when a card-targeted mutation is refused AND the item has no
+   card to re-render into, so the banner replaces the card body and says
+   why.  Two ways there:
 
-   Expected context: txn (a row, or a transfer leg since plan step
-   balance:X-bi-6-1 -- `card_dom_id` composes either's id), id_prefix,
-   error.
+     * the item no longer yields a card row-key -- e.g. a Cancelled row or
+       a Cancelled transfer's leg: the card lists filter cancelled items
+       out, so the stale card that fired the request has nothing to
+       re-render (``transactions/_helpers._render_mobile_card``,
+       ``_render_helpers`` for a leg);
+     * the row is GONE -- deleted in another tab, or while the request
+       waited for its lock (plan step credit_card:CC-5-4a-4, rulings
+       R-CC101 and R-CC104): the phone card's Mark Paid shows the sentence
+       naming the row here
+       (``transactions/_helpers._gone_transaction_response``).
+
+   The wrapper keeps the requesting card's ``#card-<prefix-><id>`` id so the
+   outerHTML swap resolves.  A page refresh (or the next tab switch) drops
+   the wrapper along with the rest of the stale list.
+
+   Expected context: card_id -- the requesting card's wrapper id, composed
+   by the caller from ``grid_view_service.card_dom_id`` (an item it holds)
+   or ``row_card_dom_id`` (a row that is gone, which only an id is left
+   of); error -- the refusal.
 #}
-<div class="mobile-card-wrapper" id="{{ card_dom_id(txn, id_prefix or "") }}">
-  <div class="alert alert-danger py-1 px-2 mb-0 small d-flex align-items-center gap-1"
-       role="alert">
-    <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
-    <span>{{ error }}</span>
-  </div>
+<div class="mobile-card-wrapper" id="{{ card_id }}">
+  {{ refusal_banner(error) }}
 </div>

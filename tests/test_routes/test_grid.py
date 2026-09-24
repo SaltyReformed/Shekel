@@ -44,7 +44,10 @@ from app.services import (
     transaction_service,
 )
 from app.services.pay_rhythm import FixedDays
-from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.utils.error_fragments import (
+    DESIGNED_FRAGMENT_HEADER,
+    ROW_NO_LONGER_EXISTS_MSG,
+)
 from app.services.balance_at import BalanceContext
 from app.services.liability_sign import owed
 from app.services.pay_calendar import DerivedPeriod, calendar_for
@@ -1847,20 +1850,34 @@ class TestTransactionNegativePaths:
     # ── Nonexistent ID tests ──────────────────────────────────────
 
     def test_update_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /transactions/999999 returns 404 for nonexistent transaction."""
+        """PATCH /transactions/999999 returns 404 for nonexistent transaction.
+
+        The body is ruling **credit_card:R-CC104**'s nameless sentence since
+        plan step CC-5-4a-4 (developer 2026-09-23: a row the app cannot name
+        -- an erased one-off, one that never existed, another user's -- shows
+        "This transaction no longer exists.  Reload the page."), in the
+        designed cell rather than a bare "Not found" htmx drops.  The status
+        is the 404 it always was.
+        """
         with app.app_context():
             resp = auth_client.patch(
                 "/transactions/999999", data={"estimated_amount": "200.00"}
             )
             assert resp.status_code == 404
-            assert b"Not found" in resp.data
+            assert resp.headers.get("Shekel-Designed-Fragment") == "1"
+            assert ROW_NO_LONGER_EXISTS_MSG.encode() in resp.data
 
     def test_mark_done_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/999999/mark-done returns 404 for nonexistent transaction."""
+        """POST /transactions/999999/mark-done returns 404 for nonexistent transaction.
+
+        The body is ruling **credit_card:R-CC104**'s nameless sentence since
+        plan step CC-5-4a-4 (see ``test_update_nonexistent_transaction``).
+        """
         with app.app_context():
             resp = auth_client.post("/transactions/999999/mark-done")
             assert resp.status_code == 404
-            assert b"Not found" in resp.data
+            assert resp.headers.get("Shekel-Designed-Fragment") == "1"
+            assert ROW_NO_LONGER_EXISTS_MSG.encode() in resp.data
 
     def test_cancel_nonexistent_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/999999/cancel returns 404 for nonexistent transaction."""

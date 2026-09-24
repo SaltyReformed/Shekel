@@ -345,4 +345,4 @@ def reject_unsettleable(txn: Transaction) -> None:
             "legs and the parent move together.",
         )
     if txn.is_deleted:
-        raise ValidationError(deleted_row_payment_refusal(txn))
+        raise ValidationError(deleted_row_payment_refusal(txn.name))

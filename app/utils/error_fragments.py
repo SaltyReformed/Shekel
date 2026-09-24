@@ -41,6 +41,40 @@ INVALID_REFERENCE_MSG = (
     "Invalid reference. Check that all referenced records exist."
 )
 
+# What a stale page reads when the row it acted on is not one it may name:
+# a one-off row whose delete removed it from the table, a row that never
+# existed, and another user's row -- one sentence for all three, so the
+# uniform 404 still says nothing about which it was (plan step
+# ``credit_card:CC-5-4a-4``, ruling **R-CC104**, developer 2026-09-23: *"A
+# one-off row is erased, so its name is gone, and the app can't tell it apart
+# from a row that was never yours. Those show 'This transaction no longer
+# exists.  Reload the page.' Another user's row gets the same words, so
+# nothing leaks."*).  Shared by the transaction and entries routes, at the
+# three doors that ruling names.
+ROW_NO_LONGER_EXISTS_MSG = "This transaction no longer exists.  Reload the page."
+
+
+def refusal_for_a_gone_row(answer, refusal) -> str:
+    """Return what a stale page is told about a row its door no longer serves.
+
+    The one choice between the two answers ruling **R-CC104** gives, for the
+    three doors it names: a deleted row the requester may reach is named, in
+    the door's own words for the act it refused; anything else gets
+    :data:`ROW_NO_LONGER_EXISTS_MSG`, the same words whichever it was.
+
+    Args:
+        answer: What ``auth_helpers.get_accessible_transaction_or_deleted``
+            answered when it was not a live row: a ``DeletedRow``, or
+            ``None``.
+        refusal: The door's sentence for its act, taking the row's name --
+            ``deleted_row_payment_refusal``,
+            ``deleted_row_purchase_refusal`` or the Save door's.
+
+    Returns:
+        The sentence to show.
+    """
+    return ROW_NO_LONGER_EXISTS_MSG if answer is None else refusal(answer.name)
+
 
 def designed_error(
     body: str, status: int, *, retarget: str | None = None,

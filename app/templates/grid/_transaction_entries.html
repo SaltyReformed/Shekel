@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "grid/_refusal_banner.html" import refusal_banner %}
 {# Entry list with inline add/edit forms for entry-capable transactions.
 
    Expected context:
@@ -84,11 +85,7 @@
   {% if error is defined and error %}
   {# Designed rejection banner: the route re-rendered this list with
      current data plus the reason the last submission was refused. #}
-  <div class="alert alert-danger py-1 px-2 mb-2 small d-flex align-items-center gap-1"
-       role="alert">
-    <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
-    <span>{{ error }}</span>
-  </div>
+  {{ refusal_banner(error, "mb-2") }}
   {% elif conflict is defined and conflict %}
   {# Stale-form / StaleDataError banner.  Refreshes are pulled
      in by the inline add/edit forms below; this banner just

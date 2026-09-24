@@ -28,17 +28,32 @@ payment or purchase written under a deleted row
 and button treats a deleted row as not found; and the two code paths that write
 money under a row refuse first with a sentence.  The last two are pinned here,
 each against its live-row control.
+
+Review 5 found the sentence never reached the screen: Mark Paid and the
+popover's Save answered a deleted row with a bare "Not found" that htmx drops,
+and a purchase on a one-off row deleted while it waited was a 500.  Rulings
+**R-CC101** ("Show the sentence") and, from Round 14, **R-CC102** (the cell's
+red "Deleted"), **R-CC103** (the purchase list's banner alone), **R-CC104**
+(a stale tab is told too, and a row it may not name reads the same words
+whoever's it was) and **R-CC105** (one sentence for every Save) are pinned in
+:class:`TestAStaleTabIsToldTheRowWasDeleted` and
+:class:`TestADeleteThatWinsTheRaceIsNamed`; the doors those rulings do not
+name keep R-CC89's bare "not found" (:class:`TestTheOtherDoorsStillSayNotFound`).
+Finding **CC-376** -- a refused purchase removal was a 500 -- is
+:class:`TestARefusedRemovalIsTheListsBanner`.  Every figure is made up.
 """
 
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import StatementMatch, StatementMatchCreation
@@ -47,14 +62,18 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import (
     entry_service,
     pay_period_gates,
+    row_write_lock,
     transaction_service,
 )
+from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import PeriodLockReason, classify_schedule_locks
 from app.services.settle_day import SettleDay
 from app.services.transaction_service import settle_transaction
 from app.utils.dates import display_today
+from app.utils.error_fragments import ROW_NO_LONGER_EXISTS_MSG
 from tests._test_helpers import (
+    derived_span,
     generate_row_of,
     make_every_period_rule,
     make_expense_template,
@@ -66,7 +85,26 @@ from tests.test_routes._statement_forms import ReconcileFormReader
 # convention ``test_cc5_4a3_captions`` keeps).
 # pylint: disable=shekel-private-module-import
 from tests.test_services.test_statement_match._builders import (
+    a_purchase,
     a_purchase_in_a_minted_envelope,
+    a_transaction,
+)
+
+#: Mark Paid's refusal of a deleted Hotel (the status seam's sentence).
+_PAYMENT_REFUSED = (
+    "Hotel was deleted: a payment cannot be recorded under it.  "
+    "Reload the page."
+)
+
+#: The Save door's refusal of a deleted Hotel (ruling R-CC105).
+_SAVE_REFUSED = (
+    "Hotel was deleted: this change cannot be saved.  Reload the page."
+)
+
+#: The purchase door's refusal of a deleted Groceries envelope.
+_PURCHASE_REFUSED = (
+    "Groceries was deleted: a purchase cannot be recorded under it.  "
+    "Reload the page."
 )
 
 
@@ -492,3 +530,600 @@ class TestATombstoneCountsAsLeaving:
             assert db.session.get(Transaction, created.transaction_id).is_deleted
             assert db.session.get(StatementMatch, created.match_id) is None
             assert db.session.query(StatementMatchCreation).count() == 0
+
+
+def _placed_one_off(seed_user, period, *, name, amount, is_envelope):
+    """A one-off -- a rule-less definition and its placed row -- committed.
+
+    Its delete removes the row from the table (and the definition with its
+    last row, ruling R-BAL27), which is the HARD arm a recurring occurrence's
+    soft delete never reaches.
+    """
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name=name,
+            amount=Decimal(amount),
+            category_id=seed_user["categories"]["Groceries"].id,
+            is_envelope=is_envelope,
+        ),
+        derived_span(period),
+        scenario_id=seed_user["scenario"].id,
+    )
+    db.session.commit()
+    assert row.recurs is False
+    return row
+
+
+def _deleted_in_another_tab(app, row_id, owner_id):
+    """Commit the app's own Delete of *row_id* from a session of its own, now.
+
+    The other tab is another thread with its own app context, so its session
+    is its own; ``result`` re-raises anything it raised here, in the test.
+    """
+    def other_tab():
+        with app.app_context():
+            try:
+                transaction_service.delete_transaction(
+                    db.session.get(Transaction, row_id), owner_id,
+                )
+                db.session.commit()
+            finally:
+                db.session.remove()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(other_tab).result(timeout=8.0)
+
+
+def _delete_lands_before_the_lock(monkeypatch, app, lock_name, row_id, owner_id):
+    """Make another tab's Delete of *row_id* commit just before the door locks it.
+
+    Ruling R-CC96's race, the technique review 5 used: the route's door has
+    read the row live, then the delete commits, then the door's row lock
+    (``row_write_lock.<lock_name>``) sees the winner.  Returns a list that
+    holds the row id once the delete has fired, so a test can assert its race
+    was staged rather than skipped.
+    """
+    real = getattr(row_write_lock, lock_name)
+    fired = []
+
+    def delete_first(target, *args, **kwargs):
+        target_id = target if isinstance(target, int) else target.id
+        if not fired and target_id == row_id:
+            fired.append(target_id)
+            _deleted_in_another_tab(app, row_id, owner_id)
+        return real(target, *args, **kwargs)
+
+    monkeypatch.setattr(row_write_lock, lock_name, delete_first)
+    return fired
+
+
+def _is_the_deleted_cell(response, sentence):
+    """Assert *response* is R-CC102's red "Deleted" cell saying *sentence*."""
+    body = response.get_data(as_text=True)
+    assert response.status_code == 404
+    assert response.headers.get("Shekel-Designed-Fragment") == "1"
+    assert '<span aria-hidden="true">Deleted</span>' in body
+    assert f'title="{sentence}"' in body
+    assert f'<span class="visually-hidden">{sentence}</span>' in body
+    # Nothing left to press: no opener, no checkmark.
+    for control in ("txn-open", "data-txn-id", "paybtn", "hx-post"):
+        assert control not in body
+
+
+def _is_the_banner_card(response, row_id, sentence):
+    """Assert *response* is the phone's banner-only card for *row_id* saying *sentence*."""
+    body = response.get_data(as_text=True)
+    assert response.status_code == 404
+    assert response.headers.get("Shekel-Designed-Fragment") == "1"
+    assert f'id="card-tp-{row_id}"' in body
+    assert f"<span>{sentence}</span>" in body
+    assert "mobile-txn-card" not in body
+
+
+def _is_the_banner_list(response, root_id, sentence):
+    """Assert *response* is R-CC103's purchase list: the banner alone, under *root_id*."""
+    body = response.get_data(as_text=True)
+    assert response.status_code == 404
+    assert response.headers.get("Shekel-Designed-Fragment") == "1"
+    assert f'id="{root_id}"' in body
+    assert f"<span>{sentence}</span>" in body
+    # No list and no Add form: nothing under a row that takes no purchase.
+    for control in ("/entries", "Remaining", "<form"):
+        assert control not in body
+
+
+def _card_mark_paid(auth_client, row_id):
+    """The phone card's Mark Paid on *row_id* (This Period's ``tp`` tab)."""
+    return auth_client.post(
+        f"/transactions/{row_id}/mark-done",
+        data={"render": "mobile_card", "card_prefix": "tp", "can_edit": "1"},
+    )
+
+
+def _a_purchase_form():
+    """What the add-purchase form posts: a made-up $12.34 charge today."""
+    return {"amount": "12.34", "direction": "charge",
+            "description": "Made-up store",
+            "purchased_on": display_today().isoformat()}
+
+
+class TestAStaleTabIsToldTheRowWasDeleted:
+    """R-CC104: a click on a row deleted minutes ago shows the sentence, not nothing."""
+
+    def test_mark_paid_on_the_cell_shows_deleted(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The $120.00 Hotel is deleted, then a stale grid presses its checkmark.
+
+        Before: ``404 Not found`` with no designed header, which htmx drops, so
+        the click did nothing visible.
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            _is_the_deleted_cell(response, _PAYMENT_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_mark_paid_on_the_card_shows_the_banner(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The same press from the phone card: the banner-only card, keyed to the card."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+
+            response = _card_mark_paid(auth_client, row_id)
+
+            _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_save_with_an_actual_says_the_change_cannot_be_saved(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Review 3's P1 case, the popover's own form, now answered in words (R-CC105)."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            _settle(row, period.start_date)
+            row_id, user_id = row.id, seed_user["user"].id
+            payload = _popover_form(auth_client, row_id)
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            payload["settled_amount"] = "125.00"
+
+            response = auth_client.patch(f"/transactions/{row_id}", data=payload)
+
+            _is_the_deleted_cell(response, _SAVE_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_save_on_an_unpaid_row_says_the_same(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """An unpaid Hotel's estimate typed from $120.00 to $130.00: one Save sentence."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            row_id = row.id
+            payload = _popover_form(auth_client, row_id)
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            db.session.expire_all()
+            version_after_delete = db.session.get(Transaction, row_id).version_id
+            payload["estimated_amount"] = "130.00"
+
+            response = auth_client.patch(f"/transactions/{row_id}", data=payload)
+
+            _is_the_deleted_cell(response, _SAVE_REFUSED)
+            db.session.expire_all()
+            assert db.session.get(Transaction, row_id).version_id == (
+                version_after_delete
+            )
+
+    @pytest.mark.parametrize("host", ["", "tp"])
+    def test_a_purchase_shows_the_banner_alone(
+        self, app, db, auth_client, seed_user, seed_periods_today, host,
+    ):
+        """A $12.34 purchase on the deleted Groceries envelope, popover and phone list."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Groceries", amount="300.00",
+                is_envelope=True,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+
+            response = auth_client.post(
+                f"/transactions/{row_id}/entries?host={host}",
+                data=_a_purchase_form(),
+            )
+
+            root = f"entry-list-{host}-{row_id}" if host else f"entry-list-{row_id}"
+            _is_the_banner_list(response, root, _PURCHASE_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_an_erased_one_off_is_not_named(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A one-off's delete takes its name with it: the nameless sentence, at both doors."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            bill = _placed_one_off(
+                seed_user, period, name="Hotel", amount="45.00",
+                is_envelope=False,
+            )
+            envelope = _placed_one_off(
+                seed_user, period, name="Groceries", amount="300.00",
+                is_envelope=True,
+            )
+            bill_id, envelope_id = bill.id, envelope.id
+            for row_id in (bill_id, envelope_id):
+                assert auth_client.delete(
+                    f"/transactions/{row_id}",
+                ).status_code == 200
+            db.session.expire_all()
+            assert db.session.get(Transaction, bill_id) is None
+
+            paid = auth_client.post(f"/transactions/{bill_id}/mark-done")
+            bought = auth_client.post(
+                f"/transactions/{envelope_id}/entries", data=_a_purchase_form(),
+            )
+
+            _is_the_deleted_cell(paid, ROW_NO_LONGER_EXISTS_MSG)
+            _is_the_banner_list(
+                bought, f"entry-list-{envelope_id}", ROW_NO_LONGER_EXISTS_MSG,
+            )
+
+    def test_another_users_row_reads_the_same_words(
+        self, app, db, auth_client, seed_user, seed_second_user,
+        seed_periods_today,
+    ):
+        """Another user's row, an id that never existed, an erased one-off: one body.
+
+        R-CC104's "Another user's row gets the same words, so nothing leaks":
+        the three answers are byte-identical, so the body says nothing about
+        which one the id was.
+        """
+        with app.app_context():
+            theirs_template = make_expense_template(
+                db.session, seed_second_user, amount="80.00", name="Phone",
+                category_key="Groceries",
+            )
+            theirs = generate_row_of(
+                theirs_template, seed_second_user["bootstrap_period"],
+            )
+            db.session.commit()
+            erased = _placed_one_off(
+                seed_user, seed_periods_today[3], name="Hotel",
+                amount="45.00", is_envelope=False,
+            )
+            theirs_id, erased_id = theirs.id, erased.id
+            assert auth_client.delete(
+                f"/transactions/{erased_id}",
+            ).status_code == 200
+            never = max(theirs_id, erased_id) + 1000
+
+            bodies = {
+                name: auth_client.post(f"/transactions/{row_id}/mark-done")
+                for name, row_id in (
+                    ("theirs", theirs_id), ("never", never),
+                    ("erased", erased_id),
+                )
+            }
+
+            for response in bodies.values():
+                _is_the_deleted_cell(response, ROW_NO_LONGER_EXISTS_MSG)
+            assert len({r.get_data() for r in bodies.values()}) == 1
+            assert "Phone" not in bodies["theirs"].get_data(as_text=True)
+            db.session.expire_all()
+            assert db.session.get(Transaction, theirs_id).status_id == (
+                ref_cache.status_id(StatusEnum.PROJECTED)
+            )
+
+
+class TestADeleteThatWinsTheRaceIsNamed:
+    """R-CC101: the delete commits while the click waits for the row's lock."""
+
+    def test_mark_paid_on_the_cell(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Review 5's M2 case on the recurring $120.00 Hotel: the cell's red "Deleted"."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            assert fired == [row_id]
+            _is_the_deleted_cell(response, _PAYMENT_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_mark_paid_on_the_card(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The same race from the phone card: the banner-only card."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = _card_mark_paid(auth_client, row_id)
+
+            assert fired == [row_id]
+            _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
+
+    def test_mark_paid_on_an_erased_one_off_names_it(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """A made-up $45.00 one-off Hotel bill erased mid-click is still named.
+
+        The row is gone from the table by the time the refusal re-reads it,
+        so the name is the one the door read while it was live.
+        """
+        with app.app_context():
+            bill = _placed_one_off(
+                seed_user, seed_periods_today[3], name="Hotel",
+                amount="45.00", is_envelope=False,
+            )
+            row_id, user_id = bill.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            assert fired == [row_id]
+            _is_the_deleted_cell(response, _PAYMENT_REFUSED)
+            db.session.expire_all()
+            assert db.session.get(Transaction, row_id) is None
+
+    def test_mark_paid_on_the_card_of_an_erased_one_off_names_it(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The erased one-off's race from the phone card: the banner card, named."""
+        with app.app_context():
+            bill = _placed_one_off(
+                seed_user, seed_periods_today[3], name="Hotel",
+                amount="45.00", is_envelope=False,
+            )
+            row_id, user_id = bill.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = _card_mark_paid(auth_client, row_id)
+
+            assert fired == [row_id]
+            _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
+
+    def test_a_save_with_an_actual(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Review 5's M2 correction case: the Paid Hotel deleted as its Actual is saved."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            _settle(row, period.start_date)
+            row_id, user_id = row.id, seed_user["user"].id
+            payload = _popover_form(auth_client, row_id)
+            payload["settled_amount"] = "125.00"
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = auth_client.patch(f"/transactions/{row_id}", data=payload)
+
+            assert fired == [row_id]
+            _is_the_deleted_cell(response, _SAVE_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_purchase_on_a_recurring_row(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The purchase door's race, soft: the banner alone where the list stood (R-CC103)."""
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Groceries", amount="300.00",
+                is_envelope=True,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_and_read", row_id, user_id,
+            )
+
+            response = auth_client.post(
+                f"/transactions/{row_id}/entries", data=_a_purchase_form(),
+            )
+
+            assert fired == [row_id]
+            _is_the_banner_list(
+                response, f"entry-list-{row_id}", _PURCHASE_REFUSED,
+            )
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_purchase_on_an_erased_one_off_names_it(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Review 5's M3: a one-off envelope erased mid-purchase was a 500."""
+        with app.app_context():
+            envelope = _placed_one_off(
+                seed_user, seed_periods_today[3], name="Groceries",
+                amount="300.00", is_envelope=True,
+            )
+            row_id, user_id = envelope.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_and_read", row_id, user_id,
+            )
+
+            response = auth_client.post(
+                f"/transactions/{row_id}/entries?host=tp",
+                data=_a_purchase_form(),
+            )
+
+            assert fired == [row_id]
+            _is_the_banner_list(
+                response, f"entry-list-tp-{row_id}", _PURCHASE_REFUSED,
+            )
+            db.session.expire_all()
+            assert db.session.get(Transaction, row_id) is None
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=row_id,
+            ).count() == 0
+
+
+class TestTheOtherDoorsStillSayNotFound:
+    """R-CC104 names three doors; every other door keeps R-CC89's bare answer."""
+
+    def test_mark_credit_racing_a_delete_is_not_found(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Mark Credit on a $80.00 Phone deleted while it waited: bare "Not found".
+
+        Pins the blueprint's default answer for a gone row, which the helpers
+        that used to return it now hand up to.
+        """
+        with app.app_context():
+            _template, row = _occurrence(
+                seed_user, seed_periods_today[3], name="Phone",
+                amount="80.00", is_envelope=False,
+            )
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_and_read", row_id, user_id,
+            )
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-credit")
+
+            assert fired == [row_id]
+            assert (response.status_code, response.get_data()) == (
+                404, b"Not found",
+            )
+            assert "Shekel-Designed-Fragment" not in response.headers
+            assert db.session.query(Transaction).filter_by(
+                credit_payback_for_id=row_id,
+            ).count() == 0
+
+    def test_a_live_row_the_door_refuses_is_never_called_deleted(
+        self, app, db, companion_client, seed_user, seed_periods_today,
+    ):
+        """A companion's malformed Mark Paid asking for the owner-only desktop cell.
+
+        The refusal's re-fetch goes through the owner-only door, which answers
+        a companion ``None`` for a row that is live and undeleted.  That is
+        the door refusing the SURFACE, not the row going: the answer stays the
+        bare "Not found" it was, and never "Hotel was deleted".
+        """
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="120.00", name="Hotel",
+                category_key="Groceries", companion_visible=True,
+            )
+            row = generate_row_of(template, seed_periods_today[3])
+            db.session.commit()
+
+            response = companion_client.post(
+                f"/transactions/{row.id}/mark-done",
+                data={"settled_amount": "not-a-number"},
+            )
+
+            assert (response.status_code, response.get_data()) == (
+                404, b"Not found",
+            )
+
+    def test_a_stale_cancel_is_not_found(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Cancel on a deleted row: the ownership door's bare "Not found", unchanged."""
+        with app.app_context():
+            _template, row = _occurrence(
+                seed_user, seed_periods_today[3], name="Phone",
+                amount="80.00", is_envelope=False,
+            )
+            row_id = row.id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+
+            response = auth_client.post(f"/transactions/{row_id}/cancel")
+
+            assert (response.status_code, response.get_data()) == (
+                404, b"Not found",
+            )
+
+
+class TestARefusedRemovalIsTheListsBanner:
+    """CC-376: the purchase delete's refusal is the list's banner, not a 500."""
+
+    def test_a_purchase_under_a_fixed_figure_close_stays_with_a_sentence(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A made-up Done $300.00 Groceries close holding one $12.34 purchase.
+
+        The close records a fixed figure, so removing the purchase is refused
+        (``entry_service.removal_refusal``).  Before: that ``ValidationError``
+        had no arm in the route, a 500.
+        """
+        with app.app_context():
+            start = seed_user["bootstrap_period"].start_date
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="300.00",
+                is_envelope=True, status=StatusEnum.DONE,
+                settled_on=start + timedelta(days=1),
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="12.34",
+                description="Made-up store", purchased_on=start,
+                settled_on=start + timedelta(days=1),
+            )
+            db.session.commit()
+            envelope_id, purchase_id = envelope.id, purchase.id
+
+            response = auth_client.delete(
+                f"/transactions/{envelope_id}/entries/{purchase_id}",
+            )
+
+            body = response.get_data(as_text=True)
+            assert response.status_code == 400
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+            assert (
+                "Groceries has settled and records a fixed figure, so a "
+                "purchase cannot be removed from it"
+            ) in body
+            assert f'id="entry-list-{envelope_id}"' in body
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, purchase_id) is not None

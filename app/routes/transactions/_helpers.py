@@ -12,8 +12,9 @@ preserving the pre-split monolith's behaviour.
 import logging
 
 from dataclasses import dataclass
+from functools import wraps
 
-from flask import render_template
+from flask import render_template, request
 from flask_login import current_user
 
 from app.extensions import db
@@ -25,6 +26,7 @@ from app.routes._render_helpers import (
     fragment_cash_flow,
     render_transaction_cell,
 )
+from app.routes.transactions._bp import transactions_bp
 from app.schemas.validation import (
     MarkDoneSchema,
     TransactionItemUpdateSchema,
@@ -41,12 +43,17 @@ from app.services.entry_service import (
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.auth_helpers import (
     get_accessible_transaction,
+    get_accessible_transaction_or_deleted,
     is_not_found_to_transaction_doors,
     log_refused_lookup,
 )
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
-from app.utils.error_fragments import INVALID_REFERENCE_MSG, designed_error
+from app.utils.error_fragments import (
+    INVALID_REFERENCE_MSG,
+    designed_error,
+    refusal_for_a_gone_row,
+)
 
 # Name of the partial unique index that backstops commit C-19's
 # duplicate CC Payback fix.  Mirrors the literal in
@@ -126,6 +133,27 @@ class _RenderTarget:
     card_prefix: str
     can_edit: bool
 
+    @classmethod
+    def from_form(cls) -> "_RenderTarget":
+        """Read the surface this request asked to be answered on off its form.
+
+        The mobile / companion card action bar posts ``render=mobile_card``
+        plus the per-tab ``card_prefix`` and the ``can_edit`` flag so the
+        response is a single re-rendered card (in-place swap, no reload); the
+        desktop grid and full-edit popover omit these, so the response
+        defaults to the cell.  Read off ``request.form`` directly -- these are
+        render-routing fields, not part of any money schema -- and before
+        any validation, so a refusal renders the right surface too.
+
+        Returns:
+            The surface, read once for the request.
+        """
+        return cls(
+            request.form.get("render", ""),
+            request.form.get("card_prefix", ""),
+            request.form.get("can_edit") == "1",
+        )
+
 
 def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     """Render a single mobile transaction card for an HTMX swap.
@@ -201,7 +229,8 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         if error is not None:
             return render_template(
                 "grid/_mobile_card_error.html",
-                txn=txn, id_prefix=card_prefix, error=error,
+                card_id=grid_view_service.card_dom_id(txn, card_prefix),
+                error=error,
             )
         return render_transaction_cell(txn)
     amounts = fragment_amounts(txn)
@@ -371,10 +400,11 @@ def _stale_transaction_response(txn_id, target=None):
     the transaction from the database so the user sees the winner's
     state -- never the loser's stale in-memory copy -- and tags the
     cell with ``conflict=True`` so the template surfaces a warning
-    indicator.  Returns a 404 if the winning request deleted the row --
-    hard, or soft: the re-fetch goes through the ownership door, which
-    answers a soft-deleted row "not found" since plan step
-    ``credit_card:CC-5-4a-4`` (ruling **R-CC89**).
+    indicator.  When the winning request deleted the row -- hard, or soft:
+    the re-fetch goes through the ownership door, which answers a
+    soft-deleted row "not found" since plan step ``credit_card:CC-5-4a-4``
+    (ruling **R-CC89**) -- there is no cell to render, and it raises
+    :class:`_RowGone` for the door to answer.
 
     The mobile/companion Mark Paid path passes a :class:`_RenderTarget`
     with ``render_mode == "mobile_card"`` so the 409 body is the
@@ -397,15 +427,17 @@ def _stale_transaction_response(txn_id, target=None):
             the owner-vs-companion edit affordance.
 
     Returns:
-        Flask response tuple ``(html, 409)`` or ``("Not found", 404)``
-        when the row vanished entirely.
+        Flask response tuple ``(html, 409)``.
+
+    Raises:
+        _RowGone: When the re-fetch finds no row this surface may draw.
     """
     db.session.rollback()
     db.session.expire_all()
     if target is not None and target.render_mode == "mobile_card":
         txn = get_accessible_transaction(txn_id)
         if txn is None:
-            return "Not found", 404
+            raise _RowGone()
         return (
             _render_mobile_card(
                 txn, card_prefix=target.card_prefix, can_edit=target.can_edit,
@@ -414,7 +446,7 @@ def _stale_transaction_response(txn_id, target=None):
         )
     txn = _get_owned_transaction(txn_id)
     if txn is None:
-        return "Not found", 404
+        raise _RowGone()
     return render_transaction_cell(txn, conflict=True), 409
 
 
@@ -448,15 +480,19 @@ def _error_transaction_response(txn_id, message, target=None, status=400):
             validation failure).
 
     Returns:
-        A designed-fragment Flask response tuple, or
-        ``("Not found", 404)`` when the row vanished.
+        A designed-fragment Flask response tuple.
+
+    Raises:
+        _RowGone: When the re-fetch finds no row this surface may draw --
+            the row was deleted while the request ran, most often -- so the
+            door, which knows what was refused, answers it.
     """
     db.session.rollback()
     db.session.expire_all()
     if target is not None and target.render_mode == "mobile_card":
         txn = get_accessible_transaction(txn_id)
         if txn is None:
-            return "Not found", 404
+            raise _RowGone()
         return designed_error(
             _render_mobile_card(
                 txn, card_prefix=target.card_prefix,
@@ -466,8 +502,159 @@ def _error_transaction_response(txn_id, message, target=None, status=400):
         )
     txn = _get_owned_transaction(txn_id)
     if txn is None:
-        return "Not found", 404
+        raise _RowGone()
     return designed_error(render_transaction_cell(txn, error=message), status)
+
+
+class _RowGone(Exception):
+    """A refused request's row is gone from every surface its door may draw it on.
+
+    Raised by :func:`_error_transaction_response` and
+    :func:`_stale_transaction_response` when, after rolling back, their
+    re-fetch through the ownership door finds nothing to render: the row was
+    deleted -- soft or hard -- while the request ran (the race ruling
+    **R-CC96**'s lock makes the door see), or the door refuses it for
+    another reason.  Those two helpers answer for every transaction door and
+    know neither the ACT that was refused nor the row's name, which a
+    one-off's delete takes out of the table; the door read the name while
+    the row was live.  So they hand the moment up rather than answering it.
+
+    The doors ruling **R-CC101** names say which act the delete refused
+    (:func:`_door_naming_a_gone_row`, plan step ``credit_card:CC-5-4a-4``);
+    every other door answers ruling **R-CC89**'s "not found", unchanged,
+    through this blueprint's handler (:func:`_row_gone_is_not_found`), so a
+    door that never names a gone row needs no code for it.
+    """
+
+
+@transactions_bp.errorhandler(_RowGone)
+def _row_gone_is_not_found(_exc):
+    """Answer a gone row "not found" at every door that does not name one.
+
+    Ruling **R-CC89**'s answer, and what the two helpers that raise
+    :class:`_RowGone` returned themselves until plan step
+    ``credit_card:CC-5-4a-4``: Delete, Mark Credit, Undo CC and Cancel keep
+    it.  The three doors ruling **R-CC101** names catch the signal first.
+
+    Returns:
+        ``("Not found", 404)``.
+    """
+    return "Not found", 404
+
+
+def _deleted_row_change_refusal(name):
+    """Return the sentence a Save on a deleted row is refused with.
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC105** (developer
+    2026-09-23, "One Save sentence"): *"Every Save on a deleted row, paid or
+    unpaid, with or without an Actual, shows the red 'Deleted' cell. Hovering
+    gives 'Hotel was deleted: this change cannot be saved.  Reload the
+    page.' Each button names what it tried to do, and the words are true for
+    every Save."*  Mark Paid's is the status seam's
+    ``deleted_row_payment_refusal`` and add purchase's
+    ``entry_service.deleted_row_purchase_refusal``; this one lives with the
+    route because no service refuses a Save as such.
+
+    Args:
+        name: The deleted row's name (ruling **R-CC98**: never its id).
+
+    Returns:
+        The refusal, naming the row.
+    """
+    return f"{name} was deleted: this change cannot be saved.  Reload the page."
+
+
+def _gone_transaction_response(message, txn_id, target=None):
+    """Render the surface a request targeted for a row that is gone, saying why.
+
+    The cell or the card, keyed by the id in the URL -- the only thing left
+    of a one-off row its delete removed.  The desktop cell becomes the red
+    "Deleted" of ruling **R-CC102** (``grid/_transaction_cell_gone.html``)
+    and the phone card the banner-only card the cancelled-row refusal
+    already uses (``grid/_mobile_card_error.html``), each carrying *message*
+    (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC104**).
+    Designed and a 404: the door answers the row "not found" (ruling
+    **R-CC89**), and the body now says why rather than being dropped.
+
+    Args:
+        message: The sentence -- the door's refusal naming the row, or
+            :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+        txn_id: The row id the request named.
+        target: The :class:`_RenderTarget`, or ``None`` for the desktop cell.
+
+    Returns:
+        A designed-fragment Flask response tuple at 404.
+    """
+    if target is not None and target.render_mode == "mobile_card":
+        body = render_template(
+            "grid/_mobile_card_error.html",
+            card_id=grid_view_service.row_card_dom_id(
+                txn_id, target.card_prefix,
+            ),
+            error=message,
+        )
+    else:
+        body = render_template(
+            "grid/_transaction_cell_gone.html", message=message,
+        )
+    return designed_error(body, 404)
+
+
+def _door_naming_a_gone_row(refusal):
+    """Open the transaction door for a view, and say so when its row is gone.
+
+    Plan step ``credit_card:CC-5-4a-4``: the door of the two transaction
+    routes ruling **R-CC101** names (Mark Paid, the popover's Save), as a
+    decorator, so each view states its sentence once and receives the live
+    row it acts on.  A row that is gone is answered on the surface the
+    request targeted (:func:`_gone_transaction_response`), in two moments:
+
+    * **before the view runs** -- the page acted on a row deleted minutes
+      ago (ruling **R-CC104**): a deleted row the requester may reach is
+      named by *refusal*, and anything else -- a one-off row its delete
+      removed, a missing id, another user's row -- reads
+      :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`, the same
+      words whichever it was;
+    * **while it runs** -- the delete won the race for the row's lock
+      (ruling **R-CC96**) and the refusal's re-fetch found nothing
+      (:class:`_RowGone`): the row is named by the name read here while it
+      was live, which a one-off's delete takes out of the table.  A row
+      that still stands undeleted -- the door refused it for another reason,
+      such as a companion's request for the owner-only desktop cell -- is
+      answered "not found", as before.
+
+    The view is called as ``view(txn, target)``: the row as the door served
+    it, and the :class:`_RenderTarget` read off the form.
+
+    Args:
+        refusal: The door's sentence for its act, taking the row's name.
+
+    Returns:
+        The decorator.
+    """
+    def decorator(view):
+        @wraps(view)
+        def door(txn_id):
+            target = _RenderTarget.from_form()
+            answer = get_accessible_transaction_or_deleted(txn_id)
+            if not isinstance(answer, Transaction):
+                return _gone_transaction_response(
+                    refusal_for_a_gone_row(answer, refusal), txn_id, target,
+                )
+            # Read while the row is live: a one-off's delete takes the row,
+            # and its name with it, before a refusal can re-read it.
+            name = answer.name
+            try:
+                return view(answer, target)
+            except _RowGone:
+                row = db.session.get(Transaction, txn_id)
+                if row is not None and not row.is_deleted:
+                    return "Not found", 404
+                return _gone_transaction_response(
+                    refusal(name), txn_id, target,
+                )
+        return door
+    return decorator
 
 
 def _finalised_edit_response(txn, data):
