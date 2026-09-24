@@ -346,8 +346,10 @@ def apply_status_change(
          on an illegal move (e.g. Cancelled -> Paid), which the route layer
          surfaces as a 400.  Then, for a ``Transaction``, the revert refusal
          (:func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
-         ruling **R-PC97**): a revert to Projected whose occurrence the row's
-         books drop raises ``ValidationError`` before anything is written.
+         rulings **R-PC97** and **R-PC99**): a revert to Projected that the
+         books hold -- the books of the account the row sits on holding its
+         own day, or its definition's dropping its occurrence -- raises
+         ``ValidationError`` before anything is written.
       2. assign ``status_id``.
       3. maintain the SETTLEMENT RECORD -- ``settled_on``,
          ``settled_day_basis_id``, the clearing link and the COVERING MOVEMENT
@@ -562,8 +564,8 @@ def apply_status_change(
 
     verify_transition(row, new_status_id)
     if isinstance(row, Transaction):
-        # A revert to Projected whose occurrence the row's books drop is
-        # refused (ruling **R-PC97**), ahead of any mutation like the refusals
+        # A revert to Projected that the books hold is refused (rulings
+        # **R-PC97** and **R-PC99**), ahead of any mutation like the refusals
         # above.  A TRANSFER is asked at its own one status door,
         # ``transfer_service.apply_status_to_all_three``, before either of its
         # shadows is written; asked here as well, one revert would walk its

@@ -373,29 +373,60 @@ class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
 
 
 class TestTheDefinitionsAccountsBoundItsRows:
-    """Review L1: the walk bounds a row by its DEFINITION's accounts, not the row's.
+    """Both accounts bound a row its definition left behind (review L1, then ruling R-PC99).
 
     A definition moved to another account leaves the rows its pass did not
-    reach where they were (ruling R-CC36 keeps a row outside the maintain
-    window on its old account).  Those rows answer occurrences of the
-    definition's walk, which the NEW account's books bound; the old
-    account's books no longer bound it at all.  The first cut keyed rows by
-    their own account, so it refused the old account's restatement over rows
-    no walk of it names and let the new account's strand them.
+    reach where they were: on the OLD account, which the balance counts them
+    in.  Those rows still answer occurrences of the definition's walk, which
+    the NEW account's books bound -- so the new account's restatement past
+    them makes a later pass delete them (review L1).  And the old account's
+    books hold them where they sit: its restatement past them would count
+    them inside its opening a second time (ruling R-PC99, developer
+    2026-09-23, the round-6 review's H1, measured ``-$100.00`` against the
+    books rule's ``-$80.00``).  Round 1's fix keyed the refusal by the
+    definition alone and let that restatement through; R-PC99 asks both.
     """
 
-    def test_the_OLD_account_may_open_past_rows_its_definition_left_behind(
+    def test_the_OLD_account_is_refused_over_the_rows_its_definition_left_behind(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Nothing the old account's books bound is stranded by moving them."""
+        """Re-expressed under R-PC99 (developer-ruled): it asserted COMMITTED here.
+
+        The ruled outcome, verbatim from the chosen option: "Restating
+        Checking to 01-16 is refused ('Recurring rent' is still projected
+        and due 01-02: mark it paid or cancel it first)".
+        """
         with app.app_context():
             old, rows = _account_with_projected_rows(seed_user, seed_periods)
             _moved_to_a_new_account(seed_user, rows[0].template)
             first_due = min(row.due_date for row in rows)
             assert all(row.account_id == old.id for row in rows)
 
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=old,
+                    opening=BooksOpening(first_due, Decimal("0.00")),
+                )
+
+            assert (
+                f'"Recurring rent" is still projected and due '
+                f"{first_due.isoformat()}.  An opening is the balance at the "
+                "END of its day, so that unpaid item would sit inside it.  "
+                "Mark it paid or cancel it first"
+            ) in str(refused.value)
+
+    def test_the_OLD_account_may_open_the_day_BEFORE_them(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The other side of R-PC99's boundary, so ``>=`` for ``>`` fails one."""
+        with app.app_context():
+            old, rows = _account_with_projected_rows(seed_user, seed_periods)
+            _moved_to_a_new_account(seed_user, rows[0].template)
+            first_due = min(row.due_date for row in rows)
+
             outcome = apply_opening_restatement(
-                account=old, opening=BooksOpening(first_due, Decimal("0.00")),
+                account=old,
+                opening=BooksOpening(first_due - _ONE_DAY, Decimal("0.00")),
             )
 
             assert outcome is OpeningRestatementOutcome.COMMITTED

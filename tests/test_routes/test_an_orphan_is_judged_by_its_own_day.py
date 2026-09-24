@@ -136,8 +136,11 @@ class TestTheUnarchive:
         """The scope judges each hidden row as it STANDS.
 
         The books are moved onto the second orphan's day by a direct record,
-        because the restatement door now refuses that move (the class above):
-        the state is one another writer can leave, and the unarchive may not
+        because the restatement door now refuses that move (the class above).
+        The doors can still leave the state (the round-6 review's L4): the
+        owner deletes the two old rows by hand while the definition is active
+        (a deleted row is not planned), restates the books onto their days
+        (allowed), then archives the definition -- and the unarchive may not
         restore into it.  Every other hidden row comes back.
         """
         with app.app_context():
@@ -170,21 +173,25 @@ class TestTheUnarchive:
 
 
 class TestTheEditDoor:
-    """R-PC90/91's edit refusal, over an orphan the save both leaves and puts inside.
+    """R-PC90/91's edit refusal over an orphan, judged where it SITS (rulings R-PC98, R-PC99).
 
     The first row is cancelled first, so the one PLANNED orphan is the second
     row and both sides of its day fall inside the seeded history (an account
     cannot be created with books before the first payday).
     """
 
-    def test_moving_the_account_onto_an_orphans_due_day_is_refused(
+    def test_moving_the_account_onto_an_orphans_due_day_is_saved(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """One save moves the start later AND the item onto books opening on the planned orphan's day.
+        """Re-expressed under R-PC99 (developer-ruled): it asserted a REFUSAL here.
 
-        The walk then drops nothing -- its first occurrence is the third row's
-        -- so only the orphan's own day can see it inside the new account's
-        books.
+        One save moves the start later AND the item onto books opening on
+        the planned orphan's day.  The orphan stays on the account it sits
+        on, whose books open long before it, so it stays planned there.  The
+        ruled outcome, verbatim from the chosen option: "Moving Rent onto
+        books opening 01-16 saves: the orphan stays planned on Checking at
+        -$10, as it should."  The refusal it used to give told the owner the
+        item would sit inside books it does not sit on.
         """
         with app.app_context():
             ordered = _first_row_cancelled(seed_user, seed_periods)
@@ -193,29 +200,55 @@ class TestTheEditDoor:
             )
             template = _edited_onto(ordered, later)
 
-            refusal = definition_edit_refusal(
+            assert definition_edit_refusal(
                 template, BalanceContext.build(seed_user["user"].id), None,
+            ) is None
+            assert ordered[1].account_id != later.id
+
+    def test_unticking_the_envelope_box_puts_the_orphan_inside_its_own_books(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The save changes the orphan's own day: its paycheck's last day becomes its payday.
+
+        The books of the account it sits on open ON its payday, which holds
+        an envelope's row no longer than its paycheck (ruling R-PC89) -- but
+        once the box is unticked it is a bill due that day, inside them.
+        """
+        with app.app_context():
+            account, ordered = _envelope_orphan_on_books_opening_on_its_payday(
+                seed_user, seed_periods, day_before=False,
+            )
+            ordered[0].template.is_envelope = False
+            _db.session.flush()
+
+            refusal = definition_edit_refusal(
+                ordered[0].template,
+                BalanceContext.build(seed_user["user"].id), None,
             )
 
             assert refusal is not None
             assert (
                 f'"{ordered[1].name}" is still projected and due '
-                f"{ordered[1].due_date.isoformat()}"
+                f"{ordered[1].due_date.isoformat()}, and {account.name}'s "
+                f"books open {ordered[1].due_date.isoformat()}.  An opening is "
+                "the balance at the END of its day, so that unpaid item would "
+                "sit inside it."
             ) in refusal
 
-    def test_the_same_edit_onto_books_opening_the_day_before_is_saved(
+    def test_the_same_untick_over_books_opening_the_day_before_is_saved(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The other side: books opening the day before the planned orphan hold nothing planned."""
+        """Books opening the day BEFORE the payday hold nothing: the save is not refused."""
         with app.app_context():
-            ordered = _first_row_cancelled(seed_user, seed_periods)
-            later = _account_opened_on(
-                seed_user, "Later books", ordered[1].due_date - _ONE_DAY,
+            _account, ordered = _envelope_orphan_on_books_opening_on_its_payday(
+                seed_user, seed_periods, day_before=True,
             )
-            template = _edited_onto(ordered, later)
+            ordered[0].template.is_envelope = False
+            _db.session.flush()
 
             assert definition_edit_refusal(
-                template, BalanceContext.build(seed_user["user"].id), None,
+                ordered[0].template,
+                BalanceContext.build(seed_user["user"].id), None,
             ) is None
 
 
@@ -472,3 +505,29 @@ def _first_row_of_a_monthly_first_bill(seed_user, seed_periods, account, starts_
     _db.session.commit()
     assert rows, "the fixture must generate rows"
     return min(rows, key=lambda row: row.occurs_on)
+
+
+def _envelope_orphan_on_books_opening_on_its_payday(
+    seed_user, seed_periods, *, day_before,
+):
+    """An envelope's rows, the first cancelled and the second orphaned, its books on its payday.
+
+    The start moves onto the third row, and the books of the account the
+    rows sit on are recorded opening on the second row's payday (or the day
+    before, *day_before*) -- a state the restatement door accepts for an
+    envelope, whose row is compared on its paycheck's LAST day.
+
+    Returns:
+        ``(account, ordered)``, the rows in date order.
+    """
+    account, rows = _account_with_projected_rows(
+        seed_user, seed_periods, is_envelope=True,
+    )
+    ordered = sorted(rows, key=lambda row: row.occurs_on)
+    status_seam.apply_status_change(
+        ordered[0], ref_cache.status_id(StatusEnum.CANCELLED),
+    )
+    ordered[0].template.recurrence_rule.starts_on = ordered[2].occurs_on
+    payday = ordered[1].due_date
+    _open_books_directly(account, payday - _ONE_DAY if day_before else payday)
+    return account, ordered

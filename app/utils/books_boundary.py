@@ -76,22 +76,23 @@ def row_books_day(due_on: date, period_end: date, *, is_envelope: bool) -> date:
     """Return the day of a planned row that the books are compared with.
 
     **THE one statement of which day that is** (plan step
-    ``pay_calendar:C18-a``), asked by its two readers.  For a row a walk
-    NAMES, the recurrence walk asks it
+    ``pay_calendar:C18-a``), asked by its two readers.  The recurrence walk
+    asks it of the day the regeneration WOULD give a row
     (``recurrence._placement._lands_inside_the_books``, through
     ``ResolvedRecurrence.books_day``), and the doors that refuse to strand a
     still-projected row below the books (``app.services.planned_rows_books``:
     the opening restatement, ruling **R-PC88**; a recurring definition's
-    edit, rulings **R-PC90** / **R-PC91**; a revert, ruling **R-PC97**) ask
-    the WALK which occurrences the books drop, reaching this picker only
-    through it: a door choosing its own day for such a row -- or reading its
-    stored one, which the first cut did -- would let through a save the walk
-    strands a row by, or refuse one it does not, since the regeneration
-    re-dates every row its walk names.  For a row NO walk names -- a
-    rule-less or undated row at an unarchive (ruling **R-PC96**), an orphan a
-    rule edit left behind at every door (ruling **R-PC98**) -- nothing
-    re-dates it, so its stored day is its day and
-    ``definition_unarchive.own_books_day`` asks this directly.
+    edit, rulings **R-PC90** / **R-PC91**; a revert, ruling **R-PC97**; the
+    unarchive) ask the WALK which occurrences its books drop, since the
+    regeneration re-dates every row its walk names -- a door reading only a
+    row's stored day, which the first cut did, would let through a save the
+    walk strands a row by.  Each door also asks it of the row's STORED day
+    (``definition_unarchive.own_books_day``) against the books of the
+    account the row sits on, because the balance counts a row there, on the
+    day it carries: first for the rows no walk names -- a rule-less or
+    undated row at an unarchive (ruling **R-PC96**), an orphan a rule edit
+    left behind (ruling **R-PC98**) -- and since ruling **R-PC99** for every
+    planned row.
 
     **A bill is compared on its DUE day** (ruling **R-PC86**): the day its
     money lands, so a bill due on or before the opening is already inside

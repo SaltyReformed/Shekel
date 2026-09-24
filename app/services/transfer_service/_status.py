@@ -119,7 +119,7 @@ def apply_status_to_all_three(
     """
     for row in (rows.transfer, *rows.shadows):
         verify_transition(row, new_status_id)
-    # A revert whose occurrence the transfer's books drop is refused here, the
+    # A revert to Projected that the books hold is refused here, the
     # transfer's one status door, before anything is assigned (ruling
     # **R-PC97**); the seam asks it of a transaction only, so one revert walks
     # the definition once.

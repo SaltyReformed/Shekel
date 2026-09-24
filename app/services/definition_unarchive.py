@@ -41,34 +41,42 @@ archive -- and it refuted the sentence this paragraph used to end on, that
 such a row "can only be one its owner deleted by hand".  So no argument about
 which writers can leave one is made here.
 
-**A row a walk names is judged by the WALK, never its stored day** (the
-round-1 review's finding H1): :func:`books_reading` asks
+**A row a walk names is judged by the WALK for what its schedule drops**
+(the round-1 review's finding H1): :func:`books_reading` asks
 :func:`~app.services.recurrence.occurrence_walk` which occurrences the books
 drop, and a row is matched to the occurrence it answers by
 ``occurs_on``, the key the maintain pass matches by -- the same question, of
-the same producer, the refusals ask.  A stored day would be wrong for such a
-row, because the regeneration re-dates every row its walk still names.
+the same producer, the refusals ask.  A stored day would be wrong for THAT
+question, because the regeneration re-dates every row its walk still names.
 
-**A row NO walk names is judged by its OWN day** (ruling **R-PC96**, the
-round-4 review's H1).  A rule-less definition's rows -- an item that no
-longer repeats, a one-time transfer -- and a recurring definition's rows
-answering no occurrence (``occurs_on`` ``NULL``, a carried-forward leftover)
-have no occurrence to look up, and the scope used to restore every one of
-them: measured, an archived $50.00 transfer whose cadence was cleared while
-it was archived came back due ON its books after a restatement onto that
-day, $50.00 counted a second time.  No regeneration walks such a row, so
-nothing re-dates it and its stored day IS its day: the one picker
-(:func:`~app.utils.books_boundary.row_books_day`: its due day, or its
-paycheck's last day for an envelope) gives the day
-:func:`~app.utils.books_boundary.books_hold` compares with the floor, and a
-row on or before the books stays deleted like the rest.  **So is an ORPHAN**
-(ruling **R-PC98**, the round-5 review's H2): a recurring definition's row
-whose ``occurs_on`` its CURRENT walk names nowhere, left behind by a rule
-edit -- measured, a start moved later while archived, the books restated
-onto the second old row's day, and the unarchive restoring both old rows
-inside the opening, ``-$20.00`` counted a second time.  R-PC98 judges an
-orphan the same way at every door that bounds a planned row by the books,
-not only here (``app.services.planned_rows_books``).
+**Every row is ALSO judged by its OWN day, against the books of the account
+it SITS ON** (:func:`own_day_held`; rulings **R-PC96**, **R-PC98** and
+**R-PC99**).  R-PC96 (the round-4 review's H1) began it for the rows NO walk
+names: a rule-less definition's rows -- an item that no longer repeats, a
+one-time transfer -- and a recurring definition's rows answering no
+occurrence (``occurs_on`` ``NULL``, a carried-forward leftover) have no
+occurrence to look up, and the scope used to restore every one of them:
+measured, an archived $50.00 transfer whose cadence was cleared while it was
+archived came back due ON its books after a restatement onto that day,
+$50.00 counted a second time.  R-PC98 (the round-5 review's H2) added the
+ORPHAN, a recurring definition's row whose ``occurs_on`` its CURRENT walk
+names nowhere, left behind by a rule edit -- measured, a start moved later
+while archived, the books restated onto the second old row's day, and the
+unarchive restoring both old rows inside the opening, ``-$20.00`` counted a
+second time.  No regeneration re-dates either, so the stored day IS the day:
+the one picker (:func:`~app.utils.books_boundary.row_books_day`: the due
+day, or the paycheck's last day for an envelope) gives the day
+:func:`~app.utils.books_boundary.books_hold` compares.  **R-PC99** (the
+round-6 review's H1) fixed WHICH books: the ones of the account the row
+sits on (:func:`~app.services.balance_at.row_books_opened_on`), which the
+balance counts it in, never its definition's.  A definition's account move
+leaves the rows of paychecks that had already ended on the account it left;
+measured, that account restated past two such rows committed with the
+forecast at ``-$100.00`` where the books rule gives ``-$80.00``, orphans and
+named rows alike.  So the own-day judgment asks every hidden row, named or
+not, and the walk's judgment above asks the named ones as well.  Every door
+that bounds a planned row by the books asks the same two questions, not only
+here (``app.services.planned_rows_books``).
 
 **The root is not fixed here.**  An unarchive still restores a row its owner
 deleted by hand ABOVE the books, and the conflict chooser revives one (ledger
@@ -84,11 +92,14 @@ criteria and a sentence out; no Flask symbol, no write, no clock.
 
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 
-from sqlalchemy import and_, false, or_
+from sqlalchemy import false, func, or_, select
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.account_opening import AccountOpening
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -97,6 +108,7 @@ from app.services.balance_at import (
     BalanceContext,
     definition_books,
     definition_money_accounts,
+    row_books_opened_on,
 )
 from app.services.cash_ledger import governing_account_opening
 from app.services.pay_calendar import FiledRow, PayCalendar
@@ -122,12 +134,16 @@ class UnarchiveScope:
             the books are compared with for its placement
             (:attr:`BooksReading.inside`): the hidden rows answering one stay
             deleted.
-        own_day_inside: Every hidden row NO walk names -- a rule-less or
-            undated row (ruling **R-PC96**), or an orphan (ruling
-            **R-PC98**) -- whose own compared day is on or before the books,
-            by row id, mapped to that day: these stay deleted too.
+        own_day_inside: Every hidden row whose OWN compared day the books
+            of the account it sits on hold (:func:`own_day_held`, rulings
+            **R-PC96**, **R-PC98** and **R-PC99**), by row id, mapped to
+            that day: these stay deleted too.
+        held_by: The same rows' ids mapped to the opening day of the books
+            holding each -- the books the notice names for it, which after
+            its definition's account move are not the definition's.
         books_opened_on: The definition's books floor, which the notice
-            quotes; ``None`` when it has none, and then nothing stays.
+            quotes for a row only its WALK drops; ``None`` when it has none,
+            and then the walk drops nothing.
         is_envelope: Whether the compared day is a paycheck's last day
             (ruling **R-PC89**) rather than a due day, which the notice has
             to say to be true.
@@ -136,6 +152,7 @@ class UnarchiveScope:
     definition: TransactionTemplate | TransferTemplate
     inside_the_books: dict
     own_day_inside: dict
+    held_by: dict
     books_opened_on: date | None
     is_envelope: bool
 
@@ -149,11 +166,11 @@ class UnarchiveScope:
         Returns:
             The criteria, for ``query.filter(*criteria)``: the definition's
             soft-deleted still-Projected rows, less those answering an
-            occurrence its books drop and less those no walk names whose own
-            day the books hold (:attr:`own_day_inside`).  A row answering NO
-            occurrence (``occurs_on`` ``NULL``) passes the first test, since
-            no walk names it with or without the books; the second is the one
-            that judges it.
+            occurrence its books drop and less those whose own day the books
+            of the account they sit on hold (:attr:`own_day_inside`).  A row
+            answering NO occurrence (``occurs_on`` ``NULL``) passes the first
+            test, since no walk names it with or without the books; the
+            second is the one that judges it.
         """
         _table_order, model, _template_fk = rows_of(self.definition)
         criteria = list(self._hidden())
@@ -172,9 +189,9 @@ class UnarchiveScope:
         Returns:
             The criteria, for ``query.filter(*criteria)``: the definition's
             soft-deleted still-Projected rows answering an occurrence its
-            books drop, or named by no walk and held by the books on their
-            own day -- the complement of :meth:`restores` among its hidden
-            rows.
+            books drop, or held on their own day by the books of the account
+            they sit on -- the complement of :meth:`restores` among its
+            hidden rows.
         """
         _table_order, model, _template_fk = rows_of(self.definition)
         held = []
@@ -191,14 +208,17 @@ def rows_of(definition) -> tuple:
     """Return ``(table_order, model, template_fk)`` for *definition*'s rows.
 
     Args:
-        definition: A transaction or transfer template.
+        definition: A transaction or transfer template, or either class --
+            the restatement asks by class which definitions own rows sitting
+            on an account (``planned_rows_books``, ruling **R-PC99**).
 
     Returns:
         ``(0, Transaction, Transaction.template_id)`` or ``(1, Transfer,
         Transfer.transfer_template_id)`` -- the order the books refusals break
         ties in, the row model, and the column naming the row's definition.
     """
-    if isinstance(definition, TransferTemplate):
+    kind = definition if isinstance(definition, type) else type(definition)
+    if issubclass(kind, TransferTemplate):
         return 1, Transfer, Transfer.transfer_template_id
     return 0, Transaction, Transaction.template_id
 
@@ -223,111 +243,63 @@ def _hidden_rows(definition) -> tuple:
 
 @dataclass(frozen=True)
 class BooksReading:
-    """What one walk of a recurring definition says about its rows and its books.
+    """What one walk of a recurring definition says about its books.
 
     Attributes:
         inside: ``{occurrence: compared day}`` for every occurrence the
             definition's books drop (the rows answering one are judged by
             the WALK's day for its placement).
-        named: Every occurrence the walk names, kept or dropped -- so a row
-            whose ``occurs_on`` is in neither half is an ORPHAN (ruling
-            **R-PC98**).
     """
 
     inside: dict
-    named: frozenset
-
-    def is_orphan(self, occurs_on: date | None) -> bool:
-        """Return whether a row dated *occurs_on* answers no occurrence the walk names.
-
-        Ruling **R-PC98** (developer 2026-09-23, the C18-a round-5 review's
-        H2): a still-Projected row a rule EDIT left behind -- its schedule
-        moved, its occurrence no longer produced -- is named by no walk, so
-        nothing re-dates it and it is judged by its own day
-        (:func:`own_books_day`), as ruling **R-PC96** judges a rule-less or
-        undated row at an unarchive.  An UNDATED row (``occurs_on``
-        ``NULL``) is not an orphan: R-PC96 judges it at the unarchive alone,
-        and the books move stays allowed for it, as that ruling says.
-
-        Args:
-            occurs_on: The row's ``occurs_on``.
-
-        Returns:
-            ``True`` for a dated row the walk names nowhere.
-        """
-        return occurs_on is not None and occurs_on not in self.named
-
-    def orphan_clause(self, model):
-        """Return :meth:`is_orphan` as a SQL criterion over *model*'s rows.
-
-        The same predicate in the query's dialect, stated beside the Python
-        one so the two cannot drift -- the shape ``balance_predicates`` gives
-        its pairs.  A door asks it in SQL so the rows it loads are only the
-        orphans, where the account edit page's card asks at every render.
-
-        Args:
-            model: ``Transaction`` or ``Transfer``.
-
-        Returns:
-            The criterion, for ``query.filter``.
-        """
-        return and_(
-            model.occurs_on.isnot(None),
-            model.occurs_on.notin_(list(self.named)),
-        )
 
 
 def books_reading(
     resolved: ResolvedRecurrence | None, calendar: PayCalendar,
 ) -> BooksReading:
-    """Return what *resolved*'s walk drops and names, from ONE walk.
+    """Return what *resolved*'s books drop, from ONE walk.
 
-    **The one reading of what a definition's books drop and what its rule
-    names**, taken by the unarchive here and by the refusals in
-    ``app.services.planned_rows_books`` (the opening and edit doors'
+    **The one reading of what a definition's books drop**, taken by the
+    unarchive here and by the refusals in ``app.services.planned_rows_books``
+    (the opening and edit doors'
     :func:`~app.services.planned_rows_books.first_row_below_the_books` and
     the revert's), so a row the unarchive leaves deleted and a row a refusal
-    names come from one walk.  Both halves are
-    :func:`~app.services.recurrence.occurrence_walk`'s, so asking for the
-    orphans (ruling **R-PC98**) walks nothing twice.
+    names come from one walk.  **A definition with no books floor is not
+    walked**: its walk drops nothing, so none is needed (the C18-a round-6
+    review's L3 -- walking it anyway refused a revert over a rule no walk
+    could read, where no answer depended on the walk).
 
     Args:
         resolved: The definition's recurrence with its books floor attached,
             or ``None`` -- a definition with no rule, or an owner with no pay
-            periods -- which drops and names nothing.
+            periods -- which drops nothing.
         calendar: The owner's pay calendar.
 
     Returns:
         The :class:`BooksReading`: every dropped occurrence mapped to
         :meth:`~app.services.recurrence.ResolvedRecurrence.books_day` for its
         placement (the due day for a bill, ruling **R-PC86**; the paycheck's
-        last day for an envelope, ruling **R-PC89**), and every occurrence
-        named.
+        last day for an envelope, ruling **R-PC89**).
 
     Raises:
         RecurrenceGenerationError: See
             :func:`~app.services.recurrence.occurrence_walk`.
     """
-    if resolved is None:
-        return BooksReading(inside={}, named=frozenset())
+    if resolved is None or resolved.books_opened_on is None:
+        return BooksReading(inside={})
     walk = occurrence_walk(resolved, calendar)
-    return BooksReading(
-        inside={
-            placement.occurrence: resolved.books_day(placement.period)
-            for placement in walk.below_the_books
-        },
-        named=frozenset(
-            placement.occurrence
-            for placement in (*walk.kept, *walk.below_the_books)
-        ),
-    )
+    return BooksReading(inside={
+        placement.occurrence: resolved.books_day(placement.period)
+        for placement in walk.below_the_books
+    })
 
 
 def own_books_day(row, calendar: PayCalendar, *, is_envelope: bool) -> date:
-    """Return the day the books are compared with for a row no walk names.
+    """Return the day the books are compared with for a row judged by its own day.
 
-    Rulings **R-PC96** and **R-PC98**: no regeneration re-dates such a row,
-    so its stored day IS its day, and the one picker
+    Rulings **R-PC96**, **R-PC98** and **R-PC99**: a row is judged where it
+    SITS on its STORED day -- no regeneration re-dates a row no walk names,
+    and the balance counts every row on its own day -- and the one picker
     (:func:`~app.utils.books_boundary.row_books_day`) chooses between its
     due day and its paycheck's last day (an envelope, ruling **R-PC89**).
 
@@ -346,6 +318,133 @@ def own_books_day(row, calendar: PayCalendar, *, is_envelope: bool) -> date:
     )
 
 
+class OwnDayHeld(NamedTuple):
+    """A row whose own day the books of the account it sits on hold (ruling R-PC99).
+
+    Attributes:
+        day: Its own compared day (:func:`own_books_day`).
+        opened_on: The opening of the books holding it: the latest among the
+            accounts it sits on
+            (:func:`~app.services.balance_at.row_books_opened_on`).
+    """
+
+    day: date
+    opened_on: date
+
+
+def own_day_held(
+    row, calendar: PayCalendar, memo: dict, *, is_envelope: bool,
+) -> OwnDayHeld | None:
+    """Return *row*'s own day when the books of the account it sits on hold it.
+
+    **Ruling R-PC99's one predicate** (developer 2026-09-23, the C18-a
+    round-6 review's H1), asked by every door that bounds a planned row by
+    the books: the opening restatement and both edit doors
+    (``planned_rows_books.first_row_below_the_books``), the revert
+    (``planned_rows_books.reject_revert_below_the_books``) and the unarchive
+    (:func:`unarchive_scope`).  A still-Projected row on or before the books
+    of the account the balance counts it in sits inside that account's
+    opening and is counted a second time, whether or not its definition's
+    walk still names it and whichever account its definition names now.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`.
+        calendar: The owner's pay calendar.
+        memo: The ``account_id -> opened_on`` memo
+            :func:`~app.services.balance_at.row_books_opened_on` reads
+            through; a restatement's holds the candidate day for the account
+            it restates.
+        is_envelope: Whether the row's definition is an envelope (ruling
+            **R-PC89**), as the save being graded would leave it.
+
+    Returns:
+        The :class:`OwnDayHeld`, or ``None`` when no account it sits on has
+        an opening or the books open before its day.
+    """
+    opened_on = row_books_opened_on(row, memo)
+    if opened_on is None:
+        return None
+    day = own_books_day(row, calendar, is_envelope=is_envelope)
+    if books_hold(opened_on, day):
+        return None
+    return OwnDayHeld(day=day, opened_on=opened_on)
+
+
+def rows_held_where_they_sit(
+    definition, criteria: tuple, calendar: PayCalendar, memo: dict,
+) -> dict:
+    """Return *definition*'s rows matching *criteria* that :func:`own_day_held` holds.
+
+    **The one loader of ruling R-PC99's question**, read by the unarchive
+    (over the hidden rows) and by every refusal in
+    ``app.services.planned_rows_books`` (over the planned ones), with the
+    envelope flag its books composition reads
+    (:func:`~app.services.balance_at.definition_books`) -- the edited
+    object's own at an edit door.  The query loads only rows the books COULD
+    hold (:func:`_could_be_held`), so the books-opening card, asking at every
+    render, never loads a schedule's future.
+
+    Args:
+        definition: The transaction or transfer template.
+        criteria: Which of its rows to ask, for ``query.filter(*criteria)``.
+        calendar: The owner's pay calendar.
+        memo: The ``account_id -> opened_on`` memo :func:`own_day_held`
+            reads through; a restatement's holds its candidate day.
+
+    Returns:
+        ``{row id: (its OwnDayHeld, the row)}``.
+    """
+    _table_order, model, _template_fk = rows_of(definition)
+    is_envelope = definition_books(definition, memo).is_envelope
+    held = {}
+    for row in (
+        db.session.query(model)
+        .filter(*criteria, _could_be_held(model, definition.user_id, memo))
+        .all()
+    ):
+        own = own_day_held(row, calendar, memo, is_envelope=is_envelope)
+        if own is not None:
+            held[row.id] = (own, row)
+    return held
+
+
+def _could_be_held(model, user_id: int, memo: dict):
+    """Return a SQL criterion no row :func:`own_day_held` holds can fail.
+
+    A row's own day is its due day or its paycheck's LAST day, which falls on
+    or after the paycheck's start; and no books a row of the owner's can sit
+    on open after the latest of the owner's account openings and any day
+    *memo* holds (a restatement's candidate).  So a row due after that day
+    in a paycheck starting after it is never held -- a bound the query
+    filters by, never a books floor.
+
+    Args:
+        model: ``Transaction`` or ``Transfer``.
+        user_id: The owner.
+        memo: The books memo, whose days count toward the bound.
+
+    Returns:
+        The criterion, for ``query.filter``.
+    """
+    latest = (
+        select(func.max(AccountOpening.opened_on))
+        .join(Account, Account.id == AccountOpening.account_id)
+        .where(Account.user_id == user_id)
+        .scalar_subquery()
+    )
+    days = [day for day in memo.values() if day is not None]
+    bound = func.greatest(latest, max(days)) if days else latest
+    return or_(
+        model.due_date <= bound,
+        model.pay_period_id.in_(
+            select(PayPeriod.id).where(
+                PayPeriod.user_id == user_id, PayPeriod.start_date <= bound,
+            )
+        ),
+    )
+
+
 def unarchive_scope(
     definition, resolved: ResolvedRecurrence | None, calendar: PayCalendar,
 ) -> UnarchiveScope:
@@ -355,8 +454,10 @@ def unarchive_scope(
     resolution carries -- the composition its walk took.  A rule-less
     definition has no resolution, so they are read off it through the SAME
     producer that composition reads
-    (:func:`~app.services.balance_at.definition_books`), for the rows judged
-    on their own day (ruling **R-PC96**).
+    (:func:`~app.services.balance_at.definition_books`).  Every hidden row is
+    judged on its own day too, against the books of the account it sits on
+    (:func:`own_day_held`, rulings **R-PC96** and **R-PC99**), the governing
+    ones: an unarchive restores rows as they stand.
 
     Args:
         definition: The transaction or transfer template.
@@ -379,13 +480,12 @@ def unarchive_scope(
     else:
         books_opened_on = resolved.books_opened_on
         is_envelope = resolved.is_envelope
-    reading = books_reading(resolved, calendar)
+    own_day_inside, held_by = _own_day_inside(definition, calendar)
     return UnarchiveScope(
         definition=definition,
-        inside_the_books=reading.inside,
-        own_day_inside=_own_day_inside(
-            definition, reading, books_opened_on, is_envelope, calendar,
-        ),
+        inside_the_books=books_reading(resolved, calendar).inside,
+        own_day_inside=own_day_inside,
+        held_by=held_by,
         books_opened_on=books_opened_on,
         is_envelope=is_envelope,
     )
@@ -410,51 +510,37 @@ def scope_holding_nothing_back(definition) -> UnarchiveScope:
         definition=definition,
         inside_the_books={},
         own_day_inside={},
+        held_by={},
         books_opened_on=None,
         is_envelope=False,
     )
 
 
-def _own_day_inside(
-    definition, reading: BooksReading, books_opened_on: date | None,
-    is_envelope: bool, calendar: PayCalendar,
-) -> dict:
-    """Return the hidden rows no walk names that the books hold, by their own day.
+def _own_day_inside(definition, calendar: PayCalendar) -> tuple[dict, dict]:
+    """Return the hidden rows the books of the account they sit on hold, by their own day.
 
-    Ruling **R-PC96**: every hidden row of a RULE-LESS definition, and a
-    recurring definition's hidden rows answering no occurrence (``occurs_on``
-    ``NULL``), are compared on the day :func:`own_books_day` picks off the
-    row itself -- its due day, or its paycheck's last day for an envelope --
-    because no regeneration re-dates them.  Ruling **R-PC98** adds a
-    recurring definition's hidden ORPHANS: rows whose ``occurs_on`` its walk
-    names nowhere (:meth:`BooksReading.is_orphan`), left behind by a rule
-    edit made while it was archived.
+    Every hidden row of *definition* -- a rule-less definition's (ruling
+    **R-PC96**), a recurring one's undated rows (R-PC96) and orphans (ruling
+    **R-PC98**), and its rows a walk names as well (ruling **R-PC99**) -- is
+    compared on the day :func:`own_books_day` picks off the row itself with
+    the governing books of the account it sits on
+    (:func:`rows_held_where_they_sit`).
 
     Args:
         definition: The transaction or transfer template.
-        reading: Its walk's :class:`BooksReading` (empty for a rule-less
-            definition, whose every row is judged here).
-        books_opened_on: Its books floor, or ``None`` (nothing is held).
-        is_envelope: Whether it is an envelope (ruling **R-PC89**).
         calendar: The owner's pay calendar, which gives a paycheck's last day.
 
     Returns:
-        ``{row id: compared day}`` for each such row on or before the books.
+        ``({row id: compared day}, {row id: opening day of the books holding
+        it})`` over each such row on or before those books.
     """
-    if books_opened_on is None:
-        return {}
-    _table_order, model, _template_fk = rows_of(definition)
-    criteria = list(_hidden_rows(definition))
-    if definition.recurs:
-        criteria.append(or_(
-            model.occurs_on.is_(None), reading.orphan_clause(model),
-        ))
-    held = {}
-    for row in db.session.query(model).filter(*criteria).all():
-        day = own_books_day(row, calendar, is_envelope=is_envelope)
-        if not books_hold(books_opened_on, day):
-            held[row.id] = day
-    return held
+    held = rows_held_where_they_sit(
+        definition, _hidden_rows(definition), calendar, {},
+    )
+    return (
+        {row_id: own.day for row_id, (own, _row) in held.items()},
+        {row_id: own.opened_on for row_id, (own, _row) in held.items()},
+    )
 
 
 def unarchive_scope_on(definition, ctx: BalanceContext) -> UnarchiveScope:
@@ -487,72 +573,123 @@ def stays_deleted_notice(scope: UnarchiveScope) -> str | None:
 
     Ruling **R-PC95**'s words: ``1 item due 2026-03-01 stays deleted: it
     falls inside Checking's books, which open 2026-03-08.``  An envelope's row
-    is named by its paycheck's last day, the day its books compare.  A row a
-    walk names takes its occurrence's compared day, a row no walk names its
-    own (ruling **R-PC96**), so every row the scope leaves deleted is named.
+    is named by its paycheck's last day, the day its books compare.  A row
+    held on its own day takes that day and the books of the account it sits
+    on (rulings **R-PC96** and **R-PC99**); a row only its WALK drops takes
+    its occurrence's compared day and says its schedule no longer produces
+    it, since it does not sit inside the books that drop it -- its definition
+    moved to another account after its paycheck ended.  One sentence per
+    books, so every row the scope leaves deleted is named, and none as inside
+    books it does not sit in.
 
     Args:
         scope: The unarchive's :class:`UnarchiveScope`, read before its
             restore.
 
     Returns:
-        The sentence, or ``None`` when every hidden row is restored.
+        The sentences, or ``None`` when every hidden row is restored.
     """
     _table_order, model, _template_fk = rows_of(scope.definition)
-    compared = sorted(
-        scope.own_day_inside[row_id]
-        if row_id in scope.own_day_inside
-        else scope.inside_the_books[occurs_on]
-        for row_id, occurs_on in (
-            db.session.query(model.id, model.occurs_on)
-            .filter(*scope.stays_deleted())
-            .all()
+    groups: dict = {}
+    for row in db.session.query(model).filter(*scope.stays_deleted()).all():
+        if row.id in scope.own_day_inside:
+            key = (True, definition_money_accounts(row), scope.held_by[row.id])
+            day = scope.own_day_inside[row.id]
+        else:
+            key = (
+                False, definition_money_accounts(scope.definition),
+                scope.books_opened_on,
+            )
+            day = scope.inside_the_books[row.occurs_on]
+        groups.setdefault(key, []).append(day)
+    if not groups:
+        return None
+    return " ".join(
+        _stays_deleted_sentence(
+            sorted(days), sits_inside, _possessive(accounts, opened_on),
+            opened_on, is_envelope=scope.is_envelope,
+        )
+        for (sits_inside, accounts, opened_on), days in sorted(
+            groups.items(), key=lambda group: min(group[1]),
         )
     )
-    if not compared:
-        return None
-    first, last = compared[0].isoformat(), compared[-1].isoformat()
+
+
+def _stays_deleted_sentence(
+    days: list, sits_inside: bool, books: str, opened_on: date,
+    *, is_envelope: bool,
+) -> str:
+    """Return one sentence of :func:`stays_deleted_notice`, over one books.
+
+    Args:
+        days: The compared days of the rows it names, ascending.
+        sits_inside: Whether they sit inside *books* (held on their own day)
+            rather than only answering occurrences their walk drops.
+        books: The accounts, in the possessive (:func:`books_named`).
+        opened_on: Those books' opening day.
+        is_envelope: Whether the days are paychecks' last days.
+
+    Returns:
+        The sentence.
+    """
+    first, last = days[0].isoformat(), days[-1].isoformat()
     span = first if first == last else f"{first} to {last}"
-    if scope.is_envelope:
-        where = f"in the paycheck{'' if len(compared) == 1 else 's'} ending {span}"
+    one = len(days) == 1
+    if is_envelope:
+        where = f"in the paycheck{'' if one else 's'} ending {span}"
     else:
         where = f"due {span}"
-    books = books_named(scope.definition, scope.books_opened_on)
-    if len(compared) == 1:
+    count = "1 item" if one else f"{len(days)} items"
+    stays = "stays" if one else "stay"
+    if sits_inside:
+        falls = "it falls" if one else "they fall"
         return (
-            f"1 item {where} stays deleted: it falls inside {books} books, "
-            f"which open {scope.books_opened_on.isoformat()}."
+            f"{count} {where} {stays} deleted: {falls} inside {books} books, "
+            f"which open {opened_on.isoformat()}."
         )
+    produces = "its schedule no longer produces it" if one else (
+        "their schedule no longer produces them"
+    )
     return (
-        f"{len(compared)} items {where} stay deleted: they fall inside "
-        f"{books} books, which open {scope.books_opened_on.isoformat()}."
+        f"{count} {where} {stays} deleted: {produces}, since {books} books "
+        f"open {opened_on.isoformat()}."
     )
 
 
-def books_named(definition, books_opened_on: date) -> str:
-    """Return the accounts whose books set *definition*'s floor, as a sentence names them.
+def books_named(holder, books_opened_on: date) -> str:
+    """Return the accounts whose books open on *books_opened_on*, as a sentence names them.
 
     ``Checking's``, or ``Src's and Dst's`` for a transfer whose two accounts
     open the same day.  **The one statement of which account a books sentence
-    names**, read by the unarchive's notice and by the revert refusal
-    (``planned_rows_books.reject_revert_below_the_books``, ruling
-    **R-PC97**).  The floor carries the latest opening day among the accounts
-    the definition moves money in, not which account set it, and naming that
-    account is what makes the sentence one the owner can check.  The openings
-    are read here and only when a sentence is being written, so a door that
-    refuses nothing reads nothing more.
+    names**, read by the unarchive's notice and by the books refusals
+    (``planned_rows_books``, rulings **R-PC97** and **R-PC99**).  *holder* is
+    a definition -- whose floor is the latest opening among the accounts it
+    moves money in -- or one of its rows, held by the books of the accounts
+    it SITS ON (:func:`own_day_held`), which after its definition's account
+    move are not the definition's.  A floor carries the latest opening day,
+    not which account set it, and naming that account is what makes the
+    sentence one the owner can check.  The openings are read here and only
+    when a sentence is being written, so a door that refuses nothing reads
+    nothing more.
 
     Args:
-        definition: The transaction or transfer template.
-        books_opened_on: Its books floor -- a day at least one of its
-            accounts' governing openings falls on.
+        holder: The transaction or transfer template, or a
+            :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer` row.
+        books_opened_on: The governing opening day of at least one of the
+            accounts *holder* names.
 
     Returns:
         Each such account's name in the possessive, joined by ``and``.
     """
+    return _possessive(definition_money_accounts(holder), books_opened_on)
+
+
+def _possessive(account_ids: tuple, books_opened_on: date) -> str:
+    """Return :func:`books_named`'s sentence over *account_ids*."""
     return " and ".join(
         f"{db.session.get(Account, account_id).name}'s"
-        for account_id in definition_money_accounts(definition)
+        for account_id in account_ids
         if _opened_on(account_id) == books_opened_on
     )
 
@@ -565,10 +702,13 @@ def _opened_on(account_id: int) -> date | None:
 
 __all__ = [
     "BooksReading",
+    "OwnDayHeld",
     "UnarchiveScope",
     "books_named",
     "books_reading",
     "own_books_day",
+    "own_day_held",
+    "rows_held_where_they_sit",
     "rows_of",
     "scope_holding_nothing_back",
     "stays_deleted_notice",

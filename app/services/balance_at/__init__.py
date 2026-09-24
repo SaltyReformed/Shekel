@@ -258,6 +258,7 @@ from ._definition_books import (
     definition_money_accounts,
     money_account_columns,
     resolved_with_books,
+    row_books_opened_on,
 )
 from ._memoize import require_scenario
 from ._grid import (
@@ -405,6 +406,7 @@ __all__ = [
     "positions",
     "records_balance_at",
     "resolved_with_books",
+    "row_books_opened_on",
     "positions_period_map",
     "require_scenario",
     "secured_loan_series",

@@ -301,19 +301,25 @@ def _reject_books_open_on_or_after_planned_rows(
     unarchive would bring them back (ruling **R-PC93**); the refusal names
     such a row as the archived definition's, with the remedy that reaches it.
 
-    **Which rows, which day, and the comparison are the WALK's**
+    **Which rows, which day, and the comparison are one producer's**
     (:func:`app.services.planned_rows_books.first_row_an_opening_strands`,
-    the one producer the books-opening card's date ceiling reads too): every
-    recurring definition moving money in the account is walked with the books
-    it would have if the account opened on *opened_on*, and a still-Projected
-    row answering an occurrence that walk drops -- live, or hidden by an
-    archive -- is stranded, named by the day the walk compares for it, a
-    bill's due day or an envelope's paycheck's last day (rulings **R-PC86**,
-    **R-PC89**), under the strict :func:`~app.utils.books_boundary.books_hold`.  It read each row's
-    STORED due day and its own account until the step's adversarial review
-    (H1, L1): the walk re-dates a row by its rule and bounds it by its
-    DEFINITION's accounts, and a door that asked anything else could pass a
-    day that strands a row or refuse one that strands none.
+    which the books-opening card's date ceiling reads too), asking two
+    questions (ruling **R-PC99**).  Every recurring definition moving money
+    in the account is walked with the books it would have if the account
+    opened on *opened_on*, and a still-Projected row answering an occurrence
+    that walk drops -- live, or hidden by an archive, wherever it sits -- is
+    stranded, named by the day the walk compares for it, a bill's due day or
+    an envelope's paycheck's last day (rulings **R-PC86**, **R-PC89**), under
+    the strict :func:`~app.utils.books_boundary.books_hold`: the walk
+    re-dates a row by its rule and bounds it by its DEFINITION's accounts
+    (the step's adversarial review, H1).  And every still-Projected recurring
+    row SITTING ON the account whose own stored day the candidate books hold
+    is stranded too, whatever account its definition names now (rulings
+    **R-PC98** and **R-PC99**): the balance counts it here, and a definition
+    that moved off the account left the rows of paychecks that had already
+    ended on it.  The sentence says what the move does to the row it names:
+    sits inside the opening, or -- a row its schedule drops while it sits on
+    another account -- is deleted by the next pass to reach it.
 
     No figure is named: the refusal is about a DAY, so the opening door's
     HELD-figure contract (ruling **R-CC52**) is untouched.
@@ -358,8 +364,7 @@ def _reject_books_open_on_or_after_planned_rows(
         return
     raise ValidationError(
         f"These books cannot open on {opened_on.isoformat()}: the recurring "
-        f"{stranded.described()}.  An opening is the balance at the END of "
-        "its day, so that unpaid item would sit inside it.  "
+        f"{stranded.described()}.  {stranded.consequence()}  "
         f"{stranded.remedy()}, then restate the books."
     )
 
