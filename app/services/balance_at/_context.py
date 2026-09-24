@@ -73,13 +73,12 @@ from app.services.recurrence import (
     BooksWalk,
     RecurrenceSpec,
     ResolvedRecurrence,
-    occurrence_walk,
-    recurrence_spec,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
-from ._definition_books import DefinitionBooks, definition_books, resolved_with_books
+from ._definition_books import DefinitionBooks
 from ._memoize import _memoize_once, require_scenario
+from ._recurrence_memos import RecurrenceMemosMixin
 
 if TYPE_CHECKING:
     # Type-only: all three RECORD types below are defined by seam SIBLINGS that
@@ -92,12 +91,12 @@ if TYPE_CHECKING:
     from ._resolution import ResolvedLoan
 
 @dataclass(frozen=True)
-class BalanceContext:  # pylint: disable=too-many-instance-attributes
+class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (14/7) -- suppressed because the
-    fourteen ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and eleven
+    Pylint: ``too-many-instance-attributes`` (15/7) -- suppressed because the
+    fifteen ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and twelve
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
@@ -106,14 +105,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
     cash fold), 11 at balance:X-au-d (the paycheck pricing), 12 at
     recurrence:**R16-b-2** (a rule's resolution), 13 at
-    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk) and 14 at
+    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk), 14 at
+    recurrence:**R16-c-1** (the loan's timeline) and 15 at
     pay_calendar:**C18-a** (each account's books floor); plan step
     **X-i1** raises it further, because that step's remaining inputs (the contribution feed, the
     standing extra, the contractual schedule) are memos of exactly this kind.
     The count is a property of what a read pass IS rather than a threshold
     this class is drifting past.  *The figure read ``(8/7)`` and "five MEMOS"
-    until X-i4, and ``(10/7)`` and "seven" until R16-b-2's adversarial review:
-    each time a memo had joined without it being updated, which is the class
+    until X-i4, ``(10/7)`` and "seven" until R16-b-2's adversarial review, and
+    ``(14/7)`` and "eleven" until ruling R-BAL146's review counted R16-c-1's
+    ``_timelines``: each time a memo had joined without it being updated, which is the class
     of claim this file's own ``scenario_id`` docstring already warns about.*
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
@@ -124,14 +125,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **SIX derivations this module owns, three it stores in PUBLIC caches, and
+    **SIX derivations this class owns, three it stores in PUBLIC caches, and
     ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
     (:meth:`calendar`), the AMOUNT BASIS (:meth:`amounts`), the PAYCHECK
     PRICING (:meth:`paychecks`), a rule's RESOLUTION
     (:meth:`resolved_recurrence_of`) and a resolved recurrence's OCCURRENCE
-    WALK (:meth:`placements_of`) derive from leaves BELOW this module,
-    which it imports outright, so all six stay private, filled by this
-    module's own methods.  *The count read "two" and named only the first two
+    WALK (:meth:`placements_of`) derive from modules BELOW the two that
+    define this class, which import them outright, so all six stay private,
+    filled by its own methods -- the last two inherited from
+    :class:`~._recurrence_memos.RecurrenceMemosMixin`, split out of this
+    module by ruling **R-BAL146**.  *The count read "two" and named only the first two
     until plan step X-i4, having missed ``amounts`` when X-au-c2b added it, and
     "three" until R16-b-2's review, having missed ``paychecks`` -- the same
     omission the attribute-count note above records, one sentence over.*  The RESOLUTION, PLAN and
@@ -284,7 +287,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             SPEC and its definition's BOOKS (what it authors, where its
             accounts' books open and whether it is an envelope, not which row
             it is; :meth:`resolved_for`).  Private
-            because this module owns the derivation (it imports the pure resolver, a leaf below the
+            because this class owns the derivation (its mixin's module imports
+            the pure resolver, a leaf below the
             seam), and a ``None`` value is a MEMOIZED "the owner has no pay
             periods", not an empty slot.
         _placements: The pass's occurrence-walk memo, keyed by the COMPOSED
@@ -638,200 +642,6 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         if self.user_id not in self._calendars:
             self._calendars[self.user_id] = calendar_for(self.user_id)
         return self._calendars[self.user_id]
-
-    def resolved_recurrence_of(self, rule) -> "ResolvedRecurrence | None":
-        """Return what *rule* MEANS against this owner's calendar, resolving it once.
-
-        The memo that collapses a read pass's N resolutions of one rule to
-        one.  Plan step **R16-b-2** put it here: the composed door
-        (``recurring_definition.resolved_definition``) resolves a definition's
-        rule to narrow it by the loan's derived stop, and that stop is the
-        forward plan's zero crossing, which since R16-b-2 walks the SAME rule
-        under its authored closing to sum the definition's occurrences -- so
-        one page reading one loan payment resolved its rule twice on one pass
-        (plan ledger row **N-511**'s shape; rule 14's ONE WALK forbids it).
-        Both readers take the resolution (books attached) from here and each
-        applies its own closing to the value.
-
-        **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
-        gives, and filled here because ``app.services.recurrence`` is a leaf
-        below the seam.
-
-        **Keyed by what the rule SAYS, not by which row it is.**  The
-        resolution is a function of the rule's authored columns, the pass's
-        calendar and its definition's books (:meth:`resolved_for`'s key), so
-        an entry keyed by those inputs cannot be served for a different one.
-        A first cut keyed by ``rule.id``, and the merge
-        of plan step R7d-c-2 -- which has GENERATION read a rule through this
-        memo -- measured the proxy's cost: ``reauthor_rule`` rewrites columns
-        IN PLACE, so a rule edited and regenerated on one pass regenerated on
-        its pre-edit cadence (monthly, the 5th moved to the 19th: ``updated
-        5, deleted 0, created 0``).  No live route reached it only because
-        every edit route builds its pass AFTER its write: a gateless
-        convention maintaining the invariant the id key carried, which a key
-        that is the input carries for no rule (``CLAUDE.md`` rule 14).  A
-        re-authored rule misses on any pass, two rules stating one spec share
-        one resolution (the resolver cannot tell them apart either), and a
-        TRANSIENT rule (``id`` ``None``) needs no special case.  The spec is
-        read ONCE, as key and input: what ``resolved_spec`` exists for.  The
-        CALENDAR half is :meth:`calendar`'s memo, under the route convention.
-
-        **The same lens one memo over, left as found.**  :attr:`loans`,
-        :attr:`plans` and :attr:`payoffs` are keyed by account id and derive
-        from ROWS as well as from every paying definition's spec.  Under the
-        rows a generate pass CREATES they are invariant by construction
-        (ruling **R-R64**: an occurrence no row answers is priced as its row
-        would be, so writing that row changes nothing), which is why a pass
-        may read them BEFORE it writes; the maintain pass's UPDATE arm
-        re-dates rows the PLANNED tier reads and its RETIRE arm deletes them,
-        so after either -- as under any other write inside one pass -- they
-        are stale, guarded by the convention above since their key is rows.
-
-        **A foreign rule never enters the memo with a VALUE, and no check here
-        is what makes that so.**  The pure resolver refuses a spec paired with
-        another owner's calendar -- ``RecurrenceResolutionError``, naming the
-        rule -- BEFORE the store on every miss, so a hit holding a value is
-        always the owner's own spec (``user_id`` is a field of the key); all a
-        foreign rule can leave is the ``None`` an EMPTY calendar answers ahead
-        of the ownership check, which carries nothing.  The composed door
-        relies on that refusal being the rule's own and reaching a caller
-        first, so a second, earlier refusal here would change which error
-        names the pairing; :func:`~._memoize._memoize_once` carries its own check because
-        the derivations it stores do not refuse for themselves.
-
-        **Its books floor is its OWNER's accounts'** (plan step
-        ``pay_calendar:C18-a``): :meth:`resolved_for` over the rule's
-        template; a payroll line's rule has none and gets no floor.
-
-        Args:
-            rule: The :class:`~app.models.recurrence_rule.RecurrenceRule` to
-                resolve, stored or transient.
-
-        Returns:
-            The :class:`~app.services.recurrence.ResolvedRecurrence` with the
-            AUTHORED closing alone and its books floor attached, or ``None``
-            when the owner has no pay periods -- the two answers
-            :func:`~app.services.recurrence.resolved_spec` gives.
-
-        Raises:
-            RecurrenceResolutionError: See
-                :func:`~app.services.recurrence.resolved_spec`; a rule paired
-                with another owner's pass is refused there, and an unmodelled
-                stored cadence reading the key, as ``resolved_recurrence``.
-        """
-        # ``getattr``: a rule is duck-typed on this seam (fixtures build one
-        # as a namespace); ``is None``, not ``or``: an ORM row's truthiness is
-        # not the question asked.
-        owner = getattr(rule, "transaction_template", None)
-        if owner is None:
-            owner = getattr(rule, "transfer_template", None)
-        return self.resolved_for(recurrence_spec(rule), owner)
-
-    def resolved_for(
-        self, spec: RecurrenceSpec, definition: object | None,
-    ) -> "ResolvedRecurrence | None":
-        """Return what *spec* MEANS for *definition*, its books floor attached.
-
-        **The ONE composition of a definition's resolved value with where its
-        books open** (plan step ``pay_calendar:C18-a``, rulings **R-PC85**,
-        **R-PC86**; the argument is :mod:`._definition_books`'), so every
-        reader of its occurrences takes the floor from one call: the composed
-        door and the loan estimate's walk through
-        :meth:`resolved_recurrence_of`, and the form preview's unsaved
-        definition (``recurring_definition.resolved_submission``).
-
-        Memoised by ``(spec, books)``: two definitions stating one spec
-        over accounts that open on one day, both envelopes or neither, share
-        one value (so repeated reads are the SAME object, which the walk
-        memo keys by); over different openings, or an envelope beside a bill
-        (ruling **R-PC89**), they mean different occurrences and walk apart.
-        The floor is read first -- a memo hit per account -- so a foreign
-        spec costs one opening read (memoised) before the resolver refuses
-        it; no resolution is stored for it, and the refusal names the rule.
-
-        Args:
-            spec: The authored recurrence.
-            definition: What moves the money -- a transaction or transfer
-                template, an unsaved definition, or ``None`` (a payroll
-                line's rule, which creates no row of its own).
-
-        Returns:
-            The resolved value with ``books_opened_on`` and ``is_envelope``
-            set, or ``None`` when the owner has no pay periods.
-
-        Raises:
-            RecurrenceResolutionError: See
-                :func:`~app.services.recurrence.resolved_spec`.
-        """
-        books = definition_books(definition, self._books_opened_on)
-        key = (spec, books)
-        if key not in self._recurrences:
-            self._recurrences[key] = resolved_with_books(
-                spec, self.calendar(), books,
-            )
-        return self._recurrences[key]
-
-    def placements_of(self, resolved: ResolvedRecurrence) -> BooksWalk:
-        """Return every occurrence *resolved* names, split by its books, walking once.
-
-        The memo that collapses a read pass's N walks of one resolved
-        recurrence to one, and the other half of what
-        :meth:`resolved_recurrence_of` began.  Plan step **R7d-f-2** put it
-        here (plan ledger row **N-513**): a ``/savings`` render reads a
-        transfer from checking into a goal account through the composed door
-        TWICE -- once in the emergency-fund floor's set, once in that goal's
-        contribution set -- and R16-b-2's memo had already made the second
-        RESOLUTION a hit while the second WALK still ran (measured on
-        2026-09-12 before this step: ``resolve`` once, the walk twice).
-        Rule 14's ONE WALK, read literally.
-
-        **Keyed by the walk's INPUT, the shape :meth:`resolved_recurrence_of`
-        chose** (ruling **R-R73**).  The placements are a pure function of the
-        resolved value -- its cadence, its first occurrence and its COMPOSED
-        closing, the destination's derived stop included -- and of this
-        pass's calendar, which is :meth:`calendar`'s one memo.  So the value
-        is the key: two definitions with one composed meaning share one walk
-        (the walk could not tell them apart either), a re-authored rule
-        resolves to a different value and misses, a definition whose loan
-        moved its payoff misses with it, and an unsaved definition needs no
-        special case.  A row-keyed memo would have served a pre-edit walk on
-        a pass that edited and re-read, which is the defect the id key
-        measured one memo over.
-
-        **Through the saved horizon and no further**: this is
-        :func:`~app.services.recurrence.occurrence_walk`, whose ``kept`` half
-        is the walk the display readers and generation take and whose other
-        half the closing also counts (plan step ``pay_calendar:C18-a``, ruling
-        **R-PC94**: the books decide which occurrences become rows, never when
-        the rule ends).
-        The seam's ESTIMATED loan tier walks PAST the horizon
-        (``projected_occurrence_placements``, ``through=``) and is a different
-        function of different inputs; it is not memoised here.
-
-        Args:
-            resolved: The recurrence's two-axis meaning, closing composed --
-                what :func:`app.services.recurring_definition
-                .resolved_definition` returns.  Must have been resolved
-                against THIS pass's calendar, which every producer of one
-                guarantees by reading :meth:`resolved_recurrence_of` or
-                :meth:`resolved_for`, never the bare ``resolved_spec``.
-
-        Returns:
-            The :class:`~app.services.recurrence.BooksWalk` through the
-            calendar's horizon, each half ascending; both empty for a
-            definition its composed closing admits nothing of.
-
-        Raises:
-            RecurrenceGenerationError: See
-                :func:`~app.services.recurrence.occurrence_placements`; a
-                raising walk is not memoised, so the refusal fires on every
-                call rather than being swallowed after the first.
-        """
-        if resolved not in self._placements:
-            self._placements[resolved] = occurrence_walk(
-                resolved, self.calendar(),
-            )
-        return self._placements[resolved]
 
     def amounts(self) -> AmountBasis:
         """Return the pass's amount-model basis, building it once.

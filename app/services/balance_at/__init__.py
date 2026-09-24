@@ -209,8 +209,10 @@ floor, with ``_assertions``, ``_asset_contributions``, ``_fold`` and
 ``_plan_records`` -- the five modules that import no sibling at runtime (an
 AST census of 2026-09-12; the sentence read "three" and named ``_context``
 among them until recurrence:R7d-f-2, wrong on both counts since ``_assertions``
-and ``_plan_records`` joined); ``_context`` imports ``_memoize`` and nothing
-else of the package.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
+and ``_plan_records`` joined); ``_context`` imports ``_memoize``,
+``_definition_books`` and ``_recurrence_memos`` (its mixin, ruling R-BAL146,
+which imports ``_definition_books``) and nothing else of the package.
+``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
 ``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only
 edges typing the caches the seam FILLS, so the arrow from the fourteen modules
 above stays one-way and the cycle finding N-25 names stays open.
