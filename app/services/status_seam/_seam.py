@@ -344,7 +344,10 @@ def apply_status_change(
       1. ``verify_transition`` -- the state-machine legality gate, which picks
          the workflow from *row*'s own model class; raises ``ValidationError``
          on an illegal move (e.g. Cancelled -> Paid), which the route layer
-         surfaces as a 400.
+         surfaces as a 400.  Then, for a ``Transaction``, the revert refusal
+         (:func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
+         ruling **R-PC97**): a revert to Projected whose occurrence the row's
+         books drop raises ``ValidationError`` before anything is written.
       2. assign ``status_id``.
       3. maintain the SETTLEMENT RECORD -- ``settled_on``,
          ``settled_day_basis_id``, the clearing link and the COVERING MOVEMENT
@@ -477,9 +480,13 @@ def apply_status_change(
         ValidationError: If the transition is illegal for *row*'s workflow
             (propagated from ``verify_transition``), if *settle_day* is
             supplied for a *new_status_id* that is not settled (propagated from
-            :func:`reject_settle_day_without_settled_status`), or if
+            :func:`reject_settle_day_without_settled_status`), if
             *settlement* is (propagated from
-            :func:`reject_settlement_without_settled_status`).
+            :func:`reject_settlement_without_settled_status`), or if a
+            ``Transaction``'s revert to Projected lands inside its books
+            (propagated from
+            :func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
+            ruling **R-PC97**).
         ValueError: If a ``Transaction`` ENTERS the settled band with no
             *settlement*.  A programming error at the call site -- no form can
             express it -- so it is not a ``ValidationError``.

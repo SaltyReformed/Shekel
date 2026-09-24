@@ -239,8 +239,8 @@ def _reject_restatement_day(
 
     **The PLANNED-ROW rule is ruling R-PC88** (plan step ``pay_calendar:C18-a``,
     :func:`_reject_books_open_on_or_after_planned_rows`), and it is last
-    because its repair is the cheapest: mark the row paid, cancel it or move
-    it.  It exists because ruling **R-PC85** made a recurring definition's
+    because its repair is the cheapest: mark the row paid or cancel it.  It
+    exists because ruling **R-PC85** made a recurring definition's
     occurrences stop at its accounts' books, so a restatement moving the books
     past a still-projected recurring row would leave that row answering an
     occurrence the walk drops -- and a maintain pass that reaches its
@@ -295,8 +295,9 @@ def _reject_books_open_on_or_after_planned_rows(
     generated -- makes the walk drop the occurrence it answers, and a
     maintain pass that reaches such a row retires it, silently raising the
     forecast.  The owner decides instead: marked paid it becomes a movement
-    (and the movement rule speaks), cancelled it holds nothing, moved later
-    it stays owed.  An ARCHIVED definition's hidden rows count, since its
+    (and the movement rule speaks), cancelled it holds nothing (a generated
+    row's day is its schedule's, so no move could clear it; the C18-a
+    review's M1).  An ARCHIVED definition's hidden rows count, since its
     unarchive would bring them back (ruling **R-PC93**); the refusal names
     such a row as the archived definition's, with the remedy that reaches it.
 

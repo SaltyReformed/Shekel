@@ -430,7 +430,7 @@ class TestAScheduleThatCannotBeWalkedRefusesTheRestatement:
 
     @pytest.mark.parametrize(("seam", "error"), [
         ("resolved_with_books", RecurrenceResolutionError),
-        ("inside_the_books", RecurrenceGenerationError),
+        ("books_reading", RecurrenceGenerationError),
     ])
     def test_it_is_refused_logged_and_nothing_is_written(
         self, app, db, seed_user, seed_periods, monkeypatch, caplog, seam, error,

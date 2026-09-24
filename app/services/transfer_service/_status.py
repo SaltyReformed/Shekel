@@ -109,8 +109,11 @@ def apply_status_to_all_three(
 
     Raises:
         ValidationError: If the transition is illegal for the transfer or for
-            either shadow (propagated from the state machine), or if
-            *settled_on* is refused by the seam (a future day, ruling R-EJ).
+            either shadow (propagated from the state machine), if
+            *settled_on* is refused by the seam (a future day, ruling R-EJ),
+            or if a revert to Projected lands inside the transfer's books
+            (:func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
+            ruling **R-PC97**, asked before either shadow is written).
         ValueError: If the move enters the settled band with no *settlement*
             (propagated from the seam).
     """
