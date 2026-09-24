@@ -219,15 +219,24 @@ def _todays_paycheck(
     application produces: a pass with NO baseline scenario
     (``BaselineMissingError``'s docstring: every owner is registered with
     one and nothing deletes it), where no profile is in scope; and a
-    calendar holding NO saved payday, where the guard only keeps
-    ``periods[0]`` from raising -- the Recurring page refuses that owner
-    earlier, describing the salary row's rule.  **The one place the page
+    calendar holding NO saved payday, where for a salary definition the
+    guard only keeps ``periods[0]``'s ``IndexError`` from pre-empting the
+    Recurring page's own refusal of that owner, which comes AFTER this read:
+    :func:`~app.services.recurring_view.described` refuses the section's
+    first repeating row, whichever row that is.  For every OTHER transaction
+    template the same guard carries weight, because it is asked before the
+    pricer says the template is no salary one: it is what lets
+    :func:`committed_monthly` answer the ``/savings`` floor for such an
+    owner, as ``recurrence.has_ended`` intends, and lets a page of rule-less
+    rows render.  **The one place the page
     still shows a salary definition's stored copy** is the Archived drawer,
-    for a salary template archived while its profile stays active: the
-    archive door allows that state, and ruling **R-SAL81** makes the door the
-    defect to fix rather than the drawer -- finding **SAL-579**, owned by plan
-    step salary:S13, which refuses the archive or archives the profile with
-    it so the state cannot arise.
+    for a salary template archived while its profile stays active: two doors
+    allow that state -- the archive door, and the hard-delete door's archive
+    fallback for a template with settled history or a standing merchant
+    rule -- and ruling **R-SAL81**
+    makes the door the defect to fix rather than the drawer: finding
+    **SAL-579**, owned by plan step salary:S13, which refuses the archive or
+    archives the profile with it so the state cannot arise.
 
     Args:
         template: The recurring definition.

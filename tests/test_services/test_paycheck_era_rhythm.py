@@ -687,10 +687,14 @@ class TestTheRecurringSalaryRow:
         the first saved payday, read on the day before that payday.
         Expected: Amount $1,847.00 and Monthly 1,847 x 26 / 12 = $4,001.83 --
         the first paycheck, the only one before the raise.  Every later
-        paycheck is 57,200 / 26 = 2,200.00 gross less 168.30 FICA =
-        $2,031.70, asserted as the control so the case tells the FIRST
-        paycheck from any other (an adversarial review of this step priced
-        the LAST saved paycheck instead and found the first draft green).
+        SAVED paycheck is 57,200 / 26 = 2,200.00 gross less 168.30 FICA =
+        $2,031.70, asserted for the SECOND and the LAST as the control so the
+        case tells the FIRST paycheck from any other (an adversarial review of
+        this step priced the LAST saved paycheck instead and found the first
+        draft green).  The second is asserted because the construction does
+        not guarantee it: the raise takes the month after the first payday,
+        so a first payday early in its month puts the second paycheck before
+        the raise too, and the case would stop telling the two apart.
         Why: there is no paycheck today, and until R-SAL79 the row fell back
         to the stored copy at the LATEST (weekly) count: $1.00 and
         1.00 x 52 / 12 = $4.33 here.
@@ -718,9 +722,10 @@ class TestTheRecurringSalaryRow:
             calendar = ctx.calendar()
             assert calendar.span_containing(ctx.as_of) is None
             profile = template.salary_profiles[0]
-            assert ctx.paychecks().for_profile(profile).at(
-                calendar.periods[-1],
-            ).earnings.net_pay == Decimal("2031.70")
+            for later in (calendar.periods[1], calendar.periods[-1]):
+                assert ctx.paychecks().for_profile(profile).at(
+                    later,
+                ).earnings.net_pay == Decimal("2031.70"), later.start_date
 
             (row,) = recurring_view.build_view([template], [], [], ctx).income.rows
             assert row.amount == Decimal("1847.00")
