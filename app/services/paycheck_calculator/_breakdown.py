@@ -141,8 +141,10 @@ class Earnings:
     Attributes:
         annual_salary: The post-raise annual salary in effect on the payday.
         base_biweekly: What the SALARY pays for one paycheck -- the rate
-            :func:`~app.services.payroll_basis.gross_per_paycheck` derives,
-            and the base every PERCENTAGE line is a percentage of
+            :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`
+            derives (the annual over the paychecks a year of the rhythm in
+            force on the payday, since plan step salary:X-av-2), and the
+            base every PERCENTAGE line is a percentage of
             (R-SAL38: never of gross, so a percentage earning is not circular
             and no existing line moves when an earning joins).
         gross_biweekly: ``base_biweekly`` plus the TAXABLE earning lines --
