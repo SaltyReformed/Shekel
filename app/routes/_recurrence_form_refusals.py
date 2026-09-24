@@ -22,6 +22,12 @@ they can be asked in:
 4. no edit may leave the rule stopping before it starts
    (:func:`refuse_inverted_window`).
 
+A FIFTH is asked later, by each door once its edit is applied, because it
+grades the state the save would LEAVE rather than the submission: no edit may
+leave a still-projected row of the definition answering an occurrence its
+books drop, or inside the books of the account it sits on
+(:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
+
 **:class:`RecurrenceFormContext` is DEFINED here**, one layer below the
 authoring helpers that also take it, and that is what keeps the split a
 boundary rather than a pair of modules that need each other.  Until plan step
@@ -40,16 +46,19 @@ redirects (the latter via
 leading underscore marks the module as route-internal.
 """
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from flask import Response, flash
+from flask_login import current_user
 
+from app.extensions import db
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
     RECURRENCE_STARTS_ON_KEY,
     end_bound_before_start_message,
 )
-from app.services import loan_loaders
+from app.services import loan_loaders, planned_rows_books
 from app.services.cash_ledger import is_loan_payment_definition
 from app.services.balance_at import (
     BalanceContext,
@@ -60,6 +69,7 @@ from app.services.recurrence import (
     end_bound_from_columns,
     stored_cadence,
 )
+from app.services.definition_unarchive import UnarchiveScope
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_templates,
 )
@@ -659,15 +669,121 @@ def refuse_recurrence_update(
     return None
 
 
+@dataclass(frozen=True)
+class StrandingCheck:
+    """What the stranded-row refusal reads, gathered BEFORE an edit is applied.
+
+    :func:`refuse_stranding_save` grades the state an edit would LEAVE, and
+    for an ARCHIVED definition it also needs a fact about the state the edit
+    REPLACES: the rows its unarchive would restore (rulings **R-PC93**,
+    **R-PC95**), which read after the edit would already leave out every row
+    the edit moves below the books.  One value, built by
+    :meth:`before_the_edit` where each edit door captures its before-image,
+    so no door can ask the refusal without having asked first.  Everything
+    else the refusal reads is the state AFTER the edit, off a pass of its
+    own (the round-8 review's L1).
+
+    Attributes:
+        restorable: The rows the definition's unarchive would restore as it
+            stood
+            (:func:`app.services.planned_rows_books.restorable_before_the_edit`);
+            ``None`` for an active definition.
+    """
+
+    restorable: UnarchiveScope | None
+
+    @classmethod
+    def before_the_edit(
+        cls, template: Any, pass_ctx: BalanceContext,
+    ) -> "StrandingCheck":
+        """Return the check for *template*, asked before any field of its edit lands.
+
+        Args:
+            template: The owner-checked definition, unedited.
+            pass_ctx: The door's pre-write read pass.
+
+        Returns:
+            The :class:`StrandingCheck`.
+        """
+        return cls(
+            planned_rows_books.restorable_before_the_edit(template, pass_ctx),
+        )
+
+
+def refuse_stranding_save(
+    template: Any, check: StrandingCheck, redirect: RedirectTarget, *,
+    kind: Any, effective_from: date,
+) -> Response | None:
+    """Refuse an edit whose SAVED state strands a still-projected row below the books.
+
+    Rulings **R-PC90** / **R-PC91** (developer, 2026-09-22; plan step
+    ``pay_calendar:C18-a``): a recurring definition's edit is refused when
+    the state it would save leaves a still-projected row of that definition
+    answering an occurrence its books drop, or sitting inside the books of
+    the account it sits on (ruling **R-PC99**), WHATEVER field changed -- an
+    account moved onto books that open later, the envelope box unticked, a
+    due day cleared -- because a maintain pass reaching a dropped row
+    retires it (the save's own regeneration, for a paycheck ending on or
+    after the edit's effective date; a later pass for an older one), and a
+    row inside the books is counted twice.  The state the save leaves is
+    read with that regeneration applied: a row it rewrites is asked where
+    the rewrite moves it (*kind*'s ``preview_fn``, the round-7 review's M1).
+    An ARCHIVED definition's hidden rows count, since its unarchive brings
+    them back (ruling **R-PC93**) -- those it would bring back as the
+    definition stood before the edit (:class:`StrandingCheck`, ruling
+    **R-PC95**).  The predicate is :func:`app.services.planned_rows_books
+    .definition_edit_refusal`'s; this is the door half both edit doors share
+    (``routes/templates/crud.update_template``, and
+    ``routes/transfers/templates._regenerate_and_commit_template``).
+
+    **Asked once the edit is whole and before regeneration**, unlike the four
+    rules above, because it reads what the save would LEAVE.  So the session
+    holds the edit, and a refusal ROLLS IT BACK before it flashes.  **It
+    reads a pass built HERE, after every write the door makes before
+    regenerating** (the round-8 review's L1), exactly as the regeneration
+    builds its own: the pre-write pass's loan caches are keyed by account
+    alone and go stale once the edit or the standing payment's sync writes,
+    so a preview read off it could decide over a state the save does not
+    leave.  For a definition with a rule -- the only one this refusal walks
+    -- nothing is written between this pass and the regeneration's.
+
+    Args:
+        template: The edited definition -- rule, amount and fields applied,
+            not committed.
+        check: The door's :class:`StrandingCheck`, built before the edit.
+        redirect: The edit form to send the owner back to.
+        kind: The door's
+            :class:`~app.routes._recurrence_conflict_chooser.RecurrenceConflictKind`,
+            whose engine regenerates the save next.
+        effective_from: The edit's effective date, from which that
+            regeneration maintains.
+
+    Returns:
+        The edit form with the refusal flashed and the edit rolled back, or
+        ``None`` when the save strands nothing.
+    """
+    stranded = planned_rows_books.definition_edit_refusal(
+        template, BalanceContext.build(current_user.id), check.restorable,
+        planned_rows_books.SaveRegeneration(kind.preview_fn, effective_from),
+    )
+    if stranded is None:
+        return None
+    db.session.rollback()
+    flash(stranded, "danger")
+    return redirect.to_response()
+
+
 __all__ = [
     "LOAN_PAYMENT_BOUND_IS_DERIVED",
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
     "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
     "RecurrenceFormContext",
+    "StrandingCheck",
     "bounds_are_the_loans",
     "is_loan_payment",
     "is_loan_payment_or_standing",
     "would_be_standing_payment",
     "refuse_inverted_window",
     "refuse_recurrence_update",
+    "refuse_stranding_save",
 ]

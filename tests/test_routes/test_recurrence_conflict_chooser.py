@@ -84,7 +84,7 @@ class TestApplyConflictDecisions:
             # and a derived row carries no column to read.  Unused by the
             # dispatch under test, so it is the identity here.
             model=None, resolve_amount=lambda row: row, regenerate_fn=None,
-            resolve_fn=fake_resolve, update_endpoint="x",
+            preview_fn=None, resolve_fn=fake_resolve, update_endpoint="x",
         )
 
     def test_ignores_ids_outside_conflict_set(self):
