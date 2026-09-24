@@ -145,7 +145,10 @@ class BoundReading:
         occurrences: Every occurrence the rule names through *horizon*,
             ascending, already limited by the bound itself.  A count-bounded
             rule therefore holds at most its own count, and ``len`` is how that
-            shape tells "spent" from "the schedule has not got there".
+            shape tells "spent" from "the schedule has not got there".  The
+            ones its definition's books drop are IN it (ruling **R-PC94**,
+            ``RuleReading.bound_reading``): the books decide which occurrences
+            become rows, never when the rule ends.
         horizon: The last day the owner's schedule reaches, or ``None`` when
             they have no pay periods.  ``None`` means nothing can be said about
             what the rule still owes, which every shape reads as "still owes".

@@ -285,7 +285,7 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 62 code files `due_date` in `app/**/*.py`) --
+**The Python files NAMING `due_date` in code** (census 63 code files `due_date` in `app/**/*.py`) --
 a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
 narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
 in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
@@ -630,7 +630,7 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       schedule bound (**R-R64**) for stated owners only.
 
 - [ ] **R22 -- the plan is computed, only the owner's acts are stored** (a DESIGN step: an audit,
-      then forks to the developer with worked dollars, BEFORE any build; asked for by the developer
+      then forks to the developer with worked dollars, BEFORE any build. Asked for by the developer
       at `pay_calendar:C18-a` round 9, 2026-09-23: "The from scratch design needs to be a step in
       the plan"). **Today** every occurrence a recurring schedule names inside the saved paychecks
       is a STORED row (Projected until settled), so an unpaid copy can be stranded, revived or
@@ -660,11 +660,9 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       from the schedule rather than read off rows; (3) R-PC96 judges rows NO schedule names (a
       rule-less item's rows, a carried-forward leftover) by their own day, and those stay stored
       under this model, so R-PC96 may survive too. Hand-added rows' own books gap is **PC-519**, a
-      separate row. Closes **REC-534**, **REC-535**, **REC-536** (each re-owned here at
-      `pay_calendar:C18-a`'s tick). Those ids, and **R-PC85**, **R-PC86**, **R-PC88**, **R-PC90**,
-      **R-PC91**, **R-PC93**, **R-PC95**, **R-PC96**, **R-PC97** and **PC-519**, are
-      `pay_calendar:C18-a`'s and file at its tick, and this step waits on `pay_calendar:C18` until
-      they do.
+      separate row. Closes **REC-534**, **REC-535**, **REC-536**, filed with this step as their
+      owner at `pay_calendar:C18-a`'s tick (the leaf it now waits on) beside **PC-519** and the
+      rulings above.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
       leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR

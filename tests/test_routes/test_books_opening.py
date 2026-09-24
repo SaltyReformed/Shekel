@@ -41,18 +41,30 @@ from decimal import Decimal
 import sqlalchemy as sa
 
 from app import ref_cache
-from app.enums import AccountOpeningSourceEnum
+from app.enums import AccountOpeningSourceEnum, TxnTypeEnum
 from app.extensions import db
-from app.services import account_service, cash_ledger
+from app.services import (
+    account_service,
+    cash_ledger,
+    planned_rows_books,
+    recurrence_engine,
+)
+from app.services.balance_at import BalanceContext
+from app.services.generation_schedule import GenerationSchedule
+from app.services.recurrence import RecurrenceResolutionError
 from app.models.account import Account
 from app.models.account_opening import AccountOpening
+from app.models.transaction_template import TransactionTemplate
 from app.utils.dates import display_today
 from tests._test_helpers import (
     account_never_asserted,
     match_two_lines,
     create_account_of_type,
     create_settled_cash_transaction,
+    make_cadence_rule,
+    state_template_price,
 )
+from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 _ONE_DAY = timedelta(days=1)
 
@@ -67,6 +79,53 @@ def _restate(client, account_id, opened_on, equity):
         },
         follow_redirects=True,
     )
+
+
+def _account_with_a_planned_bill(seed_user, seed_periods):
+    """Return an account whose only record is an every-paycheck bill, and its rows.
+
+    Its books open 30 days before the schedule and it asserts nothing, so the
+    bill's still-Projected rows are the planned-row term (ruling R-PC88) and
+    nothing else bounds the opening below today.  Committed, so a request
+    reads it.
+    """
+    account = account_never_asserted(
+        seed_user, db.session, name="Ceiling Planned",
+    )
+    db.session.flush()
+    db.session.add(AccountOpening(
+        account_id=account.id,
+        opened_on=seed_periods[0].start_date - timedelta(days=30),
+        opening_equity=Decimal("10.00"),
+        source_id=ref_cache.account_opening_source_id(
+            AccountOpeningSourceEnum.USER_DECLARED,
+        ),
+    ))
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=account.id,
+        category_id=seed_user["categories"]["Rent"].id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name="Planned bill",
+        default_amount=Decimal("25.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    state_template_price(template)
+    make_cadence_rule(
+        template, EVERY_PERIOD, starts_on=seed_periods[0].start_date,
+    )
+    db.session.refresh(template)
+    rows = recurrence_engine.generate_for_template(
+        template,
+        GenerationSchedule.for_period_ids(
+            BalanceContext.build(seed_user["user"].id),
+            {period.id for period in seed_periods},
+        ),
+        seed_user["scenario"].id,
+    )
+    db.session.commit()
+    return account, rows
 
 
 class TestTheCardIsRendered:
@@ -798,6 +857,41 @@ class TestTheCeilingNamesTheBoundThatBinds:
             assert "already recorded a balance" in html
             assert "already records money moving" not in html
 
+    def test_the_PLANNED_ROW_term_bounds_the_box_where_the_door_does(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The fifth term (ruling R-PC88; plan step pay_calendar:C18-a, review M2).
+
+        An account whose only record is an every-paycheck recurring bill,
+        still Projected: the box stops the day before its first row's due
+        day, the sentence names that row -- and the door AGREES at the
+        boundary, accepting the box's own ``max`` and refusing the day after.
+        FIRING CONTROL: without the term the box offered TODAY, a day the
+        door refuses over every unpaid row since the first payday.
+        """
+        with app.app_context():
+            account, rows = _account_with_a_planned_bill(seed_user, seed_periods)
+            first_due = min(row.due_date for row in rows)
+            assert first_due < display_today(), "the term must bind below today"
+            assert cash_ledger.earliest_recorded_movement_day(account.id) is None
+            assert cash_ledger.earliest_assertion_day(account.id) is None
+
+            html = auth_client.get(
+                f"/accounts/{account.id}/edit",
+            ).data.decode()
+
+            ceiling = first_due - _ONE_DAY
+            assert f'max="{ceiling.isoformat()}"' in html
+            assert "Planned bill" in html
+            refused = _restate(
+                auth_client, account.id, ceiling + _ONE_DAY, "10.00",
+            ).data.decode()
+            assert "still projected and due" in refused
+            accepted = _restate(
+                auth_client, account.id, ceiling, "10.00",
+            ).data.decode()
+            assert "Books restated" in accepted
+
     def test_a_BRAND_NEW_account_is_not_told_it_records_nothing(
         self, app, auth_client, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
@@ -837,3 +931,40 @@ class TestTheCeilingNamesTheBoundThatBinds:
             assert f'max="{display_today().isoformat()}"' in html
             assert "records nothing yet" not in html
             assert "has not happened yet" in html
+
+
+class TestAnUnreadableScheduleIsRefusedNotA500:
+    """The step's review, L7: the POST raised on a rule no walk can read."""
+
+    def test_the_POST_flashes_the_refusal_and_writes_nothing(
+        self, app, auth_client, db, seed_user, seed_periods, monkeypatch,
+    ):  # pylint: disable=unused-argument
+        """The service fails closed, and the page it returns to still renders.
+
+        The day is the box's own ``max``, which the walkable schedule ACCEPTS
+        (``test_the_PLANNED_ROW_term_bounds_the_box_where_the_door_does``), so
+        the refusal is the unread schedule's.  FIRING CONTROL: before L7 the
+        recurrence error escaped the route's ``except ValidationError``.
+        """
+        with app.app_context():
+            account, rows = _account_with_a_planned_bill(seed_user, seed_periods)
+            day = min(row.due_date for row in rows) - _ONE_DAY
+            before = db.session.query(AccountOpening).filter_by(
+                account_id=account.id,
+            ).count()
+
+            def refusing(*_args, **_kwargs):
+                raise RecurrenceResolutionError("a rule no door writes")
+
+            monkeypatch.setattr(planned_rows_books, "resolved_with_books", refusing)
+
+            resp = _restate(auth_client, account.id, day, "10.00")
+
+            assert resp.status_code == 200
+            assert (
+                "has a schedule that cannot be read: repair its schedule first."
+            ) in resp.data.decode()
+            db.session.expire_all()
+            assert db.session.query(AccountOpening).filter_by(
+                account_id=account.id,
+            ).count() == before
