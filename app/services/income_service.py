@@ -671,15 +671,17 @@ class SalaryPricing:
         One indexed query, memoized -- the CHEAP stage, so a row on a template
         no profile names is answered without projecting anything.
 
-        **The query is ORDERED, and it was not before.**  Two active profiles
-        naming ONE template in one scenario is expressible (nothing constrains
-        it) and this map keeps the last writer.  Unordered, that was whichever
-        row the planner reached first, so one owner could be priced two ways
-        across two requests; ordering by id makes the collision resolve the same
-        way every time.  The collision itself is finding **N-294**, reported
-        rather than fixed here: which profile SHOULD win is a question for the
-        salary arc, and answering it inside a reader refactor would be an
-        unreviewed ruling.
+        **One profile per template is the TABLE's rule since plan step
+        salary:X-av-1** (``uq_salary_profiles_template_id``, ruling
+        **R-SAL63**, closing finding **N-294**), so no key here can have two
+        profiles behind it.  Until then two active profiles naming one template
+        were storable and this map kept whichever the query returned last; an
+        ``ORDER BY id`` made that the same profile on every request without
+        deciding which should price the row, and it is deleted with the state
+        it ordered.  Profiles whose template was hard-deleted (``SET NULL``)
+        share the key ``None``, which is never looked up: :func:`salary_net_for`,
+        :meth:`net_for`'s one caller in ``app/``, answers a row with no template
+        before asking.
 
         Returns:
             ``{template_id: SalaryProfile}``; empty for an owner with no active
@@ -693,7 +695,6 @@ class SalaryPricing:
                     SalaryProfile.scenario_id == self._scenario_id,
                     SalaryProfile.is_active.is_(True),
                 )
-                .order_by(SalaryProfile.id)
                 .all()
             )
             self._profiles = {p.template_id: p for p in profiles}
