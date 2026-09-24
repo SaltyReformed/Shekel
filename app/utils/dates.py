@@ -260,13 +260,17 @@ def anchor_chronology_key(
     """Return a loan anchor's position in its loan's ONE chronology.
 
     **The single definition of "which of a loan's balance assertions is later",
-    written once and called by both consumers that must agree on it** (plan step
+    written once and called by every consumer that must agree on it** (plan step
     X-an-b, closing finding **N-196**):
 
     * :func:`app.services.loan_loaders.load_loan_anchor_facts` sorts its facts by
       this, so the list every reader receives is already in chronological order;
     * :func:`app.services.loan_resolver.select_latest_anchor` takes the ``max()``
-      of it, so the resolver seeds from the greatest whatever order it is handed.
+      of it, so the resolver seeds from the greatest whatever order it is handed;
+    * :func:`app.services.loan_loaders.load_standing_loan_assertions` (plan
+      step recurrence:R23) sorts the stored statements by it, and both the
+      loader above and the anchor write door's duplicate rule (ruling
+      **R-EQ**) read that list.
 
     They must name the SAME row -- the walk resets the running balance at each
     anchor in turn, so the last one it sees decides the posted balance, while the

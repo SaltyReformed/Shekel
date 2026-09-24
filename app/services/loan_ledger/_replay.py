@@ -48,44 +48,43 @@ accrual period arrives with nothing standing and pays pure principal.
 applied at plan step **recurrence:R16-c-1**): "the balance on this date is X"
 supersedes every earlier month, interest owed included, so the standing
 interest, escrow and hypothetical extra are zeroed with the balance overwritten.
-The arm is UNREACHABLE on this tree's streams and is written anyway, because the
-ruling exists and the day it fires is named: today every RECORDED charge is
-dated at the EARLIEST payment due in its period
-(:func:`.._charges.charges_for_due_dates`), so a payment always shares the
-charge's date and clears it before any reset can land, and every PROJECTED
-charge is walked behind every recorded fact, resets included; ``R16-c-2``
-charges every contractual installment from origination, after which a skipped
-month's charge stands when a true-up arrives.  Pinned on a hand-built stream
-rather than left to that step.
+The arm was UNREACHABLE until plan step **recurrence:R16-c-2**, when every
+contractual installment from origination began to be charged
+(:func:`.._charges.contract_charges`): a month nobody paid now leaves its
+charge standing when a later assertion arrives -- every pre-tracking month of
+a loan configured mid-life, cleared by its tracking start.
 
 **One stream, PAST and FUTURE** (plan step **recurrence:R16-c-1**, rulings
 **R-R90** and **R-R72**).  The stream carries the loan's recorded FACTS -- its
-assertions, its settled payments and the charges through them -- and, after
-them, its PROJECTION: the payments it has not yet made
-(:attr:`LoanEventStream.projections`) and the charges the plan raises against
-them (:attr:`LoanEventStream.projected_charges`).  **A projected event is never
-placed before a recorded fact.**  Its walk key is ``max(on_date, boundary)``
-where the boundary is the day after the loan's latest recorded payment or
-assertion (:func:`projection_boundary`); events pushed to the boundary keep
-their order among themselves by their OWN date (an April charge, April's
-catch-up, May's charge, May's catch-up), and no event's ``on_date`` is
-rewritten -- a charge's date is the accrual period's identity and is rendered.
-So an overdue projected installment is replayed where it will actually land --
-behind everything that has happened -- and the splits of the recorded facts are
-a function of the facts ALONE, whether or not a projection follows them.  That
-is what lets the posted ledger (which replays the facts and nothing else) and a
-screen (which replays the facts and then the plan) agree to the cent on every
+assertions and its settled payments -- and, after them, its PROJECTION: the
+payments it has not yet made (:attr:`LoanEventStream.projections`).  Since plan
+step **recurrence:R16-c-2** it carries ONE list of charges, the contract's
+installments from origination through its LAST event
+(:func:`with_contract_charges`, ruling **R-R100**); until then the plan raised
+a second list of its own against its projections.  **A projected payment is
+never placed before a recorded fact.**  Its walk key is ``max(on_date,
+boundary)`` where the boundary is the day after the loan's latest recorded
+payment or assertion (:func:`projection_boundary`); payments pushed to the
+boundary keep their order among themselves by their OWN date, and no event's
+``on_date`` is rewritten.  A charge is never pushed: an installment dated
+before the boundary is part of the facts' own calendar, so a month skipped
+behind a later settled payment is cleared by THAT payment -- arrears first,
+exactly what the servicer's books say -- and the overdue catch-up behind it
+pays what then stands.  So the splits of the recorded facts are a function of
+the facts ALONE, whether or not a projection follows them.  That is what lets
+the posted ledger (which replays the facts and nothing else) and a screen
+(which replays the facts and then the plan) agree to the cent on every
 recorded payment: the fact prefix of both replays is the same list in the same
-order.  The hypothetical ``extra_per_period`` joins the cash at PROJECTED
-charges only -- "an extra $100 a month" is money the owner has not paid yet, so
-it never reprices a recorded month.
+order.  The hypothetical ``extra_per_period`` joins the cash at the charges on
+or after the boundary only -- "an extra $100 a month" is money the owner has
+not paid yet, so it never reprices a recorded month.
 
 Pure: plain data in, plain values out.  No I/O, no clock, no Flask.  All money is
 :class:`~decimal.Decimal`.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -96,7 +95,7 @@ from app.utils.money import (
     apply_payment_cash,
 )
 
-from ._charges import AccrualCharge
+from ._charges import AccrualCharge, LoanCalendar, contract_charges
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
@@ -107,12 +106,11 @@ _ONE_DAY = timedelta(days=1)
 # last, because an assertion about the balance owed is made after the day's
 # money has moved (the settled walk's own rule since step E1c: a payment due
 # exactly on an anchor's date is walked, then overwritten by that anchor).  A
-# PROJECTED charge or payment ranks as its recorded twin -- the two kinds are
-# distinct only so the fold can flag an outcome and accrue the what-if extra at
-# the plan's charges and never at a fact's.
-_CHARGE, _PAYMENT, _RESET, _PROJECTED_CHARGE, _PROJECTION = 0, 1, 2, 3, 4
+# PROJECTED payment ranks as its recorded twin -- the two kinds are distinct
+# only so the fold can flag an outcome as projected.
+_CHARGE, _PAYMENT, _RESET, _PROJECTION = 0, 1, 2, 3
 _KIND_ORDER = {
-    _CHARGE: 0, _PROJECTED_CHARGE: 0,
+    _CHARGE: 0,
     _PAYMENT: 1, _PROJECTION: 1,
     _RESET: 2,
 }
@@ -204,9 +202,11 @@ class LoanEventStream:
     preserved without this module knowing any of them.
 
     Attributes:
-        charges: The RECORDED :class:`~._charges.AccrualCharge` list, ascending
-            by ``on_date``: one per accrual period the recorded payments occupy
-            (:func:`.._charges.charges_for_due_dates`).
+        charges: The loan's :class:`~._charges.AccrualCharge` list, ascending
+            by ``on_date``: every contractual installment from origination
+            through the stream's last event, for a production stream
+            (:func:`with_contract_charges`, ruling **R-R100**); a hand-built
+            stream states its own.
         payments: The RECORDED cash events -- settled payments -- in the
             caller's own within-date order.
         resets: The asserted balances, in the caller's own within-date order.
@@ -215,28 +215,59 @@ class LoanEventStream:
             own order.  Walked after every recorded fact (see the module
             docstring); empty for the posted ledger's replay, which books
             facts and nothing else.
-        projected_charges: The charges the plan raises against those
-            projections (``balance_at._plan._charges_for``: every contractual
-            installment after the loan's latest assertion whose month the
-            recorded walk did not charge), walked behind the recorded facts
-            exactly as the projections are, and the only charges the what-if
-            extra accrues at.  ``R16-c-2`` deletes this list with the plan's
-            own calendar, when ONE contractual calendar from origination is
-            the stream's ``charges``.
         periods: The loan's rate periods
             (:func:`app.services.loan_resolver.resolve_periods`), the calendar
             the charges were resolved against.  Read for a payment NO charge
-            stands over -- one dated after the loan's latest assertion and
-            before the first installment after it, ruling R-C's early extra
-            -- so its outcome still names the period governing it.
+            stands over -- one dated before the loan's first installment,
+            ruling R-C's early extra -- so its outcome still names the period
+            governing it.
     """
 
     charges: Sequence[AccrualCharge]
     payments: Sequence[LoanCashEvent]
     resets: Sequence[LoanResetEvent] = field(default_factory=tuple)
     projections: Sequence[LoanCashEvent] = field(default_factory=tuple)
-    projected_charges: Sequence[AccrualCharge] = field(default_factory=tuple)
     periods: Sequence[RatePeriod] = field(default_factory=tuple)
+
+
+def with_contract_charges(
+    stream: LoanEventStream, calendar: LoanCalendar,
+) -> LoanEventStream:
+    """Return *stream* charged every contractual installment through its LAST event.
+
+    **The ONE composer of a production stream's charges** (ruling **R-R100**,
+    plan step recurrence:R16-c-2).  The posted ledger's stream (its recorded
+    facts) and a screen's (the same facts, then the forward plan's payments)
+    both reach their charges here, so the two cannot be charged on two
+    calendars: every installment from the loan's first
+    (:func:`.._charges.contract_charges`) through the latest date any of the
+    stream's events -- a payment, an assertion or a projection -- is due on.
+    That reach is the whole of what a replay needs: a charge after the last
+    payment is cleared by nothing and moves no outcome, so charging further is
+    arithmetic nobody reads, and charging less would leave a payment facing an
+    installment that never fell.
+
+    Args:
+        stream: The loan's events; its own ``charges`` and ``periods`` are
+            replaced.
+        calendar: The loan's :class:`~._charges.LoanCalendar`.
+
+    Returns:
+        A copy of *stream* with the calendar's charges and periods; no charge
+        at all when the stream holds no event.
+    """
+    last = max(
+        (
+            event.on_date
+            for event in (*stream.payments, *stream.resets, *stream.projections)
+        ),
+        default=None,
+    )
+    return replace(
+        stream,
+        charges=() if last is None else contract_charges(calendar, last),
+        periods=tuple(calendar.periods),
+    )
 
 
 @dataclass(frozen=True)
@@ -247,24 +278,23 @@ class PaymentOutcome:
         event: The :class:`LoanCashEvent` this outcome answers -- carrying the
             caller's own ``source`` record back to it.
         charge: The :class:`~._charges.AccrualCharge` standing over this payment
-            -- the most recent one the walk applied.  For a RECORDED payment that
-            IS its accrual period's: a recorded charge is dated at the earliest
-            installment due in its period, the walk is in contract order, and
-            nothing can intervene.  For a PROJECTED payment it is the last charge
-            walked before it, which is its period's whenever the plan's calendar
-            reaches its month and is an earlier month's for a projection the
-            calendar has no charge for -- an ad-hoc extra between two
-            installments reads the installment it sits after (ruling R-R89's
-            reading: a payment's period is the charge the replay hands it).
-            **The replay returns it because it already knows it**, and a caller
-            that re-derived the pairing would be stating a SECOND association
-            rule beside this one: the replay associates by accumulate-and-clear,
-            a caller re-deriving it would associate by slot equality, and the two
-            agree only while the charges were built from these very payments.
-            ``None`` for a payment walked before any charge: ruling R-C's early
-            extra, a projection after the loan's latest assertion and before the
-            first installment after it, which pays what stands (nothing) and
-            reads its ``period`` from the stream's calendar.
+            -- the most recent one the walk applied.  For a payment walked on
+            its own date that is the installment whose INTERVAL it falls in:
+            the latest one due on or before it (ruling **R-R89**, "B: contract
+            interval"; plan step recurrence:R16-c-2), since every installment
+            is charged and a charge walks before a payment sharing its date.
+            An ad-hoc extra between two installments reads the installment it
+            sits after.  For an overdue projection pushed to the projection
+            boundary it is the last installment walked before the boundary --
+            the one the latest recorded payment already cleared, so the
+            catch-up pays what stands (ruling R-R89's reading: a payment's
+            period is the charge the replay hands it).  **The replay returns
+            it because it already knows it**, and a caller that re-derived the
+            pairing would be stating a SECOND association rule beside this
+            one.  ``None`` for a payment walked before any charge: ruling R-C's
+            early extra, a payment after origination and before the first
+            installment, which pays what stands (nothing) and reads its
+            ``period`` from the stream's calendar.
         split: The :class:`~app.utils.money.PaymentCashSplit` the ONE allocation
             produced, including the running ``balance_after``.  A payment that
             FOLLOWS another inside one accrual period faces the same ``charge``
@@ -410,24 +440,31 @@ def projection_boundary(stream: LoanEventStream) -> date | None:
     return None if latest is None else latest + _ONE_DAY
 
 
-def _ordered(stream: LoanEventStream) -> list[tuple[int, object]]:
+def _ordered(
+    stream: LoanEventStream, boundary: date | None,
+) -> list[tuple[int, object]]:
     """Return *stream*'s lists merged into ONE walk order.
 
-    Every event is keyed ``(walk_date, on_date, kind rank)``: a recorded event's
-    walk date is its own date; a projected charge's or projection's is
-    ``max(on_date, projection_boundary)``, so nothing projected precedes a
-    recorded fact.  The second key keeps the events pushed to the boundary in
-    CONTRACT order among themselves -- April's charge, April's catch-up, May's
-    charge, May's catch-up -- exactly as they would have walked had nothing
-    pushed them; for a recorded event it equals the first key and changes
-    nothing.  The rank orders one date: charge -> payment -> reset (see
-    :data:`_CHARGE`), a projected kind ranking as its recorded twin.  The sort
-    is STABLE, so each input list's own within-date order survives untouched --
-    the contract :class:`LoanEventStream` states -- and a projected event
-    listed after the recorded ones walks after them at an equal key.
+    Every event is keyed ``(walk_date, on_date, kind rank)``: a charge's or a
+    recorded event's walk date is its own date; a projection's is
+    ``max(on_date, boundary)``, so no projected payment precedes a recorded
+    fact.  The second key keeps the projections pushed to the boundary in
+    CONTRACT order among themselves -- April's catch-up before May's --
+    exactly as they would have walked had nothing pushed them, and ahead of an
+    installment falling on the boundary day itself; for every other event it
+    equals the first key and changes nothing.  A charge is never pushed: the
+    installments before the boundary are the recorded facts' own calendar
+    (plan step recurrence:R16-c-2).  The rank orders one date: charge ->
+    payment -> reset (see :data:`_CHARGE`), a projection ranking as a
+    payment.  The sort is STABLE, so each input list's own within-date order
+    survives untouched -- the contract :class:`LoanEventStream` states -- and
+    a projection listed after the recorded payments walks after them at an
+    equal key.
 
     Args:
         stream: The caller's pre-ordered event lists.
+        boundary: The stream's :func:`projection_boundary`, computed once by
+            the replay.
 
     Returns:
         ``[(kind, event), ...]`` in walk order, the kind travelling as the
@@ -435,20 +472,15 @@ def _ordered(stream: LoanEventStream) -> list[tuple[int, object]]:
         fold, so an event class that gained a sibling field could not silently
         change arms.
     """
-    boundary = projection_boundary(stream)
 
     def _pushed(on_date: date) -> date:
-        """The walk date of a projected event dated *on_date*."""
+        """The walk date of a projection dated *on_date*."""
         return on_date if boundary is None else max(on_date, boundary)
 
     tagged = (
         [(charge.on_date, _CHARGE, charge) for charge in stream.charges]
         + [(payment.on_date, _PAYMENT, payment) for payment in stream.payments]
         + [(reset.on_date, _RESET, reset) for reset in stream.resets]
-        + [
-            (_pushed(charge.on_date), _PROJECTED_CHARGE, charge)
-            for charge in stream.projected_charges
-        ]
         + [
             (_pushed(payment.on_date), _PROJECTION, payment)
             for payment in stream.projections
@@ -505,8 +537,11 @@ def replay_loan_events(
             the stream as it stands.  Per PERIOD rather than per PAYMENT since
             plan step R16-a: added per record, "an extra $100 a month" was $2,600
             a year for a definition paying every fortnight.  Accrues at the
-            PROJECTED charges only: it is money not yet paid, so it never
-            reprices a recorded month.
+            charges on or after the :func:`projection_boundary` only: it is
+            money not yet paid, so it never reprices a recorded month -- and a
+            month skipped behind a later settled payment is a RECORDED month
+            since plan step recurrence:R16-c-2 (its charge walks with the
+            facts), so an overdue catch-up carries no hypothetical extra.
 
     Returns:
         The :class:`LoanReplay`.
@@ -516,8 +551,9 @@ def replay_loan_events(
     standing: AccrualCharge | None = None
     payments: list[PaymentOutcome] = []
     resets: list[ResetOutcome] = []
-    for kind, event in _ordered(stream):
-        if kind in (_CHARGE, _PROJECTED_CHARGE):
+    boundary = projection_boundary(stream)
+    for kind, event in _ordered(stream, boundary):
+        if kind == _CHARGE:
             # Recorded BEFORE the closed-loan test, so a payment always carries
             # its own accrual period's charge -- what governs its rate is a fact
             # about the period, not about whether the period accrued anything.
@@ -528,7 +564,7 @@ def replay_loan_events(
                 balance, event.period.annual_rate,
             )
             escrow_due += event.escrow
-            if kind == _PROJECTED_CHARGE:
+            if boundary is None or event.on_date >= boundary:
                 extra_due += extra_per_period
         elif kind in (_PAYMENT, _PROJECTION):
             split = apply_payment_cash(
@@ -551,8 +587,8 @@ def replay_loan_events(
                 ResetOutcome(event=event, balance_before=balance)
             )
             # The assertion supersedes every charge standing before it
-            # (ruling R-R72 part (2); see the module docstring for when this
-            # arm first becomes reachable).
+            # (ruling R-R72 part (2); reachable since plan step
+            # recurrence:R16-c-2 -- see the module docstring).
             balance = event.balance
             interest_due = escrow_due = extra_due = _ZERO_MONEY
     return LoanReplay(payments=payments, resets=resets)

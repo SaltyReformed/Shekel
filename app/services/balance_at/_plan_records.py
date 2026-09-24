@@ -19,8 +19,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.services.loan_ledger import AccrualCharge
-from app.services.rate_period_engine import RatePeriod
+from app.services.loan_ledger import LoanCalendar
 
 _ONE_DAY = timedelta(days=1)
 
@@ -51,9 +50,9 @@ class PlannedPayment:
             the row's own ``due_date``, or the date the row generation would
             write for an estimated occurrence would carry
             (:func:`~app.services.recurrence.compute_due_date`).  Orders the
-            split walk against the contract's charges and keys the contract-only
-            arm's slot de-dup, so a late or clamped settlement never re-splits an
-            installment (ruling R-A).
+            split walk against the contract's charges and names the installment
+            interval the contract-only arm's de-dup reads, so a late or clamped
+            settlement never re-splits an installment (ruling R-A).
         effective_date: When the paydown becomes VISIBLE to a balance read --
             ``max(due_date, as_of + 1d)`` (ruling D1: a plan cannot have already
             happened).  For a normal future installment this is its due date; for
@@ -78,36 +77,32 @@ class PlannedPayment:
 
 @dataclass(frozen=True)
 class LoanForwardPlan:
-    """A loan's forward model: what it will be CHARGED and what it will PAY.
+    """A loan's forward model: what it will PAY, and the terms it is CHARGED on.
 
-    :func:`loan_plan`'s whole answer, and the shape plan step **R16-a** gave it.
-    The two lists are independent by construction -- charges come from the loan's
-    own note and the passage of time, payments from whatever the owner's
-    recurring definitions say -- and the loan's timeline walks them merged in
-    contract order behind its recorded facts (:mod:`._loan_stream`, since plan
-    step recurrence:R16-c-1).  That independence is what makes a payment cadence a
-    non-question: a definition emits payments on its own dates and the charges do
-    not move.
+    :func:`loan_plan`'s whole answer.  The shape plan step **R16-a** gave it --
+    the charges independent of the payments -- holds, and plan step
+    recurrence:R16-c-2 took it one step further: the plan carries the loan's
+    contract TERMS rather than a charge list of its own (ruling **R-R100**), and
+    the leaf charges the whole timeline from them, recorded facts and plan
+    alike (:func:`~app.services.loan_ledger.with_contract_charges`).  Charges
+    come from the loan's own note and the passage of time, payments from
+    whatever the owner's recurring definitions say, so a payment cadence is a
+    non-question: a definition emits payments on its own dates and the charges
+    do not move.
 
     Attributes:
         payments: The forward payment records, PLANNED then ESTIMATED, ascending
             by ``(effective_date, due_date)``.  Empty for an account that is not
             a configured loan.
-        charges: One :class:`AccrualCharge` per accrual period those payments
-            occupy, ascending by ``on_date``.
-        periods: The loan's rate periods the charges were built from
-            (:func:`~app.services.loan_resolver.resolve_periods`), so a payment
-            NO charge stands over -- one dated after the loan's latest
-            assertion and before the first installment after it, which pays
-            what stands (ruling R-C's early extra) -- still reads the period
-            that governs it (:func:`~app.services.rate_period_engine.period_for_date`)
-            when a surface asks for its rate.  Empty for an account that is
-            not a configured loan.
+        calendar: The loan's :class:`~app.services.loan_ledger.LoanCalendar` --
+            its origination, due day, rate periods and escrow lines -- which
+            :func:`~._loan_stream.merged_stream` charges the timeline from.
+            ``None`` for an account that is not a configured loan, whose
+            timeline is its (empty) recorded stream.
     """
 
     payments: list[PlannedPayment]
-    charges: list[AccrualCharge]
-    periods: list[RatePeriod]
+    calendar: LoanCalendar | None
 
 
 __all__ = ["LoanForwardPlan", "PlannedPayment"]

@@ -354,13 +354,16 @@ _FENCED_MODULE_RULINGS = {
             # sides take it: the posting writer projects it into corrections, the
             # seam's read pass folds it.
             "walk_loan_ledger",
-            # The CHARGE calendar and its key (plan step X-au-g-2c-3b-1) -- the
-            # TIME half of a walk, and neither answers balance-at-T.
+            # The CHARGE calendar (plan step X-au-g-2c-3b-1; the contract's
+            # since recurrence:R16-c-2, ruling R-R100) -- the TIME half of a
+            # walk, and neither name answers balance-at-T.
             #
-            #   * ``installment_slot`` returns a ``(year, month)`` tuple.  It
-            #     carries no money of any kind and cannot be made to.
-            #   * ``charges_for_due_dates`` returns one charge per accrual
-            #     period, and each charge carries a RATE and an escrow AMOUNT --
+            #   * ``installment_dates`` returns the loan's contractual
+            #     installment DATES.  It carries no money of any kind and
+            #     cannot be made to (it took the place of ``installment_slot``,
+            #     a ``(year, month)`` key, deleted at R16-c-2).
+            #   * ``contract_charges`` returns one charge per installment, and
+            #     each charge carries a RATE and an escrow AMOUNT --
             #     deliberately not an interest amount.  Interest accrues on the
             #     balance standing when the charge falls, and only a WALK knows
             #     that (an anchor between two payments resets it).  So this
@@ -374,8 +377,8 @@ _FENCED_MODULE_RULINGS = {
             #     loan's CONTRACT (its rate, its level P&I, its term), a
             #     derived snapshot already public from ``rate_period_engine``,
             #     and no amount owed can be read off it.
-            "charges_for_due_dates",
-            "installment_slot",
+            "contract_charges",
+            "installment_dates",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list
             # and its per-payment construction carry one ruling: cash in, four
@@ -454,8 +457,12 @@ _FENCED_MODULE_RULINGS = {
             #     and what comes back is still keyed by contract time.
             #   * ``projection_boundary`` returns a ``date`` -- the day after the
             #     loan's latest recorded fact -- and cannot yield a figure.
+            #   * ``with_contract_charges`` (recurrence:R16-c-2, ruling R-R100)
+            #     returns a stream with its charges attached -- the stream
+            #     ruling above plus ``contract_charges``' -- before any replay.
             "projection_boundary",
             "replay_loan_stream",
+            "with_contract_charges",
             # ``LoanLedgerWalk``'s two views (recurrence:R16-c-1) and
             # ``PaymentOutcome``'s ten read-through properties.  Not one of them
             # derives anything: ``settled_splits`` / ``projected_splits`` filter

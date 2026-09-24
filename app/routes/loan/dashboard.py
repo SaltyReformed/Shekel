@@ -248,7 +248,7 @@ def _compute_payment_breakdown(installments, escrow_components):
         "interest_pct": truncated["interest"],
         "escrow_pct": truncated["escrow"],
         # The period's own installment date: the charge's, or the payment's
-        # for one before the plan's first charge.
+        # for one before the loan's first installment.
         "payment_date": period[0].charge_date or period[0].visible_on,
         "shortfall": shortfall,
         "next_year_escrow": next_year_escrow,
@@ -295,7 +295,7 @@ def _build_payment_summary(
     }
 
 
-def _build_band_context(ctx, scenarios, installments):
+def _build_band_context(ctx, scenarios, installments, params):
     """Build the dashboard's band-chart template context.
 
     Wraps :func:`._helpers.build_band_chart` (the seam's balance at every
@@ -314,13 +314,15 @@ def _build_band_context(ctx, scenarios, installments):
         installments: The plan as it stands
             (:func:`~app.services.balance_at.loan_installments`), read once
             by the route and shared with the allocation bar.
+        params: The loan's :class:`LoanParams`, whose installment calendar
+            extends the grid past the contract.
 
     Returns:
         dict of template vars: band_chart (the serializable dict), has_chart.
     """
     band_chart = build_band_chart(
         ctx.account, ctx.balance_ctx,
-        band_chart_dates(scenarios, ctx.payoff_date, installments),
+        band_chart_dates(scenarios, ctx.payoff_date, installments, params),
     )
     return {
         "band_chart": band_chart,
@@ -802,7 +804,7 @@ def dashboard(account_id):
     context["merge_candidates"] = escrow_calculator.build_merge_candidates(
         ctx.loan.escrow_lines,
     )
-    context.update(_build_band_context(ctx, scenarios, installments))
+    context.update(_build_band_context(ctx, scenarios, installments, params))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.  The chips
     # fold the read pass's memoized walk (ctx.balance_ctx), so the page walks the

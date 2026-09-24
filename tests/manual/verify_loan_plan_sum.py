@@ -1,34 +1,51 @@
-"""Dump what the forward loan plan SUMS, and what moves when a definition does.
+"""Dump what a loan's plan SUMS and what its posted ledger BOOKS, and what moves.
 
-The regression harness for recurrence plan step **R16-b-2** (and, with doors 6
-and 7, for **R16-c-1**'s claim that merging the two folds moves nothing).
-R16-b-2 makes the
+The regression harness for recurrence plan steps **R16-b-2** (doors 1-5),
+**R16-c-1** (doors 6-7, its claim that merging the two folds moves nothing)
+and **R16-c-2** (every door, and the POSTED money).  R16-b-2 makes the
 balance seam's ESTIMATED tier sum EVERY definition paying into a loan on its
 own cadence, price every occurrence no row answers (ruling **R-R64**), and
-charge the CONTRACT's calendar (ruling **R-R68**) -- every installment after
-the loan's LATEST balance assertion, whether or not a payment lands in it
-(ruling **R-R71**; both live loans carry an assertion in 2026, so no month
-before it is charged).  Run it on a worktree at the base commit and on the
-branch, against the same clone, and diff the two outputs from line 2.
+charge the CONTRACT's calendar (ruling **R-R68**).  R16-c-2 makes that
+calendar the loan's ONE calendar, in the settled walk as well as the plan:
+every contractual installment from origination is charged (rulings **R-R72**,
+**R-R89**, **R-R100**), so a skipped month owes its interest in the POSTED
+ledger too -- the next payment clears the arrears before it reaches principal.
+Run it on a worktree at the base commit and on the branch, against the same
+clone, and diff the two outputs from line 2.
 
-**The BASELINE is expected byte-identical, and seven doors are PLANTED so the
-diff MUST move where the rulings say it moves (doors 1-5) or MUST NOT move
-where a restructure claims it does not (doors 6-7).**  Both of the developer's live
-loan payments are stated-price, monthly on the contractual day, and every
-forward slot the schedule reaches is answered by a row, so on unmodified data
-the sum and the old one-definition tier name the same occurrences at the same
-price -- an all-green diff there says nothing about whether the new code
-runs.  Each door constructs a state in which the two tiers differ:
+**Every door prints the posted ledger's inputs as well as the plan**: each
+settled payment's split and each anchor's correction off
+:func:`~app.services.loan_ledger.walk_loan_ledger`, and the posting TARGETS
+the walk implies -- what the next deploy's ``backfill_all_loan_postings``
+reconciles the ledger to -- then the plan's payments, the trajectory's
+projected splits, the payoff, a balance grid, the what-if lever and the
+projected interest.  It reads only producers present on both sides of
+R16-c-2, so the one file runs on both trees.
+
+**The BASELINE and the TODAY read are expected byte-identical after
+recurrence:R23** (a loan with no unpaid installment after its latest
+statement moves nothing), **and seven doors are PLANTED.**  Doors 1-5 were
+R16-b-2's; they MUST NOT move under R16-c-2 (each changes the plan's
+payments, not the calendar's reach).  **Doors 6 and 7 MUST move under
+R16-c-2**, and only as ruled: the reverted installments' months are charged
+in the SETTLED walk now, so the latest settled payment clears them first
+(its interest grows, its principal shrinks, and its posting target moves by
+the same cents), the overdue catch-ups pay pure principal, and every later
+balance carries the interest accrued on the un-reduced balance.  Both of the
+developer's live loan payments are stated-price, monthly on the contractual
+day, and every forward slot the schedule reaches is answered by a row, so on
+unmodified data an all-green diff says nothing about whether the new code
+runs.  Each door constructs a state in which the tiers differ:
 
 * **DOOR 1 -- D47, a SECOND definition into the Mortgage**: a planted
   ``$500.00`` every-paycheck sweep, the developer's Emergency Fund transfer's
   shape, created into the Mortgage with its id FORCED below the payment's
   (the reachable ordering: the sweep authored first).  The old tier priced
   every uncovered installment from the definition with the lowest id -- the
-  sweep -- so the loan read ``None`` against a ``$616.99`` escrow it does not
+  sweep -- so the loan read ``None`` against an escrow it does not
   cover; the sum adds the sweep's 26 occurrences a year beside the payment's
   and the payoff comes IN.  Planted fresh rather than re-pointing the archived
-  sweep itself, whose 51 soft-deleted undated rows claim every saved paycheck
+  sweep itself, whose soft-deleted undated rows claim every saved paycheck
   and would answer its occurrences until the horizon.
 * **DOOR 2 -- D46, the reset door's mid-transaction state**: the Van's rows
   in periods that have STARTED are hard-deleted (what ``reset_pay_periods``
@@ -51,32 +68,31 @@ runs.  Each door constructs a state in which the two tiers differ:
   (ruling **R-R71**), so the payoff moves OUT by one installment.
 * **DOOR 5 -- D54, a projected extra in a SEEDED month**: a ``$300.00``
   projected transfer into the Van due five days after its most recently
-  settled installment, inside that installment's month.  The old calendar charged that month a second time at
-  the extra's date; the seed already charged it, so the sum charges it once
-  and the extra pays pure principal.
+  settled installment, inside that installment's month.  The old calendar
+  charged that month a second time at the extra's date; the seed already
+  charged it, so the sum charges it once and the extra pays pure principal.
 * **DOORS 6 and 7 -- a DELINQUENT loan (plan step recurrence:R16-c-1)**: the
   settled installments before the latest settled one are REVERTED to
   projected through the status door -- one on the Van (its 2026-06-23 true-up
-  leaves it one), TWO on the Mortgage (07-01 and 08-01 behind the settled
-  09-01).  The merge that replays the recorded facts and the plan as ONE
-  stream must walk the skipped months' charges and their catch-ups in
-  contract order behind the facts (April's charge, April's catch-up, May's
-  charge, May's catch-up); a first cut applied both charges first, which the
-  two-catch-up door reads as the Mortgage payoff moving ``2048-12-01`` ->
-  ``2049-01-01`` and every projected balance point with it (30 lines), and the
-  one-catch-up door cannot see at all.  Both read 0 lines on the fix.
+  leaves it one), TWO on the Mortgage behind its latest settled one.  R16-c-1
+  had to walk the skipped months' charges and their catch-ups in contract
+  order behind the facts (a first cut applied both charges first, which the
+  two-catch-up door read as the Mortgage payoff moving a month and every
+  projected balance point with it); both read 0 lines on that fix.  Under
+  R16-c-2 the same two doors are where the posted money moves (above).
 
-Nothing it prints carries a sequence-assigned id, for the reason
+Nothing it prints carries an id a door's own write assigned, for the reason
 ``verify_generation_pass.py`` states: PostgreSQL does not roll a sequence
 back, so an id-bearing dump reads as a difference between two runs of
-identical code.  Every door opens a nested transaction and
+identical code.  The posting targets name rows the clone already holds (a
+pay period, a ledger account, a reference kind), which no run re-assigns.  Every door opens a nested transaction and
 ``Session.rollback()`` afterwards discards the whole outer transaction with
 it, so the database is unchanged and no door sees another's writes.
 
 **The clone must be STAMPED and it must be production's**: ``occurs_on`` is
 what answers an occurrence, and a clone whose loan rows carry NULL there reads
-every occurrence as unanswered.  Both loan payments' rows are stamped on
-``shekel_r7dc2`` (0 of 58 NULL, 2026-09-11).
+every occurrence as unanswered.  Both loan payments' rows were stamped on
+the production clones measured (none NULL, 2026-09-11 and 2026-09-23).
 
 Usage::
 
@@ -101,7 +117,7 @@ from app.extensions import db
 from app.services import balance_at, template_amount_service, transfer_service
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._plan import loan_plan
-from app.services.loan_ledger import confirmed_shadows_through
+from app.services.loan_ledger import confirmed_shadows_through, walk_loan_ledger
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import add_months
@@ -109,6 +125,9 @@ from app.utils.dates import add_months
 USER_ID = 1
 #: The read day every door is measured at.
 AS_OF = date(2026, 9, 11)
+#: A read on or after every fact the clone records (plan step R16-c-2's clone,
+#: a production dump of 2026-09-23 carrying recurrence:R23).
+TODAY = date(2026, 9, 24)
 #: The two live loans and their payment definitions (ids are stable on the
 #: production clone; names are printed beside them).
 MORTGAGE_ACCOUNT_ID = 3
@@ -118,8 +137,78 @@ VAN_TEMPLATE_ID = 9
 GRID_MONTHS = 36
 
 
+def _outcome_line(label, kind, account, outcome):
+    """Print one replay outcome: its dates, its cash and the split of it."""
+    print(
+        f"{label}\t{kind}\taccount={account.id}\tdue={outcome.due_date}"
+        f"\tvisible={outcome.visible_on}\tcharge={outcome.charge_date}"
+        f"\tcash={outcome.cash}\tinterest={outcome.interest}"
+        f"\tescrow={outcome.escrow}\tprincipal={outcome.principal}"
+        f"\texcess={outcome.excess}\tafter={outcome.balance_after}"
+    )
+
+
+def _target_lines(label, kind, account, targets):
+    """Print a posting target map with its keys and legs in a stable order."""
+    for key in sorted(targets, key=lambda k: (k[2], k[0], k[1])):
+        legs = targets[key]
+        rendered = ",".join(
+            f"{ledger}:{amount}/{kind_id}"
+            for ledger, (amount, kind_id) in sorted(legs.items())
+        )
+        print(
+            f"{label}\t{kind}\taccount={account.id}\tsource={key[0]}"
+            f"\tperiod={key[1]}\ton={key[2]}\tlegs={rendered}"
+        )
+
+
+def _ledger_lines(label, account):
+    """Print what the POSTED ledger books for a loan: its splits and its targets.
+
+    The posted ledger is a projection of the loan's settled walk, reconciled to
+    target by every deploy (``backfill_all_loan_postings``), so the targets the
+    walk implies ARE what the next deploy writes -- printed here rather than read
+    off the clone's stored postings, which the code under test has not synced.
+    """
+    from app.services.loan_posting_service._anchors import (  # pylint: disable=import-outside-toplevel
+        anchor_correction_targets,
+    )
+    from app.services.loan_posting_service._payments import (  # pylint: disable=import-outside-toplevel
+        payment_split_targets,
+    )
+    from app.services.scenario_resolver import get_baseline_scenario  # pylint: disable=import-outside-toplevel
+
+    walk = walk_loan_ledger(account.id, get_baseline_scenario(USER_ID).id)
+    for outcome in walk.settled_splits:
+        _outcome_line(label, "SETTLED", account, outcome)
+    for correction in walk.anchor_corrections:
+        print(
+            f"{label}\tANCHOR\taccount={account.id}"
+            f"\ton={correction.anchor.anchor_date}"
+            f"\topening={correction.anchor.is_opening}"
+            f"\tbefore={correction.owed_before}"
+            f"\tstated={correction.anchor.anchor_balance}"
+        )
+    _target_lines(
+        label, "POST-PAY", account, payment_split_targets(walk.settled_splits),
+    )
+    _target_lines(
+        label, "POST-ANCHOR", account,
+        anchor_correction_targets(
+            walk.anchor_corrections, USER_ID, calendar_for(USER_ID),
+        ),
+    )
+
+
 def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
-    """Print a loan's payoff, its plan's payments and charges, and a balance grid."""
+    """Print a loan's posted-ledger inputs, its plan, its trajectory and a balance grid.
+
+    Reads only producers both sides of plan step recurrence:R16-c-2 carry, so
+    the one file runs on the base worktree and on the branch: the plan's
+    PAYMENTS (the plan's charges are deleted by that step and their effect is
+    printed where it lands -- on each outcome's split and ``charge`` date).
+    """
+    _ledger_lines(label, account)
     figures = balance_at.loan_figures(account, ctx)
     print(f"{label}\tPAYOFF\taccount={account.id}\t{figures.payoff_date}")
     plan = loan_plan(account, ctx)
@@ -128,7 +217,6 @@ def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
     print(
         f"{label}\tCOUNTS\taccount={account.id}"
         f"\tplanned={len(planned)}\testimated={len(estimated)}"
-        f"\tcharges={len(plan.charges)}"
     )
     for payment in plan.payments:
         print(
@@ -136,15 +224,33 @@ def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
             f"\tvisible={payment.effective_date}\tcash={payment.cash}"
             f"\testimated={payment.is_estimated}"
         )
-    for charge in plan.charges:
-        print(
-            f"{label}\tCHARGE\taccount={account.id}\ton={charge.on_date}"
-            f"\trate={charge.period.annual_rate}\tescrow={charge.escrow}"
-        )
-    grid = [add_months(AS_OF, n) for n in range(months + 1)]
+    for outcome in balance_at.loan_installments(account, ctx):
+        _outcome_line(label, "PROJECTED", account, outcome)
+    grid = [add_months(ctx.as_of, n) for n in range(months + 1)]
     owed = balance_at.positions(account, ctx, grid)
     for on_date in sorted(owed):
         print(f"{label}\tOWED\taccount={account.id}\t{on_date}\t{owed[on_date]}")
+    # The what-if lever: the hypothetical extra accrues at the charges behind
+    # the projection boundary, a rule R16-c-2 restates.
+    for extra in (Decimal("100.00"), Decimal("250.00")):
+        what_if = balance_at.loan_what_if_owed_at_dates(
+            account, ctx, grid[1::6], extra,
+        )
+        for on_date in sorted(what_if):
+            print(
+                f"{label}\tWHAT-IF\taccount={account.id}\textra={extra}"
+                f"\t{on_date}\t{what_if[on_date]}"
+            )
+    target = add_months(ctx.as_of, 60)
+    print(
+        f"{label}\tREQUIRED\taccount={account.id}\ttarget={target}"
+        f"\t{balance_at.loan_required_extra(account, ctx, target)}"
+    )
+    for year in (2026, 2027):
+        print(
+            f"{label}\tINTEREST\taccount={account.id}\tyear={year}"
+            f"\t{balance_at.loan_interest_in_year(account, ctx, year)}"
+        )
 
 
 def _loan(account_id):
@@ -208,6 +314,11 @@ def main():
         ctx = BalanceContext.build(USER_ID, AS_OF)
         for account_id in (MORTGAGE_ACCOUNT_ID, VAN_ACCOUNT_ID):
             _plan_lines("BASE", _loan(account_id), ctx)
+        # The same data read on the clone's own day, which sees every
+        # recorded fact (the read pass bounds nothing -- ruling R-R91).
+        ctx_today = BalanceContext.build(USER_ID, TODAY)
+        for account_id in (MORTGAGE_ACCOUNT_ID, VAN_ACCOUNT_ID):
+            _plan_lines("TODAY", _loan(account_id), ctx_today)
 
         # --- DOOR 1: a $500 every-paycheck sweep into the Mortgage (D47) ---
         db.session.begin_nested()

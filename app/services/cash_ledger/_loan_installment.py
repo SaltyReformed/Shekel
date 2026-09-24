@@ -274,13 +274,19 @@ def _installment_cash(
     price rather than two answers about two moments; deriving it once rather
     than twice is what makes that structural.
 
-    **The genesis charge resolves its rate period and its escrow from the
-    identical date** (``loan_ledger._charges.charges_for_due_dates``,
-    ``period_for_date(periods, on_date)``), so the cash built into a payment and
-    the interest and escrow its split backs out of principal read one period and
-    one escrow version, by construction (the cash==split invariant) rather than
-    by coincidence.  **That still holds now the cash is dated from the PARENT
-    and the split from the SHADOW**: ``due_date`` is a mirrored field with the
+    **The charge a payment clears resolves its rate period and its escrow on
+    the INSTALLMENT's date** (``loan_ledger._charges.contract_charges``,
+    ``period_for_date(periods, on_date)``), and that is this due date only
+    while the payment is due on the contractual day.  Since plan step
+    recurrence:R16-c-2 a loan is charged on its contract's installments,
+    whatever its payments' due dates (rulings **R-R72**, **R-R89**), so a
+    payment due off the contractual day is priced here on its own date and
+    clears the charge of the installment whose interval it falls in; the cash
+    and the split then read one period and one escrow version only when no
+    rate or escrow change falls between the two dates.  Every payment on both
+    of the developer's live loans is due on the contractual day.  **The cash
+    is dated from the PARENT and the split's installment from the SHADOW, and
+    the two are one date**: ``due_date`` is a mirrored field with the
     parent canonical (``models/transfer.py``), written to all three rows in one
     statement by ``transfer_service._update`` and corrected on restore.  A
     census of every writer of a shadow's ``due_date`` or ``pay_period_id``
@@ -289,11 +295,10 @@ def _installment_cash(
     **It is one value with TWO HOMES kept equal by a maintenance contract,
     which is rule 14's own shape**: this step created the second read rather
     than inheriting it, and what deletes it is ``X-bi-6`` removing the shadow
-    rows -- one row is left to date anything from.  **A charge is dated at the EARLIEST installment
-    due in its accrual period, which for the one-payment-a-month shape IS this
-    due date**; a SECOND payment in one period deliberately clears no fresh
-    charge, so there the cash carries an escrow the split does not back out and
-    the whole payment is principal (plan step X-au-g-2c-3b-2).
+    rows -- one row is left to date anything from.  A SECOND payment inside
+    one installment's interval deliberately clears no fresh charge, so there
+    the cash carries an escrow the split does not back out and the whole
+    payment is principal (plan step X-au-g-2c-3b-2).
     Until R-IJ that held for the escrow alone: the P&I came from whatever
     period contained the READ date, so on an ARM whose rate had adjusted
     between the two the residual ``cash - interest - escrow`` absorbed the

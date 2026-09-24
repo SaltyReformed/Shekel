@@ -56,8 +56,11 @@ walk needs no fence (plan step D-fold).
 ## The modules
 
 * :mod:`._charges` -- what an accrual period COSTS: one
-  :class:`AccrualCharge` per period the payments occupy, carrying the rate period
-  governing it and the escrow in force on its date.  Pure.
+  :class:`AccrualCharge` per CONTRACTUAL installment from origination, built
+  from the loan's :class:`LoanCalendar` (its contract terms), carrying the rate
+  period governing it and the escrow in force on its date.  Pure.  Since plan
+  step recurrence:R16-c-2 (ruling **R-R100**) every walk's charges come from it
+  through :func:`with_contract_charges`.
 * :mod:`._replay` -- the ONE replay: charges accumulate, a payment allocates
   against what stands, an assertion resets the balance.  Pure.  **It is a shared
   primitive since plan step X-au-g-2c-3b-2**, when the settled walk here and the
@@ -132,11 +135,7 @@ from ._walk import (
     replay_loan_stream,
     walk_loan_ledger,
 )
-from ._charges import (
-    AccrualCharge,
-    charges_for_due_dates,
-    installment_slot,
-)
+from ._charges import AccrualCharge, LoanCalendar, installment_dates
 from ._replay import (
     LoanCashEvent,
     LoanEventStream,
@@ -146,6 +145,7 @@ from ._replay import (
     ResetOutcome,
     projection_boundary,
     replay_loan_events,
+    with_contract_charges,
 )
 from ._visible import (
     anchor_visible_on,
@@ -155,6 +155,7 @@ from ._visible import (
 __all__ = [
     "AccrualCharge",
     "LoanAnchorCorrection",
+    "LoanCalendar",
     "LoanCashEvent",
     "LoanEventStream",
     "LoanLedgerWalk",
@@ -164,11 +165,10 @@ __all__ = [
     "PaymentOutcome",
     "ResetOutcome",
     "anchor_visible_on",
-    "charges_for_due_dates",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
-    "installment_slot",
+    "installment_dates",
     "load_loan_stream",
     "loan_event_stream",
     "payment_installments",
@@ -177,4 +177,5 @@ __all__ = [
     "replay_loan_events",
     "replay_loan_stream",
     "walk_loan_ledger",
+    "with_contract_charges",
 ]

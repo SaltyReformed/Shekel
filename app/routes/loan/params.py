@@ -65,8 +65,9 @@ def create_params(account_id):
     ``tracking_start`` for it through
     :func:`app.services.loan_anchor_service.stage_loan_tracking_start` -- the same
     row the dashboard's tracking-start door writes, so a loan configured
-    mid-life reads its stated balance from that day and the contract's
-    calendar charges only the months after it (ruling R-R71).  Until R20 the
+    mid-life reads its stated balance from that day: the contract's calendar
+    charges every month from origination (plan step recurrence:R16-c-2), and
+    that statement clears every month before it (rulings R-R71, R-R72).  Until R20 the
     form REQUIRED that balance and stored it in ``LoanParams.current_principal``,
     which nothing read: the loan's only assertion was its synthesized
     origination, and every unrecorded month since read as unpaid.  The date

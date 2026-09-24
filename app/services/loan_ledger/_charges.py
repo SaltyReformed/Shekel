@@ -22,50 +22,74 @@ as the REASON the duplication was forced rather than chosen; re-measure them
 before citing them again, since an undated measurement quoted as a reason decays
 invisibly.*
 
+**Since plan step recurrence:R16-c-2 the calendar is the CONTRACT's, in every
+walk** (rulings **R-R72**, **R-R89** and **R-R100**).  Until that step the
+settled walk charged one period per month its PAYMENTS occupied -- a month
+nobody paid was never charged, so a skipped month's interest vanished from the
+posted ledger (finding **D53**'s past half) -- while the forward plan charged
+the contract's installments after the loan's latest assertion, a second
+calendar kept apart from the first by a set of ``(year, month)`` slots.  Now a
+loan is charged on EVERY contractual installment from origination
+(:func:`contract_charges` over :func:`installment_dates`), and a payment
+belongs to the installment whose interval it falls in -- the latest one due on
+or before it (ruling R-R89, finding **D55**) -- which the replay answers by
+handing each payment the charge standing over it.  An assertion clears every
+charge standing before it (R-R72 part (2)), so a mid-life loan's months before
+its tracking start are charged and cleared by that statement.
+
 Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.services import escrow_calculator
-from app.services.rate_period_engine import RatePeriod, period_for_date
+from app.services.rate_period_engine import (
+    RatePeriod,
+    first_installment_date,
+    monthly_due_date,
+    period_for_date,
+)
+
+_ONE_DAY = timedelta(days=1)
 
 
-def installment_slot(due: date) -> tuple[int, int]:
-    """Return the ``(year, month)`` installment a due date belongs to.
+def installment_dates(
+    origination_date: date, payment_day: int, through: date,
+) -> list[date]:
+    """Return a loan's contractual installment dates, its first through *through*.
 
-    The project's identity for "which contractual installment is this?", called
-    by the charge calendar below and by the forward plan -- its seed-slot
-    exclusion, its contract-only estimate's de-dup and its calendar's reach
-    (``balance_at._plan``; that module's ``_month_slot`` alias was deleted at
-    plan step R16-b-2, so it now calls this directly).
+    **The loan's ONE calendar** (plan step recurrence:R16-c-2, rulings
+    **R-R72**, **R-R89** and **R-R100**): the dates a loan is CHARGED on --
+    every one of them from its first installment onward, whether or not a
+    payment lands on it -- and the grid the loan page's band chart and the
+    plan's post-contractual extension step along.  It adds no date arithmetic
+    of its own: the first date is
+    :func:`~app.services.rate_period_engine.first_installment_date`, and each
+    next one is the first *payment_day* after the one before
+    (:func:`~app.services.rate_period_engine.monthly_due_date` from the next
+    day), which clamps *payment_day* to each month afresh -- so a due day of
+    29-31 returns to it after a short month (Jan 31, Feb 28, Mar 31), where
+    stepping a month count from a CLAMPED date keeps the clamp.
 
-    **Further sites spell the same key inline rather than calling this, and
-    naming them as sharers here was false until plan step X-au-g-2c-3b-2**: the
-    tax reader's settled-slot merge (``balance_at._loan_interest._due_slot``,
-    DELETED at plan step recurrence:R16-c-1 with the two halves it merged) and
-    the payment feed's collision key
-    (``amortization_engine.schedule_dates``, which was
-    ``loan_payment_service._engine_prep._redistribute_to_distinct_months`` until
-    plan step balance:X-bl-2a moved it into the pure engine) each
-    write ``(due.year, due.month)`` themselves.  They agree today by coincidence
-    of arithmetic, not by construction, and routing them here is a change to the
-    installment identity across the whole loan architecture -- which is
-    ``recurrence:R16-c``'s job, not this function's.  Recorded so the next reader
-    does not trust the word "shared".
+    Args:
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`.
+        payment_day: The loan's contractual day-of-month due day, 1-31.
+        through: The last day the sequence may reach; a date before the first
+            installment yields an empty list.
 
-    **It is the CALENDAR month, and for a loan whose ``payment_day`` is not the
-    1st that is not the contract's own period** -- the Van Loan's runs the 22nd
-    to the 22nd, so two payments 23 days apart inside one period key to two
-    slots while two payments 2 days apart across a boundary key to one.  That is
-    finding **D55**, owned by ``recurrence:R16-c``, and this function ADOPTS the
-    existing key rather than introducing it: re-keying it would move the
-    installment identity across the whole loan architecture at once, which is
-    that step's job and not this one's.
+    Returns:
+        The installment dates, ascending, one per calendar month.
     """
-    return (due.year, due.month)
+    dates: list[date] = []
+    due = first_installment_date(origination_date, payment_day)
+    while due <= through:
+        dates.append(due)
+        due = monthly_due_date(due + _ONE_DAY, payment_day)
+    return dates
 
 
 @dataclass(frozen=True)
@@ -78,12 +102,10 @@ class AccrualCharge:
     payment, and while they rode ON one, N payments inside a month charged N
     months.
 
-    One charge per accrual period the walk's payments occupy, dated at the
-    EARLIEST payment due in that period -- so for the one-payment-per-month
-    shape every live loan is in, the charge lands on exactly the date the payment
-    used to resolve its own rate and escrow at, and the fold is byte-identical.
-    A second payment inside the same period then clears no fresh charge and pays
-    pure principal.
+    One charge per CONTRACTUAL installment, dated at the installment (plan step
+    recurrence:R16-c-2): a payment faces the charge of the installment whose
+    interval it falls in, and a second payment inside one interval arrives with
+    nothing standing and pays pure principal.
 
     **It carries a RATE and not an interest AMOUNT**, because interest accrues on
     the balance standing when the charge falls, and only the walk knows that --
@@ -108,7 +130,7 @@ class AccrualCharge:
     accrued at" provable rather than true by coincidence.
 
     Attributes:
-        on_date: The date this period's charge falls, in CONTRACT time -- the
+        on_date: The installment this charge falls on, in CONTRACT time -- the
             date its rate and its escrow are both resolved AS OF (ruling D5), and
             where it sorts against the payments in a walk.  The charge is applied
             BEFORE any payment sharing its date, since interest is charged on the
@@ -129,59 +151,68 @@ class AccrualCharge:
     escrow: Decimal
 
 
-def charges_for_due_dates(
-    due_dates: list[date], periods: list, escrow_lines: list,
-) -> list[AccrualCharge]:
-    """Return one :class:`AccrualCharge` per accrual period *due_dates* occupy.
+@dataclass(frozen=True)
+class LoanCalendar:
+    """A loan's CONTRACT terms -- everything its charge calendar is built from.
 
-    The ONE charge calendar, taken by the settled walk
-    (:func:`.._walk.walk_loan_ledger`) and by the forward plan
-    (``balance_at._plan._charges_for``).  Derived from the installments the
-    payments SATISFY rather than from the payments themselves, which is the
-    whole of R16-a: the count of charges cannot depend on the count of payments.
+    Ruling **R-R100** (plan step recurrence:R16-c-2): ONE function builds a
+    stream's charges from these terms (:func:`contract_charges`, through the
+    stream's last event), for the posted ledger's facts and for a screen's
+    facts plus plan alike, and the forward plan carries this value rather than
+    a charge list of its own.  Nothing here is a balance or a payment: the
+    note's day, its day-of-month, the rates it charges and the escrow it
+    impounds.
 
-    **The charge is dated at the EARLIEST due date in its period, and that is
-    what makes this byte-identical for a monthly loan.**  With one payment to a
-    month that date IS the payment's own due date, so the rate and the escrow
-    resolve exactly where a per-payment charge used to resolve them -- contract
-    time, ruling D5.  Deriving the date from the CONTRACTUAL schedule instead
-    would have been the more obvious rule and is not the safer one: a payment
-    whose stored due date is not on the contractual day would then have its
-    charge resolved on a different date from the one that priced it.
-
-    **A period with no payment at all gets no charge**, which is today's rule
-    kept deliberately rather than extended.  Charging every ELAPSED period would
-    make a delinquent balance GROW, against the forward plan's own "an overdue
-    slot with no record holds flat" (finding B-9).  That is finding **D53**, a
-    ruling owned by ``recurrence:R16-b-2``, and it is deliberately NOT taken
-    here: this step moves a rule between tiers and must not also change it.
-
-    Args:
-        due_dates: The installment dates the walk's payments satisfy, in any
-            order.  Duplicates collapse onto one charge, which is the point.
+    Attributes:
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`; the
+            first installment falls the month after it
+            (:func:`installment_dates`).
+        payment_day: The loan's contractual day-of-month due day, 1-31.
         periods: The loan's rate periods
             (:func:`app.services.loan_resolver.resolve_periods`).
         escrow_lines: The loan's escrow lines with their full version history
-            (:func:`app.services.loan_loaders.load_escrow_lines`).  Empty for a
-            loan that escrows nothing, which yields ``0.00`` on every charge.
+            (:func:`app.services.loan_loaders.load_escrow_lines`); empty for a
+            loan that escrows nothing, which charges ``0.00`` escrow.
+    """
+
+    origination_date: date
+    payment_day: int
+    periods: Sequence[RatePeriod]
+    escrow_lines: Sequence
+
+
+def contract_charges(calendar: LoanCalendar, through: date) -> list[AccrualCharge]:
+    """Return one :class:`AccrualCharge` per contractual installment through *through*.
+
+    THE charge calendar (ruling **R-R100**), taken by every walk through the
+    one composer that decides how far a stream reaches
+    (:func:`.._replay.with_contract_charges`).  Every installment from the
+    loan's first (:func:`installment_dates`) is charged, whether or not a
+    payment lands on it: a skipped month owes its interest and its escrow, and
+    the next payment clears those arrears before it reaches principal (ruling
+    **R-R72**, finding **D53**).  Each charge
+    resolves its rate period and its escrow on its own installment date -- the
+    contract's day, ruling D5 -- so a later rate or escrow change never
+    re-prices an earlier month.
+
+    Args:
+        calendar: The loan's :class:`LoanCalendar`.
+        through: The last day a charge may fall on.
 
     Returns:
-        One :class:`AccrualCharge` per occupied period, ascending by
-        ``on_date``.  Empty for empty *due_dates*.
+        The charges, ascending by ``on_date``; empty when *through* is before
+        the loan's first installment.
     """
-    opens_on: dict[tuple[int, int], date] = {}
-    for due in due_dates:
-        slot = installment_slot(due)
-        standing = opens_on.get(slot)
-        if standing is None or due < standing:
-            opens_on[slot] = due
     return [
         AccrualCharge(
             on_date=on_date,
-            period=period_for_date(periods, on_date),
+            period=period_for_date(calendar.periods, on_date),
             escrow=escrow_calculator.escrow_monthly_as_of(
-                escrow_lines, on_date,
+                calendar.escrow_lines, on_date,
             ),
         )
-        for on_date in sorted(opens_on.values())
+        for on_date in installment_dates(
+            calendar.origination_date, calendar.payment_day, through,
+        )
     ]

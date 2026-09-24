@@ -42,7 +42,7 @@ from app.services import (
 )
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import LoanFigures, LoanTerms
-from app.services.loan_ledger import installment_slot
+from app.services.loan_ledger import installment_dates
 from app.services.loan_loaders import (
     latest_settled_payment_due_date,
     load_loan_anchor_facts,
@@ -453,7 +453,7 @@ def _forward_boundary(account_id, scenario_id):
     return latest_settled_payment_due_date(account_id, scenario_id)
 
 
-def band_chart_dates(scenarios, payoff, installments) -> list[date]:
+def band_chart_dates(scenarios, payoff, installments, params) -> list[date]:
     """Return the band chart's x-axis: the contractual monthly grid, run to the payoff.
 
     One installment date per month from the loan's confirmed history through
@@ -480,6 +480,8 @@ def band_chart_dates(scenarios, payoff, installments) -> list[date]:
         installments: The plan as it stands
             (:func:`~app.services.balance_at.loan_installments`), for the
             never-clears case's last date.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, whose
+            origination and due day name its installment calendar.
 
     Returns:
         Ascending installment dates; empty for a loan whose history and
@@ -492,15 +494,20 @@ def band_chart_dates(scenarios, payoff, installments) -> list[date]:
         return dates
     if payoff is None:
         payoff = installments[-1].due_date if installments else dates[-1]
-    # Each extension date steps from the contract's LAST installment by a
-    # month count, as the plan's own extension does (``_plan._charge_dates``),
-    # so a loan due on the 31st keeps the month's end rather than decaying to
-    # the 28th one step at a time -- and the grid's dates are the fold's.
+    # The extension is the loan's own installment calendar past the
+    # contract's last row -- the ONE producer the charges are dated by
+    # (plan step recurrence:R16-c-2), so the grid's dates are the fold's and
+    # a loan due on the 31st returns to the month's end after a February --
+    # run to the first installment on or after the payoff (a payoff on a
+    # definition's own cadence can fall between two).
     contract_end = dates[-1]
-    months_out = 1
-    while dates[-1] < payoff:
-        dates.append(add_months(contract_end, months_out))
-        months_out += 1
+    for due in installment_dates(
+        params.origination_date, params.payment_day, add_months(payoff, 1),
+    ):
+        if dates[-1] >= payoff:
+            break
+        if due > contract_end:
+            dates.append(due)
     return dates
 
 
@@ -684,6 +691,7 @@ def build_loan_band_chart(account, params):
         band_chart_dates(
             scenarios, ctx.payoff_date,
             balance_at.loan_installments(account, ctx.balance_ctx),
+            params,
         ),
     )
 
@@ -726,31 +734,25 @@ def _compute_schedule_totals(schedule, row_escrow):
     }
 
 
-def _period_slot(installment) -> tuple[int, int]:
-    """Return the ``(year, month)`` of the accrual period *installment* pays into.
-
-    The standing charge's month (:attr:`~app.services.loan_ledger.PaymentOutcome.charge_date`,
-    the contract's installment date of that period), or for a payment no
-    charge stands over -- one before the plan's first charge, paying what
-    stands -- the month it is paid in.
-    """
-    return installment_slot(
-        installment.charge_date or installment.visible_on,
-    )
-
-
 def planned_periods(installments) -> list[list]:
     """Group the plan's installments by accrual period, through the payoff.
 
     The ONE grouping the loan page reads the plan by: the schedule's
     month-by-month rows and the allocation bar's "this month" both take a
-    group from here, so a month is spelled once (:func:`_period_slot`, the
-    standing charge's period).  A tracking payment and a fixed sweep due the
-    same month are one period's payments; a catch-up -- an occurrence due
-    before the read that no row answers, which the plan pays the day after
-    it (ruling **R-R64**, the D1 clamp) -- belongs to the period whose
-    charge it meets, which for an overdue installment is that installment's
-    own month.  The plan runs past the payoff into the post-contractual
+    group from here, so a period is spelled once -- the installment whose
+    charge the payment meets
+    (:attr:`~app.services.loan_ledger.PaymentOutcome.charge_date`, ruling
+    **R-R89**'s contract interval; ``None`` for every payment before the
+    loan's first installment, which share that one interval).  Until plan
+    step recurrence:R16-c-2 it grouped by the charge's CALENDAR month (finding
+    **D55**'s key), which named the same groups for every charged payment and
+    split the first interval at a month boundary.  A tracking payment and a
+    fixed sweep due inside one interval are one period's payments; a
+    catch-up -- an occurrence due before the read that no row answers, which
+    the plan pays the day after it (ruling **R-R64**, the D1 clamp) --
+    belongs to the period whose charge it meets: its own installment's, or,
+    behind a later settled payment, the installment that payment cleared.
+    The plan runs past the payoff into the post-contractual
     extension (installments there carry a zero balance and pay nothing
     down), so the groups stop with the one whose balance reaches zero; a
     plan that never clears the loan yields every period of the extension,
@@ -765,8 +767,7 @@ def planned_periods(installments) -> list[list]:
     """
     periods: list[list] = []
     for installment in installments:
-        slot = _period_slot(installment)
-        if periods and _period_slot(periods[-1][0]) == slot:
+        if periods and periods[-1][0].charge_date == installment.charge_date:
             periods[-1].append(installment)
         else:
             periods.append([installment])

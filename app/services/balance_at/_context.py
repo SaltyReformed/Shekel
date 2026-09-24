@@ -524,8 +524,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         pass pinned to an earlier day answers what the loan looked like on
         that day (plan step ``recurrence:R7d-h``: the pass decides which
         crossing answers), and every reader that needs the bounded set reads
-        THIS walk's stream (the plan's seed boundaries included,
-        ``_plan._seed_boundaries``) rather than deriving the bound again.  The
+        THIS walk's stream (the plan's latest assertion and settled payments
+        included, ``_plan.loan_plan``) rather than deriving the bound again.  The
         ledger's own walk
         (:func:`~app.services.loan_ledger.walk_loan_ledger`) takes no bound and
         is not this memo.  For a pass whose ``as_of`` is on or after every
