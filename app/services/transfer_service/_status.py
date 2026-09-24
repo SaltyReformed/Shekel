@@ -41,6 +41,7 @@ from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import status_seam
+from app.services.planned_rows_books import reject_revert_below_the_books
 from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.state_machine import verify_transition
 from app.services.transfer_service._validation import TransferRows
@@ -108,13 +109,21 @@ def apply_status_to_all_three(
 
     Raises:
         ValidationError: If the transition is illegal for the transfer or for
-            either shadow (propagated from the state machine), or if
-            *settled_on* is refused by the seam (a future day, ruling R-EJ).
+            either shadow (propagated from the state machine), if
+            *settled_on* is refused by the seam (a future day, ruling R-EJ),
+            or if a revert to Projected lands inside the transfer's books
+            (:func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
+            ruling **R-PC97**, asked before either shadow is written).
         ValueError: If the move enters the settled band with no *settlement*
             (propagated from the seam).
     """
     for row in (rows.transfer, *rows.shadows):
         verify_transition(row, new_status_id)
+    # A revert to Projected that the books hold is refused here, the
+    # transfer's one status door, before anything is assigned (ruling
+    # **R-PC97**); the seam asks it of a transaction only, so one revert walks
+    # the definition once.
+    reject_revert_below_the_books(rows.transfer, new_status_id)
 
     # ONE settle DAY for the PAIR (Transfer Invariant 3), resolved before
     # either shadow is written.  The seam's per-row rule is "preserve an

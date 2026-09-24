@@ -209,8 +209,10 @@ floor, with ``_assertions``, ``_asset_contributions``, ``_fold`` and
 ``_plan_records`` -- the five modules that import no sibling at runtime (an
 AST census of 2026-09-12; the sentence read "three" and named ``_context``
 among them until recurrence:R7d-f-2, wrong on both counts since ``_assertions``
-and ``_plan_records`` joined); ``_context`` imports ``_memoize`` and nothing
-else of the package.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
+and ``_plan_records`` joined); ``_context`` imports ``_memoize``,
+``_definition_books`` and ``_recurrence_memos`` (its mixin, ruling R-BAL146,
+which imports ``_definition_books``) and nothing else of the package.
+``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
 ``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only
 edges typing the caches the seam FILLS, so the arrow from the fourteen modules
 above stays one-way and the cycle finding N-25 names stays open.
@@ -253,6 +255,13 @@ from ._cash_flow import (
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext
+from ._definition_books import (
+    definition_books,
+    definition_money_accounts,
+    money_account_columns,
+    resolved_with_books,
+    row_books_opened_on,
+)
 from ._memoize import require_scenario
 from ._grid import (
     GridBalanceView,
@@ -376,6 +385,8 @@ __all__ = [
     "cash_outstanding_difference",
     "confirmed_view",
     "debt_schedule_rows",
+    "definition_books",
+    "definition_money_accounts",
     "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",
@@ -393,8 +404,11 @@ __all__ = [
     "loan_required_extra",
     "loan_what_if_owed_at_dates",
     "loan_principal_paid_in_year",
+    "money_account_columns",
     "positions",
     "records_balance_at",
+    "resolved_with_books",
+    "row_books_opened_on",
     "positions_period_map",
     "require_scenario",
     "secured_loan_series",
