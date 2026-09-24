@@ -86,10 +86,10 @@ end.
    2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the project may have --
    defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
    **a gate may not refuse to record work somebody has done.** Holding them instead: a per-ROW cap
-   each, which makes dropping the line cap a SWAP and not a removal, a runaway backstop each, and
-   rule 3's counts. **The ledger's per-ROW cap is rule 14's twin** -- a row that swells into its
-   arc's argument stops being an index entry -- and the overflow goes to the step that OWNS it: its
-   AS-BUILT record where it shipped, its live specification where it has not (balance:R-HD).
+   each, which makes dropping the line cap a SWAP and not a removal, and rule 3's counts.
+   **The ledger's per-ROW cap is rule 14's twin** -- a row that swells into its arc's argument stops
+   being an index entry -- and the overflow goes to the step that OWNS it: its AS-BUILT record where
+   it shipped, its live specification where it has not (balance:R-HD).
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.
@@ -160,9 +160,13 @@ end.
    asking. Where a fix must follow another step to be decided correctly it is SEQUENCED behind it
    with the reason stated -- which is a schedule, and is what a deferral is not.
 
-9. **A ruling is recorded as the RULE and its date, one line, in `rulings.md`.** The key is
-   `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
-   arc (rule 10). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
+9. **Since balance:R-BAL136 a new ruling is recorded in `rulings.md` as the developer's question and
+   answer, word for word, and its date, one line within a 2,000-character cap that balance:R-BAL138
+   made hard; an amendment is a new line and an old line is never edited.** Where the two do not
+   fit, the coordinator's application of R-BAL138 keeps the question's final ask and the answer in
+   the line and puts the full question in the filing commit's message. The key is `(arc, id)`, so
+   two arcs may hold one bare id and a citation of an ambiguous one MUST name its arc (rule 10).
+   Since `balance:X-ao-2a` no arc document DECLARES one; each points.
 
 10. **The arc is a COLUMN and the KEY is `(arc, id)`**, unique across the corpus. Bare ids keep
     their exact spelling, because a rename would orphan every citation in commit messages

@@ -147,7 +147,7 @@ class NetWorthSeries:
     (``series["current_index"] = ...``) -- so the object a template and a
     serializer read was never fully constructed anywhere, and "which keys does
     the series have" needed both modules in call order to answer.  That is
-    byte-for-byte the shape ruling R-BD deleted from :class:`~.._metrics.DebtSummary`,
+    byte-for-byte the shape ruling R-BD deleted from :class:`~.._debt_summary.DebtSummary`,
     whose DTI keys were mutated in by a separate applier.
 
     Attributes:
