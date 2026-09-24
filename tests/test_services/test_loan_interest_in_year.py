@@ -98,12 +98,19 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
         (charge.on_date.year, charge.on_date.month): charge
         for charge in stream.charges
     }
-    # A plan payment due before the loan's latest RECORDED payment is an
-    # overdue catch-up: it is walked behind that fact, whose payment already
-    # cleared its month (plan step recurrence:R16-c-2, rulings R-R72 part (1)
-    # and R-R100), so it faces nothing standing and pays pure principal.
+    # A plan payment due ON or BEFORE the loan's latest recorded FACT -- a
+    # settled payment or a balance assertion, in contract time -- is a
+    # catch-up: it is walked behind that fact, which cleared every charge
+    # standing (plan step recurrence:R16-c-2, rulings R-R72 part (1) and
+    # R-R100), so it faces nothing and pays pure principal.  Stated here from
+    # the stream's facts rather than read off the replay's own boundary, so
+    # the oracle does not grade the producer against itself.  No case below
+    # puts a plan payment ON the latest fact's date or behind an assertion
+    # (the plan drops those at the assertion), so those two arms match the
+    # producer's rule for fidelity and are graded by nothing yet.
     latest_fact = max(
-        (payment.on_date for payment in stream.payments), default=None,
+        (event.on_date for event in (*stream.payments, *stream.resets)),
+        default=None,
     )
     balance = seed
     total = ZERO
@@ -111,7 +118,7 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
         plan.payments, key=lambda p: (p.due_date, p.effective_date),
     ):
         slot = (payment.due_date.year, payment.due_date.month)
-        if latest_fact is not None and payment.due_date < latest_fact:
+        if latest_fact is not None and payment.due_date <= latest_fact:
             parts = charge_then_allocate(payment.cash, balance, ZERO, ZERO)
         else:
             charge = charged[slot]
@@ -327,8 +334,10 @@ class TestLoanInterestInYearMerge:
         installment falls before it in contract time with nothing paying it,
         so the payment clears February (500.00 on the $100,000 trued balance)
         and then March (500.00) -- all $1,000.00 of its cash.  The plan's
-        February installment becomes an overdue catch-up behind it, paying pure
-        principal.  Until R16-c-2 February was charged to that catch-up and
+        February installment -- not yet due on the 01-31 read, but due before
+        the settled March payment in contract time -- becomes a catch-up behind
+        it, paying pure principal.  Until R16-c-2 February was charged to that
+        catch-up and
         this payment's interest was 500.00; the developer approved the moved
         figure (rule 5).
 

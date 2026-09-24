@@ -34,7 +34,7 @@ from its seed.  ``fold_forward``'s origination gate (``0.00`` before
 **R-R100**).  A production :class:`~app.services.balance_at._plan_records.LoanForwardPlan`
 carries the loan's contract terms and no charge list; the seam composes it
 exactly as a read pass does (:func:`~app.services.balance_at._loan_stream.merged_stream`,
-charged from origination through its last payment).  A :class:`HandPlan`
+charged from origination through its last event).  A :class:`HandPlan`
 states its CHARGES by hand -- the ruling's promise that the hand-computed
 oracles keep their hand-stated charges and figures -- and its stream is
 built here with those charges and nothing else, so the replay these suites

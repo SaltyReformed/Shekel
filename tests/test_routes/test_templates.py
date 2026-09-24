@@ -38,7 +38,7 @@ from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
 from app.services import account_service, status_seam, transaction_service
 from app.services.loan_loaders import load_loan_params
-from app.services.rate_period_engine import first_installment_date
+from app.services.installment_calendar import first_installment_date
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for

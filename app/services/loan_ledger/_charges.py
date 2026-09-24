@@ -30,66 +30,29 @@ posted ledger (finding **D53**'s past half) -- while the forward plan charged
 the contract's installments after the loan's latest assertion, a second
 calendar kept apart from the first by a set of ``(year, month)`` slots.  Now a
 loan is charged on EVERY contractual installment from origination
-(:func:`contract_charges` over :func:`installment_dates`), and a payment
-belongs to the installment whose interval it falls in -- the latest one due on
-or before it (ruling R-R89, finding **D55**) -- which the replay answers by
-handing each payment the charge standing over it.  An assertion clears every
-charge standing before it (R-R72 part (2)), so a mid-life loan's months before
-its tracking start are charged and cleared by that statement.
+(:func:`contract_charges` over
+:func:`~app.services.installment_calendar.installment_dates`, the loan's one
+calendar rule), and a payment belongs to the installment whose interval it
+falls in -- the latest one due on or before it (ruling R-R89, finding **D55**;
+:func:`~app.services.installment_calendar.installment_of`) -- whose charge the replay
+hands every payment it walks on the payment's own date.  An overdue projection
+pushed past a later recorded fact is the one exception: it faces what stands at
+the push, which that fact already cleared (:class:`._replay.PaymentOutcome`).
+An assertion clears every charge standing before it (R-R72 part (2)), so a
+mid-life loan's months before its tracking start are charged and cleared by
+that statement.
 
 Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app.services import escrow_calculator
-from app.services.rate_period_engine import (
-    RatePeriod,
-    first_installment_date,
-    monthly_due_date,
-    period_for_date,
-)
-
-_ONE_DAY = timedelta(days=1)
-
-
-def installment_dates(
-    origination_date: date, payment_day: int, through: date,
-) -> list[date]:
-    """Return a loan's contractual installment dates, its first through *through*.
-
-    **The loan's ONE calendar** (plan step recurrence:R16-c-2, rulings
-    **R-R72**, **R-R89** and **R-R100**): the dates a loan is CHARGED on --
-    every one of them from its first installment onward, whether or not a
-    payment lands on it -- and the grid the loan page's band chart and the
-    plan's post-contractual extension step along.  It adds no date arithmetic
-    of its own: the first date is
-    :func:`~app.services.rate_period_engine.first_installment_date`, and each
-    next one is the first *payment_day* after the one before
-    (:func:`~app.services.rate_period_engine.monthly_due_date` from the next
-    day), which clamps *payment_day* to each month afresh -- so a due day of
-    29-31 returns to it after a short month (Jan 31, Feb 28, Mar 31), where
-    stepping a month count from a CLAMPED date keeps the clamp.
-
-    Args:
-        origination_date: The loan's immutable
-            :attr:`~app.models.loan_params.LoanParams.origination_date`.
-        payment_day: The loan's contractual day-of-month due day, 1-31.
-        through: The last day the sequence may reach; a date before the first
-            installment yields an empty list.
-
-    Returns:
-        The installment dates, ascending, one per calendar month.
-    """
-    dates: list[date] = []
-    due = first_installment_date(origination_date, payment_day)
-    while due <= through:
-        dates.append(due)
-        due = monthly_due_date(due + _ONE_DAY, payment_day)
-    return dates
+from app.services.installment_calendar import installment_dates
+from app.services.rate_period_engine import RatePeriod, period_for_date
 
 
 @dataclass(frozen=True)
@@ -127,7 +90,11 @@ class AccrualCharge:
     inside a period would tag a second payment's row with the NEW rate while its
     (zero) interest belonged to the old one.  Resolving ONCE, on the accrual
     period the charge IS, is what makes "the row's rate is the rate its interest
-    accrued at" provable rather than true by coincidence.
+    accrued at" provable rather than true by coincidence -- for a payment that
+    clears ONE charge.  A payment clearing ARREARS across a rate change clears
+    interest accrued at both rates and carries the latest charge's period (plan
+    step recurrence:R16-c-2): made-up figures, $10,000.00 with February skipped
+    at 6% and March paid at 12% clears $50.00 + $100.00 and displays 12%.
 
     Attributes:
         on_date: The installment this charge falls on, in CONTRACT time -- the
@@ -140,7 +107,9 @@ class AccrualCharge:
             (:func:`~app.services.rate_period_engine.period_for_date` on
             ``on_date``).  Its ``annual_rate`` drives the accrual; every payment
             in this accrual period carries the whole period onto its split, so
-            the displayed rate and the accrued interest come from one resolution.
+            the displayed rate and the accrued interest come from one resolution
+            -- except for a payment clearing more than one charge, which
+            displays the latest one's.
         escrow: The monthly escrow in force for this period
             (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
             ``on_date``), ``0.00`` when the loan escrows nothing.
@@ -167,7 +136,7 @@ class LoanCalendar:
         origination_date: The loan's immutable
             :attr:`~app.models.loan_params.LoanParams.origination_date`; the
             first installment falls the month after it
-            (:func:`installment_dates`).
+            (:func:`~app.services.installment_calendar.installment_dates`).
         payment_day: The loan's contractual day-of-month due day, 1-31.
         periods: The loan's rate periods
             (:func:`app.services.loan_resolver.resolve_periods`).
@@ -188,10 +157,10 @@ def contract_charges(calendar: LoanCalendar, through: date) -> list[AccrualCharg
     THE charge calendar (ruling **R-R100**), taken by every walk through the
     one composer that decides how far a stream reaches
     (:func:`.._replay.with_contract_charges`).  Every installment from the
-    loan's first (:func:`installment_dates`) is charged, whether or not a
-    payment lands on it: a skipped month owes its interest and its escrow, and
-    the next payment clears those arrears before it reaches principal (ruling
-    **R-R72**, finding **D53**).  Each charge
+    loan's first (:func:`~app.services.installment_calendar.installment_dates`) is
+    charged, whether or not a payment lands on it: a skipped month owes its
+    interest and its escrow, and the next payment clears those arrears before
+    it reaches principal (ruling **R-R72**, finding **D53**).  Each charge
     resolves its rate period and its escrow on its own installment date -- the
     contract's day, ruling D5 -- so a later rate or escrow change never
     re-prices an earlier month.

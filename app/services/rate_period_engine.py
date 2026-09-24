@@ -49,6 +49,7 @@ from app.services.amortization_engine import (
     PaymentDates,
     calculate_monthly_payment,
 )
+from app.services.installment_calendar import due_in_following_month
 from app.utils.dates import has_settled_by, months_between
 from app.utils.money import (
     accrue_monthly_interest,
@@ -217,103 +218,6 @@ def _add_months(start: date, months: int) -> date:
     target_month = target_month_zero % 12 + 1
     last_day = calendar.monthrange(target_year, target_month)[1]
     return date(target_year, target_month, min(start.day, last_day))
-
-
-def _advance_one_month(reference: date, payment_day: int) -> date:
-    """Return the payment date in the month after ``reference``.
-
-    Day-clamped to ``payment_day`` (or the month's last day).  Used to
-    compute the projection's first payment date from the last replayed
-    payment or the anchor.
-    """
-    month_zero = reference.month  # reference.month - 1 + 1 == next month, 0-based
-    target_year = reference.year + month_zero // 12
-    target_month = month_zero % 12 + 1
-    last_day = calendar.monthrange(target_year, target_month)[1]
-    return date(target_year, target_month, min(payment_day, last_day))
-
-
-def first_installment_date(origination_date: date, payment_day: int) -> date:
-    """Return the date of a loan's FIRST contractual installment.
-
-    The project's single derivation of "when does this loan's first payment come
-    due?", and the loan's own convention rather than a calendar guess: the
-    engine seeds a from-origination projection at ``_advance_one_month`` of the
-    ORIGINATION anchor (:func:`replay_schedule`, the no-rows branch), i.e. the
-    ``payment_day`` of the month AFTER origination -- never a ``payment_day``
-    falling later in the origination month itself.  Concretely, a loan
-    originating 2026-04-15 with ``payment_day`` 20 first bills 2026-05-20, NOT
-    2026-04-20.
-
-    Deliberately NOT :func:`monthly_due_date`, which answers a different
-    question (the first ``payment_day`` ON OR AFTER a date -- the installment a
-    pay period contains) and would return that wrong 2026-04-20.
-
-    Exposed because the recurrence bound needs it
-    (:func:`app.services.loan_recurrence_sync.loan_cadence_start` makes it the
-    rule's ``starts_on`` -- its FIRST OCCURRENCE since ruling R-R16 -- so no
-    payment generates before the loan exists, plan step C9a).  It named
-    ``RecurrenceRule.start_date`` until plan step R7c-b, which is a column
-    nothing writes or reads any more.  The alternative -- reading
-    ``contractual_schedule_from_origination(...)[0].payment_date`` -- yields the
-    identical date (pinned by test) but builds the loan's entire 360-row schedule
-    and needs its rate feed to answer a question no rate can influence.
-
-    Pure: no I/O, no clock.
-
-    Args:
-        origination_date: The loan's immutable
-            :attr:`~app.models.loan_params.LoanParams.origination_date`.
-        payment_day: The loan's contractual day-of-month due day, 1-31.
-            Day-clamped to the target month's length (a ``payment_day`` of 31
-            resolves to Feb 28/29).
-
-    Returns:
-        The first contractual installment's due date.
-    """
-    return _advance_one_month(origination_date, payment_day)
-
-
-def monthly_due_date(period_start: date, payment_day: int) -> date:
-    """Return a loan payment's true monthly due date from its pay-period start.
-
-    A recurring loan payment is recorded against the pay period whose
-    range contains its real monthly due date, but the resolver keys the
-    :class:`~app.services.amortization_engine.PaymentRecord` to the
-    pay-period START -- a biweekly date that can fall up to ~2 weeks
-    before the contractual due date.  The pay-period start is too coarse
-    for the anchor-boundary comparison ("did this payment come due after
-    the balance was last verified?"): a balance true-up dated between a
-    pay period's start and that period's payment due date would otherwise
-    strand the payment in the gap, excluding it from the replay forever
-    even after the user marks it paid.
-
-    This recovers the contractual due date: the first ``payment_day`` of
-    the month on or after ``period_start``, clamping ``payment_day`` to
-    the month's length for short months (a ``payment_day`` of 31 resolves
-    to Feb 28/29).  Because the payment's pay period was chosen to contain
-    that due date, the first ``payment_day`` at or after the period start
-    is exactly the due date.
-
-    Args:
-        period_start: The pay-period start date the payment is keyed to
-            (:attr:`~app.services.amortization_engine.PaymentDates.period_start`).
-        payment_day: The loan's contractual day-of-month due day
-            (``LoanParams.payment_day``), 1-31.
-
-    Returns:
-        The first date on or after ``period_start`` whose day equals
-        ``payment_day`` (day-clamped to the month length).
-    """
-    last_day = calendar.monthrange(period_start.year, period_start.month)[1]
-    candidate = date(
-        period_start.year, period_start.month, min(payment_day, last_day),
-    )
-    if candidate >= period_start:
-        return candidate
-    # payment_day already passed in period_start's own month -- the due
-    # date is the same day in the following month.
-    return _advance_one_month(period_start, payment_day)
 
 
 def due_after_anchor(anchor_date: date, due_date: date) -> bool:
@@ -980,9 +884,9 @@ def replay_schedule(
         rows.append(row)
 
     if rows:
-        next_pay_date = _advance_one_month(rows[-1].payment_date, payment_day)
+        next_pay_date = due_in_following_month(rows[-1].payment_date, payment_day)
     else:
-        next_pay_date = _advance_one_month(anchor.as_of_date, payment_day)
+        next_pay_date = due_in_following_month(anchor.as_of_date, payment_day)
 
     remaining_months_as_of = max(
         0,

@@ -52,7 +52,7 @@ from app.services.transfer_service import (
     update_transfer,
 )
 from app.services import account_service
-from app.services.rate_period_engine import monthly_due_date
+from app.services.installment_calendar import monthly_due_date
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import declare_derived
 

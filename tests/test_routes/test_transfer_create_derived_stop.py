@@ -64,7 +64,7 @@ from tests._test_helpers import (
 _TODAY = date(2026, 3, 1)
 
 #: The loan's origination and its derived first installment (payment day 1 of
-#: the month after origination, ``rate_period_engine.first_installment_date``).
+#: the month after origination, ``installment_calendar.first_installment_date``).
 _ORIGINATION = date(2026, 4, 15)
 _FIRST_INSTALLMENT = date(2026, 5, 1)
 

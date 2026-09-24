@@ -135,7 +135,7 @@ from ._walk import (
     replay_loan_stream,
     walk_loan_ledger,
 )
-from ._charges import AccrualCharge, LoanCalendar, installment_dates
+from ._charges import AccrualCharge, LoanCalendar
 from ._replay import (
     LoanCashEvent,
     LoanEventStream,
@@ -168,7 +168,6 @@ __all__ = [
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
-    "installment_dates",
     "load_loan_stream",
     "loan_event_stream",
     "payment_installments",

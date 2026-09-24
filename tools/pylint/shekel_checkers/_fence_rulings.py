@@ -356,12 +356,12 @@ _FENCED_MODULE_RULINGS = {
             "walk_loan_ledger",
             # The CHARGE calendar (plan step X-au-g-2c-3b-1; the contract's
             # since recurrence:R16-c-2, ruling R-R100) -- the TIME half of a
-            # walk, and neither name answers balance-at-T.
+            # walk, and it does not answer balance-at-T.  Its DATES
+            # (``installment_dates``) were ruled here too until plan step
+            # recurrence:R16-c-2 moved them to ``app.services.installment_calendar``,
+            # which this registry does not scope; the ruling went with the name
+            # rather than staying stale.
             #
-            #   * ``installment_dates`` returns the loan's contractual
-            #     installment DATES.  It carries no money of any kind and
-            #     cannot be made to (it took the place of ``installment_slot``,
-            #     a ``(year, month)`` key, deleted at R16-c-2).
             #   * ``contract_charges`` returns one charge per installment, and
             #     each charge carries a RATE and an escrow AMOUNT --
             #     deliberately not an interest amount.  Interest accrues on the
@@ -378,7 +378,6 @@ _FENCED_MODULE_RULINGS = {
             #     derived snapshot already public from ``rate_period_engine``,
             #     and no amount owed can be read off it.
             "contract_charges",
-            "installment_dates",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list
             # and its per-payment construction carry one ruling: cash in, four

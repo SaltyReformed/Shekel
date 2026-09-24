@@ -3,7 +3,7 @@
 Plan step **recurrence:R16-c-2** (rulings **R-R72**, **R-R89** and **R-R100**).
 A loan is charged on EVERY contractual installment from origination, whether or
 not a payment lands on it, in the posted ledger's walk and a screen's alike:
-:func:`~app.services.loan_ledger.installment_dates` is the one date producer,
+:func:`~app.services.installment_calendar.installment_dates` is the one date producer,
 :func:`~app.services.loan_ledger._charges.contract_charges` prices each date, and
 :func:`~app.services.loan_ledger.with_contract_charges` is the one composer
 that decides how far a stream is charged -- through its LAST event, a payment,
@@ -16,19 +16,25 @@ allocation (6% on $10,000.00 is $50.00 a month).
 """
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
+from app.routes.loan._helpers import band_chart_dates
+from app.services.cash_ledger._loan_installment import (
+    _LoanCashBasis,
+    _installment_cash,
+)
 from app.services.loan_ledger import (
     LoanCalendar,
     LoanCashEvent,
     LoanEventStream,
     LoanResetEvent,
-    installment_dates,
     replay_loan_stream,
     with_contract_charges,
 )
 from app.services.loan_ledger._charges import contract_charges
+from app.services.installment_calendar import installment_dates, installment_of
 from tests.oracles.loan_monthly_composition import accrual_charge, rate_period
 
 _ZERO = Decimal("0.00")
@@ -284,6 +290,77 @@ class TestTheReplayOverTheContractsCalendar:
         assert catch_up.principal == plain_catch_up.principal == Decimal("500.00")
         assert july.principal - plain_july.principal == Decimal("100.00")
 
+    def test_a_catch_up_walks_before_an_installment_on_the_boundary_day(self):
+        """An overdue catch-up pushed to the boundary walks ahead of that day's charge.
+
+        $10,000.00 at 6% due the 1st.  The last fact is an off-day $500.00
+        payment on Aug 31, which clears the seven installments Feb 1 - Aug 1
+        (7 x 50.00 = 350.00 interest, 150.00 principal -> 9,850.00), so the
+        projections walk from Sep 1 -- itself an installment.  July's overdue
+        catch-up is pushed there and walks in CONTRACT order, before the Sep 1
+        charge: nothing stands, 500.00 principal -> 9,350.00.  Then Sep 1
+        charges 9,350.00 x 0.005 = 46.75, and September's $500.00 pays 46.75 /
+        453.25 -> 8,896.75.  Walked charge-first, the catch-up would pay
+        September's interest instead and the loan would end at 8,899.25.
+        """
+        walk = replay_loan_stream(with_contract_charges(
+            LoanEventStream(
+                charges=(),
+                payments=[_payment(date(2026, 8, 31), "500.00")],
+                resets=[_reset(date(2026, 1, 1), "10000.00", opening=True)],
+                projections=[
+                    _payment(date(2026, 7, 1), "500.00"),
+                    _payment(date(2026, 9, 1), "500.00"),
+                ],
+            ),
+            _calendar(),
+        ))
+        [fact] = walk.settled_splits
+        assert (fact.interest, fact.principal, fact.balance_after) == (
+            Decimal("350.00"), Decimal("150.00"), Decimal("9850.00"),
+        )
+        catch_up, september = walk.projected_splits
+        assert (catch_up.interest, catch_up.principal, catch_up.balance_after) == (
+            _ZERO, Decimal("500.00"), Decimal("9350.00"),
+        )
+        assert (september.interest, september.principal, september.balance_after) == (
+            Decimal("46.75"), Decimal("453.25"), Decimal("8896.75"),
+        )
+
+    def test_the_what_if_extra_joins_an_installment_on_the_boundary_day(self):
+        """A charge falling ON the projection boundary carries the extra.
+
+        $10,000.00 at 6% due the 1st: July's $500.00 clears Feb - Jul (300.00
+        interest) -> 9,800.00; August's 49.00 then stands until a true-up to
+        $9,000.00 on Aug 31 clears it.  The boundary is Sep 1, an installment:
+        it charges 9,000.00 x 0.005 = 45.00, and "an extra $100 a month" joins
+        it, so September's $500.00 pays 455.00 of principal plain and 555.00
+        with the extra.  The facts' splits do not move.
+        """
+        stream = with_contract_charges(
+            LoanEventStream(
+                charges=(),
+                payments=[_payment(date(2026, 7, 1), "500.00")],
+                resets=[
+                    _reset(date(2026, 1, 1), "10000.00", opening=True),
+                    _reset(date(2026, 8, 31), "9000.00"),
+                ],
+                projections=[_payment(date(2026, 9, 1), "500.00")],
+            ),
+            _calendar(),
+        )
+        plain = replay_loan_stream(stream)
+        topped = replay_loan_stream(stream, extra_per_period=Decimal("100.00"))
+        assert topped.settled_splits == plain.settled_splits
+        [plain_september] = plain.projected_splits
+        [september] = topped.projected_splits
+        assert (plain_september.interest, plain_september.principal) == (
+            Decimal("45.00"), Decimal("455.00"),
+        )
+        assert (september.interest, september.principal) == (
+            Decimal("45.00"), Decimal("555.00"),
+        )
+
     def test_a_hand_stated_charge_list_is_replaced_by_the_calendar(self):
         """The composer owns the charges: a stream's own list does not survive."""
         stream = with_contract_charges(
@@ -294,3 +371,205 @@ class TestTheReplayOverTheContractsCalendar:
             _calendar(),
         )
         assert [c.on_date for c in stream.charges] == [date(2026, 2, 1)]
+
+
+class TestInstallmentOf:
+    """Ruling R-R89's pairing: the latest installment on or before a day (R-R104, R-R105)."""
+
+    def test_a_day_on_an_installment_is_that_installment(self):
+        """A payment due on the contractual day pays its own installment."""
+        assert installment_of(date(2026, 1, 22), 22, date(2026, 3, 22)) == date(2026, 3, 22)
+
+    def test_a_day_inside_an_interval_is_the_installment_that_opened_it(self):
+        """Mar 10 and Mar 21 both fall in the Feb 22 - Mar 21 interval."""
+        assert installment_of(date(2026, 1, 22), 22, date(2026, 3, 10)) == date(2026, 2, 22)
+        assert installment_of(date(2026, 1, 22), 22, date(2026, 3, 21)) == date(2026, 2, 22)
+
+    def test_a_day_before_the_first_installment_has_none(self):
+        """Ruling R-C's early extra: after the Jan 22 origination, before Feb 22.
+
+        The origination day itself and a day of the origination month after
+        its own due day (Jan 25) fall before the first installment too.
+        """
+        for day in (date(2026, 1, 22), date(2026, 1, 25), date(2026, 2, 10)):
+            assert installment_of(date(2026, 1, 22), 22, day) is None
+        assert installment_of(date(2026, 1, 22), 22, date(2026, 2, 22)) == date(2026, 2, 22)
+
+    def test_a_clamped_installment_opens_its_interval(self):
+        """Due the 31st: Feb 28 is an installment, so Mar 30 falls in its interval."""
+        assert installment_of(date(2026, 12, 31), 31, date(2027, 3, 30)) == date(2027, 2, 28)
+        assert installment_of(date(2026, 12, 31), 31, date(2027, 3, 31)) == date(2027, 3, 31)
+
+    def test_it_agrees_with_the_list_on_every_day(self):
+        """The rule inverted names, for every day, the latest listed installment.
+
+        Every due day 1-31, every day from before the origination (a December
+        31st before a leap February) to three years on: the lookup and the
+        enumeration both start at :func:`first_installment_date` and step the
+        one clamp, and this sweep is what holds them to one answer.
+        """
+        origination = date(2027, 12, 31)
+        for payment_day in range(1, 32):
+            listed = installment_dates(origination, payment_day, date(2031, 1, 31))
+            day, last = date(2027, 11, 1), None
+            while day <= date(2030, 12, 31):
+                while listed and listed[0] <= day:
+                    last = listed.pop(0)
+                assert installment_of(origination, payment_day, day) == last, (
+                    payment_day, day,
+                )
+                day += timedelta(days=1)
+
+
+def _escrow_line(*versions: tuple[date, str]) -> SimpleNamespace:
+    """One escrow line with its versions, as ``(effective_date, annual)`` pairs."""
+    return SimpleNamespace(
+        id=1, name="Escrow",
+        versions=[
+            SimpleNamespace(
+                id=index, effective_date=effective, annual_amount=Decimal(annual),
+                is_removed=False, inflation_rate=None, created_at=None,
+            )
+            for index, (effective, annual) in enumerate(versions)
+        ],
+    )
+
+
+class TestAPaymentIsPricedOnItsInterval:
+    """Ruling R-R104 ("Price on the interval"): cash is priced on the installment it pays.
+
+    The developer's worked example, made-up figures: $10,000.00 at 6% due the
+    22nd, originated 2026-01-22 (first installment Feb 22), P&I $200.00,
+    escrow $100.00 a month ($1,200.00 a year) rising to $300.00 ($3,600.00)
+    on Mar 1.  A payment due Mar 10 pays the Feb 22 installment (ruling
+    R-R89), whose charge is Feb 22's: interest 10,000.00 x 0.06 / 12 =
+    $50.00 and escrow $100.00.  Priced on Feb 22 its cash is 200.00 + 100.00
+    = $300.00 and its split $50.00 / $100.00 / $150.00, principal exactly P&I
+    - interest.  Priced on its own date (ruling R-IJ before R-R104) the cash
+    was 200.00 + 300.00 = $500.00, and the $200.00 escrow difference landed
+    in principal ($350.00).
+    """
+
+    _ORIGINATION = date(2026, 1, 22)
+    _LINES = [_escrow_line((date(2026, 1, 22), "1200.00"), (date(2026, 3, 1), "3600.00"))]
+
+    def _basis(self, periods=None) -> _LoanCashBasis:
+        """The loan's pricing terms: one 6% period at P&I $200.00 unless stated."""
+        return _LoanCashBasis(
+            periods=periods if periods is not None else [
+                rate_period(_RATE, start_date=self._ORIGINATION,
+                            period_pi=Decimal("200.00")),
+            ],
+            payment_day=22,
+            origination_date=self._ORIGINATION,
+        )
+
+    def _cash(self, due: date, basis: _LoanCashBasis | None = None) -> Decimal:
+        """The derive-mode cash of a payment due *due*, no standing extra."""
+        return _installment_cash(
+            basis if basis is not None else self._basis(), self._LINES,
+            due, date(2026, 1, 1), _ZERO,
+        )
+
+    def test_an_off_day_payment_carries_its_intervals_escrow(self):
+        """Due Mar 10: Feb 22's $100.00 escrow, not Mar 10's $300.00."""
+        assert self._cash(date(2026, 3, 10)) == Decimal("300.00")
+
+    def test_an_on_day_payment_is_priced_on_its_own_due_date(self):
+        """Due Mar 22 (on the day, after the Mar 1 rise): 200.00 + 300.00."""
+        assert self._cash(date(2026, 3, 22)) == Decimal("500.00")
+
+    def test_an_early_extra_is_priced_on_its_own_due_date(self):
+        """Due Feb 10, before the first installment: nothing stands; 200.00 + 100.00."""
+        assert self._cash(date(2026, 2, 10)) == Decimal("300.00")
+
+    def test_an_early_extra_reads_its_own_dates_escrow(self):
+        """Due Feb 10, before the first installment, after an escrow rise on Feb 1.
+
+        No installment stands over it, so it is priced on its own date:
+        200.00 + the $300.00 escrow in force on Feb 10 = $500.00.  Priced on
+        the origination (Jan 22, $100.00) it would read $300.00.
+        """
+        lines = [_escrow_line(
+            (date(2026, 1, 22), "1200.00"), (date(2026, 2, 1), "3600.00"),
+        )]
+        assert _installment_cash(
+            self._basis(), lines, date(2026, 2, 10), date(2026, 1, 1), _ZERO,
+        ) == Decimal("500.00")
+
+    def test_an_off_day_payment_carries_its_intervals_rate_period(self):
+        """A rate change on Mar 1 (P&I $250.00) does not reach the Feb 22 installment.
+
+        Due Mar 10: Feb 22's period, P&I $200.00, plus Feb 22's $100.00
+        escrow.  On its own date it would read $250.00 + $300.00 = $550.00.
+        """
+        basis = self._basis([
+            rate_period(_RATE, start_date=self._ORIGINATION,
+                        period_pi=Decimal("200.00")),
+            replace(
+                rate_period(Decimal("0.12"), start_date=date(2026, 3, 1),
+                            period_pi=Decimal("250.00")),
+                index=1,
+            ),
+        ])
+        assert self._cash(date(2026, 3, 10), basis) == Decimal("300.00")
+
+    def test_the_split_backs_out_exactly_the_escrow_the_cash_carries(self):
+        """The priced cash replayed against the contract's charges: $50 / $100 / $150.
+
+        The balance falls 10,000.00 - 150.00 = $9,850.00: every cent of
+        escrow built into the cash is backed out again, so principal is P&I
+        less interest, as it is for a payment due on the contractual day.
+        """
+        cash = self._cash(date(2026, 3, 10))
+        walk = replay_loan_stream(with_contract_charges(
+            LoanEventStream(
+                charges=(),
+                payments=[_payment(date(2026, 3, 10), str(cash))],
+                resets=[_reset(self._ORIGINATION, "10000.00", opening=True)],
+            ),
+            replace(
+                _calendar(origination=self._ORIGINATION, payment_day=22),
+                escrow_lines=self._LINES,
+            ),
+        ))
+        [payment] = walk.settled_splits
+        assert payment.charge_date == date(2026, 2, 22)
+        assert (
+            payment.interest, payment.escrow, payment.principal,
+            payment.balance_after,
+        ) == (
+            Decimal("50.00"), Decimal("100.00"), Decimal("150.00"),
+            Decimal("9850.00"),
+        )
+
+
+class TestTheBandChartsExtension:
+    """The loan page's grid past the contract steps the loan's own calendar."""
+
+    _PARAMS = SimpleNamespace(origination_date=date(2026, 12, 31), payment_day=31)
+    # A contract whose last installment is a CLAMPED February 28th.
+    _SCENARIOS = SimpleNamespace(
+        history_rows=[SimpleNamespace(payment_date=date(2027, 1, 31))],
+        original_forward=[SimpleNamespace(payment_date=date(2027, 2, 28))],
+    )
+
+    def test_a_contract_ending_on_a_clamped_february_returns_to_the_31st(self):
+        """Due the 31st, the contract ends 2027-02-28, the payoff is 2027-06-30.
+
+        The grid continues Mar 31, Apr 30, May 31, Jun 30 -- each month's due
+        day clamped afresh.  Stepping a month count from the clamped last row
+        would keep the clamp: Mar 28, Apr 28, and so on.
+        """
+        assert band_chart_dates(
+            self._SCENARIOS, date(2027, 6, 30), [], self._PARAMS,
+        ) == [
+            date(2027, 1, 31), date(2027, 2, 28), date(2027, 3, 31),
+            date(2027, 4, 30), date(2027, 5, 31), date(2027, 6, 30),
+        ]
+
+    def test_a_payoff_between_installments_runs_to_the_next_one(self):
+        """A payoff on 2027-04-15 (a definition's own cadence) ends on Apr 30."""
+        assert band_chart_dates(
+            self._SCENARIOS, date(2027, 4, 15), [], self._PARAMS,
+        )[-2:] == [date(2027, 3, 31), date(2027, 4, 30)]

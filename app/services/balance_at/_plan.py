@@ -164,19 +164,19 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
-from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders
-from app.services.loan_ledger import LoanCalendar, installment_dates
+from app.services.loan_ledger import LoanCalendar
 from app.services.cash_ledger import (
     AmountBasis,
     planned_leg_contribution,
     transfer_pricing_load_options,
 )
+from app.services.installment_calendar import installment_dates, installment_of
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import due_after_anchor, period_for_date
 from app.services.transfer_legs import TransferLeg
@@ -417,13 +417,14 @@ def _estimated_from_contract(
 
     **An installment is COVERED when a record is due inside its interval** --
     from its own due date up to the next installment's, the interval a
-    payment's charge is read from (ruling **R-R89**, "B: contract interval";
-    plan step recurrence:R16-c-2).  Until that step a record covered its
-    CALENDAR month (finding **D55**): for a loan due on the 22nd, a payment on
-    the 10th covered the installment twelve days after it rather than the one
-    it pays into.  Two kinds of record cover one, and BOTH matter -- the
-    contractual synthesis is a schedule-row estimate, so it can collide with a
-    real payment:
+    payment's charge is read from and, since ruling **R-R104**, its cash is
+    priced on (:func:`~app.services.installment_calendar.installment_of`; ruling
+    **R-R89**, "B: contract interval"; plan step recurrence:R16-c-2).  Until
+    that step a record covered its CALENDAR month (finding **D55**): for a
+    loan due on the 22nd, a payment on the 10th covered the installment twelve
+    days after it rather than the one it pays into.  Two kinds of record cover
+    one, and BOTH matter -- the contractual synthesis is a schedule-row
+    estimate, so it can collide with a real payment:
 
     * a **PLANNED** record -- a projected transfer this pass will fold forward;
     * a **settled** payment the pass's recorded stream already folds -- one
@@ -469,18 +470,10 @@ def _estimated_from_contract(
     clamp_floor = fwd.as_of + _ONE_DAY
     calendar = fwd.calendar
     extension = _extension_dates(contractual, calendar)
-    # The installment sequence reaches every record, so a record past the
-    # extension names its own interval rather than the last one listed.
-    installments = installment_dates(
-        calendar.origination_date,
-        calendar.payment_day,
-        max([*extension[-1:], *recorded_dues], default=fwd.as_of),
-    )
 
     def _interval(due: date) -> date | None:
         """The installment whose interval *due* falls in, or None before the first."""
-        position = bisect_right(installments, due)
-        return installments[position - 1] if position else None
+        return installment_of(calendar.origination_date, calendar.payment_day, due)
 
     covered = {_interval(due) for due in recorded_dues} - {None}
 
@@ -524,17 +517,13 @@ def _extension_dates(contractual: list, calendar: LoanCalendar) -> list[date]:
     The contract-only estimate's extension and the definition walk's window
     (finding N-16: an underpaying loan clears late, and a plan that stops at the
     contract reads as no payoff): the loan's own installment sequence
-    (:func:`~app.services.loan_ledger.installment_dates`, the one calendar)
+    (:func:`~app.services.installment_calendar.installment_dates`, the one calendar)
     continued past its last contractual row.  Until plan step
     recurrence:R16-c-2 it stepped a month count from that last row with
     ``add_months``, which keeps a clamped day: a contract ending on a
     February 28th for a loan due on the 31st continued on the 28th.  It was
     also the charge calendar's reach, which the leaf now takes from the
     timeline's own last event (ruling **R-R100**).
-
-    Args:
-        contractual: The pure contractual schedule from origination to payoff.
-        calendar: The loan's contract terms.
 
     **Counted, not bounded by a date.**  The sequence is read to one month past
     the extension (``add_months`` of the last row, one month further) and the
@@ -543,6 +532,10 @@ def _extension_dates(contractual: list, calendar: LoanCalendar) -> list[date]:
     and can fall short of the sixtieth installment: a contract ending on a
     clamped February 28th for a loan due on the 31st bounds at the 28th five
     years on, and in a leap year the installment there is the 29th.
+
+    Args:
+        contractual: The pure contractual schedule from origination to payoff.
+        calendar: The loan's contract terms.
 
     Returns:
         The extension dates, ascending, one per month after the last

@@ -5,7 +5,10 @@ contractual facts* -- the :class:`~app.models.loan_params.LoanParams` /
 :class:`~app.models.loan_anchor_event.LoanAnchorEvent` /
 :class:`~app.models.loan_features.RateHistory` /
 :class:`~app.models.escrow_line.EscrowLine` loaders, the synthesized origination
-anchor, and the ONE derivation of which installment a payment satisfies.
+anchor, and a loan payment's own due date in contract time
+(:func:`installment_for`).  The installment whose interval that date falls in,
+and every other question about a loan's installment grid, is
+:mod:`app.services.installment_calendar`'s.
 
 Sits above :mod:`._shadows`, which owns *which rows are this account's payments*:
 :func:`_settled_payment_due_dates` reads that partition and nothing there reads
@@ -37,7 +40,8 @@ from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
-from app.services.rate_period_engine import due_after_anchor, monthly_due_date
+from app.services.installment_calendar import monthly_due_date
+from app.services.rate_period_engine import due_after_anchor
 from app.services.transfer_legs import TransferLeg
 from app.utils.dates import anchor_chronology_key
 
@@ -546,12 +550,12 @@ def load_escrow_lines(account_id: int) -> list:
 def installment_for(
     due_date: date | None, period_start: date, payment_day: int,
 ) -> date:
-    """Return the installment a loan payment satisfies, from PLAIN DATA.
+    """Return a loan payment's DUE date in contract time, from PLAIN DATA.
 
     The arithmetic core of :func:`loan_payment_due_date`, over plain values
     instead of a stored shadow: the payment's own ``due_date`` when it has one,
     else the contractual day reconstructed from its pay-period start
-    (:func:`~app.services.rate_period_engine.monthly_due_date`).  See that
+    (:func:`~app.services.installment_calendar.monthly_due_date`).  See that
     function for why the stored value is authoritative and when the fallback is
     correct.
 
@@ -574,7 +578,11 @@ def installment_for(
         payment_day: The loan's contractual day-of-month due day, 1-31.
 
     Returns:
-        The date of the monthly installment this payment satisfies.
+        The payment's due date: its stored ``due_date``, else the contractual
+        day its pay period contains.  The installment it PAYS is the one whose
+        interval that date falls in
+        (:func:`~app.services.installment_calendar.installment_of`) -- the
+        same date for a payment due on the contractual day.
     """
     if due_date is not None:
         return due_date
@@ -617,10 +625,14 @@ def precedes_origination(params: LoanParams, installment: date) -> bool:
 def loan_payment_due_date(
     shadow: Transaction | TransferLeg, payment_day: int,
 ) -> date:
-    """Return the monthly installment a loan payment satisfies.
+    """Return a loan payment's DUE date in contract time.
 
-    The project's SINGLE derivation of "which contractual installment is this
-    payment?" -- read by the fold's event stream
+    The project's SINGLE derivation of a loan payment's DUE date in contract
+    time.  The installment it PAYS -- whose charge it clears and whose rate
+    and escrow its cash is priced on -- is the one whose interval that date
+    falls in (:func:`~app.services.installment_calendar.installment_of`,
+    rulings **R-R89** and **R-R104**): the same date for a payment due on the
+    contractual day.  The due date is read by the fold's event stream
     (:func:`app.services.loan_ledger.loan_event_stream`),
     the payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
@@ -688,7 +700,7 @@ def loan_payment_due_date(
     (``loan_ledger.loan_event_stream``) DATES every payment by it, the replay
     (``loan_ledger.replay_loan_events``) orders on that date and applies its
     strict ``anchor_date < due_date`` post-anchor boundary against it, and the
-    charge calendar keys its accrual periods off it -- so moving it moves the
+    interval it falls in names the charge it clears -- so moving it moves the
     POSTED balance.  Any writer of
     ``due_date`` must therefore follow it with a posting reconcile --
     ``transfer_service._POSTING_RELEVANT_FIELDS`` is what enforces that.
@@ -716,7 +728,7 @@ def loan_payment_due_date(
             by the fallback.
 
     Returns:
-        The date of the monthly installment this payment satisfies.
+        The payment's due date (:func:`installment_for`).
     """
     return installment_for(
         shadow.due_date, shadow.pay_period.start_date, payment_day,
@@ -778,11 +790,16 @@ def latest_settled_payment_due_date(
     cannot be the greatest ``effective_date <= due date`` for any settled payment,
     so no settled split moves.
 
-    Keys on the payment's DUE date -- contract time, the EXACT date the fold's
-    walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the settle-time
-    cash freeze
-    (:func:`app.services.cash_ledger._loan_installment._installment_cash`) resolve each
-    payment's escrow at (ruling D5, finding N-34).  It is the SAME
+    Keys on the payment's DUE date -- contract time (ruling D5, finding N-34).
+    The fold's walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the
+    settle-time cash freeze
+    (:func:`app.services.cash_ledger._loan_installment._installment_cash`)
+    resolve each payment's escrow on the installment whose interval that date
+    falls in (ruling **R-R104**): the due date itself for a payment due on the
+    contractual day, an EARLIER date for one due off it.  So the bound is SAFE
+    -- no version it admits can reach a settled split -- and over-refuses a
+    version effective between an off-day payment's installment and its due
+    date (finding **REC-544**).  It is the SAME
     :func:`_settled_payment_due_dates` derivation the fold walks, so the escrow
     guard, the walk, and the tax figure provably agree on each payment's date.
 

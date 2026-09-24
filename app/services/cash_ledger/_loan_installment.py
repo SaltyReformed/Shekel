@@ -18,11 +18,12 @@ already had, and the same shape
 transfer can answer it.  The module names no model at all as a result.
 
 **Every contractual term here resolves on the INSTALLMENT it governs, never on
-a read date** (ruling **R-IJ**, plan step X-au-g-2b).  The basis holds the
-loan's term SET -- a pure function of its params and its rate feed, dated by
-nothing -- and :func:`_installment_cash` derives the installment date once and
-reads both the P&I and the escrow on it.  Nothing in this module, or in
-the package above it, reads a wall clock.
+a read date** (ruling **R-IJ**, plan step X-au-g-2b), and the installment is the
+one whose INTERVAL the payment falls in (ruling **R-R104**, which amends R-IJ).
+The basis holds the loan's term SET -- a pure function of its params and its
+rate feed, dated by nothing -- and :func:`_installment_cash` derives the
+installment once and reads both the P&I and the escrow on it.  Nothing in this
+module, or in the package above it, reads a wall clock.
 
 **It lives in THIS package rather than in ``loan_payment_service``, and plan
 step X-au-g-2a is what moved it.  This is the ONE place that argument is
@@ -91,6 +92,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import escrow_calculator, loan_resolver
+from app.services.installment_calendar import installment_of
 from app.services.loan_loaders import (
     installment_for,
     load_loan_params,
@@ -101,13 +103,15 @@ from app.utils.money import round_money
 
 @dataclass(frozen=True)
 class _LoanCashBasis:
-    """The two loan-level facts one installment's live cash is built from.
+    """The loan-level facts one installment's live cash is built from.
 
-    Both fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`), so
-    they are returned together rather than re-queried per row: the rate
-    periods are the loan's TERMS over its whole life, the payment day the
-    contractual constant that turns a payment into the installment it
-    satisfies.
+    All three fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`),
+    so they are returned together rather than re-queried per row: the rate
+    periods are the loan's TERMS over its whole life, and the origination date
+    and the payment day are the two constants that place a payment on the
+    loan's installment calendar
+    (:func:`app.services.installment_calendar.installment_of`) and so name the
+    installment it pays.
 
     **It holds the loan's term SET rather than one resolved P&I, and ruling
     R-IJ is why** (plan step X-au-g-2b).  A loan's contractual terms resolve on
@@ -117,9 +121,9 @@ class _LoanCashBasis:
     recast falls between them.  What a pass CAN share is the period set, which
     is a pure function of the loan's params and its rate feed and depends on no
     date at all -- so it is resolved once per loan per pass here and each
-    payment reads the period governing its own due date
-    (:func:`_installment_cash`), exactly as its escrow already resolves on
-    that date.
+    payment reads the period governing the installment it pays
+    (:func:`_installment_cash`), exactly as its escrow resolves on that
+    installment.
 
     Attributes:
         periods: The loan's ordered :class:`~app.services.rate_period_engine.RatePeriod`
@@ -129,15 +133,20 @@ class _LoanCashBasis:
         payment_day: The loan's contractual day-of-month due day, 1-31, from
             :attr:`app.models.loan_params.LoanParams.payment_day` -- the
             fallback basis :func:`app.services.loan_loaders.installment_for`
-            needs for a payment carrying no stored ``due_date``.
+            needs for a payment carrying no stored ``due_date``, and the day
+            the loan's installment grid falls on.
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`, where
+            the installment grid starts (ruling **R-R104**).
     """
 
     periods: list[RatePeriod]
     payment_day: int
+    origination_date: date
 
 
 def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
-    """Resolve a loan's rate periods and payment day, or ``None``.
+    """Resolve a loan's rate periods, payment day and origination date, or ``None``.
 
     Returns ``None`` when the loan has no ``LoanParams`` row (it cannot be
     resolved, so its shadows keep their stored amount); a configured loan is
@@ -162,9 +171,9 @@ def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
     no longer resolved here -- it is per-INSTALLMENT
     (:func:`_installment_cash`), not one figure per loan.  A future-dated
     escrow version means a December and a January payment carry different
-    escrow, so the escrow must be resolved against each payment's own due date
-    rather than folded into a single loan-level PITI; ruling R-IJ is that same
-    rule, stated for the P&I term beside it.
+    escrow, so the escrow must be resolved against the installment each
+    payment pays rather than folded into a single loan-level PITI; ruling R-IJ
+    is that same rule, stated for the P&I term beside it.
 
     **It reads the loan's TERMS and nothing else, and that is what deletes a
     cycle three docstrings were built around.**  It used to run
@@ -229,6 +238,7 @@ def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
             params, load_rate_changes(loan_account_id),
         ),
         payment_day=params.payment_day,
+        origination_date=params.origination_date,
     )
 
 
@@ -264,47 +274,75 @@ def _installment_cash(
     :func:`app.services.settle_day.settle_day_from_columns` takes *precisely so
     a transfer can answer it*.
 
-    **BOTH contractual terms resolve on the payment's own DUE date, and that is
-    ruling R-IJ** (plan step X-au-g-2b): the installment date
-    (:func:`app.services.loan_loaders.installment_for`) is derived ONCE
-    here and drives the P&I -- the level payment of the rate period containing
-    it (:func:`~app.services.rate_period_engine.period_for_date`) -- and the
+    **BOTH contractual terms resolve on the INSTALLMENT the payment pays, and
+    that is ruling R-IJ** (plan step X-au-g-2b) **as ruling R-R104 amends
+    it**.  The payment's own due date in contract time
+    (:func:`app.services.loan_loaders.installment_for`) is placed on the loan's
+    installment calendar ONCE here -- the latest installment due on or before
+    it (:func:`~app.services.installment_calendar.installment_of`, worked out
+    from the calendar's one rule rather than searched for, ruling **R-R105**),
+    the interval ruling **R-R89** pairs a payment with -- and that installment
+    drives the P&I --
+    the level payment of the rate period containing it
+    (:func:`~app.services.rate_period_engine.period_for_date`) -- and the
     escrow -- :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
     the same day.  One date for both is what makes them one installment's
     price rather than two answers about two moments; deriving it once rather
-    than twice is what makes that structural.
+    than twice is what makes that structural.  Until R-IJ that held for the
+    escrow alone: the P&I came from whatever period contained the READ date,
+    so on an ARM whose rate had adjusted between the two the residual
+    ``cash - interest - escrow`` absorbed the recast delta as PRINCIPAL
+    (finding **N-40**).
 
-    **The charge a payment clears resolves its rate period and its escrow on
-    the INSTALLMENT's date** (``loan_ledger._charges.contract_charges``,
-    ``period_for_date(periods, on_date)``), and that is this due date only
-    while the payment is due on the contractual day.  Since plan step
+    **Why the interval's installment and not the payment's own due date**
+    (ruling **R-R104**, "Price on the interval").  Since plan step
     recurrence:R16-c-2 a loan is charged on its contract's installments,
-    whatever its payments' due dates (rulings **R-R72**, **R-R89**), so a
-    payment due off the contractual day is priced here on its own date and
-    clears the charge of the installment whose interval it falls in; the cash
-    and the split then read one period and one escrow version only when no
-    rate or escrow change falls between the two dates.  Every payment on both
-    of the developer's live loans is due on the contractual day.  **The cash
-    is dated from the PARENT and the split's installment from the SHADOW, and
-    the two are one date**: ``due_date`` is a mirrored field with the
-    parent canonical (``models/transfer.py``), written to all three rows in one
-    statement by ``transfer_service._update`` and corrected on restore.  A
+    whatever its payments' due dates (rulings **R-R72**, **R-R89**), and the
+    charge a payment clears resolves its rate period and its escrow on THAT
+    installment's date (``loan_ledger._charges.contract_charges``).  While the
+    cash was priced on the payment's own due date, a payment due off the
+    contractual day built one escrow version into its cash and backed another
+    out of its split whenever a change fell between the two dates, moving the
+    difference into principal.  Made-up figures: escrow ``$100.00`` a month
+    rising to ``$300.00`` on Mar 1, P&I ``$200.00``, a payment due Mar 10 on a
+    loan due the 22nd that clears ``$50.00`` of interest.  Priced on Mar 10 its
+    cash was ``$500.00`` against a split backing out Feb 22's ``$100.00``
+    escrow, so ``$350.00`` went to principal where ``$150.00`` was paid down;
+    priced on Feb 22 the cash is ``$300.00`` and the split ``$50.00`` /
+    ``$100.00`` / ``$150.00``.  For a payment due ON the contractual day the
+    installment IS its due date, so nothing moved for one: measured on a
+    production copy 2026-09-24, no loan payment was due off its loan's
+    contractual day.
+
+    **Four payments clear no charge, so their whole cash -- escrow included
+    -- is principal.**  A payment due before the loan's first installment
+    (ruling R-C's early extra) has no installment to pay, so
+    :func:`~app.services.installment_calendar.installment_of` answers ``None``
+    and it is priced on its own due date, as the replay reads its period there
+    too.  An OVERDUE projection pushed past a later recorded fact is priced on
+    its own interval's installment, as if nothing had pushed it, while the
+    replay hands it what stands at the push -- nothing, since that fact cleared
+    it (the catch-up rule of plan step recurrence:R16-c-2).  A SECOND payment
+    inside one installment's interval deliberately clears no fresh charge (plan
+    step X-au-g-2c-3b-2).  And a payment whose interval's charge a balance
+    assertion cleared before it -- due Mar 10 on a loan due the 22nd, after a
+    Mar 5 true-up -- faces nothing standing (ruling R-R72 part (2)): the
+    assertion states the balance owed, so the escrow its cash carries pays
+    principal.
+
+    **The cash is dated from the PARENT and the split's installment from the
+    SHADOW, and the two are one date**: ``due_date`` is a mirrored field with
+    the parent canonical (``models/transfer.py``), written to all three rows in
+    one statement by ``transfer_service._update`` and corrected on restore.  A
     census of every writer of a shadow's ``due_date`` or ``pay_period_id``
     across ``app/`` returns those three sites and no other -- no bulk update, no
     ``setattr`` splat reaches a leg -- so the two reads are one value.
     **It is one value with TWO HOMES kept equal by a maintenance contract,
-    which is rule 14's own shape**: this step created the second read rather
-    than inheriting it, and what deletes it is ``X-bi-6`` removing the shadow
-    rows -- one row is left to date anything from.  A SECOND payment inside
-    one installment's interval deliberately clears no fresh charge, so there
-    the cash carries an escrow the split does not back out and the whole
-    payment is principal (plan step X-au-g-2c-3b-2).
-    Until R-IJ that held for the escrow alone: the P&I came from whatever
-    period contained the READ date, so on an ARM whose rate had adjusted
-    between the two the residual ``cash - interest - escrow`` absorbed the
-    recast delta as PRINCIPAL (finding **N-40**).
+    which is rule 14's own shape**: plan step X-au-f-2 created the second read
+    rather than inheriting it, and what deletes it is ``X-bi-6`` removing the
+    shadow rows -- one row is left to date anything from.
 
-    **Why the DUE date and not the pay-period start** (ruling D5, finding
+    **Why contract time and not the pay-period start** (ruling D5, finding
     N-34): a pay period begins up to ~2 weeks before the installment it pays,
     so a version effective inside that window would build one figure into the
     cash and back a different one out of the split, silently moving the
@@ -324,10 +362,10 @@ def _installment_cash(
     Args:
         basis: The loan's :class:`_LoanCashBasis` (:func:`_resolve_loan_basis`),
             resolved once per loan.  Taken WHOLE rather than unpacked by every
-            caller: its rate periods and its payment day are two halves of one
-            figure -- the payment day dates the installment whose period is
-            read -- so passing them separately would let a call site pair one
-            loan's terms with another's due day.
+            caller: its rate periods, its payment day and its origination are
+            parts of one figure -- the last two place the installment whose
+            period is read -- so passing them separately would let a call site
+            pair one loan's terms with another's calendar.
         escrow_lines: The loan's escrow lines with their full version history.
         due_date: The payment's own stored due date, or ``None``.  Both dating
             values come off ONE row at every call site, for the reason *basis*
@@ -339,13 +377,20 @@ def _installment_cash(
             (``0.00`` when none), from :func:`loan_payment_config`.
 
     Returns:
-        ``round_money(period_for_date(basis.periods, due).period_pi
-        + escrow_monthly_as_of(lines, due) + extra_principal)``, where ``due``
-        is the installment this payment satisfies.
+        ``round_money(period_for_date(basis.periods, installment).period_pi
+        + escrow_monthly_as_of(lines, installment) + extra_principal)``, where
+        ``installment`` is the one whose interval this payment's due date falls
+        in -- the due date itself for a payment due on the contractual day or
+        before the loan's first installment.
     """
     due = installment_for(due_date, period_start, basis.payment_day)
-    monthly_pi = period_for_date(basis.periods, due).period_pi
-    escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, due)
+    installment = installment_of(basis.origination_date, basis.payment_day, due)
+    if installment is None:
+        # Ruling R-C's early extra: due before the first installment, so no
+        # installment stands over it and it is priced on its own date.
+        installment = due
+    monthly_pi = period_for_date(basis.periods, installment).period_pi
+    escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, installment)
     return round_money(monthly_pi + escrow + extra_principal)
 
 

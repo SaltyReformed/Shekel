@@ -172,8 +172,10 @@ class TestAProjectionNeverPrecedesAFact:
         """Two skipped months behind a later fact: cleared by it, then pure-principal catch-ups.
 
         Facts: origination $10,000.00 (Jan 1) and a $500.00 payment on the
-        June 1 installment; April's, May's and June's charges are the
-        contract's.  Projected: April's and May's catch-ups, pushed to the
+        June 1 installment; the stream states April's, May's and June's
+        charges by hand (the contract's calendar would charge February and
+        March too -- this pure-arithmetic case omits them, so June clears
+        three months, not five).  Projected: April's and May's catch-ups, pushed to the
         boundary (June 2).  A charge is never pushed (plan step
         recurrence:R16-c-2, rulings R-R72 part (1) and R-R100), so all three
         charges walk before the June fact and it clears them; the catch-ups

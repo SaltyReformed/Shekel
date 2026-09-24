@@ -41,9 +41,9 @@ from app.models.transfer_template import TransferTemplate
 from app.schemas.validation import end_bound_before_start_message
 from app.services import (
     balance_at,
+    installment_calendar,
     loan_loaders,
     loan_recurrence_sync,
-    rate_period_engine,
     transfer_recurrence,
 )
 from app.services.balance_at import BalanceContext
@@ -103,7 +103,7 @@ class TestFirstInstallmentDate:
     ])
     def test_the_convention(self, origination, payment_day, expected):
         """The first installment is the payment_day of the month AFTER origination."""
-        assert rate_period_engine.first_installment_date(
+        assert installment_calendar.first_installment_date(
             origination, payment_day,
         ) == expected
 
@@ -116,10 +116,10 @@ class TestFirstInstallmentDate:
         closing, and NOT what the loan bills.  Sourcing the bound from the wrong
         one of these two would admit an installment the engine never schedules.
         """
-        assert rate_period_engine.monthly_due_date(
+        assert installment_calendar.monthly_due_date(
             date(2026, 4, 15), 20,
         ) == date(2026, 4, 20)
-        assert rate_period_engine.first_installment_date(
+        assert installment_calendar.first_installment_date(
             date(2026, 4, 15), 20,
         ) == date(2026, 5, 20)
 
@@ -153,7 +153,7 @@ class TestFirstInstallmentDate:
             rows = contractual_schedule_from_origination(
                 params, loan_loaders.load_rate_changes(acct.id),
             )
-            assert rows[0].payment_date == rate_period_engine.first_installment_date(
+            assert rows[0].payment_date == installment_calendar.first_installment_date(
                 origination, payment_day,
             )
 

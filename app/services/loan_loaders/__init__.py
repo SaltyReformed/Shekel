@@ -8,7 +8,7 @@ The pure data-loading functions every loan consumer shares, in two leaves:
   :class:`~app.models.loan_anchor_event.LoanAnchorEvent` /
   :class:`~app.models.loan_features.RateHistory` /
   :class:`~app.models.escrow_line.EscrowLine` loaders, the synthesized
-  origination anchor, and the ONE derivation of which installment a payment
+  origination anchor, and the contract-time due date each loan payment
   satisfies.
 * :mod:`._shadows` -- WHICH rows are an account's payments and which of them
   have HAPPENED: the shadow-income predicate and the single settled/projected
@@ -35,7 +35,7 @@ cycle), rather than a lazy-import workaround.
 
 This package is a LEAF: it imports models, the pure engine primitives
 (:class:`~app.services.amortization_engine.RateChangeRecord`,
-:func:`~app.services.rate_period_engine.monthly_due_date`), the shared
+:func:`~app.services.installment_calendar.monthly_due_date`), the shared
 balance predicates and the transfer-leg leaf
 (:mod:`app.services.transfer_legs`, itself models and predicates only) --
 never another loan service.  Flask-isolated, reads only, no commits.

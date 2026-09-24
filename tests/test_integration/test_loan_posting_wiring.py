@@ -631,11 +631,14 @@ class TestRouteChokepointWiring:
                 seed_user, db.session,
                 origination_principal=_ORIGINATION_PRINCIPAL,
                 anchor_balance=_ANCHOR_BALANCE, anchor_date=date(2026, 1, 25),
-                # The month before P1's first installment at either due day
-                # (02-01 at the 1st, 01-20 at the 20th): every contractual
-                # installment from origination is charged since plan step
-                # recurrence:R16-c-2 (ruling R-R101), so SPLIT_LOAN's
-                # 2025-01-01 would have P1 clear a year of unpaid months.
+                # P1 clears ONE month at either due day: at the 20th its 01-20
+                # installment is the loan's first; at the 1st the 01-01
+                # installment falls before the 01-25 true-up, which clears it
+                # (ruling R-R72 part (2)), and P1 (02-01) faces February's
+                # alone.  Every contractual installment from origination is
+                # charged since plan step recurrence:R16-c-2 (ruling R-R101),
+                # so at the 20th SPLIT_LOAN's 2025-01-01 would have P1 clear a
+                # year of unpaid months.
                 rate=_RATE, origination_date=date(2025, 12, 1),
             )
             _settle(seed_user, loan, seed_periods[_P1])

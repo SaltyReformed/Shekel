@@ -118,7 +118,7 @@ _KIND_ORDER = {
 
 @dataclass(frozen=True)
 class LoanCashEvent:
-    """Cash arriving against a loan, at the installment it satisfies.
+    """Cash arriving against a loan, at its due date in contract time.
 
     One payment as the replay sees it: WHEN it lands in contract time, HOW MUCH
     cash it moved, and an opaque *source* echoed back on its outcome so the
@@ -127,9 +127,11 @@ class LoanCashEvent:
     its live price and a synthesized contractual installment all replay alike.
 
     Attributes:
-        on_date: The installment this cash satisfies -- CONTRACT time, never the
-            day the cash settled (ruling R-A).  It orders the event and it is the
-            date the charge it clears was resolved at.
+        on_date: The payment's due date in CONTRACT time, never the day the
+            cash settled (ruling R-A).  It orders the event against the
+            charges; the charge a payment walked on this date clears is the
+            installment whose interval the date falls in (ruling R-R89), which
+            is this date itself only for a payment due on the contractual day.
         cash: The cash this payment moved.  Never negative: the caller reads a
             record's own figure, and the allocation surfaces an underpayment as
             NEGATIVE principal rather than as negative cash (plan D5).
@@ -250,8 +252,9 @@ def with_contract_charges(
     stream's events -- a payment, an assertion or a projection -- is due on.
     That reach is the whole of what a replay needs: a charge after the last
     payment is cleared by nothing and moves no outcome, so charging further is
-    arithmetic nobody reads, and charging less would leave a payment facing an
-    installment that never fell.
+    arithmetic nobody reads, and charging less would leave a late payment's
+    own installment uncharged, so that month's interest would never be
+    charged at all.
 
     Args:
         stream: The loan's events; its own ``charges`` and ``calendar`` are
@@ -311,8 +314,10 @@ class PaymentOutcome:
             value.
         period: The :class:`~app.services.rate_period_engine.RatePeriod`
             governing this payment: the standing charge's -- resolved ONCE, on
-            the accrual period the charge IS, so the displayed rate is provably
-            the rate its interest accrued at (plan step X-au-g-2c-3b-2) -- or,
+            the accrual period the charge IS, so for a payment clearing one
+            charge the displayed rate is provably the rate its interest accrued
+            at (plan step X-au-g-2c-3b-2); one clearing arrears across a rate
+            change displays its latest charge's -- or,
             for a payment no charge stands over, the period the loan's calendar
             puts its installment in (:func:`~app.services.rate_period_engine
             .period_for_date` over the stream's ``periods``).

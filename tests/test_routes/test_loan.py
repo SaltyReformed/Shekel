@@ -3280,7 +3280,7 @@ class TestBandChartLongestBaseline:
         dates before the plan's and run one tick past the payoff.  Since plan
         step recurrence:R16-c-2 the grid and the plan's extension both step
         the loan's ONE installment calendar
-        (``loan_ledger.installment_dates``), which clamps the due day to each
+        (``installment_calendar.installment_dates``), which clamps the due day to each
         month afresh.  The grid's dates past the contract are the plan's own:
         the last label is the payoff's month and the point count past the
         contract is the month count to the payoff.

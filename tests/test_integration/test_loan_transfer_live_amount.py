@@ -21,7 +21,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, LedgerAccountKindEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_features import RateHistory
@@ -39,12 +39,14 @@ from app.services.loan_loaders import (
     load_escrow_lines,
     loan_payment_due_date,
 )
-from app.services.rate_period_engine import monthly_due_date
+from app.services.installment_calendar import monthly_due_date
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
+    find_loan_ledger_account,
+    ledger_net,
     loan_params_for,
     make_cadence_rule,
 )
@@ -111,8 +113,13 @@ def _state_price(template, figure):
 
 def _build_derived_loan_transfer(
     seed_user, escrow_annual, origination_date=date(2026, 1, 1),
+    payment_day=1, fires_on_day=1,
 ):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
+
+    The loan is due on *payment_day* and its payment's rule fires on
+    *fires_on_day*; both are the 1st unless a case states otherwise, and a
+    case that parts them builds a payment due OFF the contractual day.
 
     Returns ``(loan_account, escrow_version, scenario_id)``.  The
     transfer's stored default amount is intentionally a stale value so
@@ -132,7 +139,7 @@ def _build_derived_loan_transfer(
     loan = create_loan_account(
         seed_user, db.session, name="Live Mortgage",
         principal=Decimal("200000.00"), rate=Decimal("0.06000"),
-        term=360, origination_date=origination_date, payment_day=1,
+        term=360, origination_date=origination_date, payment_day=payment_day,
         account_type=AcctTypeEnum.MORTGAGE,
     )
     params = loan_params_for(db.session, loan.id)
@@ -176,7 +183,7 @@ def _build_derived_loan_transfer(
     db.session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(
-        template, MONTHLY, fires_on_day=1,
+        template, MONTHLY, fires_on_day=fires_on_day,
     )
 
     periods = seed_user["periods"] if "periods" in seed_user else None
@@ -315,7 +322,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
     """A derive_from_loan transfer is due on the loan's true monthly due date.
 
     The loan card derives its due dates from LoanParams.payment_day via
-    rate_period_engine.monthly_due_date.  The transfer recurrence now uses the
+    installment_calendar.monthly_due_date.  The transfer recurrence now uses the
     shared compute_due_date, and the loan template's rule carries
     day_of_month = payment_day (1), so the transfer's parent + both shadows
     land on the 1st of each month -- matching the loan card -- rather than the
@@ -500,6 +507,157 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
             split.interest + split.escrow + split.principal + split.excess
             == settled_contribution(settled)
         )
+
+
+def test_an_off_day_payment_is_priced_on_its_intervals_installment(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """An off-day payment's cash and its split read ONE installment (ruling R-R104).
+
+    The loan is due the 22nd and originates 2026-01-22, so its first
+    installment is 02-22; its payment's rule fires on the 10th, so the row due
+    **2026-03-10** falls in the 02-22 interval and clears 02-22's charge
+    (ruling R-R89).  Escrow is $1,200.00 a year ($100.00 a month) from
+    origination, rising to $3,600.00 ($300.00) on **2026-03-01** -- between
+    the installment and the payment's own due date, the one window where the
+    two datings differ:
+
+      * interval keying (ruling R-R104, as built): the cash is P&I 1,199.10 +
+        02-22's 100.00 = **1,299.10**, and the split backs out the same
+        100.00 -- interest 200,000 x 0.06 / 12 = 1,000.00, principal
+        1,299.10 - 1,000.00 - 100.00 = 199.10, exactly P&I - interest.
+      * own-date keying (ruling R-IJ before R-R104): the cash was 1,199.10 +
+        300.00 = 1,499.10 against the same 100.00 backed out, so 399.10 went
+        to principal and the recorded balance read $200.00 low.
+
+    Generation runs over the pay periods after the origination, since the
+    payment door refuses an occurrence at or before it (ruling R-C); the 02-10
+    row it writes is an early extra and stays projected.
+    """
+    with app.app_context():
+        loan, escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(
+                seed_user, Decimal("1200.00"),
+                origination_date=date(2026, 1, 22),
+                payment_day=22, fires_on_day=10,
+            )
+        )
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods if p.start_date > date(2026, 1, 22)},
+            ), scenario_id,
+        )
+        db.session.add(EscrowComponentVersion(
+            line_id=escrow.line_id,
+            effective_date=date(2026, 3, 1),
+            annual_amount=Decimal("3600.00"),
+        ))
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+                Transaction.due_date == date(2026, 3, 10),
+            )
+            .one()
+        )
+        assert _derived_cash(seed_user, [income_shadow])[
+            income_shadow.id
+        ] == Decimal("1299.10")
+
+        resp = _mark_done_from_leg(auth_client, income_shadow)
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow.id)
+        assert settled_contribution(settled) == Decimal("1299.10")
+
+        (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
+        assert split.due_date == date(2026, 3, 10)
+        assert split.charge_date == date(2026, 2, 22)
+        assert split.interest == Decimal("1000.00")
+        assert split.escrow == Decimal("100.00")
+        assert split.principal == Decimal("199.10")
+        assert split.excess == Decimal("0.00")
+        assert (
+            split.interest + split.escrow + split.principal + split.excess
+            == settled_contribution(settled)
+        )
+
+
+def test_an_early_extra_is_charged_nothing_in_the_posted_ledger(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """Ruling R-C's early extra, settled: no charge stands over it, so it is all principal.
+
+    The off-day case's loan (due the 22nd, originated 2026-01-22, first
+    installment 02-22, escrow $100.00 a month).  Its row due **2026-02-10**
+    falls after the origination and before the first installment, so no
+    installment's interval holds it
+    (:func:`~app.services.installment_calendar.installment_of` answers
+    ``None``) and it is priced on its own date: P&I 1,199.10 + 02-10's
+    escrow 100.00 = **1,299.10**.  Settled, the posted walk hands it NO
+    charge -- nothing has fallen due yet -- so its whole cash is principal:
+    interest 0.00, escrow 0.00, principal 1,299.10, and the loan's posted
+    interest ledger books nothing.  Until plan step recurrence:R16-c-2 the
+    settled walk charged a month at the payment's own date; only a hand-built
+    stream pinned the new rule before this case.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(
+                seed_user, Decimal("1200.00"),
+                origination_date=date(2026, 1, 22),
+                payment_day=22, fires_on_day=10,
+            )
+        )
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods if p.start_date > date(2026, 1, 22)},
+            ), scenario_id,
+        )
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+                Transaction.due_date == date(2026, 2, 10),
+            )
+            .one()
+        )
+        resp = _mark_done_from_leg(auth_client, income_shadow)
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow.id)
+        assert settled_contribution(settled) == Decimal("1299.10")
+
+        (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
+        assert split.due_date == date(2026, 2, 10)
+        assert split.charge_date is None
+        assert (split.interest, split.escrow, split.principal, split.excess) == (
+            Decimal("0.00"), Decimal("0.00"), Decimal("1299.10"), Decimal("0.00"),
+        )
+        # The per-loan interest ledger is minted by the first posting that
+        # books interest, so a loan whose only payment books none may have
+        # none -- which counts as nothing booked, and any interest posted
+        # would both mint it and move its net.
+        interest_ledger = find_loan_ledger_account(
+            db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+        )
+        interest_booked = (
+            Decimal("0.00") if interest_ledger is None
+            else ledger_net(db.session, interest_ledger.id, scenario_id)
+        )
+        assert interest_booked == Decimal("0.00")
 
 
 def test_settling_derived_loan_payment_captures_live_amount(

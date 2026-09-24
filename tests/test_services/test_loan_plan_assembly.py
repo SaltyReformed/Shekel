@@ -506,7 +506,7 @@ def test_the_extension_returns_to_the_due_day_after_a_short_month():
     """A contract ending on a clamped February 28th continues on the 31st.
 
     The extension is the loan's own installment calendar past the contract's
-    last row (``loan_ledger.installment_dates``, plan step
+    last row (``installment_calendar.installment_dates``, plan step
     recurrence:R16-c-2), which clamps the due day to each month afresh.  It
     stepped a month count from the last row until then, which kept the clamp:
     2027-03-28, 2027-04-28, and so on for the loan's whole extension.

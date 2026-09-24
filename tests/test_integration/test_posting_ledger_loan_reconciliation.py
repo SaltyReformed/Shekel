@@ -156,7 +156,7 @@ from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.anchor_service import AnchorTrueUpOutcome
-from app.services.rate_period_engine import monthly_due_date
+from app.services.installment_calendar import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
 from app.services.balance_at import BalanceContext

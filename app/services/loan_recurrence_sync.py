@@ -90,7 +90,7 @@ from app.enums import RecurrenceUnitEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
-from app.services import balance_at, loan_loaders, rate_period_engine
+from app.services import balance_at, installment_calendar, loan_loaders
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     EMPTY,
@@ -413,7 +413,7 @@ def loan_cadence_start(
     Returns:
         The :class:`LoanCadenceStart`.
     """
-    starts_on = rate_period_engine.first_installment_date(
+    starts_on = installment_calendar.first_installment_date(
         params.origination_date, params.payment_day,
     )
     # MEMBERSHIP in the reader's own set, never a second list of conditions.

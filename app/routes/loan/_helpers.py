@@ -42,7 +42,7 @@ from app.services import (
 )
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import LoanFigures, LoanTerms
-from app.services.loan_ledger import installment_dates
+from app.services.installment_calendar import installment_dates
 from app.services.loan_loaders import (
     latest_settled_payment_due_date,
     load_loan_anchor_facts,
