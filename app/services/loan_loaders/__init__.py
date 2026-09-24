@@ -67,6 +67,7 @@ from ._terms import (
     load_loan_params,
     load_rate_changes,
     load_rate_history,
+    load_standing_loan_assertions,
     loan_payment_due_date,
     synthesize_origination_anchor,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "load_loan_params",
     "load_rate_changes",
     "load_rate_history",
+    "load_standing_loan_assertions",
     "loan_payment_due_date",
     "projected_income_legs",
     "query_shadow_income",

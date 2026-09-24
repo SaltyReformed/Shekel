@@ -1,7 +1,7 @@
 """one salary profile per paycheck definition in each scenario
 
 Revision ID: 9b2c5656eed9
-Revises: 5641f7729b68
+Revises: cddb15ffba5f
 Create Date: 2026-09-23
 
 Plan step **salary:X-av-1**, ruling **R-SAL63** ("One profile per paycheck",
@@ -63,7 +63,7 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = "9b2c5656eed9"
-down_revision = "5641f7729b68"
+down_revision = "cddb15ffba5f"
 branch_labels = None
 depends_on = None
 

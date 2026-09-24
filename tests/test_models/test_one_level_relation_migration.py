@@ -53,6 +53,14 @@ _LATER = load_migration_module(
 _LATEST = load_migration_module(
     "3ef820b7dd52_the_sighting_names_the_merchant.py",
 )
+#: The revision that re-installs the append-only function with a FIFTH table
+#: (plan step ``recurrence:R23``: a loan statement's withdrawal).  Stepped
+#: down FIRST and up LAST for the same reason: this revision's downgrade drops
+#: ``budget.refuse_append_only_change``, which that table's triggers still use
+#: while it stands.
+_R23 = load_migration_module(
+    "cddb15ffba5f_a_mis_dated_loan_statement_is_withdrawn.py",
+)
 
 
 def _sql(statement, **params):
@@ -173,6 +181,7 @@ class TestTheRoundTrip:
             "'account_anchor_history' AND operation = 'UPDATE'"
         )[0][0]
 
+        _run(_R23.downgrade, db.session)
         _run(_LATEST.downgrade, db.session)
         _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
@@ -272,6 +281,8 @@ class TestTheRoundTrip:
             "'account_anchor_history' AND operation = 'UPDATE'"
         )[0][0] == audit_updates_before
 
+        _run(_R23.upgrade, db.session)
+
     def test_the_upgrade_refuses_a_database_without_the_evidence_ladder(
         self, db,
     ):
@@ -281,6 +292,7 @@ class TestTheRoundTrip:
         ``uncorroborated`` row has no id to default the owner's rows to, and
         the revision says so instead of writing a wrong literal.
         """
+        _run(_R23.downgrade, db.session)
         _run(_LATEST.downgrade, db.session)
         _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
