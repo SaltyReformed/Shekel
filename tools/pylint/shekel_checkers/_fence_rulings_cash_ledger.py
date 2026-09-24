@@ -308,7 +308,7 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     "governing_account_opening",
     # ``_books`` (X-f3c-2b, N-378; X-f3c-2b-2a; X-f3c-2b-2b, N-383) -- FIVE
     # REFUSALS stating the books boundary, each returning nothing, plus the
-    # three DAYS they bound against and the one COMPARISON they share.
+    # three DAYS they bound against.
     # (It read "FOUR ... two DAYS" until the counts were taken against the
     # module: it states five ``reject_*`` and three ``earliest_*``, and its
     # own docstring says so.  A count in a ruling is a claim like any
@@ -319,14 +319,13 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # restatement form renders both, and a day is not a balance (the
     # ``latest_statement_day`` hatch, ruled below).
     #
-    # ``books_hold`` is the strongest case in the set rather than the
-    # weakest: it takes two dates, returns a ``bool`` and reads nothing at
-    # all, so it cannot answer a balance whatever a caller does with it.
-    # It is public because the SCREEN asks it -- ``statement_match``
-    # splits its bank lines on the same comparison the doors refuse on, and
-    # a second spelling of it there is the drift this whole set exists to
-    # make visible.
-    "books_hold",
+    # The one COMPARISON they share, ``books_hold``, was ruled here until
+    # plan step pay_calendar:C18-a moved its definition to the pure leaf
+    # ``app/utils/books_boundary.py`` (the recurrence walk asks it too and
+    # may not import this package).  ``_books`` imports it back, so it is no
+    # longer a name this module DEFINES and a ruling here would be stale; a
+    # two-date ``bool`` that reads nothing answers no balance wherever it
+    # lives, and the leaf is outside every fenced module.
     "reject_books_open_after_an_assertion",
     # ``reject_books_open_on_or_after_matched_lines`` and its reader
     # (X-f3c-2b-2b) carry the same ruling as the movement pair beside

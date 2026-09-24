@@ -16,10 +16,13 @@ no row in any state answers is priced, past or future, bounded to the
 schedule), **R-R65** (the authored closing alone; the derived stop is the
 fold's own output), **R-R66** (``budget.transfers`` read for identity only),
 **R-R67** (the amount model's own arm) and **R-R69** (dated as the row would
-be).  The occurrences it prices are bounded BELOW by the caller: an occurrence
+be).  The occurrences it prices are bounded BELOW twice, by two different
+facts.  The walk drops every occurrence whose row would land on or before the
+books of an account the definition moves money in (rulings **R-PC85**,
+**R-PC86**), as it does for generation.  And the caller drops an occurrence
 due at or before the loan's latest assertion -- its origination at the
-earliest, which is ruling R-C's refusal -- is dropped by :func:`._plan.loan_plan`
-on the one post-anchor predicate (ruling **R-R72**).
+earliest, which is ruling R-C's refusal -- in :func:`._plan.loan_plan`, on the
+one post-anchor predicate (ruling **R-R72**).
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.  Seam-PRIVATE.
@@ -99,15 +102,23 @@ def _unanswered_placements(
     """Return *template*'s placeable occurrences through *through* that no row answers.
 
     Steps 1-3 of :func:`estimated_from_definitions`, for one definition:
-    resolve the rule with the PURE resolver, narrow it to its AUTHORED closing
-    (never the composed door -- see that function), place every occurrence
-    on the paycheck its row would live in, drop the unplaceable (ruling
-    **R-R64**'s boundary) and drop what a row of this definition already
-    answers in any state (:func:`_answered_by_rows`).  An occurrence at or
-    before the loan's origination -- which the write door refuses (ruling
-    R-C), so a pass would not write it -- is NOT dropped here: the caller
-    drops every payment at or before the loan's latest assertion, and the
-    origination is the earliest of those (ruling **R-R72**).  An adversarial
+    resolve the rule through the pass's memo
+    (:meth:`~._context.BalanceContext.resolved_recurrence_of`, which attaches
+    the definition's books floor), narrow it to its AUTHORED closing (never
+    the composed door -- see that function), place every occurrence on the
+    paycheck its row would live in, drop the unplaceable (ruling **R-R64**'s
+    boundary) and every occurrence whose row would land on or before the
+    books of an account it moves money in (rulings **R-PC85**, **R-PC86**:
+    the walk's own floor, so the estimate and a generate pass drop the same
+    occurrences), and drop what a row of this definition already answers in
+    any state (:func:`_answered_by_rows`).  An occurrence at or before the
+    loan's origination -- which the write door refuses (ruling R-C), so a
+    pass would not write it -- is left to the caller, which drops every
+    payment at or before the loan's latest assertion, the origination being
+    the earliest of those (ruling **R-R72**).  The books floor is a different
+    fact -- where the app keeps books, not what the loan owed -- and drops
+    such an occurrence first only when its row falls on or before the books'
+    opening.  An adversarial
     review found a second definition whose unlocked start predated its loan
     paying for months the loan did not exist; a second predicate here for
     the same boundary was measured redundant by the review after it.
@@ -132,10 +143,12 @@ def _unanswered_placements(
     if resolved is None:
         # An owner with no pay periods has nothing to place on; the seam
         # cannot reach here with one (the calendar seeds the pass), and the
-        # pure resolver's answer is honoured rather than second-guessed.
+        # resolver's ``None``, which the memo hands back unchanged, is
+        # honoured rather than second-guessed.
         return []
-    # The pure resolver's value carries the AUTHORED half alone (``derived``
-    # is ``None`` by construction), which since plan step R7d-g is exactly
+    # The memo's value carries the AUTHORED closing alone (``derived`` is
+    # ``None`` by construction; the books floor it attaches bounds the walk
+    # from BELOW and closes nothing), which since plan step R7d-g is exactly
     # what the rule's two bound columns hold: every stored closing bound is
     # its owner's word, so there is no cache to read around (ruling
     # **R-R56**'s arm went with the column's last writer) and nothing to
@@ -173,8 +186,11 @@ def estimated_from_definitions(
     loaded once per pass; ruling **R-R35**: every one of them is a payment
     against it):
 
-    1. resolve its rule against the owner's calendar with the PURE resolver
-       and walk it under its AUTHORED closing alone.  Never through the
+    1. resolve its rule against the owner's calendar through the pass's memo,
+       which attaches the definition's books floor (rulings **R-PC85**,
+       **R-PC86**: no occurrence whose row would land on or before the books
+       of an account it moves money in is walked), and walk it under its
+       AUTHORED closing alone.  Never through the
        composed door: that door's derived stop is a loan's closing date,
        which is THIS fold's output, and a fold reading its own answer is the
        fixed point ruling **R-R65** refused to scaffold.  The authored half is

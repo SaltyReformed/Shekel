@@ -871,11 +871,12 @@ class TestARenderWalksAGoalTransferOnce:
         the read rather than the memo serving it.
         """
         # Pylint: ``import-outside-toplevel`` -- the walk-once control patches
-        # the name the PASS calls at call time (``_context``), a seam-private
+        # the name the PASS calls at call time (``_recurrence_memos``, the
+        # module of the context's mixin since ruling R-BAL146), a seam-private
         # module this file otherwise has no business importing; kept local
         # so the import states its one purpose beside its one use.
         # pylint: disable=import-outside-toplevel
-        from app.services.balance_at import _context
+        from app.services.balance_at import _recurrence_memos
         from tests._test_helpers import make_transfer_template
 
         with app.app_context():
@@ -906,13 +907,13 @@ class TestARenderWalksAGoalTransferOnce:
             db.session.commit()
 
             calls = []
-            real = _context.occurrence_placements
+            real = _recurrence_memos.occurrence_walk
 
             def counting(resolved, calendar, **kwargs):
                 calls.append(resolved)
                 return real(resolved, calendar, **kwargs)
 
-            monkeypatch.setattr(_context, "occurrence_placements", counting)
+            monkeypatch.setattr(_recurrence_memos, "occurrence_walk", counting)
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),

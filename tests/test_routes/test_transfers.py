@@ -779,6 +779,13 @@ class TestTemplateUpdate:
                     anchor_balance=Decimal("0.00"),
                 ),
             )
+            # Its books open before the first paycheck, as ``Savings``'s do
+            # (rule-5 confirmation 4, developer 2026-09-23).  Opened today,
+            # they would sit after this definition's still-projected past
+            # rows, and moving the destination onto them is a save the edit
+            # door now refuses (plan step pay_calendar:C18-a, rulings R-PC90
+            # and R-PC91) -- a refusal this test is not about.
+            open_books_before_the_first_assertion(db.session, elsewhere)
             db.session.commit()
             tid, noted_id = template.id, noted.id
             elsewhere_id = elsewhere.id

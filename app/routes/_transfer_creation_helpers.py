@@ -251,6 +251,7 @@ TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
         row, derived_amount_basis(row.user_id, row.scenario_id),
     ),
     regenerate_fn=transfer_recurrence.regenerate_for_template,
+    preview_fn=transfer_recurrence.preview_regeneration_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",
 )
