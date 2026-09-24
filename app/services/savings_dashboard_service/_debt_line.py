@@ -7,7 +7,7 @@ those lines ends.  Both are asked by two surfaces that render side by side
 on ``/savings``, and both used to be answered twice:
 
 * the cockpit's ``Debt-free <month>`` caption and the dashboard debt track
-  read :func:`~.._metrics._compute_debt_summary`, which selected loans by
+  read :func:`~.._debt_summary._compute_debt_summary`, which selected loans by
   their current BALANCE;
 * the Horizon chart's ``Debt-free`` flag and its x-axis read
   :func:`~.._horizon._resolve_horizon_domain`, which selected them by the

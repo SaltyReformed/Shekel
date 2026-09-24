@@ -25,8 +25,16 @@ on the line instead") beside its printed-net check.
 
 **What is NOT stored, and why.**  Gross, taxable wages and net pay are DERIVED
 from the lines (rule 14); the printed net is typed once at the entry door as a
-check against the lines and never kept.  A line amount carries no KIND: the kind
-is the paycheck line's, and a second copy of it here would be a second home.
+check against the lines and never kept.
+
+**What a stub line records is its own** (ruling **R-SAL58**, "Stub records its
+kind", plan step ``S11-c-1``, which retired **R-SAL56**'s refusal before it was
+built): the amount the stub prints for a paycheck line AND the kind it prints it
+under, as a one-off keeps its own kind.  The line's kind is the app's plan and
+stays editable; the stub's is what the document printed on its payday.  The two
+may differ, and the entry door lists a mismatch the way it lists an amount's,
+so a saved stub always adds up by its own figures whatever later happens to its
+lines (finding **SAL-567**).
 
 **Nothing here is ever deleted** (fork 8a', "Nothing is ever deleted"), and since
 ruling **R-SAL44** that holds for every routine writer, not only for the absence
@@ -70,8 +78,9 @@ another owner's, whatever a writer passes.  It is the construction
 **R-BAL76**): a key the database keeps true instead of a copy a writer keeps in
 step.
 
-No door writes these tables yet: the entry door is ``S11-b`` and the engine that
-prices from them is ``S11-c``.  This leaf moves ``$0.00``.
+The one writer is the entry door (``S11-b``,
+:mod:`app.services.pay_stub_service`); nothing prices from these tables until
+the engine's calibrated path (``S11-c-2``).
 """
 
 from app.extensions import db
@@ -192,12 +201,13 @@ class PayStubLineAmount(db.Model):
     """What one stub shows for one of its profile's PAYCHECK LINES.
 
     One row per (stub, paycheck line) -- ``uq_pay_stub_line_amounts_stub_line``.
-    The amount is the stub's figure for that line; which kind of line it is
-    (a taxable earning, a pre-tax deduction, ...) is the paycheck line's own
-    ``paycheck_line_kind_id`` and is deliberately not copied here.  A stub
-    figure that disagrees with the paycheck line is REPORTED by the entry door
-    for the owner to fix one side (fork 2, "Taxes only"); every deduction and
-    earning amount keeps its one home on the paycheck line.
+    The amount is the stub's figure for that line and ``paycheck_line_kind_id``
+    the kind the stub prints it under (a taxable earning, a pre-tax deduction,
+    ...; ruling **R-SAL58**), both the DOCUMENT's facts on its payday.  The
+    paycheck line's own amount and kind are the app's plan: a stub that
+    disagrees with either is REPORTED by the entry door for the owner to fix
+    one side (fork 2, "Taxes only"), and a later edit of the line moves nothing
+    here.
 
     ``salary_profile_id`` is a co-located KEY, not a copy: two composite keys
     hold it equal to the stub's profile and to the paycheck line's, so the pair
@@ -239,6 +249,15 @@ class PayStubLineAmount(db.Model):
     pay_stub_id = db.Column(db.Integer, nullable=False)
     paycheck_line_id = db.Column(db.Integer, nullable=False)
     salary_profile_id = db.Column(db.Integer, nullable=False)
+    paycheck_line_kind_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.paycheck_line_kinds.id",
+            name="fk_pay_stub_line_amounts_paycheck_line_kind_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
     amount = db.Column(db.Numeric(12, 2), nullable=False)
 
     pay_stub = db.relationship("PayStub", back_populates="line_amounts")
