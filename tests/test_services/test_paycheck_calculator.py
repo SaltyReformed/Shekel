@@ -735,7 +735,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_pre_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -752,7 +754,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_post_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -769,7 +773,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_taxes_sums_all_tax_fields(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -786,7 +792,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_empty_deductions_return_zero(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),

@@ -872,11 +872,15 @@ def _derive_picture(
     projections = project_accounts_with_batch(
         ctx, _believed_batch(inputs, point), axis,
     )
+    # The paycheck the gap compares against AND the rhythm it is paid at,
+    # together (ruling R-SAL70): the current paycheck standing in for the
+    # final year's is converted at its own rhythm, not the latest era's.
+    paycheck = compute_gap_net_biweekly(
+        gap, payroll, retirement_date, pension.salary_by_year, as_of,
+    )
     net = calculate_gap(
-        net_biweekly_pay=compute_gap_net_biweekly(
-            gap, payroll, retirement_date, pension.salary_by_year, as_of,
-        ),
-        pay_cadence=gap.pay_cadence,
+        net_biweekly_pay=paycheck.net,
+        pay_cadence=paycheck.cadence,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=projections,
         safe_withdrawal_rate=point.swr,

@@ -28,15 +28,33 @@ derived by the code under test:
   reader (the latest era, weekly), the nominal-day reader
   (:func:`~app.services.pay_rhythm.era_covering`, monthly) and the cash-day
   reader this step uses (biweekly) give three different answers.
+* **A record paid early before a seam** -- 14 days from 2026-01-02, then 7 days
+  from 2026-02-02, the record's last payday 2026-02-01: the 02-02 paycheck
+  paid a day early, which the calendar closes at the WEEKLY rhythm.
+
+**The paycheck also CARRIES the rhythm it was priced at** (ruling
+**R-SAL70**): the savings page's debt-to-income denominator and months-of-income
+goals, the retirement gap's current-pay fallback and the salary cockpit's
+third-paycheck chip all turned today's paycheck into a month at the LATEST
+era's count, which agreed with the engine only while it divided every payday
+by that count.  The last class grades each surface for an owner paid biweekly
+today with a weekly rhythm recorded to start later.
 """
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from app.enums import BusinessDayShiftEnum
+from app import ref_cache
+from app.enums import BusinessDayShiftEnum, GoalModeEnum, IncomeUnitEnum
+from app.models.savings_goal import SavingsGoal
+from app.services import pay_era_write, salary_cockpit_service, savings_dashboard_service
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import (
+    PayCadence,
     PayCalendar,
     cadence_on,
+    calendar_for,
+    era_index_at,
     first_payday_of,
 )
 from app.services.pay_rhythm import Era, FixedDays, Monthly, Rhythm, era_covering
@@ -45,6 +63,8 @@ from app.services.paycheck_calculator._calendar_questions import (
     _get_cumulative_wages,
 )
 from app.services.payroll_basis import PayrollBasis
+from app.utils.dates import display_today
+from tests._test_helpers import era_of, make_salary_profile, seed_fica_config
 from tests.test_services.test_paycheck_calculator import (
     FakeBracket,
     FakeBracketSet,
@@ -53,6 +73,9 @@ from tests.test_services.test_paycheck_calculator import (
     FakeProfile,
     FakeStateTaxConfig,
 )
+from tests.test_services.test_retirement_dashboard_service import _picture
+from tests.test_services.test_salary_cockpit_service import _pair
+from tests.test_services.test_savings_dashboard_service import _create_small_loan
 
 _NONE = BusinessDayShiftEnum.NONE
 
@@ -354,3 +377,225 @@ class TestAnEarlierRhythmsPaycheck:
             date(2026, 9, 4): Decimal("2307.69"),
             date(2027, 1, 11): Decimal("1153.85"),
         }
+
+    def test_the_state_line_annualises_by_the_paydays_own_count(self):
+        """A state standard deduction makes the state line see the count.
+
+        Input: $60,000, the 2026-03-01 monthly payday, the flat 4.5% state
+        config given a made-up $12,750 standard deduction.
+        Expected: (5,000 x 12 - 12,750) x 4.5% = 2,126.25 a year, / 12 =
+        177.1875 -> $177.19.
+        Why: with no deduction a flat rate annualised and divided back by one
+        count is the same at any count, so the monthly case above cannot tell
+        the state annualiser's count apart; with a deduction the wrong count
+        reads (5,000 x 26 - 12,750) x 4.5% = 5,276.25, / 26 = $202.93.  An
+        adversarial review of this step moved only the state line onto the
+        latest count and found the other cases green.
+        """
+        calendar = _monthly_then_biweekly()
+        configs = _tax_configs()
+        configs["state_config"].standard_deduction = Decimal("12750")
+        paycheck = calculate_paycheck(
+            PayrollBasis(_profile(), calendar),
+            _period_on(calendar, date(2026, 3, 1)),
+            configs,
+        )
+
+        assert paycheck.taxes.state == Decimal("177.19")
+
+    def test_the_paycheck_carries_the_rhythm_it_was_priced_at(self):
+        """``PeriodInfo.cadence`` is the era in force on the payday (R-SAL70).
+
+        Input: the monthly-then-biweekly schedule, one payday in each era.
+        Expected: monthly on 2026-03-01, biweekly on 2026-07-16.
+        Why: it is the count every reader converts this paycheck to a month
+        with; carried on the paycheck, it cannot be read off the calendar at
+        another day or at the latest era.
+        """
+        calendar = _monthly_then_biweekly()
+        basis = PayrollBasis(_profile(), calendar)
+
+        assert calculate_paycheck(
+            basis, _period_on(calendar, date(2026, 3, 1)), _tax_configs(),
+        ).period.cadence == PayCadence(Monthly(1))
+        assert calculate_paycheck(
+            basis, _period_on(calendar, date(2026, 7, 16)), _tax_configs(),
+        ).period.cadence == PayCadence(FixedDays(14))
+
+
+def _with_a_record_paid_early_before_a_seam():
+    """14 days from 2026-01-02, 7 days from 2026-02-02; the record ends 02-01."""
+    return _calendar(
+        [date(2026, 1, 2), date(2026, 1, 16), date(2026, 2, 1)],
+        (
+            Era(effective_from=date(2026, 1, 2), rhythm=Rhythm(FixedDays(14), _NONE)),
+            Era(effective_from=date(2026, 2, 2), rhythm=Rhythm(FixedDays(7), _NONE)),
+        ),
+    )
+
+
+class TestARecordPaidEarlyBeforeASeam:
+    """A recorded payday belongs to the era of the planned payday it stands for."""
+
+    def test_it_is_the_next_eras_paycheck(self):
+        """2026-02-01 is the weekly era's 02-02 paycheck, paid a day early.
+
+        Input: the record 01-02, 01-16, 02-01 under a 14-day era and a 7-day
+        era from 02-02.
+        Expected: the calendar closes 02-01 on 02-08 (the next payday is the
+        weekly 02-09), ``cadence_on`` answers 52, and the engine divides by
+        it: 60,000 / 52 = 1,153.846 -> $1,153.85.
+        Why: ``era_index_at`` alone -- the first draft of ``cadence_on`` --
+        places 02-01 in the 14-day era (asserted as the control) and priced
+        it at 60,000 / 26 = $2,307.69, a biweekly paycheck on a period the
+        calendar closes weekly.  No door writes such a record today, since
+        every door records displaced grid days; it is built here by hand, and
+        the adversarial review of this step measured it.
+        """
+        calendar = _with_a_record_paid_early_before_a_seam()
+        payday = date(2026, 2, 1)
+        assert _period_on(calendar, payday).end_date == date(2026, 2, 8)
+        assert era_index_at(calendar.eras, payday) == 0
+
+        assert cadence_on(calendar, payday).periods_per_year == Decimal("52")
+        assert calculate_paycheck(
+            PayrollBasis(_profile(), calendar),
+            _period_on(calendar, payday),
+            _tax_configs(),
+        ).earnings.base_biweekly == Decimal("1153.85")
+
+
+class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
+    """Every reader turning today's paycheck into a month converts at its count.
+
+    Ruling **R-SAL70**.  The owner is the savings page's own current-pay
+    owner (``TestTheCurrentPayIsThePassPricersCalibratedAndSummed``): a
+    made-up $52,000.00 profile paid every 14 days, no deductions, FICA seeded
+    and no bracket set or state config, so the current paycheck is::
+
+        gross   52,000.00 / 26          = 2,000.00
+        net     2,000.00 - 124.00 - 29.00 = 1,847.00
+
+    -- and a WEEKLY era is recorded to take effect four weeks after the saved
+    record ends, so the calendar's LATEST rhythm pays 52 a year while today's
+    paycheck was priced at 26.  Every surface below read the latest count
+    until this step, and each expected value is paired with what that read.
+    """
+
+    @staticmethod
+    def _seed(db, seed_user, periods, *, goal_unit=None):
+        """The owner above, the later weekly era, and optionally a 3x income goal."""
+        user_id = seed_user["user"].id
+        make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("52000.00"),
+        )
+        db.session.flush()
+        seed_fica_config(user_id)
+        last_payday = max(period.start_date for period in periods)
+        pay_era_write.mint_era(
+            user_id, era_of(last_payday + timedelta(days=28), 7),
+        )
+        if goal_unit is not None:
+            db.session.add(SavingsGoal(
+                user_id=user_id,
+                account_id=seed_user["account"].id,
+                name="Months of salary",
+                goal_mode_id=ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE),
+                income_unit_id=ref_cache.income_unit_id(goal_unit),
+                income_multiplier=Decimal("3.00"),
+                is_active=True,
+            ))
+        db.session.commit()
+
+        # The premise, asserted: the latest rhythm is weekly, and today's
+        # paycheck was priced biweekly -- the two counts the readers could use.
+        calendar = calendar_for(user_id)
+        assert calendar.cadence.periods_per_year == Decimal("52")
+        assert cadence_on(
+            calendar, calendar.period_containing(display_today()).start_date,
+        ).periods_per_year == Decimal("26")
+
+    def test_a_months_of_income_goal(self, app, db, seed_user, seed_periods_today):
+        """3 months of a $1,847.00 net: 3 x 1,847 x 26 / 12 = $12,005.50.
+
+        At the latest count it read 3 x 1,847 x 52 / 12 = $24,011.00.
+        """
+        with app.app_context():
+            self._seed(db, seed_user, seed_periods_today, goal_unit=IncomeUnitEnum.MONTHS)
+            goals = savings_dashboard_service.compute_goal_progress(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            assert [goal.resolved_target for goal in goals] == [Decimal("12005.50")]
+
+    def test_the_debt_to_income_denominator(self, app, db, seed_user, seed_periods_today):
+        """A month of a $2,000.00 gross: 2,000 x 26 / 12 = $4,333.33.
+
+        At the latest count it read 2,000 x 52 / 12 = $8,666.67, which halves
+        the ratio.  The numerator is the debt summary's own payment total
+        (not under test), so the ratio is asserted over the denominator the
+        way the savings page's own DTI cases pin it, and asserted apart from
+        the latest-count ratio so the equality graded the denominator.
+        """
+        with app.app_context():
+            self._seed(db, seed_user, seed_periods_today)
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+            summary = savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            assert summary is not None and summary.dti is not None
+            assert summary.total_monthly_payments > Decimal("0.00")
+
+            def ratio_over(gross_monthly):
+                return (
+                    summary.total_monthly_payments / gross_monthly * Decimal("100")
+                ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+            assert summary.dti.ratio == ratio_over(Decimal("4333.33"))
+            assert summary.dti.ratio != ratio_over(Decimal("8666.67"))
+
+    def test_the_retirement_gaps_current_pay_fallback(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """With no retirement date the gap reads today's net: 1,847 x 26 / 12.
+
+        Expected: pre-retirement net $4,001.83 a month.  At the latest count
+        it read 1,847 x 52 / 12 = $8,003.67.  The fallback is the branch the
+        projection cannot serve -- no pension and no stated retirement date
+        -- asserted as the premise.
+        """
+        with app.app_context():
+            self._seed(db, seed_user, seed_periods_today)
+            picture = _picture(seed_user["user"].id)
+            assert picture.retirement_date is None
+            assert picture.net.pre_retirement_net_monthly == Decimal("4001.83")
+
+
+class TestTheCockpitsThirdPaycheckChip:
+    """The chip compares a third paycheck to a regular one at the same BASE pay."""
+
+    def test_a_change_of_rhythm_is_not_a_third_paycheck_bonus(self):
+        """Weekly June paychecks, then a biweekly era from 06-19.
+
+        Input: one $52,000 salary throughout -- weekly 06-05 and 06-12 at a
+        $1,000.00 base and $800.00 net, then biweekly from 06-19 (June's third
+        paycheck) at a $2,000.00 base and $1,700.00 net, and the regular
+        biweekly 07-03 at $1,600.00 net.
+        Expected: the chip's regular net for 06-19 is $1,600.00, a $100.00
+        third-paycheck delta.
+        Why: matched on the annual salary, the nearest regular paycheck was
+        the WEEKLY 06-12 at $800.00, and the chip showed the change of rhythm
+        as a $900.00 third-paycheck bonus.
+        """
+        pairs = [
+            _pair(1, date(2026, 6, 5), date(2026, 6, 11), "52000", "1000", "800",
+                  cadence=PayCadence(FixedDays(7))),
+            _pair(2, date(2026, 6, 12), date(2026, 6, 18), "52000", "1000", "800",
+                  cadence=PayCadence(FixedDays(7))),
+            _pair(3, date(2026, 6, 19), date(2026, 7, 2), "52000", "2000", "1700",
+                  is_third=True),
+            _pair(4, date(2026, 7, 3), date(2026, 7, 16), "52000", "2000", "1600"),
+        ]
+
+        assert salary_cockpit_service.base_regular_net(pairs, 2) == Decimal("1600")
+

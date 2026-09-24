@@ -37,6 +37,7 @@ from app.services.savings_dashboard_service._tile import (
     is_configured_loan,
     tile_balance_on,
 )
+from app.services.savings_dashboard_service._metrics import CurrentPay
 from app.services.savings_dashboard_service._types import AccountProjection
 from app.services.savings_goal_service import GoalTargetSpec, GoalTrajectory
 from app.utils.dates import to_display_date
@@ -78,15 +79,19 @@ class _GoalInputs:
     reader keeps the name it had.
 
     Attributes:
-        net_biweekly_pay: Current projected net pay for one paycheck, from the
-            canonical paycheck engine.  ``Decimal("0.00")`` when the owner has
-            no salary configured, which is what
-            :attr:`GoalProgress.has_salary_data` reports.
-        balance_ctx: The render's read pass.  Its calendar turns
-            ``net_biweekly_pay`` into a monthly figure for a "months of
-            salary" goal and is the WHOLE schedule ``obligations_aggregator``
-            needs to tell whether a contribution template bounded "after N
-            occurrences" has spent its count (plan step R7b-3); its reported
+        current_pay: What the owner's active profiles pay this period and the
+            rhythm it was priced at (:class:`~._metrics.CurrentPay`), or
+            ``None`` when they have no salary configured -- which
+            :attr:`net_biweekly_pay` reads as ``$0.00`` and
+            :attr:`GoalProgress.has_salary_data` reports.  **The whole value
+            since plan step salary:X-av-2** (ruling **R-SAL70**), where it
+            carried the net alone and the calendar's LATEST rhythm turned it
+            into a month: a "months of salary" goal converts at the rhythm the
+            net was priced at, and only this value holds that.
+        balance_ctx: The render's read pass.  Its calendar is the WHOLE
+            schedule ``obligations_aggregator`` needs to tell whether a
+            contribution template bounded "after N occurrences" has spent its
+            count (plan step R7b-3); its reported
             window is what the periods-until-target count walks, the same
             window the account balances beside it were reported over
             (pay-calendar plan step C2-f2d-3); and its ``as_of`` is the
@@ -96,8 +101,15 @@ class _GoalInputs:
             card answer from two.
     """
 
-    net_biweekly_pay: Decimal
+    current_pay: CurrentPay | None
     balance_ctx: BalanceContext
+
+    @property
+    def net_biweekly_pay(self) -> Decimal:
+        """The net pay for one paycheck, ``$0.00`` when there is no salary data."""
+        if self.current_pay is None:
+            return Decimal("0.00")
+        return self.current_pay.net_biweekly
 
     @property
     def all_periods(self) -> PeriodWindow:
@@ -355,7 +367,13 @@ def _goal_basics(goal, inputs: _GoalInputs) -> _GoalBasics:
             income_multiplier=goal.income_multiplier,
         ),
         inputs.net_biweekly_pay,
-        inputs.calendar.cadence,
+        # The rhythm the net was priced at (ruling R-SAL70).  With no current
+        # pay the net is $0.00, which is $0.00 a month at any count, so the
+        # calendar's own cadence only fills the argument there.
+        (
+            inputs.current_pay.cadence if inputs.current_pay is not None
+            else inputs.calendar.cadence
+        ),
     )
     if goal.goal_mode_id == ref_cache.goal_mode_id(GoalModeEnum.FIXED):
         income_descriptor = None

@@ -130,7 +130,7 @@ from itertools import takewhile
 
 from ._cadence import PayCadence
 from ._calendar import PayCalendar
-from ._eras import era_index_at, matched_step, projected_payday
+from ._eras import era_index_at, matched_planned, matched_step, projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
@@ -539,14 +539,23 @@ def cadence_on(calendar: PayCalendar, payday: date) -> PayCadence:
     count.  Read off the latest era instead, a monthly-era paycheck under a
     later biweekly era was priced at 12/26 of its pay.
 
-    **The era is chosen in CASH days** (:func:`~._eras.era_index_at`), the
-    rule the calendar derives its periods by: an era pays from its first
-    payday -- its ``effective_from`` displaced under its own convention --
-    so an era taking effect on a closed day, whose first paycheck is paid
-    BEFORE its ``effective_from``, owns that paycheck.
-    :func:`~app.services.pay_rhythm.era_covering` asks the same question in
-    NOMINAL days, the writer's coordinate, and would hand that paycheck to
-    the era before it.
+    **The era is the one whose PLANNED payday the day stands for**
+    (:func:`~._eras.matched_planned`), the rule the calendar places a
+    recorded payday by, and it is read in CASH days.  It starts from
+    :func:`~._eras.era_index_at` -- an era pays from its first payday, its
+    ``effective_from`` displaced under its own convention, so an era taking
+    effect on a closed day, whose first paycheck is paid BEFORE its
+    ``effective_from``, owns that paycheck -- and differs from it only for a
+    record paid early just before a seam, which stands for the NEXT era's
+    first payday and is that era's paycheck (the calendar closes it at that
+    era's rhythm).  A projected or backdated payday IS a planned payday, so
+    for every day the calendar yields rather than records the two readers
+    agree.  :func:`~app.services.pay_rhythm.era_covering` asks the question
+    in NOMINAL days, the writer's coordinate, and would hand the displaced
+    first paycheck to the era before it.  *The first draft of this function
+    read ``era_index_at`` alone and said it was the rule the calendar
+    derives its periods by; an adversarial review of X-av-2 found the
+    early-paid record it misplaces.*
 
     A free function here rather than a method beside ``cadence``, for ledger
     row **P77**'s reason (this module's docstring states it).
@@ -560,9 +569,8 @@ def cadence_on(calendar: PayCalendar, payday: date) -> PayCadence:
     Returns:
         The covering era's :class:`~._cadence.PayCadence`.
     """
-    return PayCadence(
-        calendar.eras[era_index_at(calendar.eras, payday)].rhythm.cadence,
-    )
+    index, _step = matched_planned(calendar.eras, payday)
+    return PayCadence(calendar.eras[index].rhythm.cadence)
 
 
 __all__ = [

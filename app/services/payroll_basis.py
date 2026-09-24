@@ -25,7 +25,7 @@ from decimal import Decimal
 from functools import cached_property
 from typing import Any
 
-from app.services.pay_calendar import PayCalendar, cadence_on
+from app.services.pay_calendar import PayCadence, PayCalendar, cadence_on
 from app.services.recurrence import (
     ResolvedRecurrence,
     projected_occurrence_placements,
@@ -125,16 +125,27 @@ class BasePay:
     figures of which one is a function of the others is the stored-derived
     shape rule 14 deletes.
 
+    **It carries the CADENCE, not only its count** (ruling **R-SAL70**): the
+    engine hands it on as :attr:`~app.services.paycheck_calculator.PeriodInfo
+    .cadence`, so a reader turning the paycheck into a monthly or yearly
+    figure converts at the rhythm the paycheck was priced at, through
+    :class:`~app.services.pay_calendar.PayCadence`'s own conversions, and
+    never at a count read off the calendar a second time.
+
     Attributes:
         annual_salary: The post-raise annual salary in effect on the payday,
             as :func:`~app.services.salary_raises.apply_raises` returns it.
-        periods_per_year: How many paychecks a year the rhythm in force on
-            the payday pays -- :func:`~app.services.pay_calendar.cadence_on`'s
-            count, an integral ``Decimal``.
+        cadence: The rhythm in force on the payday --
+            :func:`~app.services.pay_calendar.cadence_on`'s answer.
     """
 
     annual_salary: Decimal
-    periods_per_year: Decimal
+    cadence: PayCadence
+
+    @property
+    def periods_per_year(self) -> Decimal:
+        """Return how many paychecks a year :attr:`cadence` pays, an integral ``Decimal``."""
+        return self.cadence.periods_per_year
 
     @property
     def per_paycheck(self) -> Decimal:
@@ -345,12 +356,16 @@ class PayrollBasis:
 
         **The count is the rhythm in force ON THE PAYDAY**, through
         :func:`~app.services.pay_calendar.cadence_on`, which reads the era
-        covering it in cash days.  ``periods_per_year`` read
+        whose planned payday the day stands for, in cash days.
+        ``periods_per_year`` read
         :attr:`~app.services.pay_calendar.PayCalendar.cadence` -- the LATEST
         era's -- for every payday, so a paycheck paid under an earlier rhythm
         was divided, and annualised for withholding, by a count it was never
-        paid at.  For an owner holding ONE era the covering era IS the latest
-        one, so every such owner's paycheck is unchanged by construction.
+        paid at.  For an owner holding ONE era that era is both, so every such
+        owner's paycheck is unchanged by construction.  The cadence rides on
+        to :attr:`~app.services.paycheck_calculator.PeriodInfo.cadence` (ruling
+        **R-SAL70**), which is what every reader converting the paycheck to
+        a month or a year converts with.
 
         **Total, as the property it replaced was since plan step
         pay_calendar:C4-d** (ruling **R-PC45**): a calendar in hand carries at
@@ -372,7 +387,7 @@ class PayrollBasis:
             annual_salary=apply_raises(
                 self.profile.annual_salary, self.raises, payday,
             ),
-            periods_per_year=cadence_on(self.calendar, payday).periods_per_year,
+            cadence=cadence_on(self.calendar, payday),
         )
 
 

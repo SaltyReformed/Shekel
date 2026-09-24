@@ -229,16 +229,25 @@ def raise_run_start_period_ids(pairs: list[PeriodPair]) -> set[int]:
 
 
 def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:
-    """Return the net of the nearest regular paycheck at the same salary.
+    """Return the net of the nearest regular paycheck at the same base pay.
 
     A third-paycheck period skips the 24x deductions, so its net spikes
     above the regular per-paycheck net.  For the staircase chart line and
     the third-paycheck delta chip we need the "base" regular net at the
-    same annual-salary level: the net of the nearest NON third-paycheck
-    period sharing the period-at-``idx``'s effective annual salary.  Prefer
-    the closest earlier period; fall back to the closest later one; and, in
-    the degenerate case where no regular period at that salary exists, fall
+    same pay level: the net of the nearest NON third-paycheck period
+    sharing the period-at-``idx``'s base pay per paycheck.  Prefer the
+    closest earlier period; fall back to the closest later one; and, in
+    the degenerate case where no regular period at that pay exists, fall
     back to the period's own net.
+
+    **Keyed on BASE PAY since plan step salary:X-av-2** (ruling
+    **R-SAL70**), where it keyed on the annual salary.  The two were one
+    test while every payday divided the annual by the same count; once each
+    payday divides by its own era's, one annual salary is two paychecks
+    across a change of rhythm, and a third paycheck of a new biweekly era
+    matched against a regular WEEKLY paycheck at the same salary would show
+    the difference of the two rhythms as a third-paycheck bonus.  A raise
+    still separates the levels, because it moves the base.
 
     Args:
         pairs: The full ordered ``(period, breakdown)`` list.
@@ -247,16 +256,16 @@ def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:
     Returns:
         The base regular net pay as a :class:`~decimal.Decimal`.
     """
-    target_salary = pairs[idx][1].earnings.annual_salary
+    target_base = pairs[idx][1].earnings.base_biweekly
     for j in range(idx - 1, -1, -1):
         breakdown = pairs[j][1]
         if (not breakdown.period.is_third_paycheck
-                and breakdown.earnings.annual_salary == target_salary):
+                and breakdown.earnings.base_biweekly == target_base):
             return breakdown.earnings.net_pay
     for j in range(idx + 1, len(pairs)):
         breakdown = pairs[j][1]
         if (not breakdown.period.is_third_paycheck
-                and breakdown.earnings.annual_salary == target_salary):
+                and breakdown.earnings.base_biweekly == target_base):
             return breakdown.earnings.net_pay
     return pairs[idx][1].earnings.net_pay
 
