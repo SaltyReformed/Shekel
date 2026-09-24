@@ -155,7 +155,10 @@ def _unanswered_placements(
     # rebuild.  The derived stop is THIS fold's output.
     rule = template.recurrence_rule
     dated = [
-        (placement, compute_due_date(rule, placement.period))
+        (
+            placement,
+            compute_due_date(rule, placement.occurrence, placement.period),
+        )
         for placement in projected_occurrence_placements(
             resolved, calendar, through=through,
         )

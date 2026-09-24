@@ -342,7 +342,6 @@ def create_transfer_template():
         data,
         user_id=current_user.id,
         redirect=new_form,
-        include_due_day_of_month=False,
     )
 
     template = TransferTemplate(
@@ -578,8 +577,7 @@ def update_transfer_template(template_id):
     # re-point, rebuild, or clear the recurrence rule from the update payload
     # (F-24): the helper dispatches the existing-rule (mutate in place) vs
     # no-existing-rule (build + link) branches and pops every recurrence key
-    # from ``data``.  ``include_due_day_of_month=False`` because the
-    # transfer-template schemas do not expose the field.
+    # from ``data``.
     end_bound, refusal = settle_destination_for_update(
         template, data,
         end_bound=end_bound, pass_ctx=pass_ctx, redirect=edit_form,
@@ -591,7 +589,6 @@ def update_transfer_template(template_id):
             ctx=RecurrenceFormContext(
                 end_bound=end_bound,
                 redirect=edit_form,
-                include_due_day_of_month=False,
             ),
             pass_ctx=pass_ctx,
         )

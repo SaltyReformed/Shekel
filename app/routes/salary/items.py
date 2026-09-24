@@ -489,7 +489,6 @@ def add_line(profile_id):
         data,
         user_id=current_user.id,
         redirect=_edit_page(profile_id),
-        include_due_day_of_month=False,
     )
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
@@ -748,7 +747,6 @@ def update_line(line_id):
             # which leaves the stored bound alone.
             end_bound=data.pop(RECURRENCE_END_BOUND_KEY, None),
             redirect=_edit_page(profile.id),
-            include_due_day_of_month=False,
         ),
         pass_ctx=ctx,
     )

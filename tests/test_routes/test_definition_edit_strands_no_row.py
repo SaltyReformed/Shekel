@@ -21,7 +21,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import RecurrenceUnitEnum
+from app import ref_cache
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.ref import AccountType, TransactionType
 from app.models.transaction import Transaction
@@ -39,7 +40,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     state_template_price,
 )
-from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY, MONTHLY_FIRST
 
 _ONE_DAY = timedelta(days=1)
 
@@ -196,20 +197,25 @@ class TestATransactionDefinitionsEditIsRefused:
             assert saved.name == "Rent"
             assert _first_due(saved) == first_due
 
-    def test_clearing_a_due_day_that_kept_a_CURRENT_row_outside_the_books_is_refused(
+    def test_funding_a_CURRENT_row_from_its_own_paycheck_inside_the_books_is_refused(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """H1: the save re-dates the row by the NEW rule; the refusal reads that walk.
 
-        A monthly bill scheduled on the current paycheck's first day, due
-        later, on books opening that same first day: its due day is after the
-        opening, so it was generated (R-PC86).  Clearing the due day moves
-        its cash day back onto its scheduled day -- ON the opening, inside
-        it -- so the walk stops naming it, and it is in the CURRENT paycheck,
+        A monthly bill scheduled the day before the current paycheck, funded
+        from the FIRST paycheck starting on or after it -- the current one --
+        on books opening on its scheduled day: its cash day is that later
+        payday, after the opening, so it was generated (R-PC86, R-R95).
+        Funding it from the paycheck CONTAINING its date instead moves its
+        cash day back onto its scheduled day -- ON the opening, inside it --
+        so the walk stops naming it, and its row is in the CURRENT paycheck,
         which the save's own regeneration reaches (review M1).  The row's
         STORED due day still reads outside the books, which is exactly what
         the first cut compared and passed.  The refusal names the row as the
-        save would leave it: due on its scheduled day.
+        save would leave it: due on its scheduled day.  (Until plan step
+        recurrence:R5-a the lever was clearing a separate due day; that column
+        is gone, ruling R-R96, and a later funding paycheck is the shape where
+        a row's cash day and its occurrence still part company.)
         """
         with app.app_context():
             scheduled, account, template = _monthly_bill_due_after_the_books(
@@ -217,11 +223,20 @@ class TestATransactionDefinitionsEditIsRefused:
             )
             row = _live_row_answering(template, scheduled)
             assert row.due_date > scheduled, "precondition: stored due day outside"
+            # VALUES, captured before the post: ``_reload`` hands back the SAME
+            # identity-mapped objects, so comparing them after it would compare
+            # each to itself and pass whatever the save did (review of R5-a).
+            first_paycheck = ref_cache.period_placement_id(
+                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            )
+            assert template.recurrence_rule.placement_id == first_paycheck
+            row_id, row_due = row.id, row.due_date
 
             resp = auth_client.post(
                 f"/templates/{template.id}",
                 data=_transaction_update_payload(
-                    template, unit=RecurrenceUnitEnum.MONTH, due_day_of_month="",
+                    template, unit=RecurrenceUnitEnum.MONTH,
+                    placement=PeriodPlacementEnum.CONTAINING_DATE,
                 ),
                 follow_redirects=True,
             )
@@ -233,25 +248,24 @@ class TestATransactionDefinitionsEditIsRefused:
             assert f"open {scheduled.isoformat()}".encode() in resp.data
             saved = _reload(TransactionTemplate, template.id)
             assert saved.account_id == account.id
-            assert saved.recurrence_rule.due_day_of_month is not None
+            assert saved.recurrence_rule.placement_id == first_paycheck
             kept = _live_row_answering(saved, scheduled)
-            assert kept.id == row.id and kept.due_date == row.due_date
+            assert kept.id == row_id and kept.due_date == row_due
 
-    def test_keeping_that_due_day_is_saved(
+    def test_keeping_that_funding_is_saved(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The same bill, its due day posted back unchanged: nothing is stranded."""
+        """The same bill, its funding posted back unchanged: nothing is stranded."""
         with app.app_context():
             scheduled, _account, template = _monthly_bill_due_after_the_books(
                 seed_user, seed_periods_today,
             )
-            due_day = template.recurrence_rule.due_day_of_month
 
             resp = auth_client.post(
                 f"/templates/{template.id}",
                 data=_transaction_update_payload(
                     template, unit=RecurrenceUnitEnum.MONTH, name="Water",
-                    due_day_of_month=str(due_day),
+                    placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
                 ),
             )
 
@@ -389,25 +403,26 @@ def _first_payday(seed_user):
 
 
 def _monthly_bill_due_after_the_books(seed_user, periods):
-    """A monthly bill scheduled on the current paycheck's first day, due after books opening then.
+    """A monthly bill scheduled the day before the current paycheck, due on it, books opening then.
 
     The current paycheck is ``seed_periods_today``'s period 4, and its first
-    day is the Monday of today's week -- on or before today, so books may
-    open on it (an opening cannot be in the future).  The due day is the
-    28th, or the next month's 1st when the scheduled day is already the
-    28th or later: either way strictly after the scheduled day, and a
-    different day of the month, so the rule states a real due day.
+    day is the Monday of today's week -- on or before today.  The bill is
+    scheduled the day BEFORE it, and the books open on that scheduled day
+    (in the past, so an opening may state it).  Funded from the FIRST
+    paycheck starting on or after its occurrence, the bill's row lives in the
+    current paycheck and is due on its payday (ruling R-R95): strictly after
+    the opening, so the row is generated.
 
     Returns:
         ``(scheduled, account, template)`` -- the scheduled day (also the
         books' opening day), the account, and the committed template.
     """
-    scheduled = periods[4].start_date
-    assert scheduled <= display_today() < periods[5].start_date
+    assert periods[4].start_date <= display_today() < periods[5].start_date
+    scheduled = periods[4].start_date - timedelta(days=1)
     account = _account_opened_on(seed_user, "Water account", scheduled)
     template = _transaction_template_with_rows(
-        seed_user, "Water bill", account_id=account.id, cadence=MONTHLY,
-        starts_on=scheduled, due_day_of_month=28 if scheduled.day < 28 else 1,
+        seed_user, "Water bill", account_id=account.id, cadence=MONTHLY_FIRST,
+        starts_on=scheduled,
     )
     return scheduled, account, template
 
@@ -452,7 +467,7 @@ def _transaction_template_with_rows(
     """An expense template, every paycheck unless *cadence* says otherwise, its rows generated.
 
     *rule_kwargs* reach :func:`~tests._test_helpers.make_cadence_rule` --
-    ``starts_on`` and ``due_day_of_month`` for the monthly bill.
+    ``starts_on`` for the monthly bill.
     """
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     template = TransactionTemplate(
@@ -531,13 +546,14 @@ def _reload(model, template_id):
     return db.session.get(model, template_id)
 
 
-def _transaction_update_payload(template, unit=RecurrenceUnitEnum.PERIOD, **overrides):
+def _transaction_update_payload(
+    template, unit=RecurrenceUnitEnum.PERIOD, placement=None, **overrides,
+):
     """The transaction edit form's fields, the cadence restated, as a browser posts them.
 
     The envelope box is present only when ticked (``"on"``); a test that
-    unticks it deletes the key.  The due-day box is posted only by a test
-    that states one, cleared (``""``) or not -- the form hides and DISABLES
-    it under an every-paycheck cadence, so a browser posts nothing there.
+    unticks it deletes the key.  *placement* is the funding control's value,
+    ``None`` for the cadence's default.
     """
     payload = {
         "name": template.name,
@@ -548,7 +564,9 @@ def _transaction_update_payload(template, unit=RecurrenceUnitEnum.PERIOD, **over
         "version_id": str(template.version_id),
         # The cadence restated WITHOUT a start: the stored one rides through,
         # which is what a browser posts for an untouched rule.
-        **cadence_payload(unit=unit, states_a_start=False),
+        **cadence_payload(
+            unit=unit, placement=placement, states_a_start=False,
+        ),
     }
     if template.is_envelope:
         payload["is_envelope"] = "on"

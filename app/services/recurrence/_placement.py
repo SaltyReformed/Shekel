@@ -391,7 +391,9 @@ def _lands_inside_the_books(
     floor = resolved.books_opened_on
     if floor is None or placement.period is None:
         return True
-    return books_hold(floor, resolved.books_day(placement.period))
+    return books_hold(
+        floor, resolved.books_day(placement.occurrence, placement.period),
+    )
 
 
 def placements_below_the_books(
@@ -479,7 +481,7 @@ def projected_occurrence_placements(
     ESTIMATED loan tier (plan step **R16-b-2**), which prices every occurrence
     a definition names that no row answers, and dates it exactly as the row
     would be dated (:func:`~app.services.recurrence.compute_due_date` over the
-    placed period, ruling **R-R69**) -- so the loan's payoff cannot move when
+    placed occurrence, ruling **R-R69**) -- so the loan's payoff cannot move when
     generation later writes that row.  Past the horizon the saved search
     answers ``None`` and generation stops; this keeps placing at the owner's
     cadence (:meth:`~app.services.pay_calendar.PayCalendar.span_containing`,

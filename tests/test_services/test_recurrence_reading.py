@@ -489,28 +489,10 @@ class TestItSwallowsNothingElse:
             with pytest.raises(RecurrenceResolutionError, match="positive"):
                 resolved_recurrence(rule, calendar)
 
-    def test_a_day_outside_its_column_domain_still_raises(self, app):
-        """A day of 99 would CLAMP to a month's last day, answering a lie.
-
-        The column this asks about MOVED at plan step R7c-b and the refusal
-        did not: ``day_of_month`` stopped being authored -- the write door
-        encodes it from the resolved first occurrence -- so the authored day
-        left with a domain of its own is ``due_day_of_month``, whose
-        ``ck_recurrence_rules_due_dom`` this mirrors.
-        """
-        with app.app_context():
-            calendar = build_calendar()
-            rule = _rule(MONTHLY, due_day_of_month=99)
-
-            with pytest.raises(
-                RecurrenceResolutionError, match="due_day_of_month",
-            ):
-                resolved_recurrence(rule, calendar)
-
     def test_a_start_outside_the_calendar_window_still_raises(self, app):
         """A first occurrence past 2100 overflows the calendar's projection.
 
-        The fourth rule-level refusal, and the one plan step R7c-b added: past
+        A rule-level refusal, and the one plan step R7c-b added: past
         the saved horizon the pay calendar projects the covering paycheck by
         adding ``cadence_days`` to a start, which raises ``OverflowError`` from
         outside this package's hierarchy.  It must reach the caller rather than

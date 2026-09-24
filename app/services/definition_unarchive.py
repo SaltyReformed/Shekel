@@ -248,7 +248,9 @@ def inside_the_books(
     if resolved is None:
         return {}
     return {
-        placement.occurrence: resolved.books_day(placement.period)
+        placement.occurrence: resolved.books_day(
+            placement.occurrence, placement.period,
+        )
         for placement in placements_below_the_books(resolved, calendar)
     }
 

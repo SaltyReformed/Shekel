@@ -6861,34 +6861,7 @@ class TestCreateFragmentsCarryThePeriodId:
 
 
 class TestSchemaValidation:
-    """Tests for due_day_of_month and due_date schema validation."""
-
-    def test_schema_due_day_of_month_zero(self, app):
-        """due_day_of_month=0 is rejected by the template schema."""
-        from app.schemas.validation import TemplateCreateSchema
-        with app.app_context():
-            schema = TemplateCreateSchema()
-            errors = schema.validate({"due_day_of_month": "0"})
-            assert "due_day_of_month" in errors
-
-    def test_schema_due_day_of_month_32(self, app):
-        """due_day_of_month=32 is rejected by the template schema."""
-        from app.schemas.validation import TemplateCreateSchema
-        with app.app_context():
-            schema = TemplateCreateSchema()
-            errors = schema.validate({"due_day_of_month": "32"})
-            assert "due_day_of_month" in errors
-
-    def test_schema_due_day_of_month_valid_range(self, app):
-        """due_day_of_month values 1-31 are all accepted."""
-        from app.schemas.validation import TemplateCreateSchema
-        with app.app_context():
-            schema = TemplateCreateSchema()
-            for day in range(1, 32):
-                errors = schema.validate({"due_day_of_month": str(day)})
-                assert "due_day_of_month" not in errors, (
-                    f"day {day} should be valid but got: {errors.get('due_day_of_month')}"
-                )
+    """Tests for due_date schema validation."""
 
     def test_schema_due_date_on_transaction_update(self, app):
         """due_date accepted as a valid Date field in TransactionUpdateSchema."""

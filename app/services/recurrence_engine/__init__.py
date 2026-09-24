@@ -21,10 +21,10 @@ adapter too**: ``recurrence.rule_occurrences`` answers in
 ``(occurrence, period)`` pairs, generation carries the pair as far as the write
 loop, and an occurrence the schedule cannot host is REPORTED rather than
 dropped where nobody looks (plan ledger row **D7**).  A generated row's own
-DATE is still derived from its period by
-:func:`app.services.recurrence.compute_due_date`, not from the occurrence --
-that is plan ledger row **D18**, and plan step R5 owns it with the
-``due_date`` -> ``occurs_on`` split.  That function lived in this package's
+DATE is derived from that occurrence by
+:func:`app.services.recurrence.compute_due_date` since plan step R5-a -- it
+was derived from the period alone until then, which was plan ledger row
+**D18**.  That function lived in this package's
 ``_plan`` leaf until plan step R16-b-2 moved it down (ruling **R-R69**), so
 the balance seam can date an occurrence no row answers yet as the row would
 be.  What survives here is the GENERATION half: gating, the per-period skip
@@ -81,6 +81,7 @@ from app.services.recurrence_engine._conflicts import resolve_conflicts
 from app.services.recurrence_engine._generate import (
     can_generate_in_period,
     generate_for_template,
+    occurrences_in_period,
 )
 from app.services.recurrence_engine._maintain import (
     propagate_to_unruled_definition,
@@ -111,6 +112,7 @@ __all__ = [
     "definition_recurs",
     "derived_by_occurrence",
     "generate_for_template",
+    "occurrences_in_period",
     "propagate_to_unruled_definition",
     "regenerate_definition",
     "regenerate_for_template",

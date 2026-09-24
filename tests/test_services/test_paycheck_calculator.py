@@ -151,7 +151,6 @@ class FakeRule:
         self.starts_on = starts_on
         self.max_per_month = max_per_month
         self.nominal_day = None
-        self.due_day_of_month = None
         self.end_date = None
         self.max_occurrences = None
 

@@ -168,18 +168,18 @@ class RecurrenceFormContext:
     signature tail collapses to one argument (and ``resolve`` forwards it
     unchanged).
 
-    Bundles the three inputs that
+    Bundles the two inputs that
     :func:`~app.routes._recurrence_form_helpers.recurrence_spec_from_form`,
     :func:`~app.routes._recurrence_form_helpers.update_recurrence_rule_from_form`,
     :func:`~app.routes._recurrence_form_helpers.resolve_recurrence_rule_for_update`
     and the two refusal entries below share verbatim: the form's closing
-    bound, the validation-error redirect target, and whether the submitting
-    schema exposes ``due_day_of_month`` (transaction templates) or not
-    (transfer templates).  Collapsing the formerly-triplicated
-    ``end_bound`` / ``redirect_endpoint`` / ``redirect_endpoint_kwargs``
-    / ``include_due_day_of_month`` signature tail into one object both
-    removes the duplication and clears the per-helper
-    ``too-many-arguments`` count.
+    bound and the validation-error redirect target.  Collapsing the
+    formerly-triplicated ``end_bound`` / ``redirect_endpoint`` /
+    ``redirect_endpoint_kwargs`` signature tail into one object both removes
+    the duplication and clears the per-helper ``too-many-arguments`` count.
+    A third field, the transaction-vs-transfer ``include_due_day_of_month``
+    flag, left with the column it guarded at plan step recurrence:R5-a
+    (ruling **R-R96**).
 
     **Defined in THIS module since plan step R7d-f**, having lived in the
     authoring helpers: the refusals read two of its fields and could not
@@ -210,16 +210,10 @@ class RecurrenceFormContext:
             distinction had nothing to express.
         redirect: Where to redirect on a recoverable validation failure
             (a start period that is not this user's).
-        include_due_day_of_month: ``True`` for transaction templates,
-            ``False`` for transfer templates.  Transfer-template schemas
-            do not expose ``due_day_of_month``; passing ``True`` for a
-            transfer payload would silently set the column from a key
-            the schema never validated.
     """
 
     end_bound: EndBound | None
     redirect: RedirectTarget
-    include_due_day_of_month: bool = False
 
 
 def refuse_inverted_window(

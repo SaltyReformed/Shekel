@@ -154,7 +154,7 @@ def _drive_add_form(page, profile_id: int) -> None:
            "a span control is missing")
     _check("A: no due day and no preview control is rendered",
            page.evaluate(
-               """() => ['due_day_of_month', 'recurrence-preview']
+               """() => ['due_day_of_month', 'field-due-dom', 'recurrence-preview']
                      .every(id => document.getElementById(id) === null)"""),
            "one of them exists")
     _check("A: the Starts on box opens BLANK (blank is the opening payday)",
