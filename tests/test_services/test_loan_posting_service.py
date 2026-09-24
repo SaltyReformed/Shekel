@@ -106,6 +106,12 @@ from app.models.amount_ownership import AmountOwnership
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
  _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
 _AS_OF = date(2026, 12, 31)
+# The origination a case takes when a payment is walked BEFORE its true-up: the
+# month before P1's 02-01 installment (plan step recurrence:R16-c-2, ruling
+# R-R101).  Every contractual installment from origination is charged now, so
+# SPLIT_LOAN's 2025-01-01 would have that payment clear twelve unpaid months
+# first; restated, each figure stays what these cases were written to pin.
+_ORIGINATION_BEFORE_P1 = date(2026, 1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +132,7 @@ def _make_loan(
     rate=_RATE,
     escrow_annual=None,
     name="Split Loan",
+    origination_date=_ORIGINATION_DATE,
 ):
     """Create an amortizing loan with a controlled user-trueup anchor.
 
@@ -133,13 +140,14 @@ def _make_loan(
     suite's fixed origination principal / date (distinct from the anchor, so a
     correct interest figure proves the walk seeds from the trueup anchor).  A
     distinct *name* lets one owner carry more than one loan (the account name is
-    unique per user).
+    unique per user).  A case that walks a payment before its true-up passes
+    :data:`_ORIGINATION_BEFORE_P1` as *origination_date* (ruling R-R101).
     """
     return create_loan_with_trueup(
         seed_user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
-        origination_date=_ORIGINATION_DATE, escrow_annual=escrow_annual,
+        origination_date=origination_date, escrow_annual=escrow_annual,
         name=name,
     )
 
@@ -391,9 +399,13 @@ class TestComputeLoanPaymentSplits:
 
         One escrow line, two effective-dated versions (supersession, no
         end_date): $1,200/yr ($100.00/mo) from origination, superseded by
-        $2,400/yr ($200.00/mo) on 2026-03-01.  P1's pay-period start
-        (2026-01-16) resolves to the first version -> escrow 100.00; the later
-        payment's start (2026-03-13) resolves to the second -> escrow 200.00.
+        $2,400/yr ($200.00/mo) on 2026-03-01.  P1's installment (2026-02-01)
+        resolves to the first version -> escrow 100.00; P2's (2026-03-01, the
+        second version's own day) resolves to the second -> escrow 200.00.
+        P2 and not a later payment since plan step recurrence:R16-c-2: every
+        contractual installment is charged now, so a payment skipping March
+        would clear March's escrow too (the fixture is restated so nothing is
+        left unpaid, ruling R-R103).
         Then a THIRD version ($3,600/yr) effective 2026-06-01 supersedes the
         second FROM that date only, so it must leave BOTH earlier splits
         unchanged -- proving the split is immutable for a past date, the whole
@@ -417,15 +429,15 @@ class TestComputeLoanPaymentSplits:
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             _settle_payment(
-                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
             )
             db.session.commit()
 
             splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
-            # Chronological: P1 start 2026-01-16 (V1 $100); P_late start
-            # 2026-03-13 (V2 $200).  Distinct escrow proves the as-of keying.
+            # Chronological: P1 due 2026-02-01 (V1 $100); P2 due 2026-03-01
+            # (V2 $200).  Distinct escrow proves the as-of keying.
             assert [s.escrow for s in splits] == [
                 Decimal("100.00"), Decimal("200.00"),
             ]
@@ -502,11 +514,14 @@ class TestComputeLoanPaymentSplits:
     ):
         """A mid-history rate step to 12% changes the later payment's interest.
 
-        Arithmetic: P1 (period start 2026-01-16, governed by the 6% origination
-        rate) interest 500.00, principal 500.00, balance 99500.00.  A rate
-        change effective 2026-03-01 to 12% governs P2 (period start 2026-03-13):
-        interest = round(99500 * 0.12 / 12) = 995.00, principal = 1000 - 995 =
-        5.00.
+        Arithmetic: P1 (due 2026-02-01, governed by the 6% origination rate)
+        interest 500.00, principal 500.00, balance 99500.00.  A rate change
+        effective 2026-03-01 to 12% governs P2 (due 2026-03-01, the change's
+        own day): interest = round(99500 * 0.12 / 12) = 995.00, principal =
+        1000 - 995 = 5.00.  P2 and not a later payment since plan step
+        recurrence:R16-c-2: every contractual installment is charged now, so
+        a payment skipping March would clear March's interest too (the
+        fixture is restated so nothing is left unpaid, ruling R-R103).
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -515,7 +530,7 @@ class TestComputeLoanPaymentSplits:
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             _settle_payment(
-                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
             )
             db.session.commit()
 
@@ -574,7 +589,10 @@ class TestComputeLoanPaymentSplits:
         today reproduces the case, so every asserted number is unchanged.
         """
         with app.app_context():
-            loan = _make_loan(seed_user, anchor_date=date(2026, 3, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 3, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
@@ -603,7 +621,10 @@ class TestComputeLoanPaymentSplits:
         100000 -- so the distinct 500.00 is the reset's signature.
         """
         with app.app_context():
-            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 2, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             _settle_payment(seed_user, loan, seed_periods[_P1], Decimal("1000.00"))
             _settle_payment(seed_user, loan, seed_periods[_P2], Decimal("1000.00"))
             db.session.commit()
@@ -902,6 +923,73 @@ class TestTrackingStartOpening:
 # ---------------------------------------------------------------------------
 # sync_loan_postings -- posts the balanced split correction
 # ---------------------------------------------------------------------------
+
+
+class TestASkippedMonthIsTheNextPaymentsArrears:
+    """The posted ledger charges every installment, and a payment clears its arrears first.
+
+    Plan step recurrence:R16-c-2 (rulings **R-R72** part (1) and **R-R100**;
+    finding **D53**'s past half): the settled walk charged one period per
+    month its PAYMENTS occupied until that step, so a month nobody paid was
+    never charged and its interest vanished from the posted ledger.  Every
+    contractual installment from origination is charged now, and the next
+    settled payment clears the months standing before it reaches principal --
+    what a servicer's books say.  This is the catch-up ruling R-R101 promised
+    a hand-computed test of when it restated the fixtures that had this shape
+    by accident: SPLIT_LOAN's loan with no true-up, originated 2025-01-01.
+    """
+
+    def test_the_first_payment_clears_thirteen_months_and_books_them(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """$250,000 at 6% originated 2025-01-01, first payment $1,000 due 2026-02-01.
+
+        Thirteen installments (2025-02-01 .. 2026-02-01) fall before the
+        payment and nothing pays them, each charging round(250000 * 0.005) =
+        1,250.00 on the unreduced balance: 16,250.00 of interest.  The $1,000
+        payment clears what it can -- the whole allocation is interest, and
+        principal is 1,000.00 - 16,250.00 = -15,250.00 (the balance GROWS, plan
+        D5) -- so the loan owes 250,000.00 + 15,250.00 = 265,250.00.  The
+        correction books it: Loan -16,250.00 (backing the interest out of the
+        cash the loan received) / Interest +16,250.00.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, _db.session, name="Never Paid",
+                principal=_ORIGINATION_PRINCIPAL, rate=_RATE, term=360,
+                origination_date=_ORIGINATION_DATE, payment_day=1,
+            )
+            _, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
+            )
+            db.session.commit()
+
+            [split] = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert split.due_date == date(2026, 2, 1)
+            assert (split.interest, split.escrow, split.principal) == (
+                Decimal("16250.00"), Decimal("0.00"), Decimal("-15250.00"),
+            )
+
+            entries = _correction_entries(shadow)
+            assert len(entries) == 1
+            legs = _entry_legs(entries[0].id)
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            assert legs[_linked_ledger_id(loan)] == (
+                Decimal("-16250.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+            )
+            assert legs[interest_ledger.id] == (
+                Decimal("16250.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
+            )
+            assert posted_loan_balance_at(
+                loan.id, seed_user["scenario"].id, date(2026, 3, 20),
+            ) == Decimal("265250.00")
 
 
 class TestSyncLoanPaymentPostings:
@@ -1271,15 +1359,18 @@ class TestSyncLoanPaymentPostings:
         is visible from its SETTLED date, so an EARLY settle shows immediately -- its
         REAL split, never the raw cash the pre-split ledger would have held.
 
-        Frozen today 2026-02-10.  P1 is settled 2026-01-20 (inside its period); P3
-        (budgeted to period 5, due 04-01) is settled EARLY on 2026-02-05 -- its
+        Frozen today 2026-02-10.  P1 is settled 2026-01-20 (inside its period); P2
+        (budgeted to period 3, due 03-01) is settled EARLY on 2026-02-05 -- its
         PERIOD has not begun, but its settle has.  The split keys on the DUE date,
         so P1 (due 02-01) splits first -- interest 100000 * 0.005 = 500.00 -> 99500
-        -- then P3 -- interest round(99500 * 0.005) = 497.50, principal 502.50 ->
-        98997.50.  So:
+        -- then P2 -- interest round(99500 * 0.005) = 497.50, principal 502.50 ->
+        98997.50.  The early payment is P2's and not a later installment's since
+        plan step recurrence:R16-c-2: every contractual installment is charged
+        now, so an early payment for April would clear March's standing interest
+        too (the fixture is restated so nothing is left unpaid, ruling R-R103).  So:
 
-        * the P3 correction exists AT SETTLE (no manual sync), legs
-          Loan -497.50 / Interest +497.50, attributed to P3's period;
+        * the P2 correction exists AT SETTLE (no manual sync), legs
+          Loan -497.50 / Interest +497.50, attributed to P2's period;
         * BOTH settled dates (01-20, 02-05) are on or before the frozen today, so
           the scalar reads the REAL 98997.50 -- never the raw cash
           99500 - 1000 = 98500.00 the unsplit ledger would show (H2).
@@ -1294,19 +1385,19 @@ class TestSyncLoanPaymentPostings:
                 settled_on=date(2026, 1, 20),
             )
             _, early_shadow = _settle_payment(
-                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
                 settled_on=date(2026, 2, 5),
             )
             db.session.commit()
-            # The premise: P3's PERIOD has not begun by the frozen today, but its
+            # The premise: P2's PERIOD has not begun by the frozen today, but its
             # settle (2026-02-05) has -- an EARLY settle.
-            assert seed_periods[_P3].start_date > frozen
+            assert seed_periods[_P2].start_date > frozen
 
             # The correction posted at settle, through the transfer wiring --
             # no manual sync call -- attributed to the payment's own period.
             entries = _correction_entries(early_shadow)
             assert len(entries) == 1
-            assert entries[0].pay_period_id == seed_periods[_P3].id
+            assert entries[0].pay_period_id == seed_periods[_P2].id
             interest_ledger = _find_loan_ledger(
                 loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
@@ -1326,11 +1417,11 @@ class TestSyncLoanPaymentPostings:
                 loan.id, scenario_id, frozen,
             ) == Decimal("98997.50")
 
-            # The map at P3's period agrees (period-END keyed).
+            # The map at P2's period agrees (period-END keyed).
             balance_map = posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
-            assert balance_map[seed_periods[_P3].id] == Decimal("98997.50")
+            assert balance_map[seed_periods[_P2].id] == Decimal("98997.50")
 
 
 # ---------------------------------------------------------------------------
@@ -2056,7 +2147,10 @@ class TestSyncLoanAnchorCorrections:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 2, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             # The opening + true-up (and their per-loan equity ledger) are posted
             # lazily on this first sync.
             loan_posting_service.sync_loan_postings(
@@ -2125,7 +2219,10 @@ class TestSyncLoanAnchorCorrections:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             # Trueup date EQUALS P1's 2026-02-01 due date (payment_day=1).
-            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 1))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 2, 1),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )

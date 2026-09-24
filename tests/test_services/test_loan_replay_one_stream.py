@@ -7,11 +7,11 @@ hand-built stream on this tree, and each is pinned here rather than left to the
 step that first makes it reachable on live data:
 
 * **A RESET clears whatever charges stand before it** (ruling **R-R72** part
-  (2)).  Every production charge today is dated where a payment clears it, so
-  no charge stands when an assertion lands; ``R16-c-2`` charges every
-  contractual installment and a skipped month's charge then meets a true-up.
-  (The what-if extra cannot meet one at all: it accrues at PROJECTED charges,
-  and those walk behind every recorded fact.)
+  (2)).  Reachable on live data since plan step ``recurrence:R16-c-2``, which
+  charges every contractual installment from origination, so a skipped
+  month's charge meets a true-up.  (The what-if extra cannot meet one at all:
+  it accrues at the charges on or after the projection boundary only, and
+  those walk behind every recorded fact.)
 * **A projection is never placed before a recorded fact**
   (:func:`~app.services.loan_ledger.projection_boundary`).  The recorded
   payments' splits are a function of the facts alone, whether or not the plan
@@ -30,6 +30,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.loan_ledger import (
+    LoanCalendar,
     LoanCashEvent,
     LoanEventStream,
     LoanResetEvent,
@@ -168,60 +169,76 @@ class TestAProjectionNeverPrecedesAFact:
         assert merged.payment_splits == [settled, projected]
 
     def test_pushed_projected_events_keep_contract_order_among_themselves(self):
-        """Two skipped months' charges and catch-ups behind a later fact.
+        """Two skipped months behind a later fact: cleared by it, then pure-principal catch-ups.
 
-        Facts: origination $10,000.00 (Jan 1), June's charge and a $500.00
-        payment on the June 1 installment.  Projected: April's and May's
-        charges and catch-ups, all pushed to the boundary (June 2).  They walk
-        April charge, April catch-up, May charge, May catch-up -- never both
-        charges first -- so April's catch-up meets one month standing:
+        Facts: origination $10,000.00 (Jan 1) and a $500.00 payment on the
+        June 1 installment; April's, May's and June's charges are the
+        contract's.  Projected: April's and May's catch-ups, pushed to the
+        boundary (June 2).  A charge is never pushed (plan step
+        recurrence:R16-c-2, rulings R-R72 part (1) and R-R100), so all three
+        charges walk before the June fact and it clears them; the catch-ups
+        then walk in CONTRACT order among themselves, April before May, with
+        nothing standing:
 
-          Jun fact:  50.00 interest, 450.00 principal -> 9,550.00
-          Apr:       47.75 interest, 452.25 principal -> 9,097.75
-          May:       45.49 interest, 454.51 principal -> 8,643.24
+          Jun fact:  150.00 interest (50.00 x 3), 350.00 principal -> 9,650.00
+          Apr:         0.00 interest, 500.00 principal -> 9,150.00
+          May:         0.00 interest, 500.00 principal -> 8,650.00
 
-        Both charges first would stand 95.50 over April's catch-up (404.50
-        of principal) and May's would accrue on 9,550.00 rather than
-        9,097.75.  Each charge keeps its own date.
+        Each catch-up stands under June's charge, the latest walked before it.
+        Until R16-c-2 the April and May charges were PROJECTED charges pushed
+        with their catch-ups (June 50.00 / 450.00, April 47.75 / 452.25, May
+        45.49 / 454.51, each under its own month); the developer approved the
+        moved figures (rule 5).
         """
         stream = LoanEventStream(
-            charges=[_charge(date(2026, 6, 1))],
+            charges=[
+                _charge(date(2026, 4, 1)),
+                _charge(date(2026, 5, 1)),
+                _charge(date(2026, 6, 1)),
+            ],
             payments=[_payment(date(2026, 6, 1), "500.00")],
             resets=[_reset(date(2026, 1, 1), "10000.00")],
             projections=[
                 _payment(date(2026, 4, 1), "500.00", visible_on=date(2026, 6, 16)),
                 _payment(date(2026, 5, 1), "500.00", visible_on=date(2026, 6, 16)),
             ],
-            projected_charges=[_charge(date(2026, 4, 1)), _charge(date(2026, 5, 1))],
         )
         june, april, may = replay_loan_stream(stream).payment_splits
         assert (june.interest, june.principal) == (
-            Decimal("50.00"), Decimal("450.00"),
+            Decimal("150.00"), Decimal("350.00"),
         )
         assert (april.interest, april.principal, april.balance_after) == (
-            Decimal("47.75"), Decimal("452.25"), Decimal("9097.75"),
+            _ZERO, Decimal("500.00"), Decimal("9150.00"),
         )
         assert (may.interest, may.principal, may.balance_after) == (
-            Decimal("45.49"), Decimal("454.51"), Decimal("8643.24"),
+            _ZERO, Decimal("500.00"), Decimal("8650.00"),
+        )
+        assert (april.due_date, may.due_date) == (
+            date(2026, 4, 1), date(2026, 5, 1),
         )
         assert (april.charge_date, may.charge_date) == (
-            date(2026, 4, 1), date(2026, 5, 1),
+            date(2026, 6, 1), date(2026, 6, 1),
         )
 
     def test_a_future_projection_keeps_its_own_date(self):
         """A projection due after the boundary interleaves with the calendar.
 
         Same facts through Sept; a projection due Oct 1 is keyed at Oct 1, so
-        the plan's October charge (dated Oct 1, applied first) stands over it:
-        $48.00 of interest on the $9,600.00 the September payment left
-        ($500.00 less the $100.00 it cleared).
+        the October charge (dated Oct 1, applied first) stands over it: $48.00
+        of interest on the $9,600.00 the September payment left ($500.00 less
+        the $100.00 it cleared).  The October charge is the contract's, in the
+        stream's one charge list since plan step recurrence:R16-c-2 (ruling
+        R-R100); it was a separate PROJECTED charge list before it.
         """
         stream = LoanEventStream(
-            charges=[_charge(date(2026, 8, 1)), _charge(date(2026, 9, 1))],
+            charges=[
+                _charge(date(2026, 8, 1)),
+                _charge(date(2026, 9, 1)),
+                _charge(date(2026, 10, 1)),
+            ],
             payments=[_payment(date(2026, 9, 1), "500.00")],
             resets=[_reset(date(2026, 1, 1), "10000.00")],
             projections=[_payment(date(2026, 10, 1), "500.00")],
-            projected_charges=[_charge(date(2026, 10, 1))],
         )
         [_settled, projected] = replay_loan_stream(stream).payment_splits
         assert projected.charge_date == date(2026, 10, 1)
@@ -229,20 +246,26 @@ class TestAProjectionNeverPrecedesAFact:
             Decimal("9600.00"), _RATE,
         ) == Decimal("48.00")
 
-    def test_the_extra_accrues_only_at_projected_charges(self):
+    def test_the_extra_accrues_only_at_charges_after_the_facts(self):
         """"An extra $100 a month" never reprices a recorded month.
 
-        Charges Aug 1 and Sept 1 are the FACTS' (the Sept payment is the last
-        fact); October's is the plan's, a projected charge.  With $100.00 a
-        month the recorded September payment is byte-identical to the no-extra
-        walk, and the October projection carries exactly one helping.
+        Charges Aug 1 and Sept 1 fall before the projection boundary (Sept 2,
+        the day after the last fact); October's falls after it.  The extra
+        accrues at a charge on or after the boundary only (plan step
+        recurrence:R16-c-2: one charge list, the boundary deciding; until then
+        it accrued at the separate PROJECTED charges), so with $100.00 a month
+        the recorded September payment is byte-identical to the no-extra walk,
+        and the October projection carries exactly one helping.
         """
         stream = LoanEventStream(
-            charges=[_charge(date(2026, 8, 1)), _charge(date(2026, 9, 1))],
+            charges=[
+                _charge(date(2026, 8, 1)),
+                _charge(date(2026, 9, 1)),
+                _charge(date(2026, 10, 1)),
+            ],
             payments=[_payment(date(2026, 9, 1), "500.00")],
             resets=[_reset(date(2026, 1, 1), "10000.00")],
             projections=[_payment(date(2026, 10, 1), "500.00")],
-            projected_charges=[_charge(date(2026, 10, 1))],
         )
         plain = replay_loan_stream(stream)
         topped = replay_loan_stream(stream, extra_per_period=Decimal("100.00"))
@@ -258,15 +281,20 @@ class TestTheOutcomeIsTheRecord:
     def test_a_payment_no_charge_stands_over_reads_the_calendar_period(self):
         """Ruling R-C's early extra: dated before the first charge, pure principal.
 
-        The stream's ``periods`` supply the governing period; the outcome
+        The stream's calendar supplies the governing period; the outcome
         carries it, ``charge_date`` is ``None``, and the cash is principal.
+        The charges are stated by hand, so the calendar's dates are never
+        read here -- only its rate periods.
         """
         period = rate_period(_RATE, start_date=date(2026, 1, 1))
         stream = LoanEventStream(
             charges=[_charge(date(2026, 3, 1))],
             payments=[_payment(date(2026, 1, 20), "250.00")],
             resets=[_reset(date(2026, 1, 1), "10000.00")],
-            periods=[period],
+            calendar=LoanCalendar(
+                origination_date=date(2026, 1, 1), payment_day=1,
+                periods=[period], escrow_lines=[],
+            ),
         )
         [early] = replay_loan_stream(stream).payment_splits
         assert early.charge is None and early.charge_date is None

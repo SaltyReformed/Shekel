@@ -30,6 +30,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.services import balance_at
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import loan_plan
 from app.services.balance_at import BalanceContext
 from app.services.liability_sign import owed
@@ -89,21 +90,34 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     # through the RETIRED one-payment-per-month composition
     # (``tests.oracles.loan_monthly_composition``, deleted from ``app/`` at plan
     # step X-au-g-2c-3b-2) because every plan it grades puts one payment in each
-    # period.
+    # period.  The charges are the one timeline's since plan step
+    # recurrence:R16-c-2 (ruling R-R100): every installment from origination,
+    # of which only the periods the plan's payments occupy are looked up.
+    stream = loan_timeline(loan, ctx).stream
     charged = {
         (charge.on_date.year, charge.on_date.month): charge
-        for charge in plan.charges
+        for charge in stream.charges
     }
+    # A plan payment due before the loan's latest RECORDED payment is an
+    # overdue catch-up: it is walked behind that fact, whose payment already
+    # cleared its month (plan step recurrence:R16-c-2, rulings R-R72 part (1)
+    # and R-R100), so it faces nothing standing and pays pure principal.
+    latest_fact = max(
+        (payment.on_date for payment in stream.payments), default=None,
+    )
     balance = seed
     total = ZERO
     for payment in sorted(
         plan.payments, key=lambda p: (p.due_date, p.effective_date),
     ):
         slot = (payment.due_date.year, payment.due_date.month)
-        charge = charged[slot]
-        parts = charge_then_allocate(
-            payment.cash, balance, charge.period.annual_rate, charge.escrow,
-        )
+        if latest_fact is not None and payment.due_date < latest_fact:
+            parts = charge_then_allocate(payment.cash, balance, ZERO, ZERO)
+        else:
+            charge = charged[slot]
+            parts = charge_then_allocate(
+                payment.cash, balance, charge.period.annual_rate, charge.escrow,
+            )
         balance = parts.balance_after
         if payment.effective_date.year == year and slot not in exclude_slots:
             total += parts.interest
@@ -234,16 +248,20 @@ class TestLoanInterestInYearMerge:
         once tested has no work left to do here: no projected record re-counts the
         early-settled installment.
 
-        Frozen 2026-02-10: P1 (due 02-01, begun) and P3 (due 04-01, EARLY) both
-        settle.  Fold interest = P1 500.00 (100000 * 0.005) + P3 497.50
-        (round(99500 * 0.005)) = 997.50, both paid 2026.  The April slot P3
+        Frozen 2026-02-10: P1 (due 02-01, begun) and P2 (due 03-01, EARLY) both
+        settle.  Fold interest = P1 500.00 (100000 * 0.005) + P2 497.50
+        (round(99500 * 0.005)) = 997.50, both paid 2026.  The March slot P2
         satisfies must appear in NEITHER the plan nor the projected half -- if it
-        did, it would double-count P3's installment (the +$489.97 the retired merge
-        subtracted by hand).
+        did, it would double-count P2's installment (the +$489.97 the retired merge
+        subtracted by hand).  The early payment is P2's and not a later
+        installment's since plan step recurrence:R16-c-2: every contractual
+        installment is charged now, so an early payment for April would clear
+        March's standing interest too (the fixture is restated so nothing is
+        left unpaid, ruling R-R103).
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 2, 10))
-            _, _, _, _, _, p1, _p2, p3 = SPLIT_LOAN
+            _, _, _, _, _, p1, p2, _p3 = SPLIT_LOAN
             loan = _split_loan(seed_user)
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
@@ -252,33 +270,33 @@ class TestLoanInterestInYearMerge:
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
-                seed_periods[p3], amount=Decimal("1000.00"),
+                seed_periods[p2], amount=Decimal("1000.00"),
                 settled_on=date(2026, 2, 10),
             )
             db.session.commit()
-            # Premise: P3's period has not begun by the frozen today (early settle).
-            assert seed_periods[p3].start_date > date(2026, 2, 10)
+            # Premise: P2's period has not begun by the frozen today (early settle).
+            assert seed_periods[p2].start_date > date(2026, 2, 10)
             ctx = BalanceContext.build(seed_user["user"].id)
 
-            # P3 satisfies the April installment early, so its 497.50 is in the
+            # P2 satisfies the March installment early, so its 497.50 is in the
             # SETTLED half (paid Feb 2026); the settled half is hand-computed.
             assert balance_at.loan_interest_paid_in_year(
                 loan, ctx, 2026,
             ) == Decimal("997.50")
 
-            # The plan de-dups the early-settled April slot OUT, while its
+            # The plan de-dups the early-settled March slot OUT, while its
             # neighbours are genuinely present -- so the exclusion is real, not a
             # vacuously empty plan.
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
                 for payment in loan_plan(loan, ctx).payments
             }
-            assert (2026, 4) not in plan_slots      # P3's slot, de-duped
-            assert (2026, 3) in plan_slots          # its uncovered neighbours ARE
+            assert (2026, 3) not in plan_slots      # P2's slot, de-duped
+            assert (2026, 4) in plan_slots          # its uncovered neighbours ARE
             assert (2026, 5) in plan_slots          # planned
 
-            # So the whole 2026 figure counts April ONCE: the settled fold (incl.
-            # P3) plus a projected half that carries no April record.
+            # So the whole 2026 figure counts March ONCE: the settled fold (incl.
+            # P2) plus a projected half that carries no March record.
             projected = _plan_projected_interest(loan, ctx, 2026)
             assert projected > ZERO                 # non-vacuous
             result = balance_at.loan_interest_in_year(loan, ctx, 2026)
@@ -302,8 +320,17 @@ class TestLoanInterestInYearMerge:
         Frozen display today 2026-01-31 (EST, UTC-5).  A period-``p2`` payment
         (due 2026-03-01) is settled EARLY at ``2026-02-01 02:00 UTC`` =
         ``2026-01-31 21:00 EST``: display-paid 2026-01-31 (year 2026, in the
-        settled half at 500.00) AND visible 2026-01-31 <= as_of, so ``loan_plan``
-        does not synthesize a March ESTIMATED record at all.
+        settled half) AND visible 2026-01-31 <= as_of, so ``loan_plan`` does
+        not synthesize a March ESTIMATED record at all.  Its interest is
+        1,000.00: every contractual installment is charged since plan step
+        recurrence:R16-c-2 (rulings R-R72 part (1) and R-R100), and the 02-01
+        installment falls before it in contract time with nothing paying it,
+        so the payment clears February (500.00 on the $100,000 trued balance)
+        and then March (500.00) -- all $1,000.00 of its cash.  The plan's
+        February installment becomes an overdue catch-up behind it, paying pure
+        principal.  Until R16-c-2 February was charged to that catch-up and
+        this payment's interest was 500.00; the developer approved the moved
+        figure (rule 5).
 
         **The walk-merge IS deleted at plan step recurrence:R16-c-1**, when the
         settled and projected halves became ONE list of outcomes (a payment is
@@ -329,11 +356,12 @@ class TestLoanInterestInYearMerge:
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
 
-            # The payment is display-paid in 2026 (its interest is 500.00 on the
-            # $100,000 trued balance), so the settled half counts it.
+            # The payment is display-paid in 2026 (its interest is February's
+            # and March's 500.00 each on the $100,000 trued balance), so the
+            # settled half counts it.
             assert balance_at.loan_interest_paid_in_year(
                 loan, ctx, 2026,
-            ) == Decimal("500.00")
+            ) == Decimal("1000.00")
 
             # It is now VISIBLE by as_of on the same clock the tax attribution
             # uses, so the plan does not synthesize March at all -- the gap is
@@ -357,7 +385,7 @@ class TestLoanInterestInYearMerge:
 
             # The producer counts this payment ONCE either way.
             result = balance_at.loan_interest_in_year(loan, ctx, 2026)
-            assert result == Decimal("500.00") + merged
+            assert result == Decimal("1000.00") + merged
 
 
 class TestLoanInterestAnswersFromTheFold:

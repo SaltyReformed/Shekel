@@ -170,7 +170,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import escrow_calculator, loan_loaders, loan_resolver
+from app.services import escrow_calculator, loan_loaders
 from app.services.loan_ledger import LoanCalendar, installment_dates
 from app.services.cash_ledger import (
     AmountBasis,
@@ -536,6 +536,14 @@ def _extension_dates(contractual: list, calendar: LoanCalendar) -> list[date]:
         contractual: The pure contractual schedule from origination to payoff.
         calendar: The loan's contract terms.
 
+    **Counted, not bounded by a date.**  The sequence is read to one month past
+    the extension (``add_months`` of the last row, one month further) and the
+    first :data:`_PAYOFF_EXTENSION_MONTHS` installments after the contract are
+    kept.  A date bound at exactly sixty months carries the last row's clamp
+    and can fall short of the sixtieth installment: a contract ending on a
+    clamped February 28th for a loan due on the 31st bounds at the 28th five
+    years on, and in a leap year the installment there is the 29th.
+
     Returns:
         The extension dates, ascending, one per month after the last
         contractual installment; empty for an empty schedule.
@@ -548,10 +556,10 @@ def _extension_dates(contractual: list, calendar: LoanCalendar) -> list[date]:
         for due in installment_dates(
             calendar.origination_date,
             calendar.payment_day,
-            add_months(last_due, _PAYOFF_EXTENSION_MONTHS),
+            add_months(last_due, _PAYOFF_EXTENSION_MONTHS + 1),
         )
         if due > last_due
-    ]
+    ][:_PAYOFF_EXTENSION_MONTHS]
 
 
 def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
@@ -597,12 +605,18 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         return LoanForwardPlan(payments=[], calendar=None)
     params = resolved.params
     rate_changes = resolved.context.rate_changes
-    calendar = LoanCalendar(
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        periods=loan_resolver.resolve_periods(params, rate_changes),
-        escrow_lines=loan_loaders.load_escrow_lines(account.id),
-    )
+    # What the pass's recorded stream already accounts for, read off the
+    # pass's OWN walk (the stream this plan is appended to, bounded once at
+    # its load, ruling R-R91) rather than derived again from the rows: its
+    # settled payments, its latest balance assertion, and the contract terms
+    # it was charged on.  The terms are the WALK's, not built here a second
+    # time (plan step recurrence:R16-c-2, rule 14): the plan carries the one
+    # calendar the facts were charged on (ruling R-R100), so the timeline the
+    # seam composes charges both on one object.  The opening is always in
+    # that stream, so a loan not yet originated answers its origination date
+    # with no default spelled here.
+    facts = ctx.loan_walk(account).stream
+    calendar = facts.calendar
     fwd = _ForwardInputs(calendar=calendar, as_of=ctx.as_of)
 
     # The pass's OWN loan derivation, not a second one built here: this line
@@ -619,13 +633,6 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         fwd,
     )
 
-    # What the pass's recorded stream already accounts for, read off the
-    # pass's OWN walk (the stream this plan is appended to, bounded once at
-    # its load, ruling R-R91) rather than derived again from the rows: its
-    # settled payments and its latest balance assertion.  The opening is
-    # always in that stream, so a loan not yet originated answers its
-    # origination date with no default spelled here.
-    facts = ctx.loan_walk(account).stream
     last_anchor = max(reset.on_date for reset in facts.resets)
     contractual = contractual_schedule_from_origination(params, rate_changes)
     if resolved.definitions and contractual:

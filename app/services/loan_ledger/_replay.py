@@ -215,19 +215,25 @@ class LoanEventStream:
             own order.  Walked after every recorded fact (see the module
             docstring); empty for the posted ledger's replay, which books
             facts and nothing else.
-        periods: The loan's rate periods
-            (:func:`app.services.loan_resolver.resolve_periods`), the calendar
-            the charges were resolved against.  Read for a payment NO charge
-            stands over -- one dated before the loan's first installment,
-            ruling R-C's early extra -- so its outcome still names the period
-            governing it.
+        calendar: The loan's :class:`~._charges.LoanCalendar` the charges were
+            built from (:func:`with_contract_charges`), or ``None`` for a
+            hand-built stream that states its charges itself.  Its rate
+            periods are read for a payment NO charge stands over -- one dated
+            before the loan's first installment, ruling R-C's early extra --
+            so its outcome still names the period governing it.  **The stream
+            carries the calendar it was charged on** (plan step
+            recurrence:R16-c-2, rule 14), so the read pass's forward plan
+            reads the loan's contract terms off its facts walk rather than
+            building them a second time (:func:`app.services.balance_at._plan
+            .loan_plan`), and a screen's timeline is charged on the same
+            calendar object as the facts it extends.
     """
 
     charges: Sequence[AccrualCharge]
     payments: Sequence[LoanCashEvent]
     resets: Sequence[LoanResetEvent] = field(default_factory=tuple)
     projections: Sequence[LoanCashEvent] = field(default_factory=tuple)
-    periods: Sequence[RatePeriod] = field(default_factory=tuple)
+    calendar: LoanCalendar | None = None
 
 
 def with_contract_charges(
@@ -248,13 +254,13 @@ def with_contract_charges(
     installment that never fell.
 
     Args:
-        stream: The loan's events; its own ``charges`` and ``periods`` are
+        stream: The loan's events; its own ``charges`` and ``calendar`` are
             replaced.
         calendar: The loan's :class:`~._charges.LoanCalendar`.
 
     Returns:
-        A copy of *stream* with the calendar's charges and periods; no charge
-        at all when the stream holds no event.
+        A copy of *stream* carrying *calendar* and its charges; no charge at
+        all when the stream holds no event.
     """
     last = max(
         (
@@ -266,7 +272,7 @@ def with_contract_charges(
     return replace(
         stream,
         charges=() if last is None else contract_charges(calendar, last),
-        periods=tuple(calendar.periods),
+        calendar=calendar,
     )
 
 
@@ -577,7 +583,11 @@ def replay_loan_events(
                 charge=standing,
                 split=split,
                 period=(
-                    period_for_date(stream.periods, event.on_date)
+                    period_for_date(
+                        () if stream.calendar is None
+                        else stream.calendar.periods,
+                        event.on_date,
+                    )
                     if standing is None else standing.period
                 ),
                 is_projected=kind == _PROJECTION,

@@ -194,6 +194,12 @@ from tests._test_helpers import (
 # parallel run is exact.
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
  _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
+# The origination a case takes when a payment is walked BEFORE its true-up: the
+# month before P1's 02-01 installment (plan step recurrence:R16-c-2, ruling
+# R-R101).  Every contractual installment from origination is charged now, so
+# SPLIT_LOAN's 2025-01-01 would have that payment clear twelve unpaid months
+# first; restated, each figure stays what these cases were written to pin.
+_ORIGINATION_BEFORE_P1 = date(2026, 1, 1)
 
 # The frozen as-of: after every payment period used, so each settled payment is
 # historical (eligible) and the resolver / wiring see the same today.
@@ -231,6 +237,7 @@ def _freeze_today(monkeypatch):
 def _make_loan(
     user, *, anchor_balance=_ANCHOR_BALANCE, anchor_date=_ANCHOR_DATE,
     rate=_RATE, name="Oracle Loan", escrow_annual=None, payment_day=1,
+    origination_date=_ORIGINATION_DATE,
 ):
     """Create a resolvable amortizing loan with the suite's controlled anchor.
 
@@ -238,13 +245,15 @@ def _make_loan(
     every settled payment is post-anchor and eligible); a caller pins a LATER
     date to place a payment pre-anchor (the read-switch boundary case).
     ``payment_day`` defaults to the 1st; a caller pins another day to control
-    where each installment's due date falls relative to the biweekly grid.
+    where each installment's due date falls relative to the biweekly grid.  A
+    case that places a payment pre-anchor passes
+    :data:`_ORIGINATION_BEFORE_P1` as *origination_date* (ruling R-R101).
     """
     return create_loan_with_trueup(
         user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
-        origination_date=_ORIGINATION_DATE, name=name,
+        origination_date=origination_date, name=name,
         escrow_annual=escrow_annual, payment_day=payment_day,
     )
 
@@ -394,10 +403,14 @@ def _seed_boundary_loan(bare_user):
     _db.session.flush()
     ctx = {"user": bare_user["user"], "scenario": scenario}
     checking = create_account_of_type(ctx, _db.session, "Checking", "Checking")
+    # Originated the month before the first payment's 2026-01-01 installment
+    # (plan step recurrence:R16-c-2, ruling R-R101): every contractual
+    # installment from origination is charged now, so the 2025-11-01 it
+    # carried until then left the 2025-12-01 installment unpaid ahead of it.
     loan = create_loan_account(
         ctx, _db.session, name="Boundary Loan",
         principal=Decimal("100000.00"), rate=Decimal("0.06000"),
-        origination_date=date(2025, 11, 1), term=360,
+        origination_date=date(2025, 12, 1), term=360,
     )
     return loan, ctx, checking, periods
 
@@ -989,18 +1002,21 @@ class TestParallelRunAgainstResolver:
         shared-kernel bug cannot hide from -- which is exactly why the fixture
         does NOT read the balance back from either producer.
 
-        A rate step to 12% effective 2026-03-01 governs P3 (pay period starts
-        2026-03-13, due 2026-04-01) while P1 (due 2026-02-01) keeps the 6%
-        origination rate.  Each payment is a $1,000 SHORT payment, so the
-        ledger's REAL principal (cash - interest) is hand-computable without the
+        A rate step to 12% effective 2026-03-01 governs P2 (due 2026-03-01, the
+        step's own day) while P1 (due 2026-02-01) keeps the 6% origination
+        rate.  P2 and not a later installment since plan step
+        recurrence:R16-c-2: every contractual installment is charged now, so a
+        payment skipping March would clear March's interest too (the fixture
+        is restated so nothing is left unpaid, ruling R-R103).  Each payment
+        is a $1,000 SHORT payment, so the ledger's REAL principal (cash - interest) is hand-computable without the
         schedule (the same partition ``test_arm_rate_step_changes_interest``
         pins at the unit level):
           P1 (6%):  interest = round(100000 * 0.06 / 12) = 500.00;
                     principal = 1000 - 500 = 500.00; balance 99,500.00.
-          P3 (12%): interest = round( 99500 * 0.12 / 12) = 995.00;
+          P2 (12%): interest = round( 99500 * 0.12 / 12) = 995.00;
                     principal = 1000 - 995 =   5.00; balance 99,495.00.
         So the ledger balance is 99,495.00 and the genesis linked total is
-        opening (-250000) + true-up (+150000) + P1 principal (+500) + P3
+        opening (-250000) + true-up (+150000) + P1 principal (+500) + P2
         principal (+5) = -99,495.00.  The reader reads that same ledger, so it
         agrees to the penny; the resolver books the (recast, far larger)
         SCHEDULED principal at each rate, so it shows a LOWER balance -- the
@@ -1011,7 +1027,7 @@ class TestParallelRunAgainstResolver:
             loan = _make_loan(seed_user)
             _add_rate_change(loan, date(2026, 3, 1), Decimal("0.12000"))
             _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
-            _settle(seed_user, loan, seed_periods[_P3], amount=Decimal("1000.00"))
+            _settle(seed_user, loan, seed_periods[_P2], amount=Decimal("1000.00"))
             db.session.commit()
 
             ledger = _ledger_balance(loan.id, scenario_id)
@@ -1049,7 +1065,10 @@ class TestParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             # Trueup AFTER P1's 2026-02-01 due date, so P1 is pre-trueup.
-            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 2, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             xfer = _settle(
                 seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"),
             )
@@ -2528,7 +2547,10 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             # True-up AFTER P1's 2026-02-01 due date, so P1 is pre-true-up.
-            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 2, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
             db.session.commit()
 
@@ -3167,9 +3189,19 @@ class TestLatePaidPaymentDating:
           so the pre-fix projection walked back to the April row and handed that
           period the loan's OLDER balance, which owed more.  The plotted
           liability rose.
+
+        The true-up is dated 2026-03-10, after the 02-05 and 03-05 installments
+        no payment here pays: every contractual installment is charged since
+        plan step recurrence:R16-c-2, so the suite's 2026-01-10 true-up would
+        leave both standing for the April payment to clear -- a real rise, the
+        arrears -- and the case pins the mis-dating, not a delinquent loan (the
+        fixture is restated so nothing is left unpaid, ruling R-R103).
         """
         with app.app_context():
-            loan = _make_loan(seed_user, name="Monotonic Loan", payment_day=5)
+            loan = _make_loan(
+                seed_user, name="Monotonic Loan", payment_day=5,
+                anchor_date=date(2026, 3, 10),
+            )
 
             # Two extra periods so a FUTURE period exists that ends before the
             # mis-derived 2026-06-05 date -- the window the rise appears in.

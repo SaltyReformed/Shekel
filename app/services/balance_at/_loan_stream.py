@@ -31,16 +31,21 @@ the posted ledger -- which replays the facts and nothing else -- agrees with
 every screen on every settled payment by construction.  **ONE calendar charges
 both** since plan step recurrence:R16-c-2 (ruling **R-R100**): every
 contractual installment from origination, through the stream's last event
-(:func:`~app.services.loan_ledger.with_contract_charges`), built from the
-contract terms the plan carries -- so the facts' charges are a prefix of the
-timeline's by construction, and the plan's own charge list and the
-``seed_slots`` partition that kept it apart from the facts' are deleted.
+(:func:`~app.services.loan_ledger.with_contract_charges`).  The contract
+terms are the SAME object in both -- the facts walk carries the calendar it
+was charged on, the plan reads it off that walk rather than building its own
+(:func:`~._plan.loan_plan`), and this module charges the timeline from it --
+so the facts' charges are a prefix of the timeline's by construction (one
+calendar, one pure function, a later last event), and the plan's own charge
+list and the ``seed_slots`` partition that kept it apart from the facts' are
+deleted.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.  Seam-PRIVATE -- W9910 refuses an import of it from
 outside :mod:`app.services.balance_at`.
 """
 
+from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
 
@@ -55,7 +60,7 @@ from app.services.loan_ledger import (
 
 from ._context import BalanceContext
 from ._memoize import _memoize_once
-from ._plan import LoanForwardPlan, memoized_plan
+from ._plan import LoanForwardPlan, PlannedPayment, memoized_plan
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -72,9 +77,11 @@ def merged_stream(
     order, which the replay's stable sort preserves.  The whole stream is then
     charged by the leaf's one composer from the contract terms the plan carries
     (:func:`~app.services.loan_ledger.with_contract_charges`, ruling
-    **R-R100**): every installment from origination through the last
-    projection, of which the facts' own charges -- the same installments
-    through the last recorded fact -- are the prefix.  The replay walks the
+    **R-R100**) -- the facts walk's own calendar, which :func:`~._plan.loan_plan`
+    reads off it: every installment from origination through the stream's
+    last event, of which the facts' own charges -- the same installments,
+    from the same calendar object, through the last recorded fact -- are the
+    prefix.  The replay walks the
     projections behind the recorded facts
     (:func:`~app.services.loan_ledger.projection_boundary`), so a month skipped
     before the loan's last recorded fact is a RECORDED month: that fact's
@@ -93,30 +100,51 @@ def merged_stream(
     Returns:
         One :class:`~app.services.loan_ledger.LoanEventStream`: the facts'
         payments and resets, the plan's payments as projections, and the
-        calendar's charges through the last of them.  *facts* itself when the
-        plan has no calendar (an account that is not a configured loan, whose
-        recorded stream is empty too).
+        calendar's charges through the last event of all of them.  *facts*
+        itself when the plan has no calendar (an account that is not a
+        configured loan, whose recorded stream is empty too).
     """
     if plan.calendar is None:
         return facts
     return with_contract_charges(
-        replace(
-            facts,
-            projections=[
-                LoanCashEvent(
-                    on_date=payment.due_date,
-                    cash=payment.cash,
-                    source=payment,
-                    visible_on=payment.effective_date,
-                )
-                for payment in sorted(
-                    plan.payments,
-                    key=lambda record: (record.due_date, record.effective_date),
-                )
-            ],
-        ),
+        replace(facts, projections=projection_events(plan.payments)),
         plan.calendar,
     )
+
+
+def projection_events(
+    payments: Sequence[PlannedPayment],
+) -> list[LoanCashEvent]:
+    """Return *payments* as the stream's PROJECTIONS, in the forward fold's order.
+
+    The one mapping from a plan's payment record to the replay's cash event:
+    dated at its installment (``due_date``, contract time), visible on its
+    effective day (``max(due, as_of + 1d)``, ruling D1), the record itself
+    carried as the ``source``, ordered ``(due_date, effective_date)`` -- the
+    order the replay's stable sort preserves within a date.  :func:`merged_stream`
+    appends these to a loan's recorded facts; the hand-computed forward oracles
+    (``tests/oracles/loan_forward_fold``) append them to a hand-stated stream,
+    so the two cannot map a payment two ways.
+
+    Args:
+        payments: The plan's :class:`~._plan_records.PlannedPayment` records,
+            in any order.
+
+    Returns:
+        One :class:`~app.services.loan_ledger.LoanCashEvent` per payment.
+    """
+    return [
+        LoanCashEvent(
+            on_date=payment.due_date,
+            cash=payment.cash,
+            source=payment,
+            visible_on=payment.effective_date,
+        )
+        for payment in sorted(
+            payments,
+            key=lambda record: (record.due_date, record.effective_date),
+        )
+    ]
 
 
 def loan_timeline(account: Account, ctx: BalanceContext) -> LoanLedgerWalk:

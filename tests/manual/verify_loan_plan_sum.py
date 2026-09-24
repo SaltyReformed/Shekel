@@ -116,6 +116,7 @@ from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.services import balance_at, template_amount_service, transfer_service
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import loan_plan
 from app.services.loan_ledger import confirmed_shadows_through, walk_loan_ledger
 from app.services.pay_calendar import calendar_for
@@ -135,6 +136,9 @@ VAN_ACCOUNT_ID = 8
 VAN_TEMPLATE_ID = 9
 #: How many months of the projected balance to print per loan.
 GRID_MONTHS = 36
+#: The years the interest figures are printed for: the Mortgage's origination
+#: through the end of its post-contractual extension.
+INTEREST_YEARS = range(2019, 2056)
 
 
 def _outcome_line(label, kind, account, outcome):
@@ -246,10 +250,33 @@ def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
         f"{label}\tREQUIRED\taccount={account.id}\ttarget={target}"
         f"\t{balance_at.loan_required_extra(account, ctx, target)}"
     )
-    for year in (2026, 2027):
+    # Schedule A's figure (the year's interest, settled and projected) and
+    # the dashboard chip's (the interest the settled payments PAID), every
+    # year the loan spans -- the coordinator's grade for finding REC-538
+    # (``apply_payment_cash`` reports the CHARGED interest as paid whatever
+    # cash moved), which charging every installment could reach if a payment
+    # faced more than its cash.
+    for year in INTEREST_YEARS:
         print(
             f"{label}\tINTEREST\taccount={account.id}\tyear={year}"
             f"\t{balance_at.loan_interest_in_year(account, ctx, year)}"
+        )
+        print(
+            f"{label}\tCHIP\taccount={account.id}\tyear={year}"
+            f"\t{balance_at.loan_interest_paid_in_year(account, ctx, year)}"
+        )
+    # Every payment whose cash fell below the charge standing over it: a
+    # NEGATIVE principal is exactly that (principal = cash - interest -
+    # escrow), and REC-538's case is each one of them.
+    timeline = loan_timeline(account, ctx)
+    short = [o for o in timeline.payment_splits if o.principal < 0]
+    print(f"{label}\tSHORTCOUNT\taccount={account.id}\t{len(short)}")
+    for outcome in short:
+        print(
+            f"{label}\tSHORT\taccount={account.id}"
+            f"\tprojected={outcome.is_projected}\tdue={outcome.due_date}"
+            f"\tcash={outcome.cash}\tinterest={outcome.interest}"
+            f"\tescrow={outcome.escrow}\tprincipal={outcome.principal}"
         )
 
 

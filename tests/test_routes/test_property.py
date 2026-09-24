@@ -28,6 +28,7 @@ from app.services import (
     home_equity_service,
     property_equity_chart,
 )
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import memoized_plan
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.balance_at._resolution import (
@@ -1113,11 +1114,19 @@ class TestPropertyEquityChartProducer:
                 "precondition: the whole term and its extension must be past, "
                 "or this does not exercise the empty-plan fallback"
             )
-            assert empty.charges == [], (
-                "and nothing is charged either: the plan charges every "
-                "contractual installment AFTER the loan's latest assertion "
-                "(ruling R-R71), and every installment of this term, its "
-                "extension included, precedes today's assertion"
+            # Every contractual installment from 2005 is charged since plan
+            # step recurrence:R16-c-2 (ruling R-R100), and today's
+            # tracking-start clears them all (R-R72 part (2)); nothing is
+            # charged AFTER it.  Until that step the check read the plan's own
+            # charge list, which was empty; the developer approved the
+            # re-expressed check (rule 5).
+            assert not [
+                charge for charge in loan_timeline(loan, ctx).stream.charges
+                if charge.on_date > today
+            ], (
+                "nothing is charged after today's assertion: every "
+                "installment of this term, its extension included, precedes "
+                "it and is cleared by it"
             )
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date is None

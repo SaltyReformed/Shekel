@@ -26,11 +26,9 @@ slot folded once) -- is pinned in ``test_loan_plan_assembly.py``.
 from datetime import date
 from decimal import Decimal
 
-from app.services.balance_at._plan import (
-    LoanForwardPlan,
-    PlannedPayment,
-)
+from app.services.balance_at._plan import PlannedPayment
 from tests.oracles.loan_forward_fold import (
+    HandPlan,
     fold_forward,
     plan_interest_in_year,
 )
@@ -61,11 +59,12 @@ def _plan(
     *,
     escrow: str = "0.00",
     rate: Decimal = _RATE,
-) -> LoanForwardPlan:
+) -> HandPlan:
     """Bundle *payments* with one CHARGE per accrual period they occupy.
 
-    Stated by hand rather than taken from ``_plan._charges_for``, so the fold is
-    graded against arithmetic rather than against the derivation that feeds it.
+    Stated by hand rather than taken from the leaf's calendar
+    (``loan_ledger.contract_charges``, ruling R-R100), so the fold is graded
+    against arithmetic rather than against the derivation that feeds it.
     Every plan below puts one payment in each month, so each charge lands on that
     payment's own due date and the hand-computed balances are unchanged from
     before plan step R16-a lifted the accrual off the record.
@@ -75,15 +74,14 @@ def _plan(
         slot = (payment.due_date.year, payment.due_date.month)
         if payment.due_date < opens.get(slot, date.max):
             opens[slot] = payment.due_date
-    return LoanForwardPlan(
+    return HandPlan(
         payments=list(payments),
         charges=[
             accrual_charge(on_date, rate, Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
         # Every payment here has a charge standing over it (one per slot,
-        # dated at its earliest due), so the fold never asks the periods.
-        periods=[],
+        # dated at its earliest due), so the fold never asks for a calendar.
     )
 
 

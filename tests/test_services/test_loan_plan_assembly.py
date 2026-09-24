@@ -11,6 +11,7 @@ record pays nothing).
 
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,10 +23,12 @@ from app.services import loan_loaders, transfer_service
 from app.services.row_valuation import settled_contribution
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
+    _extension_dates,
     loan_plan,
     memoized_plan,
 )
 from tests.oracles.loan_forward_fold import fold_forward
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
@@ -38,10 +41,12 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     freeze_today,
+    last_covered_day,
     loan_income_shadow,
 )
 from app.services.amount_ownership import declare_derived
 from app.models.amount_ownership import AmountOwnership
+from app.services.loan_ledger import LoanCalendar
 
 #: The read instant for the early-settled-payment case ONLY -- deliberately
 #: later than the module-wide :data:`_AS_OF` below, because that case is about a
@@ -123,13 +128,15 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
         assert payment.cash == row.payment
         assert payment.effective_date == payment.due_date
     # The escrow is the ACCRUAL's since plan step R16-a: a month impounds it, not
-    # a payment.  This loan escrows nothing, and since plan step R16-b-2 the
-    # charge calendar is the CONTRACT's (ruling R-R71): every installment after
-    # the loan's last balance assertion -- the origination, here -- whether or
-    # not a payment lands in it, so the three MISSED months (02-01, 03-01,
-    # 04-01) are charged too, then every month the payments occupy.
-    assert all(charge.escrow == Decimal("0.00") for charge in plan.charges)
-    assert [charge.on_date for charge in plan.charges] == (
+    # a payment.  This loan escrows nothing, and the charge calendar is the
+    # CONTRACT's (ruling R-R71; since plan step recurrence:R16-c-2 every
+    # installment from origination through the timeline's last event, read off
+    # the one timeline, ruling R-R100), whether or not a payment lands in it,
+    # so the three MISSED months (02-01, 03-01, 04-01) are charged too, then
+    # every month the payments occupy.
+    charges = loan_timeline(account, ctx).stream.charges
+    assert all(charge.escrow == Decimal("0.00") for charge in charges)
+    assert [charge.on_date for charge in charges] == (
         [row.payment_date for row in contractual] + extension_due
     )
 
@@ -339,41 +346,49 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     june = {p.due_date: p for p in plan.payments}[date(2026, 6, 1)]
     assert june.is_estimated is False
     # The rate and the escrow are the ACCRUAL's since plan step R16-a, and its
-    # date is the period's earliest due -- the INSTALLMENT, which is what this
-    # control measures.  Both mutations die here and they die differently: a
-    # charge DATED on the pay-period start KeyErrors this lookup, and one dated
-    # right but RESOLVED on the period start reads 0.06 / 100.00 against the two
-    # asserts below.
+    # date is the contract's INSTALLMENT (plan step recurrence:R16-c-2, ruling
+    # R-R89), which is what this control measures.  Both mutations die here
+    # and they die differently: a charge DATED on the pay-period start
+    # KeyErrors this lookup, and one dated right but RESOLVED on the period
+    # start reads 0.06 / 100.00 against the two asserts below.
     june_charge = {
-        charge.on_date: charge for charge in plan.charges
+        charge.on_date: charge
+        for charge in loan_timeline(account, ctx).stream.charges
     }[date(2026, 6, 1)]
     assert june_charge.period.annual_rate == Decimal("0.12")
     assert june_charge.escrow == Decimal("500.00")
 
 
-def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
+def test_two_payments_in_one_month_produce_ONE_charge_at_the_INSTALLMENT(
     seed_user, db, seed_periods,
 ):
-    """The firing control for :func:`app.services.balance_at._plan._charges_for`.
+    """The firing control for the charge calendar a real plan is charged on.
 
-    **The producer half of plan step R16-a had NO test until an adversarial
-    review mutated it and the suite stayed green.**  Replacing ``_charges_for``
-    with the pre-R16-a rule -- one charge per PAYMENT -- left 5,427 tests
+    That calendar is :func:`app.services.loan_ledger.with_contract_charges`
+    since plan step recurrence:R16-c-2 (ruling **R-R100**), and was
+    ``_plan._charges_for`` before it.  **The producer half of plan step R16-a
+    had NO test until an adversarial review mutated it and the suite stayed
+    green.**  Replacing ``_charges_for`` with the pre-R16-a rule -- one charge per PAYMENT -- left 5,427 tests
     passing, because every plan any other test builds through the real producer
     holds exactly one payment per slot, where "one charge per slot" and "one
     charge per payment" are indistinguishable.  The two ``_plan()`` helpers that
     DO build multi-payment plans state their charges by hand, so they grade the
     FOLD and can never reach the builder.  This test builds the multi-payment
-    month through ``loan_plan`` itself.
+    month through ``loan_plan`` and reads the timeline the seam replays.
 
     Two projected payments land in June 2026 -- the 2026-06-01 installment and an
     extra on 2026-06-20 -- and the month must yield exactly ONE charge.
 
-    **Its date is the EARLIEST of the two, and a rate and an escrow version
-    effective BETWEEN them are what make that a firing assertion rather than a
-    coincidence.**  Dated at the earliest the charge reads 6% / $100.00; dated at
-    the latest it reads 12% / $500.00, which is the same wrong-date defect N-34
-    names one function over, reached through the charge instead of the payment.
+    **Its date is the month's INSTALLMENT -- here also the earlier of the two
+    payments -- and a rate and an escrow version effective BETWEEN them are
+    what make that a firing assertion rather than a coincidence.**  Dated at
+    the installment the charge reads 6% / $100.00; dated at the later payment
+    it reads 12% / $500.00, which is the same wrong-date defect N-34 names one
+    function over, reached through the charge instead of the payment.  Until
+    plan step recurrence:R16-c-2 the rule was "the month's EARLIEST due" and
+    the test was named for it; since that step it is the contract's
+    installment (ruling **R-R89**), which this fixture cannot tell apart from
+    the earliest, so the figures stand and the name follows the rule.
     """
     account = create_loan_account(
         seed_user, db.session,
@@ -415,8 +430,9 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
         date(2026, 6, 1), date(2026, 6, 20),
     ], "precondition: both payments must reach the plan"
 
+    charges = loan_timeline(account, ctx).stream.charges
     june_charges = [
-        charge for charge in plan.charges
+        charge for charge in charges
         if (charge.on_date.year, charge.on_date.month) == (2026, 6)
     ]
     assert len(june_charges) == 1, (
@@ -424,7 +440,7 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
         "per PAYMENT is the pre-R16-a rule this test exists to refuse"
     )
     charge = june_charges[0]
-    assert charge.on_date == date(2026, 6, 1), "dated at the EARLIEST due"
+    assert charge.on_date == date(2026, 6, 1), "dated at the June installment"
     # Resolved AT that date: the versions effective 06-10 govern neither.
     assert charge.period.annual_rate == _RATE
     assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
@@ -438,10 +454,75 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
         for payment in plan.payments
     }
     charged = {
-        (charge.on_date.year, charge.on_date.month) for charge in plan.charges
+        (charge.on_date.year, charge.on_date.month) for charge in charges
     }
     assert occupied <= charged
-    assert len(charged) == len(plan.charges)
+    assert len(charged) == len(charges)
+
+
+def test_a_record_covers_the_installment_whose_interval_it_falls_in(
+    seed_user, db, seed_periods,
+):
+    """An off-day record covers the installment BEFORE it, not its calendar month's.
+
+    Ruling **R-R89** (finding **D55**, plan step recurrence:R16-c-2): an
+    installment's accrual period is the interval from its due date to the
+    next one's, and a record due inside it pays into it.  The loan is due on
+    the 22nd (originated 2026-01-22, first installment 2026-02-22) and read
+    2026-02-01, before any installment falls; one PLANNED record is due
+    2026-03-10, inside the Feb 22 - Mar 21 interval.  So the contract-only
+    ESTIMATED tier synthesizes no 02-22 installment (the record answers it)
+    and DOES synthesize 03-22.  Until that step a record covered its
+    CALENDAR month, so the 03-10 record answered March 22nd and February's
+    installment was synthesized beside it -- two payments for one interval
+    and none for the next.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=date(2026, 1, 22), payment_day=22,
+    )
+    period = next(
+        p for p in seed_periods
+        if p.start_date <= date(2026, 3, 10) <= last_covered_day(p)
+    )
+    _project_loan_payment(
+        seed_user, db, account, period,
+        amount=Decimal("2100.00"), due_date=date(2026, 3, 10),
+    )
+    ctx = BalanceContext.build(seed_user["user"].id, date(2026, 2, 1))
+
+    plan = loan_plan(account, ctx)
+
+    assert [(p.due_date, p.is_estimated) for p in plan.payments][:3] == [
+        (date(2026, 3, 10), False),
+        (date(2026, 3, 22), True),
+        (date(2026, 4, 22), True),
+    ]
+    assert date(2026, 2, 22) not in [p.due_date for p in plan.payments]
+
+
+def test_the_extension_returns_to_the_due_day_after_a_short_month():
+    """A contract ending on a clamped February 28th continues on the 31st.
+
+    The extension is the loan's own installment calendar past the contract's
+    last row (``loan_ledger.installment_dates``, plan step
+    recurrence:R16-c-2), which clamps the due day to each month afresh.  It
+    stepped a month count from the last row until then, which kept the clamp:
+    2027-03-28, 2027-04-28, and so on for the loan's whole extension.
+    """
+    calendar = LoanCalendar(
+        origination_date=date(2026, 1, 31), payment_day=31,
+        periods=[], escrow_lines=[],
+    )
+    contractual = [SimpleNamespace(payment_date=date(2027, 2, 28))]
+
+    extension = _extension_dates(contractual, calendar)
+
+    assert extension[:3] == [
+        date(2027, 3, 31), date(2027, 4, 30), date(2027, 5, 31),
+    ]
+    assert len(extension) == _PAYOFF_EXTENSION_MONTHS
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
@@ -490,9 +571,22 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     # The genuinely-uncovered July installment still is (ESTIMATED).
     assert date(2026, 7, 1) in dues
     assert all(payment.is_estimated for payment in plan.payments)
-    # And no June CHARGE either: a period the plan does not pay in charges
-    # nothing, so the seed's own accrual is never counted twice.
-    assert date(2026, 6, 1) not in [c.on_date for c in plan.charges]
+    # And June is charged ONCE, on its installment, and the early-settled
+    # payment faces it: the calendar is the contract's, one charge per
+    # installment in the one timeline (plan step recurrence:R16-c-2, ruling
+    # R-R100), so no second June charge can exist for the seed's accrual to
+    # be counted twice against.  Until that step the plan charged no June at
+    # all (the settled walk's slot); the developer approved the re-expressed
+    # check (rule 5).
+    timeline = loan_timeline(account, ctx)
+    assert [
+        c.on_date for c in timeline.stream.charges
+        if (c.on_date.year, c.on_date.month) == (2026, 6)
+    ] == [date(2026, 6, 1)]
+    [june] = timeline.settled_splits
+    assert (june.due_date, june.charge_date) == (
+        date(2026, 6, 1), date(2026, 6, 1),
+    )
 
 
 # ── D-ctx-b: the plan memo is a PUBLIC pass-through cache the seam fills ──────
@@ -572,7 +666,7 @@ def test_the_cache_stores_on_membership_not_truthiness():
     the docstring said otherwise until an adversarial merge review found it one
     site over from where it had already been corrected
     (``_memoize._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
-    a ``LoanForwardPlan(payments=[], charges=[], periods=[])``, which is unconditionally
+    a ``LoanForwardPlan(payments=[], calendar=None)``, which is unconditionally
     TRUTHY.  This test is unaffected -- the primitive is generic and its
     ``_build_empty`` below returns a real ``[]`` -- but the CLAIM about the plan
     was false, and a falsy-answer example that is no longer falsy is how the

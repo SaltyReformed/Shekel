@@ -109,7 +109,9 @@ def _state_price(template, figure):
     db.session.flush()
 
 
-def _build_derived_loan_transfer(seed_user, escrow_annual):
+def _build_derived_loan_transfer(
+    seed_user, escrow_annual, origination_date=date(2026, 1, 1),
+):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
 
     Returns ``(loan_account, escrow_version, scenario_id)``.  The
@@ -130,7 +132,7 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     loan = create_loan_account(
         seed_user, db.session, name="Live Mortgage",
         principal=Decimal("200000.00"), rate=Decimal("0.06000"),
-        term=360, origination_date=date(2026, 1, 1), payment_day=1,
+        term=360, origination_date=origination_date, payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
     params = loan_params_for(db.session, loan.id)
@@ -429,14 +431,26 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
     the $200.00 difference would land silently in PRINCIPAL, moving the recorded
     balance.  Asserting ``principal == P&I - interest`` is what pins that -- it
     holds only when both ends read the same date.
+
+    The loan originates 2026-02-01, the month before the one installment this
+    case settles: every contractual installment from origination is charged
+    since plan step recurrence:R16-c-2, so the builder's 2026-01-01 would
+    leave February (its row generated, never settled) standing for the March
+    payment to clear (ruling R-R103).  Generation runs over the pay periods
+    after the origination only, since the payment door refuses the February
+    occurrence as falling on it (ruling R-C).
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
-            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+            _build_derived_loan_transfer(
+                seed_user, Decimal("3600.00"),
+                origination_date=date(2026, 2, 1),
+            )
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods if p.start_date > date(2026, 2, 1)},
             ), scenario_id,
         )
         db.session.add(EscrowComponentVersion(

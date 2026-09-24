@@ -46,9 +46,10 @@ from app.services import (
     transfer_service,
 )
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
-    _charge_dates,
+    _extension_dates,
     loan_plan,
 )
 from app.services.balance_at._resolution import (
@@ -56,6 +57,11 @@ from app.services.balance_at._resolution import (
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.liability_sign import owed
+from app.services.loan_ledger import (
+    LoanCashEvent,
+    LoanEventStream,
+    with_contract_charges,
+)
 from app.services.recurrence import compute_due_date
 from app.services.settle_day import SettleDay
 from tests._test_helpers import (
@@ -151,6 +157,17 @@ def _generate(seed_user, template):
         seed_user["scenario"].id,
     )
     db.session.flush()
+
+
+def _charges(account, ctx):
+    """Return the loan's timeline CHARGES for the pass *ctx* reads.
+
+    Every contractual installment from origination through the timeline's
+    last event (plan step recurrence:R16-c-2, ruling **R-R100**): the plan
+    carries the loan's contract terms and no charge list of its own, so what
+    a month is charged is read off the one timeline the seam replays.
+    """
+    return loan_timeline(account, ctx).stream.charges
 
 
 def _estimated(plan):
@@ -307,7 +324,7 @@ class TestAnOccurrenceNoRowAnswers:
         # any other day the answer is the same, which is what R-R71 bought:
         # bounded at the read day instead, this loan answered 2026-08-01
         # once as_of had passed the skipped month.
-        assert [c.on_date for c in plan.charges][:3] == [
+        assert [c.on_date for c in _charges(account, ctx)][:3] == [
             date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1),
         ]
         assert balance_at.loan_payoff_date(account, ctx) == date(2026, 9, 1)
@@ -421,6 +438,7 @@ class TestTheEstimateIsWhatGenerationWouldWrite:
         template = _definition(seed_user, account, _LEVEL, name="Payment")
         ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
         before = loan_plan(account, ctx)
+        before_charges = _charges(account, ctx)
         assert all(p.is_estimated for p in before.payments)
 
         _generate(seed_user, template)
@@ -431,6 +449,7 @@ class TestTheEstimateIsWhatGenerationWouldWrite:
         assert written >= 6, "precondition: the pass wrote the schedule's rows"
         ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
         after = loan_plan(account, ctx)
+        after_charges = _charges(account, ctx)
 
         def keyed(plan):
             return [
@@ -439,8 +458,8 @@ class TestTheEstimateIsWhatGenerationWouldWrite:
 
         assert keyed(after) == keyed(before)
         assert sum(1 for p in after.payments if not p.is_estimated) == written
-        assert [(c.on_date, c.escrow) for c in after.charges] == [
-            (c.on_date, c.escrow) for c in before.charges
+        assert [(c.on_date, c.escrow) for c in after_charges] == [
+            (c.on_date, c.escrow) for c in before_charges
         ]
 
     def test_a_monthly_first_occurrence_is_dated_on_its_funding_payday(
@@ -537,8 +556,9 @@ class TestTheChargeCalendarIsTheContracts:
             # an ``as_of`` past today's fallback.
             freeze_today(monkeypatch, read_day)
             ctx = BalanceContext.build(seed_user["user"].id, read_day)
-            plan = loan_plan(account, ctx)
-            assert date(2026, 5, 1) in {c.on_date for c in plan.charges}, read_day
+            assert date(2026, 5, 1) in {
+                c.on_date for c in _charges(account, ctx)
+            }, read_day
             payoffs[read_day] = balance_at.loan_payoff_date(account, ctx)
         assert set(payoffs.values()) == {date(2026, 9, 1)}, payoffs
 
@@ -579,56 +599,78 @@ class TestTheChargeCalendarIsTheContracts:
             (date(2026, 5, 1), _LEVEL), (date(2026, 5, 20), Decimal("2000.00")),
         ]
         assert [
-            c.on_date for c in plan.charges
+            c.on_date for c in _charges(account, ctx)
             if (c.on_date.year, c.on_date.month) == (2026, 5)
         ] == [date(2026, 5, 1)]
 
     def test_the_charge_sequence_reaches_every_payment_past_the_extension(
         self, seed_user,
     ):
-        """A plan payment sixty-plus months past the contract still faces its month's charge.
+        """A plan payment sixty-plus months past the contract still faces its interval's charge.
 
         The adversarial review's M1: the calendar's dates were the contract's
         rows plus the sixty-month extension, so a loan that had matured more
         than five years ago while still owing (``_secured_debt`` names the
         shape) folded a live projected row against NO charge, where the old
-        payments-derived calendar followed it.  The sequence now runs to the
-        later of the extension's end and the last plan payment, one month at a
-        time, and stops at the extension when nothing lies beyond it.
+        payments-derived calendar followed it.  Since plan step
+        recurrence:R16-c-2 a stream is charged through its OWN last event,
+        whatever lies there (:func:`~app.services.loan_ledger.with_contract_charges`,
+        ruling **R-R100**), one installment a month, and the sixty-month
+        extension is the payment tiers' window alone
+        (``_plan._extension_dates``).
         """
-        account, _ctx = _loan(seed_user)
+        account, ctx = _loan(seed_user)
         contractual = contractual_schedule_from_origination(
             account.loan_params, loan_loaders.load_rate_changes(account.id),
         )
-        last = contractual[-1].payment_date
+        calendar = loan_plan(account, ctx).calendar
 
-        bounded = _charge_dates(contractual, last)
-        assert len(bounded) == len(contractual) + _PAYOFF_EXTENSION_MONTHS
-        assert bounded[len(contractual)] == date(2026, 8, 1)
+        extension = _extension_dates(contractual, calendar)
+        assert len(extension) == _PAYOFF_EXTENSION_MONTHS
+        assert extension[0] == date(2026, 8, 1)
+        bounded = [row.payment_date for row in contractual] + extension
 
-        # A payment on the 10th faces its MONTH's charge, dated on the
-        # contract's day (the 1st): the sequence ends in the payment's month,
-        # whether the payment falls before or after the contract's day.
+        # A payment on the 10th faces the installment its interval opens on,
+        # dated on the contract's day (the 1st): the charges end in the
+        # payment's month, whether it falls before or after the contract's day.
         for far in (date(2035, 3, 10), date(2035, 3, 1)):
-            extended = _charge_dates(contractual, far)
+            extended = [
+                charge.on_date for charge in with_contract_charges(
+                    LoanEventStream(
+                        charges=(),
+                        payments=(),
+                        projections=[LoanCashEvent(
+                            on_date=far, cash=_LEVEL, source=None,
+                            visible_on=far,
+                        )],
+                    ),
+                    calendar,
+                ).charges
+            ]
             assert extended[:len(bounded)] == bounded
             assert extended[-1] == date(2035, 3, 1), far
         assert all(
             (later.year - earlier.year) * 12 + later.month - earlier.month == 1
             for earlier, later in zip(extended, extended[1:])
         )
-        assert _charge_dates([], far) == []
+        assert not with_contract_charges(
+            LoanEventStream(charges=(), payments=()), calendar,
+        ).charges
 
     def test_a_slot_the_seed_charged_is_not_charged_again(
         self, seed_user, monkeypatch,
     ):
         """D54: a projected extra in a settled month faces no fresh charge.
 
-        April's installment settled on 04-01 (in the seed, and charged
-        there); a $300.00 projected extra on 04-10 is in the plan.  The old
-        calendar charged April AGAIN at the extra's date.  Now the slot is
-        the seed's and the extra pays pure principal -- and the forward
+        April's installment settled on 04-01 (charged there); a $300.00
+        projected extra on 04-10 is in the plan.  The old calendar charged
+        April AGAIN at the extra's date.  Now April is charged ONCE, on its
+        installment, in the one timeline (plan step recurrence:R16-c-2,
+        ruling R-R100), so the extra pays pure principal -- and the forward
         periods from May are charged whether or not a payment lands in them.
+        Until that step the check read the plan's own charge list, which
+        excluded the settled walk's April slot; the developer approved the
+        re-expressed check (rule 5).
         """
         # The settle door refuses a settle day that has not happened, so the
         # clock is the read day.
@@ -660,10 +702,18 @@ class TestTheChargeCalendarIsTheContracts:
             p.due_date == date(2026, 4, 10) and p.cash == Decimal("300.00")
             for p in plan.payments
         ), "precondition: the extra is in the plan"
-        charged = [c.on_date for c in plan.charges]
-        assert date(2026, 4, 1) not in charged
-        assert not any(
-            (c.on_date.year, c.on_date.month) == (2026, 4) for c in plan.charges
+        timeline = loan_timeline(account, ctx)
+        charged = [c.on_date for c in timeline.stream.charges]
+        assert [
+            on_date for on_date in charged
+            if (on_date.year, on_date.month) == (2026, 4)
+        ] == [date(2026, 4, 1)]
+        extra = next(
+            outcome for outcome in timeline.projected_splits
+            if outcome.due_date == date(2026, 4, 10)
+        )
+        assert (extra.interest, extra.escrow, extra.principal) == (
+            Decimal("0.00"), Decimal("0.00"), Decimal("300.00"),
         )
         contractual = contractual_schedule_from_origination(
             account.loan_params, loan_loaders.load_rate_changes(account.id),
@@ -693,11 +743,16 @@ class TestTheLatestAssertionIsTheBoundary:
         measured exactly that: $6,044.87 on 04-16 projected, $12,000.00 the
         day the rows settled, and the payoff 2026-07-01 -> 2026-10-01.
 
-        Now the plan drops every payment due at or before 04-10 and charges
-        from 05-01 (both on ``due_after_anchor``), so the six level payments
-        from 05-01 clear the $12,000.00 on 2026-10-01 -- and settling the
-        three subsumed rows on 04-15 changes nothing: the balance on 04-16
-        and the payoff read the same before and after.
+        Now the plan drops every payment due at or before 04-10
+        (``due_after_anchor``) and the first charge the assertion does not
+        clear is 05-01: every contractual installment is charged since plan
+        step recurrence:R16-c-2 (ruling R-R100), and the 04-10 assertion
+        clears the three standing before it (R-R72 part (2)).  So the six
+        level payments from 05-01 clear the $12,000.00 on 2026-10-01 -- and
+        settling the three subsumed rows on 04-15 changes nothing: the balance
+        on 04-16 and the payoff read the same before and after.  Until that
+        step the check read the plan's own charge list, which began at 05-01;
+        the developer approved the re-expressed check (rule 5).
         """
         freeze_today(monkeypatch, date(2026, 4, 15))
         account, _ctx = _loan(seed_user)
@@ -717,7 +772,10 @@ class TestTheLatestAssertionIsTheBoundary:
             # R-CC47), so the read is what the loan owes, through owed().
             return (
                 min(p.due_date for p in plan.payments),
-                plan.charges[0].on_date,
+                min(
+                    c.on_date for c in _charges(account, ctx)
+                    if c.on_date > date(2026, 4, 10)
+                ),
                 owed(balance_at.balance_at(account, ctx, _TOMORROW)),
                 balance_at.loan_payoff_date(account, ctx),
             )
@@ -761,7 +819,12 @@ class TestTheLatestAssertionIsTheBoundary:
         later of the extension's end and the same span past the read.
 
         At 5%: 05-01 charges $20.83 and pays $479.17 of principal, and the
-        eleventh payment, $117.49 + $0.49, clears it on 2027-03-01.
+        eleventh payment, $117.49 + $0.49, clears it on 2027-03-01.  Every
+        contractual installment from 2005 is charged since plan step
+        recurrence:R16-c-2 (ruling R-R100) and the read-day assertion clears
+        them (R-R72 part (2)); the first charge after it is 05-01 (the check
+        read the plan's own charge list, which began there, until that step;
+        the developer approved the re-expressed check, rule 5).
         """
         account = create_loan_account(
             seed_user, db.session, name="Matured Balloon",
@@ -785,5 +848,7 @@ class TestTheLatestAssertionIsTheBoundary:
             date(2026, 5, 1), date(2026, 6, 1),
         ]
         assert estimates[-1].due_date >= date(2027, 3, 1)
-        assert [c.on_date for c in plan.charges][:1] == [date(2026, 5, 1)]
+        assert min(
+            c.on_date for c in _charges(account, ctx) if c.on_date > _AS_OF
+        ) == date(2026, 5, 1)
         assert balance_at.loan_payoff_date(account, ctx) == date(2027, 3, 1)

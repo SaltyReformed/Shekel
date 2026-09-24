@@ -642,8 +642,8 @@ class TestLoanInterestEscrowInStatements:
     ):
         """A $1000 Mortgage payment splits to Interest 500 / Escrow 100 / principal 400.
 
-        A Mortgage originated at $250,000 @ 6% (2025-01-01), trued up to
-        $100,000 (2026-01-10), carrying a $1,200/yr escrow component.  A single
+        A Mortgage originated at $250,000 @ 6% (2099-01-01), trued up to
+        $100,000 (2099-01-10), carrying a $1,200/yr escrow component.  A single
         $1,000.00 Checking -> Mortgage payment settled in Feb 2099 splits (the
         running balance is the $100,000 anchor):
 
@@ -679,9 +679,15 @@ class TestLoanInterestEscrowInStatements:
                 seed_user, db.session,
                 origination_principal=Decimal("250000.00"),
                 anchor_balance=Decimal("100000.00"),
-                anchor_date=date(2026, 1, 10),
+                # In the payment's own year, the month before its 2099-02-01
+                # installment: every contractual installment from origination
+                # is charged since plan step recurrence:R16-c-2, so the
+                # 2025-01-01 origination and 2026-01-10 true-up it carried
+                # until then left seventy-three years unpaid ahead of the
+                # payment (ruling R-R103).
+                anchor_date=date(_Y, 1, 10),
                 rate=Decimal("0.06000"),
-                origination_date=date(2025, 1, 1),
+                origination_date=date(_Y, 1, 1),
                 name="Mortgage", term=360,
                 escrow_annual=Decimal("1200.00"),
             )

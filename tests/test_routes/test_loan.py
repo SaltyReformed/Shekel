@@ -251,7 +251,10 @@ class TestLoanDashboard:
         ``balance_at`` seam, which FOLDS the loan's source facts (origination anchor
         + settled shadows), so the page shows what the borrower actually owes.
 
-        The $240,000 loan (6%, originated 2024-09-01) receives ONE $10,000 payment:
+        The $240,000 loan (6%, originated 2026-01-01, the month before the
+        payment's 2026-02-01 installment -- ruling R-R101 moved it from
+        2024-09-01 when plan step recurrence:R16-c-2 began charging every
+        installment from origination) receives ONE $10,000 payment:
         $1,200 interest that month ($240,000 x 0.06 / 12) and $8,800 principal, so
         the fold owes $240,000 - $8,800 = $231,200.00.  The money-blind replay
         advances only the scheduled first-month principal of $238.92 ->
@@ -267,7 +270,7 @@ class TestLoanDashboard:
         acct = create_loan_account(
             seed_user, db.session, name="Broken Mortgage",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
-            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            term=360, origination_date=date(2026, 1, 1), payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
         checking = create_account_of_type(
@@ -2171,16 +2174,20 @@ class TestEscrow:
 
 
 def _make_sync_loan(seed_user, db_session):
-    """Create a $100,000 / 6% mortgage originated 2023-06-01 (clean arithmetic).
+    """Create a $100,000 / 6% mortgage originated 2026-01-01 (clean arithmetic).
 
     Interest on a payment folded against the origination principal is
     100000 * 0.06 / 12 = 500.00 exactly, so a $1,000 payment splits 500 interest /
     500 principal with no rounding -- the shape the E1b sync tests fold against.
+    Originated the month before the one payment's 2026-02-01 installment (plan
+    step recurrence:R16-c-2, ruling R-R101): every contractual installment from
+    origination is charged now, so the 2023-06-01 it carried until then read as
+    thirty-two unpaid months ahead of that payment.
     """
     return create_loan_account(
         seed_user, db_session, name="Sync Mortgage",
         principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
-        origination_date=date(2023, 6, 1), payment_day=1,
+        origination_date=date(2026, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
 
@@ -3226,6 +3233,7 @@ class TestBandChartLongestBaseline:
             scenarios,
             balance_at.loan_payoff_date(acct, balance_ctx),
             balance_at.loan_installments(acct, balance_ctx),
+            params,
         )
         return balance_ctx, scenarios, dates
 
@@ -3269,11 +3277,13 @@ class TestBandChartLongestBaseline:
         A loan due on the 31st: ``add_months`` clamps a 31st to a short
         month's end and, stepped AGAIN from that result, decays to the 28th
         for good, so an extension built one step at a time would put its
-        dates before the plan's (the plan steps from the contract's last
-        installment by a month count, ``_plan._charge_dates``) and run one
-        tick past the payoff.  The grid's dates past the contract are the
-        plan's own: the last label is the payoff's month and the point
-        count past the contract is the month count to the payoff.
+        dates before the plan's and run one tick past the payoff.  Since plan
+        step recurrence:R16-c-2 the grid and the plan's extension both step
+        the loan's ONE installment calendar
+        (``loan_ledger.installment_dates``), which clamps the due day to each
+        month afresh.  The grid's dates past the contract are the plan's own:
+        the last label is the payoff's month and the point count past the
+        contract is the month count to the payoff.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 31),

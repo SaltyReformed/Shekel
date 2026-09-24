@@ -478,12 +478,21 @@ class TestTheOneAnchorChronology:
             insert_trueup_event(_params(loan), Decimal("155000.00"), tie_day)
             db.session.commit()
 
-            facts = loan_loaders.load_loan_anchor_facts(_params(loan))
+            params = _params(loan)
+            facts = loan_loaders.load_loan_anchor_facts(params)
             reversed_facts = list(reversed(facts))
             replay = loan_ledger.replay_loan_events(
                 Decimal("0.00"),
                 loan_ledger.loan_event_stream(
-                    reversed_facts, [], _params(loan).payment_day, [], [],
+                    reversed_facts, [],
+                    loan_ledger.LoanCalendar(
+                        origination_date=params.origination_date,
+                        payment_day=params.payment_day,
+                        periods=loan_resolver.resolve_periods(
+                            params, loan_loaders.load_rate_changes(loan.id),
+                        ),
+                        escrow_lines=[],
+                    ),
                 ),
             )
             # Same date, so only the caller's order can decide: the replay

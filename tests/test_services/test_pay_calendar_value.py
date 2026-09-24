@@ -1123,8 +1123,9 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
 
     Graded HERE and not only through that consumer.  A producer tested only
     through the thing that calls it is the hole plan step R16-a's adversarial
-    review measured: replacing ``_charges_for`` wholesale left 5,427 tests
-    green, because every control built its input by hand.
+    review measured: replacing ``_charges_for`` (the forward plan's charge
+    calendar, since deleted at plan step recurrence:R16-c-2) wholesale left
+    5,427 tests green, because every control built its input by hand.
     """
 
     def test_the_saved_run_ends_exactly_where_the_saved_producer_does(self):

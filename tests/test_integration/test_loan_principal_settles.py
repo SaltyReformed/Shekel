@@ -108,7 +108,11 @@ from app.models.amount_ownership import AmountOwnership
 # a total of $2,198.65 (P&I + escrow) through the checking account,
 # but only the $298.65 principal portion reduces the loan balance --
 # the escrow $400 never touches principal.
-ORIGINATION_DATE = date(2026, 1, 1)
+# The month before the first payment's 2026-03-01 installment (every case
+# here pays from ``periods[3]`` onward): every contractual installment from
+# origination is charged since plan step recurrence:R16-c-2 (ruling R-R101),
+# so the 2026-01-01 it carried until then left February unpaid ahead of it.
+ORIGINATION_DATE = date(2026, 2, 1)
 ORIGINAL_PRINCIPAL = Decimal("300000.00")
 INTEREST_RATE = Decimal("0.06000")  # Numeric(7,5) storage scale.
 TERM_MONTHS = 360

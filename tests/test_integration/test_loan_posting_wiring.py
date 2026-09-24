@@ -296,9 +296,16 @@ class TestRevertAndDeletePostFullCashReversal:
         """Deleting an earlier payment re-splits the later one (running-balance coupling).
 
         P1 (interest 500.00) and P2 (interest round(99500*0.005)=497.50) settle,
-        so the interest ledger holds 997.50.  Deleting P1 re-bases P2 onto the
-        anchor: P2's interest becomes round(100000*0.005)=500.00, so the ledger
-        holds 500.00 after -- P1's reversed, P2's re-split UP from 497.50.
+        so the interest ledger holds 997.50.  Deleting P1 leaves its 02-01
+        installment unpaid, and every contractual installment is charged since
+        plan step recurrence:R16-c-2 (rulings R-R72 part (1) and R-R100), so P2
+        clears February's arrears before its own month: interest
+        round(100000*0.005) = 500.00 for February plus 500.00 for March, both
+        on the anchor's $100,000 no payment has reduced -- 1,000.00, all of
+        P2's cash.  The ledger holds 1,000.00 after: P1's reversed, P2's
+        re-split UP from 497.50.  Until R16-c-2 a month no payment occupied
+        was never charged, so P2 re-split to 500.00; the developer approved
+        the moved figure (rule 5).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -318,7 +325,7 @@ class TestRevertAndDeletePostFullCashReversal:
 
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("1000.00")
 
 
 class TestRestoreWiring:
@@ -537,11 +544,15 @@ class TestRouteChokepointWiring:
     ):
         """POSTing an ARM rate change re-splits a later payment's interest.
 
-        P1 (period start 01-16, 6% origination rate) and P3 (period start
-        03-13) settle: interest 500.00 + round(99500*0.005)=497.50 = 997.50.  A
-        rate change to 12% effective 2026-03-01 governs P3's period: interest
+        P1 (due 02-01, 6% origination rate) and P2 (due 03-01) settle:
+        interest 500.00 + round(99500*0.005)=497.50 = 997.50.  A rate change to
+        12% effective 2026-03-01 governs P2's installment: interest
         round(99500 * 0.12 / 12) = 995.00.  The route wiring re-syncs, so the
-        interest ledger holds 500.00 + 995.00 = 1495.00 after the POST.
+        interest ledger holds 500.00 + 995.00 = 1495.00 after the POST.  P2
+        and not a later installment since plan step recurrence:R16-c-2: every
+        contractual installment is charged now, so a payment skipping March
+        would clear March's interest too (the fixture is restated so nothing
+        is left unpaid, ruling R-R103).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -551,7 +562,7 @@ class TestRouteChokepointWiring:
             loan_params = loan.loan_params
             loan_params.is_arm = True
             _settle(seed_user, loan, seed_periods[_P1])
-            _settle(seed_user, loan, seed_periods[_P3])
+            _settle(seed_user, loan, seed_periods[_P2])
             db.session.commit()
             interest_ledger_id = _interest_ledger(loan).id
             assert ledger_net(
@@ -620,7 +631,12 @@ class TestRouteChokepointWiring:
                 seed_user, db.session,
                 origination_principal=_ORIGINATION_PRINCIPAL,
                 anchor_balance=_ANCHOR_BALANCE, anchor_date=date(2026, 1, 25),
-                rate=_RATE, origination_date=_ORIGINATION_DATE,
+                # The month before P1's first installment at either due day
+                # (02-01 at the 1st, 01-20 at the 20th): every contractual
+                # installment from origination is charged since plan step
+                # recurrence:R16-c-2 (ruling R-R101), so SPLIT_LOAN's
+                # 2025-01-01 would have P1 clear a year of unpaid months.
+                rate=_RATE, origination_date=date(2025, 12, 1),
             )
             _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()

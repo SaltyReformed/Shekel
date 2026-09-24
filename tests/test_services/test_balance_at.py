@@ -315,10 +315,14 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
     Returns:
         The committed loan :class:`~app.models.account.Account`.
     """
+    # Originated the month before the first payment's 2026-02-01 installment
+    # (plan step recurrence:R16-c-2, ruling R-R101): every contractual
+    # installment from origination is charged now, so the 2025-01-01 it
+    # carried until then read as twelve unpaid months ahead of that payment.
     loan = create_loan_account(
         seed_user, db_session, name="Paid Then Trued",
         principal=Decimal("250000.00"), rate=Decimal("0.06000"),
-        term=360, origination_date=date(2025, 1, 1), payment_day=1,
+        term=360, origination_date=date(2026, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
     # Settled payments due 2026-02-01 (period 1) and 2026-03-01 (period 3);
@@ -5438,8 +5442,17 @@ class TestBrokenLoanFailsLoud:
     behaviour of the fallback this deletes.
     """
 
-    def _broken_loan(self, seed_user, db_session, periods):
-        """A configured loan whose genesis POSTING ledger has been removed."""
+    def _broken_loan(
+        self, seed_user, db_session, periods, origination_date=date(2024, 9, 1),
+    ):
+        """A configured loan whose genesis POSTING ledger has been removed.
+
+        A case that settles a payment passes the month before that payment's
+        installment as *origination_date*: every contractual installment from
+        origination is charged since plan step recurrence:R16-c-2, so the
+        2024-09-01 default would have the payment clear the months before it
+        (ruling R-R103).
+        """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
         from tests._test_helpers import clear_loan_ledger, create_loan_account
@@ -5447,7 +5460,7 @@ class TestBrokenLoanFailsLoud:
         acct = create_loan_account(
             seed_user, db_session, name="Broken",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
-            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            term=360, origination_date=origination_date, payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
         # The ONE way to build a ledger-less loan: production cannot make one.
@@ -5551,11 +5564,19 @@ class TestBrokenLoanFailsLoud:
 
         with app.app_context():
             periods = seed_periods
-            acct = self._broken_loan(seed_user, db.session, periods)
+            # Originated the month before the payment's 2026-02-01 installment
+            # and settled on its period's first day, so nothing is left unpaid
+            # ahead of it (ruling R-R103; it was originated 2024-09-01 and
+            # settled 2024-10-01 until plan step recurrence:R16-c-2 began
+            # charging every installment from origination).
+            acct = self._broken_loan(
+                seed_user, db.session, periods,
+                origination_date=date(2026, 1, 1),
+            )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 periods[1], amount=Decimal("241200.00"),
-                settled_on=date(2024, 10, 1),
+                settled_on=periods[1].start_date,
             )
             db.session.commit()
             # Re-break the cache: settling re-synced the loan's postings.

@@ -2595,19 +2595,6 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
     _neutralize_seed_checking(db, seed_user, anchor_period)
 
-    # Origination two years back at $250k, trued up to $200k a year back (before
-    # the payment), 6% fixed.  origination != anchor so the walk seeds from the
-    # true-up, and the loan carries the opening + true-up genesis corrections.
-    loan = create_loan_with_trueup(
-        seed_user, db.session,
-        origination_principal=Decimal("250000.00"),
-        anchor_balance=Decimal("200000.00"),
-        anchor_date=date(today.year - 1, 1, 1),
-        rate=Decimal("0.06000"),
-        origination_date=date(today.year - 2, 1, 1),
-        name="Off-Schedule Loan",
-    )
-
     # One OFF-SCHEDULE payment ($5,000 cash vs ~$1,499 scheduled P&I) two months
     # before today, so its pay period has begun and the ledger books the extra
     # ~$3,500 of real principal the schedule replay drops on the floor.
@@ -2615,6 +2602,24 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
         i for i, p in enumerate(all_periods) if p.id == anchor_period.id
     )
     payment_period = all_periods[anchor_idx - 2]
+
+    # Origination two years back at $250k, trued up to $200k the day before the
+    # payment's pay period begins, 6% fixed.  origination != anchor so the walk
+    # seeds from the true-up, and the loan carries the opening + true-up
+    # genesis corrections.  The true-up sits after every installment before the
+    # payment's own (the first due day on or after its period start): every
+    # contractual installment is charged since plan step recurrence:R16-c-2,
+    # so the year-back true-up it carried until then left a year of months
+    # standing for the one payment to clear (ruling R-R103).
+    loan = create_loan_with_trueup(
+        seed_user, db.session,
+        origination_principal=Decimal("250000.00"),
+        anchor_balance=Decimal("200000.00"),
+        anchor_date=payment_period.start_date - timedelta(days=1),
+        rate=Decimal("0.06000"),
+        origination_date=date(today.year - 2, 1, 1),
+        name="Off-Schedule Loan",
+    )
     # Settled on its own period start (a past date), so it is visible today under
     # C2's settled-date clock regardless of the UTC/display-tz offset.
     create_settled_transfer(
