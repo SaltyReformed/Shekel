@@ -153,13 +153,23 @@ class RowDeletion:
             ``balance:X-bi-7b``).  Carried so the dialog can say the ITEM
             goes and not only the row, off the same answer the press acts
             on (``definition_delete.is_last_row_of_its_definition``).
-        comes_back_on_unarchive: Whether archiving and then un-archiving the
-            row's item would bring this row back -- a soft delete of a row
-            still Projected (ruling **R-CC86**, developer 2026-09-23: "Whether
-            to show it is read from the same 'not yet paid' rule un-archive
-            uses").  ``balance_predicates.is_projected`` is the Python twin of
-            the ``is_projected_clause`` ``templates/crud.unarchive_template``
-            restores by, both stated in that one module.
+        comes_back_on_unarchive: Whether this row is one archiving and then
+            un-archiving its item would bring back -- a soft delete of a row
+            still Projected, which is un-archive's CANDIDATE set (ruling
+            **R-CC86**, developer 2026-09-23: "Whether to show it is read from
+            the same 'not yet paid' rule un-archive uses";
+            ``balance_predicates.is_projected`` is the Python twin of the
+            ``is_projected_clause`` that set is built on,
+            ``definition_unarchive._hidden_rows``).  Un-archive restores a
+            candidate UNLESS the books have moved over it by then (rulings
+            **R-PC95**, **R-PC99**: its two checks, where the row sits and
+            where its item's schedule puts it), and the dialog states that
+            condition in words rather than computing it (ruling **R-CC112**,
+            developer 2026-09-24, "State the condition": "True whenever you
+            read it, before or after a later books move, and nothing new is
+            computed").  A check at the moment the card opens could not see a
+            books move made after the delete, which is the case the ruling
+            was asked about.
     """
 
     soft: bool
@@ -193,20 +203,22 @@ def _leaves_the_books(
     that outlived a soft-deleted source would inflate the next period with no
     offsetting credit row.
 
-    **Whether un-archiving would bring it back is asked HERE, once** (ruling
-    **R-CC86**; CC-5-4a-4's third review, L2): the dialog's read and the
-    press both call this, so the value has one producer rather than a copy
-    in each.  Read before anything is written, while the row's status is the
-    one the owner saw.
+    **Whether the row is one un-archiving would bring back is asked HERE,
+    once** (ruling **R-CC86**; CC-5-4a-4's third review, L2): the dialog's
+    read and the press both call this, so the value has one producer rather
+    than a copy in each.  Read before anything is written, while the row's
+    status is the one the owner saw.  It names un-archive's candidate set,
+    and the dialog's words carry the exception (ruling **R-CC112**).
 
     Args:
         txn: The row being deleted.
 
     Returns:
         ``(soft, comes_back_on_unarchive, rows)`` -- whether the row stays as
-        a tombstone, whether archiving and then un-archiving its item would
-        bring it back (a soft delete of a row still Projected), and every row
-        whose movements go (*txn* first).
+        a tombstone, whether it is one archiving and then un-archiving its
+        item would bring back unless the books have moved over it (a soft
+        delete of a row still Projected), and every row whose movements go
+        (*txn* first).
     """
     soft = txn.recurs
     return (

@@ -346,10 +346,13 @@ class TestDelete:
                 f"/transactions/{recurring.id}/full-edit",
             ).data.decode()
             assert "This occurrence stays deleted" in html
-            # Ruling R-CC83: the un-archive that brings it back, empty (R-CC75).
+            # Ruling R-CC83: the un-archive that brings it back, empty (R-CC75),
+            # in the words ruling R-CC112 gave it (developer 2026-09-24): the
+            # exception un-archive makes for a row the books have moved over.
             assert (
                 "Archiving and then un-archiving that item would bring it "
-                "back, empty." in html
+                "back, empty, unless the books have moved over it by then; "
+                "the un-archive names any row it keeps deleted." in html
             )
             assert "This cannot be undone." not in html
             assert "the item itself goes with it" not in html

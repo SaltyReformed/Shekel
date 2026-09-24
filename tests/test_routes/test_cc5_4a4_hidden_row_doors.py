@@ -513,9 +513,13 @@ class TestTheDialogSaysWhatUnarchiveDoes:
 
             question = _delete_question(auth_client, row_id)
 
+            # Ruling R-CC112 (developer 2026-09-24, "State the condition")
+            # rewrote the sentence R-CC83 worded: it names the exception
+            # un-archive makes for a row the books have moved over.
             assert (
                 "Archiving and then un-archiving that item would bring it "
-                "back, empty." in question
+                "back, empty, unless the books have moved over it by then; "
+                "the un-archive names any row it keeps deleted." in question
             )
             assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
             archived = auth_client.post(f"/templates/{template.id}/archive")

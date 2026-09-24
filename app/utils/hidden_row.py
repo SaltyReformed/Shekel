@@ -7,7 +7,9 @@ so by name (rulings **R-CC101**, **R-CC104**; never by id, **R-CC98**).  Two
 acts hide a row -- the row's own delete, and its recurring item's archive,
 which hides the item's empty Projected rows
 (``routes/templates/crud._soft_delete_projected_rows``) and whose un-archive
-brings them back (ruling **R-CC86**) -- and the sentence says whether the
+brings them back unless the books have moved over them (rulings **R-CC86**,
+**R-PC95**, **R-PC99**; the delete dialog says so, **R-CC112**) -- and the
+sentence says whether the
 row's recurring item is archived, whichever act hid it (ruling **R-CC107**,
 developer 2026-09-24, "Say archived": *"When the row's recurring item is
 archived, the sentence says 'Gym was archived: a payment cannot be recorded

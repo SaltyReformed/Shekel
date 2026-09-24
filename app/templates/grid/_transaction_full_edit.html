@@ -746,11 +746,16 @@
       record un-dated (ruling R-BAL61), which the cash fold reads in neither
       tier, so no sentence here names it (CC-5-4a-4's third review, L1). -#}
   {%- set purchases = txn.entries | rejectattr('covers_settlement') | list -%}
+  {#- The un-archive sentence states its exception in words (ruling R-CC112,
+      "State the condition"): un-archive restores a row of its candidate set
+      (``preview.comes_back_on_unarchive``) unless the books have moved over it
+      by then (rulings R-PC95, R-PC99), and a check made as this card opens
+      could not see a books move made after the delete. -#}
   {%- set question -%}
 Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} filed under it{% endif %}?
 {% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
 {% if preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
-{% endif %}{% if preview.soft %}This occurrence stays deleted, and the recurring transaction behind it keeps generating the others.{% if preview.comes_back_on_unarchive %} Archiving and then un-archiving that item would bring it back, empty.{% endif %}{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
+{% endif %}{% if preview.soft %}This occurrence stays deleted, and the recurring transaction behind it keeps generating the others.{% if preview.comes_back_on_unarchive %} Archiving and then un-archiving that item would bring it back, empty, unless the books have moved over it by then; the un-archive names any row it keeps deleted.{% endif %}{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
 {% if withdraws and withdraws.frees_a_line %}It also {{ frees_lines(withdraws) }}.{% if withdraws.kept_rows %} {{ withdraws.kept_rows }} row{{ '' if withdraws.kept_rows == 1 else 's' }} {{ 'that match' if withdraws.matches == 1 else 'those matches' }} created stay{{ 's' if withdraws.kept_rows == 1 else '' }} in your books.{% endif %}{% endif %}
   {%- endset -%}
   <button type="button" class="btn btn-sm btn-outline-danger w-100"
