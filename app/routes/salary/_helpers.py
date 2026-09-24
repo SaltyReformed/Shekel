@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from flask import abort, redirect, render_template, request, url_for
+from flask import abort, flash, redirect, render_template, request, url_for
+from flask.typing import ResponseReturnValue
 from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, log_refused_lookup
@@ -439,8 +440,15 @@ def _line_span(line, picker) -> LineSpan:
     )
 
 
-def _render_lines_partial(profile):
-    """Return the payroll-lines section partial for HTMX updates."""
+def _render_lines_partial(profile: SalaryProfile, notice: str | None = None) -> str:
+    """Return the payroll-lines section partial for HTMX updates.
+
+    Args:
+        profile: The owned profile.
+        notice: A refusal to show inside the section, or ``None`` -- the one
+            way a partial response can SAY something, since a flash is a
+            property of a full page render (``base.html``).
+    """
     db.session.refresh(profile)
     calc_methods = db.session.query(CalcMethod).all()
     investment_accounts = _get_investment_accounts(profile.user_id)
@@ -449,20 +457,30 @@ def _render_lines_partial(profile):
         profile=profile,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
+        notice=notice,
         **_line_cadence_context(profile),
     )
 
 
-def _respond_after_line_change(profile):
+def _respond_after_line_change(
+    profile: SalaryProfile, notice: str | None = None,
+) -> ResponseReturnValue:
     """Respond after a deduction mutation succeeds (or is idempotently absorbed).
 
     Returns the lines-section partial for an in-page HTMX swap, or a
     full-page redirect to the profile edit view for a normal form post.
     Counterpart to :func:`_respond_after_raise_change` for the add/update/
     delete deduction handlers.
+
+    A *notice* -- a refusal the section's own button provoked (plan step
+    salary:S11-b: a line a pay stub names cannot be deleted) -- is shown
+    INSIDE the swapped section on the HTMX path, where the owner clicked, and
+    flashed on the full-page one.
     """
     if request.headers.get("HX-Request"):
-        return _render_lines_partial(profile)
+        return _render_lines_partial(profile, notice)
+    if notice is not None:
+        flash(notice, "warning")
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 

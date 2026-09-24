@@ -17,6 +17,13 @@
     </button>
   </div>
   <div class="card-body">
+    {# A refusal the section's own delete button provoked, shown where the
+       owner clicked: an HTMX partial carries no flash (plan step salary:S11-b). #}
+    {% if notice %}
+    <div class="alert alert-warning" role="alert">
+      <i class="bi bi-exclamation-triangle" aria-hidden="true"></i> {{ notice }}
+    </div>
+    {% endif %}
     {% if profile.lines %}
     <div class="table-responsive">
     <table class="table table-hover table-sm table-token mb-0">

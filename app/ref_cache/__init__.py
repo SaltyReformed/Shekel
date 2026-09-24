@@ -89,6 +89,7 @@ from ._accessors import (
     tax_type_id,
     transaction_type_is_income,
     txn_type_id,
+    withholding_kind_id,
 )
 from ._state import (
     init,
@@ -132,4 +133,5 @@ __all__ = [
     "tax_type_id",
     "transaction_type_is_income",
     "txn_type_id",
+    "withholding_kind_id",
 ]

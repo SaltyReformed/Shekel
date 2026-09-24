@@ -58,11 +58,13 @@ from app.services.savings_dashboard_service._goals import (
     _GoalInputs,
     _load_active_goals,
 )
+from app.services.savings_dashboard_service._debt_summary import (
+    DebtSummary,
+    _compute_debt_summary,
+)
 from app.services.savings_dashboard_service._metrics import (
     CurrentPay,
-    DebtSummary,
     _compute_avg_monthly_expenses,
-    _compute_debt_summary,
     _current_pay,
     _sum_liquid_balances,
 )
@@ -161,7 +163,7 @@ def _debt_summary_with_dti(
 
     Its remaining job is the CURRENT-PAY -> gross unwrapping (plan step X-s3):
     the DTI block is no longer applied to a finished summary but built with it
-    inside :func:`~.._metrics._compute_debt_summary`, which is what makes the
+    inside :func:`~.._debt_summary._compute_debt_summary`, which is what makes the
     summary a value constructed in one place rather than a dict mutated across
     two.
 
@@ -183,7 +185,7 @@ def _debt_summary_with_dti(
             name one owner.
 
     Returns:
-        The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
+        The :class:`~.._debt_summary.DebtSummary`, or ``None`` when no loan
         accounts with params exist.
     """
     # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine output for
@@ -227,7 +229,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     ``compute_dashboard_data(balance_ctx)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
     dispatch -- restricted to the accounts the debt summary reads (its loans, plus
-    the other liabilities its ``revolving_debt`` figure names; per-account
+    the other liabilities its ``debt_without_payoff_date`` figure names; per-account
     projections are independent, so the restriction cannot change any
     projected figure) -- and routes through the shared
     :func:`_debt_summary_with_dti`.  What it skips is the dashboard-only
@@ -264,7 +266,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
             passes ONE context, so each loan is resolved once for the pair.
 
     Returns:
-        The :class:`~.._metrics.DebtSummary`, or ``None``
+        The :class:`~.._debt_summary.DebtSummary`, or ``None``
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
@@ -432,8 +434,9 @@ def compute_account_balance_cell(
     Returns:
         The account's :class:`~.._types.AccountProjection`, or ``None`` when
         *account_id* is not among the user's active accounts (e.g. it was
-        archived between page load and the revert), which the caller turns
-        into a 404.
+        archived between page load and the revert), which the Cancel GET
+        turns into a 404 and the anchor save into an empty cell (ruling
+        R-CC77).
     """
     core = _load_dashboard_core_data(balance_ctx)
     acct = next(
@@ -839,7 +842,7 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
             core, account_data, calendar,
         ),
         "savings_accounts": savings_accounts,
-        "archived_accounts": _load_archived_accounts(core.balance_ctx.user_id),
+        "archived_accounts": _load_archived_accounts(core.balance_ctx),
         "debt_summary": debt_summary,
         "net_worth": net_worth,
         "sparklines": sparklines,

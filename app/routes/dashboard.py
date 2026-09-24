@@ -293,31 +293,52 @@ def pulse_section():
     return render_template("dashboard/_pulse.html", pulse=pulse)
 
 
+def render_balance_section() -> str:
+    """Draw the dashboard's hero balance -- the dashboard's anchor draw.
+
+    The ONE function behind :func:`balance_section` -- the Cancel / Escape
+    target ``accounts.anchor._anchor_revert_url`` maps ``revert=dashboard`` to
+    -- and behind the anchor save opened from the hero (rulings R-CC74 /
+    R-CC77), which answered with the grid's cell until finding CC-365.  It
+    renders ``_pulse_balance.html`` -- the ``#balance-display`` fragment the
+    editor replaced -- shaped on the pulse hero (``balance`` + ``account_id``
+    drive the control).
+
+    Uses the narrow ``compute_balance_section`` producer (one folded
+    balance, NOT the full pulse projection walk): the figure is the current
+    period's projected END balance -- the same date the hero reads off its
+    period map, and the one the fragment's own label promises -- so the
+    drawn control agrees with the main pulse region.
+
+    **It takes no account**: the hero shows the account the dashboard
+    RESOLVES, over the one read pass this opens, as the GET always has.  With
+    none resolvable it draws the neutral fallback rather than declining.
+
+    Returns:
+        The rendered fragment.
+    """
+    return render_template(
+        "dashboard/_pulse_balance.html",
+        pulse=dashboard_service.compute_balance_section(
+            dashboard_service.resolve_section(
+                BalanceContext.build(current_user.id),
+            ),
+        ),
+    )
+
+
 @dashboard_bp.route("/dashboard/balance")
 @require_owner
 def balance_section():
     """HTMX partial: re-render the hero balance (the anchor-edit revert target).
 
     The anchor editor opened from the dashboard balance control carries
-    ``?revert=dashboard``; Cancel / Escape and the 409-conflict retry path
-    revert through ``accounts._anchor_revert_url``, which maps
-    ``dashboard`` to THIS endpoint.  So it must render ``_pulse_balance.html``
-    -- the ``#balance-display`` fragment the editor replaced -- shaped on
-    the pulse hero (``balance`` + ``account_id`` drive the control).
-
-    Uses the narrow ``compute_balance_section`` producer (one folded
-    balance, NOT the full pulse projection walk): the figure is the current
-    period's projected END balance -- the same date the hero reads off its
-    period map, and the one the fragment's own label promises -- so the
-    reverted control agrees with the main pulse region.  Non-HTMX requests redirect to the
-    dashboard page.
+    ``?revert=dashboard``; Cancel / Escape revert through
+    ``accounts._anchor_revert_url``, which maps ``dashboard`` to THIS
+    endpoint, and it answers with :func:`render_balance_section` -- the draw a
+    save opened from the hero answers with too.  Non-HTMX requests redirect to
+    the dashboard page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("dashboard.page"))
-
-    data = dashboard_service.compute_balance_section(
-        dashboard_service.resolve_section(
-            BalanceContext.build(current_user.id),
-        ),
-    )
-    return render_template("dashboard/_pulse_balance.html", pulse=data)
+    return render_balance_section()

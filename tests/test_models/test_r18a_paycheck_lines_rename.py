@@ -57,6 +57,16 @@ _KINDS = ("ref", "paycheck_line_kinds")
 _OLD_KINDS = ("ref", "deduction_timings")
 _RULES = ("budget", "recurrence_rules")
 
+#: Constraints a LATER revision added to a renamed table, by name.  The
+#: exact-set assertion admits these and nothing else, so a constraint R18-a's
+#: rename tables forgot still fails, and so does any other stranger.
+#: ``uq_paycheck_lines_id_profile`` is plan step salary:S11-a's superkey
+#: (``5641f7729b68``), the target of a transcribed stub's line key; the
+#: developer confirmed this test admits it, 2026-09-23.
+_ADDED_SINCE = {
+    _LINES: {"uq_paycheck_lines_id_profile"},
+}
+
 
 def _columns(session, schema, table) -> set[str]:
     """Return a table's column names, read from the catalogue."""
@@ -183,7 +193,9 @@ class TestHeadCarriesTheNewNamesOnly:
         the whole-catalogue round trip below is blind to a pair that was
         never renamed in either direction (an adversarial review of this
         leaf).  The arm's FK is one constraint among the rules table's many,
-        so that table is checked by membership plus the residue sweep.
+        so that table is checked by membership plus the residue sweep.  A
+        constraint a later revision added is admitted BY NAME
+        (:data:`_ADDED_SINCE`), never by loosening the equality.
         """
         with app.app_context():
             for table, pairs in (
@@ -192,7 +204,7 @@ class TestHeadCarriesTheNewNamesOnly:
             ):
                 assert set(_constraints(db.session, *table)) == {
                     new for _old, new in pairs
-                }, table[1]
+                } | _ADDED_SINCE.get(table, set()), table[1]
             rules = _constraints(db.session, *_RULES)
             for old, new in _M_R18A._ARM_CONSTRAINTS:  # pylint: disable=protected-access
                 assert new in rules and old not in rules, (old, new)

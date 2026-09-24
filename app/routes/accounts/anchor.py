@@ -30,11 +30,13 @@ The editor opens from five surfaces -- the grid cell, the dashboard
 balance card, the cockpit per-card cell, the investment / retirement
 detail page's balance hero, and the cash detail page's balance hero --
 each threaded through as a normalized ``revert`` token so Cancel /
-Escape re-render the correct opener (see
-:func:`_normalize_revert_context`).
+Escape AND a save re-render the correct opener, through the one table
+:data:`_SURFACES` (rulings R-CC74 / R-CC77), and a save draws from what the
+write door reports rather than re-reading the ledger (ruling R-CC79).
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -47,17 +49,29 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts._door_meaning import (
+    LOAN_ANCHOR_REFUSAL,
+    door_meaning_refusal,
+)
+from app.routes.accounts.detail import render_cash_balance_hero
 from app.routes.accounts.reconcile import prompt_fragment
+from app.routes.dashboard import render_balance_section
+from app.routes.investment import render_balance_hero
+from app.routes.savings import render_cockpit_balance
 from app.services import (
     anchor_service,
     cash_ledger,
+    liability_sign,
     pay_period_service,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.anchor_service import AnchorTrueUpOutcome
+from app.services.anchor_service import (
+    AnchorTrueUpOutcome,
+    AnchorTrueUpReport,
+)
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
@@ -66,46 +80,139 @@ from app.utils.error_fragments import designed_error, flatten_schema_errors
 logger = logging.getLogger(__name__)
 
 
-# The kind-refusal body shared by the PATCH gate and the editor-form GET
-# gate (ruling D4 / step A1): an amortizing loan's balance is
-# ledger-derived and is asserted on the loan's own page
-# (``apply_loan_anchor_true_up``), never as a cash anchor (B-15).
-LOAN_ANCHOR_REFUSAL = (
-    "A loan's balance is not a cash anchor. Record a balance true-up "
-    "on the loan's own page instead."
-)
-
-
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
 
 
-# The non-default surfaces the shared anchor editor can be opened from.
-# The opener names its surface via the ``revert`` query token; only these
-# canonical values are honored (see :func:`_normalize_revert_context`).
-# Each maps to a revert endpoint in :func:`_anchor_revert_url`.  ``investment``
-# is the investment / retirement detail page's balance hero (Loop B P1 C4);
-# ``cash`` is the cash detail page's balance hero (the S8 / D14 port).
-_REVERT_SURFACES = frozenset({"dashboard", "accounts", "investment", "cash"})
+def _cash_cell(account: Account, governing: cash_ledger.AnchorPoint) -> str:
+    """Draw the GRID's anchor balance cell for a cash account -- the grid's draw.
+
+    The ONE function behind :func:`anchor_display` (the grid's Cancel /
+    Escape, for every kind but a loan) and a save opened from the grid,
+    reached through :data:`_SURFACES` (ruling R-CC77).  The cell keeps the sign
+    of the surface it sits on -- a card's grid shows the held balance its rows
+    are summed in (ruling R-CC57) -- so it is NOT crossed; only the editor it
+    opens speaks owed.
+
+    **It reads nothing: the governing assertion is its input** (ruling
+    **R-CC79**) -- a save's from its write door's report, Cancel's read by
+    :func:`anchor_display`, which also holds the only loan check on the
+    grid's Cancel path.
+
+    Args:
+        account: The owned, attached, non-amortizing :class:`Account`.
+        governing: The assertion that governs the account today.
+
+    Returns:
+        The rendered display cell.
+    """
+    return render_template(
+        "grid/_anchor_edit.html",
+        account=account,
+        anchor_balance=governing.balance,
+        editing=False,
+    )
+
+
+def _dashboard_hero(
+    _account: Account, _governing: cash_ledger.AnchorPoint,
+) -> str:
+    """Give the dashboard's draw the table's shape; neither input is read.
+
+    :func:`app.routes.dashboard.render_balance_section` takes no account
+    because the hero shows the account the DASHBOARD resolves -- the one whose
+    editor it opened, and the one its Cancel redraws, so a save and a Cancel
+    still answer alike if that resolution moved while the editor was open.
+    The saved account it is handed goes unread for that reason.
+
+    Returns:
+        The rendered ``#balance-display`` fragment.
+    """
+    return render_balance_section()
+
+
+# The other three screens' draws take the account (the cockpit's and the
+# investment page's by its id, as their Cancel GETs do) and fold what they
+# show from a read pass of their own, so the governing assertion goes unread.
+def _cockpit_card(account: Account, _governing: cash_ledger.AnchorPoint) -> str | None:
+    """Give :func:`app.routes.savings.render_cockpit_balance` the table's shape."""
+    return render_cockpit_balance(account.id)
+
+
+def _investment_hero(account: Account, _governing: cash_ledger.AnchorPoint) -> str | None:
+    """Give :func:`app.routes.investment.render_balance_hero` the table's shape."""
+    return render_balance_hero(account.id)
+
+
+def _cash_hero(account: Account, _governing: cash_ledger.AnchorPoint) -> str | None:
+    """Give :func:`app.routes.accounts.detail.render_cash_balance_hero` the table's shape."""
+    return render_cash_balance_hero(account)
+
+
+@dataclass(frozen=True)
+class _Surface:
+    """One screen the anchor editor opens from: where Cancel goes, and its draw.
+
+    **ONE table, so "what this screen shows" has one home** (rulings R-CC74 /
+    R-CC77, finding CC-365).  Cancel / Escape GETs :attr:`endpoint`, whose
+    view calls the screen's draw; a save opened from the same screen calls
+    that same draw through :attr:`draw`.  Until then every save answered with
+    the grid's cell -- a card owing $1,200.00 saved from /savings showed
+    ``-$1,200.00`` for a round trip, because the cockpit tile shows what a
+    debt OWES (plan step credit_card:CC-5-5c) and the grid cell the held
+    balance -- and the screen list lived twice, as an allowlist and an
+    if-chain.
+
+    Attributes:
+        endpoint: The GET that re-renders this screen's cell on Cancel.
+        takes_account_id: Whether *endpoint* names the account; the dashboard
+            hero names none, because it shows the account the dashboard
+            resolves.
+        draw: The screen's draw: the saved account and the assertion that
+            governs it after the write (the write door's report, ruling
+            **R-CC79**) in, the rendered cell out -- or ``None`` when the
+            screen no longer shows that account (archived, or no longer its
+            kind), which a save, whose write has committed, answers with an
+            empty cell.  The grid's reads nothing; the other four adapt a
+            route module's draw that builds its own read pass as its GET does,
+            so the save runs it after the write and builds none for it.
+    """
+
+    endpoint: str
+    takes_account_id: bool
+    draw: Callable[[Account, cash_ledger.AnchorPoint], str | None]
+
+
+#: The five screens, keyed by the normalized ``revert`` token; ``None`` is the
+#: grid, which sends none.  ``dashboard`` is the dashboard hero (restoring the
+#: account name, caption and runway the grid cell lacks -- the audit's
+#: cancel-path stranding fix); ``accounts`` the Net Worth Cockpit's per-card
+#: cell, account-scoped because the cockpit is multi-card; ``investment`` the
+#: investment / retirement detail hero, the model-from-anchor balance its
+#: headline shows (Loop B P1 C4); ``cash`` the cash detail hero, the
+#: current-period balance its headline shows (the S8 / D14 port).
+_SURFACES: dict[str | None, _Surface] = {
+    None: _Surface("accounts.anchor_display", True, _cash_cell),
+    "dashboard": _Surface("dashboard.balance_section", False, _dashboard_hero),
+    "accounts": _Surface("savings.cockpit_balance", True, _cockpit_card),
+    "investment": _Surface("investment.balance_hero", True, _investment_hero),
+    "cash": _Surface("accounts.cash_balance_hero", True, _cash_hero),
+}
 
 
 def _normalize_revert_context(raw_revert: str | None) -> str | None:
     """Allowlist-validate the raw ``revert`` token to a canonical value.
 
-    The anchor editor is opened from more than one surface, and the
-    opener names its surface via the ``revert`` query token.  Four
-    non-default surfaces are recognized -- ``dashboard`` (the dashboard
-    hero balance card), ``accounts`` (the Net Worth Cockpit's per-card
-    balance cell), ``investment`` (the investment / retirement detail
-    page's balance hero), and ``cash`` (the cash detail page's balance
-    hero); every other value (unset, unknown, an attacker's probe)
-    collapses to ``None`` so the grid's default revert target is used.
-    Centralizing the allowlist here means the token is validated against
-    :data:`_REVERT_SURFACES` in exactly one place -- :func:`_anchor_revert_url`
-    (the Cancel / Escape target) and the edit form's ``hx-patch`` round-trip
-    token both consume this normalized value rather than re-checking the raw
-    string -- so the token is never interpolated unvalidated into a URL or
-    template.  A third consumer, the 409 conflict cell's retry opener, left
-    with ruling R-EN (plan step X-f1c3c).
+    The anchor editor is opened from more than one surface, and the opener
+    names its surface via the ``revert`` query token.  The recognized values
+    are :data:`_SURFACES`' keys; every other value (unset, unknown, an
+    attacker's probe) collapses to ``None``, the grid.  Validating here means
+    the token is checked against the table in exactly one place -- the Cancel
+    / Escape target (:func:`_anchor_revert_url`), the save's answer
+    (:func:`_true_up_success_response`) and the edit form's ``hx-patch``
+    round-trip token all consume this normalized value -- so the token is
+    never interpolated unvalidated into a URL or template.  A fourth consumer,
+    the 409 conflict cell's retry opener, left with ruling R-EN (plan step
+    X-f1c3c).
 
     Args:
         raw_revert: The ``revert`` query token as received, or ``None``.
@@ -114,7 +221,7 @@ def _normalize_revert_context(raw_revert: str | None) -> str | None:
         The canonical surface name when the token names a recognized
         surface; otherwise ``None`` (the grid default).
     """
-    return raw_revert if raw_revert in _REVERT_SURFACES else None
+    return raw_revert if raw_revert in _SURFACES else None
 
 
 def _submission_is_the_coverage_boundary(
@@ -161,9 +268,12 @@ def _submission_is_the_coverage_boundary(
 
     Args:
         boundary_day: The account's coverage boundary AFTER the write --
-            ``cash_ledger.reconciled_through(...).observed_day``.  Passed in
-            rather than queried so this is a pure comparison the caller can
-            resolve once, and so the rule can be graded without a database.
+            ``MAX(observed_on)`` over its owner-declared assertions, which is
+            the day of the one that governs: the write door's
+            ``governing_after``, read under the owner's lock (ruling R-CC79),
+            where ``cash_ledger.reconciled_through`` asked the same MAX after
+            the commit, outside it.  Passed in rather than queried so this is
+            a pure comparison, gradable without a database.
         submitted_day: The civil day the FORM submitted, or ``None`` when its
             date box was blank.  The submitted value, deliberately, not a
             re-resolved one: re-reading the clock here would be a second
@@ -189,7 +299,14 @@ class _AnchorSubmission:
     arrived, not a working value.
 
     Attributes:
-        balance: The validated :class:`Decimal` balance being asserted.
+        balance: The validated :class:`Decimal` balance being asserted, HELD --
+            the figure typed, crossed ONCE by
+            :func:`app.services.liability_sign.held_balance` (plan step
+            credit_card:CC-5-5b, rulings R-CC52 / R-CC57): a liability's box
+            asks for the amount owed, so ``1,200.00`` typed on a card is
+            ``-1,200.00`` here, and an asset's figure is here as typed.  Held
+            because the write door stores held and the governing comparison
+            below compares held; the acknowledgement crosses it back.
         observed_on: The civil day the form submitted, or ``None`` when its date
             box was left blank -- which the write door reads as the user's today
             (:func:`app.services.anchor_service.resolve_observation_day`).  It is
@@ -218,18 +335,19 @@ def _submitted_or_resolved_day(
     the write, and that is exact rather than approximate.  A blank submission
     is dated today, today is at or after every stored day (the write door
     refuses a future one), so the row this request produced is the governing
-    one and its day is the day asserted.  It holds for ruling R-EQ's UNCHANGED
-    outcome too: nothing was written because the governing assertion already
-    carried that day and balance, so reading its day still answers with the
-    day submitted.
+    one and its day is the day asserted -- read under the owner's lock, so no
+    concurrent save can have replaced it (ruling R-CC79).  It holds for ruling
+    R-EQ's UNCHANGED outcome too: nothing was written because the governing
+    assertion already carried that day and balance, so reading its day still
+    answers with the day submitted.
 
     A SUPPLIED day is returned as given, because a back-dated assertion does
     not govern and the governing row's day would name a different one.
 
     Args:
         submission: What the form asserted.
-        anchor: The assertion governing AFTER the write
-            (:func:`app.services.cash_ledger.resolve_anchor`).
+        anchor: The assertion governing AFTER the write -- the write door's
+            :attr:`~app.services.anchor_service.AnchorTrueUpReport.governing_after`.
 
     Returns:
         The civil day the acknowledgement should name.
@@ -241,8 +359,7 @@ def _submitted_or_resolved_day(
 
 def _true_up_success_response(
     account: Account, revert_context: str | None,
-    submission: _AnchorSubmission, governing_before: "Decimal | None",
-    outcome: AnchorTrueUpOutcome,
+    submission: _AnchorSubmission, report: AnchorTrueUpReport,
 ) -> tuple[str, int, dict[str, str]]:
     """Compose the anchor true-up success response.
 
@@ -251,8 +368,11 @@ def _true_up_success_response(
     recompute).  Three fragments can ride along, and each is mounted where it
     can actually survive -- which is the whole of plan step X-f1e3:
 
-    * **the updated display cell**, the response's primary target on all five
-      surfaces;
+    * **the display of the screen that opened the editor**, the response's
+      primary target: that screen's own draw from :data:`_SURFACES`, the one
+      its Cancel calls (rulings R-CC74 / R-CC77, finding CC-365) -- empty when
+      that screen no longer shows the account (archived mid-edit), because
+      the write has committed and a 404 would answer it as a failure;
     * **the reconcile prompt, the acknowledgement, or neither**, both
       out-of-band into a ``base.html`` mount that no refresh region owns, so
       both reach all five surfaces by construction;
@@ -288,70 +408,83 @@ def _true_up_success_response(
     to rest on: it does not move at all for a back-dated write, so treating it
     as sufficient here and not there would be two rules for one question.
 
+    **Both sides of that comparison are the write door's report, read under
+    the owner's lock** (ruling **R-CC79**), and so is everything that decides
+    between prompt and note: the coverage boundary is ``governing_after``'s
+    day, and the prompt reconciles against ``governing_after`` itself.  Read
+    here and in the route, outside the lock, two tabs saving at once could
+    compare against a replaced figure and show the wrong one.
+
     **A BACK-DATED submission is acknowledged rather than rendered**, and the
     reason is that without it this response is indistinguishable from doing
-    nothing.  The cell re-renders from ``resolve_anchor`` -- the assertion that
-    governs NOW -- which a back-dated correction by definition does not change,
-    so a user who recorded an older statement saw their editor collapse back to
-    the same figure with no sign the write landed.  That is the defect
-    :func:`_anchor_editor_error` exists to prevent on the failure side, and it
-    was still live on the success side.  It reached ONE of the five surfaces
-    until plan step X-f1e3 gave it a mount of its own (finding **N-199**).
+    nothing.  The cell re-renders from the assertion that governs NOW -- the
+    report's ``governing_after`` -- which a back-dated correction by definition
+    does not change, so a user who recorded an older statement saw their
+    editor collapse back to the same figure with no sign the write landed.
+    That is the defect :func:`_anchor_editor_error` exists to prevent on the
+    failure side, and it was still live on the success side.  It reached ONE of
+    the five surfaces until plan step X-f1e3 gave it a mount of its own
+    (finding **N-199**).
 
     Args:
-        account: The post-commit account.  The "as of" snippet is dated from
-            the ASSERTION this resolves for it (``observed_on``), never from
-            the row's ``updated_at`` -- the two are different facts (ruling
-            R-EP).
+        account: The post-commit account.
         revert_context: The normalized surface token, or ``None`` -- which is
-            the grid, the one surface the "as of" snippet is emitted for.
+            the grid, the one surface the "as of" snippet is emitted for.  It
+            picks the draw that answers.
         submission: What the form asserted.  Supplies both figures the
             acknowledgement names.  **Required, with no default**: a defaulted
             submission here means "suppress the safety check", and with one
             caller a default that can only ever be wrong is a footgun rather
             than a convenience.
-        governing_before: The balance that GOVERNED before the write, or
-            ``None`` for an account carrying no assertion at all.  Read by the
-            caller rather than here, because here is after the write and the
-            comparison needs both sides; ``None`` compares unequal to any
-            balance, so a first assertion falls through to "the cell changed".
-        outcome: What the write door did.  It decides the acknowledgement's
-            COPY, not whether it fires: under ruling R-EQ a submission matching
-            the governing assertion writes nothing and is rolled back while
-            reporting success, and that state reaches the acknowledgement now
-            -- so saying "Balance recorded" there would be false.
+        report: The write door's report.  A ``None`` ``governing_before``
+            (no assertion at all) counts as "the balance moved", which is what
+            a first assertion does.  ``governing_after`` dates the "as of"
+            snippet by the ASSERTION's ``observed_on``, never the row's
+            ``updated_at`` (ruling R-EP).  ``outcome`` decides the
+            acknowledgement's COPY, not whether it fires: an R-EQ submission
+            matching what governs writes nothing yet reaches it, so "Balance
+            recorded" there would be false.
 
     Returns:
         The ``(body, status, headers)`` tuple Flask returns, carrying the
         ``HX-Trigger: balanceChanged`` header.
     """
-    anchor = cash_ledger.resolve_anchor(account)
-    html = render_template(
-        "grid/_anchor_edit.html", account=account,
-        anchor_balance=anchor.balance, editing=False,
-    )
+    before, after = report.governing_before, report.governing_after
+    # The screen's own draw, run AFTER the write: each builds its read pass as
+    # its GET does, and a pass built before the write would memoize the
+    # pre-write fold.  The grid's reads none; it draws the assertion the door
+    # reported.  ``None`` is a screen that no longer shows the account.
+    cell = _SURFACES[revert_context].draw(account, after)
+    html = "" if cell is None else cell
     # The one question worth asking after a balance reading -- which of these
     # purchases has your bank taken?  Empty when nothing is outstanding, so the
-    # one-click habit is not taxed by a prompt with nothing in it.
+    # one-click habit is not taxed by a prompt with nothing in it.  The
+    # boundary is the reported assertion's day: ``MAX(observed_on)`` over the
+    # same owner-declared rows ``cash_ledger.reconciled_through`` would ask.
     feedback = (
-        prompt_fragment(account)
+        prompt_fragment(account, after)
         if _submission_is_the_coverage_boundary(
-            cash_ledger.reconciled_through(account.id).observed_day,
-            submission.observed_on,
+            after.observed_on, submission.observed_on,
         )
         else ""
     )
-    if not feedback and anchor.balance == governing_before:
+    if not feedback and before is not None and after.balance == before.balance:
         feedback = render_template(
             "accounts/_anchor_recorded_toast.html",
             account=account,
-            balance=submission.balance,
+            # The figure the owner TYPED, crossed back from the held balance
+            # the gate stored: a card's "$1,200.00 owed" (ruling R-CC57), an
+            # asset's balance as typed.
+            balance=liability_sign.shown_figure(
+                account.account_type, submission.balance,
+            ),
+            asks_owed=liability_sign.asks_owed(account.account_type),
             # The day the SUBMISSION asserted, resolved: a blank date box means
             # the user's today, and the acknowledgement names the day the
             # balance is about rather than leaving it to be guessed from a
             # figure that did not move.
-            observed_on=_submitted_or_resolved_day(submission, anchor),
-            was_written=outcome is AnchorTrueUpOutcome.COMMITTED,
+            observed_on=_submitted_or_resolved_day(submission, after),
+            was_written=report.outcome is AnchorTrueUpOutcome.COMMITTED,
         )
     # ``None`` is the grid, and only the grid: every named surface re-fetches
     # its own region on the ``balanceChanged`` fired below and redraws its own
@@ -361,7 +494,7 @@ def _true_up_success_response(
         ""
         if revert_context is not None
         else render_template(
-            "grid/_anchor_as_of_oob.html", observed_on=anchor.observed_on,
+            "grid/_anchor_as_of_oob.html", observed_on=after.observed_on,
         )
     )
     return html + as_of + feedback, 200, {"HX-Trigger": "balanceChanged"}
@@ -436,15 +569,38 @@ def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
     Returns:
         The designed-fragment ``(body, 422, headers)`` triple.
     """
-    return designed_error(
-        render_template(
-            "grid/_anchor_edit.html",
-            account=account,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-            editing=False,
-            error=LOAN_ANCHOR_REFUSAL,
-        ),
-        422,
+    return designed_error(_loan_cell(account, LOAN_ANCHOR_REFUSAL), 422)
+
+
+def _loan_cell(account: Account, error: str | None = None) -> str:
+    """Render an AMORTIZING account's read-only cell: a pointer, no figure.
+
+    **It shows no balance, and that is ruling R-CC53** (plan step
+    credit_card:CC-5-5b).  The cell printed the account's cash ASSERTION, which
+    for a loan is a row typed at account creation that is not the loan's
+    balance in size or, typed before this step, in sign: the production
+    Mortgage's reads ``$178,103`` where the loan owes ``$176,719.77``.  A loan's
+    balance is its own page's, so the cell points there instead -- and reads no
+    assertion at all, which is what leaves nothing on this surface for such a
+    row's sign to reach.
+
+    Reached by :func:`anchor_display` (the grid's Cancel) on a direct request
+    and by :func:`_anchor_kind_refusal` on the N-199 race; no ordinary click
+    opens it, because every surface renders a loan's balance read-only.  A
+    successful save never draws it: a save on a loan is refused before the
+    write door, by :func:`_true_up_request_gates` through
+    :func:`_anchor_kind_refusal` (ruling D4 / step A1), which is one of the
+    two ways the N-199 race reaches it (the other is :func:`anchor_form`).
+
+    Args:
+        account: The owned, attached amortizing :class:`Account`.
+        error: The refusal to show beside the pointer, or ``None``.
+
+    Returns:
+        The rendered cell.
+    """
+    return render_template(
+        "grid/_anchor_edit.html", account=account, editing=False, error=error,
     )
 
 
@@ -452,6 +608,11 @@ def _anchor_editor_error(
     account: Account, revert_context: str | None, message: str,
 ) -> ResponseReturnValue:
     """Re-render the anchor editor in place, carrying *message*, as a 400.
+
+    **The echo is NOT crossed, and that is deliberate** (plan step
+    credit_card:CC-5-5b): the boxes held what the owner typed, which on a
+    liability is already the amount OWED, so the redisplay shows it back as
+    typed and keeps the box's "Amount owed" label (``asks_owed``).
 
     **The ONE rejection surface this door has** (plan step X-f1c4c).  Until that
     step its only rejection answered ``jsonify(errors=...)`` with no marker
@@ -488,6 +649,7 @@ def _anchor_editor_error(
             anchor_balance=request.form.get("anchor_balance", ""),
             observed_on_value=request.form.get("observed_on", ""),
             editing=True,
+            asks_owed=liability_sign.asks_owed(account.account_type),
             error=message,
             revert_url=_anchor_revert_url(account.id, revert_context),
             revert_context=revert_context,
@@ -568,8 +730,22 @@ def _true_up_request_gates(
         )
 
     data = _anchor_schema.load(request.form)
+    # Ruling R-CC61: a form rendered under the other meaning is refused BEFORE
+    # anything is staged, and re-opened as a fresh click opens it under the
+    # account's meaning now -- NOT echoing the figure typed under the old one
+    # (ruling R-CC62; see :func:`_fresh_editor`).
+    stale = door_meaning_refusal(account, data["asks_owed"])
+    if stale is not None:
+        return None, designed_error(
+            _fresh_editor(account, revert_context, stale), 400,
+        )
+    # The ONE crossing this door makes (plan step credit_card:CC-5-5b, rulings
+    # R-CC52 / R-CC57): a liability's box asks for the amount OWED, on every
+    # surface the editor opens from, and the write door stores the held sign.
     return _AnchorSubmission(
-        balance=Decimal(str(data["anchor_balance"])),
+        balance=liability_sign.held_balance(
+            account.account_type, Decimal(str(data["anchor_balance"])),
+        ),
         observed_on=data.get("observed_on"),
     ), None
 
@@ -620,31 +796,6 @@ def true_up(account_id):
     if failure is not None:
         return failure
 
-    # The balance the user is LOOKING AT, read before the write so the response
-    # can ask whether anything visible happened (finding N-204; see
-    # ``_true_up_success_response``).  Read here rather than inside that helper
-    # because that one runs after the write and the comparison needs both
-    # sides.
-    #
-    # **``governing_anchor_on`` rather than ``resolve_anchor``, and a review of
-    # this step is why.**  A first version read ``resolve_anchor``, which
-    # RAISES on an account with no assertion at all -- so a door that used to
-    # self-heal that state (``stage_anchor_true_up`` asks
-    # ``governing_anchor_on``, gets an honest ``None``, and appends the first
-    # row) would have taken a 500 with nothing written, for a COSMETIC toast.
-    # It is production-unreachable, and narrowing a write door's precondition
-    # is not something to do by accident on the way to a message.
-    #
-    # The clock read is safe here rather than a second answer to anything: no
-    # assertion can be dated in the future (``resolve_observation_day`` refuses
-    # one at both write doors), so "what governs today" and "what governs now"
-    # are the same row whichever side of midnight this lands on.  ``None`` --
-    # an account with no history -- compares unequal to any balance below, so
-    # the response falls through to "the cell changed", which is exactly what
-    # a first assertion does to it.
-    governing = cash_ledger.governing_anchor_on(account.id, display_today())
-    governing_before = None if governing is None else governing.balance
-
     # Canonical anchor true-up path: route the assertion append, the posting
     # re-base and the commit through the single authoritative helper
     # (``anchor_service.apply_anchor_true_up``) so ruling R-EQ's duplicate
@@ -655,6 +806,9 @@ def true_up(account_id):
     # success-response composition (the updated cell, the optional OOB
     # "as-of" snippet, and the ``HX-Trigger: balanceChanged`` header)
     # lives in ``_true_up_success_response``.
+    #
+    # The route reads no governing assertion of its own (ruling R-CC79): the
+    # door REPORTS today's before and after, both read inside the owner's lock.
     #
     # The DAY's bounds are the seam's, not this route's (ruling R-ER): a future
     # day and a day below the owner's schedule are refused by
@@ -668,7 +822,7 @@ def true_up(account_id):
     # back here -- and it is a 400 rather than a 500 because the date box makes
     # it ordinary user input.
     try:
-        outcome = anchor_service.apply_anchor_true_up(
+        report = anchor_service.apply_anchor_true_up(
             account=account,
             new_balance=submission.balance,
             observed_on=submission.observed_on,
@@ -679,11 +833,11 @@ def true_up(account_id):
     # UNCHANGED and COMMITTED share the success response (the
     # updated cell + an OOB "as of" snippet + the HX-Trigger that
     # recomputes other grid cells), so they converge on one return.
-    if outcome is AnchorTrueUpOutcome.UNCHANGED:
+    if report.outcome is AnchorTrueUpOutcome.UNCHANGED:
         # Ruling R-EQ idempotent success: the submission asserts the balance
         # that already stands, so nothing was written and the session was
-        # rolled back.  Expire the account so the partial re-reads the
-        # assertion that governs rather than anything this request held.
+        # rolled back.  Expire the account so the draws re-read it rather
+        # than anything this request held.
         db.session.expire(account)
     else:
         db.session.refresh(account)
@@ -696,7 +850,7 @@ def true_up(account_id):
         # other is noise that reads as corroboration.
 
     return _true_up_success_response(
-        account, revert_context, submission, governing_before, outcome,
+        account, revert_context, submission, report,
     )
 
 
@@ -705,29 +859,11 @@ def _anchor_revert_url(account_id, revert_context):
 
     The anchor editor (``grid/_anchor_edit.html``) is opened from more
     than one surface, and Cancel / Escape must restore whichever surface
-    opened it -- not always the grid display cell.  This maps the
-    normalized surface token (from :func:`_normalize_revert_context`) to
-    the GET endpoint that re-renders the opener.  ``None`` falls back to
-    the grid's ``anchor_display`` so the grid path is byte-for-byte
-    unchanged (it passes no ``revert``).
-
-    Locked contexts:
-
-    * ``dashboard`` -- the dashboard balance card re-renders via
-      ``dashboard.balance_section`` (restores the account name, caption,
-      and runway the grid display cell lacks; the audit's cancel-path
-      stranding fix).
-    * ``accounts`` -- the Net Worth Cockpit's per-card balance cell
-      re-renders via ``savings.cockpit_balance`` (restores that one card's
-      resolver balance; the cockpit is multi-card, so the revert is
-      account-scoped rather than the dashboard's single hero).
-    * ``investment`` -- the investment / retirement detail page's balance
-      hero re-renders via ``investment.balance_hero`` (restores the
-      model-from-anchor balance the detail headline shows; Loop B P1 C4).
-    * ``cash`` -- the cash detail page's balance hero re-renders via
-      ``accounts.cash_balance_hero`` (restores the resolver
-      current-period balance the detail headline shows; S8 / D14 port).
-    * default / grid -- ``accounts.anchor_display`` (the grid cell).
+    opened it -- not always the grid display cell.  The normalized surface
+    token (from :func:`_normalize_revert_context`) picks the screen's row of
+    :data:`_SURFACES`, whose endpoint re-renders the opener through the same
+    draw a save answers with.  ``None`` is the grid's ``anchor_display``, so
+    the grid path is byte-for-byte unchanged (it passes no ``revert``).
 
     Args:
         account_id: The account whose editor is being reverted.
@@ -736,15 +872,64 @@ def _anchor_revert_url(account_id, revert_context):
     Returns:
         The revert URL string.
     """
-    if revert_context == "dashboard":
-        return url_for("dashboard.balance_section")
-    if revert_context == "accounts":
-        return url_for("savings.cockpit_balance", account_id=account_id)
-    if revert_context == "investment":
-        return url_for("investment.balance_hero", account_id=account_id)
-    if revert_context == "cash":
-        return url_for("accounts.cash_balance_hero", account_id=account_id)
-    return url_for("accounts.anchor_display", account_id=account_id)
+    surface = _SURFACES[revert_context]
+    if surface.takes_account_id:
+        return url_for(surface.endpoint, account_id=account_id)
+    return url_for(surface.endpoint)
+
+
+def _fresh_editor(
+    account: Account, revert_context: str | None, error: str | None = None,
+) -> str:
+    """Render the anchor editor as a fresh click opens it, optionally refusing.
+
+    The ONE rendering of an editor that has not been typed into: the standing
+    balance in the door's words, today's date, the day bounds.  :func:`anchor_form`
+    answers a click with it, and the stale-form refusal (ruling **R-CC61**)
+    re-opens with it -- carrying the refusal beside the box, and deliberately
+    NOT the figure that was typed (ruling **R-CC62**, plan step
+    credit_card:CC-5-5b).  That figure was typed under the meaning the box no
+    longer has, so echoing it under the new label left the refused save one
+    Enter away: a $0.00 Checking account re-typed to a card, 2,500.00 typed and
+    refused, re-opened as "Amount owed 2500.00" and stored a card owing
+    $2,500.00 on the next Enter (measured by CC-5-5b's re-review).  Opened
+    fresh, Enter re-asserts the standing figure, which changes nothing.
+
+    Args:
+        account: The owned, attached, non-amortizing :class:`Account`.
+        revert_context: The normalized surface token, or ``None`` (the grid).
+        error: The refusal to show beside the box, or ``None`` for a click.
+
+    Returns:
+        The rendered editor.
+    """
+    revert_url = _anchor_revert_url(account.id, revert_context)
+    bounds = _anchor_day_bounds()
+    return render_template(
+        "grid/_anchor_edit.html",
+        account=account,
+        # The pre-fill speaks the door's language (plan step
+        # credit_card:CC-5-5b, ruling R-CC57): a card holding -1,000.00 opens
+        # on 1,000.00 owed, whichever surface opened it; an asset opens on its
+        # balance.  The surface the editor replaces keeps its own sign.
+        anchor_balance=liability_sign.shown_figure(
+            account.account_type, cash_ledger.resolve_anchor(account).balance,
+        ),
+        editing=True,
+        asks_owed=liability_sign.asks_owed(account.account_type),
+        # The statement day defaults to TODAY, not to the governing assertion's
+        # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
+        # the user reading their bank NOW in the overwhelming case, and R-EE
+        # keeps that one click plus Enter; prefilling the last assertion's day
+        # would make the ordinary path silently RE-assert an old day, which is
+        # the one thing this field exists to stop being a guess.  Back-dating is
+        # then a deliberate edit of a box that already shows the right answer.
+        observed_on_value=bounds["observed_on_max"].isoformat(),
+        revert_url=revert_url,
+        revert_context=revert_context,
+        error=error,
+        **bounds,
+    )
 
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])
@@ -787,39 +972,26 @@ def anchor_form(account_id):
     if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return _anchor_kind_refusal(account)
 
-    revert_context = _normalize_revert_context(request.args.get("revert"))
-    revert_url = _anchor_revert_url(account_id, revert_context)
-    bounds = _anchor_day_bounds()
-    return render_template(
-        "grid/_anchor_edit.html",
-        account=account,
-        anchor_balance=cash_ledger.resolve_anchor(account).balance,
-        editing=True,
-        # The statement day defaults to TODAY, not to the governing assertion's
-        # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
-        # the user reading their bank NOW in the overwhelming case, and R-EE
-        # keeps that one click plus Enter; prefilling the last assertion's day
-        # would make the ordinary path silently RE-assert an old day, which is
-        # the one thing this field exists to stop being a guess.  Back-dating is
-        # then a deliberate edit of a box that already shows the right answer.
-        observed_on_value=bounds["observed_on_max"].isoformat(),
-        revert_url=revert_url,
-        revert_context=revert_context,
-        **bounds,
+    return _fresh_editor(
+        account, _normalize_revert_context(request.args.get("revert")),
     )
 
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-display", methods=["GET"])
 @require_owner
 def anchor_display(account_id):
-    """HTMX partial: return the anchor balance display (non-editing)."""
+    """HTMX partial: return the anchor balance display (non-editing).
+
+    The grid's Cancel / Escape target, answering with :func:`_cash_cell` --
+    the draw a save opened from the grid answers with too (ruling R-CC77) --
+    over the governing assertion it reads.  **It holds the only loan check on
+    the grid's Cancel path** (ruling **R-CC79**): only Cancel can hand the
+    grid's draw a loan, because a save on one is refused before the write
+    (ruling D4 / step A1), and :func:`_loan_cell` reads no assertion (R-CC53).
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         return "Not found", 404
-
-    return render_template(
-        "grid/_anchor_edit.html",
-        account=account,
-        anchor_balance=cash_ledger.resolve_anchor(account).balance,
-        editing=False,
-    )
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
+        return _loan_cell(account)
+    return _cash_cell(account, cash_ledger.resolve_anchor(account))

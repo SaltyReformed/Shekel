@@ -1,0 +1,77 @@
+{#- One goal on a DEBT, inside the /savings goal list (plan step
+    credit_card:CC-5-5d).  A milestone to get UNDER (ruling R-CC69): the
+    figure is what the debt owes, as its tile shows it (ruling R-CC88); the
+    bar runs from what it owed when the goal was set down to the target
+    (ruling R-CC70; a card's start recorded at creation, R-CC91, a loan's
+    re-read from the books, R-CC71); the date is
+    when it is projected to owe at most the target, with its pace against the
+    goal's own date (ruling R-CC73).  No per-period figure of any kind
+    (rulings R-CC73, R-CC90), so none of the savings block's "Recommended per
+    paycheck" / "Past target date" / "Manual target" lines is here.
+
+    Context: ``gd`` -- one ``GoalProgress`` with ``is_debt`` true. -#}
+{% from "_money_macros.html" import money, pace_pill %}
+    <div class="savings-goal">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <div>
+          <h6 class="mb-0">{{ gd.goal.name }}</h6>
+          <small class="text-muted">{{ gd.goal.account.name }}</small>
+        </div>
+        <div class="d-flex gap-1">
+          <a href="{{ url_for('savings.edit_goal', goal_id=gd.goal.id) }}"
+             class="btn btn-sm btn-outline-secondary" aria-label="Edit {{ gd.goal.name }}">
+            <i class="bi bi-pencil"></i>
+          </a>
+          <a href="{{ url_for('transfers.new_transfer_template', to_account=gd.goal.account_id) }}"
+             class="btn btn-sm btn-outline-primary" title="Create a recurring payment to this debt">
+            <i class="bi bi-arrow-left-right"></i>
+          </a>
+        </div>
+      </div>
+
+      <div class="mb-2">
+        <div class="d-flex justify-content-between small mb-1">
+          <span><span class="font-mono">{{ money(gd.shown_balance, cents=false) }}</span> owed</span>
+          <span>goal: under <span class="font-mono">{{ money(gd.resolved_target, cents=false) }}</span></span>
+        </div>
+        <div class="progress progress-h-8">
+          <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
+               role="progressbar"
+               data-progress-pct="{{ gd.progress_pct }}"
+               aria-valuenow="{{ gd.progress_pct }}"
+               aria-valuemin="0"
+               aria-valuemax="100">
+          </div>
+        </div>
+        <small class="text-muted">
+          {{ "{:.0f}".format(gd.progress_pct) }}% paid down from
+          <span class="font-mono">{{ money(gd.start_owed, cents=false) }}</span> when set
+        </small>
+      </div>
+
+      {% if gd.goal.target_date %}
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Target date</span>
+        <span>{{ gd.goal.target_date.strftime('%b %d, %Y') }}</span>
+      </div>
+      {% endif %}
+
+      {% set traj = gd.trajectory %}
+      <div class="mt-2 pt-2 border-top">
+        {% if traj.months_to_goal == 0 %}
+        <p class="text-success fw-bold mb-1">Goal met!</p>
+        {% elif traj.months_to_goal is not none %}
+        <div class="small mb-1">
+          Projected under target:
+          <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
+          ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
+        </div>
+        {{ pace_pill(traj.pace) }}
+        {% else %}
+        <p class="text-muted small mb-1">
+          Not projected to fall under the target with the payments planned.
+        </p>
+        {{ pace_pill(traj.pace) }}
+        {% endif %}
+      </div>
+    </div>

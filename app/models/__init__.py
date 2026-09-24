@@ -29,6 +29,7 @@ from app.models.ref import (
     TaxType,
     TransactionType,
     UserRole,
+    WithholdingKind,
 )
 
 # Authentication
@@ -94,6 +95,12 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_line import PaycheckLine
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
+from app.models.pay_stub import (
+    PayStub,
+    PayStubLineAmount,
+    PayStubOneOff,
+    PayStubWithholding,
+)
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.models.tax_config import (
     FicaConfig,
@@ -131,6 +138,7 @@ __all__ = [
     "TaxType",
     "TransactionType",
     "UserRole",
+    "WithholdingKind",
     # Authentication
     "MfaConfig",
     "User",
@@ -184,6 +192,10 @@ __all__ = [
     "PaycheckLine",
     "PensionProfile",
     "CalibrationOverride",
+    "PayStub",
+    "PayStubLineAmount",
+    "PayStubOneOff",
+    "PayStubWithholding",
     "YtdTaxCheckpoint",
     "FicaConfig",
     "StateChildDeduction",

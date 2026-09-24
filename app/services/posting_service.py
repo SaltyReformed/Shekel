@@ -712,12 +712,13 @@ def resync_all_cash_postings() -> tuple[int, int]:
     transfer loop, before the one re-check, it asks
     :func:`~app.services._posting_legacy.transfers_holding_a_legacy_net` and
     raises naming every holder, the skipped transfers and why each was
-    skipped; ``scripts/init_database.py`` exits before its own commit.
-    **That is NOT an automatic rollback**: it can fire only on a deploy that
-    has already committed migration ``c7d1e9a4b2f8``, which the previous
-    image cannot resolve, so the site is down until an operator intervenes
-    (``transfers_holding_a_legacy_net``'s docstring has the argument, the
-    ruled recovery and the gate).
+    skipped; ``scripts/init_database.py`` exits before its one commit.  Since
+    plan step ``balance:X-cv`` that commit covers the release's migrations
+    too, so the refusal rolls them back with it and ``deploy/shekel-deploy.sh``
+    re-pins the previous image on its own -- the manual dump restore ruling
+    **R-BAL105** accepted until then is gone
+    (``transfers_holding_a_legacy_net``'s docstring has the argument and the
+    gate).
 
     It stays wired on every deploy rather than being deleted after one run, for
     the same reason its two siblings are: reconcile-to-target makes it a no-op
@@ -746,8 +747,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
     each movement's own state and brings the legacy source to zero.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary
-    (``scripts.init_database.resync_all_cash_postings_after_migration``, which
-    initialises ``ref_cache`` first because the migration host does not).
+    (``scripts.init_database.initialise_database``, whose ONE commit covers the
+    migrations and all three deploy hooks, and which initialises ``ref_cache``
+    first because the migration host does not).
 
     **The counts are sources CHANGED, not sources walked** (finding N-133 / F8).
     A hook that rewrites the whole production ledger on every deploy and reports
@@ -761,10 +763,10 @@ def resync_all_cash_postings() -> tuple[int, int]:
     **The re-date is ONE-WAY, and that is a stated risk rather than a
     discovered one.**  ``entrypoint.sh`` runs ``set -eEuo pipefail`` and calls
     ``scripts/init_database.py``, so a failure here aborts the container
-    before this hook commits -- though NOT before the release's migrations
-    have (they run first): ``deploy/shekel-deploy.sh`` re-pins the previous
-    image only when that image can resolve the stamp the database now holds,
-    and otherwise names the pre-deploy dump and stops.  And if the healthcheck
+    before anything commits -- the release's migrations included, since plan
+    step ``balance:X-cv`` runs them and the three deploy hooks in ONE
+    transaction -- so the stamp is unmoved and ``deploy/shekel-deploy.sh``
+    re-pins the previous image.  And if the healthcheck
     fails AFTER this commits, the rolled-back image reads a display-dated
     ledger with the previous image's UTC rules, and only the entries whose two
     days differ are affected (on production at the cutover: one payment, one
@@ -918,7 +920,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
     # plan step ``balance:X-bi-6-3``, finding 1).  The pair's door writes in
     # sequence -- the legacy reversal, then one side, then the other -- and a
     # refusal on the second side would otherwise leave the first side and the
-    # reversal committed by this hook: the from-account debited into transit
+    # reversal committed by the deploy: the from-account debited into transit
     # with nothing arriving, a trial balance that still closes, and no reader
     # to trip.  The one-entry door resolved every input before its first
     # write, so its skip was clean by construction; a per-movement door has no
@@ -953,10 +955,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
             f"pass: {list(skipped)}).  {_skip_reasons(skipped)}  Repair "
             "each skipped transfer's movement-account ledger pairing before "
             "deploying again; a holder that was NOT skipped is a re-book "
-            "defect, not a pairing: do not deploy.  If this deploy applied a "
-            "migration the previous image cannot resolve, shekel-deploy will "
-            "not re-pin it, and the ruled recovery is the pre-deploy dump it "
-            "names (ruling R-BAL105)."
+            "defect, not a pairing: do not deploy.  Nothing this deploy did "
+            "is committed, its migrations included (plan step X-cv): the "
+            "stamp is unmoved, so shekel-deploy re-pins the previous image."
         )
     # The ONE anchor re-check, after every source is re-booked (ruling
     # **R-BAL103**; the docstring says why).  Outside the per-transfer

@@ -44,7 +44,12 @@
    Expected context:
      account     -- the Account whose balance was asserted.
      balance     -- Decimal, the balance this submission ASSERTED (not
-                    necessarily the one that governs).
+                    necessarily the one that governs), as the owner TYPED it:
+                    for a liability the amount OWED (plan step
+                    credit_card:CC-5-5b, ruling R-CC57), crossed back from the
+                    held balance the gate stored.
+     asks_owed   -- True for a liability, whose figure reads "$1,200.00 owed";
+                    an asset's line is unchanged.
      observed_on -- the civil day it was asserted for.
      was_written -- True when a row was appended (``COMMITTED``), False when
                     the submission matched the governing assertion and ruling
@@ -71,7 +76,7 @@
         </div>
         <div>
           {{ account.name }} &middot;
-          <span class="font-mono">{{ money(balance) }}</span>
+          <span class="font-mono">{{ money(balance) }}</span>{% if asks_owed %} owed{% endif %}
         </div>
         <div>
           as of {{ observed_on.strftime('%b %-d, %Y') }}

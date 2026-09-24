@@ -17,7 +17,7 @@ the user can retry against fresh row state.
 
 The C-28 / F-044 multi-tenant ownership guard for
 ``ref.account_types`` lives in :mod:`app.utils.account_validation`
-(``_account_type_is_visible``, ``_visible_account_types``); routes
+(``_visible_account_type``, ``_visible_account_types``); routes
 in this file call those helpers rather than inlining the guard.
 """
 
@@ -55,6 +55,7 @@ from app.services import (
     account_service,
     definition_delete,
     ledger_account_service,
+    liability_sign,
     pay_period_service,
     transfer_service,
 )
@@ -65,7 +66,7 @@ from app.utils import archive_helpers
 from app.utils.account_validation import (
     _create_schema,
     _validate_update_account,
-    _account_type_is_visible,
+    _visible_account_type,
     _visible_account_types,
 )
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
@@ -107,11 +108,24 @@ def new_account():
 
     The type dropdown is scoped to seeded built-ins plus the current
     owner's custom types (commit C-28 / F-044).
+
+    ``owed_type_ids`` marks the types whose balance box asks for the amount
+    owed (plan step credit_card:CC-5-5b, ruling R-CC58), and
+    ``js/account_form.js`` relabels the box from this mark.  Classified by
+    :func:`app.services.liability_sign.asks_owed`, the SAME rule the create
+    route crosses the typed figure by -- asked here at render and there at
+    POST, so a custom type whose category is edited in another tab between the
+    two is read by the new category (see :func:`create_account`).
     """
+    account_types = _visible_account_types(current_user.id)
     return render_template(
         "accounts/form.html",
         account=None,
-        account_types=_visible_account_types(current_user.id),
+        account_types=account_types,
+        owed_type_ids={
+            acct_type.id for acct_type in account_types
+            if liability_sign.asks_owed(acct_type)
+        },
         # The "balance as of" field's default and its two bounds, mirroring
         # ``anchor_service.resolve_observation_day`` so the browser refuses
         # what the service would refuse rather than round-tripping a rejection.
@@ -176,7 +190,10 @@ def create_account():
     # "Invalid account type." response as a non-existent FK so the
     # response cannot be used to probe for the existence of other
     # owners' catalogues.
-    if not _account_type_is_visible(data["account_type_id"], current_user.id):
+    account_type = _visible_account_type(
+        data["account_type_id"], current_user.id,
+    )
+    if account_type is None:
         flash("Invalid account type.", "danger")
         return redirect(url_for("accounts.new_account"))
 
@@ -196,9 +213,27 @@ def create_account():
     # (``is None``), never on Decimal truthiness: a legitimately-entered
     # zero opening balance is a value, not a missing balance.
     raw_anchor = data.pop("anchor_balance", None)
-    anchor_balance = (
+    entered = (
         Decimal(str(raw_anchor)) if raw_anchor is not None else Decimal("0")
     )
+    # **The box asks a liability for the amount OWED, and this is the ONE
+    # crossing to the held sign the account stores** (plan step
+    # credit_card:CC-5-5b, rulings R-CC52 / R-CC58).  Typing 5,000.00 on a car
+    # loan stores -5,000.00, which reads $5,000.00 owed; an asset's figure is
+    # stored as typed.  Classified by the TYPE the owner picked, because the
+    # account does not exist yet -- the row the visibility check above returned
+    # -- and here, at the route, because ruling R-J keeps account class out of
+    # the schema tier and the service's contract is the held balance every
+    # other caller already passes.
+    #
+    # **Not guarded against a stale form, and that is ruling R-CC61's stated
+    # exception.**  The anchor editor and the books-opening card refuse a save
+    # whose account crossed asset <-> liability since the form opened; this
+    # form picks its type in the same submission, so the only race left is a
+    # CUSTOM type whose category is edited in another tab between render and
+    # POST (permitted while none of its accounts has postings) -- the figure is
+    # then crossed by the category the type has NOW.
+    anchor_balance = liability_sign.held_balance(account_type, entered)
 
     # E-19 (Commit 3): the canonical factory in
     # ``app.services.account_service.create_account`` materializes
