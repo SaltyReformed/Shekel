@@ -517,7 +517,8 @@ def deleted_row_purchase_refusal(gone: HiddenRow) -> str:
     this module reads nothing.
 
     Args:
-        gone: The hidden row's name, and how it went.
+        gone: The hidden row's name, and whether its recurring item is
+            archived.
 
     Returns:
         The refusal, naming the row.

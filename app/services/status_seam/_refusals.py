@@ -314,9 +314,10 @@ def reject_settlement_on_a_deleted_row(
     transfer itself, and :mod:`app.deleted_row_infrastructure` states what the
     database must then refuse (a movement arriving under a deleted TRANSFER);
     a transfer carrying its own record would meet this refusal, by its name.
-    A ``Transaction`` is told how it went -- deleted, or hidden by its
-    recurring item's archive (ruling **R-CC107**) -- and a ``Transfer``, which
-    cannot arrive here with a record today, is named as deleted.
+    A ``Transaction`` is told "was archived" where its recurring item is
+    archived and "was deleted" otherwise, whichever act hid it (ruling
+    **R-CC107**), and a ``Transfer``, which cannot arrive here with a record
+    today, is named as deleted.
 
     Args:
         row: The row being written.
@@ -363,7 +364,8 @@ def deleted_row_payment_refusal(gone: HiddenRow) -> str:
     left to hand over.
 
     Args:
-        gone: The hidden row's name, and how it went.
+        gone: The hidden row's name, and whether its recurring item is
+            archived.
 
     Returns:
         The refusal, naming the row.

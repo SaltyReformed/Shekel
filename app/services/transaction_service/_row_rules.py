@@ -38,6 +38,7 @@ row it is refusing, and flushing nothing.
 """
 
 from app.exceptions import ValidationError
+from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
 from app.services.status_seam import deleted_row_payment_refusal
@@ -337,9 +338,14 @@ def reject_unsettleable(txn: Transaction) -> None:
     routes it somewhere else rather than the one that refuses it outright.  Both
     tests are column reads, so neither triggers the relationship lazy-load
     :func:`settles_from_entries`' cheap-first precondition ordering avoids; the
-    deleted row's sentence adds one read, on the refusal alone, and it flushes
-    nothing (:meth:`~app.utils.hidden_row.HiddenRow.of`), so a refused call
-    still writes none of a caller's staged state.
+    deleted row's sentence adds one read, on the refusal alone
+    (:meth:`~app.utils.hidden_row.HiddenRow.of`).  **None of it flushes**:
+    the two columns are read under ``no_autoflush`` -- a row the caller's
+    commit expired refreshes them by a statement, which would otherwise write
+    the caller's staged state first (review 8 of plan step
+    ``credit_card:CC-5-4a-4``, measured 2026-09-24) -- and the sentence's
+    read is guarded the same way, so a call refused here writes none of a
+    caller's staged state.
 
     Args:
         txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.
@@ -347,11 +353,14 @@ def reject_unsettleable(txn: Transaction) -> None:
     Raises:
         ValidationError: When *txn* is a transfer shadow or is soft-deleted.
     """
-    if txn.transfer_id is not None:
+    with db.session.no_autoflush:
+        is_shadow = txn.transfer_id is not None
+        is_deleted = txn.is_deleted
+    if is_shadow:
         raise ValidationError(
             f"Transaction {txn.id} is a transfer shadow; "
             "transfers settle via transfer_service.update_transfer so both "
             "legs and the parent move together.",
         )
-    if txn.is_deleted:
+    if is_deleted:
         raise ValidationError(deleted_row_payment_refusal(HiddenRow.of(txn)))

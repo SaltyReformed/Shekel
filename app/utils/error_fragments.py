@@ -59,9 +59,10 @@ def refusal_for_a_gone_row(answer, refusal) -> str:
 
     The one choice between the two answers ruling **R-CC104** gives, for the
     three doors it names: a hidden row the requester may reach is named, in
-    the door's own words for the act it refused and saying how it went
-    (ruling **R-CC107**); anything else gets :data:`ROW_NO_LONGER_EXISTS_MSG`,
-    the same words whichever it was.
+    the door's own words for the act it refused, saying "was archived" where
+    its recurring item is archived and "was deleted" otherwise (ruling
+    **R-CC107**); anything else gets :data:`ROW_NO_LONGER_EXISTS_MSG`, the
+    same words whichever it was.
 
     Args:
         answer: What ``auth_helpers.get_accessible_transaction_or_deleted``

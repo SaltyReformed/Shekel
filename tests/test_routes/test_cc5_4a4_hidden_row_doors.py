@@ -51,7 +51,9 @@ leg in :class:`TestNothingLeaksThroughTheName`.
 Review 7 found the archive's read flushing a caller's staged state from the
 settle verbs' first refusal (M1, :class:`TestTheHiddenRowsWordsFlushNothing`)
 and two of review 6's corrected payback sentences graded by no test (L4,
-:class:`TestThePaybackSentencesSayDollars`).  Every figure is made up.
+:class:`TestThePaybackSentencesSayDollars`); review 8 found the same flush
+for an EXPIRED row, the third payback sentence's format and the salary case
+ungraded (L1, L5, L4).  Every figure is made up.
 """
 
 from __future__ import annotations
@@ -68,6 +70,8 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.ref import FilingStatus
+from app.models.salary_profile import SalaryProfile
 from app.models.statement_match import StatementMatch, StatementMatchCreation
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -94,6 +98,7 @@ from app.services.transaction_service import (
 )
 from app.utils.dates import display_today
 from app.utils.error_fragments import ROW_NO_LONGER_EXISTS_MSG
+from app.utils.hidden_row import HiddenRow
 from tests._test_helpers import (
     amount_basis_for,
     derived_span,
@@ -1324,8 +1329,11 @@ class TestAnArchivedItemsRowSaysArchived:
         made-up $12.34 purchase keeps Gym's occurrence visible through it;
         the owner's own delete is what hides the row.  Gym is archived, so
         the sentence says archived (review 7, L2: the rule is the item's
-        state, and a salary profile's deactivation, which archives its item
-        and hides no row, answers the same way).
+        state; :meth:`test_a_deactivated_salary_profiles_row_says_archived`
+        is the same rule reached through the salary door).  A PIN: the
+        delete empties the row, so the end state is the deleted-then-archived
+        test's, and only an implementation that read history would separate
+        the two.
         """
         with app.app_context():
             period = seed_periods_today[3]
@@ -1344,6 +1352,64 @@ class TestAnArchivedItemsRowSaysArchived:
             response = auth_client.post(f"/transactions/{row_id}/mark-done")
 
             _is_the_deleted_cell(response, _GYM_ARCHIVED["cell"], "Archived")
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
+    def test_a_deactivated_salary_profiles_row_says_archived(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A made-up salary profile deactivated, then its Day Job row deleted.
+
+        Deactivating a profile archives its item
+        (``routes/salary/profiles.delete_profile``) and hides no row, so the
+        owner's delete is what hides this one; the item is archived, so the
+        sentence says archived (review 8, L4: measured by probe, now read by
+        a test).
+        """
+        with app.app_context():
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="Day Job",
+                default_amount=Decimal("11.11"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            make_every_period_rule(db.session, template)
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                template_id=template.id,
+                name="Made-up salary",
+                annual_salary=Decimal("52000.00"),
+                state_code="NC",
+                is_active=True,
+            )
+            db.session.add(profile)
+            db.session.flush()
+            period = seed_periods_today[3]
+            row = generate_row_of(template, period)
+            db.session.commit()
+            row_id, template_id = row.id, template.id
+            user_id = seed_user["user"].id
+            assert auth_client.post(
+                f"/salary/{profile.id}/delete",
+            ).status_code == 302
+            db.session.expire_all()
+            assert db.session.get(TransactionTemplate, template_id).is_active is False
+            assert db.session.get(Transaction, row_id).is_deleted is False
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+
+            response = auth_client.post(f"/transactions/{row_id}/mark-done")
+
+            _is_the_deleted_cell(
+                response,
+                "Day Job was archived: a payment cannot be recorded under "
+                "it.  Reload the page.",
+                "Archived",
+            )
             _holds_nothing_and_locks_nothing(row_id, period, user_id)
 
     def test_mark_paid_losing_to_the_archive_says_archived(
@@ -1459,60 +1525,110 @@ def _settle_by(verb, row, basis):
     return settle_amount(row, basis)
 
 
-class TestTheHiddenRowsWordsFlushNothing:
-    """Review 7's M1: a settle verb refusing a deleted row writes no staged state.
+class _FlushRecorder:
+    """Record what each flush of the test's session would write, while open."""
 
-    The three settle verbs ask ``reject_unsettleable`` FIRST, ahead of their
-    lock, so a refused call leaves a caller's staged state unwritten.  Its
-    deleted-row sentence reads whether the row's item is archived
-    (``HiddenRow.of``, ruling R-CC107); checkpoint 11 read it with the
-    session's autoflush on, and review 7 measured all three verbs flushing a
-    staged change to another row before raising.
+    def __init__(self):
+        self.flushed = []
+        self._session = None
+
+    def _record(self, flushing, _context, _instances):
+        self.flushed.append(sorted(type(o).__name__ for o in flushing.dirty))
+
+    def __enter__(self):
+        self._session = db.session()
+        event.listen(self._session, "before_flush", self._record)
+        return self
+
+    def __exit__(self, *_exc):
+        event.remove(self._session, "before_flush", self._record)
+
+
+class TestTheHiddenRowsWordsFlushNothing:
+    """Reviews 7 and 8: a settle verb refusing a deleted row writes no staged state.
+
+    The three settle verbs ask ``reject_unsettleable`` at their first check,
+    before any lock, so a call refused there leaves a caller's staged state
+    unwritten.  Its deleted-row sentence reads whether the row's item is
+    archived (``HiddenRow.of``, ruling R-CC107).  Review 7 measured all three
+    verbs flushing a staged change to another row before raising, through
+    that read's autoflush (checkpoint 11); review 8 measured the same for a
+    row the caller's commit had EXPIRED, whose columns refresh by a statement
+    of their own (checkpoint 12).
     """
 
+    @staticmethod
+    def _a_deleted_hotel_and_a_staged_note(auth_client, seed_user, period):
+        """The made-up $120.00 Hotel loaded deleted; a note staged on the $80.00 Phone.
+
+        Returns ``(hotel, phone, basis)``: ``settle_amount``'s basis is built
+        before anything is staged, because building it reads the database
+        and that read may flush.
+        """
+        _template, hotel = _occurrence(
+            seed_user, period, name="Hotel", amount="120.00",
+            is_envelope=False,
+        )
+        _template, phone = _occurrence(
+            seed_user, period, name="Phone", amount="80.00",
+            is_envelope=False,
+        )
+        hotel_id, phone_id = hotel.id, phone.id
+        assert auth_client.delete(f"/transactions/{hotel_id}").status_code == 200
+        db.session.expire_all()
+        hotel = db.session.get(Transaction, hotel_id)
+        assert hotel.is_deleted is True
+        basis = amount_basis_for(hotel)
+        phone = db.session.get(Transaction, phone_id)
+        phone.notes = "Made-up note, not saved yet"
+        return hotel, phone, basis
+
+    @pytest.mark.parametrize("expired", (False, True))
     @pytest.mark.parametrize(
         "verb", ("settle_transaction", "settle_from_entries", "settle_amount"),
     )
     def test_the_refusal_flushes_no_staged_change(
         self, app, db, auth_client, seed_user, seed_periods_today, verb,
+        expired,
     ):
-        """The made-up $120.00 Hotel loaded deleted, a note staged on the $80.00 Phone."""
+        """Each verb on the deleted Hotel, loaded or expired, beside the staged note."""
         with app.app_context():
-            period = seed_periods_today[3]
-            _template, hotel = _occurrence(
-                seed_user, period, name="Hotel", amount="120.00",
-                is_envelope=False,
+            hotel, phone, basis = self._a_deleted_hotel_and_a_staged_note(
+                auth_client, seed_user, seed_periods_today[3],
             )
-            _template, phone = _occurrence(
-                seed_user, period, name="Phone", amount="80.00",
-                is_envelope=False,
-            )
-            hotel_id, phone_id = hotel.id, phone.id
-            assert auth_client.delete(f"/transactions/{hotel_id}").status_code == 200
-            db.session.expire_all()
-            hotel = db.session.get(Transaction, hotel_id)
-            assert hotel.is_deleted is True
-            # ``settle_amount``'s basis, built before anything is staged:
-            # building it reads the database, and that read may flush.
-            basis = amount_basis_for(hotel)
-            phone = db.session.get(Transaction, phone_id)
-            phone.notes = "Made-up note, not saved yet"
-            session = db.session()
-            flushed = []
+            if expired:
+                db.session.expire(hotel)
 
-            def record(flushing, _context, _instances):
-                flushed.append(sorted(type(o).__name__ for o in flushing.dirty))
-
-            event.listen(session, "before_flush", record)
-            try:
+            with _FlushRecorder() as recorder:
                 with pytest.raises(ValidationError, match=(
                     "Hotel was deleted: a payment cannot be recorded under it"
                 )):
                     _settle_by(verb, hotel, basis)
-            finally:
-                event.remove(session, "before_flush", record)
 
-            assert flushed == []
+            assert recorder.flushed == []
+            assert phone in db.session.dirty
+            db.session.rollback()
+
+    def test_the_hidden_rows_read_of_an_expired_row_flushes_nothing(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """``HiddenRow.of`` asked directly of the expired Hotel (review 8's L1).
+
+        Its own guard covers the row's columns too, which the verbs' first
+        check cannot grade: that check has already refreshed the row by the
+        time it asks.
+        """
+        with app.app_context():
+            hotel, phone, _basis = self._a_deleted_hotel_and_a_staged_note(
+                auth_client, seed_user, seed_periods_today[3],
+            )
+            db.session.expire(hotel)
+
+            with _FlushRecorder() as recorder:
+                answer = HiddenRow.of(hotel)
+
+            assert answer == HiddenRow("Hotel")
+            assert recorder.flushed == []
             assert phone in db.session.dirty
             db.session.rollback()
 
@@ -1800,3 +1916,38 @@ class TestThePaybackSentencesSayDollars:
                 "purchases by $1,234.56, which would mean the card owes YOU "
                 "rather than the other way round."
             )
+
+    def test_a_removed_card_purchase_names_the_payback_in_dollars(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The $1,200.00 card purchase's payback is Paid, then the purchase is removed.
+
+        Review 8's L5: the third sentence, graded only at $50.00 (by
+        :meth:`TestARefusedRemovalIsTheListsBanner.test_a_paid_payback_is_named_with_its_dollars`),
+        so a lost thousands separator passed.
+        """
+        with app.app_context():
+            _template, envelope = _occurrence(
+                seed_user, seed_periods_today[3], name="Groceries",
+                amount="1500.00", is_envelope=True,
+            )
+            envelope_id, user_id = envelope.id, seed_user["user"].id
+            purchase_id = _card_purchase(
+                envelope_id, user_id, "1200.00", "Made-up store",
+            ).id
+            db.session.commit()
+            settle_transaction(db.session.query(Transaction).filter_by(
+                credit_payback_for_id=envelope_id,
+            ).one())
+            db.session.commit()
+
+            response = auth_client.delete(
+                f"/transactions/{envelope_id}/entries/{purchase_id}",
+            )
+
+            assert response.status_code == 400
+            assert "has settled at $1,200.00, so it cannot be removed" in (
+                response.get_data(as_text=True)
+            )
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, purchase_id) is not None

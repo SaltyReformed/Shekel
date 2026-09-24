@@ -536,8 +536,9 @@ def get_accessible_transaction_or_deleted(txn_id):
     **R-CC104**, developer 2026-09-23: *"Case (2) shows the same sentence in
     the same place. A recurring row is only hidden, so its name is known"*),
     or "Gym was archived: ..." where the row's recurring item is archived
-    (ruling **R-CC107**).  It carries the row's name and how the row went,
-    and no row, so a door holding one has no row to write money under.
+    (ruling **R-CC107**).  It carries the row's name and whether its
+    recurring item is archived, and no row, so a door holding one has no row
+    to write money under.
     Every other refusal stays ``None``: a missing id, another user's row, a
     companion's hidden row, a transfer shadow, live or deleted -- the shadow
     fence is the one it met first (review 6, L2) -- and a one-off row whose

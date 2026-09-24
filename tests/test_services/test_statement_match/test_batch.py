@@ -168,9 +168,10 @@ def _creation(seed_user, line, *, transaction_id=None, new_envelope=None):
 class TestARefusedItemDoesNotCostTheOthers:
     """The developer's ruling of 2026-08-19, which is the whole failure policy.
 
-    Not a hypothetical: 5 of the developer's own 124 proposals refuse today
-    with ``Payback 2457 has settled at 50.80, so it cannot be re-derived to
-    49.52``, and every one of the other 119 is a correction worth making.
+    Not a hypothetical: on the developer's own statement, the day of that
+    ruling, a few proposals were refused by a settled card payback's
+    re-derive refusal (``entry_credit_workflow.sync_entry_payback``), and
+    every other one was a correction worth making.
     """
 
     @staticmethod

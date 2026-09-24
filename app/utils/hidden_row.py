@@ -4,15 +4,16 @@ Shekel Budget App -- A hidden row: what a refusal may say about a row no screen 
 Plan step ``credit_card:CC-5-4a-4``.  A deleted row takes no money (ruling
 **R-CC89**), and a stale page's Mark Paid, Save or add purchase on one is told
 so by name (rulings **R-CC101**, **R-CC104**; never by id, **R-CC98**).  Two
-acts hide a row, and the sentence says which (ruling **R-CC107**, developer
-2026-09-24, "Say archived": *"When the row's recurring item is archived, the
-sentence says 'Gym was archived: a payment cannot be recorded under it.  Reload
-the page.' (and the same for a Save or a purchase). A row you deleted still says
-'was deleted'. If you deleted one row and later archived the whole item, it says
-'archived', which is also true."*): the row's own delete, and its recurring
-item's archive, which hides the item's empty Projected rows
+acts hide a row -- the row's own delete, and its recurring item's archive,
+which hides the item's empty Projected rows
 (``routes/templates/crud._soft_delete_projected_rows``) and whose un-archive
-brings them back (ruling **R-CC86**).
+brings them back (ruling **R-CC86**) -- and the sentence says whether the
+row's recurring item is archived, whichever act hid it (ruling **R-CC107**,
+developer 2026-09-24, "Say archived": *"When the row's recurring item is
+archived, the sentence says 'Gym was archived: a payment cannot be recorded
+under it.  Reload the page.' (and the same for a Save or a purchase). A row you
+deleted still says 'was deleted'. If you deleted one row and later archived the
+whole item, it says 'archived', which is also true."*).
 
 It lives in ``app/utils`` rather than beside the ownership door that first
 answered with a name (``auth_helpers``, which imports Flask) because the
@@ -37,14 +38,19 @@ class HiddenRow:
     What a door holds for a row it refuses because it is hidden, and all it
     holds: the NAME, so a door holding one has no row to write money under --
     the refusal ruling **R-CC89** exists for stays structural rather than a
-    check each door must remember -- and which act hid it, so the sentence can
-    say so (ruling **R-CC107**).  Every sentence an app door says about a
-    hidden row takes one: the status seam's ``deleted_row_payment_refusal``,
+    check each door must remember -- and whether its recurring item is
+    archived, so the sentence can say so (ruling **R-CC107**).  Every sentence
+    the transaction doors, the status seam and the settle verbs say about a
+    hidden transaction row takes one: the seam's
+    ``deleted_row_payment_refusal``,
     ``entry_service.deleted_row_purchase_refusal`` and the Save door's
-    ``routes/transactions/_helpers._deleted_row_change_refusal``.  The
-    database's own refusal (``app/deleted_row_infrastructure``, which only a
-    writer that skips every door meets) takes none and says "was deleted"
-    whichever act hid the row (finding **CC-377**).
+    ``routes/transactions/_helpers._deleted_row_change_refusal``.  Two
+    sentences about a hidden row take none.  The database's own refusal
+    (``app/deleted_row_infrastructure``, which only a writer that skips every
+    door meets) says "was deleted" whether or not the item is archived
+    (finding **CC-377**); and the transfer service's settle refuses a deleted
+    transfer shadow in its own words (``transfer_service._settle``): a
+    sentence about a transfer's leg, which the transfer's code owns.
 
     Attributes:
         name: The row's name (ruling **R-CC98**: never its id).
@@ -58,7 +64,11 @@ class HiddenRow:
 
     @property
     def went(self) -> str:
-        """The words for how the row went: ``"was archived"`` or ``"was deleted"``."""
+        """The sentence's verb: ``"was archived"`` or ``"was deleted"``.
+
+        ``"was archived"`` where the row's recurring item is archived, however
+        the row was hidden; ``"was deleted"`` otherwise.
+        """
         return "was archived" if self.archived else "was deleted"
 
     @classmethod
@@ -83,14 +93,20 @@ class HiddenRow:
         those read fresh either way; the case is the SETTLE's sentence, which a
         service caller is told.
 
-        **The read flushes nothing** (``no_autoflush``), so asking writes none
-        of the caller's staged state.  The three settle verbs ask it FIRST,
-        through ``reject_unsettleable``, ahead of their lock and of every read
-        that would flush, so that a refused call leaves a caller's staged state
-        unwritten; an autoflushing read here broke that for a row loaded
-        deleted beside a staged change, and all three flushed it before
-        raising (review 7 of this step, measured 2026-09-24; graded by
-        ``test_cc5_4a4_hidden_row_doors.TestTheHiddenRowsWordsFlushNothing``).
+        **Nothing it reads flushes**: the whole body is under
+        ``no_autoflush``, the row's own columns included, so an EXPIRED row
+        refreshes without writing and asking writes none of the caller's
+        staged state.  The three settle verbs ask it at their first check,
+        through ``reject_unsettleable``, before any lock and any read that
+        would flush, so a call refused at that check leaves a caller's staged
+        state unwritten.  A call refused later -- a delete that won the race
+        for the row lock -- is refused after that lock's own statement has
+        flushed (``row_write_lock.lock_row``).  An autoflushing read here
+        broke the first check for a row loaded deleted beside a staged change,
+        and all three verbs flushed it before raising (review 7 of this step,
+        measured 2026-09-24), and a read of an expired row's columns outside
+        the guard did the same (review 8); both are graded by
+        ``test_cc5_4a4_hidden_row_doors.TestTheHiddenRowsWordsFlushNothing``.
         What it reads is the definition's ``is_active`` as the database holds
         it, so a caller that staged an archive and had not flushed it would
         read the item active.  None does: the two route modules that write
@@ -107,14 +123,14 @@ class HiddenRow:
         Returns:
             The row's name, and whether its item is archived.
         """
-        if row.template_id is None:
-            return cls(row.name)
         with db.session.no_autoflush:
+            if row.template_id is None:
+                return cls(row.name)
             active = db.session.execute(
                 select(TransactionTemplate.is_active)
                 .where(TransactionTemplate.id == row.template_id)
             ).scalar_one_or_none()
-        return cls(row.name, archived=active is False)
+            return cls(row.name, archived=active is False)
 
     @classmethod
     def of_reread(cls, row: "Transaction | None", name: str) -> "HiddenRow":

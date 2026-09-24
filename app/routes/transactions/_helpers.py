@@ -561,7 +561,8 @@ def _deleted_row_change_refusal(gone):
 
     Args:
         gone: The :class:`~app.utils.hidden_row.HiddenRow` -- the row's name
-            (ruling **R-CC98**: never its id), and how it went.
+            (ruling **R-CC98**: never its id), and whether its recurring item
+            is archived.
 
     Returns:
         The refusal, naming the row.
