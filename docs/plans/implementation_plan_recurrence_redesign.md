@@ -13,8 +13,9 @@ every reader is on the resolver and the WRITE is gone.
 "which transfer into a loan is its payment", and **R16** deletes the rest (four leaves, **R-R36**):
 `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), `R20` 2026-09-19 (`b4da8068`, **R-R72** part 3: the
 stated balance is an assertion) and `R16-c-1` 2026-09-20 (`c88ed6ba`, **R-R90**: the past and the
-future are ONE event stream, byte-identical). `R16-c-2` (the contract calendar, **R-R89**; MOVES
-POSTED MONEY) is next.
+future are ONE event stream, byte-identical); `R23` 2026-09-23 (`f3bf8b9d`, **R-R98**) moved a
+balance a migration had dated its own run day to the setup day. `R16-c-2` (the contract calendar,
+**R-R89**; MOVES POSTED MONEY) is next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
 the findings, the index, the rules and `verification.md` are the shared registries in `docs/plans/`.
@@ -613,6 +614,13 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       `22b23085394d` dropped `LoanParams.current_principal` and its CHECK (0 of 2 on the 09-19
       clone; production prints its count); the earliest-payment refusal deleted (**R-R72** part 3).
       Closed **REC-519**. Spec and notes: `historical/recurrence_r20_as_built_2026-09-19.md`.
+
+- [x] **R23 -- a balance a migration dated its own run day takes the setup day.** `f3bf8b9d` -- as
+      built: migration `cddb15ffba5f` records the balance `d3d25212504b` had copied as a
+      `tracking_start` on the setup day and withdraws the copy through the new append-only
+      `budget.loan_anchor_withdrawals` (**R-R98**; the downgrade deletes only that statement,
+      **R-R99**); the walk and the R-EQ door read ONE producer, `load_standing_loan_assertions`.
+      Closed **balance:FU-1**.
 
 - [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
       **REC-527**, born at `salary:R15-b`'s review): `paychecks_from` and `_first_occurrence` read

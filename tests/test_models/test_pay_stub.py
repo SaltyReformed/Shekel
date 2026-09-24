@@ -1195,10 +1195,11 @@ class TestTheMigrationRoundTrips:
         assigned afresh, and this process's ref cache still holds the ones it
         read at start.
 
-        The chain is driven IN ORDER from head: ``9b64df71cc34`` (the stub
-        line's own kind, ruling R-SAL58) is this revision's child, so it is
-        stepped down first and back up last, and the stored amount carries the
-        kind the model now requires.
+        The chain is driven IN ORDER: ``9b64df71cc34`` (the stub line's own
+        kind, ruling R-SAL58) is this revision's child, so it is stepped down
+        first and back up last, and the stored amount carries the kind the
+        model now requires; ``cddb15ffba5f``, which now follows it, touches no
+        salary object and is not stepped.
         """
         with app.app_context():
             assert all(_schema_objects().values()), _schema_objects()

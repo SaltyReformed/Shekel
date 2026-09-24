@@ -1,6 +1,6 @@
 """Shared definitions for the append-only account tables' database-tier refusal.
 
-**Four account tables record FACTS that are never edited**, each a statement
+**These account tables record FACTS that are never edited**, each a statement
 about a moment that a correction ANSWERS rather than rewrites:
 
 * ``budget.account_anchor_history`` -- the LEVEL RELATION: what a bank, or the
@@ -18,6 +18,9 @@ about a moment that a correction ANSWERS rather than rewrites:
 * ``budget.loan_anchor_events`` -- a loan's owed balance at a moment (decision
   D-A); an origination row must stay reconstructible from the same immutable
   ``LoanParams`` source.
+* ``budget.loan_anchor_withdrawals`` -- the withdrawal of one loan statement
+  (plan step ``recurrence:R23``, ruling **R-R98**).  Editing one would let a
+  withdrawn statement silently reset the loan's balance again.
 
 **This module is what makes "append-only" TRUE rather than customary** (plan
 step X-f3c-2c, ruling **R-HY**).  The three tables carried SQLAlchemy
@@ -62,8 +65,8 @@ ask:
 * **UPDATE is a question about the STATEMENT.**  An edit is refused whatever
   else the transaction does, so a plain ``BEFORE UPDATE`` row trigger is exact.
 * **DELETE is a question about the transaction's END STATE**, which is why it
-  is a ``DEFERRABLE INITIALLY DEFERRED`` constraint trigger.  All four tables
-  carry :class:`app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``,
+  is a ``DEFERRABLE INITIALLY DEFERRED`` constraint trigger.  Every table here
+  carries :class:`app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``,
   so disposing of an account is meant to take its history with it, and the
   refusal has to let that through while stopping a row being picked off.  The
   test is whether the owning account is gone -- but "gone" is only meaningful
@@ -73,17 +76,19 @@ ask:
   destroyed, because at the instant the cascade ran the account genuinely did
   not exist.  Deferred, the same predicate refuses it.
 
-  **Two of the four tables have a SECOND owner, and the same end-state test is
-  asked of it** (plan step ``balance:X-bj-1``, developer ruling 2026-09-16).
-  A bank level (an ``account_anchor_history`` row with a
-  ``statement_import_id``) is its file's conclusion and cascades with its
-  import; a release cascades with the level it withdrew.  So on those two
-  tables the arm first asks whether that owner is gone at COMMIT -- the import,
-  the level -- and permits the disposal when it is, before falling through to
-  the account test.  A delete-and-recreate of the IMPORT id is refused by the
-  same reasoning that refuses one of the account id.  These are the only rows
-  in the family with an owner besides the account, and the arm names each by
-  table rather than reading a column the sibling tables lack.
+  **Three of the tables have a SECOND owner, and the same end-state test is
+  asked of it** (plan step ``balance:X-bj-1``, developer ruling 2026-09-16;
+  the third at ``recurrence:R23``).  A bank level (an
+  ``account_anchor_history`` row with a ``statement_import_id``) is its file's
+  conclusion and cascades with its import; a release cascades with the level
+  it withdrew, and a loan statement's withdrawal with the statement.  So on
+  those three tables the arm first asks whether that owner is gone at COMMIT
+  -- the import, the level, the statement -- and permits the disposal when it
+  is, before falling through to the account test.  A delete-and-recreate of
+  the IMPORT id is refused by the same reasoning that refuses one of the
+  account id.  These are the only rows in the family with an owner besides
+  the account, and the arm names each by table rather than reading a column
+  the sibling tables lack.
 
 * **UPDATE admits exactly ONE transition, on ONE table.**  A release names the
   import whose lines undercut the level through a key declared
@@ -102,7 +107,7 @@ ask:
   trigger too, so a measured ``TRUNCATE budget.account_openings`` with every
   account still standing took the table to zero and left the audit log
   byte-identical.  Every other path that removes a row from these tables writes
-  ``to_jsonb(OLD)`` to ``system.audit_log`` first (all four tables are in
+  ``to_jsonb(OLD)`` to ``system.audit_log`` first (every table here is in
   ``audit_infrastructure.AUDITED_TABLES``), so closing TRUNCATE is what makes
   "history is never destroyed without a record" true rather than usual.  That
   conservation is also why these tables need no archive of their own: the audit
@@ -134,8 +139,9 @@ Three callers must produce identical infrastructure, exactly as
 :mod:`app.opening_infrastructure` do:
 
 1. The Alembic migration that installs it (``f4a7c2d9e51b``, amended by
-   ``b8e3d5a06c94``, and by ``balance:X-bj-1``'s revision, which added the
-   fourth table and the two owner arms).
+   ``b8e3d5a06c94``, by ``balance:X-bj-1``'s revision, which added the fourth
+   table and the two owner arms, and by ``recurrence:R23``'s ``cddb15ffba5f``,
+   which added the withdrawal table and its owner arm).
 2. ``scripts/init_database.py``, whose fresh-database path builds the schema
    with ``db.create_all()`` + an Alembic ``stamp`` and so never runs the
    migration chain.
@@ -143,9 +149,10 @@ Three callers must produce identical infrastructure, exactly as
    idempotently so the latest in-code definition wins over migration-frozen
    state.
 
-**Caller contract: all four tables, ``budget.accounts`` and
-``budget.statement_imports`` must already exist.**  ``CREATE TRIGGER`` needs
-its table, so applying this before they are materialised fails loudly -- the
+**Caller contract: every table in :data:`APPEND_ONLY_TABLES`,
+``budget.accounts`` and ``budget.statement_imports`` must already exist.**
+``CREATE TRIGGER`` needs its table, so applying this before they are
+materialised fails loudly -- the
 right signal, and the same contract the two sibling modules document.  (An
 earlier version of this paragraph credited ``check_function_bodies`` with
 resolving the function's table references at ``CREATE FUNCTION`` time; for a
@@ -162,14 +169,15 @@ from __future__ import annotations
 from typing import Callable
 
 
-#: The one trigger function, serving all four tables and all three arms.  The
-#: column every arm reads is ``account_id``, which all four carry from
-#: :class:`app.models.mixins.AccountScopedMixin`; the two tables with a second
+#: The one trigger function, serving every table and all three arms.  The
+#: column every arm reads is ``account_id``, which each carries from
+#: :class:`app.models.mixins.AccountScopedMixin`; the three tables with a second
 #: owner (``statement_import_id`` on a level, ``anchor_id`` and
-#: ``released_by_import_id`` on a release) are read only inside a branch
-#: guarded by ``TG_TABLE_NAME``, because PL/pgSQL resolves a record's fields at
-#: execution and a sibling table has no such field to resolve.  One body, so
-#: the family's disposal rules are stated in one place rather than four.
+#: ``released_by_import_id`` on a release, ``anchor_event_id`` on a loan
+#: statement's withdrawal) are read only inside a branch guarded by
+#: ``TG_TABLE_NAME``, because PL/pgSQL resolves a record's fields at execution
+#: and a sibling table has no such field to resolve.  One body, so the family's
+#: disposal rules are stated in one place rather than once per table.
 _APPEND_ONLY_FUNCTION = "budget.refuse_append_only_change"
 
 #: One name per ARM, because the three differ in timing and a single trigger
@@ -194,6 +202,7 @@ APPEND_ONLY_TABLES: tuple[str, ...] = (
     "budget.anchor_releases",
     "budget.account_openings",
     "budget.loan_anchor_events",
+    "budget.loan_anchor_withdrawals",
 )
 
 
@@ -247,9 +256,10 @@ BEGIN
     -- delete-and-recreate, which leaves the account standing by the time
     -- anybody looks.
     --
-    -- Two tables have a SECOND owner and are asked about it first, each
+    -- Three tables have a SECOND owner and are asked about it first, each
     -- inside its own table guard so a sibling's row never has the field
-    -- looked up: a bank level goes with its import, a release with its level.
+    -- looked up: a bank level goes with its import, a release with its level,
+    -- a loan statement's withdrawal with the statement.
     IF TG_TABLE_NAME = 'account_anchor_history' THEN
         IF OLD.statement_import_id IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM budget.statement_imports
@@ -262,6 +272,14 @@ BEGIN
         IF NOT EXISTS (
             SELECT 1 FROM budget.account_anchor_history
             WHERE id = OLD.anchor_id
+        ) THEN
+            RETURN NULL;
+        END IF;
+    END IF;
+    IF TG_TABLE_NAME = 'loan_anchor_withdrawals' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM budget.loan_anchor_events
+            WHERE id = OLD.anchor_event_id
         ) THEN
             RETURN NULL;
         END IF;
