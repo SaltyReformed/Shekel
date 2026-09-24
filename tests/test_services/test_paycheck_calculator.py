@@ -735,7 +735,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_pre_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -752,7 +754,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_post_tax_sums_deductions(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -769,7 +773,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_total_taxes_sums_all_tax_fields(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -786,7 +792,9 @@ class TestPaycheckBreakdownProperties:
 
     def test_empty_deductions_return_zero(self):
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
                 base_biweekly=Decimal("2307.69"),
@@ -4705,7 +4713,7 @@ class TestTheBasisNamesItsRaiseSet:
         assert basis.raises == terms_of(profile.raises)
         assert all(isinstance(term, RaiseTerms) for term in basis.raises)
         # 2029-06: three applications (2027, 2028, 2029) of 5% on $60,000.
-        assert basis.annual_salary_on(date(2029, 6, 1)) == Decimal("69457.50")
+        assert basis.base_pay_on(date(2029, 6, 1)).annual_salary == Decimal("69457.50")
 
     def test_a_supplied_set_is_canonicalised_too(self):
         """``raises`` is ``RaiseTerms`` values whichever arm supplied them.
@@ -4821,10 +4829,7 @@ class TestTheBasisNamesItsRaiseSet:
             return _priced_lines(
                 _LineContext(
                     basis, eleventh.start_date,
-                    gross_per_paycheck(
-                        basis.annual_salary_on(eleventh.start_date),
-                        basis.periods_per_year,
-                    ),
+                    basis.base_pay_on(eleventh.start_date).per_paycheck,
                 ),
                 _timing_id("pre_tax_deduction"),
             )[0].amount

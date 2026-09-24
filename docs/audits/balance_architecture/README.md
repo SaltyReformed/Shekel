@@ -595,9 +595,12 @@ in SILENCE where a refused DELETE is loud.
   instance column did. **The derive-mode payment is N-450's own first kind**, so "delete it, read
   the series" would be wrong for the half that finding is about, and what the DOWNGRADE does for
   those two is the developer's open question (the ledger row carries it).
-  **`steps.md`'s `code` census CANNOT SEE A NAME THAT IS A STRING** and six more sites break as hard
-  (census 6 lines `["']default_amount` in `app/**/*.py`): two CHECK constraints ON THE DROPPED COLUMN,
-  which the migration drops with it or fails, and four route branches gating `set_amount` on a dict key.
+  **`steps.md`'s `code` census CANNOT SEE A NAME THAT IS A STRING** and seven more sites name the
+  column (census 7 lines `["']default_amount` in `app/**/*.py`): two CHECK constraints ON THE
+  DROPPED COLUMN, which the migration drops with it or fails, four lines in two route branches
+  gating `set_amount` on a dict key (`routes/templates/crud.py:457`/`459`,
+  `routes/transfers/templates.py:611`/`613`), which break as hard, and
+  `obligations_aggregator.py:322`'s `getattr` of the column, which would read `None` silently.
   Among the readers, `obligations_aggregator.py` SKIPS a row when the column is `None` or `0`;
   the live dependencies are re-measured BY THE STEP, not listed here -- the transaction half's
   three (a downgrade, `archive_profile`, the conflict chooser) plus at least
