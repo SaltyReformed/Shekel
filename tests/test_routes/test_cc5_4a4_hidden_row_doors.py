@@ -982,6 +982,35 @@ class TestADeleteThatWinsTheRaceIsNamed:
             assert fired == [row_id]
             _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
 
+    @pytest.mark.parametrize("surface", ("cell", "card"))
+    def test_a_replayed_mark_paid_on_a_paid_row(
+        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
+        surface,
+    ):
+        """Review 9's L1: the $120.00 Hotel is already Paid, and its Delete wins the replay's race.
+
+        Before: 200 and a live "Hotel ... Paid" chip, because the settle
+        verb's identity no-op answered for the Paid row before anything asked
+        whether the lock had found it deleted.
+        """
+        with app.app_context():
+            period = seed_periods_today[3]
+            _template, row = _occurrence(
+                seed_user, period, name="Hotel", amount="120.00",
+                is_envelope=False,
+            )
+            _settle(row, period.start_date)
+            row_id, user_id = row.id, seed_user["user"].id
+            fired = _delete_lands_before_the_lock(
+                monkeypatch, app, "lock_row", row_id, user_id,
+            )
+
+            response = _press(auth_client, surface, row_id)
+
+            assert fired == [row_id]
+            _is_the_gone_answer(response, surface, row_id, _PAYMENT_REFUSED)
+            _holds_nothing_and_locks_nothing(row_id, period, user_id)
+
     def test_mark_paid_on_an_erased_one_off_names_it(
         self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):

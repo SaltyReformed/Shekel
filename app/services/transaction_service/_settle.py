@@ -542,12 +542,15 @@ def settle_transaction(
     # anything staged), the purchase is either in before the decision, which
     # then settles at the purchases, or waits and meets the purchase door's
     # settled-row refusal.  ``is_deleted`` is re-read by the lock, so a delete
-    # that won is refused further down in words by ``reject_unsettleable`` --
-    # the envelope branch's own call, or ``settle_amount``'s on the manual
-    # branch -- whose sentence is the seam's (one sentence).  The seam takes
-    # the same locks again for its other callers, which costs nothing once
-    # held.
+    # that won is refused HERE, in the seam's words (one sentence), by
+    # ``reject_unsettleable`` asked again straight after the lock -- ahead of
+    # the identity no-op below, which answered first for a row already Paid:
+    # a replayed Mark Paid losing the race to that row's delete returned
+    # quietly and the grid redrew the deleted row as a live Paid chip (review
+    # 9 of this step, measured 2026-09-24).  The seam takes the same locks
+    # again for its other callers, which costs nothing once held.
     row_write_lock.lock_row(txn)
+    reject_unsettleable(txn)
     db.session.expire(txn, ["entries"])
     # The tender's reading and its gate, before any mutation for the same
     # reason and ahead of the identity no-op below: a bad REFERENCE is refused

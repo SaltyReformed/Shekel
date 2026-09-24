@@ -44,13 +44,16 @@ class HiddenRow:
     hidden transaction row takes one: the seam's
     ``deleted_row_payment_refusal``,
     ``entry_service.deleted_row_purchase_refusal`` and the Save door's
-    ``routes/transactions/_helpers._deleted_row_change_refusal``.  Two
-    sentences about a hidden row take none.  The database's own refusal
-    (``app/deleted_row_infrastructure``, which only a writer that skips every
-    door meets) says "was deleted" whether or not the item is archived
-    (finding **CC-377**); and the transfer service's settle refuses a deleted
-    transfer shadow in its own words (``transfer_service._settle``): a
-    sentence about a transfer's leg, which the transfer's code owns.
+    ``routes/transactions/_helpers._deleted_row_change_refusal``.  Other
+    sentences about a hidden row take none, among them: the database's own
+    refusal (``app/deleted_row_infrastructure``, which only a writer that
+    skips every door meets), which says "was deleted" whether or not the
+    item is archived (finding **CC-377**); the transfer service's settle
+    refusal of a deleted transfer shadow (``transfer_service._settle``), a
+    sentence about a transfer's leg, which the transfer's code owns; and Mark
+    Credit's "not found" for a row deleted while it waited
+    (``credit_workflow.mark_as_credit``), which never reaches a screen --
+    the route answers ruling **R-CC89**'s bare "not found" (**R-CC99** (b)).
 
     Attributes:
         name: The row's name (ruling **R-CC98**: never its id).
