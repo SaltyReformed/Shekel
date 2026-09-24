@@ -12,8 +12,8 @@ with a day ON the opening inside it (ruling **R-HG**).
 step: nothing said "no books before an account opens".  An occurrence with no
 paycheck to land in is skipped, so the owner's first payday (2026-03-26) stood
 in for the books, and a paycheck recorded at 2026-03-12 let the rules fill it:
-a ``$531.94`` Van Payment on 03-22 and a ``$100.00`` birthday on 03-24, both
-before Checking's books, moving 112 of 4,745 figures by exactly ``-$631.94``.
+a Van Payment on 03-22 and a birthday on 03-24, both before Checking's
+books, moving 112 of 4,745 figures by exactly the two rows' sum.
 
 What each class covers:
 
