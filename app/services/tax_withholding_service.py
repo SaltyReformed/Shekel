@@ -296,10 +296,10 @@ def compute_withholding_to_date(
             could decide whether a projection was needed BEFORE anything
             asked for a cadence an owner may never have stated.  A calendar
             can always be built, so that ordering is no longer load-bearing:
-            :attr:`~app.services.payroll_basis.PayrollBasis.periods_per_year`
-            resolves the cadence on read, and an owner with no cadence has no
-            payday, so they reach the all-zero remainder below without one
-            ever being asked for.
+            :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`
+            resolves each payday's cadence on read, and an owner with no
+            cadence has no payday, so they reach the all-zero remainder below
+            without one ever being asked for.
 
     Returns:
         The populated :class:`WithholdingToDate` (totals + measured /

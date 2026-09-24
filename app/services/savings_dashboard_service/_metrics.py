@@ -52,14 +52,31 @@ class CurrentPay:
     :func:`_current_pay`) when there is no current period or no active
     profile -- absence of an income source is not a ``$0.00`` income (E-12).
 
+    **It carries the rhythm the paycheck was priced at** (ruling
+    **R-SAL70**, plan step salary:X-av-2), because both readers leave paycheck
+    space -- the debt-to-income denominator is a MONTH of gross, a goal stated
+    in months of income a month of net -- and the conversion must use the
+    count the figures were divided by.  They converted at ``cadence_for``,
+    the LATEST era's rhythm, which agreed with the engine only while the
+    engine divided every paycheck by that same count: once X-av-2 priced a
+    payday at its own era's count, an owner paid monthly today with a
+    biweekly rhythm recorded to start later would have read a ``$5,000.00``
+    paycheck as ``$10,833.33`` a month (made-up figures).
+
     Attributes:
         net_biweekly: The summed net pay for one paycheck, off the pass's
             pricer, each profile's own calibration applied.
         gross_biweekly: The summed gross for the same paycheck.
+        cadence: The rhythm that paycheck was priced at, off the priced
+            paychecks' own :attr:`~app.services.paycheck_calculator.PeriodInfo
+            .cadence` -- one value for every profile summed, because each is
+            priced by the pass's one pricer on the pass's one calendar for
+            the one payday.
     """
 
     net_biweekly: Decimal
     gross_biweekly: Decimal
+    cadence: PayCadence
 
 
 @dataclass(frozen=True)
@@ -213,13 +230,21 @@ def _current_pay(balance_ctx, current_period):
         return None
 
     paychecks = balance_ctx.paychecks()
-    net = Decimal("0.00")
-    gross = Decimal("0.00")
-    for profile in profiles:
-        earnings = paychecks.for_profile(profile).at(current_period).earnings
-        net += earnings.net_pay
-        gross += earnings.gross_biweekly
-    return CurrentPay(net_biweekly=net, gross_biweekly=gross)
+    priced = [
+        paychecks.for_profile(profile).at(current_period)
+        for profile in profiles
+    ]
+    return CurrentPay(
+        net_biweekly=sum((p.earnings.net_pay for p in priced), Decimal("0.00")),
+        gross_biweekly=sum(
+            (p.earnings.gross_biweekly for p in priced), Decimal("0.00"),
+        ),
+        # The paycheck's own rhythm, read off what was priced rather than
+        # asked of the calendar again (ruling R-SAL70).  Every profile here is
+        # priced for the one payday on the pass's one calendar, so any
+        # element's cadence is every element's.
+        cadence=priced[0].period.cadence,
+    )
 
 
 def _checking_account_ids(accounts):

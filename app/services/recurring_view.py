@@ -132,6 +132,7 @@ from app.services.balance_at import BalanceContext
 from app.services.obligations_aggregator import (
     RecurringTemplate,
     monthly_or_none,
+    occurrence_amount,
     template_rule,
 )
 from app.services.pay_calendar import DerivedPeriod, PayCadence
@@ -195,6 +196,17 @@ class RecurringRow:
             its section's committed monthly total, for the share bar; ``None``
             when the row does not contribute (non-recurring) or the section
             total is zero.
+        amount: What one occurrence commits, for the Amount column and its
+            sort key (:func:`~app.services.obligations_aggregator
+            .occurrence_amount`): a salary profile's definition shows TODAY's
+            priced paycheck -- before the first saved payday, that first
+            paycheck (**R-SAL79**) -- and every other definition its stored
+            amount (rulings **R-SAL71** and **R-SAL73**, plan step
+            salary:X-av-2).
+            The template read ``default_amount`` itself until then, and for a
+            salary definition that is a copy of the paycheck saved with the
+            salary, stale once a raise date passes.  ``None`` when the
+            definition states no amount.
     """
 
     template: RecurringTemplate
@@ -202,6 +214,7 @@ class RecurringRow:
     recurrence: RecurrenceDescription | None
     next_date: date | None
     share_pct: Decimal | None
+    amount: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -614,6 +627,10 @@ def _build_section(
                 else _next_occurrence(item.rule, item.reading, ctx.as_of)
             ),
             share_pct=_share_pct(item.monthly_full, section_total_full),
+            # The paycheck ``monthly_full`` was converted from, for a salary
+            # definition, read again off the pass's pricer, whose memo prices
+            # that payday once for both (rulings R-SAL71, R-SAL73).
+            amount=occurrence_amount(item.template, ctx),
         )
         for item in prepared
     ]

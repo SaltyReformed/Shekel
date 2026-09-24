@@ -33,14 +33,35 @@ from ._breakdown import TaxLines
 class _WageBasis:
     """The per-paycheck wage figures withholding is computed from.
 
-    The three figures travel together through both tax paths (calibrated
-    and bracket-based): the period gross, the period taxable amount (gross
-    less pre-tax deductions, floored at zero), and the year-to-date
-    cumulative gross that drives the FICA Social Security wage-base cap.
+    The three wage figures travel together through both tax paths
+    (calibrated and bracket-based): the period gross, the period taxable
+    amount (gross less pre-tax deductions, floored at zero), and the
+    year-to-date cumulative gross that drives the FICA Social Security
+    wage-base cap.  The fourth field is the count the bracket path
+    annualises them by, which is a fact of the same paycheck.
+
+    Attributes:
+        gross_biweekly: The period gross.
+        taxable_biweekly: The period gross less the pre-tax deductions,
+            floored at zero.
+        cumulative_wages: The gross already paid this calendar year, before
+            this paycheck.
+        periods_per_year: How many paychecks a year the rhythm in force on
+            the payday pays -- the full-year count IRS Pub 15-T annualises a
+            period's wages by, and the state tax is annualised and divided
+            back by.  **Per paycheck since plan step salary:X-av-2** (ruling
+            **R-SAL66**; ledger row **SAL-569**): it was the basis's
+            ``periods_per_year``, the LATEST era's count, so a paycheck paid
+            under an earlier rhythm was annualised at a count it was never
+            paid at.  It arrives from
+            :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, the
+            read that divides the same paycheck's salary, so the divisor and
+            the annualiser cannot part.
     """
     gross_biweekly: Decimal
     taxable_biweekly: Decimal
     cumulative_wages: Decimal
+    periods_per_year: Decimal
 
 
 def _tax_lines(basis, wages, total_pre_tax, tax_configs, calibration):
@@ -48,8 +69,9 @@ def _tax_lines(basis, wages, total_pre_tax, tax_configs, calibration):
 
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis`, read by
-            the bracket path for the W-4 inputs and the annualising count.
-        wages: The per-paycheck :class:`_WageBasis`.
+            the bracket path for the W-4 inputs.
+        wages: The per-paycheck :class:`_WageBasis`, whose count the bracket
+            path annualises by.
         total_pre_tax: The paycheck's pre-tax deduction total, which the
             bracket federal computation annualises.
         tax_configs: dict with bracket_set, state_config, fica_config.
@@ -107,10 +129,10 @@ def _bracket_tax_lines(basis, wages, total_pre_tax, tax_configs):
 
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` -- read
-            for the W-4 federal inputs and for the denominator Pub 15-T
-            annualises a period's wages by.
-        wages: The per-paycheck :class:`_WageBasis` (gross, taxable, and the
-            cumulative YTD gross that drives the SS wage-base cap).
+            for the W-4 federal inputs.
+        wages: The per-paycheck :class:`_WageBasis` (gross, taxable, the
+            cumulative YTD gross that drives the SS wage-base cap, and the
+            count Pub 15-T annualises the period's wages by).
         total_pre_tax: Per-period pre-tax deduction total (annualised for
             the bracket federal calculation).
         tax_configs: dict with bracket_set, state_config, fica_config.
@@ -119,7 +141,7 @@ def _bracket_tax_lines(basis, wages, total_pre_tax, tax_configs):
         TaxLines with the federal, state, social_security, and medicare
         withholding amounts.
     """
-    pay_periods_per_year = basis.periods_per_year
+    pay_periods_per_year = wages.periods_per_year
     bracket_set = tax_configs.get("bracket_set")
     federal = (
         _bracket_federal(
@@ -154,8 +176,7 @@ def _bracket_federal(profile, gross_biweekly, pay_periods_per_year, bracket_set,
         profile: The SalaryProfile (read for the W-4 inputs).
         gross_biweekly: The period gross to withhold against.
         pay_periods_per_year: The full-year denominator IRS Pub 15-T
-            annualises against, off
-            :attr:`~app.services.payroll_basis.PayrollBasis.periods_per_year`.
+            annualises against, off :attr:`_WageBasis.periods_per_year`.
         bracket_set: The TaxBracketSet to withhold against.
         annual_pre_tax: Annualised pre-tax deduction total.
 
@@ -182,7 +203,7 @@ def _bracket_state(taxable_biweekly, pay_periods_per_year, state_config):
         taxable_biweekly: Gross less pre-tax deductions, floored at zero.
         pay_periods_per_year: The full-year denominator the annual state tax
             is computed over and divided back by, off
-            :attr:`~app.services.payroll_basis.PayrollBasis.periods_per_year`.
+            :attr:`_WageBasis.periods_per_year`.
         state_config: The StateTaxConfig (or None).
 
     Returns:

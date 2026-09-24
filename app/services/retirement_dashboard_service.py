@@ -654,13 +654,38 @@ def resolve_planned_retirement_date(
     return resolve_retirement_date_provenance(pensions, settings)["date"]
 
 
+@dataclass(frozen=True)
+class GapPaycheck:
+    """The net paycheck the retirement gap compares against, and the rhythm it is paid at.
+
+    Plan step **salary:X-av-2** (ruling **R-SAL70**): the gap calculator turns
+    this paycheck into a month, and the count it converts with must be the
+    one the paycheck is paid at.  :func:`compute_gap_net_biweekly` answers
+    two different paychecks -- the projected final-year one, divided by the
+    gap inputs' cadence (the LATEST era's, which governs the years ahead),
+    or the CURRENT one standing in when that projection cannot be made,
+    which the engine priced at the era in force on today's payday.  It
+    returned the net alone, and the caller converted both at the latest
+    era's count: right for the first, and wrong for the second whenever a
+    later rhythm is on record -- a monthly ``$4,017.50`` net read as
+    ``$8,704.58`` a month under a later biweekly era (made-up figures).
+
+    Attributes:
+        net: The net pay for one paycheck.
+        cadence: The rhythm that paycheck is paid at.
+    """
+
+    net: Decimal
+    cadence: PayCadence
+
+
 def compute_gap_net_biweekly(
     gap: GapInputs,
     payroll: BelievedPayroll,
     planned_retirement_date: date | None,
     salary_by_year: list[tuple[int, Decimal]] | None,
     as_of: date,
-) -> Decimal:
+) -> GapPaycheck:
     """Project the final-year net biweekly pay for the gap comparison.
 
     Scales the projected final-year gross biweekly (from the raise-aware
@@ -710,14 +735,22 @@ def compute_gap_net_biweekly(
             step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
 
     Returns:
-        The projected final-year net biweekly pay; the current net pay when
-        the projection cannot be performed; ``Decimal("0")`` when there is no
-        current paycheck.
+        The :class:`GapPaycheck`: the projected final-year net at the gap
+        inputs' cadence; the current net at the rhythm it was priced at
+        (:attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`) when the
+        projection cannot be performed; ``Decimal("0")`` at the gap inputs'
+        cadence when there is no current paycheck, which is ``$0.00`` a month
+        at any count.
     """
     if payroll.current_paycheck is None:
-        return Decimal("0")
+        return GapPaycheck(net=Decimal("0"), cadence=gap.pay_cadence)
     earnings = payroll.current_paycheck.earnings
     net_biweekly = earnings.net_pay
+    # The current paycheck, when it has to stand in for the final year's, is
+    # converted at the rhythm the engine PRICED it at (ruling R-SAL70).
+    current = GapPaycheck(
+        net=net_biweekly, cadence=payroll.current_paycheck.period.cadence,
+    )
     # ``None`` when the engine's gross is not positive -- the one zero-gross
     # guard, stated where the ratio is defined rather than repeated here.
     take_home_rate_pct = earnings.take_home_rate_pct
@@ -727,7 +760,7 @@ def compute_gap_net_biweekly(
         and net_biweekly > 0
         and take_home_rate_pct is not None
     ):
-        return net_biweekly
+        return current
 
     profile = gap.salary_profiles[0]
     # F-20 / MED-06 / F-032: the rate's denominator is the same per-period
@@ -740,7 +773,7 @@ def compute_gap_net_biweekly(
             planned_retirement_date.year,
         )
     if not salary_by_year:
-        return net_biweekly
+        return current
 
     final_salary = salary_by_year[-1][1]
     # The owner's OWN paycheck count, off the cadence the inputs already
@@ -750,7 +783,10 @@ def compute_gap_net_biweekly(
     final_gross_biweekly = gross_per_paycheck(
         final_salary, gap.pay_cadence.periods_per_year,
     )
-    return round_money(final_gross_biweekly * effective_take_home_rate)
+    return GapPaycheck(
+        net=round_money(final_gross_biweekly * effective_take_home_rate),
+        cadence=gap.pay_cadence,
+    )
 
 
 def resolve_estimated_tax_rate(

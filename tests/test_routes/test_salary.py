@@ -314,7 +314,9 @@ class TestProfileCreate:
         ENGINE's answer for the reference period -- ``_paycheck_template``'s
         own ``annual / count`` seed is overwritten by ``set_amount`` in the
         same request, and mutating that seed to ``/ 26`` leaves this test
-        green.  Hardcoding :attr:`PayrollBasis.periods_per_year` to 26 fails
+        green.  Hardcoding the count
+        :meth:`PayrollBasis.base_pay_on` divides by (``periods_per_year``
+        until plan step salary:X-av-2) to 26 fails
         it, and it is the ONLY test in this module that does -- which is the
         point: every other case here is biweekly, where the derived count and
         the old constant agree.
