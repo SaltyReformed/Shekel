@@ -58,11 +58,13 @@ from app.services.savings_dashboard_service._goals import (
     _GoalInputs,
     _load_active_goals,
 )
+from app.services.savings_dashboard_service._debt_summary import (
+    DebtSummary,
+    _compute_debt_summary,
+)
 from app.services.savings_dashboard_service._metrics import (
     CurrentPay,
-    DebtSummary,
     _compute_avg_monthly_expenses,
-    _compute_debt_summary,
     _current_pay,
     _sum_liquid_balances,
 )
@@ -161,7 +163,7 @@ def _debt_summary_with_dti(
 
     Its remaining job is the CURRENT-PAY -> gross unwrapping (plan step X-s3):
     the DTI block is no longer applied to a finished summary but built with it
-    inside :func:`~.._metrics._compute_debt_summary`, which is what makes the
+    inside :func:`~.._debt_summary._compute_debt_summary`, which is what makes the
     summary a value constructed in one place rather than a dict mutated across
     two.
 
@@ -183,7 +185,7 @@ def _debt_summary_with_dti(
             name one owner.
 
     Returns:
-        The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
+        The :class:`~.._debt_summary.DebtSummary`, or ``None`` when no loan
         accounts with params exist.
     """
     # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine output for
@@ -264,7 +266,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
             passes ONE context, so each loan is resolved once for the pair.
 
     Returns:
-        The :class:`~.._metrics.DebtSummary`, or ``None``
+        The :class:`~.._debt_summary.DebtSummary`, or ``None``
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
