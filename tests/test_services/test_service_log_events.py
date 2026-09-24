@@ -88,6 +88,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     make_expense_template,
     one_off_row_of,
+    open_books_before_the_first_assertion,
     record_paydays_across_a_hole,
     rhythm_of,
 )
@@ -208,6 +209,13 @@ def _transfer_setup(app, db, seed_user, seed_periods):
         ),
     )
     db.session.add(savings)
+    # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+    # developer-confirmed 2026-09-22 ("Yes: open books before rows"): the
+    # account's books open before the schedule, as the seeded account's do.
+    # ``create_account`` opens them TODAY, after the paychecks these rows are
+    # generated into, and since ruling R-PC85 a definition's occurrences start
+    # above the books of every account it moves money in.
+    open_books_before_the_first_assertion(db.session, savings)
 
     db.session.add_all([
         Category(

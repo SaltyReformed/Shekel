@@ -1,7 +1,7 @@
 """A row's delete never takes its movements, and a match's movement key stops cascading
 
 Revision ID: c4a4e7d1b9f2
-Revises: 5641f7729b68
+Revises: 9b2c5656eed9
 Create Date: 2026-09-22 22:40:00.000000
 Review: developer, 2026-09-22 / 2026-09-23 (rulings R-CC54 parts (2) and (3),
 R-CC63..R-CC66, R-CC82: three foreign keys dropped and re-created NO ACTION,
@@ -94,7 +94,7 @@ from app.deleted_row_infrastructure import (
 
 # revision identifiers, used by Alembic.
 revision = "c4a4e7d1b9f2"
-down_revision = "5641f7729b68"
+down_revision = "9b2c5656eed9"
 branch_labels = None
 depends_on = None
 

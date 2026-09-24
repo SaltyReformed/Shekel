@@ -78,6 +78,7 @@ from tests._test_helpers import (
     generate_row_of,
     generate_transfer_of,
     make_cadence_rule,
+    open_books_before_the_first_assertion,
     repriced_by_the_owner,
     shadow_amount,
     state_template_price,
@@ -145,6 +146,13 @@ def _savings_account(seed_user):
         ),
     )
     db.session.add(acct)
+    # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+    # developer-confirmed 2026-09-22 ("Yes: open books before rows"): the
+    # account's books open before the schedule, as the seeded account's do.
+    # ``create_account`` opens them TODAY, after the paychecks these rows are
+    # generated into, and since ruling R-PC85 a definition's occurrences start
+    # above the books of every account it moves money in.
+    open_books_before_the_first_assertion(db.session, acct)
     db.session.commit()
     return acct
 

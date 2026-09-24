@@ -2,10 +2,10 @@
 
 Its own module rather than a function on :mod:`_registry`, for the mechanical
 reason :mod:`_rulings` and :mod:`_row_width` were split out before it:
-``_registry`` stands at exactly 1000 lines, which is pylint's
-``max-module-lines``, and this package holds a 10.00/10 floor with
-``--fail-under=10``.  A predicate appended there would fail the gate that
-guards the gate.
+``_registry`` stood at exactly 1000 lines when this module was written
+(2026-09-05), which is pylint's ``max-module-lines``, and this package holds
+a 10.00/10 floor with ``--fail-under=10``.  A predicate appended there would
+have failed the gate that guards the gate.
 
 **What the ruling fixes** (developer, 2026-09-05).  ``N-`` ids came from ONE
 pot that five concurrent sessions drew from, and the pot had run out of gaps:

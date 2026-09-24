@@ -81,6 +81,7 @@ from app.services.statement_match import (
 
 from ._builders import (
     a_bank_line,
+    a_later_period,
     a_scope,
     a_submission,
     a_transaction,
@@ -240,13 +241,52 @@ class TestTheReviewPassStopsOfferingIt:
         the proposer would certainly pair the two.
         """
         day = _the_calendars_first_day(db, seed_user)
-        a_transaction(seed_user, name="Duke Energy", amount="180.00")
+        # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+        # developer-confirmed 2026-09-22 ("Yes: open books before rows"; this
+        # module's option: the row in the SECOND paycheck).  The books open ON
+        # the calendar's first day -- this module's subject -- and since ruling
+        # R-PC85 a recurring row dated on that day is inside them and never
+        # generated, so the row the lines match against is filed a paycheck on.
+        a_transaction(
+            seed_user, name="Duke Energy", amount="180.00",
+            period=a_later_period(seed_user),
+        )
         line = a_bank_line(seed_user, an_import(seed_user), posted_on=day)
 
         review = review_set(a_scope(seed_user))
 
         assert review.proposals == ()
         assert line.id not in {other.line_id for other in review.unmatched}
+
+    def test_the_same_line_past_EARLIER_books_IS_proposed_against_that_row(
+        self, app, db, seed_user,
+    ):
+        """POSITIVE CONTROL for the case above (C18-a adversarial review, L3).
+
+        That case's row is filed a paycheck on, so its line sits at the very
+        edge of the proposer's day window; ``proposals == ()`` would pass
+        there for a window that merely shrank.  The same row, the same figure
+        and the line on the SAME day -- the same distance from the row -- with
+        only the books moved a day earlier, so the line falls past them: it
+        IS proposed, so the empty answer above is the books' and not the
+        window's.  (Round 2's L-f: this control used to move the LINE a day
+        later instead, one day nearer the row, so a window shrunk by one day
+        would have emptied the case above and still passed here.)
+        """
+        day = seed_user["bootstrap_period"].start_date
+        _books_open_on(db, seed_user, day - timedelta(days=1))
+        a_transaction(
+            seed_user, name="Duke Energy", amount="180.00",
+            period=a_later_period(seed_user),
+        )
+        line = a_bank_line(seed_user, an_import(seed_user), posted_on=day)
+
+        review = review_set(a_scope(seed_user))
+
+        assert [
+            [bank.line_id for bank in proposal.lines]
+            for proposal in review.proposals
+        ] == [[line.id]]
 
     def test_a_line_the_day_AFTER_is_offered(self, app, db, seed_user):
         """The other side of the boundary, so the split is not simply "all".
@@ -527,7 +567,16 @@ class TestTheGridBadgeAgreesWithTheScreen:
             seed_user, statement, posted_on=day + timedelta(days=1),
             sequence_in_group=1,
         )
-        a_transaction(seed_user, name="Duke Energy", amount="180.00")
+        # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+        # developer-confirmed 2026-09-22 ("Yes: open books before rows"; this
+        # module's option: the row in the SECOND paycheck).  The books open ON
+        # the calendar's first day -- this module's subject -- and since ruling
+        # R-PC85 a recurring row dated on that day is inside them and never
+        # generated, so the row the lines match against is filed a paycheck on.
+        a_transaction(
+            seed_user, name="Duke Energy", amount="180.00",
+            period=a_later_period(seed_user),
+        )
         db.session.flush()
 
         review = review_set(a_scope(seed_user))
@@ -881,7 +930,16 @@ class TestTheThreeDoorsRefuseIt:
             seed_user, statement, amount="-64.04",
             posted_on=day + timedelta(days=30), sequence_in_group=1,
         )
-        row = a_transaction(seed_user, name="Gas", amount="80.00")
+        # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+        # developer-confirmed 2026-09-22 ("Yes: open books before rows"; this
+        # module's option: the row in the SECOND paycheck).  The books open ON
+        # the calendar's first day -- this module's subject -- and since ruling
+        # R-PC85 a recurring row dated on that day is inside them and never
+        # generated, so the row the lines match against is filed a paycheck on.
+        row = a_transaction(
+            seed_user, name="Gas", amount="80.00",
+            period=a_later_period(seed_user),
+        )
         db.session.flush()
         scope = a_scope(seed_user)
 
@@ -917,7 +975,16 @@ class TestTheThreeDoorsRefuseIt:
             seed_user, statement, amount="-64.04",
             posted_on=day + timedelta(days=30), sequence_in_group=1,
         )
-        row = a_transaction(seed_user, name="Gas", amount="80.00")
+        # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+        # developer-confirmed 2026-09-22 ("Yes: open books before rows"; this
+        # module's option: the row in the SECOND paycheck).  The books open ON
+        # the calendar's first day -- this module's subject -- and since ruling
+        # R-PC85 a recurring row dated on that day is inside them and never
+        # generated, so the row the lines match against is filed a paycheck on.
+        row = a_transaction(
+            seed_user, name="Gas", amount="80.00",
+            period=a_later_period(seed_user),
+        )
         db.session.flush()
         scope = a_scope(seed_user)
 
@@ -970,7 +1037,16 @@ class TestTheBoundAgainstAMatchADOORMade:
             seed_user, statement, amount="-64.04", posted_on=late,
             sequence_in_group=1,
         )
-        row = a_transaction(seed_user, name="Gas", amount="80.00")
+        # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+        # developer-confirmed 2026-09-22 ("Yes: open books before rows"; this
+        # module's option: the row in the SECOND paycheck).  The books open ON
+        # the calendar's first day -- this module's subject -- and since ruling
+        # R-PC85 a recurring row dated on that day is inside them and never
+        # generated, so the row the lines match against is filed a paycheck on.
+        row = a_transaction(
+            seed_user, name="Gas", amount="80.00",
+            period=a_later_period(seed_user),
+        )
         db.session.flush()
         scope = a_scope(seed_user)
 

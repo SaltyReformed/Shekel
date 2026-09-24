@@ -272,6 +272,13 @@ class RecurrenceConflictKind:
             Both engines' functions are stored here rather than called by
             name, so their shared signature moves in one commit or not at
             all.
+        preview_fn: The kind's ``preview_regeneration_for_template`` -- what
+            *regenerate_fn* would do to the existing rows, over the same
+            arguments, decided and not written (plan step
+            ``pay_calendar:C18-a``).  The edit door's stranded-row refusal
+            reads it (``planned_rows_books.SaveRegeneration``) to grade each
+            row as the save leaves it; stored beside *regenerate_fn* so the
+            pair cannot come to name two engines.
         resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id)``
             callable.  Both kinds have the same three-argument shape since
             plan step X-au-f (ruling **R-JD**); the transfer side carried a
@@ -283,6 +290,7 @@ class RecurrenceConflictKind:
     model: Any
     resolve_amount: object
     regenerate_fn: Any
+    preview_fn: Any
     resolve_fn: Any
     update_endpoint: str
 

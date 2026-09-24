@@ -71,9 +71,9 @@ def crowded_ledger_rows() -> list[str]:
     measured defect out of the registry that exists to hold it"* -- and what
     took over was the backlog being STATED in the file, with
     :func:`stated_arc_counts_violation` grading only that the statement is true.
-    :func:`stated_crowding_violation` is that pattern for row width.  The
-    failures about SIZE remain exactly two: :func:`ledger_row_cap_violations`
-    per row, and :func:`ledger_runaway_violation` as the backstop.
+    :func:`stated_crowding_violation` is that pattern for row width.  The one
+    failure about SIZE is :func:`ledger_row_cap_violations`, per row; the
+    row-count backstop beside it was deleted by balance:R-BAL135.
 
     Returned as keys rather than as a bare count, so a reader who wants to act
     on the number is handed the rows rather than left to find them.

@@ -33,6 +33,7 @@ from app.services import (
     category_service,
     definition_delete,
     definition_edit,
+    definition_unarchive,
     posting_service,
     recurrence_engine,
     row_write_lock,
@@ -69,7 +70,11 @@ from app.routes._recurrence_form_helpers import (
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._recurrence_form_refusals import RecurrenceFormContext
+from app.routes._recurrence_form_refusals import (
+    RecurrenceFormContext,
+    StrandingCheck,
+    refuse_stranding_save,
+)
 from app.routes._recurrence_form_render import (
     create_form_recurrence_state,
     edit_form_recurrence_state,
@@ -298,6 +303,7 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
         row, derived_amount_basis(row.account.user_id, row.scenario_id),
     ),
     regenerate_fn=recurrence_engine.regenerate_for_template,
+    preview_fn=recurrence_engine.preview_regeneration_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,
     update_endpoint="templates.update_template",
 )
@@ -398,6 +404,11 @@ def update_template(template_id):
     # recurrence key from ``data`` so the field-update loop below sees
     # none.  The pass is the PRE-WRITE one the refusals read (plan step
     # R7d-f); regeneration below builds its own after the write.
+    pass_ctx = BalanceContext.build(current_user.id)
+    # What the stranded-row refusal below reads of the definition as it
+    # STANDS -- the rows its unarchive would restore -- asked before the edit
+    # touches it (rulings R-PC93, R-PC95).
+    stranding = StrandingCheck.before_the_edit(template, pass_ctx)
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
@@ -409,7 +420,7 @@ def update_template(template_id):
             ),
             include_due_day_of_month=True,
         ),
-        pass_ctx=BalanceContext.build(current_user.id),
+        pass_ctx=pass_ctx,
     )
     if redirect_response is not None:
         return redirect_response
@@ -468,8 +479,18 @@ def update_template(template_id):
 
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
-    # chooser rolls the pending edit back; its Apply re-runs this same edit).
-    diverted = regenerate_or_conflict_chooser(
+    # chooser rolls the pending edit back; its Apply re-runs this same edit)
+    # -- unless the save would leave a still-projected row answering an
+    # occurrence its books drop, or sitting inside the books of the account
+    # it sits on, whatever field changed (rulings R-PC90 / R-PC91 / R-PC99),
+    # which is refused first: the edit is whole now, and the regeneration
+    # below (from ``effective_from``) is part of the state the save leaves,
+    # so the refusal reads that pass's own preview of it.
+    diverted = refuse_stranding_save(
+        template, stranding,
+        RedirectTarget("templates.edit_template", {"template_id": template_id}),
+        kind=_TXN_TEMPLATE_KIND, effective_from=effective_from,
+    ) or regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
         amount_drives_instances=not template_amount_service.is_salary_linked_template(
             template,
@@ -633,21 +654,40 @@ def _soft_delete_projected_rows(template):
 def unarchive_template(template_id):
     """Unarchive a template and restore projected transactions.
 
+    **Restores the rows the archive hid, less any its books now drop**
+    (rulings **R-PC93**, **R-PC95** and **R-PC96**,
+    :class:`~app.services.definition_unarchive.UnarchiveScope`): a row its
+    owner deleted by hand is soft-deleted exactly as the archive hides one,
+    and a row the books have passed would come back inside the opening
+    balance, so it stays deleted and the flash names it.  **An unarchive of a
+    template that is not archived restores nothing**: its soft-deleted rows
+    are its owner's own deletions, and a stale tab's button is the only way
+    to post here for one.
+
     Optimistic locking: see :func:`archive_template`.
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
         abort(404)
+    if template.is_active:
+        flash(
+            f"Recurring transaction '{template.name}' is not archived, so "
+            "nothing was restored.",
+            "info",
+        )
+        return redirect(url_for("templates.list_templates"))
+
+    # What comes back and what stays deleted: the ONE scope the books
+    # refusals count too (``definition_unarchive``), read on a PRE-WRITE pass
+    # before anything is restored.  Generation below builds its own.
+    unarchive = definition_unarchive.unarchive_scope_on(
+        template, BalanceContext.build(current_user.id),
+    )
+    stays_deleted = definition_unarchive.stays_deleted_notice(unarchive)
 
     template.is_active = True
 
-    # Restore soft-deleted projected transactions.  Routed through
-    # ``is_projected_clause`` (D6-09 / MED-02); see ``archive_template``.
-    restore_scope = (
-        Transaction.template_id == template.id,
-        is_projected_clause(Transaction),
-        Transaction.is_deleted.is_(True),
-    )
+    restore_scope = unarchive.restores()
     restored = definition_delete.rows_holding_purchase_postings(*restore_scope)
     restored_count = db.session.query(Transaction).filter(
         *restore_scope,
@@ -683,7 +723,8 @@ def unarchive_template(template_id):
 
     flash(
         f"Recurring transaction '{template.name}' unarchived. "
-        f"{restored_count} projected transaction(s) restored.",
+        f"{restored_count} projected transaction(s) restored."
+        + (f" {stays_deleted}" if stays_deleted else ""),
         "success",
     )
     return redirect(url_for("templates.list_templates"))

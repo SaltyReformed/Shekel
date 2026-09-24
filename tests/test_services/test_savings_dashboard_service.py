@@ -906,13 +906,13 @@ class TestARenderWalksAGoalTransferOnce:
             db.session.commit()
 
             calls = []
-            real = _context.occurrence_placements
+            real = _context.occurrence_walk
 
             def counting(resolved, calendar, **kwargs):
                 calls.append(resolved)
                 return real(resolved, calendar, **kwargs)
 
-            monkeypatch.setattr(_context, "occurrence_placements", counting)
+            monkeypatch.setattr(_context, "occurrence_walk", counting)
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -1475,7 +1475,7 @@ class TestDebtSummary:
         The equivalence contract behind the narrow producer: with a loan
         account, a salary profile, AND the seed user's non-loan accounts
         present, the loan-only projection run must produce exactly the
-        :class:`~..._metrics.DebtSummary` the full ``compute_dashboard_data``
+        :class:`~..._debt_summary.DebtSummary` the full ``compute_dashboard_data``
         build emits -- every money figure, the payoff outlook, the revolving
         caveat and the DTI block, since both route through the shared
         ``_debt_summary_with_dti``.  The salary makes the DTI leg
@@ -6287,7 +6287,7 @@ class TestTheDebtFreeDateIsOneDerivation:
 
     Finding N-98, plan step X-q.  ``/savings`` renders both on one page and
     derived the date twice from the same ``account_data``: the cockpit's
-    ``Debt-free <month>`` caption through ``_metrics._compute_debt_summary``,
+    ``Debt-free <month>`` caption through ``_debt_summary._compute_debt_summary``,
     which selected loans by their current BALANCE, and the Horizon chart's
     ``Debt-free`` flag through ``_horizon._resolve_horizon_domain``, which
     selected them by the debt-line predicate.

@@ -52,7 +52,11 @@ from app.routes._recurrence_form_helpers import (
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._recurrence_form_refusals import RecurrenceFormContext
+from app.routes._recurrence_form_refusals import (
+    RecurrenceFormContext,
+    StrandingCheck,
+    refuse_stranding_save,
+)
 from app.routes._recurrence_form_render import (
     create_form_recurrence_state,
     edit_form_recurrence_state,
@@ -71,6 +75,7 @@ from app.routes._standing_payment import (
     sync_loan_payment_start_or_refuse,
 )
 from app.routes._transfer_creation_helpers import (
+    TRANSFER_TEMPLATE_KIND,
     flush_template_or_namedup_redirect,
 )
 from app.routes.transfers._bp import transfers_bp
@@ -562,6 +567,10 @@ def update_transfer_template(template_id):
     # loan-resolution memo.  Regeneration afterwards builds its own, as a
     # writer must.
     pass_ctx = BalanceContext.build(current_user.id)
+    # What the stranded-row refusal reads of the definition as it STANDS --
+    # the rows its unarchive would restore -- asked before the settle or the
+    # recurrence step below touches it (rulings R-PC93, R-PC95).
+    stranding = StrandingCheck.before_the_edit(template, pass_ctx)
     # The pre-write recurrence step, in two halves that share one refusal.
     # FIRST what the destination the edit LEAVES decides about the rule's
     # bounds (plan step R7d-f-4): the derived first occurrence is written
@@ -590,9 +599,7 @@ def update_transfer_template(template_id):
     if refusal is not None:
         return refusal
 
-    for field, value in data.items():
-        if field in _TEMPLATE_UPDATE_FIELDS:
-            setattr(template, field, value)
+    _apply_update_fields(template, data)
 
     # State the amount through its one write door, which moves the scalar and
     # the dated series together (plan step X-au-a).  ``effective_from`` is the
@@ -618,7 +625,7 @@ def update_transfer_template(template_id):
         return namedup_redirect
 
     return _regenerate_and_commit_template(
-        template, before, effective_from, template_id,
+        template, before, effective_from, template_id, stranding,
     )
 
 
@@ -646,8 +653,27 @@ def delete_amount_version(template_id, version_id):
     return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
+def _apply_update_fields(template, data):
+    """Write the allowlisted fields of *data* onto *template*.
+
+    The update route's field loop, over :data:`_TEMPLATE_UPDATE_FIELDS` --
+    the columns a submission may set directly; the amount, the rule and
+    ``is_active`` each have their own door.  Its own function since plan
+    step ``pay_calendar:C18-a`` gave the route one more value to hold
+    (its :class:`~app.routes._recurrence_form_refusals.StrandingCheck`),
+    past pylint's local-variable threshold.
+
+    Args:
+        template: The owner-checked :class:`TransferTemplate` being edited.
+        data: The validated payload, the recurrence keys already popped.
+    """
+    for field, value in data.items():
+        if field in _TEMPLATE_UPDATE_FIELDS:
+            setattr(template, field, value)
+
+
 def _regenerate_and_commit_template(
-    template, before, effective_from, template_id,
+    template, before, effective_from, template_id, stranding,
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
@@ -661,6 +687,24 @@ def _regenerate_and_commit_template(
     all, and writes nothing: a rename costs it one lookup.  Its one refusal
     is the window CHECK's (ruling **R-R82**), worded whole, and it sends the
     user back to the edit form.
+
+    THEN refuses a save that would STRAND a still-projected transfer of this
+    definition -- one answering an occurrence the books drop, the later
+    opening of its two accounts, or sitting inside the books of the accounts
+    it sits on (ruling **R-PC99**) -- whatever field the edit changed (plan
+    step ``pay_calendar:C18-a``, rulings **R-PC90** / **R-PC91**;
+    :func:`app.services.planned_rows_books.definition_edit_refusal`), because
+    a maintain pass reaching a dropped transfer retires it -- the one below,
+    for a paycheck ending on or after *effective_from* -- and one inside the
+    books is counted twice.  The regeneration below is part of the state
+    the save leaves, so the refusal reads that pass's own preview
+    (:data:`~app.routes._transfer_creation_helpers.TRANSFER_TEMPLATE_KIND`'s
+    ``preview_fn``) and asks a transfer it rewrites where the rewrite moves
+    it (the round-7 review's M1).  AFTER the sync, because
+    the sync can move the rule's first occurrence, and that moves which
+    occurrences the save would leave: graded before it, the refusal would
+    read a rule the save does not keep.  A refusal rolls the whole pending
+    write back, the sync's included.
 
     Then re-runs ``transfer_recurrence.regenerate_for_template`` against the
     baseline scenario, diverting to the recurrence-conflict chooser when an
@@ -678,6 +722,11 @@ def _regenerate_and_commit_template(
             gates the sweep; see :func:`regenerate_or_conflict_chooser`.
         effective_from: Date from which regeneration applies.
         template_id: The template's id, used for redirect kwargs and logging.
+        stranding: The route's
+            :class:`~app.routes._recurrence_form_refusals.StrandingCheck`,
+            built before the edit: the rows the definition's unarchive would
+            restore as it stood.  The refusal builds its own read pass after
+            the sync, and the regeneration its own after that.
 
     Returns:
         A ``Response`` -- the chooser, or the edit form on a stale-data or
@@ -687,11 +736,17 @@ def _regenerate_and_commit_template(
     edit_form = RedirectTarget(
         "transfers.edit_transfer_template", {"template_id": template_id},
     )
+    # The standing payment's sync first, then the stranded-row refusal: the
+    # sync may move the rule's first occurrence, and the refusal grades the
+    # rule the save would leave (the edit is whole and flushed by now).
     # ``rows_follow=False``: the pass below is the one that brings this
     # definition's rows along, and the standing payment is the only
     # definition the sync can move from this door (see the helper).
     refused = sync_loan_payment_start_or_refuse(
         template.to_account_id, redirect=edit_form, rows_follow=False,
+    ) or refuse_stranding_save(
+        template, stranding, edit_form,
+        kind=TRANSFER_TEMPLATE_KIND, effective_from=effective_from,
     )
     if refused is not None:
         return refused

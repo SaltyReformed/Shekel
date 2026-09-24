@@ -57,6 +57,7 @@ from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
 from app.schemas.validation import (
     PayStubFigureSchema,
+    PayStubLineSchema,
     PayStubOneOffSchema,
     PayStubPaydaySchema,
     PayStubSchema,
@@ -73,6 +74,7 @@ logger = logging.getLogger(__name__)
 _payday_schema = PayStubPaydaySchema()
 _stub_schema = PayStubSchema()
 _figure_schema = PayStubFigureSchema()
+_line_schema = PayStubLineSchema()
 _one_off_schema = PayStubOneOffSchema()
 
 #: How many empty one-off rows the form offers beyond the stub's own.  A stub
@@ -362,16 +364,35 @@ def _read_form(
 
 def _read_lines(
     form: MultiDict, profile: SalaryProfile, errors: dict[str, str],
-) -> dict[int, Decimal]:
-    """``{line id: amount}`` for each of the profile's lines the form filled."""
+) -> dict[int, pay_stub_service.LineFigure]:
+    """``{line id: LineFigure}`` for each of the profile's lines the form filled.
+
+    Each filled line's amount is read with the kind beside it (ruling
+    **R-SAL58**): the form pre-sets the kind, so a submission missing it is a
+    malformed one and is refused on that field rather than given a kind the
+    owner never saw.
+    """
     line_amounts = {}
     for line in profile.lines:
         field = f"line-{line.id}"
         raw = form.get(field, "").strip()
-        if raw:
-            amount = _load_figure(field, raw, errors)
-            if amount is not None:
-                line_amounts[line.id] = amount
+        if not raw:
+            continue
+        kind_field = f"line-kind-{line.id}"
+        try:
+            loaded = _line_schema.load(
+                {"amount": raw, "paycheck_line_kind_id": form.get(kind_field, "")},
+            )
+        except SchemaValidationError as exc:
+            messages = _first_messages(exc.messages)
+            if "amount" in messages:
+                errors[field] = messages["amount"]
+            if "paycheck_line_kind_id" in messages:
+                errors[kind_field] = messages["paycheck_line_kind_id"]
+            continue
+        line_amounts[line.id] = pay_stub_service.LineFigure(
+            loaded["paycheck_line_kind_id"], loaded["amount"],
+        )
     return line_amounts
 
 
@@ -478,8 +499,9 @@ def _values_of(figures: pay_stub_service.StubFigures) -> dict[str, Any]:
         "base_pay": f"{figures.base_pay:.2f}",
         "notes": figures.notes or "",
     }
-    for line_id, amount in figures.line_amounts.items():
-        values[f"line-{line_id}"] = f"{amount:.2f}"
+    for line_id, line in figures.line_amounts.items():
+        values[f"line-{line_id}"] = f"{line.amount:.2f}"
+        values[f"line-kind-{line_id}"] = str(line.paycheck_line_kind_id)
     for kind_id, amount in figures.withholdings.items():
         values[f"tax-{kind_id}"] = f"{amount:.2f}"
     values["one_offs"] = [
@@ -514,7 +536,6 @@ def _form_page(
             pay_stub_service.stub_report(profile, stub, ctx) if stub is not None else None
         ),
         "lines": lines,
-        "kind_labels": dict(paycheck_line_kinds.kind_options()),
         "kind_options": paycheck_line_kinds.kind_options(),
         "tax_options": withholding_kinds.kind_options(),
     }

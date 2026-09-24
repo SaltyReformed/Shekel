@@ -29,11 +29,21 @@ calibrated path (``S11-c``); the old calibration keeps pricing until then.
   decomposition item 2: typed once as a check, never stored);
 * a one-off named like one of the profile's paycheck lines or a tax, or like
   another one-off on the same stub (ruling **R-SAL45**, compared ignoring
-  capitals and extra spaces, **R-SAL51** (b)).
+  capitals and extra spaces, **R-SAL51** (b)) -- the line and tax clash asked
+  only of a one-off the save ADDS or RENAMES (**R-SAL57**, "Check only what a
+  save adds"), so a one-off the door saved never blocks its own stub and a
+  paycheck line stays free to take a name a saved one-off already has.
 
 The payday's calendar range, the base pay and the amount bounds are the entry
 schema's; a line or kind id the owner does not hold is not a refusal but a
 NOT-FOUND (the 404 rule).
+
+**A stub line records its own kind** (ruling **R-SAL58**, "Stub records its
+kind", which retired **R-SAL56**'s refusal): the kind the stub prints each
+line under, entered beside its amount, pre-set to the app's.  Every total
+reads the stub's own kinds, never the paycheck line's, so editing a line --
+its kind included -- moves no saved stub (finding **SAL-567**); the report
+lists a kind that differs from the app's the way it lists an amount.
 
 **Every write keys on the owned profile and stub, never on input.**  A stub's
 ``salary_profile_id`` is the profile the route resolved; a child row's
@@ -91,6 +101,19 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class LineFigure:
+    """What a stub prints for one of the profile's paycheck lines (**R-SAL58**).
+
+    Attributes:
+        paycheck_line_kind_id: The kind the stub prints it under, which may
+            differ from the paycheck line's own.
+        amount: Its figure, ``>= 0``.
+    """
+    paycheck_line_kind_id: int
+    amount: Decimal
+
+
+@dataclass(frozen=True)
 class OneOffFigure:
     """One named one-off a stub prints (fork 8b, "Keep it as a one-off").
 
@@ -114,15 +137,16 @@ class StubFigures:
     Attributes:
         payday: The stub's date.
         base_pay: The base pay line, ``> 0``.
-        line_amounts: ``paycheck_line_id -> amount`` for each of the profile's
-            paycheck lines the stub prints; a line it does not print is absent.
+        line_amounts: ``paycheck_line_id -> LineFigure`` for each of the
+            profile's paycheck lines the stub prints; a line it does not print
+            is absent.
         withholdings: ``withholding_kind_id -> amount``, one per tax.
         one_offs: The one-offs, in the order the form listed them.
         notes: Free text, or ``None``.
     """
     payday: date
     base_pay: Decimal
-    line_amounts: Mapping[int, Decimal]
+    line_amounts: Mapping[int, LineFigure]
     withholdings: Mapping[int, Decimal]
     one_offs: tuple[OneOffFigure, ...]
     notes: str | None
@@ -151,28 +175,51 @@ class StubTotals:
 
 @dataclass(frozen=True)
 class LineComparison:
-    """One paycheck line set beside itself: the stub's figure and the app's.
+    """One paycheck line set beside itself: the stub's figure and kind, and the app's.
 
     Fork 2, "Taxes only": "When you enter a stub, the app lists any line that
     disagrees with it so you can fix one side."  ``None`` on a side means that
     side does not have the line on this payday -- the stub does not print it,
-    or the app does not take it.
+    or the app does not take it.  Since ruling **R-SAL58** the kind is compared
+    too: the stub records the kind it prints the line under, and one that
+    differs from the paycheck line's is listed like a figure that differs.
 
     Attributes:
         name: The paycheck line's name.
-        kind_label: Its kind, worded (:data:`~app.services.paycheck_line_kinds.LABELS`).
+        kind: The paycheck line's own kind.
+        stub_kind: The kind the stub prints it under, or ``None`` when the
+            stub does not print it.
         on_stub: The stub's figure, or ``None``.
         in_app: What the app prices the line at that payday, or ``None``.
     """
     name: str
-    kind_label: str
+    kind: PaycheckLineKindEnum
+    stub_kind: PaycheckLineKindEnum | None
     on_stub: Decimal | None
     in_app: Decimal | None
 
     @property
+    def kind_label(self) -> str:
+        """The paycheck line's kind, worded (:data:`~app.services.paycheck_line_kinds.LABELS`)."""
+        return paycheck_line_kinds.LABELS[self.kind]
+
+    @property
+    def stub_kind_label(self) -> str | None:
+        """The stub's kind, worded, or ``None`` when the stub does not print the line."""
+        return paycheck_line_kinds.LABELS[self.stub_kind] if self.stub_kind is not None else None
+
+    @property
+    def kind_agrees(self) -> bool:
+        """Whether the stub prints the line under the paycheck line's kind.
+
+        A line the stub does not print has no kind on the stub to disagree.
+        """
+        return self.stub_kind is None or self.stub_kind == self.kind
+
+    @property
     def agrees(self) -> bool:
-        """Whether both sides have the line at the same figure."""
-        return self.on_stub == self.in_app
+        """Whether both sides have the line at the same figure, under the same kind."""
+        return self.on_stub == self.in_app and self.kind_agrees
 
 
 @dataclass(frozen=True)
@@ -365,7 +412,10 @@ def figures_of(stub: PayStub) -> StubFigures:
     return StubFigures(
         payday=stub.payday,
         base_pay=stub.base_pay,
-        line_amounts={row.paycheck_line_id: row.amount for row in stub.line_amounts},
+        line_amounts={
+            row.paycheck_line_id: LineFigure(row.paycheck_line_kind_id, row.amount)
+            for row in stub.line_amounts
+        },
         withholdings={row.withholding_kind_id: row.amount for row in stub.withholdings},
         one_offs=tuple(
             OneOffFigure(row.name, row.paycheck_line_kind_id, row.amount)
@@ -376,7 +426,11 @@ def figures_of(stub: PayStub) -> StubFigures:
 
 
 def totals_of(profile: SalaryProfile, figures: StubFigures) -> StubTotals:
-    """Return what *figures* add up to, each line by its own kind.
+    """Return what *figures* add up to, each line by the kind the STUB prints it under.
+
+    Ruling **R-SAL58**: a line figure and a one-off each carry their own kind,
+    so the stub's totals read nothing off the paycheck lines but their
+    identity, and an edit of a line moves no saved stub.
 
     Args:
         profile: The owned profile whose lines *figures* names.
@@ -388,15 +442,14 @@ def totals_of(profile: SalaryProfile, figures: StubFigures) -> StubTotals:
     Raises:
         NotFoundError: *figures* names a line the profile does not hold.
     """
-    kind_ids = {line.id: line.paycheck_line_kind_id for line in profile.lines}
-    by_kind = {member: ZERO for member in PaycheckLineKindEnum}
-    for line_id, amount in figures.line_amounts.items():
-        if line_id not in kind_ids:
+    line_ids = {line.id for line in profile.lines}
+    for line_id in figures.line_amounts:
+        if line_id not in line_ids:
             raise NotFoundError(f"paycheck line {line_id} is not this profile's")
-        by_kind[ref_cache.paycheck_line_kind_member(kind_ids[line_id])] += amount
-    for one_off in figures.one_offs:
-        by_kind[ref_cache.paycheck_line_kind_member(one_off.paycheck_line_kind_id)] += (
-            one_off.amount
+    by_kind = {member: ZERO for member in PaycheckLineKindEnum}
+    for figure in (*figures.line_amounts.values(), *figures.one_offs):
+        by_kind[ref_cache.paycheck_line_kind_member(figure.paycheck_line_kind_id)] += (
+            figure.amount
         )
     gross = waterfall_gross(figures.base_pay, by_kind[PaycheckLineKindEnum.TAXABLE_EARNING])
     taxes = sum(figures.withholdings.values(), ZERO)
@@ -425,12 +478,7 @@ def stub_report(profile: SalaryProfile, stub: PayStub, ctx: "BalanceContext") ->
     priced = _app_paycheck(profile, ctx, stub.payday)
     app_base, app_lines = priced if priced is not None else (None, {})
     lines = tuple(
-        LineComparison(
-            name=line.name,
-            kind_label=_kind_label(line.paycheck_line_kind_id),
-            on_stub=figures.line_amounts.get(line.id),
-            in_app=app_lines.get(line.id),
-        )
+        _compare(line, figures.line_amounts.get(line.id), app_lines.get(line.id))
         for line in profile.lines
         if line.id in figures.line_amounts or line.id in app_lines
     )
@@ -445,6 +493,22 @@ def stub_report(profile: SalaryProfile, stub: PayStub, ctx: "BalanceContext") ->
             )
             for one_off in figures.one_offs
         ),
+    )
+
+
+def _compare(
+    line: PaycheckLine, on_stub: LineFigure | None, in_app: Decimal | None,
+) -> LineComparison:
+    """Set one paycheck line's stub figure beside the app's price for it that payday."""
+    return LineComparison(
+        name=line.name,
+        kind=ref_cache.paycheck_line_kind_member(line.paycheck_line_kind_id),
+        stub_kind=(
+            ref_cache.paycheck_line_kind_member(on_stub.paycheck_line_kind_id)
+            if on_stub is not None else None
+        ),
+        on_stub=on_stub.amount if on_stub is not None else None,
+        in_app=in_app,
     )
 
 
@@ -508,7 +572,8 @@ def record_stub(
     errors = _payday_errors(ctx, figures.payday, today)
     if not errors and stub_on(profile, figures.payday) is not None:
         errors["payday"] = held_payday_refusal(figures.payday)
-    _refuse(profile, figures, printed_net, errors)
+    # A new stub holds no one-off yet: every one it prints is one it adds.
+    _refuse(profile, figures, printed_net, errors, held=frozenset())
     stub = PayStub(salary_profile_id=profile.id, payday=figures.payday,
                    base_pay=figures.base_pay, notes=figures.notes)
     db.session.add(stub)
@@ -551,7 +616,10 @@ def edit_stub(
                 f"Your {figures.payday.isoformat()} stub already exists; open it "
                 f"to change it."
             )
-    _refuse(profile, figures, printed_net, errors)
+    # R-SAL57: read BEFORE the write replaces them, so the clash check knows
+    # which of the submitted one-offs the stub already holds.
+    held = frozenset(name_key(one_off.name) for one_off in stub.one_offs)
+    _refuse(profile, figures, printed_net, errors, held=held)
     _write(stub, figures)
     db.session.flush()
     return stub
@@ -596,9 +664,17 @@ def _payday_errors(ctx: "BalanceContext", day: date, today: date) -> dict[str, s
 
 def _refuse(
     profile: SalaryProfile, figures: StubFigures, printed_net: Decimal,
-    errors: dict[str, str],
+    errors: dict[str, str], *, held: frozenset[str],
 ) -> None:
     """Add the tax, one-off and net refusals to *errors*; raise if any stand.
+
+    Args:
+        profile: The owned profile.
+        figures: The stub's figures.
+        printed_net: The net the stub prints.
+        errors: The refusals found so far (the payday's), added to.
+        held: The :func:`name_key` of every one-off the stub already holds --
+            empty for a new stub -- for :func:`_one_off_errors`.
 
     Raises:
         NotFoundError: An id the owner does not hold (a tampered form).
@@ -610,7 +686,7 @@ def _refuse(
         if kind_id not in figures.withholdings:
             errors[f"tax-{kind_id}"] = f"Enter the stub's {label} ($0.00 if none)."
             missing_tax = True
-    errors.update(_one_off_errors(profile, figures.one_offs))
+    errors.update(_one_off_errors(profile, figures.one_offs, held))
     # The net is checked only over a COMPLETE set of taxes: without one, the
     # lines' sum leaves it out and the check would blame figures that are right.
     net = totals_of(profile, figures).net
@@ -625,12 +701,12 @@ def _refuse(
 
 
 def _check_ids(figures: StubFigures) -> None:
-    """Refuse a tax or one-off kind id the reference lists do not hold."""
+    """Refuse a tax kind, or a line's or one-off's kind, the reference lists do not hold."""
     tax_ids = {kind_id for kind_id, _ in withholding_kinds.kind_options()}
     if not set(figures.withholdings) <= tax_ids:
         raise NotFoundError("a withholding kind the app does not hold")
-    for one_off in figures.one_offs:
-        if ref_cache.paycheck_line_kind_member(one_off.paycheck_line_kind_id) is None:
+    for figure in (*figures.line_amounts.values(), *figures.one_offs):
+        if ref_cache.paycheck_line_kind_member(figure.paycheck_line_kind_id) is None:
             raise NotFoundError("a paycheck-line kind the app does not hold")
 
 
@@ -640,7 +716,7 @@ def name_key(name: str) -> str:
 
 
 def _one_off_errors(
-    profile: SalaryProfile, one_offs: Iterable[OneOffFigure],
+    profile: SalaryProfile, one_offs: Iterable[OneOffFigure], held: frozenset[str],
 ) -> dict[str, str]:
     """Refuse a one-off named like a paycheck line, a tax or another one-off.
 
@@ -648,6 +724,20 @@ def _one_off_errors(
     one of the profile's paycheck lines or a tax name ('enter it on the line
     instead')".  Every line of the profile counts, ended or not: a stub names
     a line by the line, whatever its span.
+
+    **Asked only of a one-off the save ADDS or RENAMES** (ruling **R-SAL57**,
+    "Check only what a save adds", which narrows R-SAL45): one whose name the
+    stub does not already hold, compared in :func:`name_key`'s form -- the form
+    the clash itself is judged in, so a one-off re-saved under its own name,
+    or re-cased, meets no clash it did not already carry.  A paycheck line may
+    therefore take a saved one-off's name without blocking that stub's next
+    edit.  Two one-offs of one name on one stub are refused whatever either's
+    age: that is a clash within the save itself.
+
+    Args:
+        profile: The owned profile.
+        one_offs: The one-offs the save submits, in form order.
+        held: The :func:`name_key` of every one-off the stub already holds.
 
     Returns:
         ``{"one_off:<index>": message}`` for each refused one-off.
@@ -658,12 +748,13 @@ def _one_off_errors(
     errors = {}
     for index, one_off in enumerate(one_offs):
         key = name_key(one_off.name)
-        if key in lines:
+        added = key not in held
+        if added and key in lines:
             message = (
                 f"'{one_off.name}' is your paycheck line '{lines[key]}'; enter "
                 f"it on the line instead."
             )
-        elif key in taxes:
+        elif added and key in taxes:
             message = (
                 f"'{one_off.name}' is the tax '{taxes[key]}'; enter it with "
                 f"the taxes instead."
@@ -708,8 +799,13 @@ def _sync_all(stub: PayStub, figures: StubFigures) -> bool:
             setattr(stub, attr, getattr(figures, attr))
             changed = True
     changed |= _sync(
-        stub.line_amounts, "paycheck_line_id", figures.line_amounts,
-        lambda key, amount: PayStubLineAmount(paycheck_line_id=key, amount=amount),
+        stub.line_amounts, "paycheck_line_id",
+        {line_id: (line.paycheck_line_kind_id, line.amount)
+         for line_id, line in figures.line_amounts.items()},
+        lambda key, value: PayStubLineAmount(
+            paycheck_line_id=key, paycheck_line_kind_id=value[0], amount=value[1],
+        ),
+        fields=("paycheck_line_kind_id", "amount"),
     )
     changed |= _sync(
         stub.withholdings, "withholding_kind_id", figures.withholdings,
@@ -801,6 +897,7 @@ def line_delete_refusal(line: PaycheckLine) -> str | None:
 __all__ = [
     "FormLines",
     "LineComparison",
+    "LineFigure",
     "OneOffFigure",
     "OneOffRow",
     "StubFigures",
