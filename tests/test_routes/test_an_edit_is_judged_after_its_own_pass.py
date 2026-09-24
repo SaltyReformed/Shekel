@@ -13,12 +13,22 @@ envelope and moved its due day was refused over a day the save moves the row
 off, where the same two edits as two saves passed (a regression against
 ``53d463ba``).
 
+**That regression's lever went at plan step recurrence:R5-a**: the rule's
+due day was dropped (ruling **R-R96**), and a row is now due on its
+occurrence or its funding payday.  So the three cases that moved the due day
+now MOVE THE ACCOUNT instead, the other half of what a rewrite carries, and
+the rewritten DUE DAY is graded by the one save that still re-dates a row the
+pass keeps: a switch of the paycheck that funds it (developer, 2026-09-24,
+rule 5).
+
 The refusal reads the pass's own decision
 (``RecurrenceConflictKind.preview_fn``), never a second spelling of its
 window, and each case below fails under one of the shortcuts that would
-re-spell it: judging every row as stored (the regression), skipping every
-rewritten row, ignoring the effective date, asking a retired row, or naming
-the books of the account a rewritten row leaves.
+re-spell it: judging every row as stored (the regression), judging a
+rewritten row on its stored due day, skipping every rewritten row, ignoring
+the effective date, treating a row the pass keeps as a conflict as
+rewritten, asking a retired row, or naming the books of the account a
+rewritten row leaves.
 
 Dates are the fixed ``seed_periods`` calendar (paychecks from 2026-01-02,
 every 14 days), so the effective date each save states picks the window:
@@ -29,7 +39,7 @@ carries what the edit form renders, the envelope box only when ticked.
 from datetime import date
 from decimal import Decimal
 
-from app.enums import RecurrenceUnitEnum
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -93,34 +103,36 @@ def _groceries_on_books_opening_on_its_payday(seed_user):
     return account, template
 
 
-def _untick_and_due_the_28th(template, effective_from):
-    """The one save: the envelope box unticked AND a due day of the 28th, from *effective_from*."""
+def _untick_and_move_to(template, account, effective_from):
+    """The one save: the envelope box unticked AND the account moved, from *effective_from*."""
     payload = _transaction_update_payload(
-        template, unit=RecurrenceUnitEnum.MONTH, due_day_of_month="28",
+        template, unit=RecurrenceUnitEnum.MONTH, account_id=str(account.id),
         effective_from=effective_from.isoformat(),
     )
     del payload["is_envelope"]
     return payload
 
 
-class TestTheEnvelopeUntickedAndReDated:
+class TestTheEnvelopeUntickedAndMoved:
     """The measured regression and its control: one edit, two effective dates."""
 
-    def test_one_save_the_pass_re_dates_past_the_books_is_saved(
+    def test_one_save_the_pass_moves_off_the_books_is_saved(
         self, app, auth_client, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """From 02-27 the pass rewrites the 02-27 row due 02-28, outside books opening 02-27.
+        """From 02-27 the pass moves the 02-27 row onto Early books, whose books open before it.
 
-        Judged as stored it was a bill due 02-27, inside them, and refused;
-        the same two edits made as two saves were accepted.  Saved, every
-        row is a bill due the 28th.
+        Judged as stored it was a bill due 02-27 on Envelope books, inside
+        them, and refused; the same two edits made as two saves, the account
+        move first, are accepted.  Saved, every row is a bill on Early books,
+        due as before.
         """
         with app.app_context():
             _account, template = _groceries_on_books_opening_on_its_payday(seed_user)
+            early = _account_opened_early(seed_user, name="Early books")
 
             resp = auth_client.post(
                 f"/templates/{template.id}",
-                data=_untick_and_due_the_28th(template, _FIFTH_PAYCHECK),
+                data=_untick_and_move_to(template, early, _FIFTH_PAYCHECK),
                 follow_redirects=True,
             )
 
@@ -128,25 +140,28 @@ class TestTheEnvelopeUntickedAndReDated:
             assert _REFUSED.encode() not in resp.data
             saved = _reload(TransactionTemplate, template.id)
             assert saved.is_envelope is False
-            assert saved.recurrence_rule.due_day_of_month == 28
-            assert sorted(row.due_date for row in _live_rows(saved)) == [
-                date(2026, 2, 28), date(2026, 3, 28), date(2026, 4, 28),
+            assert saved.account_id == early.id
+            rows = _live_rows(saved)
+            assert {row.account_id for row in rows} == {early.id}
+            assert sorted(row.due_date for row in rows) == [
+                date(2026, 2, 27), date(2026, 3, 27), date(2026, 4, 27),
             ]
 
     def test_the_same_save_from_the_next_paycheck_is_refused(
         self, app, auth_client, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """From 03-13 no pass reaches the 02-27 row: it stays due 02-27, a bill inside the books.
+        """From 03-13 no pass reaches the 02-27 row: a bill left on Envelope books, inside them.
 
         The edit door's own-day question is KEPT for the rows the save
         leaves as stored -- deleting it reopens a $100 counted twice.
         """
         with app.app_context():
-            _account, template = _groceries_on_books_opening_on_its_payday(seed_user)
+            account, template = _groceries_on_books_opening_on_its_payday(seed_user)
+            early = _account_opened_early(seed_user, name="Early books")
 
             resp = auth_client.post(
                 f"/templates/{template.id}",
-                data=_untick_and_due_the_28th(template, _SIXTH_PAYCHECK),
+                data=_untick_and_move_to(template, early, _SIXTH_PAYCHECK),
                 follow_redirects=True,
             )
 
@@ -157,7 +172,7 @@ class TestTheEnvelopeUntickedAndReDated:
             ).replace(b'"', b"&#34;") in resp.data
             saved = _reload(TransactionTemplate, template.id)
             assert saved.is_envelope is True
-            assert saved.recurrence_rule.due_day_of_month is None
+            assert saved.account_id == account.id
 
     def test_a_row_the_pass_keeps_as_a_conflict_is_judged_as_stored(
         self, app, auth_client, seed_user, seed_periods,
@@ -165,18 +180,20 @@ class TestTheEnvelopeUntickedAndReDated:
         """The owner re-priced the 02-27 row, so the pass keeps it where it is: refused.
 
         An overridden row is a conflict the regeneration does not rewrite,
-        so after this save it is a bill still due 02-27, inside the books.
+        so after this save it is a bill still due 02-27 on Envelope books,
+        inside them.
         """
         with app.app_context():
-            _account, template = _groceries_on_books_opening_on_its_payday(seed_user)
+            account, template = _groceries_on_books_opening_on_its_payday(seed_user)
             row = _live_row_answering(template, _FIFTH_PAYCHECK)
             state_own_amount(row, Decimal("120.00"))
             row.is_override = True
             _db.session.commit()
+            early = _account_opened_early(seed_user, name="Early books")
 
             resp = auth_client.post(
                 f"/templates/{template.id}",
-                data=_untick_and_due_the_28th(template, _FIFTH_PAYCHECK),
+                data=_untick_and_move_to(template, early, _FIFTH_PAYCHECK),
                 follow_redirects=True,
             )
 
@@ -185,7 +202,53 @@ class TestTheEnvelopeUntickedAndReDated:
                 f"2026-02-27, and Envelope books's books open 2026-02-27.  "
                 f"{_INSIDE_IT}"
             ).replace(b'"', b"&#34;") in resp.data
-            assert _reload(TransactionTemplate, template.id).is_envelope is True
+            saved = _reload(TransactionTemplate, template.id)
+            assert saved.is_envelope is True
+            assert saved.account_id == account.id
+
+
+class TestTheEnvelopeUntickedAndReFunded:
+    """The rewrite's DUE DAY is judged too: the one save that still re-dates a kept row."""
+
+    def test_one_save_the_pass_re_dates_past_the_books_is_saved(
+        self, app, auth_client, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """From 02-27 the pass re-dates the 03-01 row onto 03-13, outside books opening 03-01.
+
+        A monthly envelope scheduled 03-01, funded from the paycheck
+        CONTAINING it (02-27..03-12), due 03-01 and compared on 03-12.  One
+        save unticks it and funds it from the first paycheck starting on or
+        after 03-01 instead: the pass rewrites the row due 03-13, that
+        paycheck's payday (ruling R-R95).  Judged on its stored day it was a
+        bill due 03-01, inside the books, and refused.  The saved rows'
+        dates are NOT asserted: the rewrite leaves the row in 02-27..03-12
+        while due 03-13, ledger row REC-537.
+        """
+        with app.app_context():
+            account = _account_opened_on(
+                seed_user, "Envelope books", date(2026, 3, 1),
+            )
+            template = _transaction_template_with_rows(
+                seed_user, "Groceries", account_id=account.id, is_envelope=True,
+                cadence=MONTHLY, starts_on=date(2026, 3, 1),
+            )
+            assert _live_row_answering(template, date(2026, 3, 1)).due_date == (
+                date(2026, 3, 1)
+            ), "precondition: the stored due day sits inside the books"
+            payload = _transaction_update_payload(
+                template, unit=RecurrenceUnitEnum.MONTH,
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                effective_from=_FIFTH_PAYCHECK.isoformat(),
+            )
+            del payload["is_envelope"]
+
+            resp = auth_client.post(
+                f"/templates/{template.id}", data=payload, follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert _REFUSED.encode() not in resp.data
+            assert _reload(TransactionTemplate, template.id).is_envelope is False
 
 
 class TestARowThePassRetires:
@@ -231,7 +294,7 @@ class TestARowTheRewriteLeavesInItsPaycheck:
     def test_an_envelope_moved_into_an_early_paycheck_is_refused_on_its_new_books(
         self, app, auth_client, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Moved onto books opening 03-12, the row the owner moved into 02-27..03-12 sits inside them.
+        """Onto books opening 03-12, the row the owner moved into 02-27..03-12 sits inside them.
 
         The state is the one a grid move leaves once the conflict chooser's
         "use" hands the row back to its definition: the 03-27 row sits in
@@ -321,7 +384,7 @@ class TestTheTransferDoor:
     def test_moving_every_row_off_the_books_is_saved(
         self, app, auth_client, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """From the first paycheck the pass moves every sweep onto New source: nothing is left inside."""
+        """From the first paycheck the pass moves every sweep onto New source: saved."""
         with app.app_context():
             template, new_source = _sweep_inside_its_source_books(seed_user)
 

@@ -414,9 +414,10 @@ def placements_below_the_books(
     read the same half off :func:`occurrence_walk` itself
     (``definition_unarchive.books_reading``, one walk per check since plan
     step ``pay_calendar:C18-a``'s ruling **R-PC98**) rather than the row's
-    stored due day, which the save's regeneration re-dates by the NEW rule (a
-    cleared due day moves a bill's cash day onto its scheduled day, inside
-    the books); this function states the half on its own.
+    stored due day, which the save's regeneration re-dates by the NEW rule
+    (funding a bill from the paycheck containing its date moves its cash day
+    back onto its scheduled day, inside the books); this function states the
+    half on its own.
 
     The closing is kept as *resolved* carries it, so an occurrence the
     closing stops is named by neither half and never reported here.

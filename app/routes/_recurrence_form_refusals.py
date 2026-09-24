@@ -716,7 +716,7 @@ def refuse_stranding_save(
     answering an occurrence its books drop, or sitting inside the books of
     the account it sits on (ruling **R-PC99**), WHATEVER field changed -- an
     account moved onto books that open later, the envelope box unticked, a
-    due day cleared -- because a maintain pass reaching a dropped row
+    funding switch -- because a maintain pass reaching a dropped row
     retires it (the save's own regeneration, for a paycheck ending on or
     after the edit's effective date; a later pass for an older one), and a
     row inside the books is counted twice.  The state the save leaves is
