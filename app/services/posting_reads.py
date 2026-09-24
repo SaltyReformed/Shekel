@@ -231,7 +231,7 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
     (``cash_ledger.movement_cash_leg``, ``purchase_posts``): an oracle that
     imported the rule it grades could not grade it.  What IS shared is the
     base join and the transfer link: this reads a movement's record-ness
-    and side as the join's SQL (``transfer_legs._leg_is_record``,
+    and side as the join's SQL (``transfer_legs._records._leg_is_record``,
     ``_leg_is_income``), the writer as their Python twin over one loaded
     movement (``transfer_legs.movement_parent``, the two pinned by a parity
     test), so this is independent in its sign, its narrowings and the tier

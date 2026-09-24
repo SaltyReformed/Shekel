@@ -656,8 +656,8 @@ class TestAStatusDriftIsCountedOnce:
         """The fold's one predicate CHANGE at leaf X-bi-6-1, declared and pinned.
 
         The plan's ``dated_leg`` EXISTS now rides
-        ``transfer_legs._covering_movements_query``, which requires the shadow
-        the movement hangs off to be LIVE -- the term the pre-leaf predicate
+        ``transfer_legs._records._covering_movements_query``, which requires
+        the shadow the movement hangs off to be LIVE -- the term the pre-leaf predicate
         did not carry.  On any door-written state the two agree (no door
         soft-deletes one shadow alone).  On the double drift built here -- a
         settled leg's dated movement under a shadow soft-deleted around the

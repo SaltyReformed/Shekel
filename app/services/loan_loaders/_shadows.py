@@ -332,8 +332,8 @@ def settled_half_clause():
     drift apart silently; ``tests/test_services/test_loan_settled_legs.py``
     (``TestTheSettledHalfComplementsThePlanHalf``) is what holds the
     complement until ONE clause serves both, which belongs in
-    :mod:`app.services.transfer_legs` once its split (``X-bi-6-4a`` leaf 3)
-    gives it the room.
+    ``transfer_legs._records`` beside ``dated_leg_exists_clause``, now that
+    the package split has given it the room.
 
     Correlated to :class:`~app.models.transfer.Transfer`.  Its caller still
     states the scope -- account, scenario, soft-delete and the
