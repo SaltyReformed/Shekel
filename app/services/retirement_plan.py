@@ -269,8 +269,10 @@ class RetirementInputs:
     derived per point off the pass's pricer, and so are the payroll feeds
     since salary:S3-f-2b; both vary with the point only through its raise
     set.  For a profile that funds no account, the FIRST derivation at a set
-    is where that profile's tax series loads (three queries the loader issued
-    itself before), and every later point at that set is the memo's.
+    is where that profile's pricer is built, with no query since plan step
+    salary:X-at-1 moved the tax law into the code (three tax-series queries
+    until then, which the loader issued itself before salary:S3-f-2a), and
+    every later point at that set is the memo's.
 
     **The precise invariant, because "point-independent" is not quite true of
     ``base_ctx`` and an earlier draft of this paragraph claimed it was**
@@ -754,8 +756,9 @@ def _believed_batch(
     ``inputs.batch.feeds`` price -- rebuilt anyway rather than special-cased,
     because two paths to one feed is the shape this module removes.  At a
     PROBED set the first pricer for each profile the probe names is built here,
-    and that construction loads the profile's tax series: three statements per
-    profile per distinct set, measured by
+    and that construction issues no statement -- it loaded the profile's tax
+    series, three statements per profile per distinct set, until plan step
+    salary:X-at-1 moved the law into the code -- measured by
     ``TestThePointBelievesARaiseSet.test_a_probed_set_is_the_one_legitimate_second_pricer``.
 
     Args:
@@ -822,8 +825,8 @@ def _derive_picture(
     raise's end year moves every figure that raise feeds and no figure twice
     -- one belief per picture.  At the stored set every read resolves to the
     pricer the batch loader built and the pricer's memo answers after the
-    first; a probed set builds ONE pricer per profile it names, which is
-    where that profile's tax series loads (three queries per distinct set).
+    first; a probed set builds ONE pricer per profile it names, which issues
+    no query since plan step salary:X-at-1 (three per distinct set before).
 
     Args:
         inputs: The render's loaded inputs.

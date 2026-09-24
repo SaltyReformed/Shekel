@@ -18,5 +18,5 @@ from app.routes.salary._bp import salary_bp
 @salary_bp.route("/salary/tax-config")
 @require_owner
 def tax_config():
-    """Redirect to settings dashboard tax configuration section."""
+    """Redirect to the Settings dashboard's Tax Rates section (read-only)."""
     return redirect(url_for("settings.show", section="tax"))

@@ -137,9 +137,10 @@ class ProfilePaychecks:
     it issues no query now, and :meth:`at` still answers a payday nobody knew
     would be asked for without slicing the law again.
 
-    **This value's OWN database work is all at construction; the PROFILE's
-    need not be, and an adversarial review of plan step salary:S3-d corrected
-    a sentence here that claimed otherwise.**
+    **This value issues no query of its own since plan step salary:X-at-1
+    (the tax series was all of it, at construction); the PROFILE's reads need
+    not happen at construction either, and an adversarial review of plan step
+    salary:S3-d corrected a sentence here that claimed otherwise.**
     ``SalaryProfile.raises`` and ``.lines`` are ``lazy="select"``.  The
     deductions are read by
     :func:`~app.services.paycheck_calculator.calculate_paycheck` on the FIRST
@@ -172,7 +173,7 @@ class ProfilePaychecks:
     def __init__(
         self, profile, calendar: PayCalendar, raise_terms=None,
     ) -> None:
-        """Pin the profile to its owner's calendar and load the tax series.
+        """Pin the profile to its owner's calendar and slice the tax law for it.
 
         Args:
             profile: The :class:`~app.models.salary_profile.SalaryProfile` to
@@ -521,8 +522,9 @@ def paycheck_pricing(
 
     Resolves nothing ITSELF, so a holder that prices no paycheck pays nothing
     for holding one.  The first query lands at
-    :meth:`PaycheckPricing.for_profile`, which reads that profile's raises
-    (a SELECT when they are not loaded) and builds a :class:`ProfilePaychecks`,
+    :meth:`PaycheckPricing.for_profile`, which derives the calendar from its
+    source on first use, reads that profile's raises when no set is given (a
+    SELECT when they are not loaded) and builds a :class:`ProfilePaychecks`,
     whose tax series is sliced from the law without a query; nothing is issued
     before a profile is named.
 
