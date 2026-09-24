@@ -507,15 +507,16 @@ class TestEveryRegistryIsUnderItsCap:
     """conventions.md rule 4, on the documents it did not used to reach.
 
     **``ledger.md`` and ``steps.md`` both LEFT this class on 2026-08-25, by
-    developer ruling**, and :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` and
-    :class:`TestTheIndexIsBOUNDEDRatherThanCAPPED` are what replaced them.  The
+    developer ruling**, and :class:`TestTheLedgerCarriesNoLineCap` and
+    :class:`TestTheIndexCarriesNoLineCap` are what replaced them.  The
     argument is one argument, made twice: a line cap on a registry holding ONE
     LINE PER THING is a cap on how many of that thing the project may have --
     defects measured for the ledger, leaves DECOMPOSED for the index.  The
     ledger's was raised three times and the fourth time it bound a finding was
     written into a code docstring to get around it; the index's bound on
     ``recurrence:R7d``'s seven-leaf split with no shipped row free to archive.
-    The arms both kept are a per-ROW cap and a runaway backstop.
+    The arm both kept is a per-ROW cap; the row-count backstop each carried
+    beside it was deleted by balance:R-BAL135.
     """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
@@ -559,14 +560,15 @@ class TestEveryRegistryIsUnderItsCap:
         assert problems[0].startswith(over) and "rule 4" in problems[0]
 
 
-class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
+class TestTheLedgerCarriesNoLineCap:
     """What replaced ``ledger.md``'s line cap (developer ruling 2026-08-25).
 
-    Three arms, and the split between them is the ruling: a row may not become
-    a specification (graded elsewhere, ``LEDGER_ROW_CAP``); a table larger than
-    any real backlog is an accident (graded here); and the backlog itself is
-    REPORTED rather than gated, because refusing to record a measured defect is
-    what the dropped cap did.
+    Two arms, and the split between them is the ruling: a row may not become a
+    specification (graded elsewhere, ``LEDGER_ROW_CAP``); and the backlog
+    itself is REPORTED rather than gated (graded here), because refusing to
+    record a measured defect is what the dropped cap did.  A third, a row-count
+    backstop for a table larger than any real backlog, was deleted by
+    balance:R-BAL135.
     """
 
     def test_the_ledger_carries_no_line_cap(self):
@@ -575,19 +577,6 @@ class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
             "ledger.md's line cap was dropped 2026-08-25; putting it back is a "
             "developer ruling, not something a merge does quietly"
         )
-
-    def test_the_real_ledger_is_under_the_runaway_backstop(self):
-        """The live file, so the backstop is a fact rather than a constant."""
-        assert registry.ledger_runaway_violation() is None
-
-    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
-        self, monkeypatch,
-    ):
-        """A backstop nobody has seen fail is a number, not a gate."""
-        monkeypatch.setattr(registry, "LEDGER_RUNAWAY_ROWS", 1)
-        violation = registry.ledger_runaway_violation()
-        assert violation is not None
-        assert "runaway backstop" in violation
 
     def test_the_backlog_is_reported_per_arc_and_sums_to_the_table(self):
         """The signal the cap was standing in for, and it must be complete.
@@ -701,15 +690,16 @@ class TestTheLedgerStatesItsBACKLOG:
         assert registry.stated_arc_counts_violation() is None
 
 
-class TestTheIndexIsBOUNDEDRatherThanCAPPED:
+class TestTheIndexCarriesNoLineCap:
     """What replaced ``steps.md``'s line cap (developer ruling 2026-08-25).
 
-    The same three-way split :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED`
-    records, one registry over: a ROW may not become a specification (graded by
-    rule 14's description cap); a table larger than any real plan is an accident
-    (graded here); and what the file's LENGTH was ever a proxy for -- can a cold
-    reader find the next step -- is graded directly by rule 3's counts and rule
-    14's dense ranks, which do not care how long the table is.
+    The split :class:`TestTheLedgerCarriesNoLineCap` records, made one registry
+    over: a ROW may not become a specification (graded by rule 14's description
+    cap); and what the file's LENGTH was ever a proxy for -- can a cold reader
+    find the next step -- is graded directly by rule 3's counts and rule 14's
+    dense ranks, which do not care how long the table is.  Its row-count
+    backstop went with the ledger's, and a duplicated table fails rule 10's
+    unique key instead (the control below).
     """
 
     def test_the_index_carries_no_line_cap(self):
@@ -719,18 +709,25 @@ class TestTheIndexIsBOUNDEDRatherThanCAPPED:
             "developer ruling, not something a merge does quietly"
         )
 
-    def test_the_real_index_is_under_the_runaway_backstop(self):
-        """The live file, so the backstop is a fact rather than a constant."""
-        assert registry.steps_runaway_violation() is None
+    def test_the_control_fires_on_a_duplicated_key(self, stage):
+        """A row written twice fails rule 10's unique key, here as in the ledger.
 
-    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
-        self, monkeypatch,
-    ):
-        """A backstop nobody has seen fail is a number, not a gate."""
-        monkeypatch.setattr(registry, "STEPS_RUNAWAY_ROWS", 1)
-        violation = registry.steps_runaway_violation()
-        assert violation is not None
-        assert "runaway backstop" in violation
+        The ``steps.md`` twin of the ledger's control of the same name in
+        ``test_registry_integrity``.  Since balance:R-BAL135 deleted the
+        row-count backstop, :func:`_registry.unique_key_violations` is what
+        refuses a table a script duplicated, and until this control nothing
+        staged a ``steps.md`` duplicate: dropping this file from the arm left
+        every test green.  The row is DERIVED, the table's first, so no tick
+        can retire the subject.
+        """
+        first = registry.step_rows()[0]
+        line = row_of("steps", f"| {first.arc} | {first.ident} |")
+        stage("steps", line, line + "\n" + line)
+        problems = registry.unique_key_violations()
+        assert any(
+            p.startswith("steps.md: duplicate key") and repr(first.key) in p
+            for p in problems
+        ), problems
 
 
 class TestTheOrderTableIsSorted:
