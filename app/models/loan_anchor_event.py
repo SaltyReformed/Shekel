@@ -72,10 +72,16 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
       the rest of the schema.
     * ``account_id`` CASCADE-on-delete -- deleting a loan account
       removes its anchor history with it.  No orphan-event rows.
-    * No uniqueness guard, deliberately (ruling R-EQ) -- a duplicate submit
-      is refused at the write door, which can compare against what governs;
-      an index over the row's values cannot.  See the ``__table_args__``
-      comment below.
+    * No uniqueness guard over the row's VALUES, deliberately (ruling R-EQ)
+      -- a duplicate submit is refused at the write door, which can compare
+      against what governs; an index over the row's values cannot.  See the
+      ``__table_args__`` comment below, which also says why the one UNIQUE
+      the table does carry, over ``(account_id, id)``, rejects no row.
+    * A statement STANDS until a
+      :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` names
+      it (plan step ``recurrence:R23``); read a loan's statements through
+      :func:`app.services.loan_loaders.load_standing_loan_assertions`, never
+      this table directly.
     """
 
     __tablename__ = "loan_anchor_events"
@@ -125,6 +131,20 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
         # ``(observed_on, utc_day(created_at))``.  That would have narrowed the
         # false refusal to one recording day rather than removing it; the trace
         # for that step measured the residue and replaced the mechanism instead.
+        #
+        # **The SUPERKEY a withdrawal targets, and it does NOT revive R-EQ**
+        # (plan step ``recurrence:R23``, ruling **R-R98**).  A
+        # :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal`
+        # names the statement it withdraws through a COMPOSITE foreign key over
+        # ``(account_id, id)``, so withdrawing another account's statement is
+        # unrepresentable, and PostgreSQL requires a UNIQUE over exactly those
+        # columns before such a key may target them.  It can reject NO row:
+        # ``id`` is the primary key, so every pair containing it is already
+        # distinct -- the reason ``uq_anchor_history_account_id`` gives for the
+        # same key on the cash twin.
+        db.UniqueConstraint(
+            "account_id", "id", name="uq_loan_anchor_events_account_id",
+        ),
         {"schema": "budget"},
     )
 

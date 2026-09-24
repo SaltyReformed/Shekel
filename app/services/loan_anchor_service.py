@@ -51,7 +51,7 @@ from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.services import loan_posting_service
+from app.services import loan_loaders, loan_posting_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.user_write_lock import lock_user_writes
 
@@ -60,8 +60,8 @@ logger = logging.getLogger(__name__)
 
 def _governing_loan_anchor(
     account_id: int, source_id: int, anchor_date: date,
-) -> LoanAnchorEvent | None:
-    """Return the event of ``source_id`` governing ``anchor_date``.
+) -> loan_loaders.LoanAnchorFact | None:
+    """Return the standing statement of ``source_id`` governing ``anchor_date``.
 
     The loan twin of :func:`app.services.cash_ledger.governing_anchor_on`, and
     the WRITER's question rather than a reader's (ruling **R-EQ**, plan step
@@ -76,45 +76,49 @@ def _governing_loan_anchor(
     the one that has had a user-supplied date field since Commit 16.  A
     submission for date D can only change what is true at or after D.
 
-    **It is not a second copy of the resolver's latest-anchor rule.**  The
-    resolver answers over :func:`app.services.loan_loaders.load_loan_anchor_facts`
-    -- every source PLUS the synthesized origination, which has no stored row and
-    can never be the thing a submission duplicates.  Sharing a query between the
-    two would mean filtering the reader's synthesized fact back out, which is
-    more coupling than the four lines it would save.  **Both now break a tie the
-    SAME way, and this door is where that rule was already right**: its
-    ``(anchor_date, created_at, id)`` DESC was the only TOTAL anchor ordering
-    until plan step X-an-b gave the read path the ``id`` term too (finding
-    **N-196**).  ``id`` is load-bearing -- ``created_at`` is evaluated at
-    TRANSACTION START, so two rows written together share an instant.
+    **It reads the walk's own statements, through the ONE producer both share**
+    (:func:`app.services.loan_loaders.load_standing_loan_assertions`, plan step
+    ``recurrence:R23``).  Until that step this was a query of its own, and the
+    reason given was that sharing the resolver's list
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`) would mean
+    filtering its synthesized origination back out.  That still holds of that
+    list, and the shared producer sits BELOW the synthesis, so nothing is
+    filtered out.  What the split had cost became visible when a statement could
+    be WITHDRAWN: a predicate added to one query and not the other would leave
+    this door refusing a new statement as a duplicate of one the walk no longer
+    reads.  The order is the producer's too, ascending by
+    :func:`app.utils.dates.anchor_chronology_key`, so the LAST match is the
+    governing one; the ``(anchor_date, created_at, id) DESC`` this door spelled
+    in SQL was the same key written a second time, and it is gone.  ``id`` is
+    load-bearing in that key -- ``created_at`` is evaluated at TRANSACTION
+    START, so two rows written together share an instant (finding **N-196**).
 
     Args:
-        account_id: The loan account whose anchors to search.
+        account_id: The loan account whose statements to search.
         source_id: The ``ref.loan_anchor_sources`` id to scope to (see
             :func:`_append_loan_anchor_and_sync` for why the scope is per
-            source).
+            source) -- ``user_trueup`` or ``tracking_start``, the two sources
+            the producer loads, told apart by ``is_tracking_start``.
         anchor_date: The date the submission asserts for -- the comparison's
             horizon.
 
     Returns:
-        The governing :class:`LoanAnchorEvent`, or ``None`` when the account has
-        no stored anchor of that source at or before *anchor_date* -- in which
-        case the submission is necessarily new.
+        The governing :class:`~app.services.loan_loaders.LoanAnchorFact`, or
+        ``None`` when the account has no standing statement of that source at
+        or before *anchor_date* -- in which case the submission is necessarily
+        new.
     """
-    return (
-        db.session.query(LoanAnchorEvent)
-        .filter(
-            LoanAnchorEvent.account_id == account_id,
-            LoanAnchorEvent.source_id == source_id,
-            LoanAnchorEvent.anchor_date <= anchor_date,
-        )
-        .order_by(
-            LoanAnchorEvent.anchor_date.desc(),
-            LoanAnchorEvent.created_at.desc(),
-            LoanAnchorEvent.id.desc(),
-        )
-        .first()
+    is_tracking_start = source_id == ref_cache.loan_anchor_source_id(
+        LoanAnchorSourceEnum.TRACKING_START,
     )
+    governing = None
+    for fact in loan_loaders.load_standing_loan_assertions(account_id):
+        if (
+            fact.is_tracking_start == is_tracking_start
+            and fact.anchor_date <= anchor_date
+        ):
+            governing = fact
+    return governing
 
 
 def _append_loan_anchor_and_sync(
