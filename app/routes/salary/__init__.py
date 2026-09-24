@@ -37,6 +37,9 @@ Module map:
   (form/preview/confirm/delete).
 * :mod:`app.routes.salary.checkpoint` -- the analytics Taxes tab's YTD
   tax-checkpoint upsert (update-from-stub).
+* :mod:`app.routes.salary.stubs` -- the transcribed pay stub's entry door
+  (plan step salary:S11-b): the payday step, record, the stub's page, edit
+  and its "Use for pricing" switch.
 * :mod:`app.routes.salary.tax_config` -- state-tax and FICA config updates.
 """
 
@@ -55,6 +58,7 @@ from app.routes.salary import items  # noqa: F401, E402
 from app.routes.salary import views  # noqa: F401, E402
 from app.routes.salary import calibration  # noqa: F401, E402
 from app.routes.salary import checkpoint  # noqa: F401, E402
+from app.routes.salary import stubs  # noqa: F401, E402
 from app.routes.salary import tax_config  # noqa: F401, E402
 
 

@@ -56,7 +56,7 @@ from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
 
-from ._breakdown import DeductionBreakdown, PricedLine
+from ._breakdown import DeductionBreakdown, PricedLine, waterfall_gross
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,9 @@ def priced_gross(ctx) -> tuple[list[PricedLine], Decimal]:
     taxable = _priced_lines(
         ctx, ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.TAXABLE_EARNING),
     )
-    return taxable, ctx.base_biweekly + sum((line.amount for line in taxable), ZERO)
+    return taxable, waterfall_gross(
+        ctx.base_biweekly, sum((line.amount for line in taxable), ZERO),
+    )
 
 
 def priced_after_tax(ctx) -> list[PricedLine]:
@@ -201,9 +203,13 @@ def _priced_lines(ctx, kind_id):
                 annual_cap,
             )
 
+        # The row's identity rides with its price (plan step salary:S11-b), read
+        # like ``target_account_id`` because the engine suite's line fakes
+        # carry no ``id``.
         priced.append(PricedLine(
             name=line.name, amount=amount,
             target_account_id=getattr(line, "target_account_id", None),
+            paycheck_line_id=getattr(line, "id", None),
         ))
 
     return priced

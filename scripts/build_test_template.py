@@ -33,15 +33,15 @@ Three steps, in order:
    applies the audit infrastructure idempotently (so the LATEST
    in-code trigger definitions win over any migration-frozen state),
    and seeds reference data via :func:`app.ref_seeds.seed_reference_data`.
-   Finally truncates ``system.audit_log`` so the 18 audit rows the
-   seed fires on ``ref.account_types`` (which is in
+   Finally truncates ``system.audit_log`` so the audit rows the seed
+   fires on ``ref.account_types`` (which is in
    :data:`app.audit_infrastructure.AUDITED_TABLES` after commit C-28)
-   do not leak into per-session clones.  The TRUNCATE mirrors the
-   per-test cleanup in ``tests/conftest.py::db`` and gives the
-   template a zeroed log -- per-test assertions on audit_log row
-   count are then trivially true at clone time.
+   do not leak into the per-test clones, and the template ships a
+   zeroed log -- per-test assertions on audit_log row count are then
+   trivially true at clone time.
 3. **Verify** the populated template carries the expected state:
-   ``ref.account_types`` row count equals 18 (the seed list size),
+   ``ref.account_types`` row count equals the seed list size
+   (:data:`_EXPECTED_ACCOUNT_TYPE_COUNT`),
    ``pg_trigger`` count of ``audit_%`` triggers equals
    :data:`app.audit_infrastructure.EXPECTED_TRIGGER_COUNT`
    (i.e. ``len(AUDITED_TABLES)``), and ``system.audit_log`` is
@@ -163,6 +163,7 @@ from app.audit_infrastructure import (
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
+from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -201,7 +202,7 @@ def _recreate_template_database() -> None:
 
 
 def _populate_template(app) -> None:
-    """Materialise the schema, run migrations, apply audit + posting infra, seed.
+    """Materialise the schema, run migrations, re-apply the infrastructure, seed.
 
     Steps, in order:
 
@@ -246,18 +247,40 @@ def _populate_template(app) -> None:
        per-test ``db`` fixture clones this template, so a fixture that
        dates a movement inside its account's opening equity aborts at
        COMMIT here exactly as production would.
-    6. ``apply_ledger_append_only_privileges``: idempotent
-       re-application of the ledger append-only posture (review
-       M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
-       role happens to exist at rebuild time.
-    7. ``seed_reference_data``: populates ``ref.account_types`` (18
-       rows) and the other ref tables.  The INSERTs on
-       ``ref.account_types`` fire the audit trigger attached in
-       step 2/3 and write 18 rows into ``system.audit_log``.
-    8. ``TRUNCATE system.audit_log``: clear those 18 seed-time
-       audit rows so the template ships with a zeroed log.  Mirrors
-       the per-test pattern in ``tests/conftest.py::db`` (line 244)
-       and gives the per-session clones a clean slate.
+    6. ``apply_append_only_infrastructure``: the append-only refusal on
+       the account-history tables (plan step X-f3c-2c), re-applied under
+       the same contract.
+    7. ``apply_level_infrastructure``: a bank level lies inside its
+       statement's file (plan step balance:X-bj-1), the same contract.
+    8. ``apply_sighting_infrastructure``: a bank line goes with its last
+       sighting (plan step bank_import:X-f6b-1), the same contract.
+    9. ``apply_pay_stub_infrastructure``: a transcribed pay stub is never
+       deleted and never moved (plan step salary:S11-a), the same
+       contract.  Steps 4-9 are each a rule a FIXTURE can trip -- steps 4-7
+       and 9 refuse a write, step 8 deletes the line its last sighting
+       leaves behind -- so the suite runs against the rules the app has.
+    10. ``apply_ledger_append_only_privileges``: idempotent
+        re-application of the ledger append-only posture (review
+        M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
+        role happens to exist at rebuild time.
+    11. ``seed_reference_data``: populates ``ref.account_types`` (the
+        :data:`_EXPECTED_ACCOUNT_TYPE_COUNT` built-in rows) and the other
+        ref tables.  The INSERTs on ``ref.account_types`` fire the audit
+        trigger attached in step 2/3 and write one row each into
+        ``system.audit_log``.
+    12. ``TRUNCATE system.audit_log``: clear those seed-time audit rows
+        so the template ships with a zeroed log and every per-test clone
+        of it starts from a clean slate (``tests/conftest.py``'s world
+        builder truncates after its own seed for the same reason).
+
+    The audit, append-only, level, sighting and pay-stub trigger families
+    are counted by one list,
+    :func:`scripts.build_test_db_image.template_checks`: in the baked image,
+    and on a first boot by
+    ``tests/test_scripts/test_init_database_one_transaction.py``.  The
+    posting (step 4) and opening (step 5) triggers are counted by neither:
+    their modules export no constant naming their triggers (finding
+    BAL-542).
 
     Args:
         app: Flask application built by ``create_app('testing')``.
@@ -285,11 +308,12 @@ def _populate_template(app) -> None:
         db.session.commit()
 
         # The account-books boundary (plan step X-f3c-2b): idempotent
-        # re-application, same contract as the two above.  It matters more
-        # here than for the other two, because this constraint is the only one
-        # a FIXTURE can trip: a test that settles a row on or before its
-        # account's opening day is building a state production cannot hold,
-        # and this is what makes the suite say so.
+        # re-application, same contract as the two above.  Like the
+        # balanced-journal trigger (and unlike the audit trigger, which
+        # refuses nothing) it is a rule a FIXTURE can trip: a test that
+        # settles a row on or before its account's opening day is building a
+        # state production cannot hold, and this is what makes the suite say
+        # so.
         # ``ALL_ARMS``: this builds a database at HEAD, which is the one
         # caller shape that wants whatever arms the module currently has.  A
         # MIGRATION names its arms literally instead -- see that constant.
@@ -326,6 +350,14 @@ def _populate_template(app) -> None:
         )
         db.session.commit()
 
+        # A transcribed pay stub is never deleted and never moved (plan step
+        # salary:S11-a, ruling R-SAL44): idempotent re-application, same
+        # contract, and a refusal a FIXTURE can trip.
+        apply_pay_stub_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
         # Ledger append-only posture (review M1/R4): idempotent
         # re-application for the same latest-definition-wins contract as
         # steps 3-4.  Almost always a no-op here -- the cluster-scoped
@@ -340,10 +372,9 @@ def _populate_template(app) -> None:
         seed_reference_data(db.session)
         db.session.commit()
 
-        # Clear the 18 seed-time audit rows so the template ships
-        # with a zeroed log.  Same ordering as
-        # ``tests/conftest.py::db`` lines 244-245: TRUNCATE after the
-        # reseed commits, then commit the truncate separately.
+        # Clear the seed-time audit rows so the template ships with a
+        # zeroed log: TRUNCATE after the reseed commits, then commit the
+        # truncate separately.
         db.session.execute(db.text("TRUNCATE system.audit_log"))
         db.session.commit()
 
@@ -364,8 +395,8 @@ def _verify_template_state() -> None:
       (or, less likely, a stray trigger left over from a previous
       template that the DROP did not wipe).
     * ``system.audit_log`` row count equals 0.  Catches a missing
-      TRUNCATE -- the template must ship with a clean log so per-
-      session clones start from a known zero.
+      TRUNCATE -- the template must ship with a clean log so every
+      per-test clone starts from a known zero.
 
     Raises:
         RuntimeError: When any assertion fails.  The message names

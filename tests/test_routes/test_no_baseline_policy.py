@@ -98,6 +98,7 @@ from werkzeug.exceptions import HTTPException
 
 import app as shekel_app_package
 from app.models.account import Account
+from app.models.pay_stub import PayStub
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
@@ -239,6 +240,7 @@ _CONVERTER_ROWS = {
     ("retirement", "pension_id"): "pension",
     ("salary", "period_id"): "period",
     ("salary", "profile_id"): "salary_profile",
+    ("salary", "stub_id"): "pay_stub",
     ("savings", "goal_id"): "goal",
     ("templates", "template_id"): "transaction_template",
     ("transactions", "period_id"): "period",
@@ -380,6 +382,15 @@ def _build_baseline_less_owner(db):
         default_amount=Decimal("200.00"),
     )
     db.session.add(xfer_template)
+    # A transcribed pay stub (plan step salary:S11-b), for
+    # ``/salary/stubs/<int:stub_id>``: dated on the world's period-4 payday and
+    # constructed here as the pension and the goal are -- the entry door's
+    # payday and net refusals are its own suites' subject, not this sweep's.
+    pay_stub = PayStub(
+        salary_profile_id=salary_profile.id, payday=periods[4].start_date,
+        base_pay=Decimal("2884.62"),
+    )
+    db.session.add(pay_stub)
     # A PROJECTED instance of each movement kind.  Projected rather than
     # settled deliberately: a settled row carries a settle day, and the edit
     # doors this reaches (`/transactions/<id>/full-edit`,
@@ -408,6 +419,7 @@ def _build_baseline_less_owner(db):
         "card": card.id, "invest": invest.id,
         "period": periods[4].id,
         "salary_profile": salary_profile.id,
+        "pay_stub": pay_stub.id,
         "pension": pension.id,
         "goal": goal.id,
         "transaction_template": txn_template.id,
