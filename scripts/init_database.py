@@ -24,8 +24,9 @@ Both paths then run the same sequence (ruling R-BAL122): the reference
 rows are seeded, ``ref_cache`` is loaded from them, the hooks run (an
 existing database only), and the audit triggers are counted -- the work
 entrypoint steps 4 and 7 used to do after this script had committed
-(:func:`_bring_to_release`).  Entrypoint step 6 seeded every user's missing
-tax rows until plan step salary:X-at-1 gave the tax law one home in the code
+(:func:`_bring_to_release`).  The same sequence seeded every user's missing
+tax rows (its step 5; entrypoint step 6 before plan step balance:X-cv) until
+plan step salary:X-at-1 gave the tax law one home in the code
 (:mod:`app.tax_law`), which no deploy copies.
 
 **All of it is ONE transaction, committed once** (plan step
@@ -490,8 +491,9 @@ def _bring_to_release(connection):
     (SELECT ...)`` that finds nothing) would quietly do nothing there and in a
     deploy alike; no gate sees that case.
 
-    Steps 2 and 5 were entrypoint steps 4 and 7 (entrypoint step 6, the tax
-    seed, was deleted at plan step salary:X-at-1), each run after step 3 had
+    Steps 2 and 5 were entrypoint steps 4 and 7 (the tax seed, entrypoint
+    step 6 and then this sequence's step 5, was deleted at plan step
+    salary:X-at-1), each run after step 3 had
     committed, so a failure in one left the release's stamp behind a dead
     container: the case ``deploy/shekel-deploy.sh`` cannot re-pin.  Here a
     failure in any step rolls back with the rest.
@@ -627,8 +629,9 @@ def initialise_database():
     inside a transaction nobody commits.  ``ref_cache.init`` rolls back when a
     ref table is missing (``_load_rows``), but since ruling R-BAL122 the
     reference seed reads every table the cache reads before it does (measured
-    2026-09-23, again at salary:S11-a's merge: the cache's 28 tables are all
-    among the seed's 29), so a missing table fails the seed first; the cache's
+    2026-09-23, again at salary:S11-a's merge, and 2026-09-24 at salary:X-at-1,
+    which added ``ref.filing_statuses`` to the cache: its 29 tables are the
+    seed's 29), so a missing table fails the seed first; the cache's
     rollback is unreachable from the deploy while that holds.  None of the
     three hooks' services, and not the seed, commits or rolls back (census
     re-run 2026-09-23: the two

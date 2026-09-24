@@ -375,7 +375,7 @@ def calculate_annual_federal_liability(annual_wage_income, bracket_set, w4=W4Inp
     """Compute the filing-time FEDERAL income tax liability for a full year.
 
     This is the annual-liability sibling of
-    :func:`calculate_federal_withholding`: it applies the SAME seeded
+    :func:`calculate_federal_withholding`: it applies the SAME
     bracket ladder and dependent credits, but ONCE to the whole year's
     income rather than per pay period, to answer "what will this taxpayer
     owe the IRS at filing time" (the tax-refund estimate the analytics

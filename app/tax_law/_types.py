@@ -4,8 +4,32 @@ Every value is a frozen dataclass over ``Decimal`` literals: the law is data the
 release carries, never a row a user or a deploy can write (ruling
 **salary:R-SAL74**).  A year is checked when its module is imported, so a
 transcription slip in next year's figures -- a bracket ladder with a gap, a
-filing status left out -- stops the application from starting rather than
-pricing a paycheck against it.
+filing status left out, a rate written as a percent -- stops the application
+from starting rather than pricing a paycheck against it.
+
+**The checks replace the per-user tables' constraints, one for one, and are
+never narrower.**  Until plan step salary:X-at-1 each user's copy of the law sat
+in five ``salary`` tables (unread since, and dropped at plan step X-at-2) whose
+columns refuse a malformed row: amounts are ``Numeric(12, 2)`` and rates
+``Numeric(5, 4)``, both ``NOT NULL`` where the law requires a figure, every
+amount at least zero, the Social Security wage base and the Additional Medicare
+threshold above zero, every rate between 0 and 1, a bracket's upper bound at or
+above its lower one and a child deduction tier's above it, a state code of two
+characters, and a tax year between 2000 and 2100.  Each of those is a check
+below, on the dataclass that carries the figure, so no year can hold what no
+table could.
+
+**Several are stricter than the tables, because a per-row CHECK cannot state
+them or the column chose otherwise:** every filing status present in each year
+and each state, and FICA in every year; a ladder's rungs ordered by position
+and climbing from zero without a gap to one open top (a child deduction table
+likewise, when a state has one); no empty bracket (its table allowed an upper
+bound EQUAL to the lower one); a state code of two capital letters; a state's
+standard deduction always stated (``$0.00`` where it has none; the column
+allowed ``NULL``); a figure with more decimal places than its column refused
+where the column silently rounded it, because a transcription that disagrees
+with its scale is a slip to fix, not a figure to reinterpret; and a law that
+cannot change once it loads, because every mapping in it is a read-only view.
 
 **The attribute names are the calculator's.**  :mod:`app.services.tax_calculator`
 reads ``standard_deduction``, ``brackets`` (each ``min_income`` / ``max_income``
@@ -17,11 +41,22 @@ calculator prices the law without knowing where it came from.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from types import MappingProxyType
 
 from app.enums import FilingStatusEnum, TaxTypeEnum
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
+
+# The per-user tables' column types: amounts are ``Numeric(12, 2)`` (ten
+# digits before the point, two after) and rates ``Numeric(5, 4)`` (one and
+# four).
+_AMOUNT_DIGITS = (10, 2)
+_RATE_DIGITS = (1, 4)
+
+# The ``ck_*_valid_tax_year`` CHECKs' range.
+_FIRST_TAX_YEAR = 2000
+_LAST_TAX_YEAR = 2100
 
 
 @dataclass(frozen=True)
@@ -30,7 +65,8 @@ class Bracket:
 
     ``max_income`` is ``None`` on the top rung only.  ``sort_order`` is the
     rung's position in its ladder, set by :func:`ladder` and never written by
-    hand, because the calculator orders rungs by it.
+    hand, because the calculator orders rungs by it; :class:`FederalRules`
+    refuses a ladder whose rungs are not ordered by their position.
     """
 
     min_income: Decimal
@@ -38,14 +74,19 @@ class Bracket:
     rate: Decimal
     sort_order: int
 
+    def __post_init__(self):
+        """Refuse a rung no ``salary.tax_brackets`` row could hold, or an empty one."""
+        _require_amount(self.min_income, "bracket min_income")
+        _require_upper_bound(self.min_income, self.max_income, "bracket")
+        _require_rate(self.rate, "bracket rate")
+
 
 def ladder(*rungs: tuple[str, str | None, str]) -> tuple[Bracket, ...]:
     """Build a bracket ladder from ``(min_income, max_income, rate)`` strings.
 
-    The one place a rung's ``sort_order`` is derived (its position), and the
-    one place a ladder's shape is checked: it starts at zero, each rung starts
-    where the one below it ends, only the top rung is open-ended, and every
-    rate is a fraction.
+    The one place a rung's ``sort_order`` is derived (its position).  Each
+    rung checks itself as it is built; whether the rungs form one ladder is
+    :class:`FederalRules`' check, because a ladder is only ever used there.
 
     Args:
         *rungs: The rungs from the bottom up, each as decimal strings exactly
@@ -55,9 +96,9 @@ def ladder(*rungs: tuple[str, str | None, str]) -> tuple[Bracket, ...]:
         The ladder as a tuple of :class:`Bracket`.
 
     Raises:
-        ValueError: If the rungs do not form one contiguous ladder from zero.
+        ValueError: If a rung is malformed (:class:`Bracket`).
     """
-    brackets = tuple(
+    return tuple(
         Bracket(
             min_income=Decimal(low),
             max_income=None if high is None else Decimal(high),
@@ -66,20 +107,6 @@ def ladder(*rungs: tuple[str, str | None, str]) -> tuple[Bracket, ...]:
         )
         for position, (low, high, rate) in enumerate(rungs)
     )
-    if not brackets or brackets[0].min_income != _ZERO:
-        raise ValueError("a bracket ladder starts at zero income")
-    for lower, upper in zip(brackets, brackets[1:]):
-        if lower.max_income is None or lower.max_income != upper.min_income:
-            raise ValueError(
-                f"bracket rung {upper.sort_order} starts at {upper.min_income}, "
-                f"not where rung {lower.sort_order} ends ({lower.max_income})"
-            )
-    if brackets[-1].max_income is not None:
-        raise ValueError("the top bracket rung is open-ended")
-    for rung in brackets:
-        if not _ZERO <= rung.rate <= _ONE:
-            raise ValueError(f"bracket rate {rung.rate} is not a fraction")
-    return brackets
 
 
 @dataclass(frozen=True)
@@ -99,6 +126,24 @@ class FederalRules:
     child_credit_refundable_cap: Decimal
     brackets: tuple[Bracket, ...]
 
+    def __post_init__(self):
+        """Refuse a negative amount, or brackets that are not one ladder from zero."""
+        _require_amount(self.standard_deduction, "federal standard_deduction")
+        _require_amount(self.child_credit_amount, "federal child_credit_amount")
+        _require_amount(
+            self.other_dependent_credit_amount, "federal other_dependent_credit_amount",
+        )
+        _require_amount(
+            self.child_credit_refundable_cap, "federal child_credit_refundable_cap",
+        )
+        _require_rungs(self.brackets, Bracket, "a bracket ladder")
+        if [rung.sort_order for rung in self.brackets] != list(range(len(self.brackets))):
+            raise ValueError("a bracket ladder's rungs are ordered by their position")
+        _require_climb(
+            [(rung.min_income, rung.max_income) for rung in self.brackets],
+            "a bracket ladder",
+        )
+
 
 @dataclass(frozen=True)
 class FicaRules:
@@ -109,6 +154,17 @@ class FicaRules:
     medicare_rate: Decimal
     medicare_surtax_rate: Decimal
     medicare_surtax_threshold: Decimal
+
+    def __post_init__(self):
+        """Refuse what the ``ck_fica_configs_*`` CHECKs refuse."""
+        _require_rate(self.ss_rate, "FICA ss_rate")
+        _require_amount(self.ss_wage_base, "FICA ss_wage_base", above_zero=True)
+        _require_rate(self.medicare_rate, "FICA medicare_rate")
+        _require_rate(self.medicare_surtax_rate, "FICA medicare_surtax_rate")
+        _require_amount(
+            self.medicare_surtax_threshold, "FICA medicare_surtax_threshold",
+            above_zero=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -126,6 +182,12 @@ class ChildDeductionTier:
     agi_max: Decimal | None
     deduction_per_child: Decimal
 
+    def __post_init__(self):
+        """Refuse a tier no ``salary.state_child_deductions`` row could hold."""
+        _require_amount(self.agi_min, "child deduction agi_min")
+        _require_upper_bound(self.agi_min, self.agi_max, "child deduction tier")
+        _require_amount(self.deduction_per_child, "child deduction_per_child")
+
 
 @dataclass(frozen=True)
 class StateYearLaw:
@@ -134,6 +196,8 @@ class StateYearLaw:
     The rate is the STATE's, stated once; the standard deduction and the child
     deduction tiers are per filing status, because the statute states them per
     status.  Every filing status is present in both, or the year does not load.
+    A status's tiers are empty for a state with no child deduction; otherwise
+    they climb from zero without a gap, lowest AGI first.
     """
 
     tax_type: TaxTypeEnum
@@ -142,9 +206,21 @@ class StateYearLaw:
     child_deduction_tiers: Mapping[FilingStatusEnum, tuple[ChildDeductionTier, ...]]
 
     def __post_init__(self):
-        """Refuse a state year that leaves a filing status out."""
+        """Refuse a state year that leaves a filing status out or states a malformed figure."""
+        _freeze(self, "standard_deduction", "child_deduction_tiers")
+        if not isinstance(self.tax_type, TaxTypeEnum):
+            raise ValueError(f"a state's tax_type is a TaxTypeEnum, not {self.tax_type!r}")
+        if self.flat_rate is not None:
+            _require_rate(self.flat_rate, "state flat_rate")
         _require_every_status(self.standard_deduction, "state standard deduction")
+        for status, deduction in self.standard_deduction.items():
+            _require_amount(deduction, f"{status.value} state standard deduction")
         _require_every_status(self.child_deduction_tiers, "state child deduction")
+        for status, tiers in self.child_deduction_tiers.items():
+            what = f"the {status.value} child deduction tiers"
+            _require_rungs(tiers, ChildDeductionTier, what)
+            if tiers:
+                _require_climb([(tier.agi_min, tier.agi_max) for tier in tiers], what)
 
 
 @dataclass(frozen=True)
@@ -165,9 +241,44 @@ class TaxYearLaw:
     states: Mapping[str, StateYearLaw]
 
     def __post_init__(self):
-        """Refuse a year that is missing a filing status or cites no source."""
+        """Refuse a year out of range, missing a filing status or FICA, or citing no source."""
+        _freeze(self, "federal", "states")
+        if (
+            not isinstance(self.tax_year, int)
+            or not _FIRST_TAX_YEAR <= self.tax_year <= _LAST_TAX_YEAR
+        ):
+            raise ValueError(
+                f"a tax year is a year from {_FIRST_TAX_YEAR} to {_LAST_TAX_YEAR}, "
+                f"not {self.tax_year!r}"
+            )
         _require_every_status(self.federal, f"{self.tax_year} federal rules")
-        if not self.sources:
+        for status, rules in self.federal.items():
+            if not isinstance(rules, FederalRules):
+                raise ValueError(
+                    f"{self.tax_year} {status.value} federal rules are FederalRules, "
+                    f"not {rules!r}"
+                )
+        if not isinstance(self.fica, FicaRules):
+            raise ValueError(f"{self.tax_year} FICA rules are FicaRules, not {self.fica!r}")
+        for state_code, state in self.states.items():
+            if not (
+                isinstance(state_code, str) and len(state_code) == 2
+                and state_code.isascii() and state_code.isalpha()
+                and state_code.isupper()
+            ):
+                raise ValueError(
+                    f"{self.tax_year} state {state_code!r} is not a two-letter "
+                    "capital state code"
+                )
+            if not isinstance(state, StateYearLaw):
+                raise ValueError(
+                    f"{self.tax_year} {state_code} law is a StateYearLaw, not {state!r}"
+                )
+        if not isinstance(self.sources, tuple):
+            raise ValueError(f"the {self.tax_year} tax law's sources are a tuple")
+        if not self.sources or not all(
+            isinstance(source, str) and source.strip() for source in self.sources
+        ):
             raise ValueError(f"the {self.tax_year} tax law cites no source")
 
 
@@ -178,10 +289,175 @@ class TaxLaw:
     years: tuple[TaxYearLaw, ...]
 
     def __post_init__(self):
-        """Refuse years out of order or repeated."""
+        """Refuse a year that is not a TaxYearLaw, or years out of order or repeated."""
+        if not isinstance(self.years, tuple):
+            raise ValueError("the tax law's years are a tuple")
+        for year in self.years:
+            if not isinstance(year, TaxYearLaw):
+                raise ValueError(f"a tax law year is a TaxYearLaw, not {year!r}")
         numbers = [year.tax_year for year in self.years]
         if numbers != sorted(set(numbers)):
             raise ValueError(f"tax years must be distinct and ascending: {numbers}")
+
+
+def _require_number(value, what: str) -> None:
+    """Raise unless *value* is a finite ``Decimal``.
+
+    The first half of a ``Numeric`` column's type: it holds only a number.  A
+    ``float`` is refused with the rest, because it cannot carry an exact figure.
+
+    Args:
+        value: The figure to check.
+        what: What the figure is, for the error message.
+
+    Raises:
+        ValueError: If *value* is not a finite ``Decimal``.
+    """
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise ValueError(f"{what} must be a Decimal figure, not {value!r}")
+
+
+def _require_fit(value: Decimal, what: str, digits: tuple[int, int]) -> None:
+    """Raise unless *value* fits its column's *digits*.
+
+    The second half of a ``Numeric`` column's type: at most so many digits
+    before the point and so many after.  The places are the VALUE's, not its
+    spelling: ``0.03990`` is four places.
+
+    Args:
+        value: The figure to check, already a finite ``Decimal``.
+        what: What the figure is, for the error message.
+        digits: ``(before, after)`` -- the most digits before the decimal
+            point and after it.
+
+    Raises:
+        ValueError: If *value* is too large for the digits before the point,
+            or has more places than after it.
+    """
+    before, after = digits
+    if value.adjusted() >= before:
+        raise ValueError(f"{what} {value} has more than {before} digits before the point")
+    if value != value.quantize(Decimal(1).scaleb(-after)):
+        raise ValueError(f"{what} {value} has more than {after} decimal places")
+
+
+def _require_amount(value, what: str, *, above_zero: bool = False) -> None:
+    """Raise unless *value* is a dollar amount to the cent, at least zero.
+
+    Args:
+        value: The amount to check.
+        what: What the amount is, for the error message.
+        above_zero: Refuse zero too, as the ``ss_wage_base > 0`` and
+            ``medicare_surtax_threshold > 0`` CHECKs do.
+
+    Raises:
+        ValueError: If *value* is not a ``Decimal`` to the cent under
+            $10,000,000,000, is negative, or is zero when *above_zero*.
+    """
+    _require_number(value, what)
+    _require_fit(value, what, _AMOUNT_DIGITS)
+    if value < _ZERO or (above_zero and value == _ZERO):
+        bound = "above" if above_zero else "at least"
+        raise ValueError(f"{what} {value} must be {bound} zero")
+
+
+def _require_rate(value, what: str) -> None:
+    """Raise unless *value* is a fraction from 0 to 1, to at most four places.
+
+    A percent written where the fraction belongs -- ``3.99`` for 3.99% -- is the
+    slip this refuses: it would tax at 399%.
+
+    Args:
+        value: The rate to check.
+        what: What the rate is, for the error message.
+
+    Raises:
+        ValueError: If *value* is not a ``Decimal`` to four places, or lies
+            outside ``[0, 1]``.
+    """
+    _require_number(value, what)
+    if not _ZERO <= value <= _ONE:
+        raise ValueError(f"{what} {value} is not a fraction between 0 and 1")
+    _require_fit(value, what, _RATE_DIGITS)
+
+
+def _require_upper_bound(low: Decimal, high: Decimal | None, what: str) -> None:
+    """Raise unless *high* is ``None`` (an open top) or an amount above *low*.
+
+    Args:
+        low: The rung's lower bound, already checked as an amount.
+        high: The rung's upper bound, or ``None`` on an open-ended top rung.
+        what: What the rung is, for the error message.
+
+    Raises:
+        ValueError: If *high* is not an amount or does not exceed *low*.
+    """
+    if high is None:
+        return
+    _require_amount(high, f"{what} upper bound")
+    if high <= low:
+        raise ValueError(f"a {what} ends at {high}, not above where it starts ({low})")
+
+
+def _require_rungs(rungs, kind: type, what: str) -> None:
+    """Raise unless *rungs* is a tuple of *kind*, so each rung has checked itself.
+
+    Args:
+        rungs: The rungs to check.
+        kind: The dataclass every rung must be.
+        what: What the rungs are, for the error message.
+
+    Raises:
+        ValueError: If *rungs* is not a tuple or holds anything but *kind*.
+    """
+    if not isinstance(rungs, tuple) or not all(isinstance(r, kind) for r in rungs):
+        raise ValueError(f"{what} must be a tuple of {kind.__name__}")
+
+
+def _require_climb(bounds: list[tuple[Decimal, Decimal | None]], what: str) -> None:
+    """Raise unless *bounds* climb from zero without a gap to one open-ended top.
+
+    The one shape check for a table of rungs -- a federal bracket ladder and a
+    state's child deduction tiers alike: the bottom rung starts at zero, each
+    rung starts where the one below it ends, and only the top rung is
+    open-ended.  A gap would leave income no rung covers; a closed top, income
+    above it.
+
+    Args:
+        bounds: ``(low, high)`` per rung, bottom first; ``high`` is ``None``
+            on an open-ended rung.
+        what: What the rungs are, for the error message.
+
+    Raises:
+        ValueError: If *bounds* is empty or does not climb as above.
+    """
+    if not bounds or bounds[0][0] != _ZERO:
+        raise ValueError(f"{what} starts at zero")
+    for position, ((_, below_high), (above_low, _)) in enumerate(
+        zip(bounds, bounds[1:]), start=1,
+    ):
+        if below_high is None or below_high != above_low:
+            raise ValueError(
+                f"{what}: rung {position} starts at {above_low}, "
+                f"not where rung {position - 1} ends ({below_high})"
+            )
+    if bounds[-1][1] is not None:
+        raise ValueError(f"{what}: the top rung is open-ended")
+
+
+def _freeze(law, *names: str) -> None:
+    """Replace each named mapping field of *law* with a read-only copy.
+
+    A frozen dataclass stops a field being REASSIGNED but not a dict in it
+    being changed, which would get past every check above after the year
+    loaded.  The copy also cuts the law off from the caller's dict.
+
+    Args:
+        law: The dataclass instance being initialised.
+        *names: Its mapping fields.
+    """
+    for name in names:
+        object.__setattr__(law, name, MappingProxyType(dict(getattr(law, name))))
 
 
 def _require_every_status(by_status: Mapping, what: str) -> None:

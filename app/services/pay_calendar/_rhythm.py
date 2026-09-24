@@ -240,7 +240,8 @@ def paydays_in_year_before(
     until plan step **balance:X-bh-1**.
 
     The calendar YEAR is the span because that is the window both caps are
-    defined over: ``ck_fica_configs`` prices a wage base per tax year, and
+    defined over: the tax law states a wage base per tax year
+    (:class:`app.tax_law.FicaRules`), and
     :func:`~app.utils.deduction_cap.cap_period_amount` clamps a calendar year's
     total.  STRICTLY before, because a cumulative is what has already been paid
     when this paycheck is priced.

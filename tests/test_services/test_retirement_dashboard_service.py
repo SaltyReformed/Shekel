@@ -15,6 +15,8 @@ these cases assert on did not move -- only the surface they are read from.
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
@@ -57,7 +59,7 @@ from tests._test_helpers import (
     make_salary_profile,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
-    seed_fica_config,
+    fica_only_law,
 )
 
 
@@ -614,15 +616,15 @@ class TestTheCurrentPaycheckIsThePassPricers:
     the equality is the producer under test.
 
     The owner: a raise-free ``$52,000.00`` profile on a 14-day cadence, no
-    deductions, FICA seeded for 2026 and no bracket set or state config, so
-    every line is arithmetic::
+    deductions, and a made-up law with FICA for 2026 and no federal or state
+    rules (``fica_only_law``), so every line is arithmetic::
 
         gross per paycheck   52,000.00 / 26            = 2,000.00
         Social Security      2,000.00 x 6.20%          =   124.00
         Medicare             2,000.00 x 1.45%          =    29.00
 
     With no calibration the bracket path withholds no federal or state (no
-    config seeded), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
+    rules for either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
     ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare
     (:func:`~app.services.calibration_service.apply_calibration`: the income
     rates on the taxable base, which equals the gross here; FICA on the gross,
@@ -637,6 +639,11 @@ class TestTheCurrentPaycheckIsThePassPricers:
     (``4001.83`` where ``3351.83`` is asserted).
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     @staticmethod
     def _seed_owner(db, seed_user, *, calibrated):
         """The owner above, with the calibration row present or not."""
@@ -644,7 +651,6 @@ class TestTheCurrentPaycheckIsThePassPricers:
             seed_user, db.session, annual_salary=Decimal("52000.00"),
         )
         db.session.flush()
-        seed_fica_config(seed_user["user"].id)
         settings = (
             db.session.query(UserSettings)
             .filter_by(user_id=seed_user["user"].id)

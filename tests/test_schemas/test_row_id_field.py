@@ -496,7 +496,6 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "second_day_of_month",
     "sort_order",
     "statement_close_day",
-    "tax_year",
     "term_months",
     # ``terminal_year`` is a CALENDAR YEAR, not a row: the last year a
     # recurring raise is believed to happen (plan step salary:S3-c, ruling

@@ -3,20 +3,28 @@ Shekel Budget App -- Tests for the tax law package (plan step salary:X-at-1).
 
 The law is data the release carries (ruling salary:R-SAL74), so what these
 grade is its SHAPE: a year that is malformed cannot load.  A transcription slip
-in a new year -- a bracket ladder with a gap, a filing status left out, a year
-with no source -- must stop the application at import rather than price a
-paycheck against it.  The figures themselves are graded against their
-published sources when a year is added, not restated here: a test pinning them
-would be a second copy of the law.
+in a new year -- a bracket ladder with a gap, a filing status left out, a rate
+written as a percent, a year with no source -- must stop the application at
+import rather than price a paycheck against it.  The figures themselves are
+graded against their published sources when a year is added, not restated
+here: a test pinning them would be a second copy of the law.
+
+**Every check the per-user tables' constraints make has a refusal here**, one
+per constraint, because the law's checks replaced them and must never be
+narrower (review 1 of X-at-1 found four that were, finding M1).
 """
 
+import dataclasses
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from app.enums import FilingStatusEnum, TaxTypeEnum
 from app.tax_law import (
     LAW,
+    Bracket,
+    ChildDeductionTier,
     FederalRules,
     FicaRules,
     StateYearLaw,
@@ -24,6 +32,7 @@ from app.tax_law import (
     TaxYearLaw,
     ladder,
 )
+from app.tax_law import _north_carolina
 
 _RUNGS = (
     ("0.00", "10000.00", "0.1000"),
@@ -32,43 +41,93 @@ _RUNGS = (
 )
 
 
-def _federal():
-    """Return one filing status's made-up federal rules."""
-    return FederalRules(
-        standard_deduction=Decimal("15000.00"),
-        child_credit_amount=Decimal("2000.00"),
-        other_dependent_credit_amount=Decimal("500.00"),
-        child_credit_refundable_cap=Decimal("1500.00"),
-        brackets=ladder(*_RUNGS),
+def _federal(**overrides):
+    """Return one filing status's made-up federal rules, with *overrides* applied."""
+    fields = {
+        "standard_deduction": Decimal("15000.00"),
+        "child_credit_amount": Decimal("2000.00"),
+        "other_dependent_credit_amount": Decimal("500.00"),
+        "child_credit_refundable_cap": Decimal("1500.00"),
+        "brackets": ladder(*_RUNGS),
+    }
+    fields.update(overrides)
+    return FederalRules(**fields)
+
+
+def _fica(**overrides):
+    """Return made-up FICA rules, with *overrides* applied."""
+    fields = {
+        "ss_rate": Decimal("0.0620"),
+        "ss_wage_base": Decimal("150000.00"),
+        "medicare_rate": Decimal("0.0145"),
+        "medicare_surtax_rate": Decimal("0.0090"),
+        "medicare_surtax_threshold": Decimal("200000.00"),
+    }
+    fields.update(overrides)
+    return FicaRules(**fields)
+
+
+def _tiers():
+    """Return a made-up child deduction tier table: two tiers from zero, open top."""
+    return (
+        ChildDeductionTier(Decimal("0.00"), Decimal("20000.00"), Decimal("3000.00")),
+        ChildDeductionTier(Decimal("20000.00"), None, Decimal("0.00")),
     )
 
 
-def _fica():
-    """Return made-up FICA rules."""
-    return FicaRules(
-        ss_rate=Decimal("0.0620"),
-        ss_wage_base=Decimal("150000.00"),
-        medicare_rate=Decimal("0.0145"),
-        medicare_surtax_rate=Decimal("0.0090"),
-        medicare_surtax_threshold=Decimal("200000.00"),
-    )
+def _state(**overrides):
+    """Return a made-up flat-rate state year, with *overrides* applied."""
+    fields = {
+        "tax_type": TaxTypeEnum.FLAT,
+        "flat_rate": Decimal("0.0400"),
+        "standard_deduction": {status: Decimal("10000.00") for status in FilingStatusEnum},
+        "child_deduction_tiers": {status: _tiers() for status in FilingStatusEnum},
+    }
+    fields.update(overrides)
+    return StateYearLaw(**fields)
 
 
-def _year(tax_year, *, federal=None, sources=("A made-up source",)):
-    """Return a made-up tax year, every filing status present unless *federal* says otherwise."""
-    return TaxYearLaw(
-        tax_year=tax_year,
-        sources=sources,
-        federal=federal if federal is not None else {
-            status: _federal() for status in FilingStatusEnum
-        },
-        fica=_fica(),
-        states={},
-    )
+def _year(tax_year=2030, **overrides):
+    """Return a made-up tax year, every filing status present, with *overrides* applied."""
+    fields = {
+        "tax_year": tax_year,
+        "sources": ("A made-up source",),
+        "federal": {status: _federal() for status in FilingStatusEnum},
+        "fica": _fica(),
+        "states": {"ZZ": _state()},
+    }
+    fields.update(overrides)
+    return TaxYearLaw(**fields)
+
+
+class TestTheControlsLoad:
+    """Each made-up builder loads as written, so every refusal below is its override's."""
+
+    def test_the_made_up_year_loads(self):
+        """A complete year: every status, FICA, a state, a source."""
+        year = _year()
+        assert year.tax_year == 2030
+        assert year.states["ZZ"].flat_rate == Decimal("0.0400")
+
+    def test_a_state_without_a_child_deduction_or_a_rate_loads(self):
+        """Empty tiers and no rate are how a state states it has neither."""
+        state = _state(
+            tax_type=TaxTypeEnum.NONE,
+            flat_rate=None,
+            child_deduction_tiers={status: () for status in FilingStatusEnum},
+        )
+        assert state.flat_rate is None
+        assert state.child_deduction_tiers[FilingStatusEnum.SINGLE] == ()
+
+    def test_the_bounds_of_every_range_load(self):
+        """A rate of 0 or 1, a zero amount and years 2000 and 2100 are all allowed."""
+        assert _fica(ss_rate=Decimal("1"), medicare_rate=Decimal("0")).ss_rate == 1
+        assert _federal(child_credit_amount=Decimal("0.00")).child_credit_amount == 0
+        assert TaxLaw(years=(_year(2000), _year(2100))).years[1].tax_year == 2100
 
 
 class TestALadderIsOneContiguousClimbFromZero:
-    """``ladder`` derives each rung's order and refuses a ladder with a hole in it."""
+    """FederalRules refuses brackets that are not one ladder; ``ladder`` numbers the rungs."""
 
     def test_each_rung_is_ordered_by_its_position(self):
         """sort_order is the rung's position, never a hand-written number."""
@@ -81,64 +140,302 @@ class TestALadderIsOneContiguousClimbFromZero:
     def test_a_ladder_not_starting_at_zero_is_refused(self):
         """The bottom rung taxes income from the first dollar."""
         with pytest.raises(ValueError, match="starts at zero"):
-            ladder(("100.00", "10000.00", "0.1000"), ("10000.00", None, "0.1200"))
+            _federal(brackets=ladder(
+                ("100.00", "10000.00", "0.1000"), ("10000.00", None, "0.1200"),
+            ))
 
     def test_a_gap_between_rungs_is_refused(self):
         """Income between two rungs would be taxed by neither."""
         with pytest.raises(ValueError, match="not where rung 0 ends"):
-            ladder(("0.00", "10000.00", "0.1000"), ("10001.00", None, "0.1200"))
+            _federal(brackets=ladder(
+                ("0.00", "10000.00", "0.1000"), ("10001.00", None, "0.1200"),
+            ))
 
     def test_an_open_rung_below_the_top_is_refused(self):
         """Only the top rung may be open-ended."""
         with pytest.raises(ValueError, match="not where rung 0 ends"):
-            ladder(("0.00", None, "0.1000"), ("10000.00", None, "0.1200"))
+            _federal(brackets=ladder(
+                ("0.00", None, "0.1000"), ("10000.00", None, "0.1200"),
+            ))
 
     def test_a_closed_top_rung_is_refused(self):
         """Income above a closed top rung would be taxed by nothing."""
         with pytest.raises(ValueError, match="open-ended"):
-            ladder(("0.00", "10000.00", "0.1000"), ("10000.00", "40000.00", "0.1200"))
-
-    def test_a_rate_above_one_is_refused(self):
-        """A rate is a fraction; 12 means a typo for 0.12."""
-        with pytest.raises(ValueError, match="not a fraction"):
-            ladder(("0.00", "10000.00", "0.1000"), ("10000.00", None, "12"))
+            _federal(brackets=ladder(
+                ("0.00", "10000.00", "0.1000"), ("10000.00", "40000.00", "0.1200"),
+            ))
 
     def test_an_empty_ladder_is_refused(self):
         """A ladder with no rungs taxes nothing."""
         with pytest.raises(ValueError, match="starts at zero"):
-            ladder()
+            _federal(brackets=ladder())
+
+    def test_rungs_out_of_position_are_refused(self):
+        """The calculator orders rungs by sort_order, so it must agree with their order."""
+        low, high = ladder(("0.00", "10000.00", "0.1000"), ("10000.00", None, "0.1200"))
+        swapped = (
+            dataclasses.replace(low, sort_order=1),
+            dataclasses.replace(high, sort_order=0),
+        )
+        with pytest.raises(ValueError, match="ordered by their position"):
+            _federal(brackets=swapped)
+
+    def test_a_rung_that_is_not_a_bracket_is_refused(self):
+        """A stand-in never ran Bracket's checks, so it cannot be in the law."""
+        stand_in = SimpleNamespace(
+            min_income=Decimal("0.00"), max_income=None,
+            rate=Decimal("0.1000"), sort_order=0,
+        )
+        with pytest.raises(ValueError, match="tuple of Bracket"):
+            _federal(brackets=(stand_in,))
+
+    def test_brackets_as_a_list_are_refused(self):
+        """A list could be changed after the checks ran; the law holds tuples."""
+        with pytest.raises(ValueError, match="tuple of Bracket"):
+            _federal(brackets=list(ladder(*_RUNGS)))
 
 
-class TestAYearIsCompleteOrDoesNotLoad:
-    """A tax year covers every filing status, cites its sources, and lists states whole."""
+class TestARungChecksItself:
+    """A Bracket refuses what ``salary.tax_brackets``' CHECKs refused, and an empty rung."""
 
-    def test_a_complete_year_loads(self):
-        """The control: every status, a source, FICA."""
-        assert _year(2030).tax_year == 2030
+    def test_a_rate_above_one_is_refused(self):
+        """ck_tax_brackets_valid_rate: 12 means a typo for 0.12."""
+        with pytest.raises(ValueError, match="not a fraction"):
+            ladder(("0.00", "10000.00", "0.1000"), ("10000.00", None, "12"))
 
-    def test_a_year_missing_a_filing_status_is_refused(self):
-        """A missing status would price that filer's federal tax at zero."""
-        federal = {status: _federal() for status in FilingStatusEnum}
-        del federal[FilingStatusEnum.HEAD_OF_HOUSEHOLD]
-        with pytest.raises(ValueError, match="head_of_household"):
-            _year(2030, federal=federal)
+    def test_a_negative_rate_is_refused(self):
+        """ck_tax_brackets_valid_rate's lower bound."""
+        with pytest.raises(ValueError, match="not a fraction"):
+            ladder(("0.00", None, "-0.1000"))
 
-    def test_a_year_citing_no_source_is_refused(self):
-        """Nobody could check a figure with no source (ruling R-SAL74)."""
-        with pytest.raises(ValueError, match="cites no source"):
-            _year(2030, sources=())
+    def test_a_rate_finer_than_four_places_is_refused(self):
+        """The column is Numeric(5, 4); the marginal-rate chip renders four places."""
+        with pytest.raises(ValueError, match="more than 4 decimal places"):
+            ladder(("0.00", None, "0.12345"))
+
+    def test_a_trailing_zero_is_not_an_extra_place(self):
+        """The places are the value's, not its spelling: 0.03990 is four places."""
+        assert ladder(("0.00", None, "0.03990"))[0].rate == Decimal("0.0399")
+
+    def test_a_rung_ending_below_its_start_is_refused(self):
+        """ck_tax_brackets_income_order, on a ladder whose rungs still meet end to start."""
+        with pytest.raises(ValueError, match="not above where it starts"):
+            ladder(
+                ("0.00", "10000.00", "0.1000"),
+                ("10000.00", "5000.00", "0.1200"),
+                ("5000.00", None, "0.2200"),
+            )
+
+    def test_an_empty_rung_is_refused(self):
+        """Stricter than the table, which allowed max == min: a rung taxing no income."""
+        with pytest.raises(ValueError, match="not above where it starts"):
+            ladder(("0.00", "0.00", "0.1000"), ("0.00", None, "0.1200"))
+
+    def test_a_negative_start_is_refused(self):
+        """ck_tax_brackets_nonneg_min."""
+        with pytest.raises(ValueError, match="must be at least zero"):
+            Bracket(Decimal("-1.00"), None, Decimal("0.1000"), 0)
+
+    def test_a_float_is_refused(self):
+        """A float cannot carry an exact figure (the column was Numeric)."""
+        with pytest.raises(ValueError, match="must be a Decimal figure"):
+            Bracket(0.0, None, Decimal("0.1000"), 0)
+
+
+class TestFederalAmounts:
+    """The four amounts refuse what ``salary.tax_bracket_sets``' CHECKs refused."""
+
+    @pytest.mark.parametrize("field", [
+        "standard_deduction",
+        "child_credit_amount",
+        "other_dependent_credit_amount",
+        "child_credit_refundable_cap",
+    ])
+    def test_a_negative_amount_is_refused(self, field):
+        """ck_tax_bracket_sets_nonneg_*: each amount is at least zero."""
+        with pytest.raises(ValueError, match=f"federal {field} -1.00 must be at least zero"):
+            _federal(**{field: Decimal("-1.00")})
+
+    @pytest.mark.parametrize("field", ["standard_deduction", "child_credit_amount"])
+    def test_a_missing_amount_is_refused(self, field):
+        """The columns were NOT NULL."""
+        with pytest.raises(ValueError, match="must be a Decimal figure, not None"):
+            _federal(**{field: None})
+
+    def test_an_amount_finer_than_a_cent_is_refused(self):
+        """The column is Numeric(12, 2)."""
+        with pytest.raises(ValueError, match="more than 2 decimal places"):
+            _federal(standard_deduction=Decimal("15000.005"))
+
+    @pytest.mark.parametrize("value", ["10000000000.00", "1E+12"])
+    def test_an_amount_too_large_for_its_column_is_refused(self, value):
+        """Numeric(12, 2) holds ten digits before the point."""
+        with pytest.raises(ValueError, match="more than 10 digits before the point"):
+            _federal(standard_deduction=Decimal(value))
+
+    def test_the_largest_amount_the_column_holds_loads(self):
+        """The control for the bound above."""
+        rules = _federal(standard_deduction=Decimal("9999999999.99"))
+        assert rules.standard_deduction == Decimal("9999999999.99")
+
+    def test_a_bracket_boundary_too_large_is_refused(self):
+        """A rung's bound is an amount like any other."""
+        with pytest.raises(ValueError, match="more than 10 digits before the point"):
+            ladder(("0.00", "100000000000.00", "0.1000"), ("100000000000.00", None, "0.1200"))
+
+
+class TestFicaRules:
+    """FicaRules refuses what the deleted ``ck_fica_configs_*`` CHECKs refused."""
+
+    @pytest.mark.parametrize("field", ["ss_rate", "medicare_rate", "medicare_surtax_rate"])
+    def test_a_percent_written_for_a_rate_is_refused(self, field):
+        """6.2 for 6.2% would take more than the whole paycheck."""
+        with pytest.raises(ValueError, match="not a fraction"):
+            _fica(**{field: Decimal("6.2")})
+
+    @pytest.mark.parametrize("field", ["ss_rate", "medicare_rate", "medicare_surtax_rate"])
+    def test_a_negative_rate_is_refused(self, field):
+        """Each rate's lower bound."""
+        with pytest.raises(ValueError, match="not a fraction"):
+            _fica(**{field: Decimal("-0.0100")})
+
+    @pytest.mark.parametrize("field", ["ss_wage_base", "medicare_surtax_threshold"])
+    @pytest.mark.parametrize("value", ["0.00", "-1.00"])
+    def test_a_base_or_threshold_not_above_zero_is_refused(self, field, value):
+        """ck_fica_configs_positive_wage_base / _positive_surtax_threshold."""
+        with pytest.raises(ValueError, match="must be above zero"):
+            _fica(**{field: Decimal(value)})
+
+    def test_a_missing_rate_is_refused(self):
+        """The columns were NOT NULL; a None rate would price Social Security at zero."""
+        with pytest.raises(ValueError, match="must be a Decimal figure, not None"):
+            _fica(ss_rate=None)
+
+
+class TestStateYearLaw:
+    """A state year refuses what ``salary.state_tax_configs`` and its child table refused."""
+
+    def test_a_percent_written_for_the_flat_rate_is_refused(self):
+        """The historical slip: North Carolina's 3.99% entered as 3.99 taxes at 399%."""
+        with pytest.raises(ValueError, match="state flat_rate 3.99 is not a fraction"):
+            _north_carolina.state_year("3.99")
+
+    def test_a_negative_flat_rate_is_refused(self):
+        """ck_state_tax_configs_valid_rate's lower bound."""
+        with pytest.raises(ValueError, match="not a fraction"):
+            _state(flat_rate=Decimal("-0.0100"))
+
+    def test_a_negative_standard_deduction_is_refused(self):
+        """ck_state_tax_configs_nonneg_standard_deduction."""
+        deduction = {status: Decimal("10000.00") for status in FilingStatusEnum}
+        deduction[FilingStatusEnum.SINGLE] = Decimal("-1.00")
+        with pytest.raises(ValueError, match="single state standard deduction -1.00"):
+            _state(standard_deduction=deduction)
+
+    def test_a_tax_type_that_is_not_the_enum_is_refused(self):
+        """The calculator compares the type's ref id, which only a member has."""
+        with pytest.raises(ValueError, match="tax_type is a TaxTypeEnum"):
+            _state(tax_type="flat")
 
     def test_a_state_missing_a_filing_status_is_refused(self):
         """The state's deductions are per status, so every status is stated."""
         deduction = {status: Decimal("10000.00") for status in FilingStatusEnum}
         del deduction[FilingStatusEnum.MARRIED_SEPARATELY]
         with pytest.raises(ValueError, match="married_separately"):
-            StateYearLaw(
-                tax_type=TaxTypeEnum.FLAT,
-                flat_rate=Decimal("0.0400"),
-                standard_deduction=deduction,
-                child_deduction_tiers={status: () for status in FilingStatusEnum},
-            )
+            _state(standard_deduction=deduction)
+
+    def test_a_tier_ending_at_or_below_its_start_is_refused(self):
+        """ck_state_child_deductions_agi_order: agi_max above agi_min."""
+        with pytest.raises(ValueError, match="not above where it starts"):
+            ChildDeductionTier(Decimal("20000.00"), Decimal("20000.00"), Decimal("0.00"))
+
+    def test_a_negative_tier_start_is_refused(self):
+        """ck_state_child_deductions_nonneg_agi_min."""
+        with pytest.raises(ValueError, match="agi_min -1.00 must be at least zero"):
+            ChildDeductionTier(Decimal("-1.00"), None, Decimal("0.00"))
+
+    def test_a_negative_deduction_per_child_is_refused(self):
+        """ck_state_child_deductions_nonneg_deduction."""
+        with pytest.raises(ValueError, match="deduction_per_child -1.00 must be at least zero"):
+            ChildDeductionTier(Decimal("0.00"), None, Decimal("-1.00"))
+
+    def test_tiers_with_a_gap_are_refused(self):
+        """AGI between two tiers would find no deduction."""
+        gapped = (
+            ChildDeductionTier(Decimal("0.00"), Decimal("20000.00"), Decimal("3000.00")),
+            ChildDeductionTier(Decimal("25000.00"), None, Decimal("0.00")),
+        )
+        tiers = {status: _tiers() for status in FilingStatusEnum}
+        tiers[FilingStatusEnum.HEAD_OF_HOUSEHOLD] = gapped
+        with pytest.raises(ValueError, match="head_of_household child deduction tiers: rung 1"):
+            _state(child_deduction_tiers=tiers)
+
+    def test_tiers_not_starting_at_zero_are_refused(self):
+        """The lowest tier covers AGI from the first dollar."""
+        tiers = {status: _tiers()[1:] for status in FilingStatusEnum}
+        with pytest.raises(ValueError, match="child deduction tiers starts at zero"):
+            _state(child_deduction_tiers=tiers)
+
+    def test_tiers_as_a_list_are_refused(self):
+        """The law holds tuples, so a checked table cannot change after the check."""
+        tiers = {status: list(_tiers()) for status in FilingStatusEnum}
+        with pytest.raises(ValueError, match="tuple of ChildDeductionTier"):
+            _state(child_deduction_tiers=tiers)
+
+
+class TestAYearIsCompleteOrDoesNotLoad:
+    """A tax year covers every filing status, carries FICA, cites its sources and fits the range."""
+
+    def test_a_year_missing_a_filing_status_is_refused(self):
+        """A missing status would price that filer's federal tax at zero."""
+        federal = {status: _federal() for status in FilingStatusEnum}
+        del federal[FilingStatusEnum.HEAD_OF_HOUSEHOLD]
+        with pytest.raises(ValueError, match="head_of_household"):
+            _year(federal=federal)
+
+    def test_a_year_without_fica_is_refused(self):
+        """A None FICA would price Social Security and Medicare at $0.00 from that year on."""
+        with pytest.raises(ValueError, match="FICA rules are FicaRules, not None"):
+            _year(fica=None)
+
+    def test_a_filing_status_without_rules_is_refused(self):
+        """Every status is present AND holds FederalRules."""
+        federal = {status: _federal() for status in FilingStatusEnum}
+        federal[FilingStatusEnum.SINGLE] = None
+        with pytest.raises(ValueError, match="single federal rules are FederalRules, not None"):
+            _year(federal=federal)
+
+    @pytest.mark.parametrize("state_code", ["NCX", "nc", "N1", None, 12])
+    def test_a_state_code_that_is_not_two_capital_letters_is_refused(self, state_code):
+        """A mis-keyed state would silently price its filers at $0.00 state tax."""
+        with pytest.raises(ValueError, match="not a two-letter capital state code"):
+            _year(states={state_code: _state()})
+
+    def test_sources_as_a_list_are_refused(self):
+        """A list could be changed after the checks ran; the law holds tuples."""
+        with pytest.raises(ValueError, match="sources are a tuple"):
+            _year(sources=["A made-up source"])
+
+    def test_a_state_that_is_not_a_state_year_is_refused(self):
+        """A state entry is a checked StateYearLaw or nothing."""
+        with pytest.raises(ValueError, match="ZZ law is a StateYearLaw"):
+            _year(states={"ZZ": None})
+
+    @pytest.mark.parametrize("tax_year", [1999, 2101, "2030", True])
+    def test_a_year_outside_the_range_is_refused(self, tax_year):
+        """ck_*_valid_tax_year: an integer from 2000 to 2100."""
+        with pytest.raises(ValueError, match="a tax year is a year from 2000 to 2100"):
+            _year(tax_year)
+
+    def test_a_year_citing_no_source_is_refused(self):
+        """Nobody could check a figure with no source (ruling R-SAL74)."""
+        with pytest.raises(ValueError, match="cites no source"):
+            _year(sources=())
+
+    def test_a_blank_source_is_refused(self):
+        """A blank line names no document."""
+        with pytest.raises(ValueError, match="cites no source"):
+            _year(sources=("  ",))
 
     def test_years_out_of_order_are_refused(self):
         """The law lists each year once, oldest first."""
@@ -149,6 +446,48 @@ class TestAYearIsCompleteOrDoesNotLoad:
         """Two copies of one year are two answers to one question."""
         with pytest.raises(ValueError, match="distinct and ascending"):
             TaxLaw(years=(_year(2030), _year(2030)))
+
+    def test_years_as_a_list_are_refused(self):
+        """The law's years are a tuple, like every other sequence in it."""
+        with pytest.raises(ValueError, match="years are a tuple"):
+            TaxLaw(years=[_year(2030)])
+
+    def test_a_law_year_that_is_not_a_tax_year_is_refused(self):
+        """Every year of the law ran TaxYearLaw's checks."""
+        with pytest.raises(ValueError, match="a tax law year is a TaxYearLaw"):
+            TaxLaw(years=(None,))
+
+
+class TestTheLawCannotChangeOnceItLoads:
+    """Every mapping in the law is a read-only view of a private copy.
+
+    A frozen dataclass stops a field being reassigned, not a dict in it being
+    changed -- which would get past every check above after the year loaded.
+    """
+
+    def test_a_years_federal_rules_cannot_be_replaced(self):
+        """Assigning into the loaded year's federal mapping raises."""
+        year = _year()
+        with pytest.raises(TypeError):
+            year.federal[FilingStatusEnum.SINGLE] = None
+
+    def test_a_states_deduction_cannot_be_replaced(self):
+        """Assigning into a loaded state's deduction mapping raises."""
+        state = _state()
+        with pytest.raises(TypeError):
+            state.standard_deduction[FilingStatusEnum.SINGLE] = Decimal("-1.00")
+
+    def test_the_callers_dict_does_not_reach_the_loaded_law(self):
+        """The law holds a copy: changing the dict it was built from changes nothing."""
+        federal = {status: _federal() for status in FilingStatusEnum}
+        year = _year(federal=federal)
+        federal[FilingStatusEnum.SINGLE] = None
+        assert isinstance(year.federal[FilingStatusEnum.SINGLE], FederalRules)
+
+    def test_the_shipped_law_is_read_only(self):
+        """The law the app ships is frozen the same way."""
+        with pytest.raises(TypeError):
+            LAW.years[-1].states["NC"] = None
 
 
 class TestTheShippedLaw:

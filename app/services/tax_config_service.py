@@ -83,7 +83,7 @@ class StateTaxRules:
     state_code: str
     tax_type_id: int
     flat_rate: Decimal | None
-    standard_deduction: Decimal | None
+    standard_deduction: Decimal
     child_deduction_tiers: tuple[ChildDeductionTier, ...]
 
 
@@ -108,8 +108,10 @@ class ProfileTaxSeries:
     state can no longer arise between those two kinds.  A STATE still can: the
     law lists a state only for the years the app supports it, so a state added
     in a later year has no entry for the years before it.  Resolving each kind
-    against its own series keeps that case correct rather than relying on it
-    never happening.
+    against its own series confines that gap to the state line -- the years
+    before the state's first entry reach FORWARD to it, the approximation
+    :func:`resolve_tax_year` states -- instead of letting it move the federal
+    and FICA lines too.
 
     Attributes:
         bracket_sets: ``{tax_year: FederalRules}`` for the profile's filing
@@ -133,10 +135,16 @@ def profile_tax_series(profile) -> ProfileTaxSeries:
     :data:`app.tax_law.LAW` and issues no query.
 
     **A filing status the law does not model resolves no federal rules**, and a
-    state the law does not list resolves no state rules; the calculator prices
-    each as zero, which is what the per-user copy answered for a status or state
-    it held no row for.  Plan step **salary:X-at-3** makes the state case
-    unsaveable (ruling **R-SAL78**, finding **SAL-575**).
+    state the law does not list resolves no state rules, which is what the
+    per-user copy answered for a status or state it held no row for.  What
+    follows differs by line: a paycheck prices missing federal rules as zero
+    federal withholding (``paycheck_calculator/_withholding.py``) where the
+    annual liability refuses them
+    (:func:`~app.services.tax_calculator.calculate_annual_federal_liability`
+    raises ``InvalidFilingStatusError``), and both price missing state rules as
+    zero state tax (:func:`~app.services.tax_calculator.calculate_state_tax`).
+    Plan step **salary:X-at-3** makes the state case unsaveable (ruling
+    **R-SAL78**, finding **SAL-575**).
 
     Args:
         profile (SalaryProfile): Supplies ``filing_status_id`` and

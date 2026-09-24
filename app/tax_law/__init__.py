@@ -9,10 +9,15 @@ one module per tax year, each naming the documents it was transcribed from.
 It replaced a copy PER USER.  Signup copied the seed constants into five
 ``salary`` tables, every deploy copied any rows a user lacked, and the Settings
 page could overwrite a user's state and FICA rows -- so the law lived once in
-the code and once per user in the database, kept equal by nothing (measured
-equal on production 2026-09-24, 52 rows).  A copy cannot reach a year its
-owner never received, and a correction to the code never reached a row
-already copied.  Now nothing in the app writes the law: a new year, or a
+the code and once per user in the database, kept equal by nothing.  (On
+production, 2026-09-24, both users' 2025 and 2026 copies of the bracket sets
+and their ladders, the child deduction tiers and the FICA rows equalled the
+code field for field, and the state rows' tax type did; the state rate and
+deduction were graded by re-pricing instead: every projected paycheck and the
+Taxes tab, whose figures read them, priced from the code as they did from the
+copies, and a planted North Carolina rate moved the result.)  A copy cannot
+reach a year its owner never received, and a correction to the code never
+reached a row already copied.  Now nothing in the app writes the law: a new year, or a
 correction, is a release that edits these modules.
 
 **Adding a tax year** is a new ``_year_<YYYY>.py`` beside the others, listed

@@ -94,9 +94,10 @@ from app.services.tax_withholding_service import (
 
 ZERO = Decimal("0")
 
-# Effective-rate resolution: four decimal places (0.01%), matching the
-# ``Numeric(5, 4)`` precision the seeded bracket rates (and therefore the
-# marginal-rate chip) carry, so the two rate chips render at one precision.
+# Effective-rate resolution: four decimal places (0.01%), matching the four
+# places the tax law's bracket rates (and therefore the marginal-rate chip) are
+# held to (``app.tax_law._types``, which refuses a finer rate), so the two rate
+# chips render at one precision.
 _RATE_QUANTUM = Decimal("0.0001")
 
 # The all-zero components: the summed measured/modeled sides degrade to this

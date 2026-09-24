@@ -5,7 +5,8 @@ Everything a new owner needs before they can be shown a screen: the ``User``
 row and its settings, the REAL pay calendar they stated, a baseline scenario,
 the default Checking account and the category tree.  (It copied the tax law
 into per-user rows too until plan step salary:X-at-1; the law has one home,
-:mod:`app.tax_law`, which no owner holds a copy of.)
+:mod:`app.tax_law`, and nothing reads the copies already made, which stay in
+their tables until plan step salary:X-at-2 drops them.)
 :func:`register_user` is the one door, and
 :class:`RegistrationSpec` is what a sign-up says.
 
