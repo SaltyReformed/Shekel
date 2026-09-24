@@ -50,17 +50,22 @@ class SalaryProfile(
             "user_id", "scenario_id", "name",
             name="uq_salary_profiles_user_scenario_name",
         ),
-        # A paycheck definition belongs to at most ONE salary profile, active
-        # or not (plan step salary:X-av-1, ruling R-SAL63, closing finding
-        # N-294).  Two profiles naming one template left the amount model's
-        # ``{template_id: profile}`` map holding two answers for one row, and
-        # which profile priced it was whichever the query returned last.
-        # ``create_profile`` mints a fresh template per profile, so no door
-        # produces the state; this makes it unstorable for every writer.
-        # NULLs stay distinct (PostgreSQL's default): a template's hard delete
-        # sets ``template_id`` NULL, and several profiles may have lost theirs.
+        # Within a scenario, a paycheck definition belongs to at most ONE
+        # salary profile, active or not (plan step salary:X-av-1, ruling
+        # R-SAL63 as scoped by R-SAL69, closing finding N-294).  The
+        # amount model looks a row's profile up within the row's scenario, and
+        # two profiles on one template there gave its ``{template_id:
+        # profile}`` map two candidates for one key, of which it kept
+        # whichever the query returned last.  ``create_profile`` mints a
+        # fresh template per profile, so no door produces the state; this
+        # makes it unstorable for every writer.  PER SCENARIO because a
+        # template belongs to none: a what-if scenario may give the same
+        # paycheck its own salary.  NULLs stay distinct (PostgreSQL's
+        # default): a template's hard delete sets ``template_id`` NULL, and
+        # several profiles may have lost theirs.
         db.UniqueConstraint(
-            "template_id", name="uq_salary_profiles_template_id",
+            "scenario_id", "template_id",
+            name="uq_salary_profiles_scenario_template",
         ),
         db.CheckConstraint("annual_salary > 0", name="ck_salary_profiles_positive_salary"),
         db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),

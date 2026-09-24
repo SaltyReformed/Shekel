@@ -288,12 +288,13 @@ def _current_pay(balance_ctx, current_period):
     ratio are about total income, as the grid counts both templates' rows for
     two profiles on two templates.  One edge, inherited and ruled here: a
     profile whose template is gone (``SET NULL`` on delete) has no grid rows
-    and is summed.  The second this paragraph named -- two active profiles on
-    ONE template (ledger row **N-294**), summed here while the amount model
-    priced the template by one of them -- is unstorable since plan step
-    salary:X-av-1 (``uq_salary_profiles_template_id``, ruling **R-SAL63**).
-    Ordered by id so the walk is deterministic; the sum makes the order
-    immaterial.  ``$0.00`` on the developer's data.
+    and is summed.  A second edge, two active profiles on ONE template in one
+    scenario (ledger row **N-294**), summed here while the amount model priced
+    the template by one of them, is unstorable since plan step salary:X-av-1
+    (``uq_salary_profiles_scenario_template``, rulings **R-SAL63** and
+    **R-SAL69**); across scenarios it is this query's scenario-blindness,
+    below.  Ordered by id so the walk is deterministic; the sum makes the
+    order immaterial.  ``$0.00`` on the developer's data.
 
     **The query is scenario-blind, as the old door's was** (and as
     ``retirement_dashboard_service.load_gap_inputs`` is).  Reported rather

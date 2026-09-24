@@ -671,21 +671,20 @@ class SalaryPricing:
         One indexed query, memoized -- the CHEAP stage, so a row on a template
         no profile names is answered without projecting anything.
 
-        **One profile per template is the TABLE's rule since plan step
-        salary:X-av-1** (``uq_salary_profiles_template_id``, ruling
-        **R-SAL63**, closing finding **N-294**), so no key here can have two
-        profiles behind it.  Until then two active profiles naming one template
-        were storable and this map kept whichever the query returned last; an
+        **One profile per template in a scenario is the TABLE's rule since plan
+        step salary:X-av-1** (``uq_salary_profiles_scenario_template``, ruling
+        **R-SAL63** as scoped by **R-SAL69**, closing finding **N-294**), and
+        this query reads ONE scenario, so no key here can have two profiles
+        behind it.  Until then two active profiles naming one template were
+        storable and this map kept whichever the query returned last; an
         ``ORDER BY id`` made that the same profile on every request without
         deciding which should price the row, and it is deleted with the state
-        it ordered.  Profiles whose template was hard-deleted (``SET NULL``)
-        share the key ``None``, which is never looked up: :func:`salary_net_for`,
-        :meth:`net_for`'s one caller in ``app/``, answers a row with no template
-        before asking.
+        it ordered.  A profile whose template was hard-deleted (``SET NULL``)
+        is left out: it prices no row, and several may share that NULL.
 
         Returns:
             ``{template_id: SalaryProfile}``; empty for an owner with no active
-            profile in this scenario.
+            profile on a template in this scenario.
         """
         if self._profiles is None:
             profiles = (
@@ -694,6 +693,7 @@ class SalaryPricing:
                     SalaryProfile.user_id == self._paychecks.user_id,
                     SalaryProfile.scenario_id == self._scenario_id,
                     SalaryProfile.is_active.is_(True),
+                    SalaryProfile.template_id.isnot(None),
                 )
                 .all()
             )

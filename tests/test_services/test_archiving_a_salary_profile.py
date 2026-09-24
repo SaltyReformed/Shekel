@@ -160,13 +160,17 @@ class TestArchivingFreezesWhatItWasPricing:
     * **rows spanning ACCOUNTS** need no case.  The basis is keyed on owner and
       SCENARIO and the resolver's only pin is ``scenario_id``, so an account
       plays no part in what the freeze resolves.
-    * **a template a SECOND active profile still names** is expressible and
-      unreachable: ``routes/salary/profiles.create_profile`` mints a fresh
-      template per profile, so no door builds it, and it is the state finding
-      **N-294** already records.  The freeze would take every row of the shared
-      template to OWN while the surviving profile still priced them.  It is
-      NOT covered here because a case asserting behaviour in a state no door
-      can produce grades the fixture rather than the app.
+    * **a template a SECOND profile still names** cannot be stored within one
+      scenario since plan step salary:X-av-1
+      (``uq_salary_profiles_scenario_template``, rulings **R-SAL63** and
+      **R-SAL69**, closing finding **N-294**).  ACROSS scenarios it is
+      storable (R-SAL69: a what-if scenario may give the paycheck its own
+      salary) and unreachable, because no code in ``app/`` creates a
+      non-baseline scenario; there the freeze, which walks the template's rows
+      in every scenario, would take the other scenario's rows to OWN while
+      its profile still priced them.  It is NOT covered here because a case
+      asserting behaviour in a state no door can produce grades the fixture
+      rather than the app.
     """
 
     def test_the_balance_does_not_move_and_the_figures_are_the_PAYCHECKS(
