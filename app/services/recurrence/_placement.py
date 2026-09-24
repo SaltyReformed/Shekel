@@ -353,8 +353,8 @@ def _lands_inside_the_books(
     rule's CLOSING still counts it (ruling **R-PC94**, :class:`BooksWalk`):
     it happened.  Until this bound, the owner's first payday stood in for it,
     because an occurrence with no paycheck is skipped; a paycheck recorded
-    below the books let the rules fill it, measured on a production clone at
-    ``$531.94`` + ``$100.00`` dated before Checking's opening.
+    below the books let the rules fill it, measured on a production clone as
+    a loan payment and a birthday expense dated before Checking's opening.
 
     **The day compared is a ROW's, not the occurrence's**, and which of the
     row's days is :meth:`~._resolution.ResolvedRecurrence.books_day`'s one

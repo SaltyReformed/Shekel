@@ -55,8 +55,8 @@ the rule cannot be walked, and every hidden row is counted.  **Not covered**: an
 unarchive still restores a row deleted by hand ABOVE the books, and the
 conflict chooser's "use the template" un-deletes one without asking the walk
 (ledger rows **REC-536** and **REC-535**, closed by plan step
-``recurrence:R22``); rows added by hand -- a rule-less definition's and
-link-less ones -- are bounded by no door (ledger row **PC-519**).
+``recurrence:R22``); a rule-less row, hand-added or left by a cleared rule,
+is bounded by the books at no door but the unarchive (ledger row **PC-519**).
 
 **Two questions per planned row, and either one refuses** (ruling **R-PC99**,
 developer 2026-09-23, the round-6 review's H1).
@@ -824,9 +824,9 @@ def reject_revert_below_the_books(row, new_status_id: int) -> None:
         ValidationError: When the move is a revert to Projected and the
             books of the account the row sits on hold its own day, or its
             definition's books drop its occurrence, or its schedule cannot be
-            walked.  Nothing is refused for a row no
-            recurring definition names (a rule-less item's row, a link-less
-            row: ledger row **PC-519**'s, bounded by no door), for an
+            walked.  Nothing is refused for a row no recurring definition
+            names (a rule-less item's row, a link-less row: ledger row
+            **PC-519**'s, bounded at no door but the unarchive), for an
             undated row (``occurs_on`` ``NULL``, which ruling **R-PC96**
             judges at the unarchive alone), for an owner with no pay
             periods, or for a row the books do not hold.
@@ -850,7 +850,7 @@ def _revert_refusal(row) -> str | None:
     definition = row.template
     if definition is None or not definition.recurs or row.occurs_on is None:
         # A rule-less item's row, a link-less row (PC-519's) and an undated
-        # row (R-PC96's, judged at the unarchive alone): no door bounds them.
+        # row (R-PC96's): bounded at no door but the unarchive, so not here.
         return None
     calendar = calendar_for(definition.user_id)
     books = definition_books(definition, {})

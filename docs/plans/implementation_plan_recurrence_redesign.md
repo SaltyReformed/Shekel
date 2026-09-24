@@ -13,8 +13,9 @@ every reader is on the resolver and the WRITE is gone.
 "which transfer into a loan is its payment", and **R16** deletes the rest (four leaves, **R-R36**):
 `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), `R20` 2026-09-19 (`b4da8068`, **R-R72** part 3: the
 stated balance is an assertion) and `R16-c-1` 2026-09-20 (`c88ed6ba`, **R-R90**: the past and the
-future are ONE event stream, byte-identical). `R16-c-2` (the contract calendar, **R-R89**; MOVES
-POSTED MONEY) is next.
+future are ONE event stream, byte-identical); `R23` 2026-09-23 (`f3bf8b9d`, **R-R98**) moved a
+balance a migration had dated its own run day to the setup day. `R16-c-2` (the contract calendar,
+**R-R89**; MOVES POSTED MONEY) is next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
 the findings, the index, the rules and `verification.md` are the shared registries in `docs/plans/`.
@@ -614,6 +615,13 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       clone; production prints its count); the earliest-payment refusal deleted (**R-R72** part 3).
       Closed **REC-519**. Spec and notes: `historical/recurrence_r20_as_built_2026-09-19.md`.
 
+- [x] **R23 -- a balance a migration dated its own run day takes the setup day.** `f3bf8b9d` -- as
+      built: migration `cddb15ffba5f` records the balance `d3d25212504b` had copied as a
+      `tracking_start` on the setup day and withdraws the copy through the new append-only
+      `budget.loan_anchor_withdrawals` (**R-R98**; the downgrade deletes only that statement,
+      **R-R99**); the walk and the R-EQ door read ONE producer, `load_standing_loan_assertions`.
+      Closed **balance:FU-1**.
+
 - [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
       **REC-527**, born at `salary:R15-b`'s review): `paychecks_from` and `_first_occurrence` read
       the calendar as `balance:X-bh-2` made it run below the record when `history_opens_on` is
@@ -622,7 +630,7 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       schedule bound (**R-R64**) for stated owners only.
 
 - [ ] **R22 -- the plan is computed, only the owner's acts are stored** (a DESIGN step: an audit,
-      then forks to the developer with worked dollars, BEFORE any build; asked for by the developer
+      then forks to the developer with worked dollars, BEFORE any build. Asked for by the developer
       at `pay_calendar:C18-a` round 9, 2026-09-23: "The from scratch design needs to be a step in
       the plan"). **Today** every occurrence a recurring schedule names inside the saved paychecks
       is a STORED row (Projected until settled), so an unpaid copy can be stranded, revived or
@@ -652,11 +660,9 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       from the schedule rather than read off rows; (3) R-PC96 judges rows NO schedule names (a
       rule-less item's rows, a carried-forward leftover) by their own day, and those stay stored
       under this model, so R-PC96 may survive too. Hand-added rows' own books gap is **PC-519**, a
-      separate row. Closes **REC-534**, **REC-535**, **REC-536** (each re-owned here at
-      `pay_calendar:C18-a`'s tick). Those ids, and **R-PC85**, **R-PC86**, **R-PC88**, **R-PC90**,
-      **R-PC91**, **R-PC93**, **R-PC95**, **R-PC96**, **R-PC97** and **PC-519**, are
-      `pay_calendar:C18-a`'s and file at its tick, and this step waits on `pay_calendar:C18` until
-      they do.
+      separate row. Closes **REC-534**, **REC-535**, **REC-536**, filed with this step as their
+      owner at `pay_calendar:C18-a`'s tick (the leaf it now waits on) beside **PC-519** and the
+      rulings above.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
       leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR

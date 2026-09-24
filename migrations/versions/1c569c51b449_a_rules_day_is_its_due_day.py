@@ -1,7 +1,7 @@
 """a rule's own day is the day its rows are due
 
 Revision ID: 1c569c51b449
-Revises: 2eabfa596ee0
+Revises: cddb15ffba5f
 Create Date: 2026-09-23 15:30:00.000000
 
 Plan step **recurrence:R5-a**, ruling **R-R96** (developer, 2026-09-23).
@@ -43,10 +43,12 @@ so a test can drive it without running DDL.
 that: the upgrade refused to run over a stated value, so every row the
 downgrade meets had ``NULL`` there, and ``NULL`` is what it restores.
 
-**Re-parented at merge, never at authoring** (coordinator, 2026-09-23): the
-chain this lands on is ``2eabfa596ee0`` -> ``credit_card:CC-5-4a-4`` ->
-``credit_card:CC-5-5d`` -> ``salary:S11-a`` -> this, and ``down_revision`` is
-moved onto whichever of those merged last when this branch takes ``dev``.
+**Re-parented at merge, never at authoring** (coordinator, 2026-09-23):
+written on ``2eabfa596ee0``, it follows the chain ``dev`` held when this
+branch took it (2026-09-24): ``2eabfa596ee0`` -> ``764461215480``
+(``credit_card:CC-5-5d``) -> ``5641f7729b68`` (``salary:S11-a``) ->
+``9b64df71cc34`` (``salary:S11-c-1``) -> ``cddb15ffba5f``
+(``recurrence:R23``) -> this.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -54,7 +56,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "1c569c51b449"
-down_revision = "2eabfa596ee0"
+down_revision = "cddb15ffba5f"
 branch_labels = None
 depends_on = None
 

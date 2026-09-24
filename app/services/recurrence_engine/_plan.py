@@ -295,8 +295,8 @@ def resolve_generation_plan(
     and the walk drops an occurrence whose row would land on or before it, so
     a paycheck recorded below an account's books is not filled with rows whose
     money is already inside that account's opening equity -- measured on a
-    production clone as a ``$531.94`` Van Payment and a ``$100.00`` birthday
-    before this step.  Nothing here reads it: the placements already carry it.
+    production clone as a Van Payment and a birthday before this step.
+    Nothing here reads it: the placements already carry it.
 
     Args:
         template: The (Transaction|Transfer)Template to generate from.

@@ -59,7 +59,7 @@ class TestTheRevision:
     def test_revision_and_down_revision(self):
         """revision / down_revision pin the migration into the chain."""
         assert _MIGRATION.revision == "1c569c51b449"
-        assert _MIGRATION.down_revision == "2eabfa596ee0"
+        assert _MIGRATION.down_revision == "cddb15ffba5f"
 
     def test_it_is_reviewed(self):
         """Destructive DDL carries the ``Review:`` line the rules require."""

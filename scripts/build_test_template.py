@@ -323,8 +323,8 @@ def _populate_template(app) -> None:
         )
         db.session.commit()
 
-        # The append-only refusal on the four account-history tables (plan
-        # step X-f3c-2c): idempotent re-application, same
+        # The append-only refusal on the account-history tables (plan step
+        # X-f3c-2c; every one in APPEND_ONLY_TABLES): idempotent re-application, same
         # latest-definition-wins contract as the blocks above.  It matters
         # here for the reason the books boundary does -- this is a constraint
         # a FIXTURE can trip, and a suite that could not trip it would be

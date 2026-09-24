@@ -72,10 +72,16 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
       the rest of the schema.
     * ``account_id`` CASCADE-on-delete -- deleting a loan account
       removes its anchor history with it.  No orphan-event rows.
-    * No uniqueness guard, deliberately (ruling R-EQ) -- a duplicate submit
-      is refused at the write door, which can compare against what governs;
-      an index over the row's values cannot.  See the ``__table_args__``
-      comment below.
+    * No uniqueness guard over the row's VALUES, deliberately (ruling R-EQ)
+      -- a duplicate submit is refused at the write door, which can compare
+      against what governs; an index over the row's values cannot.  See the
+      ``__table_args__`` comment below, which also says why the one UNIQUE
+      the table does carry, over ``(account_id, id)``, rejects no row.
+    * A statement STANDS until a
+      :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` names
+      it (plan step ``recurrence:R23``); read a loan's statements through
+      :func:`app.services.loan_loaders.load_standing_loan_assertions`, never
+      this table directly.
     """
 
     __tablename__ = "loan_anchor_events"
@@ -84,26 +90,24 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
             "anchor_balance >= 0",
             name="ck_loan_anchor_events_balance_nonneg",
         ),
-        # Forward-scan index for the write door's governing-event query
-        # (``loan_anchor_service._governing_loan_anchor``, which filters on
-        # ``account_id`` and bounds ``anchor_date``).  It named the RESOLVER's
-        # "latest anchor per account" lookup too until plan step X-an-b: that
-        # read path issues no ``ORDER BY`` at all now -- ``load_loan_anchor_facts``
-        # filters on ``account_id`` and orders in Python, because the synthesized
-        # origination has no row for SQL to sort -- so only the seek term serves
-        # it.  It shared the
-        # table with a unique expression index over ``(account_id, anchor_date,
+        # The seek index for the table's ONE reader,
+        # ``loan_loaders.load_standing_loan_assertions``, which filters on
+        # ``account_id`` and orders in Python (the loan's chronology key), so
+        # only the leading term serves it.  It served an ``ORDER BY`` for two
+        # readers once: the resolver's "latest anchor per account" lookup until
+        # plan step X-an-b, and the write door's governing-event query
+        # (``loan_anchor_service._governing_loan_anchor``, which bounded
+        # ``anchor_date`` and sorted in SQL) until plan step ``recurrence:R23``
+        # routed the door through the same producer.  It shared the table with
+        # a unique expression index over ``(account_id, anchor_date,
         # anchor_balance, utc_day(created_at))`` until ruling R-EQ deleted that
-        # one (plan step X-f1c4b); this is now the only index serving the
-        # ORDER BY pattern, which is what it was always doing -- the deleted
-        # index's postgres-text expression term kept it from doubling as a clean
-        # range scan over ``(account_id, anchor_date)``.
+        # one (plan step X-f1c4b).
         db.Index(
             "idx_loan_anchor_events_account",
             "account_id", "anchor_date",
         ),
-        # **There is no uniqueness guard on this table, and that is ruling
-        # R-EQ** (plan step X-f1c4b).  It carried
+        # **There is no uniqueness guard over this table's VALUES, and that is
+        # ruling R-EQ** (plan step X-f1c4b).  It carried
         # ``uq_loan_anchor_events_acct_date_bal_day`` over ``(account_id,
         # anchor_date, anchor_balance, ((created_at AT TIME ZONE 'UTC')::date))``
         # to absorb a double-click on the dashboard's "Record balance" button,
@@ -125,6 +129,20 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
         # ``(observed_on, utc_day(created_at))``.  That would have narrowed the
         # false refusal to one recording day rather than removing it; the trace
         # for that step measured the residue and replaced the mechanism instead.
+        #
+        # **The SUPERKEY a withdrawal targets, and it does NOT revive R-EQ**
+        # (plan step ``recurrence:R23``, ruling **R-R98**).  A
+        # :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal`
+        # names the statement it withdraws through a COMPOSITE foreign key over
+        # ``(account_id, id)``, so withdrawing another account's statement is
+        # unrepresentable, and PostgreSQL requires a UNIQUE over exactly those
+        # columns before such a key may target them.  It can reject NO row:
+        # ``id`` is the primary key, so every pair containing it is already
+        # distinct -- the reason ``uq_anchor_history_account_id`` gives for the
+        # same key on the cash twin.
+        db.UniqueConstraint(
+            "account_id", "id", name="uq_loan_anchor_events_account_id",
+        ),
         {"schema": "budget"},
     )
 

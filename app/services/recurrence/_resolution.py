@@ -292,8 +292,8 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             nothing stated the bound at all: the owner's first payday stood in
             for it, because an occurrence with no paycheck to land in is
             skipped, and a paycheck recorded below the books let the rule fill
-            it -- a ``$531.94`` Van Payment and a ``$100.00`` birthday dated
-            before Checking's books, measured on a production clone.
+            it -- a Van Payment and a birthday dated before Checking's books,
+            measured on a production clone.
 
             **:func:`resolve` leaves it ``None``**, for the reason it leaves
             the closing's derived half empty: it is pure, and the day is a
