@@ -68,12 +68,13 @@ Transfer invariants (critical -- violating any one is a critical bug):
   plan also reads transfers for occurrence identity, R-R66). A plan leg is emitted
   only for a side whose dated movement does not exist (R-BAL79), so a settled shadow
   under a still-Projected parent (a status DRIFT, forbidden by invariants 3 and 4)
-  is counted once, by whichever half holds it, and the reverse drift, a settled
-  parent over a still-Projected shadow that holds no movement, by neither half of
-  the cash fold and, since balance:X-bi-6-4b, once by the loan walk, as a $0.00
-  payment, its settled half being the plan half's exact complement (R-BAL140);
-  that is pinned, not a new defect, but any door that could WRITE such a drift is
-  one.
+  is counted once, by whichever half holds it. The reverse drift, a settled parent
+  over a still-Projected shadow that holds no movement, is counted by neither half
+  of the cash fold and, since balance:X-bi-6-4b, once by the loan walk, as a $0.00
+  payment; a settled parent over a shadow reverted alone, whose kept movement is
+  un-dated, makes the loan walk refuse (UndatedSettleError, naming the shadow's
+  row). That is pinned, not a new defect, but any door that could WRITE such a
+  drift is one.
 
 Design (DRY / SOLID / pythonic):
 - Duplicated logic should be extracted, not copy-pasted. `duplicate-code`

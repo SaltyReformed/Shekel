@@ -264,17 +264,18 @@ A task is NOT complete until ALL of these are true:
    movement does not exist (**R-BAL79**), so a SETTLED shadow under a still-Projected parent -- a
    status drift, which invariants 3 and 4 forbid and no door writes -- is counted ONCE, by whichever
    half holds it. The reverse drift, a settled parent over a still-Projected shadow that holds no
-   movement, is counted by neither half of the cash fold, and once by the loan walk since
-   `balance:X-bi-6-4b`, as a `$0.00` payment, because its settled half is the plan half's exact
-   complement (**R-BAL140**). Pinned in `tests/test_services/test_transfer_legs.py` and
-   `test_loan_settled_legs.py`; the structural end is `X-bi-6`, status in ONE row.
+   movement, is counted by neither half of the cash fold and, since `balance:X-bi-6-4b`, once by the
+   loan walk, as a `$0.00` payment; a settled parent over a shadow reverted alone, whose kept
+   movement is un-dated, makes the loan walk refuse (`UndatedSettleError`, naming the shadow's row).
+   Pinned in `tests/test_services/test_transfer_legs.py` and `test_loan_settled_legs.py`; the
+   structural end is `X-bi-6`, status in ONE row.
 
 **Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
 and invariant 5's record half is why the mirror still exists at all. Which clauses are already
 structural and which steps delete the rest is the balance arc's plan of record --
-`docs/audits/balance_architecture/README.md` (the X-au-m and X-bi-6 specifications). Until that work
-ships, the invariants are enforced exactly as written above, and the step that deletes a home owes
-this section its rewrite.
+`docs/audits/balance_architecture/README.md` (the X-bi-6 specifications). Until that work ships, the
+invariants are enforced exactly as written above, and the step that deletes a home owes this section
+its rewrite.
 
 ## Standards
 

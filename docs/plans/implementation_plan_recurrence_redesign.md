@@ -303,13 +303,15 @@ deletes that function.
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
 the ROW, where the ledger already reads it, rather than on the rule. The files carrying
-`payment_day` in code (census 19 code files `payment_day` in `app/**/*.py`) -- the rest of the
-(census 30 files `payment_day` in `app/**/*.py`) naming it at all name it only in prose, which a
-code census excludes by construction -- **already read it as the installment, bar two** -- exactly
-two make it a CASH day, in `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and
-those two ARE D4's mechanism. Eight distinct producers of "when is this installment due" collapse
-into one; the plan previously counted them as one accessor plus a rule read. Kills D4.
-**This step needs its own review pass** -- it is the deepest cut into the ledger.
+`payment_day` in code (census 19 code files `payment_day` in `app/**/*.py`)
+**already read it as the installment, bar two** -- exactly two make it a CASH day, in
+`routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.
+The other files of the (census 30 files `payment_day` in `app/**/*.py`) that name it at all carry it
+only in comments or string literals, which a code census blanks by construction, and not every one
+of those is prose: `routes/loan/_helpers.py`'s `_PARAM_FIELDS` keys a form field by the string.
+Eight distinct producers of "when is this installment due" collapse into one; the plan previously
+counted them as one accessor plus a rule read. Kills D4. **This step needs its own review pass** --
+it is the deepest cut into the ledger.
 
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
