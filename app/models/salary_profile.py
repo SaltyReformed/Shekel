@@ -50,6 +50,25 @@ class SalaryProfile(
             "user_id", "scenario_id", "name",
             name="uq_salary_profiles_user_scenario_name",
         ),
+        # Within a scenario, a paycheck definition belongs to at most ONE
+        # salary profile, active or not (plan step salary:X-av-1, ruling
+        # R-SAL63 as scoped by R-SAL69, closing finding N-294).  The
+        # amount model's PRICING lookup finds a row's profile within the row's
+        # scenario, and two profiles on one template there gave its
+        # ``{template_id: profile}`` map two candidates for one key, of which
+        # it kept whichever the query returned last.  ``create_profile``
+        # mints a fresh template per profile, so no door produces the state;
+        # this makes it unstorable for every writer.  PER SCENARIO because a
+        # template belongs to none: the rule lets a what-if scenario give the
+        # same paycheck its own salary (five template-keyed doors ignore
+        # scenario, and owner-scoped profile readers would count both: ledger
+        # row SAL-570).  NULLs stay distinct (PostgreSQL's
+        # default): a template's hard delete sets ``template_id`` NULL, and
+        # several profiles may have lost theirs.
+        db.UniqueConstraint(
+            "scenario_id", "template_id",
+            name="uq_salary_profiles_scenario_template",
+        ),
         db.CheckConstraint("annual_salary > 0", name="ck_salary_profiles_positive_salary"),
         db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),
         db.CheckConstraint("other_dependents >= 0", name="ck_salary_profiles_nonneg_dependents"),
