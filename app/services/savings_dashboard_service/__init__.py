@@ -44,6 +44,13 @@ Module map:
   of them end" (plan step X-q), read by both ``_metrics``' debt summary and
   ``_horizon``'s domain and milestone flags, which each used to answer it
   with a membership rule of their own.
+* :mod:`app.services.savings_dashboard_service._tile` -- the ONE statement of
+  what an account's tile shows on a day (plan step credit_card:CC-5-5d, ruling
+  R-CC88): a configured loan on the day, every other account at the end of
+  the day's pay period.  The live tile, the archived list, a debt goal and the
+  goal door (``app.services.savings_goal_door``) all read it, which is why
+  ``tile_balance_on`` and its loan test ``is_configured_loan`` are re-exported
+  below.
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping and the shared id-based category classifier.
 * :mod:`app.services.savings_dashboard_service._net_worth` -- the
@@ -107,6 +114,10 @@ from app.services.savings_dashboard_service._orchestrator import (
     compute_debt_summary,
     compute_goal_progress,
 )
+from app.services.savings_dashboard_service._tile import (
+    is_configured_loan,
+    tile_balance_on,
+)
 
 __all__ = [
     "DebtSummary",
@@ -116,4 +127,6 @@ __all__ = [
     "compute_dashboard_data",
     "compute_debt_summary",
     "compute_goal_progress",
+    "is_configured_loan",
+    "tile_balance_on",
 ]

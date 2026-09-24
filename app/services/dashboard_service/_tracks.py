@@ -127,9 +127,16 @@ def _track_goal_datum(goal_datum: GoalProgress) -> dict:
             ATTRIBUTES now, so a field this producer renames fails here rather
             than resolving to a ``KeyError`` that reads like missing data.
 
+    **A goal on a DEBT** (plan step credit_card:CC-5-5d) rides the same
+    contract: ``is_debt`` tells the track to caption it as a milestone to get
+    under, and ``current_balance`` is the figure the track SHOWS --
+    :attr:`~app.services.savings_dashboard_service.GoalProgress.shown_balance`,
+    what the debt owes, the same crossing its /savings tile speaks.  For a
+    savings goal that is its balance, as it always was.
+
     Returns:
         A dict with keys ``name``, ``account_name``, ``account_id``,
-        ``progress_pct``, ``current_balance``, ``target_amount``,
+        ``is_debt``, ``progress_pct``, ``current_balance``, ``target_amount``,
         ``target_date``, ``pace``, ``projected_completion_date``,
         ``required_monthly``, ``monthly_contribution``.
     """
@@ -139,8 +146,9 @@ def _track_goal_datum(goal_datum: GoalProgress) -> dict:
         "name": goal.name,
         "account_name": goal.account.name,
         "account_id": goal.account_id,
+        "is_debt": goal_datum.is_debt,
         "progress_pct": goal_datum.progress_pct,
-        "current_balance": goal_datum.current_balance,
+        "current_balance": goal_datum.shown_balance,
         "target_amount": goal_datum.resolved_target,
         "target_date": goal.target_date,
         "pace": trajectory.pace,

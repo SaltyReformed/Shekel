@@ -36,7 +36,16 @@
    account -- a loan's opening is its original principal, so the card is not
    rendered at all rather than rendered disabled:
      opened_on         -- date: the day the books currently open.
-     equity            -- Decimal: what they currently open holding.
+     equity            -- Decimal: what they currently open holding -- or, for
+                          a liability, OWING (plan step credit_card:CC-5-5b,
+                          ruling R-CC52: the card speaks owed, the route stores
+                          the held sign).
+     asks_owed         -- bool: True for a liability.  Its three wordings and
+                          the hidden ``asks_owed`` it submits (what the card
+                          ASKED; the POST refuses a card rendered under the
+                          other meaning, ruling R-CC61) sit INLINE so an
+                          asset's card renders byte-identical to before that
+                          step (no ``trim_blocks`` here).
      declared          -- bool: True when a human stated that figure, False
                           when the X-f3c-2a migration derived it.
      ceiling           -- OpeningCeiling: the latest day the service will
@@ -69,7 +78,7 @@
     <p class="text-body-secondary small">
       This account's books open on
       <strong>{{ books_opening.opened_on.strftime('%b %-d, %Y') }}</strong>
-      holding <strong>{{ money(books_opening.equity) }}</strong>. That figure is
+      {% if books_opening.asks_owed %}owing{% else %}holding{% endif %} <strong>{{ money(books_opening.equity) }}</strong>. That figure is
       the closing balance for that day, so anything that moved by then is
       already inside it -- which is why nothing this account records may be
       dated on or before it.
@@ -82,7 +91,8 @@
 
     <form method="POST"
           action="{{ url_for('accounts.restate_opening', account_id=account.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% if books_opening.asks_owed %}
+      <input type="hidden" name="asks_owed" value="true">{% endif %}
 
       <div class="row g-3">
         <div class="col-sm-6">
@@ -103,7 +113,7 @@
         </div>
 
         <div class="col-sm-6">
-          <label for="opening_equity" class="form-label">Opening equity</label>
+          <label for="opening_equity" class="form-label">{% if books_opening.asks_owed %}Owed at opening{% else %}Opening equity{% endif %}</label>
           <div class="input-group">
             <span class="input-group-text">$</span>
             <input type="number" step="0.01" id="opening_equity"
@@ -112,8 +122,9 @@
                    aria-describedby="opening-equity-help">
           </div>
           <div id="opening-equity-help" class="form-text">
-            What the account really held at the end of that day. Negative for
-            something you owe.
+            {% if books_opening.asks_owed %}What you really owed at the end of that day. A credit is a
+            negative amount.{% else %}What the account really held at the end of that day. Negative for
+            something you owe.{% endif %}
           </div>
         </div>
       </div>

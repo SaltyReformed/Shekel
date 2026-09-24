@@ -256,10 +256,14 @@ class TestSavingsDashboardProjection:
 # The live netting is covered on the real path in
 # ``test_savings_dashboard_service.py``, by tests that build real accounts and
 # read the cockpit producer: ``test_assets_minus_liabilities`` (a real
-# mortgage against real assets).  The ``abs`` on a negatively-stored
-# liability has a SEPARATE control at each of its two reduction sites:
+# mortgage against real assets).  The crossing of a negatively-held liability
+# to what it owes (``liability_sign.owed``; ``abs`` until plan step
+# credit_card:CC-5-5c, ruling R-CC47) has a SEPARATE control at each of its
+# two reduction sites:
 #   * hero            -- test_a_negative_balance_liability_still_adds_its_magnitude
 #   * per-period band -- test_series_liability_band_holds_a_negative_balance_magnitude
+# and the card holding a credit in ``test_one_liability_sign.py`` is what
+# tells ``owed()`` from ``abs()`` at both.
 # None of them uses a Property specifically; the netting rule is keyed on the
 # liability flag, not on the asset's kind.  Deliberately NOT cited:
 # ``test_net_equals_assets_minus_liabilities_each_point`` -- the series appends

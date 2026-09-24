@@ -148,7 +148,11 @@ end.
    which commit is the useful one genuinely differs by step. What is graded is that each document
    names ONE. **The balance document's exemption from this rule is CLOSED**: it was justified by a
    count that had gone stale in both directions, which is what a disabled arm does to the claim it
-   rests on.
+   rests on. **A commit claims the step it SHIPS in a `Ships: <arc>:<id>` git trailer**
+   (**R-BAL134**), one line per step in the message's last paragraph beside `Co-Authored-By:`, and
+   the gate refuses an open leaf that any commit on the graded tree names there. Prose is never a
+   claim, so a sentence that only names an open step cannot block a merge, as one did on 2026-09-23;
+   a trailer, like any message, binds once pushed.
 
 8. **A finding is not deferred for cost.** "Materially larger than this step" is a reason to give
    something its OWN step, never a reason to leave it unowned. A finding costing `$0.00` on today's

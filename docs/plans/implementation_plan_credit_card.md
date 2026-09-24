@@ -171,9 +171,11 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       payment or purchase stops cascading, like its key to the bank line, and the leftover-match
       check `_candidates.act_still_names_a_row` (read by `matched_subjects` and `_undisposed`) is
       deleted, which makes `bank_agreement._lines_on`'s membership read exact (**CC-358**). A
-      migration on `2eabfa596ee0`, its own release after the 4a-2 + 4a-3 release; its entry's own
-      design questions (2026-09-22, extending part (2) to the archive, the object layer and the
-      reset and transfer doors) are filed at its tick. Closes **CC-358**, **CC-363**.
+      migration, `c4a4e7d1b9f2`, written on `2eabfa596ee0` and re-parented at its merge behind the
+      chain as it stands (`764461215480`, 5d's, and `5641f7729b68`, S11-a's), its own release after
+      the 4a-2 + 4a-3 release; its entry's own design questions (2026-09-22, extending part (2) to
+      the archive, the object layer and the reset and transfer doors) are filed at its tick. Closes
+      **CC-358**, **CC-363**.
 - [ ] **CC-5-4a-5** `fix(cards): the panel and carry-forward say what they free first` -- `R-CC76`:
       the two doors that reach the status seam's `$0.00` / purchases withdrawal and undo a statement
       match with no caption (**CC-364**) name the bank lines they would free BEFORE the press, from
@@ -195,64 +197,34 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       link and the bill does not, so `status_seam.record_clearing` learns which account's statement
       it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
       package, announce-first.
-- [ ] **CC-5-5** `fix(cards): one sign for every balance` -- `R-CC47` (re-scoping `R-CC41`; the
-      sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
-      minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
-      `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
-      flip); ticks with its last leaf. `$0.00` on production's net-worth figures (both liabilities
-      are configured loans).
+- [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
+      balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
+      parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given
+      2026-09-23 5d (`R-CC69`..`R-CC73`); ticked with 5d.
   - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
         into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
         non-loan liability's owed amount floored at zero, summed (`R-CC49`);
         `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
         `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
         shape.
-- [ ] **CC-5-5b** `fix(accounts): a liability's balance is asked as owed` -- `R-CC52`: every door
-      that takes a LIABILITY's balance asks for the amount OWED (positive = you owe; a card's credit
-      a negative amount owed) and stores the held sign through `balance_at.owed`, one crossing per
-      door (the form speaks owed, the service stores held; the schema tier may not branch on account
-      class, as `schemas/validation/accounts.py` states): the account create form's opening balance
-      (`templates/accounts/form.html`, its route, `AccountCreateSchema`,
-      `account_service.create_account`), the anchor editor (`routes/accounts/anchor.py`
-      `anchor_form` and its PATCH, `grid/_anchor_edit.html`; amortizing accounts stay refused) and
-      the books-opening door (`routes/accounts/opening.py`, `opening_service`,
-      `accounts/_books_opening.html`), each entered and shown as owed, the pre-fill and a 422
-      redisplay included; the tile editor's held pre-fill (**CC-357**) closes with it. FIRST, a
-      census of every STORED liability balance on the newest production dump
-      (`account_openings.opening_equity`, `account_anchor_history.anchor_balance`, any other
-      books-opening or assertion row), each read under `R-CC47`, and of what reads them: the
-      Mortgage's `+174,281.51` opening and `+178,103.41` anchor were typed as owed, so wrong-signed
-      (both a configured loan's, feeding no net-worth figure; its cash fold and the posted ledger's
-      Balance Sheet are what to trace). A wrong-signed stored value is a MONEY question to the
-      developer, with worked dollars, BEFORE 5c; any backfill is an Alembic migration, which makes
-      this leaf migration-bearing and its own release. Before 5b grades with it, 5a's instrument
-      gains `/grid?account_id=<id>` for each non-amortizing liability (the balance line the anchor
-      door opens from). Graded by 5a's instrument: every ASSET screen byte-identical, a liability
-      form's label change a declared change. Closes **CC-357**.
-- [ ] **CC-5-5c** `fix(cards): a card in credit is the issuer owing` -- `R-CC47` and `R-CC48`, ONE
-      commit: the seam's two configured-loan arms report the HELD sign (`positions()` and the loan
-      domain's producers stay owed), each arm converting through the one flip and never an inline
-      `-positions(...)` (CLAUDE.md rule 14) -- so FIRST `owed` MOVES out of `_liability.py`, which
-      imports `_inputs` and `_kind_correct` (the two arms), to a module with no seam imports (e.g.
-      `balance_at/_sign.py`; the public name `balance_at.owed` stays), and its docstring names the
-      seam's other NON-held outputs (`liability_owed_at_dates`' magnitudes for every liability,
-      `positions`, `secured_loan_series`), none of which may be passed to it; the hero and trend
-      read the plain sum of balances with liabilities as `owed`, the band drops its `abs` and the
-      liability subtotal (`_display._compute_group_subtotals`, `R-CC48`) reads `owed`; the seven
-      loan-balance readers move onto `owed` (debt strategy; the loan pages' `current_balance`
-      property feeding the dashboard, the payoff and refinance calculators and the true-up pre-fill;
-      home equity; on /savings the liability tile's figure, its sparkline and two debt-summary
-      figures) and liability tiles show owed. The flip also decides what a savings goal backed by a
-      LIABILITY reads (**CC-360**: `_goal_form_context` offers any active account, a loan included,
-      and `_goals._goal_account_balance` reads a configured loan's OWED figure as progress today and
-      its held balance once the loan arm is re-signed): 5c either gains that reader, the goal
-      reading `owed()`, or refuses a liability as a goal's account, a design question the lane puts
-      to the developer with worked dollars before building; and the footer's "revolving" caption,
-      whose sum also counts an amortizing account with no loan terms and a custom liability, is
-      corrected (**CC-361**). Every loan test figure that flips sign is a rule-5 re-expression the
-      developer confirms, its classes with counts, before the commit. Graded by 5a's
-      `tests/manual/verify_liability_screens.py` per its docstring's procedure: production's screens
-      byte-identical. Closes **CC-354**, **CC-360**, **CC-361**.
+  - [x] **CC-5-5b** `3d9d0c1a` -- every liability balance door asks OWED and stores held through
+        `liability_sign.held_balance` (`owed()` moved out of the seam; `R-CC52`): the create form
+        (`R-CC58`), the anchor editor on every surface (`R-CC57` as amended by `R-CC60`), the
+        books-opening card; a stale form refused and re-opened as a fresh click (`R-CC61`,
+        `R-CC62`); no stored row re-signed, a loan's anchor cell a link (`R-CC53`). Two commits,
+        `ef4f6782` first; closed **CC-357**; suite 15186/0 at `ef4f6782`.
+  - [x] **CC-5-5c** `6daa3048` -- ONE commit (`R-CC50`): the configured-loan arms report HELD
+        through `liability_sign.owed`; net worth the plain sum; band, trend, subtotal (`R-CC48`),
+        tiles, debt summary, loan readers and archived drawer (`R-CC67`) read `owed`; the footer's
+        words (`R-CC68`); an anchor save answers its opener's display (`R-CC74`, `R-CC77`, `R-CC78`)
+        from the door's report (`R-CC79`, `R-CC85`). Rule-5 re-signs confirmed; closed **CC-354**,
+        **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
+  - [x] **CC-5-5d** `8f8b056d` -- a goal on a DEBT is a milestone to get under (`R-CC69`..`R-CC73`):
+        ONE goal door, `savings_goal_door.judge_goal_save` (`R-CC87`, `R-CC90`, `R-CC93`); every
+        debt figure by the tile's one rule, `_tile.tile_balance_on` (`R-CC88`, `R-CC95`, `R-CC97`),
+        a card-style goal's start recorded as `start_owed` (`R-CC91`); a Delete goal button
+        (`R-CC94`); migration `764461215480`. Rule-5 re-expressions confirmed; closed **CC-360**,
+        **CC-371**; suite 15368/0.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else

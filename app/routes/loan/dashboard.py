@@ -256,19 +256,19 @@ def _compute_payment_breakdown(installments, escrow_components):
 
 
 def _build_payment_summary(
-    current_balance, monthly_payment, installments, escrow_components,
+    current_owed, monthly_payment, installments, escrow_components,
 ):
     """Build the loan-card payment-summary template context.
 
-    Bundles the seam's current balance, the total monthly
+    Bundles what the loan owes today (the seam's), the total monthly
     payment (P&I + escrow), the next period's allocation, and
     the escrow display list.  The allocation reads the seam's forward plan
     so it reflects the next planned payments, not the contractual one when
     the user is under-/over-paying.
 
     Args:
-        current_balance: The loan's balance-at-today (``ctx.current_balance`` --
-            the seam's fold, plan C4).
+        current_owed: What the loan owes today (``ctx.current_owed`` --
+            the seam's fold, plan C4, through ``liability_sign.owed``).
         monthly_payment: The loan's P&I payment (``ctx.monthly_payment`` -- the
             seam figure), the base the total payment adds escrow to.
         installments: The seam's forward plan
@@ -285,7 +285,7 @@ def _build_payment_summary(
     return {
         # Plan C4: the seam's fold; equals the /savings debt card balance
         # and the net-worth liability (same seam, same resolution).
-        "current_principal_display": current_balance,
+        "current_principal_display": current_owed,
         "total_payment": escrow_calculator.calculate_total_payment(
             monthly_payment, escrow_components,
         ),
@@ -674,7 +674,7 @@ def balance_hero(account_id):
     return render_template(
         "loan/_balance_hero.html",
         account=account,
-        current_principal_display=ctx.current_balance,
+        current_principal_display=ctx.current_owed,
     )
 
 
@@ -702,7 +702,7 @@ def anchor_form(account_id):
         "loan/_anchor_edit.html",
         account=account,
         params=params,
-        current_principal_display=ctx.current_balance,
+        current_principal_display=ctx.current_owed,
         today_iso=date.today().isoformat(),
     )
 
@@ -778,7 +778,7 @@ def dashboard(account_id):
         "collateral_candidates": _load_collateral_candidates(current_user.id),
     }
     context.update(_build_payment_summary(
-        ctx.current_balance, ctx.monthly_payment, installments,
+        ctx.current_owed, ctx.monthly_payment, installments,
         ctx.loan.escrow_components,
     ))
     # The payment card: one strip per definition, each with its figure, its

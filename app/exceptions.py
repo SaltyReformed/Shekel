@@ -674,3 +674,24 @@ class StatementLineConflict(StatementImportError):
             f"line is the wrong one, delete the import that recorded it on the "
             f"statements page and import this file again."
         )
+
+
+class PayStubRefused(ValidationError):
+    """A transcribed pay stub the entry door will not record (plan step salary:S11-b).
+
+    Carries every refusal the SERVICE finds in one submission, keyed by what
+    it is about (``"payday"``, ``"tax-<kind id>"``, ``"printed_net"``,
+    ``"one_off:<index>"``), so the entry form marks each of them at once.  A
+    form the route could not read at all (a malformed figure) is answered
+    first and never reaches the service, so its refusals follow on the next
+    submit.  What
+    each refusal is, and whose ruling, is
+    :mod:`app.services.pay_stub_service`'s module docstring.
+
+    Attributes:
+        errors: ``{key: message}``, never empty.
+    """
+
+    def __init__(self, errors: "dict[str, str]") -> None:
+        self.errors = dict(errors)
+        super().__init__("; ".join(self.errors.values()))

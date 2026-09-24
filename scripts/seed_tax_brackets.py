@@ -8,6 +8,12 @@ tax config.
 Uses upsert pattern to avoid duplicates on re-run.
 Requires ref tables to be seeded first (seed_ref_tables.py).
 
+The deploy runs :func:`seed_tax_brackets` on every container start, inside
+entrypoint step 3's one transaction (``scripts/init_database.py``, plan step
+balance:X-cv, ruling R-BAL122), so the function commits nothing: the deploy
+commits it with everything else, and this script's ``__main__`` commits it
+when an operator runs the script by hand as a repair tool.
+
 Usage:
     python scripts/seed_tax_brackets.py
 """
@@ -47,10 +53,16 @@ from app.services.tax_seed_data import (
 
 
 def seed_tax_brackets():
-    """Seed federal brackets, FICA, and state tax config for all users."""
+    """Seed federal brackets, FICA, and state tax config for all users.
+
+    Adds only the rows a user is missing and commits nothing: the caller owns
+    the transaction (the deploy's one transaction, or ``__main__`` below).
+    """
     users = db.session.query(User).all()
     if not users:
-        print("No users found. Run seed_user.py first.")
+        # A first boot reaches this inside the deploy, before entrypoint step
+        # 5 seeds the owner -- whose registration writes the tax data itself.
+        print("No users yet; no tax data to seed.")
         return
 
     filing_statuses = {
@@ -75,9 +87,6 @@ def seed_tax_brackets():
         _seed_fica_for_user(user)
         _seed_state_tax_for_user(user, filing_statuses)
         _seed_state_child_deductions_for_user(user, filing_statuses)
-
-    db.session.commit()
-    print("\nTax bracket seeding complete.")
 
 
 def _seed_brackets_for_user(user, filing_statuses, tax_year, bracket_data):
@@ -204,3 +213,5 @@ if __name__ == "__main__":
     app = create_app()
     with app.app_context():
         seed_tax_brackets()
+        db.session.commit()
+        print("\nTax bracket seeding complete.")

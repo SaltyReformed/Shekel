@@ -35,6 +35,7 @@ from app.services.balance_at._resolution import (
     resolve_loan_bundle,
 )
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed
 from app.utils.dates import add_months
 from app.utils.money import round_money
 from tests._test_helpers import (
@@ -882,10 +883,15 @@ class TestPropertyEquityChartProducer:
             last_confirmed = confirmed[-1]
             # The loan's balance is the seam's fold (plan step D2a deleted the
             # resolver's balance field); the reconciliation guarantee is that
-            # the last confirmed schedule row IS that folded balance.
-            fold_balance = balance_at.balance_at(
+            # the last confirmed schedule row IS what that folded balance owes.
+            # The seam reports the balance HELD, negative when owed, since plan
+            # step credit_card:CC-5-5c (ruling R-CC47), while the schedule row,
+            # the chart's debt and the hero's total debt are all OWED -- so the
+            # fold is read through ``owed()`` once, here, for every comparison
+            # below.
+            fold_balance = owed(balance_at.balance_at(
                 loan, BalanceContext.build(seed_user["user"].id), today,
-            )
+            ))
             assert last_confirmed.remaining_balance == fold_balance
 
             # The loan's series comes from the PRODUCTION seam
@@ -922,9 +928,10 @@ class TestPropertyEquityChartProducer:
 
             # C5 closed the M1 gap: TODAY's month now reconciles too.  The fold
             # values the current month at ``ctx.as_of`` itself (not a projected
-            # month end), so its debt is the folded balance -- the hero's balance
-            # -- and its tier is ``confirmed``, where the pre-C5 schedule-row
-            # producer read today's still-projected row one payment below.
+            # month end), so its debt is what the folded balance owes -- the
+            # hero's total debt -- and its tier is ``confirmed``, where the
+            # pre-C5 schedule-row producer read today's still-projected row one
+            # payment below.
             assert index < chart.today_index
             assert chart.debt_tier[chart.today_index] == "confirmed"
             assert chart.debt[chart.today_index] == fold_balance

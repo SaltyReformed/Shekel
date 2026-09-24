@@ -153,15 +153,15 @@ class DebtSummary:
     restating, because a rule written down five times is a rule that can
     disagree with itself, which the first draft of this very docstring did:
 
-    ======================  ===========================  ==================
-    field                   rule                         reduces over
-    ======================  ===========================  ==================
-    the money figures       owed TODAY (balance > 0)     ``loan_ads``
-    payoff_outlook          has a DEBT LINE ahead        ``loan_ads``
-    principal_paid_fraction ALL LOANS EVER originated    ``loan_ads``
-    revolving_debt          liabilities that are NOT     ``account_data``
-                            loans (no payoff model)
-    ======================  ===========================  ==================
+    ========================  ===========================  ==================
+    field                     rule                         reduces over
+    ========================  ===========================  ==================
+    the money figures         owed TODAY (owed > 0)        ``loan_ads``
+    payoff_outlook            has a DEBT LINE ahead        ``loan_ads``
+    principal_paid_fraction   ALL LOANS EVER originated    ``loan_ads``
+    debt_without_payoff_date  liabilities that are NOT     ``account_data``
+                              loans (no payoff model)
+    ========================  ===========================  ==================
 
     **Three of the four share one list, and the fourth cannot.**
     :func:`~.._debt_line.debt_without_payoff_model` exists to sum what the loan
@@ -188,7 +188,7 @@ class DebtSummary:
     turned on ZERO ``app/`` readers anywhere, and this field has a live one
     (``routes/dashboard.py`` -> ``dashboard/_tracks.html``).  This value object
     was ALREADY a two-consumer union before X-u -- ``weighted_avg_rate``,
-    ``revolving_debt`` and two of the outlook's three states are read only by
+    ``debt_without_payoff_date`` and two of the outlook's three states are read only by
     ``/savings``, and the dashboard track reads a strict subset -- so the merge
     makes the union symmetric rather than adding a new class of thing.  The cost
     on ``/savings`` is one reduce over an already-built list: no query, no seam
@@ -207,11 +207,14 @@ class DebtSummary:
         payoff_outlook: The seam-derived
             :class:`~.._debt_line.LoanPayoffOutlook`, carried WHOLE -- the one
             derivation the Horizon chart's flag and axis read as well.
-        revolving_debt: What is owed on every liability with no payoff model
-            (a revolving card, a loan with no terms, a custom liability), each
-            account's owed amount floored at zero and summed (ruling R-CC49),
-            which the payoff date cannot speak for and the caption therefore
-            names (plan step X-q3).
+        debt_without_payoff_date: What is owed on every liability with no
+            payoff model (a card, a loan with no terms, a custom liability),
+            each account's owed amount floored at zero and summed (ruling
+            R-CC49), which the payoff date cannot speak for and the caption
+            therefore names (plan step X-q3) -- as "with no payoff date"
+            (ruling **R-CC68**, ledger row CC-361): it was ``revolving_debt``,
+            captioned "revolving", until plan step credit_card:CC-5-5c,
+            though two of its three kinds do not revolve.
         principal_paid_fraction: The aggregate fraction of ORIGINAL principal
             repaid across every loan that has originated, a ``Decimal`` in
             ``[0, 1]`` -- the budget dashboard's debt-rail position.  ``None``
@@ -231,7 +234,7 @@ class DebtSummary:
     total_monthly_payments: Decimal
     weighted_avg_rate: Decimal
     payoff_outlook: LoanPayoffOutlook
-    revolving_debt: Decimal
+    debt_without_payoff_date: Decimal
     principal_paid_fraction: Decimal | None
     dti: DtiMetrics | None
 
@@ -602,9 +605,9 @@ def _loan_ad_current_principal(ad: AccountProjection) -> Decimal | None:
     ``is_paid_off`` as well, which was the CONGRATULATION predicate answering a
     money question (finding B-16's class).  It was rescued only by the balance
     test beside it: ``is_paid_off`` implies ``is_retired`` implies the fold at
-    the pass's as-of is ``<= 0``, and ``current_balance`` is
-    :func:`~app.services.balance_at.balance_at` at that same as-of, which for
-    an originated loan is that same fold -- so the arm could never change an
+    the pass's as-of is ``<= 0``, and :attr:`~.._types.AccountProjection.owed`
+    is ``owed()`` of :func:`~app.services.balance_at.balance_at` at that same
+    as-of, which for an originated loan is that same fold -- so the arm could never change an
     answer.  It is deleted rather than re-pointed: a predicate that cannot
     fire reads as a rule and is not one.
 
@@ -615,19 +618,21 @@ def _loan_ad_current_principal(ad: AccountProjection) -> Decimal | None:
     contrast, is owed-today, which is exactly what this predicate scopes.
 
     Args:
-        ad: A per-account projection carrying ``current_balance`` (a loan
+        ad: A per-account projection carrying ``owed`` (a loan
             entry from ``_compute_account_projections``).
 
     Returns:
-        The loan's seam-derived current balance as a positive ``Decimal``
-        when it contributes, or ``None`` when that balance is zero or
-        negative.
+        What the loan owes today, as a positive ``Decimal``, when it
+        contributes, or ``None`` when it owes nothing (zero, or a credit).
     """
-    # Seam-derived current_balance (E-18 / Commit 15).  Same dollar
-    # figure as the loan card; replaces the previous read of the
-    # non-authoritative ``LoanParams.current_principal`` column that
-    # produced F-008's stored-vs-engine divergence.
-    principal = ad.current_balance
+    # Seam-derived (E-18 / Commit 15): the same dollar figure as the loan
+    # card; replaces the previous read of the non-authoritative
+    # ``LoanParams.current_principal`` column that produced F-008's
+    # stored-vs-engine divergence.  OWED, not the balance: the seam reports a
+    # configured loan HELD since plan step credit_card:CC-5-5c (ruling R-CC47),
+    # so the principal is ``owed()`` of it -- read raw, every loan would fail
+    # this test and the debt summary would read zero debt.
+    principal = ad.owed
     if principal <= Decimal("0.00"):
         return None
     return principal
@@ -638,11 +643,11 @@ def _compute_principal_paid_fraction(
 ) -> Decimal | None:
     """Aggregate fraction of original principal paid across ALL loans ever.
 
-    Computes ``(sum(original_principal) - sum(current_balance)) /
+    Computes ``(sum(original_principal) - sum(owed)) /
     sum(original_principal)`` over EVERY loan the pipeline surfaces, not
     just the loans still carrying a balance.  A RETIRED loan stays in
     BOTH the numerator and the denominator, contributing
-    ``Decimal("0.00")`` to the current-balance sum -- so its full
+    ``Decimal("0.00")`` to the owed sum -- so its full
     ``original_principal`` lands in the "paid" portion of the numerator.
 
     This "all loans ever originated" basis (locked 2026-06-12 in
@@ -740,8 +745,9 @@ def _compute_principal_paid_fraction(
         total_original += ad.loan.params.original_principal
         if ad.loan.figures.is_retired:
             continue
-        current = ad.current_balance
-        total_current += max(current, Decimal("0.00"))
+        # What it owes (plan step credit_card:CC-5-5c: the balance is HELD, so
+        # read raw a loan would floor to 0 here and read as fully paid).
+        total_current += max(ad.owed, Decimal("0.00"))
 
     if total_original <= Decimal("0.00"):
         return None
@@ -833,7 +839,7 @@ def _compute_debt_summary(
     was answerable only by reading the modules in call order.
 
     Uses per-account data already computed by _compute_account_projections:
-    ``current_balance`` directly, the original principal, payment and rate off
+    ``owed`` directly, the original principal, payment and rate off
     the ``loan`` detail's contract row and seam figures (plan steps X-r /
     X-t1), and the payoff through
     :func:`~.._debt_line.loan_payoff_outlook`.  Escrow components are loaded
@@ -848,7 +854,7 @@ def _compute_debt_summary(
     **The three LOAN rules are safe because they share one list.**  ``loan_ads``
     is computed once below and handed to each of them, so a loan rule can differ
     in what it does with a loan and never in which loans it was shown.  (The
-    fourth figure, ``revolving_debt``, is about the liabilities that are NOT
+    fourth figure, ``debt_without_payoff_date``, is about the liabilities that are NOT
     loans and takes ``account_data`` -- a superset, so it cannot disagree with
     the three about a loan.  The table in :class:`DebtSummary` says which is
     which.)  The fraction reached this function at plan step X-u (finding N-109)
@@ -876,7 +882,7 @@ def _compute_debt_summary(
     Returns:
         The :class:`DebtSummary`, or ``None`` if no loan accounts with params
         exist -- so a user whose only liability is a card has no payoff caption
-        to qualify, which is why the ``revolving_debt`` caveat rides here.
+        to qualify, which is why the ``debt_without_payoff_date`` caveat rides here.
     """
     loan_ads = [ad for ad in account_data if ad.loan is not None]
     if not loan_ads:
@@ -909,13 +915,13 @@ def _compute_debt_summary(
         # payment", plan C8d).
         payoff_outlook=loan_payoff_outlook(loan_ads),
         # What the payoff date CANNOT speak for (plan step X-q3, finding
-        # N-99): every liability with no PAYOFF model -- today, a revolving
-        # card, whose forward balance is its cash fold since plan step
-        # credit_card:CC-1 but which no schedule pays off -- is invisible to
-        # the derivation, so the caption says so
-        # instead of implying the user is out of debt on a date that only
-        # covers their loans.
-        revolving_debt=debt_without_payoff_model(account_data),
+        # N-99): every liability with no PAYOFF model -- a card, whose forward
+        # balance is its cash fold since plan step credit_card:CC-1 but which
+        # no schedule pays off, a loan with no terms, a custom liability -- is
+        # invisible to the derivation, so the caption says so instead of
+        # implying the user is out of debt on a date that only covers their
+        # loans (ruling R-CC68: "with no payoff date").
+        debt_without_payoff_date=debt_without_payoff_model(account_data),
         # The debt rail's position (plan step X-u, ruling R-BS, finding N-109).
         # It reduces over the SAME ``loan_ads`` the two loan rules above do and
         # applies its own all-loans-ever rule inside itself, so the rules stay

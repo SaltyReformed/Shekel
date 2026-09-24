@@ -60,7 +60,12 @@
 
   {% if goal_data %}
   <div class="savings-goals">
-    {% for gd in goal_data %}
+    {#- A goal on a DEBT renders its own block (plan step credit_card:CC-5-5d):
+        a milestone to get UNDER, with no per-period figure (ruling R-CC73).
+        The branch sits on the loop line and the endif on the savings block's
+        closing tag so a savings goal renders byte-for-byte as before (this
+        project sets no trim_blocks). #}
+    {% for gd in goal_data %}{% if gd.is_debt %}{% include "savings/_debt_goal.html" %}{% else %}
     <div class="savings-goal">
       <div class="d-flex justify-content-between align-items-start mb-2">
         <div>
@@ -175,7 +180,7 @@
         </p>
         {% endif %}
       </div>
-    </div>
+    </div>{% endif %}
     {% endfor %}
   </div>
   {% else %}
@@ -231,23 +236,26 @@
                    CONGRATULATION predicate -- and the moment to congratulate
                    is the live list when the loan clears, not the drawer a user
                    opens to unarchive or permanently delete.  So an archived row
-                   stays ``account`` + ``last_anchor_balance`` and this list
-                   runs no engine or seam call.  Plan step X-r deleted the
-                   branch that used to sit here, which tested a key
-                   ``_data._load_archived_accounts`` has never built.
+                   carries one figure and no congratulation predicate.  Plan
+                   step X-r deleted the branch that used to sit here, which
+                   tested a key ``_data._load_archived_accounts`` has never
+                   built.
 
-                   ``Last Balance`` below is the account's latest cash
-                   ASSERTION, and for an amortizing loan it is not a balance at
-                   all: ``anchor_service.AmortizingAccountAnchorError`` says so
-                   in terms (a loan's balance is ledger-derived) and the cash
-                   true-up door refuses the kind, so nothing keeps that
-                   assertion true for a loan.  Finding N-103 (plan step
-                   X-f1c3a) carries the measurements and the option space.  It
-                   read the ``current_anchor_balance`` CACHE COLUMN until that
-                   step deleted it; the figure is the same one.  The field it is read
-                   from now SAYS which figure it is: it was ``current_balance``,
-                   the name the live tiles use for the seam-derived balance,
-                   until plan step X-w2 (ruling R-CH). #}
+                   The figure below is one of two facts, and the row's type says
+                   which (plan step credit_card:CC-5-5c).  A DEBT is an
+                   ``ArchivedDebt`` captioned ``Owed``: what its tile would show
+                   today (the tile's rule, ``_tile.tile_balance_on``, since plan
+                   step CC-5-5d closed ledger row CC-371) through
+                   ``liability_sign.owed``, the figure a live liability tile
+                   shows (ruling R-CC67, with R-CC53 for a loan; ledger row
+                   CC-362).  It read the typed cash assertion
+                   until then, which for a configured loan is not its balance in
+                   either sign (finding N-103's measurement).  Every other
+                   account is an ``ArchivedAccount`` captioned ``Last Balance``:
+                   its latest cash ASSERTION, named ``last_anchor_balance`` for
+                   what it is since plan step X-w2 (ruling R-CH), after the
+                   ``current_anchor_balance`` cache column it mirrored was
+                   deleted (plan step X-f1c3a). #}
                 <h6 class="card-title mb-1">
                   <i class="bi bi-archive me-1"></i>
                   {{ archived.account.name }}
@@ -353,8 +361,13 @@
               </div>
             </div>
             <div class="mt-2">
+              {%- if archived.is_debt %}
+              <div class="small">Owed</div>
+              <div class="fs-5 fw-bold font-mono">{{ money(archived.owed) }}</div>
+              {%- else %}
               <div class="small">Last Balance</div>
               <div class="fs-5 fw-bold font-mono">{{ money(archived.last_anchor_balance) }}</div>
+              {%- endif %}
             </div>
           </div>
         </div>

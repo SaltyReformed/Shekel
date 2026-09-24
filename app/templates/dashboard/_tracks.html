@@ -7,9 +7,10 @@
    a _DebtTrackView (X-s3 -- the route no longer adds a key to the
    producer's object; it returns a new one):
 
-     tracks.goals: [{name, account_name, account_id, progress_pct,
+     tracks.goals: [{name, account_name, account_id, is_debt, progress_pct,
        current_balance, target_amount, target_date, pace,
        projected_completion_date, required_monthly, monthly_contribution}]
+       (current_balance is the figure SHOWN: what a debt owes, CC-5-5d)
      tracks.debt: a route-layer _DebtTrackView | None -- .summary (the
        savings package's DebtSummary value object, passed through WHOLE) and
        .principal_paid_pct (that summary's principal_paid_fraction scaled to
@@ -67,11 +68,23 @@
     <div class="track__pos">
       <span class="track__pos-num font-mono">{{ money(goal.current_balance) }}</span>
       <span class="track__pos-sub">
+        {#- A goal on a DEBT (plan step credit_card:CC-5-5d) is a milestone to
+            get UNDER: the figure above is what the debt owes, and the date is
+            when it is projected to owe at most the target (ruling R-CC73). -#}
+        {%- if goal.is_debt %}
+        owed &middot; goal under {{ money(goal.target_amount) }} &middot;
+        {%- if goal.projected_completion_date %}
+        under it ~{{ goal.projected_completion_date.strftime('%b %Y') }}
+        {%- else %}
+        not projected under it
+        {%- endif -%}
+        {%- else %}
         of {{ money(goal.target_amount) }} &middot;
         {%- if goal.projected_completion_date %}
         arriving ~{{ goal.projected_completion_date.strftime('%b %Y') }}
         {%- else %}
         no recurring contribution
+        {%- endif -%}
         {%- endif -%}
         {%- if goal.target_date %} &middot; target {{ goal.target_date.strftime('%b %Y') }}{% endif -%}
       </span>

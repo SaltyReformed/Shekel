@@ -111,6 +111,7 @@ from app.enums import (
     PostingSourceEnum,
     RecurrenceUnitEnum,
     StatementSourceEnum,
+    WithholdingKindEnum,
 )
 from app.ref_seeds import _REF_TABLE_SEEDS
 
@@ -139,6 +140,7 @@ _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (MovementFigureSourceEnum, "ref.movement_figure_sources"),
     (StatementBalanceEvidenceEnum, "ref.statement_balance_evidence"),
     (AccountOpeningSourceEnum, "ref.account_opening_sources"),
+    (WithholdingKindEnum, "ref.withholding_kinds"),
 )
 
 
@@ -160,6 +162,7 @@ _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (MovementFigureSourceEnum, "MovementFigureSource"),
     (StatementBalanceEvidenceEnum, "StatementBalanceEvidence"),
     (AccountOpeningSourceEnum, "AccountOpeningSource"),
+    (WithholdingKindEnum, "WithholdingKind"),
 )
 
 

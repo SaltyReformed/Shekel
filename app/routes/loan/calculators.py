@@ -250,7 +250,7 @@ def _payoff_target_date_result(params, ctx, data, has_plan):
     )
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
-            current_principal=ctx.current_balance,
+            current_principal=ctx.current_owed,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),
@@ -306,7 +306,7 @@ def payoff_calculate(account_id):
 
     # Shared loan context: payments, rate changes, seam balance + figures.
     # Identical to the dashboard's data loading so calculations are
-    # consistent.  ``ctx.current_balance`` is the same dollar figure
+    # consistent.  ``ctx.current_owed`` is the same dollar figure
     # rendered on the loan card (the seam's fold, plan C4).
     ctx = _load_route_context(account, params)
 
@@ -414,7 +414,7 @@ def _refinance_break_even(closing_costs, monthly_savings):
     )
 
 
-def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
+def _build_refinance_comparison(current_owed, ctx, scenarios, data, params):
     """Build the refinance side-by-side comparison from validated form data.
 
     Compares the current loan's CONTRACTUAL forward trajectory against a
@@ -440,7 +440,7 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
     from-today refinance.
 
     Args:
-        current_balance: The loan's balance-at-today (the seam's fold), read
+        current_owed: What the loan owes today (the seam's fold), read
             ONCE by the caller and threaded in so this and the paid-off gate do
             not each re-sample the seam.
         ctx: The :class:`~app.routes.loan._helpers._RouteLoanContext` for the
@@ -462,7 +462,7 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
     if data["new_principal"] is not None:
         refi_principal = data["new_principal"]
     else:
-        refi_principal = current_balance + closing_costs
+        refi_principal = current_owed + closing_costs
     refi_term = data["new_term_months"]
 
     refi_monthly, refi_total_interest, refi_payoff = _project_refinance(
@@ -478,7 +478,7 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
     ))
 
     monthly_savings = ctx.monthly_payment - refi_monthly
-    principal_diff = refi_principal - current_balance
+    principal_diff = refi_principal - current_owed
 
     return {
         "current_monthly": ctx.monthly_payment,
@@ -488,7 +488,7 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
             else ctx.payoff_date
         ),
         "current_remaining_months": len(forward_rows),
-        "current_principal": current_balance,
+        "current_principal": current_owed,
         "refi_monthly": refi_monthly,
         "refi_total_interest": refi_total_interest,
         "refi_payoff": refi_payoff,
@@ -552,8 +552,8 @@ def refinance_calculate(account_id):
     # only divergent case -- a past-term balloon still owing a positive balance
     # with no forward rows -- is more honestly served BY a refinance comparison
     # than blocked as "paid off", so gating on the balance alone is correct.
-    current_balance = ctx.current_balance
-    if current_balance <= Decimal("0.00"):
+    current_owed = ctx.current_owed
+    if current_owed <= Decimal("0.00"):
         return render_template(
             "loan/_refinance_results.html",
             error=(
@@ -573,7 +573,7 @@ def refinance_calculate(account_id):
     )
 
     comparison = _build_refinance_comparison(
-        current_balance, ctx, scenarios, data, params,
+        current_owed, ctx, scenarios, data, params,
     )
     return render_template(
         "loan/_refinance_results.html",
