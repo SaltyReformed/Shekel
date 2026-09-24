@@ -285,7 +285,7 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 63 code files `due_date` in `app/**/*.py`) --
+**The Python files NAMING `due_date` in code** (census 64 code files `due_date` in `app/**/*.py`) --
 a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
 narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
 in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
@@ -303,13 +303,13 @@ deletes that function.
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
 the ROW, where the ledger already reads it, rather than on the rule. The files carrying
-`payment_day` in code (census 18 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
-only in prose, which a code census excludes by construction --
-**already read it as the installment, bar two** -- exactly two make it a CASH day, in
-`routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.
-Eight distinct producers of "when is this installment due" collapse into one; the plan previously
-counted them as one accessor plus a rule read. Kills D4. **This step needs its own review pass** --
-it is the deepest cut into the ledger.
+`payment_day` in code (census 19 code files `payment_day` in `app/**/*.py`) -- the rest of the
+(census 30 files `payment_day` in `app/**/*.py`) naming it at all name it only in prose, which a
+code census excludes by construction -- **already read it as the installment, bar two** -- exactly
+two make it a CASH day, in `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and
+those two ARE D4's mechanism. Eight distinct producers of "when is this installment due" collapse
+into one; the plan previously counted them as one accessor plus a rule read. Kills D4.
+**This step needs its own review pass** -- it is the deepest cut into the ledger.
 
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
