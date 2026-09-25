@@ -102,10 +102,12 @@ transfer's covering movement with its transfer and side, and since that
 leaf's second half the posting WRITER books every transfer movement under its
 LEG (:func:`movement_parent`, :func:`transfer_family_movements`,
 :func:`dated_leg_exists_clause`).  For THOSE readers and the writer this
-module is the one place a movement is reached through a shadow row.
-**Other readers still reach it themselves until their leaf moves them** and
-``X-bi-6-4d`` must find each -- among them statement match and the
-reconcile panel (6-4c), and DC-11's raw-SQL leg arm
+module is the one place a movement is reached through a shadow row, and so
+it is since leaf ``X-bi-6-4c-2`` for the reconcile panel
+(:func:`offerable_transfer_legs`) and the recurrence engine's records
+predicate (:func:`transfers_holding_records`).  **Other readers still reach
+it themselves until their leaf moves them** and ``X-bi-6-4d`` must find each
+-- among them statement match (6-4c-1) and DC-11's raw-SQL leg arm
 (``scripts/integrity_check.py``).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
@@ -150,10 +152,12 @@ from app.services.transfer_legs._records import (
     grid_transfer_leg,
     grid_transfer_legs,
     movement_parent,
+    offerable_transfer_legs,
     planned_transfer_legs,
     recorded_transfer_legs,
     transfer_family_movements,
     transfer_movement_rows,
+    transfers_holding_records,
 )
 
 __all__ = [
@@ -171,8 +175,10 @@ __all__ = [
     "leg_label",
     "leg_of",
     "movement_parent",
+    "offerable_transfer_legs",
     "planned_transfer_legs",
     "recorded_transfer_legs",
     "transfer_family_movements",
     "transfer_movement_rows",
+    "transfers_holding_records",
 ]

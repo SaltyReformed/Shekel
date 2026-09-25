@@ -49,15 +49,18 @@ over THREE row kinds whose settle verbs are genuinely different:
   the verb the grid's Mark Paid shares (ruling **R-FA**), and a BILL's tick may
   correct its amount while an envelope's close may not (ruling **R-FB**) --
   plan step X-f2-c2;
-* a TRANSFER SHADOW settles through ``transfer_service.update_transfer`` so
-  both legs and the parent move together, carrying the loan-payment freeze
-  (:mod:`._transfers`) -- plan step X-f2-c3.
+* a TRANSFER settles through ``transfer_service.settle_transfer`` so both
+  legs and the parent move together, carrying the loan-payment freeze
+  (:mod:`._transfers`) -- plan step X-f2-c3.  It is offered as its LEG on this
+  account since leaf ``balance:X-bi-6-4c-2``, where it was offered as its
+  shadow row.
 
 **Two of those three turned out to share a SHAPE, and finding N-225 is that
 measured.**  A purchase's settle is genuinely different -- one column, no
 status, a bulk ``UPDATE`` -- but the transaction and transfer arms are both
-"query ``Transaction`` under a scope, narrow in Python by attribution date,
-loop dispatching to a per-row service verb".  The half that would have been
+"load under a scope, narrow in Python by attribution date, loop dispatching
+to a per-item service verb" (both queried ``Transaction`` until the transfer
+arm moved onto legs).  The half that would have been
 COPIED is :mod:`._rows`: the SQL scope, both halves of the day bound, and the
 loader.  Each arm still states which rows are its own, what one is worth, and
 what a tick means for it.
@@ -105,6 +108,7 @@ from app.services.reconcile_service._assemble import (
     record_reconciliation,
 )
 from app.services.reconcile_service._offers import (
+    DamagedTransfer,
     OfferKind,
     OutstandingGroup,
     OutstandingPurchase,
@@ -112,11 +116,13 @@ from app.services.reconcile_service._offers import (
     OutstandingTransaction,
     ReconcileSubmission,
     Section,
+    TickForm,
 )
 from app.services.reconcile_service._purchases import record_settled_days
 from app.services.reconcile_service._rows import Statement
 
 __all__ = [
+    "DamagedTransfer",
     "OfferKind",
     "OutstandingGroup",
     "OutstandingPurchase",
@@ -125,6 +131,7 @@ __all__ = [
     "ReconcileSubmission",
     "Section",
     "Statement",
+    "TickForm",
     "outstanding_set",
     "record_reconciliation",
     "record_settled_days",
