@@ -8,8 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-at-4` (`5d5f5bc1`, 2026-09-25) made a forgotten tax year loud**, `$0.00`; `S15`, the 2027 law,
-is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived spans: `historical/salary_*`.
+**`X-at-4` (`5d5f5bc1`, 2026-09-25) made a forgotten tax year loud**, `$0.00`; `X-at-8`, the 2027
+law, is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived spans: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -241,7 +241,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (`_metrics._compute_avg_monthly_expenses`) averages at the rhythm it was paid at
       (`pay_calendar.cadence_on`). `$0.00` on production.
 - [ ] **X-at -- the tax law has ONE home, and a year the app lacks is loud** (**R-SAL74**): the
-      DECOMPOSED parent of seven leaves, ticking with its last; a new year's law waits on none.
+      DECOMPOSED parent of eight leaves, ticking with its last; a new year's law waits on none.
   - [x] **X-at-1** `42bb425d` -- the law's one home, `app/tax_law/`, each year citing its sources,
         read with no query and written by no app door (**R-SAL74**; the tests' law, **R-SAL80**).
         `$0.00`, byte-identical on a production clone; closed **N-236**, **SAL-574**.
@@ -271,11 +271,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         standard deduction (P.L. 119-21) and 2026's head-of-household 24%/32% boundary (Rev. Proc.
         2025-32). **MOVES MONEY** (the 2025 Taxes tab); whether 2025 withholding keeps the old
         deduction is a fork for the developer, with worked examples, first.
-- [ ] **S15 -- the 2027 tax law** (**R-SAL74**): `_year_2027.py` in `LAW`, each figure citing its
-      source (the 2027 IRS Revenue Procedure's brackets, standard deductions and child credits, the
-      SSA's 2027 wage base, NC's 2027 rate), once published (late October to November 2026);
-      released before 2026-12-01, when `X-at-4`'s refusal begins, the banner showing from 2026-11-01
-      until it lands. **MOVES MONEY** (every projected 2027 paycheck).
+  - [ ] **X-at-8 -- the 2027 tax law** (**R-SAL74**): `_year_2027.py` in `LAW`, each figure citing
+        its source (the 2027 IRS Revenue Procedure's brackets, standard deductions and child
+        credits, the SSA's 2027 wage base, NC's 2027 rate), once published (late October to November
+        2026); released before 2026-12-01, when `X-at-4`'s refusal begins, the banner showing from
+        2026-11-01 until it lands. **MOVES MONEY** (every projected 2027 paycheck).
 
 ## 5. Findings ledger
 

@@ -5,8 +5,8 @@
 # The shipped salary step `S2` archived under rule 5 on 2026-09-25
 
 The salary plan stood at 300 lines, the most its 320-line cap allows under the gate's 20-line
-headroom arm, when the tick for `salary:X-at-4` (`5d5f5bc1`) ticked that leaf, minted `salary:S15`
-(the 2027 tax law) and gave `X-at-3`'s specification the two-state wording clause. Under
+headroom arm, when the tick for `salary:X-at-4` (`5d5f5bc1`) ticked that leaf, minted
+`salary:X-at-8` (the 2027 tax law) and gave `X-at-3`'s specification the two-state wording clause. Under
 `docs/plans/conventions.md` rule 5 the room comes from archiving a COMPLETED step, never from
 trimming a live specification. `S2` was the one SHIPPED step left in the plan that no other row of
 `docs/plans/steps.md` cites as a wait or an alias and no outcome names (measured on the tick's tree
