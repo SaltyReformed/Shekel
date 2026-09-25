@@ -6,16 +6,17 @@ the auto-linked income transaction template created with each profile.
 """
 
 import logging
-from datetime import date
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 from markupsafe import Markup
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.auth_helpers import get_or_404, get_owned_via_parent, require_owner
 from app.utils.dates import display_today
+from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
 from app.models.category import Category
@@ -28,18 +29,22 @@ from app import ref_cache
 from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.services import (
     account_service,
+    pay_list_service,
     recurrence_engine,
     salary_profile_service,
     template_amount_service,
 )
 from app.services import pay_schedule_service, pay_stub_service
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import PayCadence, cadence_for
+from app.services.pay_calendar import PayCadence
+from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence import RecurrenceSpec, author_rule
+from app.schemas.validation import SalaryPayEntryFixSchema
 from app.services.generation_schedule import GenerationSchedule
 from app.routes._commit_helpers import (
     DbErrorContext,
     StaleConflictContext,
+    UniqueViolationContext,
     commit_or_handle_stale,
     handle_db_error,
     regenerate_commit_or_report,
@@ -57,14 +62,20 @@ from app.routes.salary._helpers import (
 
 logger = logging.getLogger(__name__)
 
+_pay_entry_fix_schema = SalaryPayEntryFixSchema()
+
+#: The pay list's one-entry-per-payday key, named for the duplicate-key
+#: report a Fix racing another onto one payday lands on.
+_PAY_ENTRIES_UNIQUE_CONSTRAINT = "uq_pay_entries_profile_payday"
+
 
 def _paychecks_per_year() -> "int | None":
     """Return how many paychecks the owner receives a year, or ``None``.
 
     **The form's read-only replacement for the ``pay_periods_per_year``
-    dropdown** (plan step R-F16).  The engine divides the annual salary by this
-    number, so the page has to state it or the gross it previews is
-    unexplainable -- but it is not the owner's to choose HERE: it derives from
+    dropdown** (plan step R-F16).  The yearly figure beside the pay is the pay
+    times this number (ruling **R-SAL59**, plan step salary:X-av-3a), so the
+    page has to state it -- but it is not the owner's to choose HERE: it derives from
     the owner's pay era's cadence (``budget.pay_eras`` since plan step
     ``pay_calendar:C17-a``; ``budget.pay_schedule.cadence_days`` until then),
     which the pay-period settings own, and offering a second control was the
@@ -108,16 +119,31 @@ def _paychecks_per_year() -> "int | None":
 @salary_bp.route("/salary/new")
 @require_owner
 def new_profile():
-    """Display the salary profile creation form."""
+    """Display the salary profile creation form.
+
+    The first pay entry's payday defaults to the CURRENT payday (plan step
+    salary:X-av-3a): the pay the owner types is what they are paid now, so a
+    raise they already received is in it and is not added on top.  Only an
+    owner with a pay schedule has one; the form points the rest at the
+    schedule (:func:`_paychecks_per_year`).  The day is the pass's pinned day,
+    the one read (ledger row **SAL-572**).
+    """
     filing_statuses = db.session.query(FilingStatus).all()
+    paychecks_per_year = _paychecks_per_year()
+    ctx = BalanceContext.build(current_user.id)
+    current_payday = None
+    if paychecks_per_year is not None:
+        current = ctx.calendar().period_containing(ctx.as_of)
+        current_payday = current.start_date if current is not None else None
     return render_template(
         "salary/form.html",
         profile=None,
         filing_statuses=filing_statuses,
         raise_types=[],
         calc_methods=[],
-        paychecks_per_year=_paychecks_per_year(),
-        now_year=date.today().year,
+        paychecks_per_year=paychecks_per_year,
+        current_payday=current_payday,
+        now_year=ctx.as_of.year,
     )
 
 
@@ -154,7 +180,7 @@ def _salary_category(user_id: int) -> Category:
 
 
 def _paycheck_template(
-    data: dict, *, account_id: int, category_id: int, calendar,
+    data: dict, *, net_pay, account_id: int, category_id: int, calendar,
 ) -> TransactionTemplate:
     """Create and flush the every-paycheck template a salary profile files through.
 
@@ -168,14 +194,13 @@ def _paycheck_template(
     salary profile fans its paychecks across every pay period the owner has,
     closed ones included.  Plan ledger row **D34** carries whether it should.
 
-    **The per-paycheck amount is the annual salary over the OWNER's paycheck
-    count** (plan step R-F16).  It read a ``pay_periods_per_year`` off the
-    submitted payload until then -- a second answer to a question the calendar
-    this function already loads had already answered, and one that could
-    disagree with it.  The docstring above is why there was never a second
-    answer to give: a salary profile's paycheck recurs every pay period by
-    definition, so the count of paychecks in a year IS the count of pay
-    periods in a year.
+    **The template is born at the NET paycheck the engine prices** (plan step
+    salary:X-av-3a).  It was born at the GROSS -- the annual salary over the
+    owner's paycheck count -- and re-stated at the net a few lines later in
+    the same request, so the column held two quantities in one unit of work
+    and kept the gross whenever no reference period was found (half of
+    finding **N-446**'s "two quantities").  The profile is priced first and
+    the template takes that figure once.
 
     **The calendar is TAKEN rather than derived here** (pay-calendar plan step
     C2-f3c).  ``create_profile`` derives one anyway for the paycheck it then
@@ -184,14 +209,15 @@ def _paycheck_template(
     write could separate.
 
     Args:
-        data: The validated create payload; read for the name and the annual
-            salary.
+        data: The validated create payload; read for the name.
+        net_pay: The new profile's net paycheck at the reference period
+            :func:`create_profile` prices -- the figure the amount model's
+            fallback reads.
         account_id: The deposit account the paychecks land in -- neither a
             loan nor a credit card (the picker in :func:`create_profile`).
         category_id: This owner's ``Income: Salary`` category.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
-            read for the schedule's opening payday and for the paycheck count
-            the annual salary is divided by.
+            read for the schedule's opening payday.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -203,9 +229,7 @@ def _paycheck_template(
         category_id=category_id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
         name=data["name"],
-        default_amount=calendar.cadence.annual_to_per_paycheck(
-            data["annual_salary"],
-        ),
+        default_amount=net_pay,
         is_active=True,
     )
     db.session.add(template)
@@ -286,27 +310,21 @@ def create_profile():
     # session (PendingRollbackError) rather than yield the id.
     user_id = current_user.id
 
-    # The template's opening bound and per-paycheck amount, the generate pass,
-    # and the net-pay recompute below all read the pass's own derivation of it
-    # (pay-calendar plan step C2-f3c; plan step R7d-c-1 moved it onto the pass).
+    # The template's opening bound, the first pay entry's payday check, the
+    # net paycheck the template is born at, and the generate pass all read the
+    # pass's own derivation of it (pay-calendar plan step C2-f3c; plan step
+    # R7d-c-1 moved it onto the pass).
     calendar = ctx.calendar()
 
     try:
-        template = _paycheck_template(
-            data,
-            account_id=account.id,
-            category_id=salary_category.id,
-            calendar=calendar,
-        )
-
-        # Create the salary profile
+        # The profile FIRST, with its pay list, and priced before its template
+        # exists (plan step salary:X-av-3a): the template is born at the net
+        # paycheck rather than at a gross re-stated a few lines later.
         profile = SalaryProfile(
             user_id=current_user.id,
             scenario_id=ctx.scenario_id,
-            template_id=template.id,
             filing_status_id=data["filing_status_id"],
             name=data["name"],
-            annual_salary=data["annual_salary"],
             state_code=data["state_code"],
             qualifying_children=data.get("qualifying_children", 0),
             other_dependents=data.get("other_dependents", 0),
@@ -316,43 +334,51 @@ def create_profile():
         )
         db.session.add(profile)
         db.session.flush()
+        pay_list_service.start_pay_list(
+            profile, calendar, data["pay_amount"], data["pay_payday"],
+        )
+
+        # The reference period: the one holding the pass's pinned day -- the
+        # one read of "today" (ledger row SAL-572) -- else the first saved,
+        # else the first entry's own, which ``start_pay_list`` has just
+        # proven is a payday the calendar holds or projects.  The pass's
+        # pricer (plan step salary:C12, ledger row P62): the tax configs
+        # resolve for the period's own year, as for every other paycheck
+        # this profile prices.
+        periods = calendar.saved()
+        ref_period = (
+            calendar.period_containing(ctx.as_of)
+            or (periods[0] if periods else None)
+            or calendar.span_containing(data["pay_payday"])
+        )
+        net_pay = ctx.paychecks().for_profile(profile).at(
+            ref_period,
+        ).earnings.net_pay
+
+        template = _paycheck_template(
+            data,
+            net_pay=net_pay,
+            account_id=account.id,
+            category_id=salary_category.id,
+            calendar=calendar,
+        )
+        profile.template = template
+        db.session.flush()
 
         # Generate income transactions via recurrence engine.  The schedule
         # is the OWNER's whole one, off the same calendar the paycheck engine
         # prices against (plan step R4b-1).  ONE derivation answers both
         # (pay-calendar plan steps C2-f2d-3, C2-f3c).
         schedule = GenerationSchedule.for_pass(ctx)
-        periods = calendar.saved()
         recurrence_engine.generate_for_template(
             template, schedule, ctx.scenario_id,
         )
 
-        # Update the template's default_amount from gross to net so that
-        # any future fallback (e.g. missing tax configs for a period)
-        # uses the net amount rather than the gross.
-        ref_period = (
-            calendar.period_containing(date.today())
-            or (periods[0] if periods else None)
-        )
-        if ref_period:
-            # The pass's pricer (plan step salary:C12, ledger row P62): the
-            # tax configs resolve for the reference period's own year, as they
-            # do for every other paycheck this profile prices.  It was a
-            # direct ``calculate_paycheck`` passing no calibration, and the
-            # figure is the same: a profile flushed in this request has no
-            # calibration row for the pricer to find.
-            init_breakdown = ctx.paychecks().for_profile(profile).at(ref_period)
-            # Through the amount's one write door (plan step X-au-a).  The
-            # profile above is already flushed and active, so the door sees a
-            # salary-linked template: the column moves and NO version is
-            # recorded, because a paycheck-calculated figure is derived, not a
-            # price anybody stated.
-            template_amount_service.set_amount(
-                template, init_breakdown.earnings.net_pay,
-                effective_on=display_today(),
-            )
-
         db.session.commit()
+    except ValidationError as refused:
+        db.session.rollback()
+        flash(str(refused), "danger")
+        return redirect(url_for("salary.new_profile"))
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): DB-tier failures (FK, CHECK,
         # NUMERIC range, OperationalError, etc.) produce the user-
@@ -396,6 +422,13 @@ def edit_profile(profile_id):
         .all()
     )
 
+    # The pay list and the changes of rhythm no pay is recorded from (plan
+    # step salary:X-av-3a, rulings R-SAL61 and R-SAL82), off the one walk the
+    # engine prices through.  The pass's pinned day is also the form's year,
+    # the one read of "today" (ledger row SAL-572).
+    ctx = BalanceContext.build(current_user.id)
+    basis = PayrollBasis(profile, ctx.calendar())
+
     return render_template(
         "salary/form.html",
         profile=profile,
@@ -405,7 +438,9 @@ def edit_profile(profile_id):
         investment_accounts=investment_accounts,
         inactive_profiles=inactive_profiles,
         paychecks_per_year=_paychecks_per_year(),
-        now_year=date.today().year,
+        now_year=ctx.as_of.year,
+        pay_rows=pay_list_service.pay_rows(basis),
+        rhythm_changes=basis.rhythm_changes_without_pay(),
         stub_summaries=pay_stub_service.stub_summaries(profile),
         **_line_cadence_context(profile),
     )
@@ -454,22 +489,13 @@ def update_profile(profile_id):
         if field_name in _PROFILE_UPDATE_FIELDS:
             setattr(profile, field_name, value)
 
-    # Update linked template amount.  ``profile.template`` is eager
-    # (lazy="joined"), so this touches no DB and stages safely before the
-    # guard below picks up the commit.
-    if profile.template and "annual_salary" in data:
-        # The owner's paycheck count, off their cadence and from nowhere else
-        # (plan step R-F16).  ``cadence_for`` rather than a whole calendar:
-        # this needs the count and not the paydays.
-        template_amount_service.set_amount(
-            profile.template,
-            cadence_for(current_user.id).annual_to_per_paycheck(
-                data["annual_salary"],
-            ),
-            effective_on=display_today(),
-        )
-        if "name" in data:
-            profile.template.name = data["name"]
+    # The linked template takes the profile's name.  ``profile.template`` is
+    # eager (lazy="joined"), so this touches no DB and stages safely before
+    # the guard below picks up the commit.  The GROSS amount written here
+    # beside it went with the yearly salary (plan step salary:X-av-3a): the
+    # regeneration below re-states the template at the net, its one quantity.
+    if profile.template and "name" in data:
+        profile.template.name = data["name"]
 
     # Regenerate transactions and commit under the canonical optimistic-lock
     # guard (C-18 / F-010): the regeneration flushes, so it must run inside
@@ -503,6 +529,96 @@ def update_profile(profile_id):
     logger.info("user_id=%d updated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' updated.", "success")
     return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+
+
+@salary_bp.route("/salary/pay/<int:entry_id>/fix", methods=["POST"])
+@require_owner
+def fix_pay_entry(entry_id):
+    """Correct one pay entry's amount or payday, and re-price what it covers.
+
+    Plan step **salary:X-av-3a**, ruling **R-SAL61** ("'Fix' edits one").
+    Ownership runs through the entry's profile (404 for not-found and
+    not-yours).  Optimistic locking as the raise edit does it: the form ships
+    the entry's ``version_id``; a stale one short-circuits with a flash, and a
+    flush-time ``StaleDataError`` is caught by the same guard.  A Fix racing
+    another onto one payday lands on ``uq_pay_entries_profile_payday`` and is
+    reported as the recoverable warning it is.
+    """
+    entry = get_owned_via_parent(SalaryPayEntry, entry_id, "salary_profile")
+    if entry is None:
+        abort(404)
+    profile = entry.salary_profile
+    edit_page = RedirectTarget("salary.edit_profile", {"profile_id": profile.id})
+
+    errors = _pay_entry_fix_schema.validate(request.form)
+    if errors:
+        flash("Please correct the highlighted errors and try again.", "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+    data = _pay_entry_fix_schema.load(request.form)
+
+    stale_message = (
+        "This pay entry was changed by another action while you were "
+        "editing.  Please reload and try again."
+    )
+    if data["version_id"] != entry.version_id:
+        logger.info(
+            "Stale-form conflict on fix_pay_entry id=%d "
+            "(submitted=%d, current=%d)",
+            entry_id, data["version_id"], entry.version_id,
+        )
+        flash(stale_message, "warning")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    try:
+        pay_list_service.fix_entry(
+            entry, BalanceContext.build(current_user.id).calendar(),
+            data["amount"], data["payday"],
+        )
+    except ValidationError as refused:
+        db.session.rollback()
+        flash(str(refused), "danger")
+        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="fix_pay_entry",
+            log_id=entry_id,
+            flash_message=stale_message,
+            redirect=edit_page,
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to fix pay entry %d on profile %d",
+            log_args=(current_user.id, entry_id, profile.id),
+            flash_message="Failed to fix the pay entry. Please try again.",
+            redirect=edit_page,
+        ),
+        on_integrity=UniqueViolationContext(
+            logger=logger,
+            constraint=_PAY_ENTRIES_UNIQUE_CONSTRAINT,
+            log_message=(
+                "Duplicate-key conflict on fix_pay_entry id=%d "
+                "(another entry already holds that payday)"
+            ),
+            log_args=(entry_id,),
+            flash_message=(
+                "Another pay entry already starts on that payday.  Fix that "
+                "entry instead."
+            ),
+            redirect=edit_page,
+        ),
+    )
+    if response is not None:
+        return response
+
+    logger.info(
+        "user_id=%d fixed pay entry %d on salary profile %d",
+        current_user.id, entry_id, profile.id,
+    )
+    flash("Pay entry fixed.", "success")
+    return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
 @salary_bp.route("/salary/<int:profile_id>/delete", methods=["POST"])

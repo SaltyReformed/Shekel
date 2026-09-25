@@ -317,14 +317,9 @@ def payday_refusal(ctx: "BalanceContext", day: date, today: date) -> str | None:
         The message to show, or ``None``.
     """
     calendar = ctx.calendar()
-    if _paycheck_on(calendar, day) is None:
-        opening = calendar.opening_bound()
-        if opening is not None and day < opening:
-            return (
-                f"The app holds no paycheck on {day.isoformat()}: your pay "
-                f"record starts {opening.isoformat()}."
-            )
-        return f"{day.isoformat()} is not one of your paydays."
+    refusal = not_a_payday(calendar, day)
+    if refusal is not None:
+        return refusal
     upcoming = span_starting_on_or_after(calendar, today)
     if upcoming is not None and day > upcoming.start_date:
         return (
@@ -332,6 +327,34 @@ def payday_refusal(ctx: "BalanceContext", day: date, today: date) -> str | None:
             f"up to your next payday, {upcoming.start_date.isoformat()}."
         )
     return None
+
+
+def not_a_payday(calendar: PayCalendar, day: date) -> str | None:
+    """Return why *day* is not a payday the app holds or projects, or ``None``.
+
+    **The one statement of "is this day a payday" for the salary doors that
+    take one** (ruling **R-SAL49** for a stub; plan step salary:X-av-3a's pay
+    list asks it too, rulings **R-SAL50** and **R-SAL61**): the calendar's
+    span covering *day* STARTS on it (:func:`_paycheck_on`).  A day below the
+    record is refused as the record's, since the calendar holds no paycheck
+    there.
+
+    Args:
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+        day: The day asked about.
+
+    Returns:
+        The message to show, or ``None`` for a payday.
+    """
+    if _paycheck_on(calendar, day) is not None:
+        return None
+    opening = calendar.opening_bound()
+    if opening is not None and day < opening:
+        return (
+            f"The app holds no paycheck on {day.isoformat()}: your pay "
+            f"record starts {opening.isoformat()}."
+        )
+    return f"{day.isoformat()} is not one of your paydays."
 
 
 def _paycheck_on(calendar: PayCalendar, day: date) -> "DerivedPeriod | None":
@@ -910,6 +933,7 @@ __all__ = [
     "held_payday_refusal",
     "line_delete_refusal",
     "name_key",
+    "not_a_payday",
     "payday_refusal",
     "record_stub",
     "set_use_for_pricing",

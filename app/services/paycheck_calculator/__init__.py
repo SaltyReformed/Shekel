@@ -109,11 +109,13 @@ divergence; the capped half is unchanged.*
 The per-paycheck gross -- a RATE, not a share of a year
 -------------------------------------------------------
 
-``base_biweekly`` is the (post-raise) annual salary divided by the owner's
-PAYCHECK COUNT and rounded once, at the cent.  The division lives in ONE place
-for the whole application, :func:`app.services.payroll_basis.gross_per_paycheck`,
-which carries the argument for the rule and the measurements behind it, and
-the engine reaches it through ONE read,
+``base_biweekly`` is what the profile's PAY LIST pays on the payday since plan
+step **salary:X-av-3a** (ruling **R-SAL59**): the entry the payday is priced
+from, raised by each forecast raise landing after it, each step rounded at the
+cent (**R-SAL60**).  Until then it was the (post-raise) annual salary divided
+by the owner's PAYCHECK COUNT and rounded once, through
+``payroll_basis.gross_per_paycheck``, which that step deleted with the
+division.  The engine reaches it through ONE read,
 :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, for the paycheck
 and for both year-to-date replays (plan step **salary:X-av-2**; they spelled
 it three times until then).
@@ -187,10 +189,13 @@ through 2026-12-31 -- and driving MED-05's rule over it at a FLAT
 group) pays ``$95,200.96``: a full extra paycheck above the salary its own
 docstring claimed the year would equal.
 
-**The STORED input is still the annual salary, and plan step salary:X-av flips
-it** to a dated per-paycheck gross with the annual derived (ruling R-HW).  The
+**The STORED input is a dated per-paycheck gross since plan step
+salary:X-av-3a, with the annual derived** (ruling R-HW, then **R-SAL59**).  The
 contract stated here -- a constant rate per paycheck, independent of the
-schedule -- is what survives that flip unchanged; only the input improves.
+schedule -- is what survived that flip unchanged; only the input improved.  The
+yearly figure is now the rate times the paychecks a year, so the "four cents
+under" above is gone by construction for the figure the app shows, and a
+27-payday year simply pays 27 paychecks, as this employer does.
 """
 
 from ._breakdown import (

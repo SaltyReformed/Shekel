@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # be written back to each model via setattr.  Defined at module scope so
 # each set is built once per process rather than on every request.
 _PROFILE_UPDATE_FIELDS = {
-    "name", "annual_salary", "filing_status_id", "state_code",
+    "name", "filing_status_id", "state_code",
     "qualifying_children", "other_dependents",
     "additional_income", "additional_deductions", "extra_withholding",
 }

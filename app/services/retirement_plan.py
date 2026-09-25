@@ -857,8 +857,9 @@ def _derive_picture(
     # crossing a New Year could project the verdict card's path from year N
     # and the lever card's from N+1.
     as_of = inputs.balance_ctx.as_of
+    calendar = inputs.balance_ctx.calendar()
     pension = compute_pension_summary(
-        gap.pensions, as_of, point.terms_for, point.month_offset,
+        gap.pensions, as_of, point.terms_for, calendar, point.month_offset,
     )
     # The current paycheck off the PASS's pricer -- the same
     # ``ProfilePaychecks`` the payroll feed below prices from, so the income
@@ -888,7 +889,7 @@ def _derive_picture(
     # together (ruling R-SAL70): the current paycheck standing in for the
     # final year's is converted at its own rhythm, not the latest era's.
     paycheck = compute_gap_net_biweekly(
-        gap, payroll, retirement_date, pension.salary_by_year, as_of,
+        gap, payroll, retirement_date, as_of, calendar,
     )
     net = calculate_gap(
         net_biweekly_pay=paycheck.net,
