@@ -84,7 +84,7 @@ prefer, because claiming it before it was true is how
 
 from datetime import date
 
-from app.services.installment_calendar import installment_of
+from app.services.installment_calendar import installment_paid_by
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import settled_day
@@ -137,9 +137,10 @@ def payment_visible_on(
     transfer stores a day).  That installment is its INTERVAL's (ruling
     **R-R107**, amending R-BAL139): the latest installment due on or before the
     payment's own due date
-    (:func:`~app.services.installment_calendar.installment_of`), the same one
-    answer to "which installment does this payment pay" that its charge, its
-    cash price and the forward plan read (ruling **R-R104**).  Nothing moved on
+    (:func:`~app.services.installment_calendar.installment_paid_by`), the same
+    one answer to "which installment does this payment pay" that its charge,
+    its cash price, the forward plan (ruling **R-R104**) and the loan page
+    (rulings **R-R108**, **R-R109**) read.  Nothing moved on
     any day, so this is the day the debt grows by the charge the payment did
     not clear, and the ledger books that correction on it.  For a payment due
     ON the contractual day the interval's installment IS its due date
@@ -193,7 +194,8 @@ def payment_visible_on(
             X-bi-6-4b) until ``X-bi-6-4d`` re-parents the movement.
     """
     if leg.record is None:
-        due = loan_payment_due_date(leg, payment_day)
-        installment = installment_of(origination_date, payment_day, due)
-        return due if installment is None else installment
+        return installment_paid_by(
+            origination_date, payment_day,
+            loan_payment_due_date(leg, payment_day),
+        )
     return settled_day(leg.record.transaction_id, leg.record.settled_on)

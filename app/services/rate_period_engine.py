@@ -575,7 +575,7 @@ class ConfirmedRowInputs:
 
     The cohesive argument bundle of :func:`confirmed_amortization_row`: the real
     economics of one settled payment (its ACTUAL ``principal`` and ``interest``),
-    the installment it satisfies (its ``due_date`` and governing ``period``), the
+    the installment it pays (its ``installment`` and governing ``period``), the
     loan's ``origination_date`` that numbers the row, and the running
     ``remaining_balance`` owed after it that the caller's own walk produced.
     Bundled so the shared builder the posted reader and the walk view both call
@@ -584,8 +584,14 @@ class ConfirmedRowInputs:
     Attributes:
         origination_date: The loan's origination date, numbering the row
             (:func:`payment_number`).
-        due_date: The contractual installment this payment satisfies (the row's
-            date and number), NOT its settled date.
+        installment: The contractual installment this payment PAYS -- the
+            row's date and number, and the date the schedule prices its escrow
+            on -- NOT its settled date, and not its own due date when that
+            falls off the contractual day: a payment due Mar 10 on a loan due
+            the 22nd is row ``#1 Feb 22`` of a loan from Jan 22 (ruling
+            **R-R109**, the caller places it with
+            :func:`~app.services.installment_calendar.installment_paid_by`).
+            It was the payment's due date until that ruling.
         principal: The payment's REAL principal paid down (may be NEGATIVE for an
             underpayment, plan D5).
         interest: The payment's REAL accrued interest.
@@ -596,7 +602,7 @@ class ConfirmedRowInputs:
     """
 
     origination_date: date
-    due_date: date
+    installment: date
     principal: Decimal
     interest: Decimal
     period: RatePeriod
@@ -642,8 +648,8 @@ def confirmed_amortization_row(row: ConfirmedRowInputs) -> AmortizationRow:
     """
     extra = max(row.principal + row.interest - row.period.period_pi, ZERO_MONEY)
     return AmortizationRow(
-        month=payment_number(row.origination_date, row.due_date),
-        payment_date=row.due_date,
+        month=payment_number(row.origination_date, row.installment),
+        payment_date=row.installment,
         payment=round_money(row.principal + row.interest - extra),
         principal=row.principal,
         interest=row.interest,

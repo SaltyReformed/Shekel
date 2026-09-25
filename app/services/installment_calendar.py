@@ -222,3 +222,45 @@ def installment_of(
     if ordinal < month_ordinal(first_installment_date(origination_date, payment_day)):
         return None
     return installment
+
+
+def installment_paid_by(
+    origination_date: date, payment_day: int, due: date,
+) -> date:
+    """Return the day that NAMES a payment due on *due*: the installment it pays.
+
+    **The one answer to "which installment does this payment pay"** (ruling
+    **R-R104**) as a date every reader can name the payment by: the
+    installment whose interval *due* falls in (:func:`installment_of`), or
+    *due* itself for a payment due before the loan's first installment --
+    ruling R-C's early extra, which pays no installment and keeps its own
+    date.  For a payment due ON the contractual day it IS *due*; for one due
+    off it, the latest installment before it -- a payment due Mar 10 on a loan
+    due the 22nd pays, and is named by, Feb 22.
+
+    Its readers are every tier that dates or names a payment by its
+    installment: the cash price
+    (:func:`app.services.cash_ledger._loan_installment._installment_cash`),
+    the day a ``$0.00`` close is visible and booked on (ruling **R-R107**,
+    :func:`app.services.loan_ledger.payment_visible_on`), the loan page's
+    payment-history card (ruling **R-R108**,
+    :func:`app.services.loan_posting_service.confirmed_loan_payment_history`)
+    and the confirmed schedule row's date, number and escrow (ruling
+    **R-R109**, :func:`app.services.balance_at.confirmed_view`).  The first
+    two each spelled the early-extra fallback out beside
+    :func:`installment_of` until plan step recurrence:R16-c-2 gave it this
+    one home.  The forward plan's coverage test asks :func:`installment_of`
+    directly, because an early extra covers no installment there.
+
+    Args:
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`.
+        payment_day: The loan's contractual day-of-month due day, 1-31.
+        due: The payment's own due date in contract time
+            (:func:`app.services.loan_loaders.loan_payment_due_date`).
+
+    Returns:
+        The installment *due* falls in, or *due* when it precedes the first.
+    """
+    installment = installment_of(origination_date, payment_day, due)
+    return due if installment is None else installment

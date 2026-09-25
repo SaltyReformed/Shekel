@@ -346,7 +346,14 @@ class PaymentOutcome:
 
     @property
     def due_date(self) -> date:
-        """The installment this payment satisfies (:attr:`LoanCashEvent.on_date`)."""
+        """The payment's own due date (:attr:`LoanCashEvent.on_date`), its walk-order key.
+
+        The installment it PAYS -- the one the loan page names it by -- is the
+        installment this date falls in
+        (:func:`~app.services.installment_calendar.installment_paid_by`, rulings
+        **R-R104**, **R-R108**); the two are one date only for a payment due on
+        the loan's contractual day.
+        """
         return self.event.on_date
 
     @property

@@ -1567,7 +1567,7 @@ class TestTheSplitIsADateKeyedCorrection:
             rows = loan_posting_service.confirmed_loan_payment_history(
                 loan.id, scenario_id, date.today(),
             )
-            assert [(row.due_date, row.interest, row.principal) for row in rows] == [
+            assert [(row.installment, row.interest, row.principal) for row in rows] == [
                 (date(2026, 2, 1), Decimal("500.00"), Decimal("500.00")),
                 (date(2026, 3, 1), Decimal("497.50"), Decimal("302.50")),
             ]

@@ -80,6 +80,24 @@ runs.  Each door constructs a state in which the tiers differ:
   two-catch-up door read as the Mortgage payoff moving a month and every
   projected balance point with it); both read 0 lines on that fix.  Under
   R16-c-2 the same two doors are where the posted money moves (above).
+* **DOOR 8 -- a SETTLED payment due OFF the contractual day** (rulings
+  **R-R108**, **R-R109**): the Van's latest settled payment, due on its
+  contractual 22nd, is re-dated to the 10th of the next month through the
+  transfer door -- inside the same installment's interval, so it pays the
+  same installment and the walk charges and splits it exactly as before.
+  What the loan page NAMES it by moves: the history card lists it under that
+  installment and the schedule dates, numbers and escrow-prices its row
+  there, where the base tree used the payment's own due date.  It is the
+  positive control for the CARD and SCHED lines below, which no other door
+  can move -- production holds no payment due off its loan's day, and doors
+  1-7 settle none -- so their zero on every other door is a measurement
+  rather than a printer that could not see the change.
+
+**Every door also prints the loan page's two NAMING surfaces** (plan step
+R16-c-2's rulings R-R108 and R-R109): the payment-history card's rows and the
+schedule's confirmed rows exactly as the route hands them to the template
+(:func:`app.routes.loan._helpers.build_schedule_context` -- the row's
+number, date, escrow and total).
 
 Nothing it prints carries an id a door's own write assigned, for the reason
 ``verify_generation_pass.py`` states: PostgreSQL does not roll a sequence
@@ -206,6 +224,58 @@ def _ledger_lines(label, account):
     )
 
 
+def _display_lines(label, account, ctx):
+    """Print the loan page's history card and the schedule's confirmed rows.
+
+    The two surfaces rulings R-R108 and R-R109 name a payment on by the
+    installment it pays.  The card row's field is ``due_date`` on a tree
+    before R-R108 and ``installment`` after it, so it is read by whichever the
+    tree carries and the one file runs on both.  The schedule's rows are the
+    route's own (:func:`app.routes.loan._helpers.build_schedule_context` over
+    the seam's confirmed rows), printed while they are confirmed -- they come
+    first -- with the number, date, escrow and total the template renders.
+    """
+    from app.routes.loan._helpers import build_schedule_context  # pylint: disable=import-outside-toplevel
+    from app.services.loan_loaders import (  # pylint: disable=import-outside-toplevel
+        load_escrow_lines,
+        load_loan_params,
+    )
+    from app.services.loan_posting_service import (  # pylint: disable=import-outside-toplevel
+        confirmed_loan_payment_history,
+    )
+    from app.services.scenario_resolver import get_baseline_scenario  # pylint: disable=import-outside-toplevel
+
+    card = confirmed_loan_payment_history(
+        account.id, get_baseline_scenario(USER_ID).id, ctx.as_of,
+    )
+    for row in card or ():
+        named = getattr(row, "installment", None) or getattr(row, "due_date")
+        print(
+            f"{label}\tCARD\taccount={account.id}\t{named}"
+            f"\tcash={row.cash}\tprincipal={row.principal}"
+            f"\tinterest={row.interest}\tescrow={row.escrow}"
+        )
+    view = balance_at.confirmed_view(account, ctx)
+    if view is None:
+        print(f"{label}\tSCHED\taccount={account.id}\tno confirmed view")
+        return
+    schedule = build_schedule_context(
+        view.history_rows, balance_at.loan_installments(account, ctx),
+        load_escrow_lines(account.id), load_loan_params(account.id),
+    )
+    for index, row in enumerate(schedule["amortization_schedule"]):
+        if not row.is_confirmed:
+            break
+        print(
+            f"{label}\tSCHED\taccount={account.id}"
+            f"\t#{schedule['schedule_row_numbers'][index]}"
+            f"\t{row.payment_date}"
+            f"\tescrow={schedule['schedule_row_escrow'][index]}"
+            f"\ttotal={schedule['schedule_row_totals'][index]}"
+            f"\tbalance={row.remaining_balance}"
+        )
+
+
 def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
     """Print a loan's posted-ledger inputs, its plan, its trajectory and a balance grid.
 
@@ -215,6 +285,7 @@ def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
     printed where it lands -- on each outcome's split and ``charge`` date).
     """
     _ledger_lines(label, account)
+    _display_lines(label, account, ctx)
     figures = balance_at.loan_figures(account, ctx)
     print(f"{label}\tPAYOFF\taccount={account.id}\t{figures.payoff_date}")
     plan = loan_plan(account, ctx)
@@ -355,7 +426,7 @@ def _adhoc_projected(account_id, period, amount, due):
 
 
 def main():
-    """Print the baseline, the TODAY read and the seven doors."""
+    """Print the baseline, the TODAY read and the eight doors."""
     app = create_app()
     with app.app_context():
         print(f"# as_of={AS_OF}")
@@ -589,6 +660,31 @@ def main():
         db.session.flush()
         ctx7 = BalanceContext.build(USER_ID, AS_OF)
         _plan_lines("D7", _loan(MORTGAGE_ACCOUNT_ID), ctx7, months=12)
+        db.session.rollback()
+
+        # --- DOOR 8: a SETTLED payment due OFF the contractual day (R-R108,
+        # R-R109).  The Van's latest settled payment is re-dated from its
+        # contractual 22nd to the 10th of the next month through the transfer
+        # door: inside the same installment's interval, so the charge it
+        # clears, its split and its settled day are unchanged, and only what
+        # the loan page names it by can move.
+        db.session.begin_nested()
+        latest8 = max(
+            _confirmed_legs(VAN_ACCOUNT_ID), key=lambda shadow: shadow.due_date,
+        )
+        off_day = add_months(
+            date(latest8.due_date.year, latest8.due_date.month, 10), 1,
+        )
+        print(
+            f"# DOOR 8 re-dating the settled Van installment due "
+            f"{latest8.due_date} to {off_day}"
+        )
+        transfer_service.update_transfer(
+            latest8.transfer.id, USER_ID, due_date=off_day,
+        )
+        db.session.flush()
+        ctx8 = BalanceContext.build(USER_ID, AS_OF)
+        _plan_lines("D8", _loan(VAN_ACCOUNT_ID), ctx8, months=12)
         db.session.rollback()
 
         print("# rolled back")

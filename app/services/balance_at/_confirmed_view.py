@@ -52,6 +52,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.installment_calendar import installment_paid_by
 from app.services.loan_ledger import LoanLedgerWalk
 from app.services.loan_resolver import ConfirmedLedgerView
 from app.services.amortization_engine import AmortizationRow
@@ -131,20 +132,31 @@ def _history_rows_from_walk(
       period's contractual ``period_pi`` under the schedule-row invariant
       ``principal + interest == payment + extra_payment``.
     * ``month`` / ``payment_date`` -- numbered and dated at the installment the
-      payment satisfies (the split's ``due_date``, the walk's own ordering key), so
-      a late-settled payment is dated at the installment it paid, never the next.
+      payment PAYS: the installment its own due date (the split's ``due_date``,
+      the walk's ordering key) falls in
+      (:func:`~app.services.installment_calendar.installment_paid_by`, ruling
+      **R-R109**), so a late-settled payment is dated at the installment it
+      paid, never the next, and a payment due Mar 10 on a loan due the 22nd is
+      dated and numbered at Feb 22 -- where the schedule prices its escrow and
+      the band chart plots it.  The loan's due day is read off the calendar the
+      walk was charged on (``walk.stream.calendar``, ruling **R-R100**), its
+      origination from *origination_date*, so the row is numbered and placed
+      from one origination.
     * ``interest_rate`` -- the split's governing period ``annual_rate`` (the SAME
       period its ``interest`` accrued at, carried on the split -- plan step E1c).
 
     Event ORDER mirrors the write walk exactly: payments by DUE date, anchors by
     their own date, a payment BEFORE a same-date anchor, ties within a type keeping
-    the walk's ``(pay_period.start_date, id)`` order via a stable sort.
+    the walk's ``(pay_period.start_date, id)`` order via a stable sort.  A row
+    is NAMED by its installment but ORDERED by its due date, because the
+    running balance must accumulate in the walk's order; the installment never
+    falls as the due date rises, so the rows' dates stay ascending.
 
     Args:
         walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk` (the read
             pass's memoized walk, :meth:`~app.services.balance_at.BalanceContext.loan_walk`).
         origination_date: The loan's origination (:func:`_origination_date`), which
-            numbers the rows.
+            numbers the rows and places each on its installment.
 
     Returns:
         The chronological confirmed :class:`~app.services.amortization_engine.AmortizationRow`
@@ -170,6 +182,7 @@ def _history_rows_from_walk(
     # do, so the row balances and the posted ledger cannot drift.
     linked_sum = _ZERO_MONEY
     rows: list[AmortizationRow] = []
+    payment_day = walk.stream.calendar.payment_day
     for _event_date, tag, item in events:
         if tag == _TAG_ANCHOR:
             # The anchor's posted linked net -- the jump its reset booked, in
@@ -184,7 +197,9 @@ def _history_rows_from_walk(
         linked_sum += principal
         rows.append(confirmed_amortization_row(ConfirmedRowInputs(
             origination_date=origination_date,
-            due_date=item.due_date,
+            installment=installment_paid_by(
+                origination_date, payment_day, item.due_date,
+            ),
             principal=principal,
             interest=interest,
             period=item.period,

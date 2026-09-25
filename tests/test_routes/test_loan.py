@@ -9442,3 +9442,96 @@ class TestScheduleRowsResolveTheirOwnTerms:
         assert {row.interest_rate for row in rows} == {
             Decimal("0.05000"), Decimal("0.07000"),
         }
+
+
+class TestTheLoanPageNamesAPaymentByItsInstallment:
+    """Rulings R-R108 and R-R109: the page names a payment by the installment it pays.
+
+    A payment due off the loan's contractual day pays the installment whose
+    interval its due date falls in (ruling R-R104): a payment due Mar 10 on a
+    loan due the 22nd pays Feb 22's, and its charge, cash price, balance and
+    ledger entry already read Feb 22.  The page now names it the same way:
+    the payment-history card lists it under ``Feb 2026`` (R-R108), and the
+    schedule's row for it is ``#1 . Feb 22, 2026`` in every column -- its date,
+    its number, the escrow it is priced with -- and the band chart plots it
+    there (R-R109).
+
+    Josh's worked example for R-R109, rendered through both routes: a
+    ``$200,000.00`` mortgage at 6%, due the 22nd from 2026-01-22 (P&I
+    ``$1,199.10``), escrowing ``$100.00`` a month rising to ``$300.00`` on
+    Mar 1, and one payment due Mar 10 that moves ``$1,299.10`` -- P&I plus
+    Feb 22's ``$100.00`` escrow.  Feb 22's charge is ``200000.00 * 0.06 / 12
+    = 1000.00`` of interest and ``$100.00`` of escrow, so the payment splits
+    interest ``1,000.00``, escrow ``100.00``, principal ``199.10``.  Before
+    R-R109 the row read ``#2 . Mar 10, 2026`` with Mar 10's ``$300.00``
+    escrow, a row total of ``$1,499.10`` -- ``$200.00`` more than moved.
+    Today is frozen at 2026-03-20 for this file, after the payment.
+    """
+
+    @staticmethod
+    def _mortgage_paid_off_day(seed_user, seed_periods, db_session):
+        """The worked example's mortgage, escrow step and Mar 10 payment."""
+        acct = _create_fresh_mortgage(
+            seed_user, db_session, principal=Decimal("200000.00"),
+            rate=Decimal("0.06000"), payment_day=22,
+            origination_date=date(2026, 1, 22),
+        )
+        opening = add_escrow_line(
+            db_session, acct.id, "Property Tax", Decimal("1200.00"),
+            effective_date=date(2026, 1, 22),
+        )
+        db_session.add(EscrowComponentVersion(
+            line_id=opening.line_id,
+            effective_date=date(2026, 3, 1),
+            annual_amount=Decimal("3600.00"),
+        ))
+        db_session.commit()
+        create_settled_transfer(
+            seed_user, db_session, seed_user["account"], acct,
+            seed_periods[4], amount=Decimal("1299.10"),
+            settled_on=date(2026, 3, 10), due_date=date(2026, 3, 10),
+        )
+        db_session.commit()
+        return acct
+
+    def test_the_schedule_row_is_the_installment_in_every_column(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """``#1 . Feb 22, 2026``, escrow ``$100.00``, total ``$1,299.10`` = the cash."""
+        acct = self._mortgage_paid_off_day(seed_user, seed_periods, db.session)
+
+        context, html = (
+            TestScheduleRowsResolveTheirOwnTerms._capture_schedule_context(  # pylint: disable=protected-access
+                app, auth_client, acct.id,
+            )
+        )
+        rows = context["amortization_schedule"]
+        assert [row.is_confirmed for row in rows[:2]] == [True, False]
+        confirmed = rows[0]
+        assert (
+            context["schedule_row_numbers"][0],
+            confirmed.payment_date,
+            confirmed.interest,
+            confirmed.principal,
+            context["schedule_row_escrow"][0],
+            context["schedule_row_totals"][0],
+        ) == (
+            1, date(2026, 2, 22), Decimal("1000.00"), Decimal("199.10"),
+            Decimal("100.00"), Decimal("1299.10"),
+        )
+        assert "Feb 22, 2026" in html
+        assert "Mar 10, 2026" not in html
+
+    def test_the_card_and_the_chart_name_the_feb_22_installment(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The card lists it under ``Feb 2026``; the chart's history point is Feb."""
+        acct = self._mortgage_paid_off_day(seed_user, seed_periods, db.session)
+
+        response = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert "Ledger-confirmed through Feb 2026" in html
+        assert "<td>Feb 2026</td>" in html
+        assert "<td>Mar 2026</td>" not in html
+        assert _parse_band_chart(html)["labels"][0] == "Feb 2026"

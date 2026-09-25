@@ -3115,7 +3115,7 @@ class TestLatePaidPaymentDating:
             history = loan_posting_service.confirmed_loan_payment_history(
                 loan.id, scenario_id, _AS_OF,
             )
-            assert [row.due_date for row in history] == [date(2026, 2, 1)]
+            assert [row.installment for row in history] == [date(2026, 2, 1)]
 
     def test_every_surface_equals_the_ledger_for_a_late_payment(
         self, app, db, seed_user, seed_periods,

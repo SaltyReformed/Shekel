@@ -34,7 +34,11 @@ from app.services.loan_ledger import (
     with_contract_charges,
 )
 from app.services.loan_ledger._charges import contract_charges
-from app.services.installment_calendar import installment_dates, installment_of
+from app.services.installment_calendar import (
+    installment_dates,
+    installment_of,
+    installment_paid_by,
+)
 from tests.oracles.loan_monthly_composition import accrual_charge, rate_period
 
 _ZERO = Decimal("0.00")
@@ -419,6 +423,49 @@ class TestInstallmentOf:
                     payment_day, day,
                 )
                 day += timedelta(days=1)
+
+
+class TestInstallmentPaidBy:
+    """The day a payment is NAMED by: the installment it pays (R-R104, R-R108, R-R109).
+
+    :func:`installment_of`, or the payment's own due date before the loan's
+    first installment -- the one home of the fallback the cash price and a
+    ``$0.00`` close's day each spelled out beside :func:`installment_of`.
+    """
+
+    def test_an_on_day_payment_is_named_by_its_own_due_date(self):
+        """Due Mar 22 on a loan due the 22nd: its installment IS its due date."""
+        assert installment_paid_by(
+            date(2026, 1, 22), 22, date(2026, 3, 22),
+        ) == date(2026, 3, 22)
+
+    def test_an_off_day_payment_is_named_by_its_intervals_installment(self):
+        """Due Mar 10 on a loan due the 22nd: it pays, and is named by, Feb 22."""
+        assert installment_paid_by(
+            date(2026, 1, 22), 22, date(2026, 3, 10),
+        ) == date(2026, 2, 22)
+
+    def test_an_early_extra_keeps_its_own_due_date(self):
+        """Before the Feb 22 first installment there is none to name it by."""
+        for due in (date(2026, 1, 25), date(2026, 2, 10)):
+            assert installment_paid_by(date(2026, 1, 22), 22, due) == due
+
+    def test_it_never_falls_as_the_due_date_rises(self):
+        """Ordering by due date orders by installment too.
+
+        The history card and the confirmed schedule sort their rows by the
+        payment's own due date and name them by this; the names stay ascending
+        only if it is monotone, early extras included.  Every due day 1-31,
+        every day from before the origination to three years on.
+        """
+        origination = date(2027, 12, 31)
+        for payment_day in range(1, 32):
+            day, previous = date(2027, 11, 1), None
+            while day <= date(2030, 12, 31):
+                named = installment_paid_by(origination, payment_day, day)
+                assert named <= day, (payment_day, day)
+                assert previous is None or named >= previous, (payment_day, day)
+                day, previous = day + timedelta(days=1), named
 
 
 def _escrow_line(*versions: tuple[date, str]) -> SimpleNamespace:

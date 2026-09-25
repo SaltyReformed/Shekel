@@ -373,7 +373,7 @@ def _loans(user_id, scenario_id, accounts):
                 history if isinstance(history, dict)
                 else None if history is None
                 else [
-                    [str(row.due_date), _money(row.cash), _money(row.principal),
+                    [str(row.installment), _money(row.cash), _money(row.principal),
                      _money(row.interest), _money(row.escrow)]
                     for row in history
                 ]

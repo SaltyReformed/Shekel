@@ -38,7 +38,7 @@
       <div class="nw-hero__cap">
         {%- set last_payment = payment_history[-1] if payment_history else none -%}
         {%- set last_anchor = balance_anchors[-1] if balance_anchors else none -%}
-        {%- if last_payment %}Ledger-confirmed through {{ last_payment.due_date.strftime('%b %Y') }}
+        {%- if last_payment %}Ledger-confirmed through {{ last_payment.installment.strftime('%b %Y') }}
         {%- else %}Projected from schedule{% endif -%}
         {%- if last_anchor and not last_anchor.is_opening %}, anchored {{ last_anchor.anchor_date.strftime('%b %-d, %Y') }}{% endif -%}
       </div>
@@ -254,7 +254,7 @@
              chronological). #}
           {% for row in payment_history|reverse %}
           <tr>
-            <td>{{ row.due_date.strftime('%b %Y') }}</td>
+            <td>{{ row.installment.strftime('%b %Y') }}</td>
             <td class="text-end font-mono">{{ money(row.cash) }}</td>
             <td class="text-end font-mono">{{ money(row.principal) }}</td>
             <td class="text-end font-mono">{{ money(row.interest) }}</td>

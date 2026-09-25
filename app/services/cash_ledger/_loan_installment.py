@@ -92,7 +92,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import escrow_calculator, loan_resolver
-from app.services.installment_calendar import installment_of
+from app.services.installment_calendar import installment_paid_by
 from app.services.loan_loaders import (
     installment_for,
     load_loan_params,
@@ -279,9 +279,11 @@ def _installment_cash(
     it**.  The payment's own due date in contract time
     (:func:`app.services.loan_loaders.installment_for`) is placed on the loan's
     installment calendar ONCE here -- the latest installment due on or before
-    it (:func:`~app.services.installment_calendar.installment_of`, worked out
-    from the calendar's one rule rather than searched for, ruling **R-R105**),
-    the interval ruling **R-R89** pairs a payment with -- and that installment
+    it (:func:`~app.services.installment_calendar.installment_paid_by`, worked
+    out from the calendar's one rule rather than searched for, ruling
+    **R-R105**), the interval ruling **R-R89** pairs a payment with, and the
+    installment the loan page names the payment by (rulings **R-R108**,
+    **R-R109**) -- and that installment
     drives the P&I --
     the level payment of the rate period containing it
     (:func:`~app.services.rate_period_engine.period_for_date`) -- and the
@@ -317,8 +319,8 @@ def _installment_cash(
     **Four payments clear no charge, so their whole cash -- escrow included
     -- is principal.**  A payment due before the loan's first installment
     (ruling R-C's early extra) has no installment to pay, so
-    :func:`~app.services.installment_calendar.installment_of` answers ``None``
-    and it is priced on its own due date, as the replay reads its period there
+    :func:`~app.services.installment_calendar.installment_paid_by` answers its
+    own due date and it is priced there, as the replay reads its period there
     too.  An OVERDUE projection pushed past a later recorded fact is priced on
     its own interval's installment, as if nothing had pushed it, while the
     replay hands it what stands at the push -- nothing, since that fact cleared
@@ -380,12 +382,10 @@ def _installment_cash(
         in -- the due date itself for a payment due on the contractual day or
         before the loan's first installment.
     """
-    due = installment_for(due_date, period_start, basis.payment_day)
-    installment = installment_of(basis.origination_date, basis.payment_day, due)
-    if installment is None:
-        # Ruling R-C's early extra: due before the first installment, so no
-        # installment stands over it and it is priced on its own date.
-        installment = due
+    installment = installment_paid_by(
+        basis.origination_date, basis.payment_day,
+        installment_for(due_date, period_start, basis.payment_day),
+    )
     monthly_pi = period_for_date(basis.periods, installment).period_pi
     escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, installment)
     return round_money(monthly_pi + escrow + extra_principal)
