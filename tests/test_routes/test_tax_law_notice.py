@@ -14,8 +14,10 @@ when the weekly calendar sweep fakes the date.
 
 import re
 from datetime import date
+from pathlib import Path
 
 import pytest
+from flask import render_template_string
 from flask_login import login_user
 
 from app import _current_user_is_owner, ref_cache
@@ -138,6 +140,22 @@ class TestTheNoticeIsOnEveryOwnerPage:
             "adds them.",
         ]
 
+    def test_two_states_priced_older_are_both_named(self, auth_client, tax_law, on_day):
+        """R-SAL91's sentence for two states -- wording extrapolated from Josh's one-state form.
+
+        Unreachable until plan step salary:X-at-3 lists a second state; X-at-3's
+        specification carries the question of these words for the developer
+        (X-at-4's tick).  Pinned so they cannot drift unseen meanwhile.
+        """
+        tax_law(made_up_law((2026, {"NC": "0.0399", "SC": "0.0500"}), (2027, {})))
+        on_day(date(2027, 11, 2))
+
+        assert _sentences(auth_client.get("/dashboard").get_data(as_text=True))[-1] == (
+            "Shekel doesn't have the 2028 tax rules yet. Federal tax, Social Security and "
+            "Medicare for 2028 use 2027's rules, and NC tax uses 2026's and SC tax uses "
+            "2026's, until an app update adds them."
+        )
+
     def test_a_law_with_no_year_says_it_has_nothing_to_use(self, auth_client, tax_law, on_day):
         """No release ships an empty law; a test installs one, and the words stay true of it."""
         tax_law(EMPTY_TAX_LAW)
@@ -151,6 +169,31 @@ class TestTheNoticeIsOnEveryOwnerPage:
 
 class TestTheNoticeIsSilentOtherwise:
     """Before November 1, once the year is in, and for anyone but the owner."""
+
+    def test_a_silent_notice_leaves_the_page_byte_identical(
+        self, app, seed_user, tax_law, on_day,
+    ):
+        """While silent, the notice's block renders to NOTHING -- not even whitespace.
+
+        The release that ships these alarms is graded page for page against
+        the one before it, so ``base.html`` renders with the block and with it
+        cut out, in ONE request (one CSRF token), and the bytes must match.
+        With the notice showing, the same comparison must differ, which is
+        what shows it can fail.
+        """
+        source = (Path(app.root_path) / "templates" / "base.html").read_text(encoding="utf-8")
+        # From the start of the comment's line, found without its trim marker,
+        # so a lost marker fails the byte comparison rather than this lookup.
+        start = source.rindex("\n", 0, source.index("--- Tax-law notice")) + 1
+        without = source[:start] + source[source.index("\n  {# --- Welcome Banner"):]
+        tax_law(_THROUGH_2026)
+
+        with app.test_request_context("/dashboard"):
+            login_user(seed_user["user"])
+            on_day(date(2026, 10, 31))
+            assert render_template_string(source) == render_template_string(without)
+            on_day(date(2026, 11, 1))
+            assert render_template_string(source) != render_template_string(without)
 
     def test_october_31_carries_no_notice(self, auth_client, tax_law, on_day):
         """The notice starts on November 1 (the display-timezone date)."""

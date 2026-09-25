@@ -20,7 +20,9 @@ Four claims, each graded in the direction it can fail:
 from __future__ import annotations
 
 import io
+import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -677,6 +679,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
             if name != "tax-law":
                 assert job.get("needs") == "tax-law", name
                 assert "if" not in job, f"an if: could run {name!r} after the check failed"
+                assert "continue-on-error" not in job, f"{name!r} could fail green"
         # A re-run of only the failed build reuses a check judged earlier, so
         # the check hands over the instant its refusal starts and the build's
         # FIRST step -- before any checkout or login -- refuses once it has.
@@ -685,9 +688,109 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "python scripts/check_tax_law.py refuse --starts-epoch" in emit["run"]
         gate = jobs["build-and-push"]["steps"][0]
         assert gate["env"] == {"REFUSE_FROM": "${{ needs.tax-law.outputs.refuse_from }}"}
-        assert '[ "${now}" -ge "${REFUSE_FROM}" ]' in gate["run"]
-        assert "exit 1" in gate["run"]
-        assert "if" not in gate and "continue-on-error" not in gate
+        # No step of the build may run past a failed gate or fail green: an
+        # ``if: always()`` on the build step would build after the refusal.
+        for step in jobs["build-and-push"]["steps"]:
+            assert "if" not in step and "continue-on-error" not in step, step.get("name")
+        # Both executed steps name ``bash``, so GitHub runs them the way
+        # ``_run_step`` below does (pipefail included).
+        assert gate["shell"] == "bash" and emit["shell"] == "bash"
+
+    @staticmethod
+    def _publish_jobs() -> dict[str, dict]:
+        """Read the jobs out of the live release-image workflow."""
+        text = (registry.REPO / ".github/workflows/docker-publish.yml").read_text(
+            encoding="utf-8",
+        )
+        return yaml.safe_load(text)["jobs"]
+
+    @staticmethod
+    def _run_step(run: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        """Run a step's ``run`` text as GitHub runs a ``shell: bash`` step.
+
+        ``bash --noprofile --norc -eo pipefail`` is GitHub's invocation for an
+        explicit ``shell: bash``; a step with NO ``shell:`` gets ``bash -e``
+        instead, which is why the wiring test above requires ``shell: bash``
+        on both steps this runs.
+        """
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+            env={"PATH": "/usr/bin:/bin", **env},
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_the_build_gate_lets_only_a_future_instant_through(self):
+        """The build's first step, RUN: through only while the refusal instant is ahead.
+
+        A re-run of only the failed build reuses a check judged earlier
+        (ruling R-SAL88), so this step is what refuses it.  Every value that
+        is not a well-formed future instant must refuse -- an empty output, a
+        malformed one, one bash cannot compare -- because a check that handed
+        nothing has vouched for nothing.
+        """
+        run = self._publish_jobs()["build-and-push"]["steps"][0]["run"]
+        now = int(time.time())
+        future = str(now + 3600)
+        malformed = "no usable refusal instant"
+        missing = "Next year's tax law is missing"
+        # value -> (exit status, the reason it must give)
+        cases = {
+            future: (0, "Before the tax-law refusal"),
+            str(now - 1): (1, missing),
+            str(now): (1, missing),
+            "0": (1, missing),
+            "": (1, malformed),
+            "abc": (1, malformed),
+            # Malformed FUTURE instants: each is what only the digits-only
+            # check refuses, and each stays in the future on every run.
+            " " + future: (1, malformed),
+            future + " ": (1, malformed),
+            "+" + future: (1, malformed),
+            "-5": (1, malformed),
+            "0x10": (1, malformed),
+            "\uff11" + future[1:]: (1, malformed),
+            "9" * 19: (1, malformed),
+            "9" * 23: (1, malformed),
+        }
+        for value, (expected, reason) in cases.items():
+            result = self._run_step(run, {"REFUSE_FROM": value})
+            assert result.returncode == expected, (value, result.stdout, result.stderr)
+            assert reason in result.stdout + result.stderr, (value, result.stdout, result.stderr)
+
+    def test_the_check_hands_its_instant_to_the_build(self, tmp_path):
+        """The check job's output step, RUN: it writes the script's answer, or fails.
+
+        A stand-in ``python`` prints what ``check_tax_law.py refuse
+        --starts-epoch`` would; a failing one must fail the step and write
+        nothing, so the build is handed no instant and refuses.
+        """
+        jobs = self._publish_jobs()
+        emit = next(step for step in jobs["tax-law"]["steps"] if step.get("id") == "refuse_from")
+        stand_in = tmp_path / "python"
+        output = tmp_path / "github_output"
+        env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "GITHUB_OUTPUT": str(output)}
+
+        # A value the real law never yields, so an emit step that hard-codes
+        # today's answer cannot pass.
+        stand_in.write_text(
+            '#!/bin/sh\n'
+            'test "$*" = "scripts/check_tax_law.py refuse --starts-epoch" || exit 9\n'
+            'echo 4242424242\n',
+        )
+        stand_in.chmod(0o755)
+        output.write_text("")
+        result = self._run_step(emit["run"], env)
+        assert result.returncode == 0, result.stderr
+        assert output.read_text() == "epoch=4242424242\n"
+
+        # A failing script writes NOTHING, silent or not: a value printed
+        # before a failure is no answer.
+        for failing in ("exit 1\n", "echo 4242424242\nexit 1\n"):
+            stand_in.write_text("#!/bin/sh\n" + failing)
+            output.write_text("")
+            result = self._run_step(emit["run"], env)
+            assert result.returncode != 0, failing
+            assert output.read_text() == "", failing
 
     def test_the_plan_gate_no_longer_hides_inside_the_checker_step(self):
         """Step 5b used to carry ``pytest tools/plan_gate``; a guarded copy is a second run."""

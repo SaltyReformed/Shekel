@@ -106,9 +106,10 @@ def _describe(gap) -> str:
     if gap.fallback_year is None:
         return f"MISSING: the whole {gap.tax_year} tax law; no year prices it meanwhile."
     if gap.state is None:
-        older = "".join(
-            f", except {state.state} on {state.fallback_year}'s" for state in gap.priced_older
+        older = " and ".join(
+            f"{state.state} on {state.fallback_year}'s" for state in gap.priced_older
         )
+        older = f", except {older}" if older else ""
         return (
             f"MISSING: the whole {gap.tax_year} tax law; priced on "
             f"{gap.fallback_year}'s rules meanwhile{older}."

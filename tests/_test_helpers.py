@@ -8224,9 +8224,10 @@ def made_up_law(*years):
     """Return a law of consecutive made-up years, each ``(tax_year, {state: rate})``.
 
     The tax-law alarms' tests (plan step salary:X-at-4) vary WHICH years and
-    states the law lists, never the figures, so each year states the made-up
-    federal rules and a made-up flat rate per state it lists (``{}`` for a
-    year that lists none).
+    states the law lists, never the figures, so each year states
+    :func:`made_up_year`'s defaults (:func:`zero_federal` and
+    :func:`zero_fica`) and a made-up flat rate per state it lists (``{}`` for
+    a year that lists none).
 
     Args:
         *years: ``(tax_year, {state_code: rate_string})`` per year, oldest

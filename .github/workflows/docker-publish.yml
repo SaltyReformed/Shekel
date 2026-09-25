@@ -100,6 +100,7 @@ jobs:
       # the step rather than handing the build an empty value.
       - name: When does the refusal start?
         id: refuse_from
+        shell: bash
         run: |
           epoch="$(python scripts/check_tax_law.py refuse --starts-epoch)"
           echo "epoch=${epoch}" >> "${GITHUB_OUTPUT}"
@@ -120,24 +121,34 @@ jobs:
     steps:
       # FIRST, before any checkout or login: refuse once the tax-law refusal
       # has started, even when this job is a re-run whose ``tax-law`` result
-      # was judged before it (R-SAL88).  A missing or malformed value refuses
-      # too -- a check that handed nothing has vouched for nothing.
+      # was judged before it (R-SAL88).  The ONLY way through is a well-formed
+      # instant still in the future: anything else -- a missing or malformed
+      # value, or a comparison that errors (``set -e`` does not fire inside an
+      # ``if``) -- falls to a refusal.  ``shell: bash`` makes GitHub run it
+      # as ``bash --noprofile --norc -eo pipefail``, the invocation
+      # tools/plan_gate/test_ci_scope.py RUNS this text under, with planted
+      # values.
       - name: Is it still before the tax-law refusal?
+        shell: bash
         env:
           REFUSE_FROM: ${{ needs.tax-law.outputs.refuse_from }}
         run: |
           set -euo pipefail
-          if ! [[ "${REFUSE_FROM}" =~ ^[0-9]+$ ]]; then
-              echo "The tax-law check handed no refusal time; refusing to build." >&2
+          # One to eighteen ASCII digits: the bracket lists them, so no locale
+          # widens it, and eighteen digits is a number bash can compare.
+          if ! [[ "${REFUSE_FROM}" =~ ^[0123456789]{1,18}$ ]]; then
+              echo "Refusing to build: the tax-law check handed no usable refusal instant ('${REFUSE_FROM}')." >&2
+              echo "That is a fault in the check, not the law: fix it, then re-run all jobs." >&2
               exit 1
           fi
           now="$(date +%s)"
-          if [ "${now}" -ge "${REFUSE_FROM}" ]; then
-              echo "The tax-law refusal started at ${REFUSE_FROM} (Unix time) and it is ${now}." >&2
-              echo "Next year's tax law is missing: add it, then re-run ALL jobs." >&2
-              exit 1
+          if [ "${now}" -lt "${REFUSE_FROM}" ]; then
+              echo "Before the tax-law refusal (${now} < ${REFUSE_FROM})."
+              exit 0
           fi
-          echo "Before the tax-law refusal (${now} < ${REFUSE_FROM})."
+          echo "Refusing to build: the tax-law refusal started at ${REFUSE_FROM} (Unix time) and it is ${now}." >&2
+          echo "Next year's tax law is missing, so this commit cannot ship; the release that adds it builds on its own push." >&2
+          exit 1
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

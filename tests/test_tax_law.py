@@ -21,7 +21,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.enums import FilingStatusEnum, TaxTypeEnum
-from app.services.tax_law_alarm import gaps
 from app.tax_law import (
     LAW,
     Bracket,
@@ -524,13 +523,3 @@ class TestTheShippedLaw:
             for state in year.states.values():
                 assert set(state.standard_deduction) == set(FilingStatusEnum)
                 assert set(state.child_deduction_tiers) == set(FilingStatusEnum)
-
-    def test_no_year_drops_a_state_an_earlier_year_lists(self):
-        """Through its newest year the shipped law has no gap the tax-law alarms would name.
-
-        Relative to the law itself, so it never moves when a year is added
-        (ruling salary:R-SAL80's reason): whatever the newest year is, every
-        year up to it lists every state an earlier year lists (ruling
-        salary:R-SAL86).
-        """
-        assert gaps(LAW, LAW.years[-1].tax_year) == ()

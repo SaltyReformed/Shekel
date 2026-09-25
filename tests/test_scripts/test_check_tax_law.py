@@ -95,6 +95,17 @@ class TestTheReport:
             _HOW_TO_ADD,
         ]
 
+    def test_two_states_priced_older_are_both_named(self):
+        """The whole-year line joins several older states with "and" (X-at-3 reaches it)."""
+        law = made_up_law((2026, {"NC": "0.0399", "SC": "0.0500"}), (2027, {}))
+
+        lines, _status = report(law, date(2027, 11, 1), Stage.NOTICE)
+
+        assert lines[-2] == (
+            "MISSING: the whole 2028 tax law; priced on 2027's rules meanwhile, except NC "
+            "on 2026's and SC on 2026's."
+        )
+
     def test_a_law_with_no_year_fails_with_nothing_to_price_it(self):
         """No release ships one; the words must still be true of it."""
         lines, status = report(EMPTY_TAX_LAW, date(2026, 11, 1), Stage.NOTICE)
