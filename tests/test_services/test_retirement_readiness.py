@@ -41,7 +41,7 @@ from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 from app.utils.dates import add_months
 
-from tests._test_helpers import derived_window
+from tests._test_helpers import derived_window, start_test_pay_list
 
 
 def _readiness(user_id, **whatif):
@@ -198,11 +198,11 @@ def _build_scenario(db, seed_user, *, tax_rate=None, with_pension=True):
         scenario_id=scenario.id,
         filing_status_id=filing.id,
         name="Day Job",
-        annual_salary=Decimal("80000.00"),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db.session.flush()
 
     if with_pension:

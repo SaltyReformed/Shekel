@@ -140,11 +140,14 @@ class Earnings:
     deposit met two or three app rows.
 
     Attributes:
-        annual_salary: The post-raise annual salary in effect on the payday.
+        annual_salary: The yearly figure on the payday: :attr:`base_biweekly`
+            times the paychecks a year of the rhythm in force on it
+            (:attr:`~app.services.payroll_basis.BasePay.annual`; ruling
+            **R-SAL59**, plan step salary:X-av-3a -- the post-raise annual
+            salary the rate was divided from until then).
         base_biweekly: What the SALARY pays for one paycheck -- the rate
             :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`
-            derives (the annual over the paychecks a year of the rhythm in
-            force on the payday, since plan step salary:X-av-2), and the
+            walks the pay list to (plan step salary:X-av-3a), and the
             base every PERCENTAGE line is a percentage of
             (R-SAL38: never of gross, so a percentage earning is not circular
             and no existing line moves when an earning joins).
@@ -217,12 +220,14 @@ class PeriodInfo:
             widening the type did not also make it forgettable.
         is_third_paycheck: Whether this is the third paycheck starting in its
             calendar month, which is what a 24-per-year deduction skips.
-        raise_event: The raise taking effect in this period, as the label
-            :func:`get_raise_event` composes, or ``""``.
+        raise_event: The banner of this paycheck, as
+            :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on`
+            composes it: a recorded pay change (``PAY +$X``) or the forecast
+            raises it is priced under, or ``""`` (ruling **R-SAL84**).
         cadence: The rhythm this paycheck was PRICED at -- the era in force
             on :attr:`payday` (:func:`~app.services.pay_calendar.cadence_on`),
-            whose count divided :attr:`Earnings.annual_salary` into
-            :attr:`Earnings.base_biweekly` and annualised the withholding.
+            whose count multiplies :attr:`Earnings.base_biweekly` into
+            :attr:`Earnings.annual_salary` and annualised the withholding.
             **The one count any reader turns this paycheck into a monthly or
             yearly figure with** (ruling **R-SAL70**, plan step
             salary:X-av-2): debt-to-income, a goal stated in months of

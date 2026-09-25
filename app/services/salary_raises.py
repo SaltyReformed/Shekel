@@ -1,17 +1,27 @@
-"""How a salary RAISE changes an annual salary, and when it is an event.
+"""How a salary RAISE changes what a paycheck pays, and when it is an event.
 
 Split out of :mod:`app.services.paycheck_calculator` at plan step **R-F16**,
 which is the step that pushed that module past its 1000-line ceiling.  The
 split is by CONCERN rather than by line count: applying raises is a rule about
 ``salary.salary_raises`` rows that two unrelated engines consume -- the
 paycheck pipeline (:func:`~app.services.paycheck_calculator.calculate_paycheck`
-/ ``project_salary``) and the pension salary projection
-(:func:`app.services.pension_calculator.project_salaries_by_year`) -- and the
-second of those already had to import it across the module boundary.  It
-computes no paycheck and reads no cadence, so it never belonged to the
-engine's own file.
+/ ``project_salary``) and, until plan step salary:X-av-3a, the pension salary
+projection, which reads the paycheck pipeline's own walk since.  It computes
+no paycheck and reads no cadence -- a flat raise's paychecks a year is its
+caller's argument -- so it never belonged to the engine's own file.
 
 Pure: plain inputs, plain outputs, no Flask, no ORM, no clock, no database.
+
+**A raise compounds on a PER-PAYCHECK pay since plan step salary:X-av-3a**
+(rulings **R-SAL59**, **R-SAL60** and **R-SAL65**).  ``apply_raises`` walked
+an ANNUAL salary through every application and rounded once at the end; the
+salary's stored fact is what one paycheck pays now
+(:class:`~app.models.salary_pay_entry.SalaryPayEntry`), so the walk lives in
+:meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, which reads the
+two halves stated here: WHICH applications land between two days
+(:func:`applications_between`) and what ONE application does to a paycheck's
+pay (:func:`raise_pay`), each rounding to the cent the way a stub prints it.
+The pension projection reads the same walk, so there is one.
 
 **Every caller passes real ``SalaryRaise`` rows as of plan step salary:S3-c,
 and the ENGINE passes :class:`RaiseTerms` values as of salary:S3-f-1.**  The
@@ -31,6 +41,7 @@ row still the one home of the stored fact -- not a second home computed from a
 global on every render, which is what S3-c deleted.
 """
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.utils.money import round_money
@@ -238,8 +249,8 @@ def terms_of(raises) -> "tuple[RaiseTerms, ...]":
 
     **The one canonical spelling of a raise set.**  Order is kept rather than
     sorted because it is part of the answer: :func:`get_raise_event` joins
-    labels in iteration order, and :func:`apply_raises` keeps input order
-    between two applications on one date by one method.
+    labels in iteration order, and :func:`applications_between` keeps input
+    order between two applications on one date by one method.
 
     Args:
         raises: An iterable of raise-shaped objects (see :meth:`RaiseTerms.of`).
@@ -250,94 +261,86 @@ def terms_of(raises) -> "tuple[RaiseTerms, ...]":
     return tuple(RaiseTerms.of(raise_obj) for raise_obj in (raises or ()))
 
 
-def apply_raises(base_salary, raises, as_of):
-    """Return the effective annual salary as of a date, after applying raises.
+def applications_between(raises, after, through):
+    """Return every raise APPLICATION landing after *after* and on or before *through*.
 
-    The shared raise-application rule used by both the paycheck pipeline
-    (:func:`app.services.paycheck_calculator.calculate_paycheck` /
-    ``project_salary``) and the pension salary projection
-    (:func:`app.services.pension_calculator.project_salaries_by_year`).
-    Promoted from the former private ``_apply_raises(profile, period)`` to
-    plain inputs so the pension projector no longer reaches into a private
-    symbol with fabricated duck-typed objects (deep-hunt #83).
+    **The one statement of which forecast raises a paycheck is priced under**
+    (plan step salary:X-av-3a, ruling **R-SAL59**).  An application lands on
+    the 1st of its effective month, so a payday is priced under every
+    application of its own month -- the rule ``apply_raises`` stated by year
+    and month until then.  *after* is the payday of the pay entry the paycheck
+    is priced from: an entry REPLACES every forecast raise due on or before
+    its payday, because the pay it records already holds them.
 
     **APPLICATIONS are ordered by the date each one lands on**, not by the
-    raise they belong to.  Raise application is
-    non-commutative (``(salary + flat) * pct`` != ``salary * pct +
-    flat``), so the order is the answer, and until this step the order was
-    wrong whenever an owner held a flat raise and a percentage raise at
-    once: the raises were sorted, then EACH raise's whole run of yearly
-    applications was applied before the next raise began.  A recurring flat
-    ``$1,500`` COLA therefore contributed all of its additions up front and
-    a recurring 4% merit raise then multiplied the lot -- including the
-    COLA dollars that arrive in later years, which that percentage had not
-    been earned on.
+    raise they belong to.  Raise application is non-commutative (a flat
+    raise then a percentage is not a percentage then a flat raise), so the
+    order is the answer: grouping each raise's whole run of yearly
+    applications before the next raise began was a defect -- a recurring flat
+    COLA contributed all of its additions up front and a recurring
+    percentage then multiplied the lot, including dollars that percentage
+    had not been earned on.  Within a single date a flat raise applies before
+    a percentage one (M-01; deep-hunt #12 added the method tie-break), and
+    two applications on one date by one method keep their input order.
 
-    The size of that is small inside the owner's saved pay calendar, which
-    is why it stood: on a 3%-plus-flat pair it is ``$62.40`` by the second
-    year.  It grows without bound over a projection.  The two-phase split
-    ``pension_calculator.project_salaries_by_year`` used to apply its merit
-    horizon happened to BOUND the error past the cutoff by re-basing on the
-    cutoff salary, so the defect surfaced when that split was examined for
-    removal; it was never a property of the horizon.
-
-    Within a single date a flat raise still applies before a percentage one
-    (M-01; deep-hunt #12 added the method tie-break the original M-01 fix
-    specified but omitted, leaving same-date ties resolved by DB row
-    order), and the number of times each raise applies is unchanged.  For
-    an owner whose raises are all percentages the result is therefore
-    identical to the previous rule, multiplication being commutative --
-    which is every raise on the developer's own profile.
-
-    A raise applies if:
-    - Its effective_year is on or before ``as_of``'s year (recurring
-      raises compound once per year from ``effective_year`` onward)
-    - Its effective_month is on or before ``as_of``'s month (for that year)
-    - It has not TERMINATED first -- see ``terminal_year`` below.  A
-      terminated raise still applies; it stops accruing FURTHER
-      applications after its last believed year.
+    A raise applies if its effective year and month are on or before
+    *through*'s (a recurring raise once a year from then on), and it has not
+    TERMINATED first (:func:`_is_believed_in`): a terminated raise still
+    applies; it stops accruing further applications after its last believed
+    year.
 
     Args:
-        base_salary: The pre-raise annual salary -- a Decimal, or any
-            value ``Decimal(str(...))`` accepts.
-        raises: An iterable of :class:`~app.models.salary_raise.SalaryRaise`
-            rows, each exposing ``effective_year``, ``effective_month``,
-            ``is_recurring``, ``percentage``, ``flat_amount`` and
-            ``terminal_year`` -- the last year the raise is believed to
-            happen, ``None`` meaning indefinitely.  A falsy/empty *raises*
-            returns ``base_salary`` unchanged (unquantized, matching the
-            prior behavior).
-        as_of: The :class:`datetime.date` the salary is evaluated at;
-            only its ``year`` and ``month`` are consulted (day ignored).
+        raises: An iterable of raise-shaped objects, each exposing
+            ``effective_year``, ``effective_month``, ``is_recurring``,
+            ``percentage``, ``flat_amount`` and ``terminal_year`` -- rows or
+            :class:`RaiseTerms` values.
+        after: The day the pay being raised was recorded from; an
+            application landing on or before it is excluded.
+        through: The payday being priced; only its year and month are
+            consulted, since an application lands on a month's 1st.
 
     Returns:
-        Decimal -- the post-raise annual salary, quantized to cents
-        (ROUND_HALF_UP) when any raise applied.
+        ``(date, method_rank, raise_obj)`` for each application, in the order
+        they apply: by date, a flat raise before a percentage one on one
+        date, then input order.
     """
-    salary = Decimal(str(base_salary))
-
-    if not raises:
-        return salary
-
-    period_year = as_of.year
-    period_month = as_of.month
-
-    # Sorting by (year, month, method) puts every application in the order
-    # the money actually arrived.  The list is of APPLICATIONS, not of
-    # raises, which is the whole of this rule -- see this
-    # function's docstring for what it corrects.  ``sorted`` is stable and
-    # the key excludes the raise object, so two applications on one date
-    # with one method keep their input order and nothing compares a
-    # ``SalaryRaise`` against another.
     applications = sorted(
-        _applications(raises, period_year, period_month),
-        key=lambda a: a[:3],
+        (
+            (date(year, month, 1), method_rank, raise_obj)
+            for year, month, method_rank, raise_obj in _applications(
+                raises or (), through.year, through.month,
+            )
+        ),
+        key=lambda a: a[:2],
     )
+    return [a for a in applications if a[0] > after]
 
-    for _, _, _, raise_obj in applications:
-        salary = _apply_single_raise(salary, raise_obj)
 
-    return round_money(salary)
+def raise_pay(pay, raise_obj, periods_per_year):
+    """Return a paycheck's pay after ONE raise application, rounded to the cent.
+
+    **Each raise makes a new cent-exact pay, the way a stub prints it**
+    (ruling **R-SAL60**), and the next raise compounds on that printed
+    figure.  A percentage raise multiplies the pay; a FLAT raise is stated in
+    dollars a YEAR (ruling **R-SAL65**: the salary form labels the box "a
+    year") and adds that amount divided by the paychecks a year of the rhythm
+    the paycheck is paid at.
+
+    Args:
+        pay: The per-paycheck pay the raise applies to, cent-exact.
+        raise_obj: The raise, exposing ``percentage`` and ``flat_amount``
+            (exactly one is set: ``ck_salary_raises_one_method``).
+        periods_per_year: The paychecks a year of the rhythm in force where
+            the raise lands, an integral ``Decimal``.
+
+    Returns:
+        The raised pay, quantized to the cent (``ROUND_HALF_UP``).
+    """
+    if raise_obj.percentage:
+        return round_money(pay * (1 + Decimal(str(raise_obj.percentage))))
+    return round_money(
+        pay + Decimal(str(raise_obj.flat_amount)) / periods_per_year,
+    )
 
 
 def _is_believed_in(raise_obj, year):
@@ -370,7 +373,7 @@ def _is_believed_in(raise_obj, year):
 def _applications(raises, period_year, period_month):
     """Yield one entry per raise APPLICATION, with the date it lands on.
 
-    The unit :func:`apply_raises` orders by.  A recurring raise contributes
+    The unit :func:`applications_between` orders by.  A recurring raise contributes
     one entry per year from its effective year through the last year whose
     effective month the caller's date has reached; a one-time raise
     contributes at most one.  The counts are exactly those the per-raise
@@ -378,7 +381,7 @@ def _applications(raises, period_year, period_month):
     interleaved by DATE rather than grouped by raise.
 
     Args:
-        raises: The raise objects, as :func:`apply_raises` documents them.
+        raises: The raise objects, as :func:`applications_between` documents them.
         period_year: The year the salary is being evaluated at.
         period_month: The month within that year.
 
@@ -416,42 +419,41 @@ def _applications(raises, period_year, period_month):
             yield eff_year, eff_month, method_rank, raise_obj
 
 
-def _apply_single_raise(salary, raise_obj):
-    """Apply a single raise (percentage or flat) to the salary."""
-    if raise_obj.percentage:
-        pct = Decimal(str(raise_obj.percentage))
-        return salary * (1 + pct)
-    if raise_obj.flat_amount:
-        return salary + Decimal(str(raise_obj.flat_amount))
-    return salary
-
-
-def get_raise_event(raises, period):
+def get_raise_event(raises, period, replaced_through=None):
     """Return a description of any raise event occurring in this period.
 
-    Public because two consumers now need a period's raise event: the paycheck
-    engine (:func:`app.services.paycheck_calculator.calculate_paycheck`, when
-    it builds each ``PeriodInfo``) and the salary cockpit route, which compares
-    the focused period's event against its
-    predecessor's to collapse the raise banner to one paycheck per run
-    (P-SA1) without projecting every period.  Pure over *raises* and
+    Public because the paycheck engine's basis composes each paycheck's
+    banner from it (:meth:`~app.services.payroll_basis.PayrollBasis
+    .pay_event_on`).  Pure over *raises* and
     ``period.start_date`` -- no breakdown, no DB, no ``float``.
 
     **It takes the RAISE SET rather than the profile since plan step
     salary:S3-f-1** (ruling **R-SAL20**), for the same reason
-    :func:`apply_raises` always did: the engine badges the event of the set it
+    :func:`applications_between` does: the engine badges the event of the set it
     PRICED, which is its basis's and not necessarily the profile's rows, and a
     banner announcing a raise the paycheck beside it was not priced under is
-    the two-walks-disagreeing defect the paragraph below records.  The cockpit
-    passes ``profile.raises``, the rows, because that is the set it renders.
+    the two-walks-disagreeing defect the paragraph below records.  Its one
+    caller is :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on`
+    since plan step salary:X-av-3a; the cockpit route passed
+    ``profile.raises`` here directly until then, and reads the engine's own
+    banner now.
+
+    **It badges only an application the paycheck is PRICED under since plan
+    step salary:X-av-3a** (ruling **R-SAL84**): a forecast raise due on or
+    before the payday of the pay entry a paycheck is priced from is replaced
+    by that entry (:func:`applications_between`), so its banner would announce
+    money that never arrives.  *replaced_through* is that entry's payday.
 
     Args:
-        raises: The raise set -- each exposing what :func:`apply_raises`
-            documents PLUS ``raise_type_name``, which is what
-            :class:`RaiseTerms` carries and what a
+        raises: The raise set -- each exposing what
+            :func:`applications_between` documents PLUS ``raise_type_name``,
+            which is what :class:`RaiseTerms` carries and what a
             :class:`~app.models.salary_raise.SalaryRaise` row exposes as a
             property; a falsy/empty set badges nothing.
         period: The pay period, read for ``start_date`` alone.
+        replaced_through: The payday of the pay entry the period's paycheck
+            is priced from; an application landing on or before it badges
+            nothing.  ``None`` badges every application of the month.
 
     Returns:
         The comma-joined event labels for *period*, or ``""``.
@@ -483,7 +485,7 @@ def get_raise_event(raises, period):
                 and _is_believed_in(raise_obj, period_year)):
             # A recurring raise recurs at eff_month every year from
             # eff_year onward and stops after the last year it is believed,
-            # matching apply_raises' application gate at BOTH ends -- so it
+            # matching _applications' gate at BOTH ends -- so it
             # must not badge an event in a calendar year before it takes
             # effect (deep-hunt #13) or after it is over (salary:S3-c).
             is_match = True
@@ -497,6 +499,10 @@ def get_raise_event(raises, period):
             # raise``), so there is nothing to test here.
             is_match = True
 
+        if is_match and replaced_through is not None:
+            # The application this match announces lands on the 1st of the
+            # period's month (a one-time raise's own month is that month).
+            is_match = date(period_year, eff_month, 1) > replaced_through
         if is_match:
             # The type's display name, ONE attribute on rows and values alike.
             # A ``raise_type is None`` arm stood here; a row's property now
@@ -521,8 +527,9 @@ __all__ = [
     "RAISE_YEAR_MAX",
     "RAISE_YEAR_MIN",
     "RaiseTerms",
-    "apply_raises",
+    "applications_between",
     "end_year_of",
     "get_raise_event",
+    "raise_pay",
     "terms_of",
 ]

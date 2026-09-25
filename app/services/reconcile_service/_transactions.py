@@ -13,6 +13,21 @@ literally through :data:`ARM`'s loader, which is the security property.  What
 stays here is what is genuinely this arm's: WHICH rows (``transfer_id IS
 NULL``), what one is WORTH, and what a tick MEANS for it.
 
+**It answers TWO scopes since plan step ``credit_card:CC-5-4b``, one per
+account relation** (ruling **R-CC44**).  :data:`ARM` offers the rows ON this
+account.  :data:`SETTLEMENT_ARM` offers a row planned on ANOTHER account whose
+payment was recorded on this one and then reopened -- a bill planned on
+Checking, marked paid from the card, reopened to edit, its payment KEPT on the
+card with no date (rulings **R-CC42**, **R-BAL61**) -- under the panel's "Paid
+from this account" section (ruling **R-CC111**).  They share this module
+because the package cuts by SETTLE VERB and they have one: the same row kind,
+ticked through the same :func:`_settle_one`, priced by the same
+``settle_amount``, with the same amount box (ruling **R-CC110**) and the same
+form fields (ruling **R-CC116**).  What differs is WHICH rows, how a row
+READS (its label, :func:`_settlement_label`), and which statement a tick's
+link reaches -- the payment and not the row, which ``status_seam.
+record_clearing`` works out from the statement's own account.
+
 **Its settle is a service verb, and that is the difference from the purchase
 arm.**  A purchase settles by stamping one column and moves no status, so that
 arm's writer is a bulk ``UPDATE``.  A transaction settles through the status
@@ -38,20 +53,30 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
+from collections.abc import Callable
 from decimal import Decimal
 
+from sqlalchemy import and_
 from sqlalchemy.orm import selectinload
 
+from app.extensions import db
+from app.models.account import Account
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, status_seam, transaction_service
+from app.services.account_projection import is_revolving
 from app.services.cash_ledger import AmountBasis
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
+    OutstandingGroup,
     OutstandingTransaction,
 )
 from app.services.stated_figure import StatedFigure
-from app.utils.log_events import EVT_TRANSACTIONS_RECONCILED
+from app.utils.log_events import (
+    EVT_SETTLEMENTS_RECONCILED,
+    EVT_TRANSACTIONS_RECONCILED,
+)
 
 
 def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
@@ -150,7 +175,10 @@ def _settle_one(
 ) -> bool:
     """Settle one row through the grid's own verb; say if a human's figure won.
 
-    This arm's settle, named by :data:`ARM`.
+    This arm's settle, named by :data:`ARM` and by :data:`SETTLEMENT_ARM`:
+    the "Paid from this account" list ticks a row through the bill's OWN door
+    (ruling **R-CC44**), so both scopes share this one function and nothing
+    here asks which list the row came from.
     The submitted figure is handed STRAIGHT to the verb: **this function holds
     no money rule at all**, and a first draft's two -- "read it only where the
     panel offered a box" and "only when it differs from what the row would
@@ -175,10 +203,14 @@ def _settle_one(
             statement showed the money, so the covering movement books here
             -- named rather than left to the seam's default, because a row
             reverted out of a card-tendered settle keeps that record and the
-            default would keep it on the card (ruling **R-CC42**).  The scope
-            offers this account's own rows (:func:`~._rows.outstanding_scope`),
-            so the named tender is the row's own account and passes the verb's
-            gate by its first member.
+            default would keep it on the card (ruling **R-CC42**).  On
+            :data:`ARM`'s scope the named tender is the row's own account and
+            passes the verb's gate by its first member.  On
+            :data:`SETTLEMENT_ARM`'s it is the account the row's kept payment
+            is already on (that scope's own clause), which the verb reads as
+            an ECHO of the recorded tender (``status_seam.tender_for_status``)
+            and books where the payment is, asking the gate nothing: the
+            money is not moving, only being dated.
 
     Returns:
         Whether the verb booked *submitted* as a correction -- **answered by the
@@ -205,17 +237,20 @@ def _settle_one(
     # the new day's own fact.  Through ``status_seam.record_clearing`` since
     # plan step **X-bi-3a**: the settle mirrored the row's money onto its
     # covering movement, and the link has to reach the fact that carries it.
+    # That door links each fact ON THIS STATEMENT'S ACCOUNT (plan step
+    # credit_card:CC-5-4b, ruling R-CC44): the row and its payment for a row
+    # on this account, the payment alone for a row planned on another.
     status_seam.record_clearing(txn, statement.anchor.anchor_id)
     return corrected
 
 
-def _load(
-    statement: _rows.Statement, transaction_ids: "set[int] | None",
-) -> "dict[int, Transaction]":
-    """Return this arm's rows, ``{row id: row}``, for :data:`ARM`'s ``load``.
+def _own_clauses(statement: _rows.Statement) -> tuple:
+    """Return the rows-ON-this-account scope's membership clauses, for :data:`ARM`.
 
-    :func:`~._rows.outstanding_rows` over this arm's clause and eager load,
-    keyed by the id a row's tick posts (its own).
+    The row is on THIS account -- the account clause
+    :func:`~._rows.outstanding_scope` carried as its own first clause until
+    plan step ``credit_card:CC-5-4b``, which made it each scope's; its
+    complement is :func:`_settlement_clauses`' first.
 
     ``transfer_id IS NULL`` -- a transfer settles through
     ``transfer_service.settle_transfer`` so both legs and the parent move
@@ -226,26 +261,58 @@ def _load(
     ``budget.transfers`` since leaf ``balance:X-bi-6-4c-2``; until then its
     clause was this one's complement over this table.
 
-    ``template`` is loaded here and not in the shared loader because only this
-    arm reads ``tracks_purchases``, which lazy-loads a template per row
-    otherwise -- an N+1 on a list the user is about to read.
-
     Args:
         statement: The statement being reconciled.
-        transaction_ids: The writer's narrowing, or ``None`` for the reader.
 
     Returns:
-        The rows in landing-day order, keyed by id.
+        The clauses, for :func:`_scope_loader`.
     """
-    return {
-        txn.id: txn
-        for txn in _rows.outstanding_rows(
-            statement,
-            kind_clauses=(Transaction.transfer_id.is_(None),),
-            load_options=(selectinload(Transaction.template),),
-            transaction_ids=transaction_ids,
-        )
-    }
+    return (
+        Transaction.account_id == statement.account_id,
+        Transaction.transfer_id.is_(None),
+    )
+
+
+def _scope_loader(
+    clauses: "Callable[[_rows.Statement], tuple]",
+) -> "Callable[[_rows.Statement, set[int] | None], dict[int, Transaction]]":
+    """Return the ``load`` of one of this arm's scopes, over *clauses*.
+
+    Both scopes load the same way -- :func:`~._rows.outstanding_rows` over the
+    scope's clauses, keyed by the id a row's tick posts (its own, under the
+    SAME field for both scopes, ruling **R-CC116**) -- and differ only in
+    WHICH rows, so the body is written once and each scope hands it its
+    clauses (plan step ``credit_card:CC-5-4b``, whose review measured the two
+    bodies identical but for the clauses).
+
+    ``template`` is loaded here and not in the shared loader because only this
+    arm reads ``tracks_purchases``, which lazy-loads a template per row
+    otherwise -- an N+1 on a list the user is about to read.  The row's
+    ``account``, whose name the second scope's label reads, is a joined load
+    on the model.
+
+    Args:
+        clauses: ``statement -> scope clauses`` -- :func:`_own_clauses` or
+            :func:`_settlement_clauses`.
+
+    Returns:
+        ``(statement, transaction_ids) -> {row id: row}``, in landing-day
+        order; *transaction_ids* is the writer's narrowing, ``None`` the
+        reader's "everything in scope".
+    """
+    def load(
+        statement: _rows.Statement, transaction_ids: "set[int] | None",
+    ) -> "dict[int, Transaction]":
+        return {
+            txn.id: txn
+            for txn in _rows.outstanding_rows(
+                statement,
+                scope_clauses=clauses(statement),
+                load_options=(selectinload(Transaction.template),),
+                transaction_ids=transaction_ids,
+            )
+        }
+    return load
 
 
 #: What this arm IS (:class:`app.services.reconcile_service._rows.Arm`): what it
@@ -255,9 +322,80 @@ def _load(
 #: :func:`app.services.reconcile_service._assemble.record_reconciliation` both
 #: name it, and it being ONE value is what stops them scoping differently.
 ARM = _rows.Arm(
-    load=_load,
+    load=_scope_loader(_own_clauses),
     settle=_settle_one,
     event=EVT_TRANSACTIONS_RECONCILED,
+)
+
+
+def _settlement_clauses(statement: _rows.Statement) -> tuple:
+    """Return the "Paid from this account" scope's membership clauses.
+
+    Ruling **R-CC44**: an UN-DATED payment on this account whose row is
+    planned on ANOTHER.  :func:`~._rows.outstanding_scope` adds what every
+    row scope shares -- Projected, contributing, an offerable period -- and
+    :func:`~._rows.outstanding_rows` the landing-day bound, which is the one
+    Checking's own list applies to the same row (ruling **R-CC118**, "Once the
+    bill is due").  Four clauses of its own, each load-bearing:
+
+    * the row is on ANOTHER account -- the complement of :data:`ARM`'s first
+      clause, so the two scopes partition every row and one posted id loads
+      in at most one (ruling **R-CC116**).  The row's own account's list keeps
+      offering it as a bill, and whichever tick lands first leaves the other
+      nothing to settle.
+    * ``transfer_id IS NULL`` -- a transfer settles through the transfer
+      service and ``settle_transaction`` refuses a shadow.  A shadow's
+      covering movements are kept on the shadow's own account
+      (``transfer_service._endpoints._apply_endpoint_move`` re-points them
+      with the endpoint), so the next clause admits none today; this one
+      keeps the scope inside the verb's domain rather than relying on that.
+    * it holds an UN-DATED covering movement ON THIS ACCOUNT -- the payment
+      the statement may show.  Un-dated, because that is the payment R-CC44
+      lists: a dated one already posts and folds on its own day, so it is in
+      this account's books and is not outstanding (a Projected row over a
+      dated payment is a drift the seam does not write, and ticking it would
+      only re-date that one movement); on this account, because a statement
+      can show only this account's
+      money (the tick then books where the payment already is,
+      :func:`_settle_one`).
+    * it holds NO purchase -- ruling **R-CC113** ("Hide it"): a row holding
+      purchases settles FROM them (``transaction_service.
+      settles_from_entries``), ignoring the tender and withdrawing the very
+      payment this list would show; its purchases are its figure, and the
+      purchase arm offers a card swipe on the card.  Stated as the verb's own
+      predicate in SQL (:attr:`~app.models.transaction.Transaction.purchases`
+      is the entries less the seam's mark, ``status_seam.covering_clause``).
+
+    Args:
+        statement: The statement being reconciled.
+
+    Returns:
+        The clauses, for :func:`_scope_loader`.
+    """
+    covering = status_seam.covering_clause()
+    return (
+        Transaction.account_id != statement.account_id,
+        Transaction.transfer_id.is_(None),
+        Transaction.entries.any(and_(
+            covering,
+            TransactionEntry.settled_on.is_(None),
+            TransactionEntry.account_id == statement.account_id,
+        )),
+        ~Transaction.entries.any(~covering),
+    )
+
+
+#: The transaction arm's SECOND scope (plan step ``credit_card:CC-5-4b``): the
+#: rows planned on another account whose kept payment is on this one.  Its own
+#: :class:`~app.services.reconcile_service._rows.Arm` because it loads
+#: differently and logs under its own event -- the row it settles is planned on
+#: a SECOND account, so its settles are counted apart from this account's own
+#: bills -- while its settle is :data:`ARM`'s own.  PUBLIC within the package
+#: for :data:`ARM`'s reason.
+SETTLEMENT_ARM = _rows.Arm(
+    load=_scope_loader(_settlement_clauses),
+    settle=_settle_one,
+    event=EVT_SETTLEMENTS_RECONCILED,
 )
 
 
@@ -306,15 +444,104 @@ def outstanding_transactions(
         owns whether that bound is right.
     """
     return {
-        txn_id: _offer(statement, txn, basis)
+        txn_id: _offer(statement, txn, basis, kind=_offer_kind(txn))
         for txn_id, txn in ARM.load(statement, None).items()
     }
 
 
+def outstanding_settlements(
+    statement: _rows.Statement, basis: "AmountBasis",
+) -> "list[OutstandingGroup]":
+    """Return the "Paid from this account" offers, one childless block per row.
+
+    The second scope's reader (plan step ``credit_card:CC-5-4b``, ruling
+    **R-CC44**): each row planned on another account whose payment was
+    recorded here and reopened, headed by its own label and listed in its
+    own paycheck block -- :func:`_settlement_label`, over
+    :func:`~._rows.filed_period` -- and priced, boxed and settled exactly as
+    the row's own list would price, box and settle it (:func:`_offer`).
+
+    **It returns finished BLOCKS, as the transfer arm does**, because a row
+    here is always childless (the scope admits no row holding a purchase,
+    ruling **R-CC113**) and headed by its own label -- so it has nothing to
+    union with the purchase arm and no parent to look up.  Its key is still
+    the row's id, and the row-keyed map could have held it (its scope is
+    disjoint from :data:`ARM`'s by the row's account); the label is what
+    that map's heading query cannot compose.
+
+    **Whether this account is a CARD is asked once, of the account's type**
+    (``account_projection.is_revolving``, the one card predicate, which reads
+    the type's ``has_revolving_credit`` flag -- never a name), and only when
+    there is a row to label: a card's rows read "paid from this card", every
+    other account's "paid from this account" (rulings **R-CC111** /
+    **R-CC117**).
+
+    Reads only (no writes, no commit).
+
+    Args:
+        statement: The :class:`~._rows.Statement` being reconciled, built once
+            by :func:`~._assemble.outstanding_set` and threaded.
+        basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
+            built once by :func:`~._assemble.outstanding_set` and threaded,
+            for :func:`outstanding_transactions`' reason.
+
+    Returns:
+        One :class:`~._offers.OutstandingGroup` per row, keyed by the row's
+        id, in landing-day order; empty for an account holding none.
+    """
+    rows = SETTLEMENT_ARM.load(statement, None)
+    if not rows:
+        return []
+    on_card = is_revolving(db.session.get(Account, statement.account_id))
+    return [
+        OutstandingGroup(
+            key=txn.id,
+            name=_settlement_label(txn, on_card=on_card),
+            period=_rows.filed_period(statement, txn),
+            purchases=(),
+            settle=_offer(statement, txn, basis, kind=OfferKind.SETTLEMENT),
+            # Resolved by the assembler once the order is known.
+            section=None,
+        )
+        for txn in rows.values()
+    ]
+
+
+def _settlement_label(txn: Transaction, *, on_card: bool) -> str:
+    """Return a "Paid from this account" row's heading.
+
+    The developer's wording, verbatim in shape: ruling **R-CC111** ("Groceries
+    (Checking's plan, paid from this card)", and "(Checking's plan, received
+    into this account)" for a deposit), and ruling **R-CC117** for an account
+    that is not a card ("paid from this account", since "this card" would be
+    false).  An envelope's tick is PREFIXED "Close " by the template, off
+    :attr:`~._offers.OutstandingGroup.settle_closes_an_envelope` (ruling
+    **R-CC119**), so this composes the row and never the act.
+
+    The planned account's name is its CURRENT one, read through the row's
+    joined ``account``, as a transfer leg's label reads its endpoints'.
+
+    Args:
+        txn: A row in the second scope, with ``account`` loaded.
+        on_card: Whether the statement's account is a card.
+
+    Returns:
+        The label.
+    """
+    if txn.is_income:
+        moved = "received into this account"
+    elif on_card:
+        moved = "paid from this card"
+    else:
+        moved = "paid from this account"
+    return f"{txn.name} ({txn.account.name}'s plan, {moved})"
+
+
 def _offer(
     statement: _rows.Statement, txn: Transaction, basis: AmountBasis,
+    *, kind: OfferKind,
 ) -> OutstandingTransaction:
-    """Return the offer this arm makes for one row.
+    """Return the offer this arm makes for one row, in either scope.
 
     Args:
         statement: The statement being reconciled; its calendar is what dates
@@ -323,12 +550,19 @@ def _offer(
             loaded.
         basis: The panel's :class:`~app.services.cash_ledger.AmountBasis`,
             threaded from :func:`outstanding_transactions` (plan step X-au-j).
+        kind: The SECTION the scope puts it in -- :func:`_offer_kind` on
+            :data:`ARM`'s scope, ``SETTLEMENT`` on :data:`SETTLEMENT_ARM`'s
+            (plan step ``credit_card:CC-5-4b``).  Everything else is the row's
+            and is read the same way in both, so a row is worth, boxed and
+            settled the same whichever list offers it.
 
     Returns:
         Its :class:`OutstandingTransaction`.  ``amount`` is resolved once and
         passed to :func:`_cash_amount` rather than resolved twice: the two
         figures are the same number seen two ways, and asking the verb again
-        would be a second answer to one money question.
+        would be a second answer to one money question.  ``closes_envelope``
+        is :func:`_offer_kind`'s own answer, so on :data:`ARM`'s scope it
+        and ``kind`` are one classification read once each.
     """
     booked = transaction_service.settle_amount(txn, basis)
     return OutstandingTransaction(
@@ -338,5 +572,6 @@ def _offer(
         cash_amount=_cash_amount(txn, booked),
         is_correctable=not transaction_service.settles_from_entries(txn),
         is_income=txn.is_income,
-        kind=_offer_kind(txn),
+        kind=kind,
+        closes_envelope=_offer_kind(txn) is OfferKind.ENVELOPE,
     )

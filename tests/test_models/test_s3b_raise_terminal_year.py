@@ -7,10 +7,13 @@ write door and the deletion of
 ``auth.user_settings.merit_raise_horizon_years`` are the cutover step's.
 
 **What these tests grade, and why the identity case is the important one.**
-:func:`app.services.salary_raises.apply_raises` has read this attribute
-through ``getattr(raise_obj, "terminal_year", None)`` since plan step
-**salary:S3-a**, so the column is LIVE to the paycheck engine the moment it
-exists on the model -- there is no dormant period to rely on.  The migration
+``app.services.salary_raises.apply_raises`` read this attribute
+through ``getattr(raise_obj, "terminal_year", None)`` from plan step
+**salary:S3-a**, so the column was LIVE to the paycheck engine the moment it
+existed on the model -- there was no dormant period to rely on.  *Plan step
+salary:X-av-3a deleted ``apply_raises``; the walk that reads the column is
+:meth:`app.services.payroll_basis.PayrollBasis.base_pay_on` since, and
+:class:`TestTheColumnIsLiveAndNullIsTheIdentity` asks it there.*  The migration
 therefore claims something specific: that an all-``NULL`` column is the
 identity, because ``NULL`` is exactly what that ``getattr`` answered when
 the attribute did not exist.  That claim is the one thing the rest of the
@@ -56,8 +59,13 @@ from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.services.salary_raises import apply_raises
-from tests._test_helpers import constraint_name_from, load_migration_module
+from app.services.pay_calendar import calendar_for
+from app.services.payroll_basis import PayrollBasis
+from tests._test_helpers import (
+    constraint_name_from,
+    load_migration_module,
+    start_test_pay_list,
+)
 
 
 #: The three constraint names, kept as constants so a rename in
@@ -68,17 +76,32 @@ CK_WINDOW = "ck_salary_raises_valid_terminal_year"
 CK_RECURRING = "ck_salary_raises_terminal_year_only_on_a_recurring_raise"
 
 #: The developer's own profile, read off the dev database 2026-09-05 and
-#: used because the figures below are the ones the ruling was decided on.
-BASE = Decimal("91675.00")
+#: used because the figures below are the ones the ruling was decided on:
+#: ``$91,675.00`` a year then, and since plan step salary:X-av-3a the ONE pay
+#: entry migration ``70680a4a7405`` writes for it -- ``91,675.00 / 26 =
+#: 3,525.9615...``, half-up to the cent.
+BASE = Decimal("3525.96")
 MERIT_PCT = Decimal("0.0250")
 
-#: What that merit raise compounds to at 2040-12-01, both ways.  Named
-#: absolutely rather than compared side to side: an equality whose two
-#: sides run ONE producer passes when that producer is wrong identically on
-#: both, which is the hole an adversarial review of this step found in the
-#: identity assertion below.
-TERMINATED_2031_AT_2040 = Decimal("103721.85")   # 2027..2031, five times
-UNTERMINATED_AT_2040 = Decimal("129534.38")      # 2027..2040, fourteen
+#: What that merit raise compounds ONE PAYCHECK to at 2040-12-01, both ways
+#: -- the pay list's walk (:meth:`PayrollBasis.base_pay_on`), each 2.5% step
+#: rounded half-up to the cent (ruling R-SAL60), from the entry on the
+#: owner's first saved payday (2024-01-05, before the raise's first landing
+#: on 2027-01-01).  By hand, from 3,525.96: 2027 3,614.11 (3,614.109);
+#: 2028 3,704.46 (3,704.46275); 2029 3,797.07 (3,797.0715); 2030 3,892.00
+#: (3,891.99675); 2031 3,989.30 (3,989.3); 2032 4,089.03 (4,089.0325);
+#: 2033 4,191.26 (4,191.25575); 2034 4,296.04 (4,296.0415); 2035 4,403.44
+#: (4,403.441); 2036 4,513.53 (4,513.526); 2037 4,626.37 (4,626.36825);
+#: 2038 4,742.03 (4,742.02925); 2039 4,860.58 (4,860.58075); 2040 4,982.09
+#: (4,982.0945).  The yearly figures they were until X-av-3a --
+#: ``103,721.85`` and ``129,534.38``, the annual salary compounded and
+#: rounded once -- are ``3,989.30 x 26 = 103,721.80`` and ``4,982.09 x 26 =
+#: 129,534.34`` now.  Named absolutely rather than compared side to side: an
+#: equality whose two sides run ONE producer passes when that producer is
+#: wrong identically on both, which is the hole an adversarial review of
+#: this step found in the identity assertion below.
+TERMINATED_2031_AT_2040 = Decimal("3989.30")     # 2027..2031, five times
+UNTERMINATED_AT_2040 = Decimal("4982.09")        # 2027..2040, fourteen
 
 
 def _merit_type_id() -> int:
@@ -100,9 +123,9 @@ def _make_profile(seed_user) -> SalaryProfile:
         scenario_id=seed_user["scenario"].id,
         filing_status_id=single_id,
         name="S3-b",
-        annual_salary=BASE,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, BASE)  # $91,675.00 a year / 26
     db.session.commit()
     return profile
 
@@ -311,7 +334,7 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         """A raise-like value with no ``terminal_year`` attribute at all.
 
         What every :class:`~app.models.salary_raise.SalaryRaise` row looked
-        like to :func:`apply_raises` before this column existed.  Written as
+        like to ``apply_raises`` before this column existed.  Written as
         a class with fixed fields rather than a ``SalaryRaise`` with the
         attribute deleted, because deleting a mapped attribute on an ORM
         instance triggers a lazy reload and puts the field back.
@@ -349,8 +372,12 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         """A stored ``NULL`` means the raise carries no end.
 
         The developer's own merit raise as a committed row, walked to 2040.
-        The engine passes ORM rows straight to :func:`apply_raises`, so this
-        is the production shape and not a fabricated one.
+        The engine reads the profile's ORM rows through
+        :attr:`PayrollBasis.raises`, so this is the production shape and not
+        a fabricated one.  *Asked of ``apply_raises`` on the yearly salary
+        until plan step salary:X-av-3a deleted it; re-stated on the pay
+        list's walk at the per-paycheck figure :data:`UNTERMINATED_AT_2040`
+        works by hand.*
 
         **It names an ABSOLUTE figure**, and an adversarial review of plan
         step salary:S3-b is why: this case was written as an equality
@@ -370,8 +397,9 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
             profile = _make_profile(seed_user)
             row = self._row(profile.id, None)
             assert row.terminal_year is None
+            basis = PayrollBasis(profile, calendar_for(profile.user_id))
             assert (
-                apply_raises(BASE, [row], date(2040, 12, 1))
+                basis.base_pay_on(date(2040, 12, 1)).per_paycheck
                 == UNTERMINATED_AT_2040
             )
 
@@ -396,14 +424,22 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         fails if someone does.
 
         It is written against the walk rather than the reader because the
-        reader is private; the failure is what a caller would see.
+        reader is private; the failure is what a caller would see.  *The walk
+        was ``apply_raises`` until plan step salary:X-av-3a deleted it; it is
+        :meth:`PayrollBasis.base_pay_on` now, handed the shape as the raise
+        set a what-if supplies (``raise_terms``, ruling R-SAL20), which every
+        read converts through :meth:`~app.services.salary_raises.RaiseTerms
+        .of` -- plain attribute access, so the refusal is still an
+        ``AttributeError`` naming the missing end year.*
         """
         with app.app_context():
-            _make_profile(seed_user)
+            profile = _make_profile(seed_user)
+            basis = PayrollBasis(
+                profile, calendar_for(profile.user_id),
+                raise_terms=(self._NoSuchAttribute(),),
+            )
             with pytest.raises(AttributeError, match="terminal_year"):
-                apply_raises(
-                    BASE, [self._NoSuchAttribute()], date(2040, 12, 1),
-                )
+                basis.base_pay_on(date(2040, 12, 1))
 
     def test_a_stored_end_year_actually_terminates_the_raise(
         self, app, seed_user,
@@ -411,16 +447,20 @@ class TestTheColumnIsLiveAndNullIsTheIdentity:
         """A row carrying an end year stops compounding after it.
 
         The mutation that proves the test above is not vacuous: if
-        :func:`apply_raises` ignored the column, both walks there would
+        the walk ignored the column, both walks there would
         agree at ``UNTERMINATED_AT_2040`` and the identity would be
-        measuring nothing.  2027..2031 is five applications of 2.5%,
-        quantized once at the end of the walk.
+        measuring nothing.  2027..2031 is five applications of 2.5%, each
+        rounded to the cent on the paycheck (ruling R-SAL60, plan step
+        salary:X-av-3a; quantized once at the end of ``apply_raises``'s
+        yearly walk until then): 3,525.96 -> 3,614.11 -> 3,704.46 ->
+        3,797.07 -> 3,892.00 -> 3,989.30, and nothing after 2031.
         """
         with app.app_context():
             profile = _make_profile(seed_user)
             row = self._row(profile.id, 2031)
+            basis = PayrollBasis(profile, calendar_for(profile.user_id))
             assert (
-                apply_raises(BASE, [row], date(2040, 12, 1))
+                basis.base_pay_on(date(2040, 12, 1)).per_paycheck
                 == TERMINATED_2031_AT_2040
             )
 

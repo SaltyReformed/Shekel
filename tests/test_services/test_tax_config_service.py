@@ -30,6 +30,7 @@ from tests._test_helpers import (
     made_up_fica,
     made_up_state,
     made_up_year,
+    start_test_pay_list,
 )
 
 # pylint: disable=redefined-outer-name
@@ -51,12 +52,12 @@ def _make_profile(seed_user, *, state_code="NC", filing_status_name="single"):
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name="Test Profile",
-        annual_salary=Decimal("80000.00"),
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db.session.flush()
     return profile
 

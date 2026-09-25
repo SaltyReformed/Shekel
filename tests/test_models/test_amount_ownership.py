@@ -81,6 +81,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     repriced_by_the_owner,
     settle_day_columns,
+    start_test_pay_list,
 )
 from app.services.cash_ledger import (
     derived_amount_basis,
@@ -131,17 +132,18 @@ def _salary_template(seed_user):
     db.session.add(template)
     db.session.flush()
     make_every_period_rule(db.session, template)
-    db.session.add(SalaryProfile(
+    profile = SalaryProfile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         filing_status_id=db.session.query(FilingStatus).first().id,
         template_id=template.id,
         name="X-au-d control",
-        annual_salary=Decimal("104000.00"),
         state_code="NC",
         is_active=True,
-    ))
+    )
+    db.session.add(profile)
     db.session.flush()
+    start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
     return template
 
 

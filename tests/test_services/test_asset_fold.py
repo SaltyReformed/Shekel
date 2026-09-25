@@ -239,7 +239,7 @@ def _salaried_deduction(seed_user, account, amount):
     size a percentage off.
     """
     profile = make_salary_profile(
-        seed_user, db.session, annual_salary=Decimal("94425.24"),
+        seed_user, db.session, pay=Decimal("3631.74"),  # $94,425.24 a year / 26
     )
     db.session.flush()
     deduction = PaycheckLine(
@@ -889,7 +889,7 @@ class TestTheContributionTier:
         params = _params_for(account)
         params.employer_flat_percentage = Decimal("0.0500")
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("94425.24"),
+            seed_user, db.session, pay=Decimal("3631.74"),  # $94,425.24 a year / 26
         )
         db.session.flush()
         params.salary_profile_id = profile.id
@@ -1410,7 +1410,7 @@ class TestThePerPeriodIdentity:
         # the 2026-09-04 ruling models no employer money and this shape would
         # be missing the contribution it is here to mix in.
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("94425.24"),
+            seed_user, db.session, pay=Decimal("3631.74"),  # $94,425.24 a year / 26
         )
         db.session.flush()
         params.salary_profile_id = profile.id

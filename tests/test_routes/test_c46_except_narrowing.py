@@ -106,7 +106,8 @@ class TestSalaryNarrowCatch:
                     "/salary",
                     data={
                         "name": "New Profile",
-                        "annual_salary": "75000.00",
+                        "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                        "pay_payday": "2026-01-02",  # the first period's payday
                         "filing_status_id": filing_status.id,
                         "state_code": "NC",
                     },
@@ -133,7 +134,9 @@ class TestSalaryNarrowCatch:
         """``DataError`` on ``update_profile`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            original_salary = profile.annual_salary
+            # The update takes no salary since plan step salary:X-av-3a, so
+            # the rollback's witness is the name the POST changes.
+            original_name = profile.name
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single",
             ).one()
@@ -144,8 +147,7 @@ class TestSalaryNarrowCatch:
                 resp = auth_client.post(
                     f"/salary/{profile.id}",
                     data={
-                        "name": "Day Job",
-                        "annual_salary": "90000.00",
+                        "name": "Renamed Job",
                         "filing_status_id": filing_status.id,
                         "state_code": "NC",
                     },
@@ -155,10 +157,10 @@ class TestSalaryNarrowCatch:
             assert resp.status_code == 302
             assert f"/salary/{profile.id}/edit" in resp.headers["Location"]
 
-            # Rollback verified: annual_salary unchanged.
+            # Rollback verified: the name unchanged.
             db.session.expire_all()
             refreshed = db.session.get(SalaryProfile, profile.id)
-            assert refreshed.annual_salary == original_salary
+            assert refreshed.name == original_name
 
     def test_add_raise_data_error_handled(
         self, app, auth_client, seed_user, seed_periods,
@@ -561,7 +563,6 @@ class TestRegenerateHelperNarrowCatch:
                         f"/salary/{profile.id}",
                         data={
                             "name": "Day Job",
-                            "annual_salary": "80000.00",
                             "filing_status_id": filing_status.id,
                             "state_code": "NC",
                         },
@@ -618,7 +619,8 @@ class TestNonSqlAlchemyErrorPropagates:
                         "/salary",
                         data={
                             "name": "New Profile",
-                            "annual_salary": "75000.00",
+                            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                            "pay_payday": "2026-01-02",  # the first period's payday
                             "filing_status_id": filing_status.id,
                             "state_code": "NC",
                         },

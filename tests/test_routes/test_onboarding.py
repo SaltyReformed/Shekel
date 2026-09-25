@@ -8,7 +8,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import FilingStatus, TransactionType
 from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today
-from tests._test_helpers import counting_calls
+from tests._test_helpers import counting_calls, start_test_pay_list
 
 #: The one door every checklist fact queries through (ruling
 #: ``balance:R-BAL117``), as ``(module path, attribute)`` for
@@ -26,13 +26,14 @@ def _add_salary_profile(owner):
     filing_status = db.session.query(FilingStatus).filter_by(
         name="single"
     ).one()
-    db.session.add(SalaryProfile(
+    profile = SalaryProfile(
         user_id=owner["user"].id,
         scenario_id=owner["scenario"].id,
         filing_status_id=filing_status.id,
         name="Main",
-        annual_salary=Decimal("60000"),
-    ))
+    )
+    db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
 
 

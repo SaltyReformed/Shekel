@@ -48,6 +48,7 @@ from tests._test_helpers import (
     reassert_balance_on,
     settle_day_columns,
     settle_instant_on,
+    start_test_pay_list,
 )
 from app.services.investment_dashboard_service import _cards as investment_cards
 from app.services.investment_dashboard_service import _chart as investment_chart
@@ -1226,11 +1227,11 @@ def _create_salary_profile(db_session, user_id, scenario_id, funds=None):
         scenario_id=scenario_id,
         filing_status_id=filing.id,
         name="Day Job",
-        annual_salary=Decimal("100000.00"),
         state_code="NC",
         is_active=True,
     )
     db_session.add(profile)
+    start_test_pay_list(profile, Decimal("3846.15"))  # $100,000.00 a year / 26
     db_session.flush()
     if funds is not None:
         db_session.query(InvestmentParams).filter_by(
@@ -2769,11 +2770,11 @@ class TestEmployerMatchCapped:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=filing.id,
             name="Day Job",
-            annual_salary=Decimal("208000.00"),
             state_code="NC",
             is_active=True,
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("8000.00"))  # $208,000.00 a year / 26
         db.session.flush()
 
         # Deduction $1500/period -> uncapped periodic_contribution = 1500.
@@ -2842,11 +2843,11 @@ class TestEmployerMatchCapped:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=filing.id,
             name="Day Job",
-            annual_salary=Decimal("208000.00"),
             state_code="NC",
             is_active=True,
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("8000.00"))  # $208,000.00 a year / 26
         db.session.flush()
         _create_deduction(db.session, profile.id, acct.id, "1500.00")
         db.session.commit()

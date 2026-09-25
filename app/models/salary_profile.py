@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Salary Profile Model (salary schema)
 
-A salary profile defines an income source with annual salary, filing status,
+A salary profile defines an income source with its pay list, filing status,
 state tax config, and links to raises and deductions for paycheck calculation.
 """
 
@@ -37,6 +37,15 @@ class SalaryProfile(
     is what ``salary.profiles._paycheck_template`` authors -- so there was
     never a per-profile count for this column to hold.
 
+    **Nor does it record what the salary pays, since plan step
+    salary:X-av-3a** (ruling **R-SAL59**).  ``annual_salary`` was a
+    ``Numeric(12, 2)`` column here, one undated yearly figure for all time, so
+    editing it re-priced every paycheck not yet received and a correction
+    could not be told from a raise (finding **N-237**).  What one paycheck
+    pays from a dated payday on is :attr:`pay_entries`' fact
+    (:class:`~app.models.salary_pay_entry.SalaryPayEntry`); the yearly figure
+    is derived from it and never stored.
+
     Optimistic locking: see :class:`Transaction` for the
     ``version_id_col`` contract.  Concurrent profile edits race for
     the bump; the loser raises ``StaleDataError`` and the route
@@ -69,7 +78,6 @@ class SalaryProfile(
             "scenario_id", "template_id",
             name="uq_salary_profiles_scenario_template",
         ),
-        db.CheckConstraint("annual_salary > 0", name="ck_salary_profiles_positive_salary"),
         db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),
         db.CheckConstraint("other_dependents >= 0", name="ck_salary_profiles_nonneg_dependents"),
         db.CheckConstraint("additional_income >= 0", name="ck_salary_profiles_nonneg_add_income"),
@@ -114,7 +122,6 @@ class SalaryProfile(
         db.String(200), nullable=False,
         server_default=db.text("'Primary'"),
     )
-    annual_salary = db.Column(db.Numeric(12, 2), nullable=False)
     state_code = db.Column(
         db.String(2), nullable=False, default="NC",
         server_default=db.text("'NC'"),
@@ -161,6 +168,14 @@ class SalaryProfile(
         cascade="all, delete-orphan", lazy="select",
         order_by="SalaryRaise.effective_year, SalaryRaise.effective_month",
     )
+    # The pay list (plan step salary:X-av-3a), in payday order: the engine
+    # reads it as an attribute the caller loaded, as it reads ``raises`` and
+    # ``lines`` (``projection_inputs`` eager-loads all three).
+    pay_entries = db.relationship(
+        "SalaryPayEntry", back_populates="salary_profile",
+        cascade="all, delete-orphan", lazy="select",
+        order_by="SalaryPayEntry.payday",
+    )
     # The profile's payroll LINES -- every deduction, and from plan step
     # salary:R18-b every earning line too (ruling R-SAL38); which side a row
     # is on is its ``paycheck_line_kind_id``.  ``deductions`` until R18-a.
@@ -171,4 +186,4 @@ class SalaryProfile(
     )
 
     def __repr__(self):
-        return f"<SalaryProfile '{self.name}' ${self.annual_salary}>"
+        return f"<SalaryProfile '{self.name}'>"
