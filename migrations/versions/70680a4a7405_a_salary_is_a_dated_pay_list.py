@@ -35,8 +35,11 @@ first, so every paycheck before the entry uses it) and then applies every
 forecast raise landing AFTER that entry's payday -- so an entry dated before
 every raise's first landing prices exactly the raises the yearly salary was
 priced under.  The one difference is WHERE a raise rounds: on the yearly
-figure once, before; on each per-paycheck step, after (R-SAL60).  So no
-paycheck moves before the first raise lands, a projected paycheck after it
+figure once, before; on each per-paycheck step, after (R-SAL60).  The yearly
+figure shown moves at once: it is the entry times the count, which differs
+from the stored figure by up to half a cent per paycheck of a year
+(made-up: ``$52,000.13`` shows as ``$52,000.26``).  No paycheck moves before
+the first raise lands, a projected paycheck after it
 can move by the cents the two roundings part by -- more, the more raises
 compound -- and no settled record moves, because a settled record holds its
 own figure.  The production grade's figures are the release notes', never
@@ -206,9 +209,22 @@ _RESTORE_ANNUAL = sa.text(
 #: ``annual_salary`` goes NOT NULL.  The refusals above leave none (each
 #: profile holds one entry and its owner one era, so the UPDATE's join meets
 #: every profile once); it is asked rather than assumed.
-_PROFILES_NOT_RESTORED = (
+_PROFILES_NOT_RESTORED = sa.text(
     "SELECT sp.id, sp.name FROM salary.salary_profiles sp "
     "WHERE sp.annual_salary IS NULL ORDER BY sp.id"
+)
+
+#: The same profiles asked of the schema the refusal leaves behind: the
+#: migration is one transaction, so its added column is rolled back with it
+#: and the query above cannot be run afterwards.  A profile the restore's
+#: join cannot meet holds other than one entry, or its owner other than one
+#: era.
+_DIAGNOSE_NOT_RESTORED = (
+    "SELECT sp.id, sp.name FROM salary.salary_profiles sp "
+    f"WHERE (SELECT count(*) FROM {_SCHEMA}.{_TABLE} pe "
+    "WHERE pe.salary_profile_id = sp.id) <> 1 "
+    "OR (SELECT count(*) FROM budget.pay_eras e "
+    "WHERE e.user_id = sp.user_id) <> 1 ORDER BY sp.id"
 )
 
 
@@ -329,8 +345,9 @@ def downgrade():
             many) or none, an owner has not exactly one pay era, or a raise
             lands on or before its profile's entry -- each named; nothing is
             written.  Or, after the restore, a profile left without a yearly
-            figure (the refusals leave none), named with the diagnostic
-            SELECT before the column goes NOT NULL.
+            figure (the refusals leave none), named before the column goes
+            NOT NULL, with a SELECT that runs against the schema the
+            rolled-back transaction leaves.
     """
     bind = op.get_bind()
     with_history = bind.execute(_PROFILES_WITH_HISTORY).scalar_one()
@@ -372,7 +389,7 @@ def downgrade():
         schema=_SCHEMA,
     )
     bind.execute(_RESTORE_ANNUAL)
-    not_restored = bind.execute(sa.text(_PROFILES_NOT_RESTORED)).fetchall()
+    not_restored = bind.execute(_PROFILES_NOT_RESTORED).fetchall()
     if not_restored:
         listing = "; ".join(
             f"profile {profile_id} ({name})" for profile_id, name in not_restored
@@ -380,7 +397,7 @@ def downgrade():
         raise RuntimeError(
             "the downgrade restored no yearly figure for these salary "
             f"profiles, so annual_salary cannot be made NOT NULL: {listing}.  "
-            f"Diagnose with: {_PROFILES_NOT_RESTORED}"
+            f"Nothing was written; diagnose with: {_DIAGNOSE_NOT_RESTORED}"
         )
     op.alter_column(
         "salary_profiles", "annual_salary", nullable=False, schema=_SCHEMA,

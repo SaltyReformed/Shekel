@@ -201,8 +201,9 @@ class TestADatedPayList:
     def test_a_raise_landing_ON_the_entry_payday_is_inside_it(self):
         """Entry from 2026-01-01, and 3% landing 2026-01-01: the entry holds it (R-SAL59).
 
-        "On or before its date": 01-15 pays 2,000.00, not 2,060.00, and
-        neither January paycheck badges the raise the entry replaced.  Every
+        "On or before its date": 01-15 pays 2,000.00, not 2,060.00, and no
+        January paycheck (01-01, 01-15, 01-29) badges the raise the entry
+        replaced.  Every
         other case dates its entry strictly off the 1st a raise lands on, so
         this is the one that tells "on or before" from "before" (an
         adversarial review of this step: the boundary flipped passed 1,111
@@ -215,6 +216,7 @@ class TestADatedPayList:
         assert _pay(basis, date(2026, 1, 15)) == Decimal("2000.00")
         assert _badge(basis, date(2026, 1, 1)) == ""
         assert _badge(basis, date(2026, 1, 15)) == ""
+        assert _badge(basis, date(2026, 1, 29)) == ""
 
 
 class TestEachRaiseRounds:
@@ -409,6 +411,44 @@ class TestOnOneDayTheRhythmChangesFirst:
         )
         assert _pay(basis, date(2027, 6, 17)) == Decimal("2001.01")
         assert _pay(basis, date(2027, 7, 1)) == Decimal("1030.53")
+
+
+class TestOneBasisPricesEachPaydayItsOwnWay:
+    """Each payday is walked once per basis and REMEMBERED BY ITS OWN DAY.
+
+    A basis memoises each payday's walk; these cases price two paydays of
+    one month that differ, through ONE basis, in both orders, so a memo keyed
+    coarser than the day (by month, as ``applications_between`` reads a
+    raise) would hand one payday the other's answer.  An adversarial review
+    of this step keyed it by month and found every other case passing,
+    since each puts its entries and seams on a month's first payday.
+    """
+
+    def test_two_entries_in_one_month(self):
+        """2,000.00 from 01-01, 2,070.00 from 07-16: 07-02 pays 2,000.00 and 07-16 2,070.00."""
+        entries = [(date(2026, 1, 1), "2000.00"), (date(2026, 7, 16), "2070.00")]
+        forward = _basis(_biweekly(), entries)
+        assert _pay(forward, date(2026, 7, 2)) == Decimal("2000.00")
+        assert _pay(forward, date(2026, 7, 16)) == Decimal("2070.00")
+        backward = _basis(_biweekly(), entries)
+        assert _pay(backward, date(2026, 7, 16)) == Decimal("2070.00")
+        assert _pay(backward, date(2026, 7, 2)) == Decimal("2000.00")
+
+    def test_a_seam_in_the_middle_of_a_month(self):
+        """Biweekly through 2027-01-07, weekly from 01-21: 01-07 pays 2,000.00, 01-21 1,000.00."""
+        biweekly = [date(2026, 1, 8) + timedelta(days=14 * step) for step in range(27)]
+        weekly = [date(2027, 1, 21) + timedelta(days=7 * step) for step in range(10)]
+        calendar = _calendar(
+            biweekly + weekly,
+            (_era(date(2026, 1, 8), 14), _era(date(2027, 1, 21), 7)),
+        )
+        entries = [(date(2026, 1, 8), "2000.00")]
+        forward = _basis(calendar, entries)
+        assert _pay(forward, date(2027, 1, 7)) == Decimal("2000.00")
+        assert _pay(forward, date(2027, 1, 21)) == Decimal("1000.00")
+        backward = _basis(calendar, entries)
+        assert _pay(backward, date(2027, 1, 21)) == Decimal("1000.00")
+        assert _pay(backward, date(2027, 1, 7)) == Decimal("2000.00")
 
 
 class TestARecordPaidEarlyBeforeASeam:

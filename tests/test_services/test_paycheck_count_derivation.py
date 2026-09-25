@@ -273,8 +273,10 @@ class TestTheCountIsTheSchedule:
             # ruling R-HW states.  Without this the bound above would pass
             # for an engine that varied the gross period by period.
             assert len({b.earnings.gross_biweekly for b in breakdowns}) == 1
-            # The identity F-16 needs on a pay list: the year holds ``count``
-            # paydays, and they sum exactly to the reported yearly figure.
+            # The identity F-16 needs on a pay list: a year's paydays sum
+            # exactly to the reported yearly figure.  The first line is the
+            # fixture's premise (it builds ``count`` paydays), asserted so the
+            # sum is a year's; the second is the engine's property.
             assert len(breakdowns) == count
             assert total == breakdowns[0].earnings.annual_salary
 

@@ -27,13 +27,11 @@ salary:X-av-3b's (ruling **R-SAL83**), and Remove never takes the last entry
   never overwrites an entry unseen.
 
 The amount's bounds are the schema's (``SalaryPayEntryFixSchema``,
-``SalaryProfileCreateSchema``).  Every write re-prices the paychecks the
-entry covers: the Fix route follows it with
-:func:`~app.services.salary_regeneration.regenerate_salary_transactions`, the
-walk every salary write to an existing profile is followed by, and the create
-route generates the new profile's paychecks from its new template
-(:func:`~app.services.recurrence_engine.generate_for_template`), since a new
-profile has no paycheck yet to re-price.
+``SalaryProfileCreateSchema``).  Every write prices the paychecks the entry
+covers: the Fix route re-prices them with
+:func:`~app.services.salary_regeneration.regenerate_salary_transactions`, and
+the create route generates the new profile's paychecks from its new template
+(:func:`~app.services.recurrence_engine.generate_for_template`).
 
 Flask-free: ORM rows and plain values in, the row out.  Never commits -- the
 route owns the unit of work.  :func:`start_pay_list` flushes, so its caller

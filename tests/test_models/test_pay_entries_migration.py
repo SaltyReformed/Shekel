@@ -379,7 +379,11 @@ class TestTheDowngrade:
             message = str(excinfo.value)
             assert f"profile {profile.id} (Day job)" in message
             assert "annual_salary cannot be made NOT NULL" in message
-            assert "WHERE sp.annual_salary IS NULL" in message
+            assert "diagnose with: SELECT sp.id, sp.name" in message
+            # The diagnostic runs against the schema the rollback left: it
+            # lists nothing here, since the restore was forced to miss.
+            diagnostic = message.split("diagnose with: ", 1)[1]
+            assert db.session.execute(sqlalchemy.text(diagnostic)).fetchall() == []
             assert _pay_list_exists()
             assert not _annual_column_exists()
 

@@ -555,8 +555,9 @@ class PayrollBasis:
 
         **Total** for a calendar in hand (ruling **R-PC45**: a calendar
         carries at least one era) and a profile holding a pay entry.
-        Resolved per call and never at construction, so building a basis
-        still reads nothing.
+        Resolved the first time each payday is asked (:meth:`_walk_of`
+        remembers it for the basis) and never at construction, so building
+        a basis still reads nothing.
 
         Args:
             payday: The day the paycheck arrives -- saved, projected, or below
@@ -586,8 +587,10 @@ class PayrollBasis:
         26-a-year one; the paycheck before it is that entry carried back,
         ``$4,333.33 x 12 / 26 = $2,000.00``, so the yearly comparison read
         ``$51,999.96`` against ``$52,000.00`` and badged a ``$0.04`` cut no
-        one took (an adversarial review of this step).  Its payday badges its
-        forecast raises like any payday it prices.
+        one took (an adversarial review of this step).  Its payday badges
+        nothing at all: a raise of its month lands on the 1st, on or before
+        the payday, so the entry holds it (``get_raise_event`` with the
+        entry's payday).
 
         **Across a change of rhythm it compares YEARLY pay**, labelled ``a
         year`` (ruling **R-SAL89**, "Yearly pay across a seam", amending
