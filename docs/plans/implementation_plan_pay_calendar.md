@@ -249,7 +249,7 @@ their only live specimen from them, which both `_staging` docstrings predict and
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
-      in" as `period_containing(date.today())` (census 4 code lines `period_containing` in
+      in" as `period_containing(date.today())` (census 5 code lines `period_containing` in
       `app/routes/salary/**/*.py`) plus the regeneration's, moved to the service at `salary:S3-f-3`
       (census 1 code lines `period_containing` in `app/services/salary_regeneration.py`) -- derived
       at `C2-f2d-3`, still on the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its

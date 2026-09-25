@@ -8,8 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-at-4` (`5d5f5bc1`, 2026-09-25) made a forgotten tax year loud**, `$0.00`; `X-at-8`, the 2027
-law, is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived spans: `historical/salary_*`.
+**`X-av-3a` (`8e832d8e`, 2026-09-25) made the salary a dated pay list**, moving cents; `X-at-8`, the
+2027 law, is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -210,21 +210,25 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money; the Recurring
         salary row moved, with the four totals it feeds (Net committed hero, Income chip, Expenses %
         of income, Income subtotal); closed **SAL-569**.
-  - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**; closes
-        **N-237**, **N-391**'s app half, **SAL-572**): dated per-paycheck gross entries, one per
-        profile and payday, audited; `annual_salary` DROPPED by a migration writing each profile one
-        entry (yearly over paychecks a year, to the cent) dated on or before every raise's first
-        landing and the first priced payday, else refusing; its downgrade refuses a profile with two
-        entries. A payday's base is the latest entry on or before it (else the first), each forecast
-        raise landing after that entry's date rounding to the cent; a flat raise adds its yearly
-        dollars over paychecks a year. Doors: Record, Fix, Remove (never the only entry); the yearly
-        figure shown beside each entry; the GROSS `default_amount` writes go. A yearly edit
-        re-prices EVERY projected paycheck since `balance:X-au-d`, past-dated ones too.
-        **MOVES MONEY** by cents, projected only; own PR and release. The developer's pay history is
-        entered after it, an operator act.
+  - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**): the
+        DECOMPOSED parent of two leaves (**R-SAL83**, 2026-09-25), ticking with its last.
+  - [x] **X-av-3a** `8e832d8e` -- the switch: `salary.pay_entries`, migration `70680a4a7405` (one
+        entry per profile, `annual_salary` dropped), the engine's walk (**R-SAL82**), the pay-change
+        banners (**R-SAL84**, **R-SAL85**, **R-SAL89**), create and Fix (**R-SAL90**, **R-SAL93**).
+        On the production copy, 104 projected paychecks move by one cent, the first on 2029-07-12,
+        and no settled record moves; a rollback re-prices 130 projected paychecks a cent lower
+        (**R-SAL92**). Closed **N-237**, **N-391**'s app half, **SAL-572**, **D44**.
+  - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): Record
+        (**R-SAL61**) refuses a payday past the next in its own words (**R-SAL90**, **R-SAL93**),
+        one entry per payday; Remove never takes the only entry (**R-SAL68**). The raise doors
+        refuse a raise no paycheck would get, in the ruled words, and the raises list marks one a
+        later entry holds "In your pay from <date>" (**R-SAL95**), the developer asked first how a
+        RECURRING raise with held early applications reads. The create form shows the count in force
+        on its default payday and the edit page none (**R-SAL97**); the "Next raise" chip styles a
+        `PAY -` event as a cut (**R-SAL85**). His pay history follows, an operator act.
   - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
         differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
-        entry through `X-av-3`'s Record door, one function both call. `$0.00` until used.
+        entry through `X-av-3b`'s Record door, one function both call. `$0.00` until used.
 - [ ] **S12 -- a paycheck line's amount is dated too** (**R-SAL64**; finding **N-240**): a line's
       amount gets the pay's dated list, its inflation forecast compounding from its latest entry, in
       place of `paycheck_calculator/_lines._inflation_years` counting from `profile.created_at`. A
@@ -257,10 +261,6 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         and the script's '..., except NC on 2026's and SC on 2026's.') is extrapolated and pinned by
         tests. X-at-3 puts it to the developer before a second state lands. In that form a state
         priced on the newest year is named nowhere. Closes **SAL-575**.
-  - [x] **X-at-4** `5d5f5bc1` -- the alarms (**R-SAL74**, **R-SAL86**-**R-SAL88**), `$0.00`; where
-        the newest year lacks a state, a missing year's one sentence names each part's year
-        (**R-SAL91**); the publish job outputs the refusal's start instant and `build-and-push`'s
-        first step refuses once it has passed, so a re-run reusing a November check still refuses.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
