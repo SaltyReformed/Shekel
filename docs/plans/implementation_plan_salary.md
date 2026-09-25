@@ -206,10 +206,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (**R-SAL67**), ticking with its last; built beside `S11-c`, neither waiting (**R-SAL62**,
       amending **R-SAL43**'s order). The stub transcription (**R-SAL40**) subsumes the one-stub
       re-read that opened it; **N-240** moved to `S12`; **N-446** stays `balance:X-bp`'s.
-  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm, the
-        priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money; the Recurring
-        salary row moved, with the four totals it feeds (Net committed hero, Income chip, Expenses %
-        of income, Income subtotal); closed **SAL-569**.
+  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm
+        (**R-SAL66**, **R-SAL70**); closed **SAL-569**.
   - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**): the
         DECOMPOSED parent of two leaves (**R-SAL83**, 2026-09-25), ticking with its last.
   - [x] **X-av-3a** `8e832d8e` -- the switch: `salary.pay_entries`, migration `70680a4a7405` (one
@@ -218,7 +216,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         On the 2026-09-25 05:59 production copy, 104 projected paychecks move by one cent, the first
         on 2029-07-12, and no settled record moves; a rollback prices 130 a cent below their
         pre-release figure (**R-SAL92**). Closed **N-391**'s app half, **SAL-572**, **D44**.
-  - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): Record
+  - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): its FIRST
+        commit replaces the real pay figures X-av-3a's tests repeat with made-up ones and re-derives
+        each expected value, after an honest rule-5 list to the developer (**R-SAL98**). Record
         (**R-SAL61**) refuses a payday past the next in its own words (**R-SAL90**, **R-SAL93**),
         one entry per payday; Remove never takes the only entry (**R-SAL68**). The raise doors
         refuse a raise no paycheck would get, in the ruled words, and the raises list marks one a
