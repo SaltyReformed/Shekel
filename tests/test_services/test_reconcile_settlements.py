@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- The card's reconcile panel lists the bill it paid (plan step credit_card:CC-5-4b)
+Shekel Budget App -- The card's reconcile panel lists the bill it paid (credit_card:CC-5-4b)
 
 Ruling **R-CC44**: the reconcile panel gains a list of UN-DATED payments on
 the statement's account whose row is planned on ANOTHER account -- a bill
@@ -84,7 +84,7 @@ def _card(seed_user, name="Rewards Card"):
 
 
 def _statement(seed_user, account_id, observed_on=_OBSERVED_ON):
-    """Return the Statement for *account_id*: its REAL governing assertion, presented for *observed_on*.
+    """Return *account_id*'s Statement: its REAL governing assertion, presented for *observed_on*.
 
     The id must exist -- the clearing links' composite keys refuse one that
     does not -- and the day is the test's.
@@ -254,7 +254,7 @@ class TestTheListOffersAReopenedPaymentFromHere:
     def test_a_DATED_payment_under_a_projected_row_is_not_offered(
         self, app, seed_user, seed_periods,
     ):
-        """Un-dated is load-bearing: R-CC44 lists un-dated payments, and a dated one is already in the books.
+        """Un-dated is load-bearing: R-CC44 lists un-dated payments; a dated one is in the books.
 
         A dated payment posts and folds on its own day, so it is not
         outstanding on this statement.  The seam keeps a covering movement's
@@ -373,7 +373,7 @@ class TestTheListOffersAReopenedPaymentFromHere:
             assert txn.id not in _groups(seed_user, card.id)
 
     def test_it_is_offered_once_the_bill_is_DUE(self, app, seed_user, seed_periods):
-        """Ruling R-CC118 ("Once the bill is due"): the row's own landing day, as Checking's list asks.
+        """R-CC118 ("Once the bill is due"): the row's own landing day, as Checking's list asks.
 
         A bill due on the 14th of a paycheck that started on the 2nd: not on
         the 10th's statement, and on the 14th's.
@@ -408,7 +408,7 @@ class TestTheOffersWording:
     def test_a_non_card_account_reads_paid_from_this_account(
         self, app, seed_user, seed_periods,
     ):
-        """R-CC117: a Savings bill paid from Checking reads 'paid from this account' on Checking."""
+        """R-CC117: a Savings bill paid from Checking reads 'paid from this account' there."""
         with app.app_context():
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Savings",
@@ -471,7 +471,7 @@ class TestTheOffersWording:
 
 
 class TestTheTick:
-    """What ticking one does: the bill's own settle, dated by the statement, linked on the payment."""
+    """What a tick does: the bill's own settle, dated by the statement, linked on the payment."""
 
     def test_a_tick_settles_the_row_from_here_and_links_the_payment_not_the_row(
         self, app, seed_user, seed_periods,
@@ -558,7 +558,7 @@ class TestTheTick:
     def test_the_bill_list_and_this_list_share_ONE_field(
         self, app, seed_user, seed_periods,
     ):
-        """R-CC116: a card's own bill and a Checking bill paid from it, one submission, both land."""
+        """R-CC116: a card's own bill and a Checking bill paid from it land in one submission."""
         with app.app_context():
             card = _card(seed_user)
             own = _row(seed_user, seed_periods[0], account=card, name="Phone",
@@ -577,7 +577,7 @@ class TestTheTick:
     def test_a_row_neither_scope_offers_settles_nothing(
         self, app, seed_user, seed_periods,
     ):
-        """A Checking bill with no card payment, forged onto the card's form: 0, and still Projected."""
+        """A Checking bill with no card payment, forged onto the card: 0, still Projected."""
         with app.app_context():
             card = _card(seed_user)
             checking_bill = _row(seed_user, seed_periods[0], name="Electricity")
@@ -676,7 +676,7 @@ class TestTheTwoRowScopesLogOneFieldsTicks:
     def test_each_event_counts_its_own_settles_and_the_whole_row_field(
         self, app, seed_user, seed_periods, caplog,
     ):
-        """A card bill, a Checking bill paid from the card (typed 118.50) and a stale id: 2 land.
+        """A card bill, a card-paid Checking bill (typed 118.50), an id no scope offers: 2 land.
 
         Each scope's event reports what IT settled and corrected, and the
         ROW field's whole posted set as ``requested_count`` -- the documented
@@ -690,11 +690,11 @@ class TestTheTwoRowScopesLogOneFieldsTicks:
             elsewhere = _paid_from_and_reopened(
                 _row(seed_user, seed_periods[0]), card,
             )
-            stale = _row(seed_user, seed_periods[0], name="Electricity")
+            neither = _row(seed_user, seed_periods[0], name="Electricity")
 
             with caplog.at_level("INFO"):
                 recorded = _tick(
-                    seed_user, card.id, {own.id, elsewhere.id, stale.id},
+                    seed_user, card.id, {own.id, elsewhere.id, neither.id},
                     {elsewhere.id: Decimal("118.50")},
                 )
 
@@ -710,6 +710,12 @@ class TestTheTwoRowScopesLogOneFieldsTicks:
                     record.corrected_count,
                 )
 
+            # Derived from the code: both scopes are handed all 3 row ids
+            # (requested 3 each); ARM loads only `own` (on the card) and books
+            # it untyped (0 corrected); SETTLEMENT_ARM loads only `elsewhere`
+            # (its un-dated payment is on the card) and books the typed 118.50
+            # against the $120.00 it would book (1 corrected); `neither` has no
+            # payment on the card, so no scope loads it.
             assert recorded == 2
             assert counts(EVT_TRANSACTIONS_RECONCILED) == (1, 3, 0)
             assert counts(EVT_SETTLEMENTS_RECONCILED) == (1, 3, 1)
@@ -759,14 +765,18 @@ class TestTheCardsGapClosesByThePayment:
     def test_the_statements_correction_goes_to_zero_and_checking_does_not_move(
         self, app, seed_user, seed_periods,
     ):
-        """The card opened at -$500 on 1/5; its 1/10 statement says -$620; the reopened $120 is the gap.
+        """Card asserted -$500 on 1/5 and -$620 on 1/10: the reopened $120 is the 1/10 gap.
 
         The statement is the 1/10 ASSERTION itself (its own day, not a later
         assertion presented for an earlier one), so that assertion's own
         posted correction -- its true-up legs dated 1/10, not the pay period's
-        net, which would net the 1/5 opening in too -- is the books-vs-bank
-        difference: -$120.00 before the tick, $0.00 after.  Checking's cash facts and posted ledger do not move --
-        the money was never Checking's.
+        net, which would net the 1/5 origination assertion's in too -- is the
+        books-vs-bank difference: -$120.00 before the tick, $0.00 after.
+        Checking's cash facts and posted ledger do not move -- the money was
+        never Checking's.  (The per-day read is inline, as
+        ``test_anchor_settle_partition`` reads one: ``_test_helpers`` has the
+        per-PERIOD one only, and ``linked_net_by_date`` would net the
+        payment's own leg in.)
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id

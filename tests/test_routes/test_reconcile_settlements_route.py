@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- "Paid from this account" through the reconcile ROUTE (plan step credit_card:CC-5-4b)
+Shekel Budget App -- "Paid from this account" through the reconcile ROUTE (CC-5-4b)
 
 The list's rules are graded at the service
 (``tests/test_services/test_reconcile_settlements.py``).  What is graded here
@@ -129,7 +129,7 @@ class TestPaidFromThisAccountThroughTheRoute:
     def test_a_browser_post_of_the_rendered_form_settles_the_row_on_the_card(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The tick end to end: posted as rendered, the row settles and the card statement links its payment."""
+        """End to end: posted as rendered, the row settles and its card payment is linked."""
         with app.app_context():
             card = _card(seed_user)
             txn = _reopened_card_payment(seed_user, seed_periods_today[0], card)
