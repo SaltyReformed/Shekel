@@ -40,9 +40,25 @@ from tests._test_helpers import (
     make_line_cadence_rule,
     make_salary_profile,
     replay_paycheck_lines_rename as _replay,
-    rewind_paycheck_lines_rename as _rewind,
+    restore_rule_due_day_column,
+    rewind_paycheck_lines_rename,
     run_migration_callable as _run,
 )
+
+
+def _rewind(db_session):
+    """Undo head's schema back past what this revision's SQL reads, newest first.
+
+    Plan step ``recurrence:R5-a`` dropped ``recurrence_rules.due_day_of_month``,
+    which this revision's own SQL reads (``_DEDUCTION_RULES``, ``_unadorned``),
+    so its downgrade runs FIRST -- it is the newest -- and plan step
+    ``salary:R18-a``/``R18-b``'s rename rewind after it.
+
+    Args:
+        db_session: The test ``db.session``.
+    """
+    restore_rule_due_day_column(db_session)
+    rewind_paycheck_lines_rename(db_session)
 
 #: This revision, loaded so its own callables are what this file drives.
 _M_R15B = load_migration_module(
