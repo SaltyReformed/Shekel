@@ -82,7 +82,8 @@ def _nominal_day_of(effective_from: date, day: int) -> "int | None":
     one meaning and ``ck_pay_eras_nominal_day`` can tie presence to the
     clamp.  A meant day BELOW the anchor's own day is not a clamp but an
     anchor off its grid, which :func:`reject_phase_off_grid` refuses before
-    this is asked.
+    this is asked for a minted era, and :func:`_on_grid` -- the stronger
+    question, which implies it -- before a moved phase's columns are.
 
     Args:
         effective_from: The era's phase, a day on its grid.
@@ -163,11 +164,12 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
     the batch from the stated day -- on an off-grid anchor that batch's
     first element would not be the day the owner stated.  :func:`mint_era`
     asks it again immediately before the write, as it asks the cadence
-    bound and the pairing, so no door can persist the state -- and
-    :func:`rephase_earliest_era` asks it of the phase it moves, after
-    refusing any phase that is not a day of the earliest era's own grid at
-    or below its current one (a check this function cannot make: a
-    fixed-days grid anchored at ANY day passes through it).  The CHECKs
+    bound and the pairing, so no door can persist the state.
+    :func:`rephase_earliest_era` asks the STRONGER question instead --
+    whether the phase is a day of the earliest era's own grid
+    (:func:`_on_grid`) -- which implies this one for every kind and which
+    this function cannot ask: a fixed-days grid anchored at ANY day passes
+    through it.  The CHECKs
     see only half of it: a meant day ABOVE the anchor's would be written
     as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
     the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
@@ -372,9 +374,9 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     written from is the stored one the door read (``rephase.earliest``), so
     ``cadence_days`` is written back with the value the row already holds.
 
-    **It moves the phase DOWN to another day of the SAME grid, and refuses
-    anything else** (reviews 2 and 3 of C18-b).  DOWN: the earliest era
-    moved down cannot reach a later era's day
+    **It moves the phase to a day AT OR BELOW its current one on the SAME
+    grid, and refuses anything else** (reviews 2 and 3 of C18-b).  DOWN: the
+    earliest era moved down cannot reach a later era's day
     (``uq_pay_eras_user_effective_from``), cannot pass it (the order every
     reader walks), and only gains grid steps before that era's first payday,
     so it cannot be left paying nothing (ruling **R-PC75**); a move UP could
@@ -384,8 +386,20 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     the earliest new payday's DISPLACED cash day under ``prior`` or ``next``
     rather than its nominal day -- re-phases the grid and moves every planned
     payday for good, and :func:`reject_phase_off_grid` cannot see that for a
-    fixed-days era.  The column writer holds both, so neither rests on the
-    caller.
+    fixed-days era; the same-grid question implies it for every kind, so it
+    is not asked beside it.  The column writer holds both refusals, so
+    neither rests on the caller.
+
+    **What it does NOT hold, stated rather than fenced** (review 4 of C18-b).
+    The UPDATE is keyed on the phase the door read, and nothing checks that
+    it moved a row.  Every era writer takes the per-user lock the door read
+    under, except the two ledger row **P71** records (the first-schedule
+    generate route and registration).  A first-schedule generate that read
+    an empty record before a first schedule committed, and retires every era
+    after this door's read, would leave the UPDATE matching nothing and
+    these paydays below an unmoved phase -- the state ruling R-PC105 exists
+    to prevent.  The root is P71's missing lock, and a row count here would
+    route around it rather than close it.
 
     Args:
         user_id: The owning user's id.  They hold at least one era -- the
@@ -394,12 +408,10 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
             (:class:`EarliestRephase`).
 
     Raises:
-        ValidationError: The phase lies ABOVE the era's current one, is not
-            a day of the era's own grid (:func:`_on_grid`), or is one its
-            columns cannot store as that grid
-            (:func:`reject_phase_off_grid`).  The earlier door hands the
-            nominal grid day of the earliest new payday, at or below the
-            current phase, so it cannot reach any of them; they are the
+        ValidationError: The phase lies ABOVE the era's current one, or is
+            not a day of the era's own grid (:func:`_on_grid`).  The earlier
+            door hands the nominal grid day of the earliest new payday, at or
+            below the current phase, so it cannot reach either; they are the
             column writer's own preconditions, asked as :func:`mint_era`
             asks its own.
     """
@@ -407,7 +419,7 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     cadence = earliest.rhythm.cadence
     if phase > earliest.effective_from:
         raise ValidationError(
-            f"user {user_id}'s earliest pay era cannot move up from "
+            f"The earliest pay era cannot move up from "
             f"{earliest.effective_from.isoformat()} to {phase.isoformat()}.  "
             f"This writer moves the phase down with paydays recorded below "
             f"the record; a move up can collide with a later era, pass it or "
@@ -415,12 +427,11 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
         )
     if not _on_grid(earliest, phase):
         raise ValidationError(
-            f"user {user_id}'s earliest pay era cannot move from "
+            f"The earliest pay era cannot move from "
             f"{earliest.effective_from.isoformat()} to {phase.isoformat()}: "
             f"that day is not on the era's grid, so every payday it plans "
             f"would move with it."
         )
-    reject_phase_off_grid(phase, cadence)
     db.session.query(PayEra).filter(
         PayEra.user_id == user_id,
         PayEra.effective_from == earliest.effective_from,

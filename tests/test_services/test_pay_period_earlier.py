@@ -19,8 +19,8 @@ Four contracts, one class each:
 * the WRITER and ADMIN doors (``pay_period_write.prepend_paydays``,
   ``pay_period_admin.add_earlier_pay_periods``) -- what they record, what they
   move, what they refuse and that a refusal writes nothing -- and the era
-  writer's own bound (``pay_era_write.rephase_earliest_era`` moves the phase
-  down only);
+  writer's own bounds (``pay_era_write.rephase_earliest_era`` moves the phase
+  only to a day at or below it on the era's own grid);
 * the HAZARD R-PC105 exists for -- a regenerate keeping only earlier paychecks
   restating a rhythm from the old phase or just past it -- driven through the
   real doors.
@@ -467,15 +467,16 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
             ))) == plan_before
 
     @pytest.mark.parametrize(
-        ("count", "first", "phase"),
+        ("count", "added", "phase"),
         [
-            (1, date(2026, 11, 12), date(2026, 11, 12)),
-            (2, date(2026, 10, 29), date(2026, 10, 29)),
-            (3, date(2026, 10, 15), date(2026, 10, 15)),
+            (1, [date(2026, 11, 12)], date(2026, 11, 12)),
+            (2, [date(2026, 10, 29), date(2026, 11, 12)], date(2026, 10, 29)),
+            (3, [date(2026, 10, 15), date(2026, 10, 29), date(2026, 11, 12)],
+             date(2026, 10, 15)),
         ],
     )
     def test_the_backfilled_era_a_cadence_below_the_record(
-        self, app, db, bare_user, count, first, phase,
+        self, app, db, bare_user, count, added, phase,
     ):
         """The one era phased BELOW the record: adding 1 keeps its phase.
 
@@ -507,7 +508,9 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
             pay_period_admin.add_earlier_pay_periods(user_id, count)
             db.session.commit()
 
-            assert _paydays(user_id)[0] == first
+            assert _paydays(user_id) == [
+                *added, date(2026, 11, 25), date(2026, 12, 10),
+            ]
             assert _stored_eras(user_id) == [(phase, None, None)]
             assert list(zip(range(30), planned_paydays_after(
                 schedule_for(user_id).eras, date(2026, 12, 10),
