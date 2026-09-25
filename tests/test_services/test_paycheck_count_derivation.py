@@ -34,7 +34,6 @@ from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
 from app.services.pay_rhythm import FixedDays
-from app.services.registration_service import _seed_tax_data_for_user
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._inputs import _contribution_inputs_for_accounts
 from app.services.pay_calendar import PayCadence, PayCalendar, PayCalendarError
@@ -243,7 +242,7 @@ class TestTheCountIsTheSchedule:
 
             calendar = _calendar(cadence_days, count, user_id=user_id)
             periods = list(calendar.saved())
-            configs = load_tax_configs_for_year(user_id, profile, 2026)
+            configs = load_tax_configs_for_year(profile, 2026)
 
             breakdowns = paycheck_calculator.project_salary(
                 PayrollBasis(profile, calendar), periods, configs,
@@ -287,7 +286,7 @@ class TestTheCountIsTheSchedule:
             )
             db.session.add(profile)
             db.session.flush()
-            configs = load_tax_configs_for_year(user_id, profile, 2026)
+            configs = load_tax_configs_for_year(profile, 2026)
 
             weekly = _calendar(7, 52, user_id=user_id)
             biweekly = _calendar(14, 26, user_id=user_id)
@@ -366,7 +365,6 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            _seed_tax_data_for_user(user_id)
             db.session.add(SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No paydays",
@@ -396,7 +394,6 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            _seed_tax_data_for_user(user_id)
             db.session.add(SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No cadence",

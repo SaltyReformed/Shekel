@@ -263,7 +263,7 @@ def year_paydays(calendar, year: int) -> tuple:
 
 
 def compute_withholding_to_date(
-    user_id: int, profile, year: int, calendar,
+    profile, year: int, calendar,
 ) -> WithholdingToDate:
     """Compute withholding-to-date = measured checkpoint + modeled remainder.
 
@@ -274,13 +274,12 @@ def compute_withholding_to_date(
     active calibration automatically.  With no checkpoint the measured side
     is zero and the whole ``periods`` list is modeled.
 
-    The projection uses the same per-year tax configs SSOT
+    The projection uses the same per-year tax-law resolution
     (:func:`load_tax_configs_for_year`) and the same ``project_salary``
     path the paycheck engine and the year-end summary use, so this module
     re-implements no tax arithmetic.
 
     Args:
-        user_id: The owning user's id (tax configs are per-user).
         profile: The :class:`~app.models.salary_profile.SalaryProfile`, with
             its ``raises``, ``deductions``, and ``calibration`` relationships
             available (read by ``project_salary``).
@@ -296,10 +295,10 @@ def compute_withholding_to_date(
             could decide whether a projection was needed BEFORE anything
             asked for a cadence an owner may never have stated.  A calendar
             can always be built, so that ordering is no longer load-bearing:
-            :attr:`~app.services.payroll_basis.PayrollBasis.periods_per_year`
-            resolves the cadence on read, and an owner with no cadence has no
-            payday, so they reach the all-zero remainder below without one
-            ever being asked for.
+            :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`
+            resolves each payday's cadence on read, and an owner with no
+            cadence has no payday, so they reach the all-zero remainder below
+            without one ever being asked for.
 
     Returns:
         The populated :class:`WithholdingToDate` (totals + measured /
@@ -309,9 +308,7 @@ def compute_withholding_to_date(
     measured = _measured_components(checkpoint)
     remainder = _remainder_periods(year_paydays(calendar, year), checkpoint)
     projected = (
-        _project_remainder(
-            user_id, PayrollBasis(profile, calendar), year, remainder,
-        )
+        _project_remainder(PayrollBasis(profile, calendar), year, remainder)
         if remainder
         else _ZERO_COMPONENTS
     )
@@ -391,7 +388,6 @@ def _remainder_periods(
 
 
 def _project_remainder(
-    user_id: int,
     basis,
     year: int,
     remainder: tuple,
@@ -416,18 +412,17 @@ def _project_remainder(
     ``project_salary`` is not free on a 26-period year.
 
     Args:
-        user_id: The owning user's id (per-user tax configs).
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` to
             project -- the salary profile bound to its owner's pay calendar,
             calibration-aware via ``basis.profile.calibration``.
-        year: The tax year whose configs to load.
+        year: The tax year whose law applies.
         remainder: The non-empty tuple of periods to price, from
             :func:`_remainder_periods`.
 
     Returns:
         The summed modeled remainder as a :class:`WithholdingComponents`.
     """
-    tax_configs = load_tax_configs_for_year(user_id, basis.profile, year)
+    tax_configs = load_tax_configs_for_year(basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
         basis, remainder, tax_configs,
         calibration=basis.profile.calibration,

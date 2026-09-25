@@ -1865,18 +1865,16 @@ class TestCalendarFlowStrip:
 
 
 def _seed_taxes_profile(seed_user, db):
-    """Seed the DEFAULT_* tax configs and a 130k single/NC salary profile.
+    """Seed a 130k single/NC salary profile; it prices under the shipped law.
 
     The T-P4 route-test fixture: 130,000 / 26 = 5,000.00 gross per period
     exactly (no rounding residue), no deductions, no calibration -- so every
-    figure asserted below is hand-computable from the 2026 seeds.
+    figure asserted below is hand-computable from the 2026 law.
     """
     from app.extensions import db as _db
     from app.models.ref import FilingStatus
     from app.models.salary_profile import SalaryProfile
-    from app.services.registration_service import _seed_tax_data_for_user
 
-    _seed_tax_data_for_user(seed_user["user"].id)
     filing_status = (
         _db.session.query(FilingStatus).filter_by(name="single").one()
     )
@@ -2016,9 +2014,7 @@ class TestTaxesTab:
             from app.extensions import db as _db
             from app.models.ref import FilingStatus
             from app.models.salary_profile import SalaryProfile
-            from app.services.registration_service import _seed_tax_data_for_user
 
-            _seed_tax_data_for_user(seed_user["user"].id)
             filing_status = (
                 _db.session.query(FilingStatus)
                 .filter_by(name="married_jointly").one()

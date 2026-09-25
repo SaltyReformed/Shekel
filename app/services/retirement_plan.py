@@ -269,8 +269,10 @@ class RetirementInputs:
     derived per point off the pass's pricer, and so are the payroll feeds
     since salary:S3-f-2b; both vary with the point only through its raise
     set.  For a profile that funds no account, the FIRST derivation at a set
-    is where that profile's tax series loads (three queries the loader issued
-    itself before), and every later point at that set is the memo's.
+    is where that profile's pricer is built, with no query since plan step
+    salary:X-at-1 moved the tax law into the code (three tax-series queries
+    until then, which the loader issued itself before salary:S3-f-2a), and
+    every later point at that set is the memo's.
 
     **The precise invariant, because "point-independent" is not quite true of
     ``base_ctx`` and an earlier draft of this paragraph claimed it was**
@@ -614,11 +616,20 @@ class RetirementPicture:
 
     @property
     def pay_cadence(self) -> PayCadence:
-        """How often the owner is paid.
+        """How often the owner is paid going forward: the LATEST era's rhythm.
+
+        Off the gap inputs.  Its reader spreads each account's contribution
+        limit over a year's paychecks for the lever's headroom (where the
+        contribution it is set against is today's paycheck's, priced at
+        today's rhythm -- finding **SAL-571**, ruling **R-SAL72**).  **It no
+        longer turns a paycheck into monthly income**, which is what this
+        docstring said until plan step salary:X-av-2: the gap converts at the
+        rhythm of the paycheck it compares against
+        (:class:`~app.services.retirement_dashboard_service.GapPaycheck`,
+        ruling **R-SAL70**).
 
         Returns:
-            The owner's :class:`~app.services.pay_calendar.PayCadence`, which is
-            what turns one paycheck into monthly income.
+            The owner's :class:`~app.services.pay_calendar.PayCadence`.
         """
         return self.inputs.gap.pay_cadence
 
@@ -754,8 +765,9 @@ def _believed_batch(
     ``inputs.batch.feeds`` price -- rebuilt anyway rather than special-cased,
     because two paths to one feed is the shape this module removes.  At a
     PROBED set the first pricer for each profile the probe names is built here,
-    and that construction loads the profile's tax series: three statements per
-    profile per distinct set, measured by
+    and that construction issues no statement -- it loaded the profile's tax
+    series, three statements per profile per distinct set, until plan step
+    salary:X-at-1 moved the law into the code -- measured by
     ``TestThePointBelievesARaiseSet.test_a_probed_set_is_the_one_legitimate_second_pricer``.
 
     Args:
@@ -822,8 +834,8 @@ def _derive_picture(
     raise's end year moves every figure that raise feeds and no figure twice
     -- one belief per picture.  At the stored set every read resolves to the
     pricer the batch loader built and the pricer's memo answers after the
-    first; a probed set builds ONE pricer per profile it names, which is
-    where that profile's tax series loads (three queries per distinct set).
+    first; a probed set builds ONE pricer per profile it names, which issues
+    no query since plan step salary:X-at-1 (three per distinct set before).
 
     Args:
         inputs: The render's loaded inputs.
@@ -872,11 +884,15 @@ def _derive_picture(
     projections = project_accounts_with_batch(
         ctx, _believed_batch(inputs, point), axis,
     )
+    # The paycheck the gap compares against AND the rhythm it is paid at,
+    # together (ruling R-SAL70): the current paycheck standing in for the
+    # final year's is converted at its own rhythm, not the latest era's.
+    paycheck = compute_gap_net_biweekly(
+        gap, payroll, retirement_date, pension.salary_by_year, as_of,
+    )
     net = calculate_gap(
-        net_biweekly_pay=compute_gap_net_biweekly(
-            gap, payroll, retirement_date, pension.salary_by_year, as_of,
-        ),
-        pay_cadence=gap.pay_cadence,
+        net_biweekly_pay=paycheck.net,
+        pay_cadence=paycheck.cadence,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=projections,
         safe_withdrawal_rate=point.swr,

@@ -408,32 +408,6 @@ class TestNothingOfferedIsUnauthorable:
                 for member in PeriodPlacementEnum
             }
 
-    def test_a_first_paycheck_month_cadence_reads_no_day_of_month(self, app):
-        """``schedules_on_day_of_month`` belongs to the PAIR, not to the unit.
-
-        ``(MONTH, first paycheck)`` dates its generated rows from the PAYCHECK
-        they defer onto, so ``scheduling_day_of_month`` answers ``None`` for it
-        -- which is why the form has always hidden the Due Day input for it,
-        and why the fact is asked of the ``(unit, placement)`` pair rather than
-        of the unit.
-        """
-        with app.app_context():
-            month_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH)
-            first_paycheck_id = ref_cache.period_placement_id(
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            )
-            covering_id = ref_cache.period_placement_id(
-                PeriodPlacementEnum.CONTAINING_DATE,
-            )
-            by_placement = {
-                option.placement_id: option.wire.schedules_on_day_of_month
-                for option in cadence_options()
-                if option.unit_id == month_id
-            }
-
-            assert by_placement[covering_id] is True
-            assert by_placement[first_paycheck_id] is False
-
 
 # ── The rendered controls ────────────────────────────────────────────
 
@@ -459,15 +433,15 @@ class TestTheScriptCanReadWhatTheServerSerialized:
     #: control it fed: ruling R-R16 put the cycle's month on ``starts_on``, so
     #: there is no control to narrow and no fact for the script to read.
     #:
-    #: ``has_day_of_month_coordinate`` JOINED it at the same step, and the two
-    #: day facts are deliberately BOTH here rather than one standing for the
-    #: other.  ``schedules_on_day_of_month`` is keyed on the
-    #: ``(unit, placement)``
-    #: pair and decides the Due Day row; this one is keyed on the UNIT and
-    #: decides the "repeating on" control.  They disagree for exactly a
-    #: first-paycheck month cadence, and the script reading the pair-keyed fact
-    #: where it needed the unit-keyed one silently erased a month-end rule's
-    #: ``nominal_day`` on an ordinary edit.
+    #: ``has_day_of_month_coordinate`` JOINED it at the same step, keyed on
+    #: the UNIT, and it decides the "repeating on" control.  Its pair-keyed
+    #: sibling ``schedules_on_day_of_month`` decided the Due Day row and LEFT
+    #: this set -- and the wire -- at plan step recurrence:R5-a with that row
+    #: (ruling R-R96).
+    #: The two disagree for exactly a first-paycheck month cadence, and the
+    #: script reading the pair-keyed fact where it needed the unit-keyed one
+    #: silently erased a month-end rule's ``nominal_day`` on an ordinary
+    #: edit.
     #:
     #: ``interval_n`` LEFT it at plan step R7c-c: every positive interval is
     #: authorable on every offered pair, so an offer names none and the script
@@ -478,7 +452,7 @@ class TestTheScriptCanReadWhatTheServerSerialized:
     #: can put two occurrences in a month, and that is a fact the SERVER
     #: states about the offer rather than one the script infers.
     _READ_BY_THE_SCRIPT = frozenset({
-        "unit_id", "placement_id", "schedules_on_day_of_month",
+        "unit_id", "placement_id",
         "has_day_of_month_coordinate", "can_repeat_within_month",
     })
 

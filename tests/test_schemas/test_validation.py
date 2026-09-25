@@ -25,7 +25,6 @@ from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
     PaycheckLineCreateSchema,
-    FicaConfigSchema,
     InlineTransactionCreateSchema,
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
@@ -1105,33 +1104,6 @@ class TestDeductionCreateSchema:
         assert exc.value.messages == RECURRENCE_NEEDS_A_START
 
 
-# ── FicaConfigSchema ─────────────────────────────────────────────────
-
-
-class TestFicaConfigSchema:
-    """Tests for FicaConfigSchema."""
-
-    def test_valid_data(self):
-        """Valid FICA config data loads successfully."""
-        data = FicaConfigSchema().load({
-            "tax_year": "2026",
-            "ss_rate": "6.20",
-            "ss_wage_base": "176100.00",
-            "medicare_rate": "1.45",
-            "medicare_surtax_rate": "0.90",
-            "medicare_surtax_threshold": "200000.00",
-        })
-        assert data["ss_rate"] == Decimal("6.20")
-        assert data["tax_year"] == 2026
-
-    def test_missing_required_field(self):
-        """Missing ss_rate raises ValidationError."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load({
-                "tax_year": "2026",
-                # Missing all rate fields.
-            })
-        assert "ss_rate" in exc.value.messages
 
 
 # ── AccountCreateSchema ──────────────────────────────────────────────
@@ -1582,80 +1554,6 @@ class TestSalaryProfileCreateSchemaBoundary:
         assert data["state_code"] == "nc"
 
 
-# ── TestFicaConfigSchemaBoundary ────────────────────────────────────
-
-
-class TestFicaConfigSchemaBoundary:
-    """Boundary tests for FicaConfigSchema rate validation gaps."""
-
-    def _valid_fica_data(self, **overrides):
-        """Return a valid FICA config payload with optional overrides."""
-        data = {
-            "tax_year": "2026",
-            "ss_rate": "6.20",
-            "ss_wage_base": "176100.00",
-            "medicare_rate": "1.45",
-            "medicare_surtax_rate": "0.90",
-            "medicare_surtax_threshold": "200000.00",
-        }
-        data.update(overrides)
-        return data
-
-    def test_fica_rate_over_100_rejected(self):
-        """ss_rate=200 (200%) is rejected by Range(min=0, max=100) validator."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="200")
-            )
-        assert "ss_rate" in exc.value.messages
-
-    def test_negative_fica_rate_rejected(self):
-        """Negative ss_rate is rejected by Range(min=0, max=100) validator."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="-5")
-            )
-        assert "ss_rate" in exc.value.messages
-
-    def test_zero_wage_base_rejected(self):
-        """ss_wage_base=0 is rejected by Range(min=0, min_inclusive=False).
-
-        Wage base must be positive. Matches the database CHECK constraint
-        ``ss_wage_base > 0``.
-        """
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_wage_base="0")
-            )
-        assert "ss_wage_base" in exc.value.messages
-
-    def test_rate_at_zero_accepted(self):
-        """ss_rate=0 is accepted -- inclusive lower bound of Range(min=0, max=100)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="0.00")
-        )
-        assert data["ss_rate"] == Decimal("0.00")
-
-    def test_rate_at_100_accepted(self):
-        """ss_rate=100 is accepted -- inclusive upper bound of Range(min=0, max=100)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="100.00")
-        )
-        assert data["ss_rate"] == Decimal("100.00")
-
-    def test_wage_base_minimum_accepted(self):
-        """ss_wage_base=0.01 is accepted -- smallest valid value (> 0)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_wage_base="0.01")
-        )
-        assert data["ss_wage_base"] == Decimal("0.01")
-
-    def test_threshold_minimum_accepted(self):
-        """medicare_surtax_threshold=0.01 is accepted -- smallest valid value (> 0)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(medicare_surtax_threshold="0.01")
-        )
-        assert data["medicare_surtax_threshold"] == Decimal("0.01")
 
 
 # ── TestCategoryCreateSchemaBoundary ────────────────────────────────

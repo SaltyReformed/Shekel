@@ -43,7 +43,6 @@ DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 # module is what both layers already depend on.  The schema keeps its names as
 # re-exports, so nothing that imported them from there had to move.
 #
-# The values are the ones ``routes/salary/tax_config.py`` uses for a tax YEAR.
 # THREE tables mirror them for writers that never see a schema:
 # ``ck_template_amount_versions_effective_date_range``,
 # ``ck_recurrence_rules_starts_on_range`` and, since plan step

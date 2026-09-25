@@ -1,4 +1,4 @@
-"""Salary, paycheck-deduction, tax-config, and calibration schemas."""
+"""Salary, paycheck-line, calibration and pay-stub-checkpoint schemas."""
 
 
 from datetime import datetime, timezone
@@ -365,10 +365,8 @@ class PaycheckLineCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     start is legal and means the opening payday (R-SAL30's default survives
     as the default; :attr:`recurrence_start_is_required` is off, and
     ``app.routes.salary.items`` derives the unit's zero at the opening,
-    ruling **R-SAL36**, before the recurrence seam reads the payload).  And
-    ``due_day_of_month`` is still not declared: a payroll line has no
-    servicer's due day, so a crafted POST stating one meets ``BaseSchema``'s
-    ``unknown = EXCLUDE``.  An empty unit (the form's "Does not repeat")
+    ruling **R-SAL36**, before the recurrence seam reads the payload).  An
+    empty unit (the form's "Does not repeat")
     arrives as a present ``None`` -- every paycheck, ruling **R-SAL3** -- and
     an ABSENT unit is a submission that said nothing about the cadence, which
     the update route reads as "leave the stored rule alone".
@@ -534,115 +532,6 @@ class PaycheckLineUpdateSchema(PaycheckLineCreateSchema):
     """
 
     version_id = RowId(validate=validate.Range(min=1))
-
-
-class TaxBracketSetSchema(BaseSchema):
-    """Validates POST data for updating a tax bracket set.
-
-    F-075 / C-24: monetary fields gain ``Range(min=0)`` validators
-    so the schema layer rejects negative entries before the DB
-    CHECK (``standard_deduction >= 0`` etc.) raises an opaque
-    IntegrityError.  ``tax_year`` is bounded to ``[2000, 2100]`` to
-    match the storage CHECK introduced by C-24's migration.
-    """
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    filing_status_id = RowId(required=True)
-    tax_year = fields.Integer(
-        required=True, validate=validate.Range(min=2000, max=2100),
-    )
-    # F-075 / C-24: Added explicit ``Range(>= 0)`` to backstop DB
-    # CHECK ``standard_deduction >= 0``.  The 2026 federal standard
-    # deduction tops out around $32,200 (married jointly); $10M is
-    # a wildly generous form-layer ceiling that still rejects an
-    # extra-zero typo.
-    standard_deduction = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=_NON_NEGATIVE_MONETARY,
-    )
-    # F-075 / C-24: DB CHECK ``child_credit_amount >= 0``.  The CTC
-    # is $2,000 per child today; cap matches the form-layer
-    # ceiling.
-    child_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True,
-        validate=_NON_NEGATIVE_MONETARY,
-    )
-    # F-075 / C-24: DB CHECK ``other_dependent_credit_amount >= 0``.
-    other_dependent_credit_amount = fields.Decimal(
-        load_default="0", places=2, as_string=True,
-        validate=_NON_NEGATIVE_MONETARY,
-    )
-
-
-class FicaConfigSchema(BaseSchema):
-    """Validates POST data for updating FICA configuration.
-
-    F-076 / C-24: ``tax_year`` bounded to ``[2000, 2100]`` to match
-    the same-named bound on
-    :class:`StateTaxConfigSchema`/:class:`TaxBracketSetSchema`; the
-    rate fields keep their percent-input ``Range`` (the route
-    divides by 100 before persistence into ``Numeric(5, 4)`` columns
-    with DB CHECK ``rate >= 0 AND rate <= 1``).
-    """
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    tax_year = fields.Integer(
-        required=True, validate=validate.Range(min=2000, max=2100),
-    )
-    ss_rate = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, max=100),
-    )
-    ss_wage_base = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
-    )
-    medicare_rate = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, max=100),
-    )
-    medicare_surtax_rate = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, max=100),
-    )
-    medicare_surtax_threshold = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
-    )
-
-
-class StateTaxConfigSchema(BaseSchema):
-    """Validates POST data for updating state tax configuration."""
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    state_code = fields.String(
-        required=True, validate=validate.Length(min=2, max=2),
-    )
-    flat_rate = fields.Decimal(
-        places=2, as_string=True,
-        validate=validate.Range(min=0, max=100),
-    )
-    # F-077 / C-24: Backstop new DB CHECK
-    # ``standard_deduction IS NULL OR standard_deduction >= 0``.
-    standard_deduction = fields.Decimal(
-        places=2, as_string=True, allow_none=True,
-        validate=_NON_NEGATIVE_MONETARY,
-    )
-    tax_year = fields.Integer(
-        required=True, validate=validate.Range(min=2000, max=2100),
-    )
 
 
 class CalibrationSchema(BaseSchema):

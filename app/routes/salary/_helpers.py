@@ -47,14 +47,12 @@ from app.schemas.validation import (
     CalibrationSchema,
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
-    FicaConfigSchema,
     PaycheckLineCreateSchema,
     PaycheckLineUpdateSchema,
     RaiseCreateSchema,
     RaiseUpdateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
-    StateTaxConfigSchema,
     YtdTaxCheckpointSchema,
 )
 
@@ -97,10 +95,8 @@ _raise_schema = RaiseCreateSchema()
 _raise_update_schema = RaiseUpdateSchema()
 _line_schema = PaycheckLineCreateSchema()
 _line_update_schema = PaycheckLineUpdateSchema()
-_fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
-_state_tax_schema = StateTaxConfigSchema()
 _ytd_checkpoint_schema = YtdTaxCheckpointSchema()
 
 
@@ -188,23 +184,6 @@ def _regenerate_salary_transactions(profile):
     # step R10-a, adversarial review): the service returns the ids rather
     # than dropping them, and this is where the salary page says so.
     flash_retained_notice(retained)
-
-
-def _regenerate_all_salary_transactions():
-    """Regenerate salary transactions for every active profile.
-
-    Called after tax or FICA configuration changes so that projected
-    paycheck amounts in the grid stay in sync with the salary profile
-    page.  Without this, updating a tax rate would change the salary
-    page's displayed net pay but leave stale amounts in the grid.
-    """
-    profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .all()
-    )
-    for profile in profiles:
-        _regenerate_salary_transactions(profile)
 
 
 def _compute_total_pre_tax(profile):

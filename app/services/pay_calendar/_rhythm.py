@@ -5,7 +5,10 @@ The package's FOURTH shape.  :mod:`._searches` answers "which period is X",
 over", :mod:`._walks` answers "keep giving me paychecks from here".  This one
 answers **"how many times was this owner paid between these two days"** -- a
 COUNT of paydays rather than a period, a window or a stream, and the two
-questions below are the only two shapes of it anything asks.
+questions below are the only two shapes of it anything asks.  Beside them,
+since plan step salary:X-av-2, is the count per YEAR the rhythm in force on a
+day pays (:func:`cadence_on`) -- the era's count, where
+:attr:`~._calendar.PayCalendar.cadence` answers the latest era's.
 
 **Why it is a count and not a window, which is the whole point of the module.**
 Its consumers do not want a pay period.  A 24-per-year deduction skips the
@@ -125,8 +128,9 @@ paydays and the cadence the calendar carries.
 from datetime import date, timedelta
 from itertools import takewhile
 
+from ._cadence import PayCadence
 from ._calendar import PayCalendar
-from ._eras import era_index_at, matched_step, projected_payday
+from ._eras import era_index_at, matched_planned, matched_step, projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
@@ -240,7 +244,8 @@ def paydays_in_year_before(
     until plan step **balance:X-bh-1**.
 
     The calendar YEAR is the span because that is the window both caps are
-    defined over: ``ck_fica_configs`` prices a wage base per tax year, and
+    defined over: the tax law states a wage base per tax year
+    (:class:`app.tax_law.FicaRules`), and
     :func:`~app.utils.deduction_cap.cap_period_amount` clamps a calendar year's
     total.  STRICTLY before, because a cumulative is what has already been paid
     when this paycheck is priced.
@@ -522,7 +527,55 @@ def _backdated_paydays(
     )
 
 
+def cadence_on(calendar: PayCalendar, payday: date) -> PayCadence:
+    """Return the cadence the owner was paid at on *payday*: its era's.
+
+    **The per-payday answer :attr:`~._calendar.PayCalendar.cadence` does not
+    give** (plan step salary:X-av-2, ruling **R-SAL66**; ledger row
+    **SAL-569**).  That property answers how often the owner IS paid -- the
+    LATEST era's rhythm, the one that continues past the record -- which is
+    the right answer to every question about the future.  A paycheck paid
+    under an earlier era was paid at THAT era's rhythm, so the paycheck
+    engine's divisor and the count Pub 15-T annualises it by are that era's
+    count.  Read off the latest era instead, a monthly-era paycheck under a
+    later biweekly era was priced at 12/26 of its pay.
+
+    **The era is the one whose PLANNED payday the day stands for**
+    (:func:`~._eras.matched_planned`), the rule the calendar places a
+    recorded payday by, and it is read in CASH days.  It starts from
+    :func:`~._eras.era_index_at` -- an era pays from its first payday, its
+    ``effective_from`` displaced under its own convention, so an era taking
+    effect on a closed day, whose first paycheck is paid BEFORE its
+    ``effective_from``, owns that paycheck -- and differs from it only for a
+    record paid early just before a seam, which stands for the NEXT era's
+    first payday and is that era's paycheck (the calendar closes it at that
+    era's rhythm).  A projected or backdated payday IS a planned payday, so
+    for every day the calendar yields rather than records the two readers
+    agree.  :func:`~app.services.pay_rhythm.era_covering` asks the question
+    in NOMINAL days, the writer's coordinate, and would hand the displaced
+    first paycheck to the era before it.  *The first draft of this function
+    read ``era_index_at`` alone and said it was the rule the calendar
+    derives its periods by; an adversarial review of X-av-2 found the
+    early-paid record it misplaces.*
+
+    A free function here rather than a method beside ``cadence``, for ledger
+    row **P77**'s reason (this module's docstring states it).
+
+    Args:
+        calendar: The owner's schedule.
+        payday: The day a paycheck arrives -- saved, projected past the
+            record, or stepped back below it (where the earliest era covers
+            it, by the same rule).
+
+    Returns:
+        The covering era's :class:`~._cadence.PayCadence`.
+    """
+    index, _step = matched_planned(calendar.eras, payday)
+    return PayCadence(calendar.eras[index].rhythm.cadence)
+
+
 __all__ = [
+    "cadence_on",
     "paydays_in_month_through",
     "paydays_in_year_before",
     "saved_paydays_in_month_through",

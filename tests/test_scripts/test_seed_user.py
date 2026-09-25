@@ -45,12 +45,6 @@ from app.models.user import User, UserSettings
 from app.services import pay_schedule_service
 from app.services.pay_rhythm import FixedDays
 from app.services.registration_service import DEFAULT_CATEGORIES
-from app.services.tax_seed_data import (
-    DEFAULT_FEDERAL_BRACKETS,
-    DEFAULT_FICA,
-    DEFAULT_STATE_CHILD_DEDUCTIONS,
-    DEFAULT_STATE_TAX,
-)
 from app.utils.dates import display_today
 # Aliased so the module-level name cannot shadow the ``seed_user``
 # pytest fixture from conftest.py.
@@ -507,11 +501,11 @@ class TestSeedUserProvisioning:
     def test_seed_creates_full_registration_shape(self, app, db, monkeypatch):
         """One seed run provisions the complete /register shape.
 
-        Tax configuration is the load-bearing assertion: the
-        hand-copied version never created it (the drift this
-        delegation fixes); the bracket-set count is derived from the
-        shared defaults dict so a future tax-year addition does not
-        break the pin.
+        Tax configuration was the load-bearing assertion: the hand-copied
+        version never created it (the drift this delegation fixed).  Since
+        plan step salary:X-at-1 the tax law lives in the code and
+        registration copies none of it, so the shape a /register user gets
+        holds no tax row -- and neither does a seeded one.
         """
         with app.app_context():
             self._set_seed_env(monkeypatch)
@@ -559,39 +553,15 @@ class TestSeedUserProvisioning:
                 == len(DEFAULT_CATEGORIES)
             )
 
-            # Tax configuration: one bracket set per (year, status) in
-            # the shared defaults, one FICA row per year, and -- post-T-P5 --
-            # one state config per (year, filing status) plus the NC per-child
-            # deduction tiers per (year, filing status).
-            expected_sets = sum(
-                len(year_data)
-                for year_data in DEFAULT_FEDERAL_BRACKETS.values()
-            )
-            assert (
-                db.session.query(TaxBracketSet)
-                .filter_by(user_id=user.id).count() == expected_sets
-            )
-            assert (
-                db.session.query(FicaConfig)
-                .filter_by(user_id=user.id).count() == len(DEFAULT_FICA)
-            )
-            expected_state_configs = sum(
-                len(data["standard_deduction_by_status"])
-                for data in DEFAULT_STATE_TAX.values()
-            )
-            assert (
-                db.session.query(StateTaxConfig)
-                .filter_by(user_id=user.id).count() == expected_state_configs
-            )
-            expected_child_tiers = sum(
-                len(tiers)
-                for data in DEFAULT_STATE_CHILD_DEDUCTIONS.values()
-                for tiers in data["tiers_by_status"].values()
-            )
-            assert (
-                db.session.query(StateChildDeduction)
-                .filter_by(user_id=user.id).count() == expected_child_tiers
-            )
+            # No tax rows: registration copies no law (plan step
+            # salary:X-at-1, ruling R-SAL74).
+            for table in (
+                TaxBracketSet, FicaConfig, StateTaxConfig, StateChildDeduction,
+            ):
+                assert (
+                    db.session.query(table).filter_by(user_id=user.id).count()
+                    == 0
+                ), table.__tablename__
 
     def test_seed_rerun_is_idempotent_skip(self, app, db, monkeypatch, capsys):
         """A second run returns the existing user and creates nothing.

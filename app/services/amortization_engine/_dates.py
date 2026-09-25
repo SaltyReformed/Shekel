@@ -129,8 +129,10 @@ class PaymentDates:
         (``balance_at._loan_figures``), and the suite.
 
         Returns:
-            ``True`` for a settled payment (Paid or Received), ``False``
-            for a Projected one.
+            ``True`` for a payment from the settled half of
+            :func:`app.services.loan_loaders.income_shadows` -- a settled
+            transfer, or since ruling **R-BAL140** a Projected one whose
+            money has moved -- and ``False`` for a planned one.
         """
         return self.settled_on is not None
 

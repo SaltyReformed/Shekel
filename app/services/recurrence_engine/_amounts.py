@@ -48,7 +48,7 @@ from app.services.recurrence import compute_due_date
 
 
 class DerivedRowFields(NamedTuple):
-    """What a template and a pay period DERIVE on a generated transaction.
+    """What a template and a placed occurrence DERIVE on a generated transaction.
 
     **THE one statement of which columns a generated row takes from its
     DEFINITION rather than from its owner**, and the reason
@@ -123,9 +123,11 @@ class DerivedRowFields(NamedTuple):
             fork on ``template_amount_service.owns_its_amount`` until that
             step, and the arm that fork selected is what stored the copy the
             cutover deleted.
-        due_date: Derived from the rule and the period by
-            :func:`compute_due_date`, which always answers one -- a cadence
-            naming no day of the month dates the row from its period's start.
+        due_date: Derived from the rule and the placed occurrence by
+            :func:`compute_due_date`, which always answers one -- the
+            occurrence itself for a cadence naming a day of the month, the
+            funding paycheck's payday for one naming none (plan step R5-a,
+            rulings **R-R94** / **R-R95**).
             It was annotated ``date | None`` until plan step **X-bv-2**, which
             binds ``ck_transactions_template_row_needs_due_date`` (a row of a
             definition is dated) and tightened the type to the fact the
@@ -142,8 +144,8 @@ class DerivedRowFields(NamedTuple):
 
 
 
-def _derive_row_fields(template, rule, period):
-    """Resolve what *template* and *period* derive on a generated row.
+def _derive_row_fields(template, rule, occurrence, period):
+    """Resolve what *template* derives on the row answering *occurrence*.
 
     The producer of :class:`DerivedRowFields` for a definition WITH a rule,
     so the create path and the maintain path cannot disagree about what a
@@ -171,11 +173,15 @@ def _derive_row_fields(template, rule, period):
             being generated from.
         rule: The template's recurrence rule, already confirmed present by
             :func:`resolve_generation_plan` (``GenerationPlan.rule``).
+        occurrence: The date the rule names for this row, straight off its
+            ``PlannedOccurrence`` -- what the row is dated FROM since plan
+            step R5-a (plan ledger row **D18**: it was dated from *period*
+            alone, and two occurrences seated in one paycheck shared a date).
         period: The :class:`~app.services.pay_calendar.DerivedPeriod` this row
-            lives in, straight off its ``PlannedOccurrence``.
+            lives in, straight off the same ``PlannedOccurrence``.
 
     Returns:
-        The :class:`DerivedRowFields` for this (template, period) pair.
+        The :class:`DerivedRowFields` for this (template, occurrence) pair.
     """
     return DerivedRowFields(
         account_id=template.account_id,
@@ -183,7 +189,7 @@ def _derive_row_fields(template, rule, period):
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
         amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
-        due_date=compute_due_date(rule, period),
+        due_date=compute_due_date(rule, occurrence, period),
     )
 
 

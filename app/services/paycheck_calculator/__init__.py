@@ -112,7 +112,11 @@ The per-paycheck gross -- a RATE, not a share of a year
 ``base_biweekly`` is the (post-raise) annual salary divided by the owner's
 PAYCHECK COUNT and rounded once, at the cent.  The division lives in ONE place
 for the whole application, :func:`app.services.payroll_basis.gross_per_paycheck`,
-which carries the argument for the rule and the measurements behind it.
+which carries the argument for the rule and the measurements behind it, and
+the engine reaches it through ONE read,
+:meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, for the paycheck
+and for both year-to-date replays (plan step **salary:X-av-2**; they spelled
+it three times until then).
 *It was ``gross_biweekly`` until plan step salary:R18-b (ruling R-SAL38),
 when the gross became the base plus the paycheck's TAXABLE EARNING lines --
 an employer allowance with a cadence, priced through the same pass as a
@@ -120,9 +124,15 @@ deduction (``_lines``) -- and the net gained the AFTER-TAX earning lines;
 every percentage line is a percentage of the BASE, so what this section
 argues about the rate is unchanged by a line joining it.*
 
-The paycheck count is :attr:`PayrollBasis.periods_per_year`, derived from the
-owner's pay cadence and from nothing else since plan step **R-F16**; that class
-carries what the second stored count cost (finding **F-16**).
+The paycheck count is derived from the owner's pay cadence and from nothing
+else since plan step **R-F16**; :class:`~app.services.payroll_basis.PayrollBasis`
+carries what the second stored count cost (finding **F-16**).  **It is the
+count of the rhythm in force ON THE PAYDAY since plan step salary:X-av-2**
+(ruling **R-SAL66**; ledger row **SAL-569**), read through
+:func:`~app.services.pay_calendar.cadence_on` -- the era covering the payday.
+It was the LATEST era's for every payday, so a paycheck paid under an earlier
+rhythm was divided, and annualised for withholding, by a count it was never
+paid at.  An owner with one era is unchanged by construction.
 
 Two properties follow, and they are the point:
 

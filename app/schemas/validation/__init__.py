@@ -7,7 +7,7 @@ to keep controllers thin and push validation logic out of Flask.
 Percent / decimal-rate convention (E-28 / HIGH-06, Commit 24)
 -------------------------------------------------------------
 
-Percentage rate fields (FICA, state flat rates, inflation, APY,
+Percentage rate fields (inflation, APY,
 trend alert threshold, etc.) are stored as decimal fractions in the
 database -- a 6.2% rate is persisted as ``Decimal("0.0620")`` in a
 ``Numeric(5, 4)`` or ``Numeric(7, 5)`` column with a database
@@ -43,7 +43,7 @@ Monetary range validators
 -------------------------
 
 Pure monetary fields (deduction amount, SalaryProfile W-4 fields,
-TaxBracketSet credits, etc.) get ``Range(min=...)`` validators per
+YTD tax checkpoint figures, etc.) get ``Range(min=...)`` validators per
 commit C-24.  The minimum mirrors the database CHECK (``>= 0`` or
 ``> 0`` per column); the maximum is set well below the column's
 storage limit but above any plausible real-world value, so a typo
@@ -156,13 +156,10 @@ from app.schemas.validation.salary import (
     CalibrationSchema,
     PaycheckLineCreateSchema,
     PaycheckLineUpdateSchema,
-    FicaConfigSchema,
     RaiseCreateSchema,
     RaiseUpdateSchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
-    StateTaxConfigSchema,
-    TaxBracketSetSchema,
     YtdTaxCheckpointSchema,
 )
 from app.schemas.validation.savings import (
@@ -229,7 +226,6 @@ __all__ = [
     "EscrowLineMergeSchema",
     "EscrowLineRenameSchema",
     "EscrowVersionSchema",
-    "FicaConfigSchema",
     "InlineTransactionCreateSchema",
     "InterestParamsCreateSchema",
     "InterestParamsUpdateSchema",
@@ -268,8 +264,6 @@ __all__ = [
     "SalaryProfileUpdateSchema",
     "SavingsGoalCreateSchema",
     "SavingsGoalUpdateSchema",
-    "StateTaxConfigSchema",
-    "TaxBracketSetSchema",
     "TemplateCreateSchema",
     "TemplateUpdateSchema",
     "TransactionCreateSchema",

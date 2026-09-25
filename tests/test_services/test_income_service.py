@@ -35,10 +35,9 @@ from app import ref_cache
 from app.services.cash_flow_set import CashFlowSet
 from app.enums import RaiseTypeEnum
 from app.extensions import db
-from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
+from app.models.ref import FilingStatus, RaiseType, Status, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import calendar_for, paydays_in_year_before
 from app.services.salary_raises import RaiseTerms, terms_of
@@ -48,12 +47,13 @@ from app.services import (
     income_service,
     paycheck_calculator,
 )
-from app.services.tax_config_service import (
-    load_tax_configs,
-    load_tax_configs_for_year,
-)
+from app.services.tax_config_service import load_tax_configs_for_year
+from app.tax_law import FicaRules, TaxLaw
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    EMPTY_TAX_LAW,
+    made_up_state,
+    made_up_year,
     all_periods,
     counting_calls,
     freeze_today,
@@ -282,7 +282,7 @@ class TestSalaryNetFor:
     """
 
     def test_recomputes_live_ignoring_stored_amount(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """A salary-linked income row maps to what its PROFILE pays.
 
@@ -294,6 +294,7 @@ class TestSalaryNetFor:
         structural rather than measured -- is graded one tier up, by
         ``test_amount_source`` over the rule this producer is the body of.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -499,7 +500,7 @@ class TestLiveIncomeThroughBalanceResolver:
     """
 
     def test_a_declared_salary_row_reaches_the_grid_and_the_BALANCE(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """A declared salary income row contributes its profile's net to both.
 
@@ -515,6 +516,7 @@ class TestLiveIncomeThroughBalanceResolver:
         rule is the same on both bases -- which is the property this test
         exists to pin.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
@@ -531,7 +533,7 @@ class TestLiveIncomeThroughBalanceResolver:
             assert row.estimated_amount is None
 
             tax_configs = load_tax_configs_for_year(
-                user_id, profile, period.start_date.year,
+                profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
                 payroll_basis(profile, _derived(user_id)), _derived(user_id),
@@ -826,11 +828,11 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
     """
 
     def test_future_year_txn_uses_future_year_state_rate(
-        self, app, db, monkeypatch, seed_user, seed_periods_52,
+        self, app, db, monkeypatch, seed_user, seed_periods_52, tax_law,
     ):
         """A 2027 salary income row recomputes against 2027's state rate.
 
-        Seeds NC flat state tax at different rates for 2026 (3.99%) and
+        Installs NC flat state tax at different rates for 2026 (3.99%) and
         2027 (6.00%), then asserts a 2027 period's live net equals the
         2027-rate projection and differs from the 2026-rate one.  ``today``
         is frozen to 2026 so the pre-fix single current-year load would
@@ -845,21 +847,14 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             profile = _create_profile(user_id, scenario_id)  # $104k, NC
             template = _make_salary_template(seed_user, profile)
 
-            flat_type = db.session.query(TaxType).filter_by(name="flat").one()
-            db.session.add_all([
-                StateTaxConfig(
-                    user_id=user_id, state_code="NC", tax_year=2026,
-                    tax_type_id=flat_type.id,
-                    filing_status_id=profile.filing_status_id,
-                    flat_rate=Decimal("0.0399"),
-                ),
-                StateTaxConfig(
-                    user_id=user_id, state_code="NC", tax_year=2027,
-                    tax_type_id=flat_type.id,
-                    filing_status_id=profile.filing_status_id,
-                    flat_rate=Decimal("0.0600"),
-                ),
-            ])
+            # A NC state rate per year and nothing else: a law year cannot
+            # lack federal rules or FICA, so each carries the zero ones.
+            tax_law(TaxLaw(years=tuple(
+                made_up_year(year, states={
+                    "NC": made_up_state(rate, standard_deduction=Decimal("0.00")),
+                })
+                for year, rate in ((2026, Decimal("0.0399")), (2027, Decimal("0.0600")))
+            )))
             db.session.commit()
 
             periods = all_periods(user_id)
@@ -879,7 +874,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                 for bd in paycheck_calculator.project_salary(
                     payroll_basis(profile, _derived(user_id)),
                     _derived(user_id),
-                    load_tax_configs(user_id, profile, tax_year=2027),
+                    load_tax_configs_for_year(profile, 2027),
                     calibration=profile.calibration,
                 )
             }[period_2027.id]
@@ -888,7 +883,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                 for bd in paycheck_calculator.project_salary(
                     payroll_basis(profile, _derived(user_id)),
                     _derived(user_id),
-                    load_tax_configs(user_id, profile, tax_year=2026),
+                    load_tax_configs_for_year(profile, 2026),
                     calibration=profile.calibration,
                 )
             }[period_2027.id]
@@ -904,8 +899,8 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
 class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
     """The New Year cliff: a projection may not change because a date passed.
 
-    Tax configuration is seeded per year and nothing seeds the next one, so on
-    every January 1 the CURRENT year is an unconfigured year.  The retired
+    The law carries only the years that have been published, so on a
+    January 1 the CURRENT year can be one it lacks.  The retired
     resolution rule substituted "the current calendar year", which cannot
     answer for the year it is itself: a request for the now-current year found
     nothing to redirect to and resolved to no configuration at all.  The
@@ -929,27 +924,31 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
     forward.  The read-time gap had two write-back doors.
     """
 
-    def _seed_2026_only(self, user_id, profile):
-        """Seed NC state tax and FICA for 2026 and for no other year."""
-        flat_type = db.session.query(TaxType).filter_by(name="flat").one()
-        db.session.add_all([
-            StateTaxConfig(
-                user_id=user_id, state_code="NC", tax_year=2026,
-                tax_type_id=flat_type.id,
-                filing_status_id=profile.filing_status_id,
-                flat_rate=Decimal("0.0399"),
+    @staticmethod
+    def _law_2026_only():
+        """Return a made-up law: NC state tax and FICA for 2026, and no other year.
+
+        No federal bracket set, as the rows it replaced held none: the year
+        carries the zero federal rules a law year cannot lack.
+        """
+        return TaxLaw(years=(
+            made_up_year(
+                2026,
+                fica=FicaRules(
+                    ss_rate=Decimal("0.0620"),
+                    ss_wage_base=Decimal("184500.00"),
+                    medicare_rate=Decimal("0.0145"),
+                    medicare_surtax_rate=Decimal("0.0090"),
+                    medicare_surtax_threshold=Decimal("200000.00"),
+                ),
+                states={"NC": made_up_state(
+                    Decimal("0.0399"), standard_deduction=Decimal("0.00"),
+                )},
             ),
-            FicaConfig(
-                user_id=user_id, tax_year=2026,
-                ss_rate=Decimal("0.0620"),
-                ss_wage_base=Decimal("184500.00"),
-                medicare_rate=Decimal("0.0145"),
-            ),
-        ])
-        db.session.commit()
+        ))
 
     def test_a_2027_paycheck_is_priced_the_same_in_2026_and_in_2027(
-        self, app, db, monkeypatch, seed_user, seed_periods_52,
+        self, app, db, monkeypatch, seed_user, seed_periods_52, tax_law,
     ):
         """The same row, the same inputs, two different "todays", one answer.
 
@@ -962,7 +961,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             scenario_id = seed_user["scenario"].id
             profile = _create_profile(user_id, scenario_id)  # $104k, NC
             template = _make_salary_template(seed_user, profile)
-            self._seed_2026_only(user_id, profile)
+            tax_law(self._law_2026_only())
 
             periods = all_periods(user_id)
             period_2027 = next(
@@ -981,15 +980,15 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             assert priced_in_2027 == priced_in_2026
 
     def test_every_withholding_line_is_what_an_unresolved_year_deletes(
-        self, app, db, seed_user, seed_periods_52,
+        self, app, db, seed_user, seed_periods_52, tax_law,
     ):
         """Non-vacuity: an unresolved 2027 really does zero the withholding.
 
         Without this the sibling above could pass with both reads equally
-        wrong.  It prices the same 2027 period against the EXACT-year loader
-        -- which substitutes nothing and so returns the three ``None``s the
-        retired rule produced on 2027-01-01 -- and shows every withholding
-        line collapsing to zero, which raises the net by their sum.
+        wrong.  It prices the same 2027 period against the three ``None``s the
+        retired rule produced on 2027-01-01 (the exact-year loader that also
+        returned them was deleted at plan step salary:X-at-1) and shows every
+        withholding line collapsing to zero, which raises the net by their sum.
 
         On production only the Social Security line moved, because that
         profile carries an ACTIVE calibration and the calibrated path takes
@@ -1004,7 +1003,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             scenario_id = seed_user["scenario"].id
             profile = _create_profile(user_id, scenario_id)  # $104k, NC
             _make_salary_template(seed_user, profile)
-            self._seed_2026_only(user_id, profile)
+            tax_law(self._law_2026_only())
 
             periods = all_periods(user_id)
             period_2027 = next(
@@ -1018,11 +1017,12 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             basis = payroll_basis(profile, derived)
             resolved = paycheck_calculator.calculate_paycheck(
                 basis, derived_2027,
-                load_tax_configs_for_year(user_id, profile, 2027),
+                load_tax_configs_for_year(profile, 2027),
             )
+            # The three ``None``s the retired rule produced on 2027-01-01.
             unresolved = paycheck_calculator.calculate_paycheck(
                 basis, derived_2027,
-                load_tax_configs(user_id, profile, 2027),
+                {"bracket_set": None, "state_config": None, "fica_config": None},
             )
 
             # $104,000 / 26 = $4,000.00 gross, no pre-tax deductions, so each
@@ -1030,7 +1030,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             #   state    4000.00 * 0.0399 = 159.60
             #   SS       4000.00 * 0.0620 = 248.00  (under the $184,500 base)
             #   medicare 4000.00 * 0.0145 =  58.00
-            #   federal                    =   0.00  (no bracket set seeded)
+            #   federal                    =   0.00  (zero federal rules)
             # net = 4000.00 - 159.60 - 248.00 - 58.00 = 3,534.40
             assert resolved.earnings.gross_biweekly == Decimal("4000.00")
             assert resolved.taxes.state == Decimal("159.60")
@@ -1302,8 +1302,9 @@ class TestThePricerREFUSESAMismatchedOwner:
     """A profile and a calendar from two owners is refused, not answered.
 
     **The mispairing is SILENT without the refusal**, which is why it is a
-    case: the tax series would load under one owner while every payday came
-    from the other's schedule, and the engine's own cross-owner guard
+    case: the profile would be priced as one owner's (its owner's tax rows
+    loaded, until plan step salary:X-at-1 moved the law into the code) while
+    every payday came from the other's schedule, and the engine's own cross-owner guard
     (``paycheck_calculator._month_ordinal``) cannot fire, because it refuses a
     payday its calendar cannot PLACE and a calendar places its own paydays
     perfectly well.  An adversarial review of plan step salary:S3-d found the
@@ -1368,7 +1369,7 @@ class TestTheAmountModelReadsThePassPricer:
     """
 
     def test_the_basis_prices_a_row_through_the_pass_pricer(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """A payday the pass's pricer already priced is NOT priced again.
 
@@ -1378,6 +1379,7 @@ class TestTheAmountModelReadsThePassPricer:
         one memo.  On the tree before C12 the basis's own pricer ran the
         engine once more here.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1406,7 +1408,7 @@ class TestTheAmountModelReadsThePassPricer:
             )
 
     def test_the_owner_is_the_pricers(
-        self, app, db, seed_user, seed_second_user, seed_periods,
+        self, app, db, seed_user, seed_second_user, seed_periods, tax_law,
     ):
         """A basis over another owner's pricer prices THIS owner's rows never.
 
@@ -1422,6 +1424,7 @@ class TestTheAmountModelReadsThePassPricer:
         ``None`` too -- the same answer by the wrong door, one calendar
         derivation later.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1453,7 +1456,7 @@ class TestTheAmountModelReadsThePassPricer:
             )
 
     def test_the_pass_pricer_and_its_basis_derive_nothing_until_a_paycheck_is_asked(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """Building ``ctx.paychecks()`` and ``ctx.amounts()`` derives NO calendar.
 
@@ -1465,6 +1468,7 @@ class TestTheAmountModelReadsThePassPricer:
         at ``amounts()``, which put a ``PayCalendarError`` under two ``Raises``
         contracts that promise none; this is the case that keeps it out.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1497,7 +1501,7 @@ class TestTheAmountModelReadsThePassPricer:
                 assert counts["derive_periods"] == 1
 
     def test_the_derived_pricer_derives_nothing_until_a_paycheck_is_asked(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """A pass-less basis over a non-salary row derives NO calendar.
 
@@ -1508,6 +1512,7 @@ class TestTheAmountModelReadsThePassPricer:
         lookup runs against it, and a template no profile names stops there.
         Then the first real paycheck derives it, exactly once.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id

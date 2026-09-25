@@ -30,10 +30,8 @@ from decimal import Decimal
 from app.models.loan_params import LoanParams
 from app.services import escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
-from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     AmountBasis,
-    contributions_by_id,
     planned_leg_contribution,
     transfer_pricing_load_options,
 )
@@ -43,6 +41,7 @@ from app.services.loan_loaders import (
     load_escrow_lines,
     load_rate_history,
 )
+from app.services.row_valuation import leg_settled_contribution
 from ._engine_prep import compute_contractual_pi, prepare_payments_for_engine
 
 
@@ -174,7 +173,7 @@ def load_loan_context(
     rate_history_records = load_rate_history(account_id)
     rate_changes = _rate_change_records_from(rate_history_records)
 
-    # Payment history from shadow income transactions.
+    # Payment history from the transfers into the loan.
     raw_payments = (
         get_payment_history(account_id, basis, loan_params.payment_day)
         if basis is not None else []
@@ -245,27 +244,36 @@ def get_payment_history(
     """Price a debt account's payment installments into the engine's feed.
 
     Returns PaymentRecord instances for every non-deleted, non-excluded
-    payment into the given account in the basis's scenario: each settled
-    income shadow at what it RECORDED, and each still-projected transfer into
-    the account at what its parent resolves to (plan step **balance:X-bi-6a**,
-    ruling **R-BAL13** -- a projected payment is a leg derived from its
-    parent, not a shadow row).
+    payment into the given account in the basis's scenario, each the leg of
+    its transfer: a settled one at what it RECORDED, and a still-projected
+    one at what its parent resolves to (plan step **balance:X-bi-6a**, ruling
+    **R-BAL13**, for the projected half; plan step **balance:X-bi-6-4b** for
+    the settled half, which was the income shadow row until then).
 
-    **Two valuations, one per relation, and the split is the record/plan
-    split itself.**  A settled row is worth what moved, which
-    :func:`~app.services.cash_ledger.contributions_by_id` answers from the
-    settlement record without reaching the amount model; a projected leg is
-    worth its parent's resolved amount,
-    :func:`~app.services.cash_ledger.planned_leg_contribution`.  The settled
-    half therefore states NO pricing load -- nothing on that path reads a
-    relationship -- and the projected half states the transfer's own.
+    **Two valuations, one per half, and the split is the record/plan split
+    itself.**  A settled leg is worth what moved, which
+    :func:`~app.services.row_valuation.leg_settled_contribution` answers from
+    its record without reaching the amount model; a projected leg is worth its
+    parent's resolved amount,
+    :func:`~app.services.cash_ledger.planned_leg_contribution`.  WHICH half an
+    installment is in is its dates' to say
+    (:attr:`~app.services.amortization_engine.PaymentDates.is_confirmed`,
+    true exactly for the producer's settled half), never a re-reading of the
+    status column.  NOT :func:`~app.services.cash_ledger.leg_contribution_of`
+    over both: a still-Projected transfer whose side's money has MOVED is
+    settled (ruling **R-BAL140**), and that function would price it at its
+    plan.  The settled half therefore states NO pricing load -- nothing on
+    that path reads a relationship -- and the projected half states the
+    transfer's own.
 
     **It is the JOIN of two producers since plan step balance:X-bl-2a, and owns
     neither** (finding **N-432**).  The rows, their order and their three dates
     are :func:`app.services.loan_ledger.payment_installments`; the figures are
-    :func:`~app.services.cash_ledger.contributions_by_id`.  What is left here is
-    the pairing.  Splitting it that way is what lets a consumer that needs only
-    the chronology -- the schedule replay, which reads three dates and no amount
+    :func:`~app.services.row_valuation.leg_settled_contribution` and
+    :func:`~app.services.cash_ledger.planned_leg_contribution`, one per half.
+    What is left here is the pairing.  Splitting it that way is what lets a
+    consumer that needs only the chronology -- the schedule replay, which
+    reads three dates and no amount
     -- take the installments alone: this function's import closure is the amount
     model's -- **102 modules here, against the 46 the replay's own tier needs**
     (2026-09-09; the metric and its history are stated in
@@ -292,11 +300,13 @@ def get_payment_history(
     that accessor REFUSED a row whose
     plan is DERIVED.  So the loan-side INCOME leg could not be declared derived
     while this call stood -- not because anything was circular, but because one
-    reader had never been routed.  The bound is deleted rather than worked
-    around: this asks
+    reader had never been routed.  The bound was deleted rather than worked
+    around: this asked
     :func:`~app.services.cash_ledger.contributions_by_id`, which answers a
     derived row from its producer and an OWN row from the plan column that
-    accessor then read.
+    accessor then read.  Since plan step balance:X-bi-6a that question is the
+    projected half's alone, asked of each leg's parent through
+    :func:`~app.services.cash_ledger.planned_leg_contribution`.
 
     **It is BYTE-IDENTICAL on every row that exists today, and that is a
     measurement rather than an expectation.**  Both accessors gate on
@@ -330,14 +340,14 @@ def get_payment_history(
     claim about VALUES, and this is the one place it is not also a claim about
     which refusal arrives first.
 
-    **It asks the BATCH, and the reason is consistency rather than cost.**
-    ``contributions_by_id`` is a comprehension over ``contribution_of``, so it
-    is per row underneath; what stops 29 rows resolving the same loan 29 times
-    is the memo on the BASIS (``LoanPricing._loan``), which a per-row loop over
-    the same basis would get too.  *A first draft of this paragraph credited
-    the batch for that saving, which is wrong and worth correcting rather than
-    quietly deleting: the batch is taken because every other reader of a row
-    set takes it, so a figure cannot differ by which caller asked.*
+    **It asked the BATCH over the settled half until plan step
+    balance:X-bi-6-4b**, because every other reader of a ROW set took
+    ``contributions_by_id`` and a figure could not then differ by which caller
+    asked.  The settled half is legs since, valued by the ONE per-leg accessor
+    every leg reader asks (the Spending report's, the savings metric's), and
+    the projected half has been per leg since X-bi-6a; what stops 29 projected
+    legs resolving the same loan 29 times is the memo on the BASIS
+    (``LoanPricing._loan``), which a batch over the same basis gets too.
 
     **There is no Decimal coercion below, and its removal is part of the
     route.**  The line here read *"Defensive: ensure Decimal even if the stored
@@ -385,13 +395,18 @@ def get_payment_history(
     **Status and settle day are arbitrated ONE TIER DOWN, and since plan step
     balance:X-bl-2a they are arbitrated once rather than agreeably twice.**
     :func:`app.services.loan_ledger.payment_installments` reads the fold's own
-    settled set, then REQUIRES the day, because
+    settled set, then REQUIRES the day of every record that exists -- a
+    ``$0.00`` close has none and is dated by its installment (ruling
+    **R-BAL139**) -- because
     :func:`~app.utils.balance_predicates.settled_day` (inside
-    ``payment_visible_on``) refuses a settled row carrying none rather than
-    inventing one.  A row broken the other way -- Projected but still carrying a
-    stale day, which only a seam bypass can produce -- arrives in the PROJECTED
-    set and its day is never read, so the record cannot report it as confirmed.
-    ``PaymentRecord.is_confirmed`` is that absence.  What this file used to hold
+    ``payment_visible_on``) refuses a settled record carrying none rather than
+    inventing one.  A payment broken the other way -- its transfer Projected
+    while its covering movement still carries a day, which only a seam bypass
+    can produce -- is a payment whose money MOVED (ruling **R-BAL140**, plan
+    step balance:X-bi-6-4b): it arrives in the SETTLED half, dated and valued
+    by that movement, as the cash fold counts it.  Until that step the shadow's
+    own status decided, and a Projected row's stale day was never read.
+    ``PaymentRecord.is_confirmed`` is the day's presence.  What this file used to hold
     was a second reading of the status column beside the loader's, and its
     defence was that the two ran in the same ORDER -- a maintenance contract
     where there is now one producer.
@@ -405,7 +420,7 @@ def get_payment_history(
             unconstructible here rather than checked.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
-            to reconstruct the due date of a shadow that stores none.
+            to reconstruct the due date of a payment that stores none.
 
     Returns:
         List of PaymentRecord instances sorted by payment date
@@ -416,7 +431,7 @@ def get_payment_history(
             answer -- a DERIVE-mode payment whose loan will not resolve, or a
             row whose ownership CHECK is broken.  A refusal is never a fallback
             (see :mod:`app.services.cash_ledger._amount_source`).
-        UndatedSettleError: When a shadow in a settled status carries no
+        UndatedSettleError: When a settled payment's record carries no
             ``settled_on`` -- the settled-iff-dated invariant is broken on that
             row, and dating it by a fallback would put real money on a day
             nothing recorded (see :func:`app.utils.balance_predicates.settled_day`).
@@ -436,7 +451,7 @@ def get_payment_history(
 
             The row is still broken on every other surface -- the sibling cash
             leg refuses at ``cash_ledger._events`` and the loan fold at
-            ``loan_ledger._visible`` -- so no loan carrying such a shadow is
+            ``loan_ledger._visible`` -- so no loan carrying such a payment is
             silently healthy; what changed is only WHICH door reports it
             first.  Stated rather than quietly dropped, because a refusal that
             stops being reachable from a door is a behaviour change even when
@@ -456,23 +471,12 @@ def get_payment_history(
         leg_options=transfer_pricing_load_options(),
     )
 
-    # One valuation pass over the settled half.  Indexed with ``[]`` because
-    # the batch covers every id it was given, so a row it forgot to price
-    # raises where it is read rather than defaulting to a fabricated figure.
-    priced = contributions_by_id(
-        [
-            installment.source for installment in installments
-            if isinstance(installment.source, Transaction)
-        ],
-        basis,
-    )
-
     return [
         PaymentRecord(
             dates=installment.dates,
             amount=(
-                priced[installment.source.id]
-                if isinstance(installment.source, Transaction)
+                leg_settled_contribution(installment.source)
+                if installment.dates.is_confirmed
                 else planned_leg_contribution(installment.source, basis)
             ),
         )
