@@ -33,10 +33,15 @@ Until then it offered the transfer's SHADOW row on this account, keyed by the
 shadow's id in one map with the transaction arm's rows, which only the
 table's partition on ``transfer_id`` kept from colliding.  So this arm reaches
 no shadow itself; the two doors do, through the interval, and plan step
-``X-bi-6-4d`` re-bodies them once.  **The one thing that can move on
-screen**: a transfer's block is headed by its leg's label, composed from the
+``X-bi-6-4d`` re-bodies them once.  **What can move on screen**, all of it
+declared: a transfer's block is headed by its leg's label, composed from the
 endpoints' CURRENT names, where it printed the shadow's stored copy (leaf
-``X-bi-6-1``'s same change on the grid), wherever the two disagree.
+``X-bi-6-1``'s same change on the grid) -- 0 of 354 shadows disagreed on the
+2026-09-24 production dump; two same-day transfer blocks order by transfer id
+where they ordered by shadow id (``_assemble._block_order``); a transfer whose
+shadow pair is broken is warned about rather than offered (ruling
+**R-BAL148**); and a shadow drifted from its parent is offered by the
+parent's state (``transfer_legs.offerable_transfer_legs``).
 
 **Its settle is ``transfer_service.settle_transfer``, and that is the whole
 reason it is a separate arm** (ruling **R-FA**).  A transfer is THREE rows -- a
@@ -272,8 +277,14 @@ def outstanding_transfers(
     server error on the account's whole page, which builds this panel inline,
     and on a true-up's response after its write had committed.  A stale or
     forged tick naming such a transfer still reaches the settle, which refuses
-    it the same way, and the route renders that as the panel's designed
-    refusal.
+    it the same way; the route renders that refusal in the panel's error
+    alert, whose text is the pair loader's own message (it names the transfer
+    by id, a pre-existing wording of ``transfer_service._validation``).
+    **The catch is by TYPE**: every ``ValidationError`` the leg price can raise
+    today is the broken pair's (``_get_shadow_transactions``; its
+    ``_reject_unsettleable`` cannot fire on a pair loaded live), so one added
+    to that chain later would read as "damaged" too -- still a warning, never
+    a silent drop.
 
     Returns:
         ``(blocks, damaged)``: one :class:`~._offers.OutstandingGroup` per

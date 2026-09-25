@@ -116,12 +116,18 @@ def offerable_transfer_legs(
     **It equals the shadow scope the panel read before this leaf on every
     door-written state** (a Projected parent's two shadows are Projected, live
     and filed in its period -- Transfer Invariants 1, 3 and 4), and differs
-    only where a shadow has drifted from its parent, which no door writes: a
-    parent that is not Projected is not offered whatever its shadow says, and
-    a Projected parent's side is offered whatever its shadow's status or
-    soft-delete says, since the parent decides (ruling **R-JA**).
-    ``tests/test_services/test_reconcile_transfer_legs.py`` pins both
-    directions.
+    only where a shadow has drifted from its parent, which no door writes.
+    The PARENT decides (ruling **R-JM**, a transfer leg reads its parent): a
+    parent that is not Projected is not emitted whatever its shadow says, and
+    a Projected parent's side is emitted while that side's own DATED movement
+    does not exist, whatever its shadow's status or soft-delete says.  What
+    the panel then does with such a leg is its pricing's: a soft-deleted
+    shadow breaks the pair, so the leg is WARNED about and not offered (ruling
+    **R-BAL148**); a Cancelled shadow prices at ``$0.00`` and its tick is
+    refused by the status seam's transition rule.
+    ``tests/test_services/test_reconcile_transfer_legs.py`` pins the
+    parent-side direction, the Cancelled-shadow direction and the dated-side
+    rule here, and the soft-delete direction at the panel.
 
     Args:
         account_id: The account the statement is for -- either side.

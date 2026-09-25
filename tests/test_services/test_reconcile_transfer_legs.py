@@ -440,12 +440,14 @@ class TestTheBlockReadsTheLeg:
     def test_the_panel_prints_the_warning_and_no_tick_for_it(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Both doors that build the panel answer 200 and print the warning.
+        """Every door that builds the panel answers 200; the permanent ones warn.
 
         The true-up (whose response builds the prompt after its write), the
         cash detail page (which builds the panel inline), and the panel's own
-        fragment.  Each was a server error while the pair's refusal
-        propagated.
+        fragment -- each a server error while the pair's refusal propagated.
+        With the damaged transfer ALL that is outstanding there is nothing to
+        tick, so the true-up opens no modal (``prompt_fragment`` gates on
+        ticks); the detail page and the fragment carry the warning.
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -467,6 +469,7 @@ class TestTheBlockReadsTheLeg:
             },
         )
         assert response.status_code == 200, response.data
+        assert b"reconcileModal" not in response.data
         warning = (
             "Transfer to Savings, $500.00, Jan 2 is damaged and can't be "
             "reconciled here."
@@ -480,6 +483,38 @@ class TestTheBlockReadsTheLeg:
         assert warning in body, body
         assert f'name="transfer_ids" value="{transfer_id}"' not in body
         assert "has been matched to your bank" not in body
+
+
+    def test_the_true_up_modal_carries_the_warning_beside_a_tickable_row(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """With a bill to tick, the post-true-up modal opens and warns too."""
+        with app.app_context():
+            _bill(seed_user, seed_periods[0])
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("500.00"),
+            )
+            db.session.commit()
+            _shadow_on(transfer, savings).is_deleted = True
+            db.session.commit()
+            account_id = seed_user["account"].id
+
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up",
+            data={
+                "anchor_balance": "4537.66",
+                "observed_on": _OBSERVED_ON.isoformat(),
+            },
+        )
+        assert response.status_code == 200, response.data
+        body = response.data.decode()
+        assert "reconcileModal" in body
+        assert (
+            "Transfer to Savings, $500.00, Jan 2 is damaged and can't be "
+            "reconciled here." in body
+        )
 
 
 class TestTheRecordsPredicateKeptItsBody:

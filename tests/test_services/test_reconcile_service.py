@@ -1678,7 +1678,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
 
 
 class TestTheTransferArm:
-    """Plan step **X-f2-c3**: the panel offers a TRANSFER's shadow too.
+    """Plan step **X-f2-c3**: the panel offers a TRANSFER's leg too.
 
     Money moving between two of the owner's own accounts still leaves one of
     them, so a checking statement shows it exactly as it shows a bill.
@@ -1919,7 +1919,7 @@ class TestTheTransferArm:
                 .one()
             )
 
-            assert (transfer.id, shadow.account_id) not in self._offered(seed_user)
+            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
             assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
@@ -2252,6 +2252,7 @@ class TestWhatATickBooks:
                 "purchase_count", "purchase_total",
                 "payment_count", "payment_total",
                 "deposit_count", "deposit_total",
+                "damaged",
             }
 
 

@@ -433,9 +433,13 @@ def _build_transfer_plan(transfer, basis):
 
     **The subject is the TRANSFER since plan step balance:X-bi-6-4c-2**, and
     two things follow.  Its figure is ``resolve_transfer_amount`` over the
-    parent -- what ``resolve_transaction_amount`` answered for either shadow,
-    by delegating to exactly that (``cash_ledger``'s amount rule 5) -- so
-    the figure does not move.  Its label is its FROM side's
+    parent, which is what ``resolve_transaction_amount`` answered for either
+    shadow on every door-written state: a derived shadow delegates to exactly
+    that (``cash_ledger``'s amount rule 5), and an owner-priced one holds an
+    OWN copy of the parent's figure that ``transfer_service._amount`` keeps
+    equal (Transfer Invariant 3) -- so the figure does not move (the
+    2026-09-25 clone grade replayed 95 transfer plans: every figure equal).
+    Its label is its FROM side's
     (:attr:`~app.services.transfer_legs.TransferLeg.name`, "Transfer to
     <account>"), stated here where it was whichever shadow the context's
     unordered query returned first (finding **BAL-546**, a DECLARED display

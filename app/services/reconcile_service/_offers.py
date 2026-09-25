@@ -654,7 +654,9 @@ class OutstandingSet:  # pylint: disable=too-many-instance-attributes
 
         The steady state for a user who reconciles as they go, and the state
         the panel answers with its "nothing is being held back twice" copy
-        rather than an empty form.
+        rather than an empty form -- unless :attr:`damaged` is not empty
+        (ruling **R-BAL148**), when the panel prints only the warnings: a
+        transfer it cannot offer is still outstanding.
 
         **Read off the COUNTS, not off ``groups``**, and the difference is a
         wrong empty state rather than a style point.  This accessor was written
