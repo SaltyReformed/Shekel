@@ -35,15 +35,19 @@ first, so every paycheck before the entry uses it) and then applies every
 forecast raise landing AFTER that entry's payday -- so an entry dated before
 every raise's first landing prices exactly the raises the yearly salary was
 priced under.  The one difference is WHERE a raise rounds: on the yearly
-figure once, before; on each per-paycheck step, after (R-SAL60).  The yearly
-figure shown moves at once: it is the entry times the count, which differs
-from the stored figure by up to half a cent per paycheck of a year
+figure once, before; on each per-paycheck step, after (R-SAL60).  The
+entry's own yearly figure (the pay list's "A year", and every payday's before
+the first raise) moves at once: it is the entry times the count, which
+differs from the stored figure by up to half a cent per paycheck of a year
 (made-up: ``$52,000.13`` shows as ``$52,000.26``).  No paycheck moves before
-the first raise lands, a projected paycheck after it
-can move by the cents the two roundings part by -- more, the more raises
-compound -- and no settled record moves, because a settled record holds its
-own figure.  The production grade's figures are the release notes', never
-this file's.
+the first raise lands, a projected paycheck after it can move by the cents
+the two roundings part by -- more, the more raises compound -- and a raised
+payday's yearly figure, its paycheck times the count, moves by that
+paycheck's move times the count (made-up: ``$52,004.29`` with one 3% raise
+showed ``$53,564.42`` and shows ``$53,564.68``, the paycheck ``$0.01`` higher,
+times 26).  No settled record moves, because a settled record holds its own
+figure.  The production grade's figures are the release notes', never this
+file's.
 
 **It REFUSES, before writing anything, the three states it cannot convert
 exactly**, naming each profile.  The developer's production data holds none of
@@ -214,11 +218,15 @@ _PROFILES_NOT_RESTORED = sa.text(
     "WHERE sp.annual_salary IS NULL ORDER BY sp.id"
 )
 
-#: The same profiles asked of the schema the refusal leaves behind: the
-#: migration is one transaction, so its added column is rolled back with it
-#: and the query above cannot be run afterwards.  A profile the restore's
-#: join cannot meet holds other than one entry, or its owner other than one
-#: era.
+#: The diagnostic the refusal quotes, asked of the schema it leaves behind:
+#: the migration is one transaction, so its added column is rolled back with
+#: it and the query above cannot be run afterwards.  It asks the refusals'
+#: own predicates -- a profile holding other than one entry, or whose owner
+#: holds other than one era -- which is WIDER than the profiles the restore's
+#: join misses (no entry, or no era; a profile holding two is met twice and
+#: restored), and every profile the join can miss is in it.  The refusals
+#: have just passed on the same data, so it lists a profile only when another
+#: writer changed its entries or eras between them and the restore.
 _DIAGNOSE_NOT_RESTORED = (
     "SELECT sp.id, sp.name FROM salary.salary_profiles sp "
     f"WHERE (SELECT count(*) FROM {_SCHEMA}.{_TABLE} pe "

@@ -387,6 +387,45 @@ class TestTheDowngrade:
             assert _pay_list_exists()
             assert not _annual_column_exists()
 
+    def test_the_diagnostic_lists_a_profile_the_restore_really_missed(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A profile with no entry that gets past the refusals is named, and the diagnostic lists it.
+
+        The refusal of a profile without pay is blinded, standing in for a
+        writer that removed the entry between the refusals and the restore:
+        the REAL restore then misses that profile, the check fires, and the
+        diagnostic the message quotes, run after the rollback, lists exactly
+        it (the forced case above can only show that the diagnostic runs).
+        """
+        with app.app_context():
+            migration = load_migration_module(_MIGRATION)
+            make_salary_profile(seed_user, db.session, name="Day job")
+            bare = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                name="Side job",
+            )
+            db.session.add(bare)
+            db.session.commit()
+            monkeypatch.setattr(
+                migration, "_PROFILES_WITHOUT_PAY",
+                sqlalchemy.text("SELECT NULL::int, NULL::text WHERE false"),
+            )
+
+            with pytest.raises(RuntimeError) as excinfo:
+                run_migration_callable(migration.downgrade, db.session)
+            db.session.rollback()
+
+            message = str(excinfo.value)
+            assert f"profile {bare.id} (Side job)" in message
+            diagnostic = message.split("diagnose with: ", 1)[1]
+            assert db.session.execute(sqlalchemy.text(diagnostic)).fetchall() == [
+                (bare.id, "Side job"),
+            ]
+            assert not _annual_column_exists()
+
     def test_the_round_trip_keeps_the_entry(self, app, db, seed_user, seed_periods):
         """52,000.13 -> 2,000.01 -> 52,000.26 -> 2,000.01: every paycheck priced alike.
 
