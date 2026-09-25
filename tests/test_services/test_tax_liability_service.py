@@ -3,10 +3,10 @@ Shekel Budget App -- Annual Tax Liability Service Tests
 
 Hand-confirmed assertions for ``tax_liability_service.compute_annual_liability``:
 the filing-time FEDERAL + NC-STATE annual liability the analytics Taxes tab
-builds its refund estimate on (T-P1).  Configs are seeded through the
-canonical ``registration_service._seed_tax_data_for_user`` path so the numbers anchor
-on the same 2025/2026 DEFAULT_* seeds a registered user receives; the profile
-is built inline (the established test_tax_config_service pattern).
+builds its refund estimate on (T-P1).  The law is the shipped one, the
+default every test prices under (ruling salary:R-SAL80) -- the same 2025/2026
+figures the signup seed copied to every user until plan step salary:X-at-1;
+the profile is built inline (the established test_tax_config_service pattern).
 
 Every expected figure is hand-computed in the test docstring, including how
 ROUND_HALF_UP resolves the NC half-cent.
@@ -20,9 +20,9 @@ import pytest
 from app.extensions import db as _db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services.registration_service import _seed_tax_data_for_user
 from app.services.exceptions import InvalidFilingStatusError
 from app.services.tax_liability_service import AnnualLiability, compute_annual_liability
+from tests._test_helpers import EMPTY_TAX_LAW
 
 
 def _make_profile(
@@ -65,9 +65,8 @@ def _make_profile(
     return profile
 
 
-def _seed_and_profile(seed_user, **profile_kwargs):
-    """Seed the DEFAULT_* tax configs for the user and build a profile."""
-    _seed_tax_data_for_user(seed_user["user"].id)
+def _committed_profile(seed_user, **profile_kwargs):
+    """Build and commit a profile; it prices under the shipped law."""
     profile = _make_profile(seed_user, **profile_kwargs)
     _db.session.commit()
     return profile
@@ -91,13 +90,13 @@ class TestWorkedAnchor:
           raw       = 86450 * 0.0399 = 3,449.3550 exactly
           liability = 3,449.36 (ROUND_HALF_UP on the .0050 half-cent)
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user,
             additional_income="1200.00",
             additional_deductions="3000.00",
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
 
@@ -138,7 +137,6 @@ class TestFourBExclusion:
         The service never reads ``additional_deductions``, so both resolve to
         the anchor federal liability 12,994.00.
         """
-        _seed_tax_data_for_user(seed_user["user"].id)
         no_4b = _make_profile(
             seed_user, name="No 4b", additional_income="1200.00",
         )
@@ -151,11 +149,11 @@ class TestFourBExclusion:
         db.session.commit()
 
         base = compute_annual_liability(
-            seed_user["user"].id, no_4b, 2026,
+            no_4b, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
         alt = compute_annual_liability(
-            seed_user["user"].id, with_4b, 2026,
+            with_4b, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
         assert base.federal.liability == alt.federal.liability == Decimal("12994.00")
@@ -177,14 +175,14 @@ class TestConfigYearSelection:
           liability = 3,674.13 (ROUND_HALF_UP on the .005 half-cent)
         2026 anchor liability is 12,994.00 / 3,449.36 (see TestWorkedAnchor).
         """
-        profile = _seed_and_profile(seed_user, additional_income="1200.00")
+        profile = _committed_profile(seed_user, additional_income="1200.00")
 
         r2026 = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
         r2025 = compute_annual_liability(
-            seed_user["user"].id, profile, 2025,
+            profile, 2025,
             Decimal("110000.00"), Decimal("12000.00"),
         )
 
@@ -214,14 +212,14 @@ class TestDependentCredits:
         AGI base 99,200 is above the single $70k top child-deduction tier,
         so the NC child deduction is 0 -> state liability unchanged (3,449.36).
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user,
             additional_income="1200.00",
             qualifying_children=2,
             other_dependents=1,
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
         assert result.federal.qualifying_children == 2
@@ -255,13 +253,13 @@ class TestDeveloperLiveAnchorMFJ:
           taxable   = 80675.69 - 25500 - 6000 = 49,175.69
           tax       = 49175.69 * 0.0399 = 1,962.110031 -> 1,962.11
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user,
             filing_status_name="married_jointly",
             qualifying_children=4,
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("94619.62"), Decimal("13943.93"),
         )
 
@@ -288,11 +286,11 @@ class TestNCFilingStatusStandardDeduction:
           taxable  = 100000 - 25500 = 74,500.00
           tax      = 74500 * 0.0399 = 2,972.55
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, filing_status_name="married_jointly",
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("100000.00"), Decimal("0.00"),
         )
         assert result.state.standard_deduction == Decimal("25500.00")
@@ -305,9 +303,9 @@ class TestNCFilingStatusStandardDeduction:
           taxable = 100000 - 12750 = 87,250.00
           tax     = 87250 * 0.0399 = 3,481.275 -> 3,481.28 (ROUND_HALF_UP)
         """
-        profile = _seed_and_profile(seed_user, filing_status_name="single")
+        profile = _committed_profile(seed_user, filing_status_name="single")
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("100000.00"), Decimal("0.00"),
         )
         assert result.state.standard_deduction == Decimal("12750.00")
@@ -327,11 +325,11 @@ class TestNCChildDeductionTierBoundary:
           taxable   = 40000 - 12750 - 2000 = 25,250.00
           tax       = 25250 * 0.0399 = 1,007.475 -> 1,007.48 (ROUND_HALF_UP)
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, filing_status_name="single", qualifying_children=1,
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("40000.00"), Decimal("0.00"),
         )
         assert result.state.child_deduction_per_child == Decimal("2000.00")
@@ -346,11 +344,11 @@ class TestNCChildDeductionTierBoundary:
           taxable   = 40000.01 - 12750 - 1500 = 25,750.01
           tax       = 25750.01 * 0.0399 = 1,027.4254... -> 1,027.43
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, filing_status_name="single", qualifying_children=1,
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("40000.01"), Decimal("0.00"),
         )
         assert result.state.child_deduction_per_child == Decimal("1500.00")
@@ -359,11 +357,11 @@ class TestNCChildDeductionTierBoundary:
 
     def test_zero_children_no_child_deduction(self, app, db, seed_user):
         """A filer with 0 children gets no child deduction regardless of AGI."""
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, filing_status_name="single", qualifying_children=0,
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("40000.00"), Decimal("0.00"),
         )
         assert result.state.child_deduction_total == Decimal("0")
@@ -382,9 +380,9 @@ class TestClampAndMissingConfigs:
           federal taxable = 10000 - 16100 < 0 -> 0.00 -> liability 0.00
           state base      = 10000 -> (10000 - 12750) < 0 -> liability 0.00
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("10000.00"), Decimal("0.00"),
         )
         assert result.federal.taxable == Decimal("0")
@@ -399,11 +397,11 @@ class TestClampAndMissingConfigs:
         state liability 0.00, rate/std-ded None; federal is unaffected
         (bracket sets are state-independent -> anchor liability 12,994.00).
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, state_code="PA", additional_income="1200.00",
         )
         result = compute_annual_liability(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             Decimal("110000.00"), Decimal("12000.00"),
         )
         assert result.federal.liability == Decimal("12994.00")
@@ -413,18 +411,19 @@ class TestClampAndMissingConfigs:
         # The base is still reported for context.
         assert result.state.taxable_base == Decimal("99200.00")
 
-    def test_missing_bracket_set_raises(self, app, db, seed_user):
+    def test_missing_bracket_set_raises(self, app, db, seed_user, tax_law):
         """No bracket set for the year -> InvalidFilingStatusError.
 
-        Nothing is seeded, so the current year (the fallback year) has no
-        bracket set and no fallback applies -- the engine raises, consistent
-        with calculate_federal_withholding on a None bracket set.
+        The empty law is installed, so no year has a bracket set and no
+        fallback applies -- the engine raises, consistent with
+        calculate_federal_withholding on a None bracket set.
         """
+        tax_law(EMPTY_TAX_LAW)
         profile = _make_profile(seed_user, additional_income="1200.00")
         db.session.commit()
         current_year = date.today().year
         with pytest.raises(InvalidFilingStatusError):
             compute_annual_liability(
-                seed_user["user"].id, profile, current_year,
+                profile, current_year,
                 Decimal("110000.00"), Decimal("12000.00"),
             )

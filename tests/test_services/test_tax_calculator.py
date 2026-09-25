@@ -1038,11 +1038,12 @@ class TestCappedSocialSecurityHelper:
 
 
 def _federal_2026_single():
-    """The seeded 2026 single-filer bracket set (tax_seed_data DEFAULT_*).
+    """The 2026 single filer's federal rules, as ``app.tax_law`` states them.
 
-    Mirrors ``DEFAULT_FEDERAL_BRACKETS[2026]["single"]`` so the annual
-    liability arithmetic is hand-confirmed against the same numbers a
-    registered user is seeded with (std deduction 16,100; CTC 2,200 per
+    Mirrors the 2026 law's single-filer rules (``DEFAULT_FEDERAL_BRACKETS
+    [2026]["single"]`` in the ``tax_seed_data`` seed until plan step
+    salary:X-at-1) so the annual liability arithmetic is hand-confirmed
+    against the app's own figures (std deduction 16,100; CTC 2,200 per
     OBBBA; ODC 500; refundable ACTC cap 1,700).
     """
     return FakeBracketSet(
@@ -1277,9 +1278,11 @@ class TestAnnualFederalLiability:
 
 
 def _federal_2026_mfj():
-    """The seeded 2026 married-filing-jointly bracket set (tax_seed_data).
+    """The 2026 married-filing-jointly federal rules, as ``app.tax_law`` states them.
 
-    Mirrors ``DEFAULT_FEDERAL_BRACKETS[2026]["married_jointly"]``: std
+    Mirrors the 2026 law's married-filing-jointly rules
+    (``DEFAULT_FEDERAL_BRACKETS[2026]["married_jointly"]`` in the
+    ``tax_seed_data`` seed until plan step salary:X-at-1): std
     deduction 32,200; CTC 2,200; ODC 500; refundable ACTC cap 1,700.
     """
     return FakeBracketSet(

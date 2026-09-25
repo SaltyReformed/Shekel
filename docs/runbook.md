@@ -94,7 +94,6 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 | `scripts/reset_mfa.py` | Emergency MFA reset for a user | `docker exec shekel-prod-app python scripts/reset_mfa.py <email>` |
 | `scripts/seed_ref_tables.py` | Seed reference lookup tables | `docker exec shekel-prod-app python scripts/seed_ref_tables.py` |
 | `scripts/seed_user.py` | Create initial seed user | `docker exec shekel-prod-app python scripts/seed_user.py` |
-| `scripts/seed_tax_brackets.py` | Seed US tax brackets | `docker exec shekel-prod-app python scripts/seed_tax_brackets.py` |
 
 ### Cron Schedule
 

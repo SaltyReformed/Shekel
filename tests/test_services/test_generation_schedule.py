@@ -97,9 +97,10 @@ from tests._test_helpers import (
     make_transfer_template,
     payroll_basis,
     populate_in_a_fresh_pass,
-    seed_fica_config,
-    seed_state_tax_config,
-    seed_tax_bracket_set,
+    made_up_federal,
+    made_up_fica,
+    made_up_state,
+    made_up_year,
     state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
@@ -107,6 +108,7 @@ from tests.oracles.recurrence_baseline import (
     MONTHLY_FIRST,
 )
 from app.services.amount_ownership import state_own_amount
+from app.tax_law import TaxLaw
 
 #: The one database door every pay-calendar derivation goes through, as
 #: ``tests/test_arch/test_one_read_pass_per_render.py`` names it.  A service
@@ -563,7 +565,7 @@ class TestThePaycheckSeesTheWholeSchedule:
     payday answers the windowed figure.
     """
 
-    def _salary_template(self, seed_user):
+    def _salary_template(self, seed_user, tax_law):
         """Create a salary profile whose deduction skips the 3rd paycheck.
 
         The line's rule -- every paycheck, at most 2 a month, the shape plan
@@ -619,14 +621,16 @@ class TestThePaycheckSeesTheWholeSchedule:
         db.session.add(deduction)
         db.session.flush()
         make_line_cadence_rule(db.session, deduction, 24)
-        seed_tax_bracket_set(seed_user["user"].id)
-        seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
-        seed_fica_config(seed_user["user"].id)
+        # The made-up federal, FICA and NC rules the three row seeders wrote.
+        tax_law(TaxLaw(years=(made_up_year(
+            federal=made_up_federal(), fica=made_up_fica(),
+            states={"NC": made_up_state(Decimal("0.0399"))},
+        ),)))
         db.session.flush()
         return template, profile
 
     def test_a_windowed_pass_computes_the_whole_schedule_paycheck(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """Generating index 2 alone gives January's THIRD-paycheck net pay.
 
@@ -643,7 +647,7 @@ class TestThePaycheckSeesTheWholeSchedule:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            template, profile = self._salary_template(seed_user)
+            template, profile = self._salary_template(seed_user, tax_law)
             period = seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX]
 
             schedule = GenerationSchedule.for_period_ids(
@@ -662,7 +666,7 @@ class TestThePaycheckSeesTheWholeSchedule:
             from app.services.tax_config_service import (  # pylint: disable=import-outside-toplevel
                 load_tax_configs_for_year,
             )
-            configs = load_tax_configs_for_year(profile.user_id, profile, 2026)
+            configs = load_tax_configs_for_year(profile, 2026)
             # Pylint: ``import-outside-toplevel`` -- see above.
             from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
                 PayrollBasis,
@@ -737,9 +741,10 @@ class TestThePaycheckSeesTheWholeSchedule:
             # review is why.  The gap was a $480.05 literal with a stated
             # derivation of "$500 less the 3.99% state rate, because federal
             # does not move" -- and federal does not move here for the opposite
-            # of the stated reason: the SHARED ``seed_tax_bracket_set`` fixture
-            # has no open-ended top bracket, so both annualised bases saturate
-            # it and the federal lines match by accident of the fixture.  The
+            # of the stated reason: the SHARED made-up federal rules
+            # (``made_up_federal``, the old ``seed_tax_bracket_set`` rows) tax
+            # nothing above $47,150, so both annualised bases sit in that top
+            # rung and the federal lines match by accident of the fixture.  The
             # first person to give that helper a realistic top bracket would
             # have broken a financial assertion and been sent to the wrong
             # cause.  The pre-tax total is the fact this defect is ABOUT, and
@@ -755,7 +760,7 @@ class TestThePaycheckSeesTheWholeSchedule:
             assert whole > windowed
 
     def test_the_deduction_is_skipped_on_the_third_paycheck(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, tax_law,
     ):
         """Stated absolutely: the generated row differs from a 1st-payday one.
 
@@ -767,7 +772,7 @@ class TestThePaycheckSeesTheWholeSchedule:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            template, _profile = self._salary_template(seed_user)
+            template, _profile = self._salary_template(seed_user, tax_law)
 
             created = recurrence_engine.generate_for_template(
                 template,

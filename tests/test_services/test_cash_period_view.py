@@ -54,6 +54,7 @@ from app.services.balance_at._cash_periods import (
     period_view_of,
 )
 from app.services.pay_calendar import PayCalendarError, PeriodWindow
+from tests._test_helpers import EMPTY_TAX_LAW
 from tests._test_helpers import (
     figure_source_columns,
     add_entry,
@@ -1101,7 +1102,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
     """
 
     def test_a_declared_salary_row_is_priced_by_its_PROFILE_in_the_subtotal(
-        self, db, seed_user, seed_periods,
+        self, db, seed_user, seed_periods, tax_law,
     ):  # pylint: disable=unused-argument
         """A salary row's income subtotal is what its profile pays.
 
@@ -1112,6 +1113,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         own column would contribute ``None``; this one asks the amount model.
         """
         # pylint: disable=import-outside-toplevel
+        tax_law(EMPTY_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,

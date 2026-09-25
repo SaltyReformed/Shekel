@@ -10,7 +10,7 @@ import logging
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 
-from app import ref_cache
+from app import ref_cache, tax_law
 from app.enums import RoleEnum
 from app.exceptions import RequiredRecordMissing
 from app.utils.auth_helpers import fresh_login_required, require_owner
@@ -25,8 +25,7 @@ from app.schemas.validation import (
     rhythm_to_wire,
 )
 from app.models.category import Category
-from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
-from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
+from app.models.ref import AccountType, AccountTypeCategory
 from app.models.user import MfaConfig, User, UserSettings
 from app.services import (
     account_resolver,
@@ -370,11 +369,7 @@ def _empty_section_context():
         "errors": {},
         "accounts": [],
         "grouped": {},
-        "filing_statuses": [],
-        "tax_types": [],
-        "bracket_sets": [],
-        "fica_configs": [],
-        "state_configs": [],
+        "tax_years": (),
         "account_types": [],
         "types_in_use": set(),
         "categories": [],
@@ -418,30 +413,20 @@ def _load_categories_context():
 
 
 def _load_tax_context():
-    """Load the tax section: filing statuses / tax types (reference) plus the
-    user's bracket sets, FICA configs, and state tax configs.
+    """Load the tax section: the tax law the app prices against, newest year first.
+
+    READ-ONLY since plan step salary:X-at-1 (ruling **R-SAL74**).  The law has
+    one home, :mod:`app.tax_law`, which a release edits; this section shows
+    it, with each year's sources, so the owner can see which figures price
+    their paychecks and where each came from.  It held a per-user copy of the
+    law and two forms that overwrote it until then -- one of which wrote a
+    single state standard deduction to all four filing statuses (finding
+    **SAL-574**).
+
+    Returns:
+        ``{"tax_years": (TaxYearLaw, ...)}``, newest year first.
     """
-    return {
-        "filing_statuses": db.session.query(FilingStatus).all(),
-        "tax_types": db.session.query(TaxType).all(),
-        "bracket_sets": (
-            db.session.query(TaxBracketSet)
-            .filter_by(user_id=current_user.id)
-            .order_by(TaxBracketSet.tax_year.desc(), TaxBracketSet.filing_status_id)
-            .all()
-        ),
-        "fica_configs": (
-            db.session.query(FicaConfig)
-            .filter_by(user_id=current_user.id)
-            .order_by(FicaConfig.tax_year.desc())
-            .all()
-        ),
-        "state_configs": (
-            db.session.query(StateTaxConfig)
-            .filter_by(user_id=current_user.id)
-            .all()
-        ),
-    }
+    return {"tax_years": tuple(reversed(tax_law.LAW.years))}
 
 
 def _load_account_types_context():

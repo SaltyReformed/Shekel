@@ -30,6 +30,7 @@ from app.enums import (
     AcctCategoryEnum,
     AmountSourceEnum,
     BusinessDayShiftEnum,
+    FilingStatusEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
@@ -46,6 +47,7 @@ from app.enums import (
 from app.models.ref import (
     AmountSource,
     BusinessDayShift,
+    FilingStatus,
     GoalMode,
     IncomeUnit,
     LedgerAccountClass,
@@ -1192,6 +1194,49 @@ class TestRaiseTypeMemberRefCache:
         with app.app_context():
             known = {ref_cache.raise_type_id(m) for m in RaiseTypeEnum}
             assert ref_cache.raise_type_member(max(known) + 1000) is None
+
+
+class TestFilingStatusMemberRefCache:
+    """The filing-status lookup the tax law is reached through (plan step salary:X-at-1).
+
+    ``filing_status_member`` turns a profile's stored ``filing_status_id``
+    into the :class:`~app.enums.FilingStatusEnum` member the law
+    (:mod:`app.tax_law`) is keyed on, so no reader builds a member out of the
+    ref row's ``name``.  A wrong answer here prices a filer on another
+    status's brackets.
+    """
+
+    def test_every_row_resolves_to_the_member_its_name_is(self, app, db):
+        """Each ``ref.filing_statuses`` row resolves to the member whose value is its name."""
+        with app.app_context():
+            rows = db.session.query(FilingStatus).all()
+            assert {row.name for row in rows} == {m.value for m in FilingStatusEnum}
+            for row in rows:
+                assert ref_cache.filing_status_member(row.id) is FilingStatusEnum(row.name), (
+                    f"ref.filing_statuses row {row.name!r} (id {row.id}) resolved wrongly"
+                )
+
+    def test_an_unmodelled_status_id_answers_none(self, app, db):
+        """An id no member names answers ``None`` -- the caller prices no federal rules."""
+        with app.app_context():
+            known = {row.id for row in db.session.query(FilingStatus).all()}
+            assert ref_cache.filing_status_member(max(known) + 1000) is None
+
+    def test_requires_initialization(self, app, db):
+        """An uninitialized cache raises rather than answering ``None``.
+
+        ``None`` means "no status the law models"; from an unloaded cache it
+        would mean "I could not look", and every filer would price with no
+        federal rules.
+        """
+        with app.app_context():
+            # pylint: disable=protected-access
+            _state._cache.initialized = False
+            try:
+                with pytest.raises(RuntimeError):
+                    ref_cache.filing_status_member(1)
+            finally:
+                ref_cache.init(db.session)
 
 
 class TestAmountSourceRefCache:
