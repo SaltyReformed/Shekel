@@ -8,9 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-at-1` (`42bb425d`, 2026-09-24) gave the tax law ONE home, in the code** (**R-SAL74**), `$0.00`,
-closing **N-236** and **SAL-574**; `X-at-4`'s alarms are due before 2026-11-01 and `S11-c-2` MOVES
-MONEY. Each archived span's record is a `historical/salary_*` file.
+**`X-at-4` (`5d5f5bc1`, 2026-09-25) made a forgotten tax year loud**, `$0.00`; `S15`, the 2027 law,
+is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived spans: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -35,11 +34,9 @@ C12 in with the others; N-443, the three spellings of the paycheck projection, c
 leaf, which memoized the breakdown map, and C12 collapsed the dashboards' readers onto it.
 
 **Why each step sits where `steps.md` puts it, which is that table's to say and not this
-document's.** `S2` is the arc's cheapest first act, because a derivation that moves `-$19.28` for no
-recorded reason is a baseline nobody can measure `S1` against until the input is named. The
-earnings-lines chain follows the bank_import production scope by `bank_import:R-JJ`, because `R18`
-is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12-a`
-decided the shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
+document's.** The earnings-lines chain follows the bank_import production scope by
+`bank_import:R-JJ`, because `R18` is what makes one payroll deposit one app row. `C12-a` decided the
+shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
 
 ## 1. Root cause
 
@@ -117,9 +114,6 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 
 ## 4. Step sequence
 
-- [x] **S2** `08638f61` -- the `-$19.28` was a DELETED calibration, not the engine; no single
-      calibration reproduces the record. Closed **N-442**, opened **N-535**, ruled **R-SAL9**.
-      As-built: `historical/salary_s2_as_built_2026-09-04.md`.
 - [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41** and
       **R-SAL9** as amended by **R-SAL42**; **SAL-564**; absorbs `S1`'s **N-441**, **N-535**,
       **N-530**): the DECOMPOSED parent of six leaves (2026-09-23), ticking with its last. Today one
@@ -258,14 +252,15 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [ ] **X-at-3 -- the supported states** (**R-SAL78**): the law lists each one, a no-income-tax
         state as an explicit `$0.00` entry checked against a primary source (the developer names
         which); the profile form offers only those and refuses another, and the engine refuses a
-        state the law lacks or a flat state with no rate. Closes **SAL-575**.
-  - [ ] **X-at-4 -- the alarms** (**R-SAL74**, **R-SAL86**-**R-SAL88**), which MUST ship before
-        2026-11-01. ONE pure check (NOTICE from Nov 1, REFUSE from Dec 1) counts next year in when
-        it lists every state an earlier year lists, a missing year also naming a state priced on an
-        older one; the law refuses a skipped year. From Nov 1 (display timezone) a banner with no
-        close on every owner page, in the layout, and a failing weekly workflow on the real clock;
-        from Dec 1 the refusal: `ci.yml`'s own `tax-law` job, in every scope and `lint-and-test`'s
-        needs (rule 5), and a `tax-law` job in `docker-publish.yml` its image build needs.
+        state the law lacks or a flat state with no rate. R-SAL91's one-sentence wording was ruled
+        for ONE state; its two-state form ('... and NC tax uses 2026's and SC tax uses 2026's, ...',
+        and the script's '..., except NC on 2026's and SC on 2026's.') is extrapolated and pinned by
+        tests. X-at-3 puts it to the developer before a second state lands. In that form a state
+        priced on the newest year is named nowhere. Closes **SAL-575**.
+  - [x] **X-at-4** `5d5f5bc1` -- the alarms (**R-SAL74**, **R-SAL86**-**R-SAL88**), `$0.00`; where
+        the newest year lacks a state, a missing year's one sentence names each part's year
+        (**R-SAL91**); the publish job outputs the refusal's start instant and `build-and-push`'s
+        first step refuses once it has passed, so a re-run cannot reuse a November check.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
@@ -276,6 +271,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         standard deduction (P.L. 119-21) and 2026's head-of-household 24%/32% boundary (Rev. Proc.
         2025-32). **MOVES MONEY** (the 2025 Taxes tab); whether 2025 withholding keeps the old
         deduction is a fork for the developer, with worked examples, first.
+- [ ] **S15 -- the 2027 tax law** (**R-SAL74**): `_year_2027.py` in `LAW`, each figure citing its
+      source (the 2027 IRS Revenue Procedure's brackets, standard deductions and child credits, the
+      SSA's 2027 wage base, NC's 2027 rate), once published (late October to November 2026);
+      released before 2026-12-01, when `X-at-4`'s refusal begins, the banner showing from 2026-11-01
+      until it lands. **MOVES MONEY** (every projected 2027 paycheck).
 
 ## 5. Findings ledger
 
