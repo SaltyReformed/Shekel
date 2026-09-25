@@ -41,7 +41,7 @@ from app.services.posting_service import (
     sync_transfer_postings,
 )
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.user_write_lock import lock_every_user_writes, lock_user_writes
+from app.services.user_write_lock import lock_every_user_writes
 from app.utils.db_errors import is_unique_violation
 from app.utils.money import round_money
 
@@ -126,7 +126,9 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     sync happened to run.  Flushes but does not commit (the caller owns the
     transaction).
 
-    **Takes the owner's write lock before it walks** (plan step X-f1c3c).  Both
+    **Runs under the owner's write lock, held since its transaction began**
+    (plan step ``balance:X-bn``, :mod:`app.db_transaction`; plan step X-f1c3c
+    took it here, before the walk, until then).  Both
     reconciles below are read-modify-writes -- read what is posted, subtract
     it from what the walk says, write the difference -- and two of them
     interleaved both compute their delta against the same posted state.
@@ -142,9 +144,10 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     ``None`` only when the ``accounts`` row is absent (``user_id`` is NOT
     NULL), and at that point ``_ledger_account_for`` below raises
     ``PostingError`` for the missing chart-of-accounts pairing -- which is the
-    disposition this codebase wants for a broken invariant.  The lock simply
-    cannot be keyed without an owner, so the acquisition is skipped and the
-    existing raise is left to fire.  *The claim that this matched "the same
+    disposition this codebase wants for a broken invariant.  *Until plan step
+    ``balance:X-bn`` this function keyed a lock of its own on that owner and
+    skipped the acquisition when there was none, leaving the raise to fire.*
+    *The claim that this matched "the same
     disposition the reconciles below already have" was FALSE and was caught by
     a neutral adversarial review: the cash twin no-ops on a missing account by
     design, this one raises, and the two are not the same rule.*
@@ -157,9 +160,6 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
         PostingError: When the reconciled ledger does not equal the fold of the
             loan's events (:func:`_assert_checked_projection`).
     """
-    owner_id = account_owner_id(loan_account_id)
-    if owner_id is not None:
-        lock_user_writes(owner_id)
     walk = walk_loan_ledger(loan_account_id, scenario_id)
     # ONE linked-ledger resolution per sync, shared by the lineage probe and
     # the assert (each used to resolve its own -- a redundant query).
@@ -406,13 +406,13 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     A brand-new or unresolvable loan (no anchors) syncs nothing.  Idempotent and
     self-healing.  Flushes but does not commit (the caller owns the transaction).
 
-    **Takes the owner's write lock before the scenario read, and so does the
-    per-scenario sync it loops** (plan step X-f1c3c).  Both, not one: the lock
-    is re-entrant within a transaction, and the SCENARIO SET below is itself a
-    read this function then acts on -- a scenario that became live between that
-    read and the loop would otherwise be missed.  The cash twin
-    (``account_posting_service._sync.sync_account_anchor_postings_all_scenarios``)
-    is locked at the same two points for the same two reasons.
+    **Runs under the owner's write lock, held since its transaction began**
+    (plan step ``balance:X-bn``), which matters here beyond the per-scenario
+    sync it loops: the SCENARIO SET below is itself a read this function then
+    acts on, and a scenario that became live between that read and the loop
+    would otherwise be missed.  *From plan step X-f1c3c until ``balance:X-bn``
+    this function and the one it loops each took the lock themselves, as the
+    cash twin did.*
 
     Args:
         loan_account_id: The loan whose corrections to reconcile across every
@@ -421,7 +421,6 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     owner_id = account_owner_id(loan_account_id)
     if owner_id is None:
         return
-    lock_user_writes(owner_id)
     scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
     baseline = get_baseline_scenario(owner_id)
     if baseline is not None:

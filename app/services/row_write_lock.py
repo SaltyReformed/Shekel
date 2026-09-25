@@ -16,6 +16,12 @@ against ``tests/test_services/test_cc5_4a4_row_lock_races.py``.  Whether the
 screen then SHOWS the sentence is each route's answer, not this module's
 (ruling **R-CC101**).
 
+*Since plan step ``balance:X-bn`` (rulings **R-CC106**, **R-CC115**) the
+owner's write lock is taken where each writing transaction begins
+(:mod:`app.db_transaction`), before any door here runs, and the three
+per-door acquisitions the next paragraph describes are deleted; the row locks
+themselves go at that step's next checkpoint, with this module.*
+
 **The owner's write lock FIRST, then the row's** (ruling **R-CC100**,
 developer 2026-09-23, "Write lock first here": *"Every door this step locks
 (add purchase, Mark Paid, the popover's Actual, Delete, Archive, Mark Credit)
@@ -94,7 +100,6 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services.user_write_lock import lock_user_writes
 
 #: ``with_for_update`` keywords for the row's write lock: ``FOR NO KEY UPDATE
 #: OF transactions``.  ``OF`` because ``Transaction``'s joined eager loads put
@@ -130,7 +135,6 @@ def lock_row(row: Transaction, *, removing: bool = False) -> None:
             version-pinned write finds its row gone, so each caller answers it
             as it already answered that: the row routes' 409 and re-fetch.
     """
-    lock_user_writes(row.user_id)
     locked = _lock(row.id, removing=removing)
     if locked is None:
         raise StaleDataError(
@@ -178,7 +182,6 @@ def lock_and_read(transaction_id: int) -> "Transaction | None":
     )
     if owner_id is None:
         return None
-    lock_user_writes(owner_id)
     if _lock(transaction_id, removing=False) is None:
         return None
     return (
@@ -228,7 +231,6 @@ def lock_rows(owner_id: int, *criteria) -> None:
         owner_id: The id of the user who owns every row *criteria* can match.
         *criteria: SQLAlchemy filter clauses over :class:`Transaction`.
     """
-    lock_user_writes(owner_id)
     (
         db.session.query(Transaction.id)
         .filter(Transaction.user_id == owner_id, *criteria)

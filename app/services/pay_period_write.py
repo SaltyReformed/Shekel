@@ -545,8 +545,9 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
     owner (or a stale one) retires nothing rather than being deleted or counted.
 
     **What the re-read does and does NOT guarantee**, corrected by an
-    adversarial review of plan step C2-f3b.  Under every door that takes
-    ``user_write_lock.lock_user_writes`` it cannot see FEWER rows than the gate
+    adversarial review of plan step C2-f3b.  Under the owner's write lock,
+    which every writing transaction holds from its start since plan step
+    ``balance:X-bn``, it cannot see FEWER rows than the gate
     did, which is the direction that matters: no period the caller refused to
     delete can be missing here.  It is not the SAME set, and a first draft said
     it was: ``POST /pay-periods/generate`` and ``registration_service.register_user``

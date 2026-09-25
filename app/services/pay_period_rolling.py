@@ -48,7 +48,7 @@ future edit cannot regrow the read on a derived value either.
 
 from datetime import date
 
-from app.services import pay_period_admin, pay_schedule_service, user_write_lock
+from app.services import pay_period_admin, pay_schedule_service
 from app.services.pay_calendar import calendar_at_schedule
 from app.utils.dates import display_today
 
@@ -62,22 +62,27 @@ def top_up_rolling_window(user_id, as_of=None):
     page load.
 
     Cheap and idempotent.  When rolling is disabled (or the user has no
-    schedule row) it does ZERO write work and takes NO lock -- one tiny
-    schedule read.  Otherwise it counts the current-and-future periods
-    (those whose DERIVED end falls on or after ``as_of``, which INCLUDES
-    the period containing ``as_of``, so "keep N ahead" counts the current
-    period as one of the N) and, only if short of the target, takes the
-    per-user advisory lock, RE-READS the schedule and RE-COUNTS under it
-    (another request may have just filled the window or moved the
-    cadence), and appends exactly the deficit via
+    schedule row) it does ZERO write work -- one tiny schedule read.
+    Otherwise it counts the current-and-future periods (those whose DERIVED
+    end falls on or after ``as_of``, which INCLUDES the period containing
+    ``as_of``, so "keep N ahead" counts the current period as one of the N)
+    and, only if short of the target, appends exactly the deficit via
     :func:`~app.services.pay_period_admin.extend_pay_periods`, which leaves
     the new periods EMPTY for the caller to populate (see the module
     docstring).
 
+    **Every read here is taken under the owner's write lock**, which the
+    caller's ``write_transaction`` block took when its transaction began
+    (plan step ``balance:X-bn``, ruling **R-CC114**: a page load's write
+    takes the lock like any save), so a second render racing this one waits
+    for its commit and then counts a full window.  *Until that step this
+    function counted first, took the lock only on a deficit, and then
+    RE-READ the schedule and RE-COUNTED under it; ruling R-CC115 deleted the
+    acquisition, and the second read went with the reason for it.*
     Correctness against a duplicate payday comes from
-    ``UNIQUE(user_id, start_date)``; the lock + re-count is the UX
-    layer that lets a racing loser cleanly create nothing instead of
-    hitting that constraint as a 500.
+    ``UNIQUE(user_id, start_date)``; the lock is the UX layer that lets a
+    racing loser cleanly create nothing instead of hitting that constraint as
+    a 500.
 
     **It passes no cadence, and that is not a saving of one argument.**  It
     used to hand ``pay_period_admin.extend_pay_periods`` the schedule row's own
@@ -115,32 +120,6 @@ def top_up_rolling_window(user_id, as_of=None):
     if facts is None:
         return []
 
-    target = schedule.rolling_target_periods
-    if _future_period_count(user_id, facts, as_of) >= target:
-        return []
-
-    # A deficit exists: serialize concurrent top-ups, then re-count under
-    # the lock so a request that lost the race re-reads a now-full window
-    # and creates nothing.
-    user_write_lock.lock_user_writes(user_id)
-    # The schedule is RE-READ under the lock for the same reason the count is
-    # re-taken: it was loaded before the lock, the only writer of an era
-    # takes this lock, and the count derives the LAST period's end from the
-    # latest era's cadence -- so a stale one moves a period in or out of the
-    # answer.  ``reread_schedule`` rather than ``get_schedule``
-    # because the identity map would otherwise return the original values;
-    # that door's docstring carries the argument.  The target is read from
-    # the same re-read row, so the deficit is one snapshot rather than two.
-    schedule = pay_schedule_service.reread_schedule(user_id)
-    facts = pay_schedule_service.ScheduleFacts.of(schedule)
-    if facts is None:
-        # The same owner the pre-lock read answered [] for -- a row and no
-        # era, which the migration leaves for a schedule whose paydays were
-        # all removed before it ran.  Re-asked under the lock because the
-        # value is optional wherever the row is re-read, not because a writer
-        # can produce the state between the two reads: the one door that
-        # retires every era (reset) mints its own in the same transaction.
-        return []
     deficit = schedule.rolling_target_periods - _future_period_count(
         user_id, facts, as_of,
     )

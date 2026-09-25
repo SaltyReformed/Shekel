@@ -61,7 +61,6 @@ from app.services import (
 )
 from app.services.account_params import ensure_type_params
 from app.services.account_projection import AccountProjectionKind, classify_account
-from app.services.user_write_lock import lock_user_writes
 from app.utils import archive_helpers
 from app.utils.account_validation import (
     _create_schema,
@@ -394,42 +393,6 @@ def update_account(account_id):
     if failure is not None:
         flash(failure[0], failure[1])
         return redirect(url_for("accounts.edit_account", account_id=account_id))
-
-    # The owner's write lock, taken HERE and unconditionally, BEFORE any row of
-    # this transaction is touched.  It is the invariant
-    # :mod:`app.services.user_write_lock` states -- **this lock must be the FIRST
-    # lock a transaction takes** -- and without this line the route breaks it on
-    # the type-change branch: the ``setattr`` loop below dirties the ``Account``,
-    # the flush emits ``UPDATE budget.accounts`` and takes that ROW lock, and the
-    # advisory lock is not reached until ``_reconcile_type_effects`` calls the
-    # posting re-sync several statements later.  That inversion is the class
-    # finding **N-193** records; the settle paths still have it, this route does
-    # not, and holding the invariant is the whole reason the line is here.
-    #
-    # **Its original justification expired at plan step X-f1e and the line did
-    # not.**  X-f1c4b added it because two of this route's OWN branches ordered
-    # the two locks oppositely -- the anchor branch reached ``lock_user_writes``
-    # inside ``stage_anchor_true_up`` before the ``setattr`` flush, a type-only
-    # edit reached it after -- and that deadlock was reproduced against a real
-    # database.  X-f1e deleted the anchor branch, so THAT cycle is gone -- but
-    # the sentence that replaced it ("no other ``lock_user_writes`` caller is
-    # known to take a ``budget.accounts`` row lock, so naming one here would be
-    # a claim nobody has tested") was FALSE, and plan step X-f1e2's concurrency
-    # review tested it.  ``account_service.create_account`` INSERTs
-    # ``budget.accounts`` before it reaches the advisory lock, taking an index
-    # lock on ``uq_accounts_user_name``; this route takes the advisory lock
-    # first and then UPDATEs that table.  Two tabs, one creating and one
-    # renaming to the same name, deadlock -- reproduced against a real
-    # PostgreSQL (finding **N-202**).  So the second measured antagonist exists,
-    # this line is not merely an invariant-holder, and deleting it would put the
-    # route back in N-193's class outright.
-    #
-    # It is re-entrant and transaction-scoped, so the nested acquisition inside
-    # the re-sync is free.  On a rename-only edit this acquisition is the only
-    # one and serialises that edit behind the owner's other writes -- a real if
-    # small cost, accepted because the alternative is a lock whose correctness
-    # depends on which branch the request happens to take.
-    lock_user_writes(current_user.id)
 
     old_type_id = account.account_type_id
     for field, value in data.items():

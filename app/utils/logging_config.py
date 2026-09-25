@@ -587,7 +587,7 @@ def setup_logging(app: Flask) -> None:
             # logging setup, so a module-top import here would be circular.
             # pylint: disable=import-outside-toplevel
             from app.db_transaction import bind_request_actor
-            bind_request_actor(current_user.id)
+            bind_request_actor(current_user.id, current_user.data_owner_id)
 
     # Slow request threshold in milliseconds (configurable via env var).
     slow_threshold_ms = float(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500"))

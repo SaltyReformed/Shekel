@@ -89,7 +89,6 @@ from app.services import (
     loan_posting_service,
     pay_period_gates,
     pay_period_write,
-    user_write_lock,
 )
 from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import classify_schedule_locks
@@ -123,7 +122,8 @@ def extend_pay_periods(user_id, num_periods):
 
     **It STATES nothing, since plan step ``pay_calendar:C17-c-2b``** (rulings
     **R-PC75**, **R-PC78**; ledger rows **PC-509** and **N-494** closed).
-    This door is the lock and one call: the writer's CONTINUE door records
+    This door is one call, under the owner's write lock its transaction holds
+    from its start (plan step ``balance:X-bn``): the writer's CONTINUE door records
     the next paydays the owner's own plan projects
     (:func:`~app.services.pay_calendar.planned_paydays_after`), reading the
     eras and the record itself.  Until then this door computed the batch --
@@ -164,12 +164,11 @@ def extend_pay_periods(user_id, num_periods):
             surface for "this owner has no derivable calendar" and the wrong
             one for "that date is not allowed".
     """
-    # Serialize against concurrent structural mutations for this user so the
-    # record is read under the lock and the append cannot race another
-    # extend / top-up into a duplicate payday.  ``uq_pay_periods_user_start``
-    # is the hard guard; the lock keeps the racing loser from hitting it as a
-    # 500.
-    user_write_lock.lock_user_writes(user_id)
+    # The record is read under the owner's write lock, held since this
+    # transaction began (plan step ``balance:X-bn``, :mod:`app.db_transaction`),
+    # so the append cannot race another extend / top-up into a duplicate
+    # payday.  ``uq_pay_periods_user_start`` is the hard guard; the lock keeps
+    # the racing loser from hitting it as a 500.
     return pay_period_write.continue_paydays(user_id, num_periods)
 
 
@@ -261,11 +260,11 @@ def truncate_pay_periods(
         PayPeriodDiscardRequired: A to-delete period holds unrecoverable
             rows and ``confirm_discard`` is False.
     """
-    # Serialize against concurrent structural mutations so the resolve, the
-    # classify and the bulk DELETE see one consistent set -- closes the
-    # classify-then-DELETE TOCTOU against another extend / top-up /
-    # truncate for this user.
-    user_write_lock.lock_user_writes(user_id)
+    # The resolve, the classify and the bulk DELETE run under the owner's
+    # write lock, held since this transaction began (plan step
+    # ``balance:X-bn``), so they see one consistent set -- the
+    # classify-then-DELETE TOCTOU against another extend / top-up / truncate
+    # for this user stays closed.
 
     # The OWNER's calendar, so the resolve below is owner-scoped by
     # construction rather than by a comparison this function has to remember to
@@ -374,11 +373,9 @@ def regenerate_pay_periods(
             floor or at or past the plan's second projected payday
             (``record_paydays``' two bounds).
     """
-    # Serialize the whole rebuild -- boundary computation through the
-    # truncate + regenerate -- for this user; re-entrant with the lock
-    # ``truncate_pay_periods`` used to take before plan step C3-a split the
-    # resolve off the delete, and which the generate below still relies on.
-    user_write_lock.lock_user_writes(user_id)
+    # The whole rebuild -- boundary computation through the truncate +
+    # regenerate -- runs under the owner's write lock, held since this
+    # transaction began (plan step ``balance:X-bn``).
 
     # The schedule is read ONCE, under the lock, and threaded into both the
     # boundary computation and the delete.  Before plan step C3-a each of
@@ -456,8 +453,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
       1. Refuse if any settled transaction exists, or any row holds a
          payment or purchase (delete nothing).
-      2. Take the per-user advisory lock (a structural mutation, like
-         extend / truncate / regenerate).
+      2. (The per-user advisory lock is held from the transaction's start,
+         plan step ``balance:X-bn``, so step 1's gates read under it.)
       3. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
          pass: transactions and transfers (+ both shadows, preserving the
          transfer invariant) go; audit triggers still fire.  Anchor history is
@@ -581,8 +578,9 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     if holding > 0:
         raise PayPeriodResetBlocked(holding_count=holding)
 
-    # Serialize against concurrent structural mutations for this user.
-    user_write_lock.lock_user_writes(user_id)
+    # Under the owner's write lock since this transaction began (plan step
+    # ``balance:X-bn``) -- so the two gates above read under it too, where
+    # they used to run before this door's own acquisition.
 
     # Wipe ALL the user's periods (the cascade handles the dependents) and
     # build the new schedule in ONE write, so the writer derives and

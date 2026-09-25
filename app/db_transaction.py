@@ -21,9 +21,9 @@ committed append answer ``(1, 2)`` under ``READ COMMITTED`` and ``(1, 1)`` under
 this module's query mode.
 
 **Why a command may NOT have one snapshot, which is the harder half.**  The
-posting-ledger reconciles are read-modify-write under an advisory lock
-(:func:`app.services.user_write_lock.lock_user_writes`): take the lock, re-read
-what is posted, write the difference.  The waiting transaction's re-read is
+posting-ledger reconciles are read-modify-write under the owner's write lock
+(:func:`take_owner_write_lock`, below): hold the lock, re-read what is posted,
+write the difference.  The waiting transaction's re-read is
 *required* to see the winner's just-committed postings, and only ``READ
 COMMITTED`` shows them -- under one snapshot the waiter would re-read its own
 pre-lock picture and reconcile to a stale target, which is the divergence ruling
@@ -47,13 +47,16 @@ transaction id, while every row-lock strength is refused -- ``FOR UPDATE``,
 execute ... in a read-only transaction``, which covers
 ``credit_workflow``'s ``with_for_update(key_share=True)``.
 
-So the gap is advisory locks alone: a render that took
-:func:`app.services.user_write_lock.lock_user_writes` would block every writer
-for that owner for the length of the page and then read from a frozen snapshot,
-with nothing raising.  Not reachable today -- that function is GET-reachable
-only inside :func:`write_transaction`, where the mode is already a command's --
-but that is a census rather than a guarantee, and it is the one hole this
-setting cannot close for itself.
+So the gap is advisory locks alone: a render that took the owner's write lock
+would block every writer for that owner for the length of the page and then
+read from a frozen snapshot, with nothing raising.  **Closed by construction
+since plan step ``balance:X-bn``**: the owner's write lock is taken in ONE
+place, :func:`_bind_transaction_mode`'s COMMAND arm (and
+:func:`bind_request_actor` for the command transaction already open), and a
+query's transaction returns from that listener before the arm -- so no render
+can take it, and ``tests/test_arch/test_the_owner_lock_has_one_home.py``
+refuses a second place that could.  *Until that step this paragraph said the
+hole was closed only by a census of which functions a GET could reach.*
 
 *This paragraph claimed ``FOR UPDATE`` was allowed too, until a peer session
 re-measured it.  The first measurement taken here had it right and an
@@ -133,6 +136,36 @@ no trigger in a query's transaction can fire and there is no actor for it to
 be told about.  Binding one there is not a cheap safety margin -- it is a
 round trip per transaction buying a value nothing can read.
 
+**The owner's write lock is bound here too, for the reason the actor is**
+(plan step ``balance:X-bn``, rulings **R-CC106**, **R-CC114**, **R-CC115**):
+it is a property of a writing TRANSACTION, and this module is what decides a
+transaction's kind.  Every COMMAND transaction a signed-in request opens takes
+the advisory lock of the user whose data the request acts on (a companion's
+linked owner, :func:`app.services.entry_service.resolve_owner_id`) BEFORE its
+first read, so two of one owner's writes never overlap: the second waits for
+the first to commit, and every statement it then runs sees the first's rows.
+That is what makes "this lock must be the FIRST lock a transaction takes"
+(:mod:`app.services.user_write_lock`) true of every request path at once,
+where it used to be a property each write door had to hold for itself -- a
+census over the whole suite found 27 endpoints that locked a row first and
+then asked for this lock (2026-09-24).  **Per TRANSACTION, not per request**,
+which matters in two places: a route that commits and goes on writing opens a
+second command transaction, which takes the lock again; and a
+:func:`write_transaction` block inside a query request opens a command
+transaction, which takes it (R-CC114: a page load's write takes the lock
+like any save).  A lock taken at the REQUEST's start would not survive
+either: it is transaction-scoped, and :func:`write_transaction` rolls the
+query's snapshot back before its command, releasing anything taken earlier.
+So plan step ``balance:X-i5``, which moves every save into a
+:func:`write_transaction` block, keeps this lock with no change here -- and
+owes one thing of its own: a save's READS that decide its write must sit
+inside its block, because a read in the query's snapshot before the block is
+a read taken before the lock.  Sign-in and sign-up take no lock (no owner is
+acting yet: a new user is not committed, so no other transaction can touch
+it); a CLI script, a deploy reconcile and Alembic hold no request, and the
+three deploy reconciles lock every owner at their own start
+(:func:`app.services.user_write_lock.lock_every_user_writes`).
+
 **What this module does NOT do**, said here because the boundary is worth
 knowing rather than discovering: a COMMAND's own re-render still reads at
 ``READ COMMITTED``, because it rides the transaction its writes are in.  That is
@@ -157,6 +190,8 @@ from sqlalchemy.orm import Session
 
 from app.audit_infrastructure import bind_audit_actor
 from app.extensions import db
+from app.models.user import User
+from app.services.user_write_lock import take_owner_write_lock
 
 # HTTP's safe methods, as this application serves them.  ``OPTIONS`` is left
 # out, and the reason first given here was measurably WRONG: it said Flask
@@ -199,6 +234,15 @@ _COMMAND = "command"
 # the shape this arc calls a root cause, on the value that decides whose name
 # an audit row carries.
 _ACTOR_KEY = "shekel_audit_actor"
+
+# Where the request records WHOSE DATA it acts on, for the same reason and by
+# the same door as the actor (:func:`bind_request_actor`): every command
+# transaction the request opens takes this owner's write lock, and the
+# listener that binds each one cannot run a statement to find out who that is.
+# The ACTOR and the OWNER differ for a companion, who acts on the budget of
+# the user they are linked to -- and every lock this replaced was keyed on the
+# ROW's owner, so keying on the actor would take a second key beside it.
+_OWNER_KEY = "shekel_write_owner"
 
 # Issued between ``BEGIN`` and the statement that caused it.  One statement,
 # both halves: the isolation level is what gives the pass one snapshot, and
@@ -290,6 +334,14 @@ def _bind_transaction_mode(session, transaction, connection) -> None:
     actor = g.get(_ACTOR_KEY)
     if actor is not None:
         bind_audit_actor(connection, actor)
+    # The owner's write lock, on the listener's CONNECTION rather than through
+    # the session: a session statement autoflushes, so a transaction begun with
+    # rows already staged would write them before its first lock (plan step
+    # ``balance:X-bn``; the module docstring has why every command
+    # transaction takes it).
+    owner = g.get(_OWNER_KEY)
+    if owner is not None:
+        take_owner_write_lock(connection, owner)
 
 
 def _open_this_request_s_own_transaction(sender: Flask, **extra) -> None:
@@ -417,15 +469,18 @@ def register_transaction_boundary(app: Flask) -> None:
         teardown roll it back -- and reaching into that from here would decide
         a mutation's outcome from a lifecycle hook.
 
-        **The mode is retired either way, and the ACTOR with it**, and under
-        the test client that is the load-bearing half: ``flask.g`` lives on the
+        **The mode is retired either way, and the ACTOR and the OWNER with
+        it**, and under the test client that is the load-bearing half: ``flask.g`` lives on the
         APP context, which the suite shares across a test and every request it
         issues, so either left behind would follow the request out and govern
         the test body's own transactions.  For the actor that means a row the
         test body writes AFTER a request would be attributed to that request's
         user, which is neither what production does -- ``g`` dies with the
         request there -- nor what the ``SET LOCAL`` this replaced did, since a
-        transaction-scoped GUC died with the request's transaction.
+        transaction-scoped GUC died with the request's transaction.  For the
+        owner it would mean every later transaction of the test body taking
+        that owner's write lock, which a test racing two connections would
+        then wait on from its own main one.
 
         Args:
             exc: The unhandled exception Flask is tearing down for, if any.
@@ -440,14 +495,31 @@ def register_transaction_boundary(app: Flask) -> None:
         if has_app_context():
             g.pop(_MODE_KEY, None)
             g.pop(_ACTOR_KEY, None)
+            g.pop(_OWNER_KEY, None)
 
 
-def bind_request_actor(user_id: int) -> None:
-    """Record who is acting, and tell the transaction ALREADY open.
+def bind_request_actor(user_id: int, owner_id: "int | None") -> None:
+    """Record who is acting and whose data, and bind the transaction ALREADY open.
 
     **The one door to the audit actor**, so the key that decides whose name an
     audit row carries has one writer and one spelling.  It was two: this module
     read ``_ACTOR_KEY`` and ``setup_logging`` wrote the same string as a literal.
+
+    **And the one door to the owner's write lock for a request** (plan step
+    ``balance:X-bn``; the module docstring has the argument).  The owner is the
+    user whose data the actor acts on -- the actor, or a companion's linked
+    owner -- which the caller reads off the signed-in row by the one rule that
+    says so (:attr:`app.models.user.User.data_owner_id`), a property of columns
+    already loaded, so resolving it here issues no statement either; a command
+    transaction already open takes that owner's lock here, and every later one
+    in :func:`_bind_transaction_mode`.  The lock follows the actor's two halves
+    exactly, and for the same reasons: this call is the earliest point the
+    owner is known, and resolving it is what opened the transaction.  The only
+    row that transaction has read before the lock is the acting user's own,
+    loaded to sign the request in -- and the password, MFA and settings doors
+    write that row -- so that row is EXPIRED once the lock is held, and the
+    request's first use of it reloads it under the lock: nothing a write
+    decides on was read before it.
 
     Two halves, and the second is the one a caller cannot do for itself.
     Recording the actor on ``g`` is what lets :func:`_bind_transaction_mode`
@@ -480,11 +552,28 @@ def bind_request_actor(user_id: int) -> None:
 
     Args:
         user_id: The acting ``auth.users.id``.
+        owner_id: The id of the user whose data the actor acts on
+            (:attr:`app.models.user.User.data_owner_id`); ``None`` for a
+            companion whose owner was deleted, who has no budget to write and
+            takes no lock.
     """
     session = db.session()
     if not _is_query_request() and session.in_transaction():
-        bind_audit_actor(session.connection(), user_id)
+        connection = session.connection()
+        bind_audit_actor(connection, user_id)
+        if owner_id is not None:
+            take_owner_write_lock(connection, owner_id)
+        # The acting user's row, loaded to sign the request in, is the one
+        # thing read before the lock (the docstring); expired, it reloads
+        # under it.  Only that row, and only if it is loaded (looked up in the
+        # identity map, so no statement is issued to find it): under the test
+        # client this session is also the test body's, whose other loaded
+        # state is not this request's to discard.
+        signed_in = session.identity_map.get(session.identity_key(User, user_id))
+        if signed_in is not None:
+            session.expire(signed_in)
     setattr(g, _ACTOR_KEY, user_id)
+    setattr(g, _OWNER_KEY, owner_id)
 
 
 @contextmanager

@@ -25,7 +25,6 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, movement_removal, posting_service
 from app.services.credit_workflow import lock_source_transaction_for_payback
@@ -173,15 +172,13 @@ def resolve_owner_id(user_id: int) -> int:
     user = db.session.get(User, user_id)
     if user is None:
         raise NotFoundError("User not found.")
-    companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
-    if user.role_id == companion_role_id:
-        if user.linked_owner_id is None:
-            raise ValidationError(
-                f"Companion user {user_id} has no linked owner. "
-                "This is a data integrity issue -- contact the administrator."
-            )
-        return user.linked_owner_id
-    return user.id
+    owner_id = user.data_owner_id
+    if owner_id is None:
+        raise ValidationError(
+            f"Companion user {user_id} has no linked owner. "
+            "This is a data integrity issue -- contact the administrator."
+        )
+    return owner_id
 
 
 # Backward-compatible alias -- existing tests reference the private name.

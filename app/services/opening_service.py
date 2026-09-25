@@ -77,7 +77,6 @@ from app.models.account_opening import AccountOpening
 from app.services import account_posting_service, cash_ledger, planned_rows_books
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceGenerationError, RecurrenceResolutionError
-from app.services.user_write_lock import lock_user_writes
 from app.utils.dates import display_today
 
 
@@ -381,9 +380,10 @@ def stage_account_opening(
     **The ONE writer of ``budget.account_openings``.**  Its two callers are the
     ``apply`` wrapper below (an owner restating the books) and
     :func:`app.services.account_service.create_account` (the origination), so
-    the owner's write lock, ruling **R-EQ**'s did-this-change compare and the
-    audit line are properties of the TABLE rather than of one of the two
-    events.  Adds to the current session; the caller commits.
+    ruling **R-EQ**'s did-this-change compare and the audit line are properties
+    of the TABLE rather than of one of the two events (the owner's write lock
+    is the transaction's, plan step ``balance:X-bn``).  Adds to the current
+    session; the caller commits.
 
     **It decides whether there is anything to append, and that decision is
     ruling R-EQ** -- the same rule
@@ -405,11 +405,11 @@ def stage_account_opening(
 
     **The lock precedes the read**, exactly as it does one table over: a
     compare-then-append is a read-modify-write, and an unserialised one lets
-    two concurrent submissions each read the pre-state and both append.  It is
-    taken HERE, with the read it protects, rather than at either door.  It is
-    re-entrant and transaction-scoped, so the origination path -- which reaches
-    :func:`~app.services.anchor_service.stage_anchor_true_up`'s acquisition two
-    statements later -- pays for it once.
+    two concurrent submissions each read the pre-state and both append.  The
+    owner's write lock is held from the transaction's start (plan step
+    ``balance:X-bn``, :mod:`app.db_transaction`), before this or any read;
+    *until that step it was taken HERE, with the read it protects, and ruling
+    R-CC115 deleted the acquisition.*
 
     **It does NOT bound the day, and the caller must have done so.**  See the
     module docstring: the two events bound it differently, and a second
@@ -437,7 +437,6 @@ def stage_account_opening(
         submission matched the governing opening and nothing was staged.  The
         caller decides what unchanged means for ITS transaction.
     """
-    lock_user_writes(account.user_id)
     source_id = ref_cache.account_opening_source_id(source)
     governing = cash_ledger.governing_account_opening(account.id)
     if governing is not None and (
@@ -525,8 +524,7 @@ def apply_opening_restatement(
 
     Raises:
         AmortizingAccountOpeningError: When ``account`` is an amortizing loan.
-            Raised BEFORE anything is staged and before the owner's write lock
-            is taken, so the session is clean.
+            Raised BEFORE anything is staged, so the session is clean.
         ValidationError: When the day breaks one of the five day rules
             (:func:`_reject_restatement_day`): in the future, on or after a
             recorded movement or a matched bank line, after an assertion, or
@@ -543,34 +541,16 @@ def apply_opening_restatement(
             "row while the loan is configured"
         )
 
-    # **The owner's write lock is taken HERE, BEFORE the day is judged, and
-    # that DIVERGES from the sibling door on purpose** (adversarial review,
-    # 2026-08-31).  ``anchor_service.apply_anchor_true_up`` resolves its day
-    # before its lock, on the stated ground that a refused submission must not
-    # take the owner's write lock -- which is right there, because
-    # ``resolve_observation_day`` reads a CLOCK and the owner's pay schedule,
-    # neither of which another transaction is racing.
-    #
-    # Half of this door's bound is not like that.  The movement rule reads
-    # ``budget.transactions`` and ``budget.transaction_entries``, which a
-    # concurrent settle is writing, so reading it unlocked lets the whole
-    # pairing fail in exactly the window it was built for: the restatement
-    # sees no movement, passes, and then the DEFERRED trigger aborts the
-    # COMMIT -- a raw ``psycopg2`` 500 for an ordinary date-box mistake, where
-    # :mod:`app.services.cash_ledger._books` exists to give a sentence.  Taken
-    # here, the loser blocks, re-reads under READ COMMITTED, sees the
-    # committed movement and renders the 400.
-    #
-    # What it costs is what the sibling declines to pay: a REFUSED restatement
-    # holds the owner's write lock for the length of one indexed MIN.  Accepted
-    # rather than argued away -- a restatement is rare by construction
-    # (:mod:`app.opening_infrastructure` says so) where a true-up is the
-    # one-click habit five surfaces open, so the frequency the sibling's rule
-    # protects against is not this door's.  Re-entrant and transaction-scoped,
-    # so :func:`stage_account_opening`'s own acquisition below is free.
-    lock_user_writes(account.user_id)
+    # The owner's write lock is held from this transaction's start (plan step
+    # ``balance:X-bn``, :mod:`app.db_transaction`), so the day rule below
+    # reads ``budget.transactions`` / ``budget.transaction_entries`` after any
+    # concurrent settle of this owner has committed: the loser sees the
+    # committed movement and renders the 400 rather than meeting the DEFERRED
+    # trigger's raw error at COMMIT.  *Until that step this door took the lock
+    # here, before the day is judged, deliberately earlier than the sibling
+    # anchor door took its own; ruling R-CC115 deleted both acquisitions.*
     # The kind gate ran FIRST, above, so an amortizing account is refused for
-    # what it IS before its day is judged -- and before it takes any lock.
+    # what it IS before its day is judged.
     _reject_restatement_day(account.id, account.user_id, opening.opened_on)
 
     if not stage_account_opening(
@@ -580,11 +560,12 @@ def apply_opening_restatement(
     ):
         # Ruling R-EQ: the submission IS the governing opening, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back
-        # rather than returning on an open transaction -- the stager took the
-        # owner's write lock to make its read safe, and only a commit or a
-        # rollback releases it.  Read the id BEFORE the rollback: afterwards
-        # the instance is expired and touching an attribute opens a fresh
-        # transaction purely to recover a value already in hand.
+        # rather than returning on an open transaction -- the transaction holds
+        # the owner's write lock (taken where it began, plan step
+        # ``balance:X-bn``), and only a commit or a rollback releases it.  Read
+        # the id BEFORE the rollback: afterwards the instance is expired and
+        # touching an attribute opens a fresh transaction purely to recover a
+        # value already in hand.
         account_id = account.id
         db.session.rollback()
         logger.info(

@@ -18,24 +18,25 @@ a reader to assume more:
 * Under READ COMMITTED two CONCURRENT transactions -- one recording a movement,
   one restating the books past it -- each see a snapshot without the other's
   uncommitted row, so both predicates pass.  **Neither trigger takes a lock,
-  and what closes the window instead is that both DOORS take the owner's**
-  (:func:`app.services.user_write_lock.lock_user_writes`), which was true of
-  the movement side before there was a restatement door and is true of
-  :func:`app.services.opening_service.stage_account_opening` by construction.
+  and what closes the window instead is that both DOORS hold the owner's**
+  write lock (:mod:`app.services.user_write_lock`), which every writing
+  transaction takes where it begins since plan step ``balance:X-bn`` -- the
+  movement side and :func:`app.services.opening_service.stage_account_opening`
+  alike, where each used to take it for itself.
   The loser blocks until the winner's transaction ENDS, and a deferred
   constraint trigger runs at COMMIT -- after that block, on a fresh READ
   COMMITTED snapshot -- so it sees the winner's committed row and refuses.
-  **Measured 2026-08-31 on a production clone rather than argued**: the settle
-  path emits ``pg_advisory_xact_lock`` at statement 11 of the 13 an ordinary
-  settle runs, inside ``account_posting_service.self_heal_anchor_corrections``,
-  and ``reconcile_service.record_settled_days`` reaches the same lock through
-  ``_post_stamped_purchases`` -> ``posting_service.sync_transaction_postings``.
-  **The residue, stated rather than rounded off:** that self-heal returns
-  BEFORE its lock when the source emitted no posting delta, so a movement whose
-  legs all net to zero races a restatement unserialised.  ``SELECT ... FOR
-  UPDATE`` on the governing opening remains the fix that would not depend on a
-  second door's locking, and it is a fix for that residue rather than for the
-  whole window.
+  *Measured 2026-08-31 on a production clone, before plan step
+  ``balance:X-bn``: the settle path emitted ``pg_advisory_xact_lock`` at
+  statement 11 of the 13 an ordinary settle ran, inside
+  ``account_posting_service.self_heal_anchor_corrections``, and that self-heal
+  returned BEFORE its lock when the source emitted no posting delta, so a
+  movement whose legs all net to zero raced a restatement unserialised -- the
+  residue this paragraph named.*  **Since that step the lock is taken where
+  every signed-in request's writing transaction BEGINS**
+  (:mod:`app.db_transaction`), whatever the transaction goes on to post, so
+  the zero-net movement holds it too and the residue is closed on every
+  request path by construction.
 * ``session_replication_role = replica`` disables constraint triggers outright,
   which is what ``pg_restore --disable-triggers`` sets.  The prod-to-dev clone
   is a documented workflow here, so a restore can land rows this module would

@@ -53,7 +53,6 @@ from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.services import loan_loaders, loan_posting_service
 from app.services.anchor_service import AnchorTrueUpOutcome
-from app.services.user_write_lock import lock_user_writes
 
 logger = logging.getLogger(__name__)
 
@@ -255,14 +254,11 @@ def _stage_loan_anchor(
         governing event of this source already asserts exactly
         ``(anchor_date, anchor_balance)``, in which case nothing was staged.
     """
-    # Ruling R-EQ: the lock precedes the read the decision is made from.  For
-    # the two committing doors it is also the transaction's first lock
-    # (finding N-193's ordering invariant); the setup door reaches here with
-    # its params row already INSERTed, which is the order that door has
-    # always had -- until plan step R20 its first taking of this lock was
-    # inside the all-scenario sync, after the same insert.  The sync every
-    # caller runs takes the same re-entrant lock again, harmlessly.
-    lock_user_writes(account.user_id)
+    # Ruling R-EQ: the owner's write lock precedes the read the decision is
+    # made from -- held since this transaction began, for every door including
+    # the setup door's params INSERT (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`; the acquisition that stood here and the
+    # sync's are deleted, ruling R-CC115).
     source_id = ref_cache.loan_anchor_source_id(source)
     governing = _governing_loan_anchor(account.id, source, anchor_date)
     if governing is not None and (
@@ -321,8 +317,9 @@ def apply_loan_anchor_true_up(
     because there was none to inherit.**  Both paths then re-sync the posted
     ledger, and a re-sync is a read-modify-write with no unique index behind
     it; nothing serialised this one between Commit 16 and X-f1c3c.  It is
-    serialised now, by the per-owner lock the reconcile takes for itself
-    (:mod:`app.services.user_write_lock`).
+    serialised now by the per-owner write lock
+    (:mod:`app.services.user_write_lock`), held since plan step
+    ``balance:X-bn`` from the start of every writing transaction.
 
     The ``UNCHANGED`` outcome mirrors the checking-anchor semantics: when a
     request submits the ``(anchor_date, anchor_balance)`` the governing

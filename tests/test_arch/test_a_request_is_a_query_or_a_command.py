@@ -783,7 +783,7 @@ class TestACommandNamesItsActor:
             assert not session.in_transaction(), "the setup left one open"
             observed_statements.clear()
 
-            db_transaction.bind_request_actor(owner_id)
+            db_transaction.bind_request_actor(owner_id, owner_id)
 
             assert not session.in_transaction(), (
                 "binding the audit actor opened a transaction that nothing "
