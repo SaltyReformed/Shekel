@@ -103,12 +103,12 @@ class TestBuildRecurrenceRuleFromForm:
     def test_no_pattern_returns_none_and_pops_all_keys(
         self, app, auth_client, seed_user,  # pylint: disable=unused-argument
     ):
-        """C2-1 (template variant): no pattern -> None, all keys popped.
+        """C2-1: no pattern -> None, every recurrence key popped.
 
-        ``include_due_day_of_month=True`` -- the helper should also
-        pop ``due_day_of_month`` so the caller's
-        ``TransactionTemplate`` constructor does not receive it as a
-        stray kwarg.
+        So the caller's ``TransactionTemplate`` constructor receives no
+        recurrence key as a stray kwarg.  (Its transfer twin and the
+        ``due_day_of_month`` pop left at plan step R5-a with the field,
+        ruling R-R96: both forms now post the same recurrence keys.)
         """
         with app.test_request_context():
             # "Does not repeat" is a submitted-empty UNIT, and the placement
@@ -118,7 +118,6 @@ class TestBuildRecurrenceRuleFromForm:
                 "recurrence_unit": None,
                 "recurrence_placement": None,
                 "interval_n": 1,
-                "due_day_of_month": 5,
                 "end_date": None,
                 # The OPENING bound, which a BROWSER posts on this branch even
                 # though no hand-written payload ever did: the box is hidden
@@ -137,44 +136,10 @@ class TestBuildRecurrenceRuleFromForm:
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
                 ),
             )
             assert result is None
             assert data == {"name": "Should survive"}
-
-    def test_no_pattern_transfer_variant_leaves_due_day_of_month_untouched(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
-    ):
-        """C2-5 (negative): include_due_day_of_month=False keeps the key.
-
-        Transfer-template schemas do not expose ``due_day_of_month``;
-        the helper must not probe the key when the caller signals it
-        is not a transaction-template payload.
-        """
-        with app.test_request_context():
-            data = {
-                "recurrence_unit": None,
-                "interval_n": 1,
-                "starts_on": None,
-                "due_day_of_month": 5,  # would never appear in real
-                                        # transfer payload
-            }
-            result = recurrence_spec_from_form(
-                data,
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget("transfers.new_transfer_template"),
-                    include_due_day_of_month=False,
-                ),
-            )
-            assert result is None
-            # ``due_day_of_month`` survives because the helper did not
-            # probe for it -- the caller's TransferTemplate
-            # constructor would never see this key in production
-            # because the schema strips it via EXCLUDE.
-            assert data == {"due_day_of_month": 5}
 
     def test_every_n_periods_auto_offset(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -203,7 +168,6 @@ class TestBuildRecurrenceRuleFromForm:
                 **validated_cadence(
                     unit=RecurrenceUnitEnum.PERIOD, interval_n=4,
                 ),
-                "due_day_of_month": None,
                 "end_date": None,
             }
             data["starts_on"] = chosen.start_date
@@ -213,7 +177,6 @@ class TestBuildRecurrenceRuleFromForm:
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
                 ),
             )
             assert isinstance(result, RecurrenceSpec)
@@ -251,7 +214,6 @@ class TestBuildRecurrenceRuleFromForm:
         with app.test_request_context():
             data = {
                 **validated_cadence(unit=RecurrenceUnitEnum.MONTH),
-                "due_day_of_month": None,
                 "end_date": None,
                 # A foreign period id cannot be expressed: the transaction
                 # schema no longer declares the field, and the helper takes no
@@ -266,7 +228,6 @@ class TestBuildRecurrenceRuleFromForm:
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
                 ),
             )
 
@@ -298,7 +259,6 @@ class TestBuildRecurrenceRuleFromForm:
             assert own_period is not None, "fixture missing period_index=1"
             data = {
                 **validated_cadence(unit=RecurrenceUnitEnum.MONTH),
-                "due_day_of_month": None,
                 "end_date": None,
                 "starts_on": own_period.start_date,
             }
@@ -308,7 +268,6 @@ class TestBuildRecurrenceRuleFromForm:
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
                 ),
             )
             assert isinstance(result, RecurrenceSpec)
@@ -317,38 +276,6 @@ class TestBuildRecurrenceRuleFromForm:
             assert _phase_of_spec(result) == 0
             assert result.unit is RecurrenceUnitEnum.MONTH
             db.session.rollback()
-
-    def test_include_due_day_of_month_true_consumes_key(
-        self, app, auth_client, seed_user, seed_periods_today,  # pylint: disable=unused-argument
-    ):
-        """C2-5 (positive): include=True puts due_day_of_month on the rule.
-
-        Uses EVERY_PERIOD so the every-N phase derivation is skipped and the
-        helper exercises the straight RecurrenceRule construction path.  Named
-        the ``Once`` pattern for the same reason until plan step R2e-3 retired
-        it; EVERY_PERIOD is the surviving cadence in pay-period space, which is
-        what both had in common.  (That was worded "the same anchor family"
-        until plan step R8-a deleted the router the phrase named.)
-        """
-        with app.test_request_context():
-            data = {
-                **validated_cadence(unit=RecurrenceUnitEnum.PERIOD),
-                "due_day_of_month": 15,
-            }
-            result = recurrence_spec_from_form(
-                data,
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
-                ),
-            )
-            assert isinstance(result, RecurrenceSpec)
-            assert result.due_day_of_month == 15
-            assert "due_day_of_month" not in data
-            db.session.rollback()
-
 
 class TestAnEditCannotRePhaseARule:
     """Defect **D8**, and the surface it survived on until plan step R7b-4.
@@ -395,7 +322,6 @@ class TestAnEditCannotRePhaseARule:
                 **validated_cadence(
                     unit=RecurrenceUnitEnum.PERIOD, interval_n=6,
                 ),
-                "due_day_of_month": None,
                 "starts_on": seed_periods[3].start_date,
             }
             update_recurrence_rule_from_form(
@@ -406,7 +332,6 @@ class TestAnEditCannotRePhaseARule:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )
@@ -445,7 +370,6 @@ class TestAnEditCannotRePhaseARule:
                     unit=RecurrenceUnitEnum.PERIOD, interval_n=4,
                 ),
                 "offset_periods": 0,
-                "due_day_of_month": None,
                 "starts_on": seed_periods[3].start_date,
             }
             update_recurrence_rule_from_form(
@@ -456,7 +380,6 @@ class TestAnEditCannotRePhaseARule:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )
@@ -491,7 +414,6 @@ class TestAnEditCannotRePhaseARule:
                 **validated_cadence(
                     unit=RecurrenceUnitEnum.PERIOD, interval_n=7,
                 ),
-                "due_day_of_month": None,
                 "starts_on": seed_periods[2].start_date,
             }
             result = resolve_recurrence_rule_for_update(
@@ -502,7 +424,6 @@ class TestAnEditCannotRePhaseARule:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
@@ -554,7 +475,6 @@ class TestUpdateKeepsTheStatedStartsPhase:
                         **validated_cadence(
                             unit=RecurrenceUnitEnum.PERIOD, interval_n=3,
                         ),
-                        "due_day_of_month": None,
                         "starts_on": seed_periods[2].start_date,
                     },
                     user_id=seed_user["user"].id,
@@ -563,7 +483,6 @@ class TestUpdateKeepsTheStatedStartsPhase:
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
-                        include_due_day_of_month=True,
                     ),
                 ),
                 calendar_for(seed_user["user"].id),
@@ -576,7 +495,6 @@ class TestUpdateKeepsTheStatedStartsPhase:
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.PERIOD, interval_n=3,
                     ),
-                    "due_day_of_month": None,
                     "starts_on": seed_periods[2].start_date,
                 },
                 ctx=RecurrenceFormContext(
@@ -584,7 +502,6 @@ class TestUpdateKeepsTheStatedStartsPhase:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )
@@ -785,7 +702,6 @@ class TestTheColumnSaysWhatTheCadenceSays:
                 **validated_cadence(
                     unit=unit, interval_n=interval, **stated,
                 ),
-                "due_day_of_month": None,
             }
             update_recurrence_rule_from_form(
                 rule, data,
@@ -794,7 +710,6 @@ class TestTheColumnSaysWhatTheCadenceSays:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )
@@ -922,7 +837,6 @@ class TestTheColumnSaysWhatTheCadenceSays:
             before = rule.unit_id
             data = {
                 **validated_cadence(unit=RecurrenceUnitEnum.WEEK),
-                "due_day_of_month": None,
             }
             with pytest.raises(RecurrenceResolutionError) as excinfo:
                 update_recurrence_rule_from_form(
@@ -932,7 +846,6 @@ class TestTheColumnSaysWhatTheCadenceSays:
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
-                        include_due_day_of_month=True,
                     ),
                     calendar=calendar_for(seed_user["user"].id),
                 )
@@ -1019,7 +932,6 @@ class TestAnUpdateMayNotInvertTheWindow:
             redirect=RedirectTarget(
                 "templates.edit_template", {"template_id": 1},
             ),
-            include_due_day_of_month=True,
         )
 
     def _monthly_rule(self, seed_user, starts_on, end_bound=NEVER_ENDS):
@@ -1039,7 +951,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.MONTH, starts_on=starts_on,
                     ),
-                    "due_day_of_month": None,
                     "starts_on": starts_on,
                 },
                 user_id=seed_user["user"].id,
@@ -1108,7 +1019,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                             unit=RecurrenceUnitEnum.MONTH,
                             states_a_start=False,
                         ),
-                        "due_day_of_month": None,
                     },
                     ctx=self._ctx(None),
                     pass_ctx=pass_ctx,
@@ -1138,7 +1048,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
                     ),
-                    "due_day_of_month": None,
                 },
                 ctx=self._ctx(EndsOnDate(on=date(2026, 5, 31))),
                 pass_ctx=BalanceContext.build(seed_user["user"].id),
@@ -1175,7 +1084,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.PERIOD, states_a_start=False,
                     ),
-                    "due_day_of_month": None,
                 },
                 ctx=self._ctx(None),
                 pass_ctx=BalanceContext.build(seed_user["user"].id),
@@ -1213,7 +1121,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                         unit=RecurrenceUnitEnum.MONTH,
                         starts_on=date(2026, 9, 1),
                     ),
-                    "due_day_of_month": None,
                     "starts_on": date(2026, 9, 1),
                 },
                 ctx=self._ctx(None),
@@ -1244,7 +1151,6 @@ class TestAnUpdateMayNotInvertTheWindow:
                         unit=RecurrenceUnitEnum.MONTH,
                         starts_on=date(2026, 6, 1),
                     ),
-                    "due_day_of_month": None,
                     "starts_on": date(2026, 6, 1),
                 },
                 ctx=self._ctx(EndsOnDate(on=date(2026, 6, 1))),
@@ -1316,7 +1222,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                             starts_on=date(2026, 4, 30),
                             nominal_day=31,
                         ),
-                        "due_day_of_month": None,
                         "starts_on": date(2026, 4, 30),
                         "nominal_day": 31,
                     },
@@ -1326,7 +1231,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
-                        include_due_day_of_month=True,
                     ),
                 ),
                 calendar_for(seed_user["user"].id),
@@ -1339,14 +1243,12 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.PERIOD, states_a_start=False,
                     ),
-                    "due_day_of_month": None,
                 },
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )
@@ -1375,7 +1277,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                             starts_on=date(2026, 4, 30),
                             nominal_day=31,
                         ),
-                        "due_day_of_month": None,
                         "starts_on": date(2026, 4, 30),
                         "nominal_day": 31,
                     },
@@ -1385,7 +1286,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
-                        include_due_day_of_month=True,
                     ),
                 ),
                 calendar_for(seed_user["user"].id),
@@ -1413,7 +1313,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                             starts_on=date(2026, 4, 30),
                             nominal_day=31,
                         ),
-                        "due_day_of_month": None,
                         "starts_on": date(2026, 4, 30),
                         "nominal_day": 31,
                     },
@@ -1423,7 +1322,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
-                        include_due_day_of_month=True,
                     ),
                 ),
                 calendar_for(seed_user["user"].id),
@@ -1440,7 +1338,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                         starts_on=date(2026, 4, 30),
                         nominal_day=31,
                     ),
-                    "due_day_of_month": None,
                     "starts_on": date(2026, 4, 30),
                     "nominal_day": 31,
                 },
@@ -1449,7 +1346,6 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
-                    include_due_day_of_month=True,
                 ),
                 calendar=calendar_for(seed_user["user"].id),
             )

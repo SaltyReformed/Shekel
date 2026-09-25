@@ -57,9 +57,9 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
 
         HTML forms always submit every <input> element, even hidden ones,
         as empty strings.  Without this hook, those empty strings fail
-        OneOf / Integer validation on optional fields.  The nullable
-        fields (``due_day_of_month``, ``end_date``) keep the key as an
-        explicit ``None`` so clearing them on update actually persists.
+        OneOf / Integer validation on optional fields.  A nullable field
+        (``end_date``) keeps the key as an explicit ``None`` so clearing it
+        on update actually persists.
         """
         return _normalize_empty_inputs(self, data)
 
@@ -76,14 +76,11 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
-    # The recurrence controls both template forms share are on
-    # :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`.
-    # This one field is NOT shared: only a transaction template carries a
-    # separate bill due-day, and declaring it on the mixin would silently set
-    # a column from a key the transfer schemas never validate.
-    due_day_of_month = fields.Integer(
-        validate=validate.Range(min=1, max=31), allow_none=True,
-    )
+    # The recurrence controls this form submits are on
+    # :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`,
+    # every one of them shared with the transfer form since plan step
+    # recurrence:R5-a dropped the one it did not share, the bill's separate
+    # due day (ruling R-R96: a rule's own day is the day its rows are due).
 
     @validates_schema
     def validate_a_cadence_is_chosen(self, data, **kwargs):

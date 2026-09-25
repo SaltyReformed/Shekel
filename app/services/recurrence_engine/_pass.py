@@ -108,8 +108,10 @@ class MaintainActs(NamedTuple):
             identity before the five acts it carries out.
         selector_for: ``(template, scenario_id) -> TemplateRowSelector`` --
             which table and which template-FK this engine's fetches ask about.
-        derive_for: ``(template, rule, period) -> <derived fields>`` -- the ONE
-            statement of what a generated row takes from its definition.
+        derive_for: ``(template, rule, occurrence, period) -> <derived
+            fields>`` -- the ONE statement of what a generated row takes from
+            its definition, for the occurrence it answers in the paycheck that
+            seats it.
         owner_records: ``(existing) -> set[int]`` -- the rows carrying the
             owner's own records, which is a question about this engine's tables.
         reattributed: ``(existing, template) -> set[int]`` -- the rows whose
@@ -157,10 +159,12 @@ def derived_by_occurrence(plan, derive_for) -> dict:
         plan: The pass's :class:`~._plan.GenerationPlan`, or ``None`` for a
             CLEARED recurrence -- which names no occurrence, so the map is
             empty and every existing row is considered for retirement.
-        derive_for: Called as ``derive_for(rule, period)``.  WHAT a generated
-            row derives is the one thing the two engines genuinely do not
-            share: a transaction takes a category and a type, a transfer takes
-            two accounts.
+        derive_for: Called as ``derive_for(rule, occurrence, period)``.  WHAT
+            a generated row derives is the one thing the two engines genuinely
+            do not share: a transaction takes a category and a type, a
+            transfer takes two accounts.  Both date the row from *occurrence*
+            since plan step R5-a (plan ledger row **D18**), which is why the
+            placement is handed over whole rather than its period alone.
 
     Returns:
         ``{occurs_on: <the engine's derived-fields value>}``, empty for a
@@ -169,7 +173,9 @@ def derived_by_occurrence(plan, derive_for) -> dict:
     if plan is None:
         return {}
     return {
-        placement.occurrence: derive_for(plan.rule, placement.period)
+        placement.occurrence: derive_for(
+            plan.rule, placement.occurrence, placement.period,
+        )
         for placement in plan.placements
     }
 
@@ -301,7 +307,10 @@ def _decide(acts: MaintainActs, template, schedule, scenario_id, effective_from)
     return _Decision(
         plan, work,
         derived_by_occurrence(
-            plan, lambda rule, period: acts.derive_for(template, rule, period),
+            plan,
+            lambda rule, occurrence, period: acts.derive_for(
+                template, rule, occurrence, period,
+            ),
         ),
     )
 

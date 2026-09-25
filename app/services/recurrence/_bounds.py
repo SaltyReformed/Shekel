@@ -42,7 +42,9 @@ untyped storage rather than a rule the writers restate -- and
 ``positive_max_occurrences`` is refused by :class:`EndsAfterOccurrences` at
 construction, which is every path there is because a frozen dataclass cannot be
 mutated past its own ``__post_init__``.  The other two, ``due_dom`` and
-``valid_offset``, are column DOMAINS over plain integers rather than shapes, so
+``valid_offset``, were column DOMAINS over plain integers rather than shapes
+(both have since left with their columns, ``due_dom`` at plan step
+recurrence:R5-a), so
 this step mirrors them at the door instead
 (``_resolution._require_authored_domains``); making those structural means a
 day-of-month VALUE TYPE, which is plan step G2's work and not this one's.

@@ -20,7 +20,8 @@ to the only two questions it is asked in production:
   here is what the deleted adapter did for it, so the blob is unmoved.)
 * :func:`app.services.recurrence.compute_due_date` -- what date does the
   generated row carry?  (In ``recurrence_engine`` until plan step R16-b-2
-  moved it down beside the occurrence walk, ruling R-R69.)
+  moved it down beside the occurrence walk, ruling R-R69; asked of each
+  placement's own occurrence since plan step R5-a.)
 
 Both are their module's public surface (their docstrings say so) and both are
 pure functions of a rule's columns plus a period list, so the baseline needs no
@@ -141,12 +142,6 @@ LONG_CADENCE_PERIOD_COUNT: int = 12
 #: common year, February in a leap year, the 30-day months, the 31-day months).
 #: See the module docstring for why 2-14 and 16-27 add no branch.
 _CLAMP_DAYS: tuple[int, ...] = (1, 15, 28, 29, 30, 31)
-
-#: Scheduling days swept against every due day.  ``compute_due_date``'s
-#: next-month convention triggers on ``due_dom < dom``, so the set spans a day
-#: below every due day (1), a mid-month day (15), the live Van Loan's day (22),
-#: and a day above every due day (31).
-_DUE_SWEEP_DAYS: tuple[int, ...] = (1, 15, 22, 31)
 
 
 @dataclass(frozen=True)
@@ -302,8 +297,6 @@ class RuleShape:
             which the write door normalises onto that paycheck's payday.
         nominal_day: The day the rule MEANS when *starts_on*'s own month was
             too short to hold it, and ``None`` otherwise.
-        due_day_of_month: Real bill due day when it differs from the
-            scheduling day.
         end_date: The rule's closing validity bound.
         long_cadence: Capture this shape against the 90-day schedule instead
             of the biweekly one (the D3 shapes).
@@ -314,7 +307,6 @@ class RuleShape:
     starts_on: date = SCHEDULE_START
     interval_n: int = 1
     nominal_day: int | None = None
-    due_day_of_month: int | None = None
     end_date: date | None = None
     long_cadence: bool = False
 
@@ -532,7 +524,6 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
         ),
         placement=shape.cadence.placement,
         nominal_day=shape.nominal_day,
-        due_day_of_month=shape.due_day_of_month,
         # Read through the same column-to-bound seam the READ DOOR uses
         # (plan step R7b-3), for the reason the cadence is read off the
         # axes: a shape is a set of stored COLUMN values, so building the
@@ -765,27 +756,6 @@ def _add_calendar_cycle_shapes(acc: _ShapeAccumulator) -> None:
                 ))
 
 
-def _add_due_day_shapes(acc: _ShapeAccumulator) -> None:
-    """Every due day 1..31 against four scheduling days.
-
-    This is the axis ``compute_due_date`` branches on, and the one plan step R5
-    rewrites: below the scheduling day the due date rolls into the FOLLOWING
-    calendar month, at or above it stays in the same month, and both ends clamp
-    to the month's length.  Freezing the whole due axis is what lets R5's
-    explicit ``due_month_offset`` be diffed against the convention it replaces.
-    """
-    for dom in _DUE_SWEEP_DAYS:
-        for due_dom in range(1, 32):
-            acc.add(RuleShape(
-                f"due_sweep.dom{dom:02d}.due{due_dom:02d}",
-                MONTHLY,
-                starts_on=date(
-                    SCHEDULE_START.year, SCHEDULE_START.month, dom,
-                ),
-                due_day_of_month=due_dom,
-            ))
-
-
 def _add_bound_shapes(acc: _ShapeAccumulator) -> None:
     """The validity-window shapes.
 
@@ -977,7 +947,9 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     ``day_of_month`` target and never consults ``month_of_year``, so at a
     cadence where the firing month is neither endpoint it dates the row in the
     wrong month entirely.  Latent at 14 days, where the firing month always is
-    an endpoint.  Frozen here as it behaves; plan step R5 owns it.
+    an endpoint.  Frozen here as it behaved until plan step R5-a dated a row
+    from its OCCURRENCE (plan ledger row D18, closed there), which moved this
+    line onto the January occurrence the rule names.
     """
     for day in (1, 15, 31):
         acc.add(RuleShape(
@@ -1030,7 +1002,6 @@ def build_shapes() -> list[RuleShape]:
     _add_period_space_shapes(acc)
     _add_monthly_shapes(acc)
     _add_calendar_cycle_shapes(acc)
-    _add_due_day_shapes(acc)
     _add_bound_shapes(acc)
     _add_anchor_normalisation_shapes(acc)
     _add_horizon_bound_shapes(acc)
@@ -1046,22 +1017,23 @@ def capture_shape(
     Calls the two public entry points exactly as ``generate_for_template``
     does: :func:`~app.services.recurrence.rule_occurrences` over the whole
     schedule with no lower window bound, then ``compute_due_date`` per placed
-    period.
+    occurrence.
 
     A shape that matches nothing emits one ``(none)`` line rather than
     disappearing.  A shape that vanished silently would be indistinguishable in
     the diff from a shape that was never captured, which is how a regression
     hides.
 
-    **A period repeated in ``matched`` emits a repeated LINE**, and since plan
-    step R4a that is reachable: at a cadence of 30 days or more several
-    occurrences of one monthly bill land in one paycheck.  The repeats are
-    byte-identical, because ``compute_due_date`` dates a row from its PERIOD
-    rather than from its occurrence and so cannot tell them apart -- which is
-    plan ledger row D18 made visible rather than a defect in this capture.
-    The occurrence DATES those lines stand for are pinned independently, by
-    ``tests/test_services/test_recurrence_occurrence.py``'s day-by-day sweep;
-    a blob keyed on periods cannot carry them.
+    **A period repeated in ``matched`` emits a repeated period**, and since
+    plan step R4a that is reachable: at a cadence of 30 days or more several
+    occurrences of one monthly bill land in one paycheck.  Until plan step
+    R5-a the repeated lines were byte-identical, because ``compute_due_date``
+    dated a row from its PERIOD and could not tell them apart -- plan ledger
+    row D18 made visible.  It dates each from its own occurrence now, so the
+    repeats differ in their ``due=`` column wherever the cadence names a day
+    of the month.  The occurrence DATES themselves are pinned independently,
+    by ``tests/test_services/test_recurrence_occurrence.py``'s day-by-day
+    sweep.
 
     Args:
         shape: The configuration to capture.
@@ -1080,25 +1052,30 @@ def capture_shape(
     # bound -- the anchor's own floor is ``PayCalendar.opening_bound()``, so
     # no walk can emit an occurrence placed before it.
     #
-    # **Unplaced occurrences are dropped by ``placed_periods`` since plan step
-    # R4b-2**, where the retired ``match_periods`` adapter dropped them, which
+    # **Unplaced occurrences are dropped by the placed filter since plan step
+    # R4b-2** (``placed_occurrences`` since R5-a, which keeps the occurrence
+    # the row is dated from), where the retired ``match_periods`` adapter dropped them, which
     # is why the blob did not move across that step.  They are NOT rare even on
     # the contiguous schedules this module builds: three shapes have one --
     # ``PERIOD_STARTING_ON_OR_AFTER`` cannot defer an occurrence dated after
     # the last payday onto anything.  A blob keyed on PERIODS cannot record
     # them, so ``tests/test_services/test_recurrence_occurrence.py``'s
     # ``_EXPECTED_UNPLACED`` names each one exactly and is what gates them.
-    matched = _reading.placed_periods(
+    matched = _reading.placed_occurrences(
         _reading.rule_occurrences(rule, calendar),
     )
     if not matched:
         return [f"{shape.label} (none)"]
-    return [
-        f"{shape.label} idx={period.period_index:03d} "
-        f"period={period.start_date.isoformat()}..{period.end_date.isoformat()} "
-        f"due={_row_date.compute_due_date(rule, period).isoformat()}"
-        for period in matched
-    ]
+    lines = []
+    for placement in matched:
+        period = placement.period
+        due = _row_date.compute_due_date(rule, placement.occurrence, period)
+        lines.append(
+            f"{shape.label} idx={period.period_index:03d} "
+            f"period={period.start_date.isoformat()}..{period.end_date.isoformat()} "
+            f"due={due.isoformat()}"
+        )
+    return lines
 
 
 def capture_baseline() -> str:

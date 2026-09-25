@@ -2620,6 +2620,35 @@ def replay_paycheck_lines_rename(db_session):
     )
 
 
+#: Plan step ``recurrence:R5-a``'s revision, which dropped the rule's due day.
+_R5A_REVISION_FILE = "1c569c51b449_a_rules_day_is_its_due_day.py"
+
+
+def restore_rule_due_day_column(db_session):
+    """Re-create ``budget.recurrence_rules.due_day_of_month``, which R5-a dropped.
+
+    **For a test whose subject is an EARLIER revision's shipped SQL**, the
+    reason :func:`restore_pay_period_derived_columns` exists, and built the
+    same way: it runs plan step ``recurrence:R5-a``'s own ``downgrade()``
+    (ruling R-R96) rather than issuing DDL of its own, so the column comes back
+    with its CHECK exactly as the shipped statement rebuilds it -- nullable and
+    empty.  Revision ``542c61e48ee8`` (plan step ``salary:R15-b``) reads the
+    column in its own SQL, so a test driving that revision meets
+    ``UndefinedColumn`` at head without it.  Alembic undoes the NEWEST revision
+    first, so a caller rewinding further runs this before its older rewinds.
+
+    It does not put the database at any particular revision.  The ORM model on
+    this tree does not map the column, so an ORM insert leaves it ``NULL``.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that holds the
+            table's locks (see :func:`run_migration_callable`).
+    """
+    run_migration_callable(
+        load_migration_module(_R5A_REVISION_FILE).downgrade, db_session,
+    )
+
+
 def restore_pay_period_derived_columns(db_session):
     """Re-create the two ``budget.pay_periods`` columns C4-c dropped.
 
@@ -6787,7 +6816,6 @@ def _cadence_spec(
     fires_in_month=None,
     interval_n=1,
     nominal_day=None,
-    due_day_of_month=None,
     end_date=None,
     max_per_month=None,
 ):
@@ -6810,7 +6838,6 @@ def _cadence_spec(
         fires_in_month: See :func:`make_cadence_rule`.
         interval_n: See :func:`make_cadence_rule`.
         nominal_day: See :func:`make_cadence_rule`.
-        due_day_of_month: See :func:`make_cadence_rule`.
         end_date: See :func:`make_cadence_rule`.
         max_per_month: See :func:`make_cadence_rule`.
 
@@ -6866,7 +6893,6 @@ def _cadence_spec(
             else calendar.opening_bound()
         ),
         nominal_day=nominal_day,
-        due_day_of_month=due_day_of_month,
         end_bound=(
             NEVER_ENDS if end_date is None else EndsOnDate(end_date)
         ),
@@ -6928,8 +6954,6 @@ def make_cadence_rule(owner, cadence, **kwargs):
             constant, not the model.)
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it (ruling R-R3).
-        due_day_of_month: Real bill due day, when it differs from the
-            scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
         max_per_month: The per-month ceiling (plan step salary:R15-a), or
             ``None`` for none.

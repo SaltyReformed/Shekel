@@ -289,7 +289,9 @@ def books_reading(
         return BooksReading(inside={})
     walk = occurrence_walk(resolved, calendar)
     return BooksReading(inside={
-        placement.occurrence: resolved.books_day(placement.period)
+        placement.occurrence: resolved.books_day(
+            placement.occurrence, placement.period,
+        )
         for placement in walk.below_the_books
     })
 

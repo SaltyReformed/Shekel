@@ -130,7 +130,7 @@ _CADENCES_OWN_INTERVAL = object()
 def build_rule(cadence=EVERY_PERIOD,
                interval_n=_CADENCES_OWN_INTERVAL,
                starts_on=_SCHEDULE_OPENS, nominal_day=None,
-               end_date=None, due_day_of_month=None):
+               end_date=None):
     """Build a REAL, unsaved ``RecurrenceRule`` for the pure matcher tests.
 
     ``rule_occurrences`` and ``compute_due_date`` are pure functions of a rule's
@@ -183,8 +183,6 @@ def build_rule(cadence=EVERY_PERIOD,
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it.
         end_date: The rule's closing validity bound.
-        due_day_of_month: Real bill due day when it differs from the
-            scheduling day.
 
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -226,7 +224,6 @@ def build_rule(cadence=EVERY_PERIOD,
         shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
         starts_on=starts_on,
         nominal_day=nominal_day,
-        due_day_of_month=due_day_of_month,
         end_date=end_date,
     )
     TransactionTemplate(user_id=_MATCH_USER_ID).recurrence_rule = rule
@@ -994,9 +991,9 @@ class TestMatchPeriodsEdgeCaseSafety:
         their own domains and their own NULL defaults.  Plan step R7c-b made
         both ENCODED columns rather than authored ones -- a rule states its
         first occurrence and the door derives them from it -- so there is no
-        caller-supplied value left to refuse.  The refusal of that shape that
-        survives is ``due_day_of_month``'s, in
-        ``test_recurrence_resolution.TestRefusals``.
+        caller-supplied value left to refuse.  The last refusal of that
+        shape, ``due_day_of_month``'s, left with its column at plan step
+        R5-a (ruling R-R96).
 
     **Plan step R4a moved every one of these refusals to one door.**  The five
     reverse-matching helpers each failed in their own way and in their own
@@ -1888,33 +1885,23 @@ class TestALegacyScheduleHole:
                 f"on a derived period end -- the two are not one comparison"
             )
 
-    def test_an_absorbed_occurrence_is_DATED_by_its_paycheck_not_its_cadence(
+    def test_an_absorbed_occurrence_is_DATED_by_its_cadence_not_its_paycheck(
         self, app, db, seed_user, seed_periods,
     ):
-        """Plan ledger row **D18**, reached through a door plan step C2-b2 opens.
+        """Plan ledger row **D18**, closed by plan step R5-a (ruling **R-R94**).
 
-        **This asserts a DEFECT, deliberately, so the step that fixes it has a
-        control.**  ``compute_due_date`` dates a generated row by scanning the
-        two ENDPOINT months of the paycheck it landed in, and the occurrence
-        date the walk actually found is discarded.  When a paycheck absorbs a
-        hole it spans months neither endpoint names, so the row is dated in the
-        wrong month entirely.  Measured here: the 2026-06-05 occurrence is
-        seated in the 2026-05-08 paycheck and generated with
-        ``due_date = 2026-05-05`` -- a month early, and colliding with the date
-        the PREVIOUS paycheck's row already carries.
+        **This asserted the DEFECT until R5-a, deliberately, so the step that
+        fixed it had a control** -- and its docstring said this test would go
+        red when that step landed, which is what it did.  ``compute_due_date``
+        dated a generated row by scanning the two ENDPOINT months of the
+        paycheck it landed in and discarded the occurrence the walk found; when
+        a paycheck absorbs a hole it spans months neither endpoint names, so
+        the 2026-06-05 occurrence seated in the 2026-05-08 paycheck was
+        generated with ``due_date = 2026-05-05`` -- a month early, colliding
+        with the date the PREVIOUS paycheck's row already carried.
 
-        Before C2-b2 this occurrence produced no row at all (it fell in the
-        hole, was logged, and was skipped), so the wrong date is new even
-        though the defect is not: a 30-day-or-longer cadence already reaches it
-        without any hole.  **Recurrence plan step R5 owns the fix** -- it splits
-        a generated row's dates into ``occurs_on`` (the cadence),
-        ``pay_period_id`` (the funding) and ``due_on`` (the installment), and
-        deletes ``compute_due_date`` -- and this test goes red when it lands,
-        which is what it is for.
-
-        Not fixed here: the repair changes every generated row's date and would
-        move the frozen 430-shape baseline, which this step must leave
-        byte-identical.
+        R5-a dates a row from the occurrence it answers, so the row carries the
+        date the cadence named and no two rows share one.
         """
         absorbed_day = 5
         with app.app_context():
@@ -1946,13 +1933,13 @@ class TestALegacyScheduleHole:
             )
             # The occurrence the cadence named, for the record.
             assert gap_start <= date(2026, 6, absorbed_day) <= gap_end
-            # ...and the date the row actually carries, which is not it.
-            assert seated[0].due_date == date(2026, 5, absorbed_day)
-            # The collision that makes it visible: two rows, two paychecks,
-            # one date.
+            # ...and the date the row carries, which is now that occurrence.
+            assert seated[0].due_date == date(2026, 6, absorbed_day)
+            assert seated[0].due_date == seated[0].occurs_on
+            # The collision is gone: one row per date.
             assert [txn.due_date for txn in created].count(
                 date(2026, 5, absorbed_day),
-            ) == 2
+            ) == 1
 
     def test_an_absorbed_hole_can_make_one_paycheck_owe_a_bill_twice(
         self, app, db, seed_user, seed_periods,
@@ -2566,26 +2553,21 @@ class TestRegenerateForTemplate:
             template.name = "Renamed Bill"
             template.category_id = new_category.id
             template.transaction_type_id = income_type.id
-            # The DUE DATE moves and the OCCURRENCE does not, which is what
-            # keeps these rows maintained rather than retired.  Since plan step
-            # **R17** a row is named by the occurrence it answers, so moving
-            # ``starts_on`` from the 5th to the 7th would move every occurrence
-            # and retire every row -- correct behaviour (developer ruling
-            # 2026-08-28) but a different test.  ``due_day_of_month`` is the
-            # knob that separates the two: the walk reads the scheduling day
-            # and never this, while ``compute_due_date`` prefers it.  Chosen
-            # ABOVE the scheduling day so it stays in the same calendar month
-            # (below it means "the month after", by that function's contract).
-            #
-            # RE-AUTHORED rather than assigned, because plan step R7c-b made
-            # the day a property of the first OCCURRENCE and the write door
-            # derives the storage encoding from the spec.
-            rule = template.recurrence_rule
-            reauthor_rule(
-                rule,
-                replace(recurrence_spec(rule), due_day_of_month=7),
-                calendar_for(template.user_id),
-            )
+            # The DUE DATE is planted STALE and the rule is left alone, so the
+            # occurrence -- what names a row since plan step **R17** -- does
+            # not move and every row is maintained rather than retired.  Until
+            # plan step R5-a a rule EDIT moved it: ``due_day_of_month`` was the
+            # knob the walk never read and ``compute_due_date`` preferred.  That
+            # column is gone (ruling R-R96) and a rule now dates a row from the
+            # occurrence it answers, so no edit to a day-naming rule's DAY can
+            # move a maintained row's date without moving its occurrence.  (A
+            # FUNDING switch can, and moves it off the row's own paycheck --
+            # a behaviour R5-a keeps rather than introduces, reported with it.)
+            # A stored date that disagrees with the derivation is what the
+            # update loop must still overwrite, which is the claim this test
+            # pins.
+            for txn in created:
+                txn.due_date = txn.due_date.replace(day=7)
             db.session.flush()
 
             recurrence_engine.regenerate_for_template(
@@ -2607,7 +2589,7 @@ class TestRegenerateForTemplate:
                 assert txn.name == "Renamed Bill"
                 assert txn.category_id == new_category.id
                 assert txn.transaction_type_id == income_type.id
-                assert txn.due_date.day == 7
+                assert txn.due_date.day == 5
 
     def test_maintaining_a_row_reconciles_the_ledger_its_purchase_posted(
         self, app, db, seed_user, seed_periods
@@ -4480,8 +4462,9 @@ class TestDueDateGeneration:
     Verifies that generate_for_template correctly computes due_date on
     each created Transaction by delegating to compute_due_date.  Tests
     cover every recurrence pattern, day-of-month clamping for short
-    months, the next-month convention for due_day_of_month, and edge
-    cases around leap years and month boundaries.
+    months, and edge cases around leap years and month boundaries.  The
+    due-day tests (the next-month convention and its clamping) left with
+    ``due_day_of_month`` at plan step R5-a (ruling R-R96).
     """
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
@@ -4700,140 +4683,6 @@ class TestDueDateGeneration:
             assert len(created) == 1
             assert created[0].due_date == date(2026, 4, 30)
 
-    # -- due_day_of_month (next-month convention) tests ------------------------
-
-    def test_due_day_next_month_convention(
-        self, app, db, seed_user, seed_periods
-    ):
-        """due_day_of_month=1 < fires_on_day=22: due date in the next month.
-
-        P1 = Jan 16 - Jan 29, which contains Jan 22. Since due_dom(1) <
-        dom(22), the due date rolls to the next month: Feb 1.
-        due_date == 2026-02-01.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=22, due_day_of_month=1,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-
-            # P1 (Jan 16-29) contains Jan 22.
-            p1_txns = [
-                txn for txn in created
-                if txn.pay_period_id == seed_periods[1].id
-            ]
-            assert len(p1_txns) == 1
-            assert p1_txns[0].due_date == date(2026, 2, 1)
-
-    def test_due_day_same_month(self, app, db, seed_user):
-        """due_day_of_month=15 > fires_on_day=1: due date in the same month.
-
-        Custom period Jan 1-14 contains Jan 1. Since due_dom(15) >=
-        dom(1), the due date stays in the same month: Jan 15.
-        due_date == 2026-01-15.
-        """
-        with app.app_context():
-            period = self._make_custom_period(
-                seed_user, date(2026, 1, 1), date(2026, 1, 14),
-            )
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=1, due_day_of_month=15,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {period.id},
-                ), seed_user["scenario"].id,
-            )
-
-            assert len(created) == 1
-            assert created[0].due_date == date(2026, 1, 15)
-
-    def test_due_day_dec_to_jan_rollover(self, app, db, seed_user):
-        """due_day_of_month=1 < fires_on_day=22 in December rolls to Jan next year.
-
-        Custom period Dec 15-28 contains Dec 22. Since due_dom(1) <
-        dom(22), the due date rolls to the next month. December + 1 =
-        January of the next year. due_date == 2027-01-01.
-        """
-        with app.app_context():
-            period = self._make_custom_period(
-                seed_user, date(2026, 12, 15), date(2026, 12, 28),
-            )
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=22, due_day_of_month=1,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {period.id},
-                ), seed_user["scenario"].id,
-            )
-
-            assert len(created) == 1
-            assert created[0].due_date == date(2027, 1, 1)
-
-    def test_due_day_null_uses_day_of_month(
-        self, app, db, seed_user, seed_periods
-    ):
-        """due_day_of_month=None falls back to day_of_month for due_date.
-
-        Same behavior as basic monthly: due_date == Jan 15.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=15, due_day_of_month=None,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-
-            jan_txns = [
-                txn for txn in created
-                if txn.pay_period_id == _paycheck_covering(
-                    seed_user, date(2026, 1, 15),
-                )
-            ]
-            assert len(jan_txns) == 1
-            assert jan_txns[0].due_date == date(2026, 1, 15)
-
-    def test_due_day_equals_day_of_month(
-        self, app, db, seed_user, seed_periods
-    ):
-        """due_day_of_month == day_of_month treated as no override.
-
-        When due_day_of_month equals day_of_month, compute_due_date
-        takes the 'due_dom is None or due_dom == dom' branch and uses
-        day_of_month directly. due_date == Jan 15.
-        """
-        with app.app_context():
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=15, due_day_of_month=15,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
-            )
-
-            jan_txns = [
-                txn for txn in created
-                if txn.pay_period_id == _paycheck_covering(
-                    seed_user, date(2026, 1, 15),
-                )
-            ]
-            assert len(jan_txns) == 1
-            assert jan_txns[0].due_date == date(2026, 1, 15)
-
     # -- No recurrence rule ----------------------------------------------------
 
     def test_due_date_no_recurrence_rule(
@@ -4965,10 +4814,11 @@ class TestDueDateGeneration:
     def test_due_date_period_spanning_two_months(self, app, db, seed_user):
         """fires_on_day=1, period Jan 17 - Feb 1: due_date is Feb 1, not Jan 1.
 
-        The period spans two months. Jan 1 is before the period start,
-        so compute_due_date checks both start_date and end_date months.
-        Feb 1 falls within the period [Jan 17, Feb 1], so base_month
-        resolves to February. due_date == 2026-02-01.
+        The period spans two months. Jan 1 is before the period start;
+        Feb 1 is the occurrence the rule places in [Jan 17, Feb 1], and the
+        row is due on it (plan step R5-a dates a row from its occurrence --
+        it scanned the period's two endpoint months until then).
+        due_date == 2026-02-01.
         """
         with app.app_context():
             period = self._make_custom_period(
@@ -4985,59 +4835,6 @@ class TestDueDateGeneration:
 
             assert len(created) == 1
             assert created[0].due_date == date(2026, 2, 1)
-
-    # -- due_day_of_month clamping tests ---------------------------------------
-
-    def test_due_day_same_month_clamping(self, app, db, seed_user):
-        """due_day_of_month=31 in April (30 days) clamped to 30.
-
-        fires_on_day=15, due_day_of_month=31. Since 31 >= 15, the due
-        date stays in the same month (April). min(31, 30) = 30.
-        due_date == 2026-04-30.
-        """
-        with app.app_context():
-            period = self._make_custom_period(
-                seed_user, date(2026, 4, 1), date(2026, 4, 30),
-            )
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=15, due_day_of_month=31,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {period.id},
-                ), seed_user["scenario"].id,
-            )
-
-            assert len(created) == 1
-            assert created[0].due_date == date(2026, 4, 30)
-
-    def test_due_day_next_month_feb_clamping(self, app, db, seed_user):
-        """Next-month convention with due_dom clamped in February.
-
-        fires_on_day=31 in January, due_day_of_month=30. Since
-        due_dom(30) < dom(31), next-month convention applies: the due
-        date falls in February. February 2026 has 28 days, so
-        min(30, 28) = 28. due_date == 2026-02-28.
-        """
-        with app.app_context():
-            period = self._make_custom_period(
-                seed_user, date(2026, 1, 17), date(2026, 1, 31),
-            )
-            template = self._make_template_with_rule(
-                seed_user, MONTHLY,
-                fires_on_day=31, due_day_of_month=30,
-            )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {period.id},
-                ), seed_user["scenario"].id,
-            )
-
-            assert len(created) == 1
-            # dom=31 in Jan, due_dom=30 < 31 so next month = Feb.
-            # Feb 2026 has 28 days: min(30, 28) = 28.
-            assert created[0].due_date == date(2026, 2, 28)
 
     # -- Pure function test for compute_due_date ------------------------------
 
@@ -5071,14 +4868,14 @@ class TestDueDateGeneration:
                 end_is_projected=False,
             )
             result = compute_due_date(
-                rule_monthly, period,
+                rule_monthly, date(2026, 3, 20), period,
             )
             assert result == date(2026, 3, 20)
 
             # Test with a cadence that names no day (every-period style).
             rule_every = build_rule(cadence=EVERY_PERIOD)
             result = compute_due_date(
-                rule_every, period,
+                rule_every, date(2026, 3, 13), period,
             )
             assert result == date(2026, 3, 13)
 
@@ -5092,16 +4889,18 @@ class TestDueDateGeneration:
         would go on withholding the ``WEEK`` unit with every gate green.
 
         The two sources are all there are, and the assertions below are them:
-        the rule's scheduling DAY OF THE MONTH, and -- when it has none -- the
-        funding paycheck's own ``start_date``.  For the ``PERIOD`` unit the
-        second IS the occurrence, so a row dated from it carries the date the
-        cadence named.  For the ``WEEK`` unit it is NOT: a weekly occurrence is
-        a calendar date strictly inside its paycheck, so dating from the
-        paycheck discards the authored weekday for the life of the rule.
+        the OCCURRENCE, for a cadence dated from a day of the month (plan step
+        R5-a), and -- for one naming no day -- the funding paycheck's own
+        ``start_date``.  For the ``PERIOD`` unit the second IS the occurrence,
+        so a row dated from it carries the date the cadence named.  For the
+        ``WEEK`` unit it is NOT: a weekly occurrence is a calendar date
+        strictly inside its paycheck, and the unit names no day of the month,
+        so dating from the paycheck discards the authored weekday for the life
+        of the rule.
 
-        That is why the unit is withheld rather than refused at the door, and
-        it is why plan step **R5** -- which gives a generated row its own
-        ``occurs_on`` -- is what deletes both the predicate and this case.
+        That is why the unit is withheld rather than refused at the door.
+        Plan step **R8-b** is what deletes both the predicate and this case,
+        by dating a weekly row from its occurrence too.
         """
         with app.app_context():
             period = DerivedPeriod(
@@ -5126,7 +4925,7 @@ class TestDueDateGeneration:
             with pytest.raises(
                 RecurrenceResolutionError, match="generated row",
             ):
-                compute_due_date(weekly, period)
+                compute_due_date(weekly, date(2026, 3, 17), period)
 
             # And what the refusal is standing in front of: the paycheck's own
             # start, which is not any date a weekly cadence from ``starts_on``
