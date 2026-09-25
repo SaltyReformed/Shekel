@@ -18,7 +18,9 @@ Four contracts, one class each:
   -- the two messages, and the inside case's span taken from the derivation;
 * the WRITER and ADMIN doors (``pay_period_write.prepend_paydays``,
   ``pay_period_admin.add_earlier_pay_periods``) -- what they record, what they
-  move, what they refuse and that a refusal writes nothing;
+  move, what they refuse and that a refusal writes nothing -- and the era
+  writer's own bound (``pay_era_write.rephase_earliest_era`` moves the phase
+  down only);
 * the HAZARD R-PC105 exists for -- a regenerate keeping only earlier paychecks
   restating a rhythm from the old phase or just past it -- driven through the
   real doors.
@@ -432,6 +434,77 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
             ]
             assert _stored_eras(user_id) == [(date(2025, 12, 5), None, None)]
 
+    def test_a_schedule_loaded_before_the_door_reads_the_moved_phase(
+        self, app, db, bare_user,
+    ):
+        """The door expires the session, so a row loaded earlier is re-read.
+
+        The phase moves by a bulk UPDATE that synchronises nothing, and
+        ``PaySchedule.eras`` is view-only, so a schedule the request loaded
+        BEFORE the door would keep naming the old phase (2026-01-02) unless
+        ``_apply`` expires it -- read here with no commit between, since a
+        commit would expire it anyway (review 2 of C18-b).
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            schedule = pay_schedule_service.get_schedule(user_id)
+            assert schedule.eras[0].effective_from == date(2026, 1, 2)
+
+            pay_period_admin.add_earlier_pay_periods(user_id, 1)
+
+            assert schedule.eras[0].effective_from == date(2025, 12, 19)
+
+
+class TestThePhaseMovesDownOnly:
+    """``pay_era_write.rephase_earliest_era`` refuses any move but down.
+
+    Down is what makes the grid the one bound it asks: the earliest era
+    moved down cannot reach a later era's day, pass it, or be left paying
+    nothing.  A move UP could do all three, and the writer asks none of
+    them, so it refuses the move rather than claiming a bound it does not
+    hold (review 2 of C18-b).
+    """
+
+    def test_a_move_up_is_refused_and_writes_nothing(self, app, db, bare_user):
+        """One step up, still on the grid: refused before the UPDATE."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+            earliest = schedule_for(user_id).eras[0]
+
+            with pytest.raises(ValidationError, match="cannot move up"):
+                pay_era_write.rephase_earliest_era(
+                    user_id,
+                    pay_era_write.EarliestRephase(
+                        earliest=earliest, phase=date(2026, 1, 16),
+                    ),
+                )
+
+            _unchanged(user_id, paydays, eras)
+
+    def test_a_move_to_the_same_day_is_admitted(self, app, db, bare_user):
+        """Equality is admitted: "at or below", as the Args state.
+
+        The door reaches it for the one era the C17-a migration backfilled a
+        cadence below the record, when a single paycheck is added.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            earliest = schedule_for(user_id).eras[0]
+
+            pay_era_write.rephase_earliest_era(
+                user_id,
+                pay_era_write.EarliestRephase(
+                    earliest=earliest, phase=date(2026, 1, 2),
+                ),
+            )
+            db.session.commit()
+
+            assert _stored_eras(user_id) == [(date(2026, 1, 2), None, None)]
+
 
 def _unchanged(user_id, paydays, eras):
     """Assert a refused door left the owner's rows exactly as they were.
@@ -505,6 +578,32 @@ class TestTheDoorRefusesBeforeItWrites:
             pay_period_admin.add_earlier_pay_periods(user_id, 26)
             db.session.commit()
             assert _paydays(user_id)[0] == date(2000, 1, 9)
+
+    def test_below_both_the_history_and_the_calendar_the_history_is_named(
+        self, app, db, bare_user,
+    ):
+        """The history is asked FIRST, so its ruled message is the one read.
+
+        A history stated ON the calendar's floor (2000-01-01) and 27 yearly
+        paychecks below 2026-01-02, whose earliest (1999-01-09) is under
+        both: asked the other way round, the calendar's message would hide
+        the one ruling R-PC104 worded (review 2 of C18-b).
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 2, rhythm_of(365))
+            pay_schedule_service.set_history_opening(user_id, date(2000, 1, 1))
+            db.session.commit()
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+
+            with pytest.raises(ValidationError) as refused:
+                pay_period_admin.add_earlier_pay_periods(user_id, 27)
+
+            assert str(refused.value) == (
+                "1999-01-09 is before 2000-01-01, the day you saved as when "
+                "your paychecks started. Change that date first, or add fewer."
+            )
+            _unchanged(user_id, paydays, eras)
 
     def test_a_payday_below_a_stated_history_is_refused(self, app, db, bare_user):
         """R-PC104: nothing is added, in the ruling's words."""

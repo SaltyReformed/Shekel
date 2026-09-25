@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- Pay Period Admin Service
 
-The structural / destructive pay-period operations -- the lock
-classifier and extend / add-earlier / truncate / regenerate -- kept out of
+The structural / destructive pay-period operations -- extend / add-earlier /
+truncate / regenerate / reset -- kept out of
 the heavily imported read/generate ``pay_period_service`` so the destructive
 paths live in one isolated place.  Flask-isolated: takes and returns plain
 data, never imports ``request`` / ``session``; flushes / bulk-deletes,
@@ -51,8 +51,9 @@ schedule read once through ``pay_calendar``, in
 :class:`~app.services.pay_calendar.DerivedPeriod` values.  Every door but
 truncate RETURNS ``list[PayPeriod]`` from ``pay_period_write`` to its own
 caller, which populates them -- the writer's OUTPUT, not an input to any
-decision here.  What the doors hand the writer is the set of
-``budget.pay_periods.id`` to retire.
+decision here.  What truncate, regenerate and reset hand the writer beside
+any batch they state is the set of ``budget.pay_periods.id`` to retire;
+extend and add-earlier hand it a count and nothing else.
 
 **Each door resolves "today" ONCE, as the OWNER's civil day**
 (``utils.dates.display_today``), and both halves of that are plan step C2-f3b's.

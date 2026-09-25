@@ -464,10 +464,12 @@ def reject_out_of_range_cadence(cadence) -> None:
 
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).
-    :func:`~app.services.pay_era_write.mint_era` is the one writer
-    of the column (``budget.pay_eras.cadence_days`` since plan step
-    ``C17-a``; the schedule row's until then) and asks this immediately before
-    writing, so no door can persist a value the CHECK refuses.
+    :func:`~app.services.pay_era_write.mint_era` is the one door that writes
+    a cadence a row did not already hold (``budget.pay_eras.cadence_days``
+    since plan step ``C17-a``; the schedule row's until then) and asks this
+    immediately before writing, so no door can persist a value the CHECK
+    refuses; ``pay_era_write.rephase_earliest_era`` writes back the row's own
+    value at a new phase.
     ``registration_service.register_user`` asks
     it EARLIER -- in its up-front validation block, before the ``User`` row is
     added to the session -- because a registration that refuses halfway leaves

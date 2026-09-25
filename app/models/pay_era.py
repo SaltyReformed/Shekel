@@ -62,7 +62,9 @@ from app.utils.dates import SHORTEST_MONTH_DAYS
 #: the ``ck_pay_eras_cadence_range`` CHECK below, by every Marshmallow field
 #: that accepts a cadence, and by
 #: :func:`app.services.pay_schedule_service.reject_out_of_range_cadence`, which
-#: the column's one writer asks.  They were six hand-copied literals until plan
+#: ``pay_era_write.mint_era`` asks -- the one door that writes a cadence a row
+#: did not already hold; ``rephase_earliest_era`` writes back the row's own
+#: value at a new phase.  They were six hand-copied literals until plan
 #: step X-ad-a, which added a seventh door (registration) and made the copying
 #: the defect: a bound stated in six places is six places to disagree, and the
 #: one that would have disagreed silently was the service's -- a cadence the
@@ -147,14 +149,17 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
     ``uq_pay_eras_user_effective_from`` makes unique: two eras cannot take
     effect on one day, so "the era covering this day" has exactly one answer.
 
-    **Written by ONE door**, ``pay_era_write.mint_era``, which asks the
-    cadence bound and the cadence-convention pairing before it writes; every
-    batch that records a payday reaches it through
-    ``pay_period_write.record_paydays``, which mints an era only when the batch
-    states a rhythm the era covering its first payday does not already hold.
-    Retired by ``pay_schedule_service.retire_eras`` on the same writer's terms:
-    minting an era supersedes every era taking effect on or after it, and a
-    batch that leaves no payday standing leaves no era either.
+    **Written by ONE module**, ``pay_era_write``, in three functions.
+    ``mint_era`` inserts an era, asking the cadence bound and the
+    cadence-convention pairing before it writes, when
+    ``pay_period_write.record_paydays`` records a batch stating a rhythm the
+    era covering its first payday does not already hold.
+    ``rephase_earliest_era`` moves the earliest era's phase DOWN in place, its
+    rhythm untouched, when ``pay_period_write.prepend_paydays`` records
+    paydays below the record (plan step ``C18-b``, ruling **R-PC105**).
+    ``retire_eras`` deletes every era whose first payday falls after the last
+    payday a recording batch leaves standing -- the earliest excepted while
+    any payday stands -- and every era when none does.
 
     **The KIND is which parameter columns the row carries** (plan step
     ``C17-d-2``, ruling **R-PC80**, revising **R-PC58**'s letter).  The

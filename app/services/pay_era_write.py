@@ -35,6 +35,7 @@ Flask-isolated -- takes and returns plain data, never imports ``request`` /
 route layer owns the transaction.
 """
 
+from dataclasses import dataclass
 from datetime import date
 
 from app import ref_cache
@@ -164,7 +165,8 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
     asks it again immediately before the write, as it asks the cadence
     bound and the pairing, so no door can persist the state -- and
     :func:`rephase_earliest_era` asks it of the phase it moves, the one
-    bound a phase move can break.  The CHECKs
+    bound a move DOWN can break, which is the only move that function
+    makes.  The CHECKs
     see only half of it: a meant day ABOVE the anchor's would be written
     as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
     the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
@@ -201,8 +203,11 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
 def mint_era(user_id: int, era: Era) -> PayEra:
     """Record that the owner has been paid on *era*'s rhythm since its day.
 
-    **The ONE writer of ``budget.pay_eras``** (plan step ``C17-a``, ruling
-    **R-PC58**).  Called by ``pay_period_write.record_paydays`` when a batch
+    **The ONE door that INSERTS into ``budget.pay_eras``** (plan step
+    ``C17-a``, ruling **R-PC58**).  The table's one writer is this MODULE,
+    in three functions: this one inserts an era, :func:`rephase_earliest_era`
+    moves the earliest era's phase down in place, and :func:`retire_eras`
+    deletes.  Called by ``pay_period_write.record_paydays`` when a batch
     states a rhythm the era covering its first payday does not already hold
     -- a first schedule, a cadence or convention changed going forward, or a
     phase off the covering grid -- and by nothing else: a batch that continues
@@ -288,8 +293,30 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     return row
 
 
-def rephase_earliest_era(user_id: int, phase: date) -> None:
-    """Move the owner's EARLIEST era's phase to *phase*, its rhythm untouched.
+@dataclass(frozen=True)
+class EarliestRephase:
+    """A batch's era write when it moves the EARLIEST era's phase in place.
+
+    The other value ``pay_period_write._PaydayChange.era`` can hold beside an
+    :class:`~app.services.pay_rhythm.Era` to MINT, so a batch that does one
+    cannot also do the other: the change carries ONE era write or none, and
+    the type says which (review 2 of plan step ``pay_calendar:C18-b``).
+
+    Attributes:
+        earliest: The owner's earliest era AS THE DOOR READ IT, in the same
+            operation and under the same lock -- the rhythm the move keeps
+            and the row it moves, taken from that one read rather than read
+            again (rule 14).
+        phase: The era's new ``effective_from``: a NOMINAL day on its own
+            grid, at or below ``earliest.effective_from``.
+    """
+
+    earliest: Era
+    phase: date
+
+
+def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
+    """Move the owner's EARLIEST era's phase DOWN, its rhythm untouched.
 
     **The EARLIER door's era write** (plan step ``pay_calendar:C18-b``, ruling
     **R-PC105**).  "Add earlier paychecks" records paydays below the record,
@@ -312,25 +339,41 @@ def rephase_earliest_era(user_id: int, phase: date) -> None:
     retire's DELETE had run.  A phase move changes the row's
     ``effective_from`` and the parameter columns read against it (a clamped
     month day's ``nominal_day``, which member of a semi-monthly pair the
-    anchor stands for) and nothing else, so the RHYTHM is read from the
-    stored row here rather than taken from a caller, and the only bound
-    asked is the phase's own place on its grid
-    (:func:`reject_phase_off_grid`).
+    anchor stands for) and nothing else.  The rhythm those columns are
+    written from is the stored one the door read (``rephase.earliest``), so
+    ``cadence_days`` is written back with the value the row already holds.
+
+    **It moves the phase DOWN only, and refuses anything else, because that
+    is what makes the grid the one bound to ask** (review 2 of C18-b).  The
+    earliest era moved down cannot reach a later era's day
+    (``uq_pay_eras_user_effective_from``), cannot pass it (the order every
+    reader walks), and only gains grid steps before that era's first payday,
+    so it cannot be left paying nothing (ruling **R-PC75**).  A move UP could
+    break all three, and this function asks none of them.
 
     Args:
         user_id: The owning user's id.  They hold at least one era -- the
             door that calls this has read their calendar.
-        phase: The earliest era's new ``effective_from``: a NOMINAL day on
-            its own grid, at or below its current one.
+        rephase: The earliest era as read, and its new phase
+            (:class:`EarliestRephase`).
 
     Raises:
-        ValidationError: *phase* is off the earliest era's grid
-            (:func:`reject_phase_off_grid`).  The earlier door hands a grid
-            day, so it cannot reach this; it is the column writer's own
-            precondition, asked as :func:`mint_era` asks it.
+        ValidationError: The phase lies ABOVE the era's current one, or off
+            its grid (:func:`reject_phase_off_grid`).  The earlier door hands
+            a grid day at or below the current phase, so it cannot reach
+            either; they are the column writer's own preconditions, asked
+            as :func:`mint_era` asks its own.
     """
-    earliest = pay_schedule_service.resolve_schedule(user_id).eras[0]
+    earliest, phase = rephase.earliest, rephase.phase
     cadence = earliest.rhythm.cadence
+    if phase > earliest.effective_from:
+        raise ValidationError(
+            f"user {user_id}'s earliest pay era cannot move up from "
+            f"{earliest.effective_from.isoformat()} to {phase.isoformat()}.  "
+            f"This writer moves the phase down with paydays recorded below "
+            f"the record; a move up can collide with a later era, pass it or "
+            f"leave it paying nothing, and none of those is asked here."
+        )
     reject_phase_off_grid(phase, cadence)
     db.session.query(PayEra).filter(
         PayEra.user_id == user_id,
