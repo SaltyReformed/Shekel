@@ -46,6 +46,7 @@ from tests._test_helpers import (
     capture_sql_statements,
     generate_row_of,
     make_every_period_rule,
+    start_test_pay_list,
 )
 from app.services import salary_profile_service, status_seam, template_amount_service
 from app.services.cash_ledger import (
@@ -97,11 +98,11 @@ def _salary_profile(seed_user):
         filing_status_id=db.session.query(FilingStatus).first().id,
         template_id=template.id,
         name="N-261 Salary",
-        annual_salary=Decimal("104000.00"),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
     db.session.flush()
     return profile, template
 
@@ -329,11 +330,11 @@ class TestArchivingFreezesWhatItWasPricing:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=db.session.query(FilingStatus).first().id,
                 name="Templateless",
-                annual_salary=Decimal("50000.00"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             db.session.flush()
 
             assert salary_profile_service.archive_profile(profile) == 0

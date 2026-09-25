@@ -1,6 +1,7 @@
 """Re-derive every SETTLED paycheck and account for the distance to its record.
 
-Plan step **salary:S2** (``docs/plans/implementation_plan_salary.md`` section 4),
+Plan step **salary:S2** (shipped; its entry is archived in
+``docs/plans/historical/salary_s2_archived_2026-09-25.md``),
 finding **N-442**: production's seven March-June 2026 paychecks were generated
 and settled at ``$2,473.38`` and re-derive at ``$2,454.10`` with the calibration
 removed, a ``-$19.28`` the ledger row recorded as UNACCOUNTED FOR.  The row's
@@ -244,7 +245,12 @@ def _grade_profile(profile, cards):
     return {
         "profile_id": profile.id,
         "user_id": profile.user_id,
-        "annual_salary": str(profile.annual_salary),
+        # The pay list since plan step salary:X-av-3a, which dropped the one
+        # yearly figure this record carried.
+        "pay_list": ", ".join(
+            f"{entry.amount} from {entry.payday.isoformat()}"
+            for entry in sorted(profile.pay_entries, key=lambda e: e.payday)
+        ),
         "stored_calibration": (
             None if profile.calibration is None
             else profile.calibration.pay_stub_date.isoformat()
@@ -364,7 +370,7 @@ def _report(records):
     status = 0
     for record in records:
         print(f"\n=== profile {record['profile_id']} "
-              f"(user {record['user_id']}, salary {record['annual_salary']}, "
+              f"(user {record['user_id']}, pay {record['pay_list']}, "
               f"stored calibration {record['stored_calibration']}) ===")
         states = list(record["paychecks"][0]["derived"])
         print("target = the figure the row was GENERATED at: its stored plan "

@@ -128,7 +128,7 @@ class DifferenceLanding:
     belongs to the salary row; `N-391`'s own last sentence says the opposite
     -- *NOT yet attributed: a `$0.04` error in any of the 12 hand-entered
     deductions reproduces the same net, and the gross is n=1*.  What was
-    measured on 2026-09-01 is narrower and is about the GROSS: the app derives
+    measured on 2026-09-01 is narrower and is about the GROSS: the app derived
     a per-paycheck gross by dividing ``salary_profiles.annual_salary``
     (`$91,675.00` / 26 = `$3,525.96`) where the owner's stub states
     `$3,526.00`, and re-running all seven paychecks through
@@ -137,8 +137,10 @@ class DifferenceLanding:
     about the derivation and not a per-member attribution: the bank shows ONE
     deposit, so no per-member bank figure exists to compare an allowance
     against, and *the allowances match exactly* is ``bank less allowances =
-    salary`` restated.  The gross half is ``salary:X-av``'s, which
-    `N-391` already names.
+    salary`` restated.  The gross half was ``salary:X-av``'s, which
+    `N-391` names; since plan step ``salary:X-av-3a`` the salary is what one
+    paycheck pays, so the owner can hold the stub's figure (its migration
+    wrote the divided one).
 
     Attributes:
         on_row: The member the difference is written to, or ``None`` where it

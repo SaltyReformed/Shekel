@@ -33,7 +33,7 @@ from app.services.grid_view_service import (
     cell_key,
     leg_dom_id,
 )
-from app.services.salary_cockpit_service import clean_raise_label
+from app.services.salary_cockpit_service import clean_raise_label, is_pay_cut
 from app.services.statement_match import (
     CandidateRow,
     MatchProposal,
@@ -171,6 +171,23 @@ def raise_label(value: str | None) -> str:
     return clean_raise_label(value)
 
 
+def pay_cut(value: str | None) -> bool:
+    """Whether a calculator ``raise_event`` string announces a pay cut (R-SAL85).
+
+    Thin filter wrapper over
+    :func:`app.services.salary_cockpit_service.is_pay_cut`, so the anatomy
+    banner and the projection ledger's badge choose the amber "Pay cut:"
+    styling from one reading of the label.
+
+    Args:
+        value: The verbatim ``PeriodInfo.raise_event`` string, or ``None``.
+
+    Returns:
+        ``True`` when the label is a recorded pay cut.
+    """
+    return is_pay_cut(value)
+
+
 def reviewed_token(row: CandidateRow) -> str:
     """Render one candidate row as the form value a match submits for it.
 
@@ -287,5 +304,6 @@ def register_template_filters(app: Flask) -> None:
     app.add_template_filter(months_to_years, "months_to_years")
     app.add_template_filter(month_name, "month_name")
     app.add_template_filter(raise_label, "raise_label")
+    app.add_template_filter(pay_cut, "pay_cut")
     app.add_template_filter(reviewed_token, "reviewed_token")
     app.add_template_filter(stated_difference, "stated_difference")

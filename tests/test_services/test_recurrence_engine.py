@@ -85,6 +85,7 @@ from tests._test_helpers import (
     rhythm_of,
     cover_bare_settled_row,
     settlement_if_settling,
+    start_test_pay_list,
     state_template_price,
 )
 from app.services.settle_day import record_settle_day
@@ -4196,16 +4197,17 @@ class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
             )
             db.session.add(template)
             db.session.flush()
-            db.session.add(SalaryProfile(
+            salary = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=db.session.query(FilingStatus).first().id,
                 template_id=template.id,
                 name="X-au-d Salary",
-                annual_salary=Decimal("104000.00"),
                 state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(salary)
+            start_test_pay_list(salary, Decimal("4000.00"))  # $104,000.00 a year / 26
             db.session.flush()
 
             row = self._generated_row(db, seed_user, seed_periods, template)

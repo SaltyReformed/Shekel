@@ -108,9 +108,15 @@ def clean_raise_label(raw_label: str) -> str:
     land in one period: ``"{TYPE} +{pct}%"`` (percentage, e.g.
     ``"MERIT +2.5000%"`` -- the trailing places follow the stored
     ``Numeric(5, 4)`` precision) and ``"{TYPE} +${amount:,.2f}"`` (flat,
-    e.g. ``"COLA +$2,000.00"``).  This cleaner reformats each event for
-    display: the type word is title-cased (``COLA`` -> ``Cola``, matching
-    the app-wide ``raise_type.name|title`` convention) and a percentage's
+    e.g. ``"COLA +$2,000.00"``).  Since plan step salary:X-av-3a
+    :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on` emits a
+    third, alone, for a recorded pay change (ruling **R-SAL84**):
+    ``"PAY +${amount:,.2f}"`` or ``"PAY -${amount:,.2f}"``, the one shape
+    carrying a minus, with a trailing ``" a year"`` when the change is
+    measured in yearly pay across a change of rhythm (kept verbatim here).
+    This cleaner reformats each event for display: the type word is
+    title-cased (``COLA`` -> ``Cola``, matching the app-wide
+    ``raise_type.name|title`` convention) and a percentage's
     trailing zeros are trimmed (``+2.5000%`` -> ``+2.5%``,
     ``+3.0000%`` -> ``+3%``).  Flat amounts keep their to-the-cent money
     formatting verbatim.  Pure string manipulation on the emitter's own
@@ -133,6 +139,8 @@ def clean_raise_label(raw_label: str) -> str:
     for event in raw_label.split(", "):
         type_part, sep, amount_part = event.partition(" +")
         if not sep:
+            type_part, sep, amount_part = event.partition(" -")
+        if not sep:
             # Not an emitter shape; pass through untouched rather than
             # mangling an unrecognised string.
             cleaned_events.append(event)
@@ -142,8 +150,28 @@ def clean_raise_label(raw_label: str) -> str:
             if "." in number:
                 number = number.rstrip("0").rstrip(".")
             amount_part = f"{number}%"
-        cleaned_events.append(f"{type_part.title()} +{amount_part}")
+        cleaned_events.append(f"{type_part.title()}{sep}{amount_part}")
     return ", ".join(cleaned_events)
+
+
+def is_pay_cut(raw_label: str | None) -> bool:
+    """Return whether a calculator ``raise_event`` string announces a pay CUT.
+
+    Ruling **R-SAL85** ("Green up, amber down"): a recorded pay change that
+    lowers base pay renders amber with a down arrow under "Pay cut:", while a
+    raise or a pay increase keeps the green "Raise:" banner.  The cut is the
+    one emitter shape carrying a minus (:func:`clean_raise_label` lists them),
+    and :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on` emits it
+    alone, never joined with a raise.
+
+    Args:
+        raw_label: The verbatim ``PeriodInfo.raise_event`` string, or
+            ``None``.
+
+    Returns:
+        ``True`` for ``"PAY -$..."``; ``False`` otherwise, empty included.
+    """
+    return bool(raw_label) and raw_label.startswith("PAY -")
 
 
 def raise_run_starts(current_raise_event: str, prev_raise_event: str | None) -> bool:

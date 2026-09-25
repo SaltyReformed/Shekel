@@ -172,10 +172,18 @@ def _tax_configs(ss_wage_base="168600"):
     }
 
 
-def _profile(lines=None):
-    """A made-up $60,000 salary with no raises."""
+def _profile(
+    lines=None, pay=Decimal("5000.00"), pay_from=date(2026, 1, 1),
+):
+    """A made-up $60,000 salary with no raises.
+
+    Its one pay entry sits on the first payday of the calendar a case prices,
+    at that payday's rhythm: by default the MONTHLY 2026-01-01 that
+    :func:`_monthly_then_biweekly` and :func:`_with_a_displaced_first_payday`
+    both open on -- $60,000.00 a year / 12.
+    """
     return FakeProfile(
-        annual_salary=60000, lines=lines, created_at=date(2026, 1, 1),
+        pay=pay, pay_from=pay_from, lines=lines, created_at=date(2026, 1, 1),
     )
 
 
@@ -476,7 +484,14 @@ class TestARecordPaidEarlyBeforeASeam:
 
         assert cadence_on(calendar, payday).periods_per_year == Decimal("52")
         assert calculate_paycheck(
-            PayrollBasis(_profile(), calendar),
+            PayrollBasis(
+                _profile(
+                    # This calendar opens BIWEEKLY on 2026-01-02:
+                    # $60,000.00 a year / 26.
+                    pay=Decimal("2307.69"), pay_from=date(2026, 1, 2),
+                ),
+                calendar,
+            ),
             _period_on(calendar, payday),
             _tax_configs(),
         ).earnings.base_biweekly == Decimal("1153.85")
@@ -510,7 +525,7 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
         """The owner above, the later weekly era, and optionally a 3x income goal."""
         user_id = seed_user["user"].id
         make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 / 26
         )
         db.session.flush()
         last_payday = max(period.start_date for period in periods)
@@ -655,7 +670,10 @@ class TestTheRecurringSalaryRow:
         filing = db.session.query(FilingStatus).filter_by(name="single").one()
         auth_client.post("/salary", data={
             "name": "Main Job",
-            "annual_salary": "52000.00",
+            "pay_amount": "2000.00",  # $52,000.00 a year / 26
+            "pay_payday": min(
+                period.start_date for period in periods
+            ).isoformat(),
             "filing_status_id": filing.id,
             "state_code": "NC",
         }, follow_redirects=True)

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.services.salary_raises import apply_raises
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -41,7 +40,7 @@ def calculate_benefit(benefit_multiplier, consecutive_high_years,
         consecutive_high_years:  int -- number of consecutive highest salary years to average.
         hire_date:               date -- employment start date.
         planned_retirement_date: date -- planned retirement date.
-        salary_by_year:          list of (year, annual_salary) tuples, sorted by year.
+        salary_by_year:          list of (year, yearly salary) tuples, sorted by year.
 
     Returns:
         PensionBenefit dataclass.
@@ -76,90 +75,48 @@ def calculate_benefit(benefit_multiplier, consecutive_high_years,
     )
 
 
-def project_salaries_by_year(annual_salary, raises, start_year, end_year):
-    """Project annual salary for each year in a range.
+def project_profile_salaries(basis, start_year, end_year):
+    """Project a salary profile's yearly salary for each year in a range.
 
-    Delegates each year's salary to the shared
-    :func:`app.services.salary_raises.apply_raises` so pension
-    projections and the paycheck pipeline apply the identical raise rule
-    (sort order, recurring compounding, one-time gating, and the last year
-    each raise is believed).
+    **Each year's salary is the paycheck engine's own base pay on December 1,
+    times that day's paychecks a year** -- :meth:`~app.services.payroll_basis
+    .PayrollBasis.base_pay_on`'s :attr:`~app.services.payroll_basis.BasePay
+    .annual` -- since plan step salary:X-av-3a (ruling **R-SAL59**: the
+    yearly figure is pay x paychecks a year, derived and never stored).
+    Until then this walked ``salary_raises.apply_raises`` over the profile's
+    stored annual salary: a second walk of the raises beside the engine's,
+    agreeing because both called one function, and one the pay list's
+    replacement rule (a recorded entry replaces the forecast raises due by
+    its payday) could never have reached.  The raise set is the basis's own
+    (:attr:`~app.services.payroll_basis.PayrollBasis.raise_terms`), which is
+    how a plan point's believed set reaches the pension (plan step
+    salary:S3-f-2b, ruling **R-SAL20**).
 
-    **They share ONE TERMINATION RULE as of plan step salary:S3-c** (ruling
-    **R-SAL11**), which they did not before.  This function used to fabricate
-    a terminal year for every raise from
-    ``auth.user_settings.merit_raise_horizon_years`` -- one number for the
-    whole owner, applied by ``/retirement`` alone, keyed by raise TYPE --
-    while the paycheck engine compounded every recurring raise forever off
-    the same rows.  The end year is stored per raise now, both engines read
-    it off the row, and neither invents one, so there is no cutoff left for
-    the two to disagree about.
+    **It shares ONE TERMINATION RULE with the paychecks** (ruling
+    **R-SAL11**): the end year is stored per raise and read by the one walk.
 
-    **They do NOT share an AS-OF rule, and an adversarial review of that step
-    corrected a draft that said "one model" flat.**  The engine prices each
-    payday at its own date; this function evaluates each YEAR at December 1.
-    So a payday in a year whose raise lands after January is priced here from
-    that year's post-raise salary and by the engine from the salary on the
-    day.  Unifying that is plan step **salary:S3**'s, which makes the engine
-    price the whole projected horizon.
-
-    Each year is evaluated as of December 1, so every raise effective
-    during that year -- recurring or one-time -- is applied.
+    **It evaluates each YEAR at December 1**, so every raise effective during
+    that year -- recurring or one-time -- is applied, where the engine prices
+    each payday at its own date.  A payday in a year whose raise lands after
+    January is priced here from that year's post-raise pay; unifying that is
+    plan step **salary:S3**'s, which makes the engine price the whole
+    projected horizon.
 
     Args:
-        annual_salary:      Decimal base salary.
-        raises:             list of raise objects with .percentage,
-                            .flat_amount, .effective_month,
-                            .effective_year, .is_recurring and
-                            .terminal_year.
-        start_year:         int first year to project (the current year, by
-                            caller convention -- every call site passes the
-                            read pass's ``as_of.year``).
-        end_year:           int last year to project (inclusive).
+        basis: The :class:`~app.services.payroll_basis.PayrollBasis` of the
+            profile, built with the raise set to project under.
+        start_year: int first year to project (the current year, by caller
+            convention -- every call site passes the read pass's
+            ``as_of.year``).
+        end_year: int last year to project (inclusive).
 
     Returns:
         list of (year, Decimal salary) tuples.
     """
     return [
-        (year, apply_raises(annual_salary, raises, date(year, 12, 1)))
+        (year, basis.base_pay_on(date(year, 12, 1)).annual)
         for year in range(start_year, end_year + 1)
     ]
-
-
-def project_profile_salaries(profile, raises, start_year, end_year):
-    """Project a salary profile's annual salaries to the retirement horizon.
-
-    Thin convenience over :func:`project_salaries_by_year` that marshals a
-    :class:`~app.models.salary_profile.SalaryProfile`'s ``annual_salary`` into
-    the plain-input contract.  Shared by the two retirement consumers that
-    project a profile's salary path -- the pension summary and the
-    gap-comparison net-biweekly scaling -- so the ``Decimal(str(...))``
-    marshalling lives in one place.
-
-    **It takes the RAISE SET rather than reading ``profile.raises`` since plan
-    step salary:S3-f-2b** (ruling **R-SAL20**'s rule, applied to this walk):
-    the set a plan point believes a profile under is an INPUT, and a reader
-    that took it off the row could not be probed.  Both callers hand it the
-    point's :meth:`~app.services.retirement_plan.PlanPoint.terms_for`, which
-    at the stored point equals the rows' own terms by value.
-
-    Args:
-        profile:             A salary profile exposing ``annual_salary``.
-        raises:              The raise set to project under -- what
-                             :func:`~app.services.salary_raises.apply_raises`
-                             documents (rows or :class:`RaiseTerms` values).
-        start_year:          int first year to project (the current year).
-        end_year:            int last year to project (inclusive).
-
-    Returns:
-        list of (year, Decimal salary) tuples.
-    """
-    return project_salaries_by_year(
-        Decimal(str(profile.annual_salary)),
-        raises,
-        start_year,
-        end_year,
-    )
 
 
 def _calculate_years_of_service(hire_date, retirement_date):

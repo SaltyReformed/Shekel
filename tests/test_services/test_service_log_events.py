@@ -91,6 +91,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     record_paydays_across_a_hole,
     rhythm_of,
+    start_test_pay_list,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -826,16 +827,17 @@ class TestRecurrenceEngineLogging:
             )
             db.session.add(template)
             db.session.flush()
-            db.session.add(SalaryProfile(
+            salary = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=db.session.query(FilingStatus).first().id,
                 template_id=template.id,
                 name="X-au-d logging control",
-                annual_salary=Decimal("104000.00"),
                 state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(salary)
+            start_test_pay_list(salary, Decimal("4000.00"))  # $104,000.00 a year / 26
             db.session.flush()
             make_every_period_rule(db.session, template)
             created = recurrence_engine.generate_for_template(

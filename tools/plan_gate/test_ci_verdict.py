@@ -25,7 +25,7 @@ def _needs(scope_output="full", **results):
         scope_output: The classifier's output, or ``None`` for a scope job
             that produced none (it failed, or never set it).
         **results: ``job_id=result`` overrides; ``plan_gate`` names the
-            ``plan-gate`` job.
+            ``plan-gate`` job and ``tax_law`` the ``tax-law`` job.
     """
     needs = {
         "scope": {
@@ -33,6 +33,7 @@ def _needs(scope_output="full", **results):
             "outputs": {} if scope_output is None else {"scope": scope_output},
         },
         "plan-gate": {"result": "success", "outputs": {}},
+        "tax-law": {"result": "success", "outputs": {}},
         "lint": {"result": "success", "outputs": {}},
         "test": {"result": "success", "outputs": {}},
     }
@@ -48,7 +49,7 @@ class TestAFullRunIsGreenOnlyWhenEveryGraderPassed:
         """The one green shape of a full run."""
         assert not ci_verdict.verdict(_needs())
 
-    @pytest.mark.parametrize("job", ["scope", "plan_gate", "lint", "test"])
+    @pytest.mark.parametrize("job", ["scope", "plan_gate", "tax_law", "lint", "test"])
     @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
     def test_any_grader_not_succeeding_is_red(self, job, result):
         """A failed, cancelled or SKIPPED grader turns the check red.
@@ -77,6 +78,19 @@ class TestARegistryOnlyRunSkipsOnlyTheCodeGraders:
             _needs(scope_output="registry-only", plan_gate=result, lint="skipped", test="skipped")
         )
         assert reasons == [f"plan-gate: {result!r}, where this scope requires success"]
+
+    @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+    def test_the_tax_law_check_must_still_succeed(self, result):
+        """A registry pass is a pull request too: from December 1 it waits for next year's law.
+
+        Ruling salary:R-SAL74 refuses EVERY release until next year's tax law
+        is in the app, so the tax-law job grades a registry pass as it grades
+        a full one (plan step salary:X-at-4).
+        """
+        reasons = ci_verdict.verdict(
+            _needs(scope_output="registry-only", tax_law=result, lint="skipped", test="skipped")
+        )
+        assert reasons == [f"tax-law: {result!r}, where this scope requires success"]
 
     @pytest.mark.parametrize("result", ["failure", "cancelled"])
     def test_a_code_grader_that_ran_and_failed_is_still_red(self, result):
@@ -125,7 +139,7 @@ class TestTheVerdictKnowsExactlyWhatItGrades:
             "benchmarks: a job this verdict does not know how to grade",
         ]
 
-    @pytest.mark.parametrize("job", ["scope", "plan-gate", "lint", "test"])
+    @pytest.mark.parametrize("job", ["scope", "plan-gate", "tax-law", "lint", "test"])
     def test_a_named_job_missing_from_needs_is_red(self, job):
         """Dropping a grader from ``needs`` cannot quietly stop grading it."""
         needs = _needs()

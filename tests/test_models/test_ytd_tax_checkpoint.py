@@ -20,6 +20,7 @@ from app.extensions import db as _db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
+from tests._test_helpers import start_test_pay_list
 
 
 def _make_profile(seed_user, name="Checkpoint Model Profile"):
@@ -31,13 +32,13 @@ def _make_profile(seed_user, name="Checkpoint Model Profile"):
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name=name,
-        annual_salary=Decimal("120000.00"),
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
     )
     _db.session.add(profile)
     _db.session.flush()
+    start_test_pay_list(profile, Decimal("4615.38"))  # $120,000.00 a year / 26
     return profile
 
 

@@ -8,9 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-at-1` (`42bb425d`, 2026-09-24) gave the tax law ONE home, in the code** (**R-SAL74**), `$0.00`,
-closing **N-236** and **SAL-574**; `X-at-4`'s alarms are due before 2026-11-01 and `S11-c-2` MOVES
-MONEY. Each archived span's record is a `historical/salary_*` file.
+**`X-av-3a` (`8e832d8e`, 2026-09-25) made the salary a dated pay list**, moving cents; `X-at-8`, the
+2027 law, is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -35,11 +34,9 @@ C12 in with the others; N-443, the three spellings of the paycheck projection, c
 leaf, which memoized the breakdown map, and C12 collapsed the dashboards' readers onto it.
 
 **Why each step sits where `steps.md` puts it, which is that table's to say and not this
-document's.** `S2` is the arc's cheapest first act, because a derivation that moves `-$19.28` for no
-recorded reason is a baseline nobody can measure `S1` against until the input is named. The
-earnings-lines chain follows the bank_import production scope by `bank_import:R-JJ`, because `R18`
-is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12-a`
-decided the shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
+document's.** The earnings-lines chain follows the bank_import production scope by
+`bank_import:R-JJ`, because `R18` is what makes one payroll deposit one app row. `C12-a` decided the
+shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
 
 ## 1. Root cause
 
@@ -117,9 +114,6 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 
 ## 4. Step sequence
 
-- [x] **S2** `08638f61` -- the `-$19.28` was a DELETED calibration, not the engine; no single
-      calibration reproduces the record. Closed **N-442**, opened **N-535**, ruled **R-SAL9**.
-      As-built: `historical/salary_s2_as_built_2026-09-04.md`.
 - [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41** and
       **R-SAL9** as amended by **R-SAL42**; **SAL-564**; absorbs `S1`'s **N-441**, **N-535**,
       **N-530**): the DECOMPOSED parent of six leaves (2026-09-23), ticking with its last. Today one
@@ -212,25 +206,29 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (**R-SAL67**), ticking with its last; built beside `S11-c`, neither waiting (**R-SAL62**,
       amending **R-SAL43**'s order). The stub transcription (**R-SAL40**) subsumes the one-stub
       re-read that opened it; **N-240** moved to `S12`; **N-446** stays `balance:X-bp`'s.
-  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm, the
-        priced paycheck carrying it (**R-SAL66**, **R-SAL70**). `$0.00` stored money; the Recurring
-        salary row moved, with the four totals it feeds (Net committed hero, Income chip, Expenses %
-        of income, Income subtotal); closed **SAL-569**.
-  - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**; closes
-        **N-237**, **N-391**'s app half, **SAL-572**): dated per-paycheck gross entries, one per
-        profile and payday, audited; `annual_salary` DROPPED by a migration writing each profile one
-        entry (yearly over paychecks a year, to the cent) dated on or before every raise's first
-        landing and the first priced payday, else refusing; its downgrade refuses a profile with two
-        entries. A payday's base is the latest entry on or before it (else the first), each forecast
-        raise landing after that entry's date rounding to the cent; a flat raise adds its yearly
-        dollars over paychecks a year. Doors: Record, Fix, Remove (never the only entry); the yearly
-        figure shown beside each entry; the GROSS `default_amount` writes go. A yearly edit
-        re-prices EVERY projected paycheck since `balance:X-au-d`, past-dated ones too.
-        **MOVES MONEY** by cents, projected only; own PR and release. The developer's pay history is
-        entered after it, an operator act.
+  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm
+        (**R-SAL66**, **R-SAL70**); closed **SAL-569**.
+  - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**): the
+        DECOMPOSED parent of two leaves (**R-SAL83**, 2026-09-25), ticking with its last.
+  - [x] **X-av-3a** `8e832d8e` -- the switch: `salary.pay_entries`, migration `70680a4a7405` (one
+        entry per profile, `annual_salary` dropped), the engine's walk (**R-SAL82**), the pay-change
+        banners (**R-SAL84**, **R-SAL85**, **R-SAL89**), create and Fix (**R-SAL90**, **R-SAL93**).
+        On the 2026-09-25 05:59 production copy, 104 projected paychecks move by one cent, the first
+        on 2029-07-12, and no settled record moves; a rollback prices 130 a cent below their
+        pre-release figure (**R-SAL92**). Closed **N-391**'s app half, **SAL-572**, **D44**.
+  - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): its FIRST
+        commit replaces the real pay figures X-av-3a's tests repeat with made-up ones and re-derives
+        each expected value, after an honest rule-5 list to the developer (**R-SAL98**). Record
+        (**R-SAL61**) refuses a payday past the next in its own words (**R-SAL90**, **R-SAL93**),
+        one entry per payday; Remove never takes the only entry (**R-SAL68**). The raise doors
+        refuse a raise no paycheck would get, in the ruled words, and the raises list marks one a
+        later entry holds "In your pay from <date>" (**R-SAL95**), asking the developer first how a
+        held RECURRING raise reads. The create form shows the count in force on its default payday,
+        the edit page none (**R-SAL97**); the "Next raise" chip gives a `PAY -` event a cut's
+        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows.
   - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
         differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
-        entry through `X-av-3`'s Record door, one function both call. `$0.00` until used.
+        entry through `X-av-3b`'s Record door, one function both call. `$0.00` until used.
 - [ ] **S12 -- a paycheck line's amount is dated too** (**R-SAL64**; finding **N-240**): a line's
       amount gets the pay's dated list, its inflation forecast compounding from its latest entry, in
       place of `paycheck_calculator/_lines._inflation_years` counting from `profile.created_at`. A
@@ -247,7 +245,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (`_metrics._compute_avg_monthly_expenses`) averages at the rhythm it was paid at
       (`pay_calendar.cadence_on`). `$0.00` on production.
 - [ ] **X-at -- the tax law has ONE home, and a year the app lacks is loud** (**R-SAL74**): the
-      DECOMPOSED parent of seven leaves, ticking with its last; a new year's law waits on none.
+      DECOMPOSED parent of eight leaves, ticking with its last; a new year's law waits on none.
   - [x] **X-at-1** `42bb425d` -- the law's one home, `app/tax_law/`, each year citing its sources,
         read with no query and written by no app door (**R-SAL74**; the tests' law, **R-SAL80**).
         `$0.00`, byte-identical on a production clone; closed **N-236**, **SAL-574**.
@@ -258,14 +256,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [ ] **X-at-3 -- the supported states** (**R-SAL78**): the law lists each one, a no-income-tax
         state as an explicit `$0.00` entry checked against a primary source (the developer names
         which); the profile form offers only those and refuses another, and the engine refuses a
-        state the law lacks or a flat state with no rate. Closes **SAL-575**.
-  - [ ] **X-at-4 -- the alarms** (**R-SAL74**, **R-SAL86**-**R-SAL88**), which MUST ship before
-        2026-11-01. ONE pure check (NOTICE from Nov 1, REFUSE from Dec 1) counts next year in when
-        it lists every state an earlier year lists, a missing year also naming a state priced on an
-        older one; the law refuses a skipped year. From Nov 1 (display timezone) a banner with no
-        close on every owner page, in the layout, and a failing weekly workflow on the real clock;
-        from Dec 1 the refusal: `ci.yml`'s own `tax-law` job, in every scope and `lint-and-test`'s
-        needs (rule 5), and a `tax-law` job in `docker-publish.yml` its image build needs.
+        state the law lacks or a flat state with no rate. R-SAL91's one-sentence wording was ruled
+        for ONE state; its two-state form ('... and NC tax uses 2026's and SC tax uses 2026's, ...',
+        and the script's '..., except NC on 2026's and SC on 2026's.') is extrapolated and pinned by
+        tests. X-at-3 puts it to the developer before a second state lands. In that form a state
+        priced on the newest year is named nowhere. Closes **SAL-575**.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
@@ -276,6 +271,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         standard deduction (P.L. 119-21) and 2026's head-of-household 24%/32% boundary (Rev. Proc.
         2025-32). **MOVES MONEY** (the 2025 Taxes tab); whether 2025 withholding keeps the old
         deduction is a fork for the developer, with worked examples, first.
+  - [ ] **X-at-8 -- the 2027 tax law** (**R-SAL74**, **R-SAL94**): `_year_2027.py` in `LAW`, each
+        figure citing its source (the 2027 IRS Revenue Procedure's brackets, standard deductions and
+        child credits, the SSA's 2027 wage base, NC's 2027 rate), once published (late October to
+        November 2026); released before 2026-12-01, when `X-at-4`'s refusal begins, the banner
+        showing from 2026-11-01 until it lands. **MOVES MONEY** (every projected 2027 paycheck).
 
 ## 5. Findings ledger
 

@@ -123,7 +123,8 @@ class TestTheControlsLoad:
         """A rate of 0 or 1, a zero amount and years 2000 and 2100 are all allowed."""
         assert _fica(ss_rate=Decimal("1"), medicare_rate=Decimal("0")).ss_rate == 1
         assert _federal(child_credit_amount=Decimal("0.00")).child_credit_amount == 0
-        assert TaxLaw(years=(_year(2000), _year(2100))).years[1].tax_year == 2100
+        assert _year(2000).tax_year == 2000
+        assert _year(2100).tax_year == 2100
 
 
 class TestALadderIsOneContiguousClimbFromZero:
@@ -446,6 +447,21 @@ class TestAYearIsCompleteOrDoesNotLoad:
         """Two copies of one year are two answers to one question."""
         with pytest.raises(ValueError, match="distinct and ascending"):
             TaxLaw(years=(_year(2030), _year(2030)))
+
+    def test_a_skipped_year_is_refused(self):
+        """No year between two the law carries may be missing (ruling salary:R-SAL86).
+
+        A gap would be priced on the year before it with no alarm, because the
+        alarms ask only whether the law reaches the due year.
+        """
+        with pytest.raises(ValueError, match=r"skips a year: \[2030, 2032\]"):
+            TaxLaw(years=(_year(2030), _year(2032)))
+
+    def test_consecutive_years_and_no_year_at_all_load(self):
+        """The refusal is of a GAP: back-to-back years load, and so does an empty law."""
+        law = TaxLaw(years=(_year(2030), _year(2031), _year(2032)))
+        assert [year.tax_year for year in law.years] == [2030, 2031, 2032]
+        assert not TaxLaw(years=()).years
 
     def test_years_as_a_list_are_refused(self):
         """The law's years are a tuple, like every other sequence in it."""

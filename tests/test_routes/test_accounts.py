@@ -3951,7 +3951,8 @@ class TestTheTransferArmThroughItsROUTE:
 
         Both are template branches that no test reached: the heading comes
         from ``group.section.label`` and the note from ``group.section.note``,
-        which only :class:`OfferKind.TRANSFER` supplies.  Shown to FIRE:
+        which :class:`OfferKind.TRANSFER` supplies (and, since plan step
+        credit_card:CC-5-4b, ``OfferKind.SETTLEMENT``).  Shown to FIRE:
         deleting the ``group.section.note`` block fails this.
         """
         with app.app_context():
