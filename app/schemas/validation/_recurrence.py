@@ -175,7 +175,7 @@ def validate_authorable_cadence(data):
     only reading still refused is the ``WEEK`` unit -- whose occurrences are
     neither paydays nor days of the month, so
     ``recurrence.compute_due_date`` has nothing to date its rows from
-    until plan step **R5** gives a generated row its own ``occurs_on``.  **The
+    until plan step **R8-b** dates a weekly row from its occurrence.  **The
     interval is no longer able to make a cadence unauthorable**, which is what
     the refusal's own copy had to stop saying.
 
@@ -629,9 +629,9 @@ class RecurrenceFormFieldsMixin(RecurrenceCadenceFieldsMixin):
     identical field declarations and an identical cross-field cadence rule.
     Plan step R7b-3 would have made it nine and added an identical
     ``@post_load`` to each, which is when ``duplicate-code`` said so and the
-    copy stopped being worth keeping.  They differ in exactly ONE field:
-    ``due_day_of_month``, which only a transaction template carries, and which
-    that schema declares for itself.
+    copy stopped being worth keeping.  They differed in exactly ONE field,
+    ``due_day_of_month``, which only a transaction template carried, until
+    plan step recurrence:R5-a dropped it with its column (ruling **R-R96**).
 
     **Declared here rather than copied because a copy is what a THIRD form
     would have neither of**, which is the same reasoning

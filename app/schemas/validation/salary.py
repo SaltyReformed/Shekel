@@ -365,10 +365,8 @@ class PaycheckLineCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     start is legal and means the opening payday (R-SAL30's default survives
     as the default; :attr:`recurrence_start_is_required` is off, and
     ``app.routes.salary.items`` derives the unit's zero at the opening,
-    ruling **R-SAL36**, before the recurrence seam reads the payload).  And
-    ``due_day_of_month`` is still not declared: a payroll line has no
-    servicer's due day, so a crafted POST stating one meets ``BaseSchema``'s
-    ``unknown = EXCLUDE``.  An empty unit (the form's "Does not repeat")
+    ruling **R-SAL36**, before the recurrence seam reads the payload).  An
+    empty unit (the form's "Does not repeat")
     arrives as a present ``None`` -- every paycheck, ruling **R-SAL3** -- and
     an ABSENT unit is a submission that said nothing about the cadence, which
     the update route reads as "leave the stored rule alone".

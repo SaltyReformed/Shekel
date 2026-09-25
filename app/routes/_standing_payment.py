@@ -172,8 +172,9 @@ def regenerate_or_refuse(
     R7d-g-2 the update door did not, and ruling **R-R81** made the state
     reachable there: a second transfer's typed start is graded against the
     origination at the door, but an every-paycheck rule dates its rows at
-    the START of their paychecks (``compute_due_date``, rule 3), so a start
-    typed the day after origination can put the first row on or before it.
+    the START of their paychecks (``compute_due_date``, ruling R-R95), so a
+    start typed the day after origination can put the first row on or before
+    it.
     The service stays the one floor for the row's date; this turns its
     refusal into the edit form's flash (developer 2026-09-13, after this
     leaf's adversarial review).  Shared with the entry helper above, whose

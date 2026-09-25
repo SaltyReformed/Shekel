@@ -91,7 +91,6 @@ class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
 
     # Every recurrence control this form submits is on
     # :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`.
-    # ``due_day_of_month`` is the transaction form's alone.
 
     # The pay period a NON-REPEATING transfer lands in
     # (``_instances._materialize_one_time_transfer``), and the transfer form's

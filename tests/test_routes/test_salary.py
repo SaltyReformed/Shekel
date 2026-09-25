@@ -2043,7 +2043,6 @@ def _authored_columns(rule):
         "interval_n": rule.interval_n,
         "starts_on": rule.starts_on,
         "nominal_day": rule.nominal_day,
-        "due_day_of_month": rule.due_day_of_month,
         "max_per_month": rule.max_per_month,
         "end_date": rule.end_date,
         "max_occurrences": rule.max_occurrences,
@@ -2343,8 +2342,7 @@ class TestDeductionCadenceForm:
             starts_on = re.search(r'<input type="date" id="starts_on"[^>]*>', form).group(0)
             assert 'value=""' in starts_on, "the ADD form's start opens blank"
             for absent in (
-                'name="due_day_of_month"', 'id="recurrence-preview"',
-                'name="deductions_per_year"',
+                'id="recurrence-preview"', 'name="deductions_per_year"',
             ):
                 assert absent not in form, absent
             assert "js/recurrence_form.js" in html
@@ -2773,17 +2771,16 @@ class TestDeductionCadenceForm:
                 "starts-on": "", **never_ending,
             }
 
-    def test_a_stated_start_and_bound_reach_the_rule_and_a_due_day_does_not(
+    def test_a_stated_start_and_bound_reach_the_rule(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``starts_on`` and a closing bound are the owner's and are authored; a due day is dropped.
+        """``starts_on`` and a closing bound are the owner's and are authored.
 
         Until plan step salary:R18-c every one of these was dropped on the
         wire (rulings R-SAL30 / R-SAL31); ruling **R-SAL38** (2) gives every
         line a start and an optional end, so a monthly line that begins
-        2026-04-01 and ends 2026-06-30 is stored exactly so.  ``due_day_of
-        _month`` is still nobody's on a payroll line and still meets the
-        schema's EXCLUDE; ``max_occurrences`` beside an ``on_date`` mode is
+        2026-04-01 and ends 2026-06-30 is stored exactly so.
+        ``max_occurrences`` beside an ``on_date`` mode is
         the input that shape does not need and is dropped by the compose.
         """
         with app.app_context():
@@ -2800,7 +2797,6 @@ class TestDeductionCadenceForm:
                         ),
                     ),
                     "starts_on": "2026-04-01",
-                    "due_day_of_month": "20",
                     "recurrence_end_mode": "on_date",
                     "end_date": "2026-06-30",
                     "max_occurrences": "2",
@@ -2815,7 +2811,6 @@ class TestDeductionCadenceForm:
             rule = added.recurrence_rule
             assert rule.starts_on == date(2026, 4, 1)
             assert rule.nominal_day is None
-            assert rule.due_day_of_month is None
             assert rule.end_date == date(2026, 6, 30)
             assert rule.max_occurrences is None
             # The section words the span beside the cadence, and the edit
