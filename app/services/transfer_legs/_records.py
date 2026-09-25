@@ -3,18 +3,21 @@ Shekel Budget App -- A leg's RECORD: the one join to its covering movement.
 
 The half of :mod:`app.services.transfer_legs` that reaches a leg's covering
 MOVEMENT.  :func:`_movements_under_shadows` is the ONE join through the
-interval (a movement still hangs off the transfer's shadow row),
-:func:`_covering_movements_query` that join narrowed to leg RECORDS by
-:func:`_leg_is_record`, and :func:`_leg_transfer_id` and :func:`_leg_is_income`
-say which transfer and which side over them.  Every loader in this package that
-asks the join lives here -- the plan half's :func:`planned_transfer_legs`
-(through :func:`dated_leg_exists_clause`), the settled half's
-:func:`transfer_movement_rows` / :func:`recorded_transfer_legs`, the posting
-writer's :func:`transfer_family_movements`, and the grid's
+interval (a movement still hangs off the transfer's shadow row, by
+:func:`_movement_link`), :func:`_covering_movements_query` that join narrowed
+to leg RECORDS by :func:`_leg_is_record`, and :func:`_leg_transfer_id` and
+:func:`_leg_is_income` say which transfer and which side over them.  Every
+loader in this package that asks the join lives here -- the plan half's
+:func:`planned_transfer_legs` and the reconcile panel's
+:func:`offerable_transfer_legs` (both through :func:`dated_leg_exists_clause`),
+the settled half's :func:`transfer_movement_rows` /
+:func:`recorded_transfer_legs`, the posting writer's
+:func:`transfer_family_movements`, the grid's
 :func:`covering_movements_by_leg` / :func:`grid_transfer_leg` /
-:func:`grid_transfer_legs` -- beside :func:`movement_parent`, the join's Python
-twin over one loaded movement.  Plan step ``balance:X-bi-6-4d`` moves the join
-off the shadows HERE, once, for every reader built on it.
+:func:`grid_transfer_legs`, and the recurrence engine's
+:func:`transfers_holding_records` -- beside :func:`movement_parent`, the join's
+Python twin over one loaded movement.  Plan step ``balance:X-bi-6-4d`` moves
+the join off the shadows HERE, once, for every reader built on it.
 
 **"The module docstring" in the definitions below means the PACKAGE's**
 (:mod:`app.services.transfer_legs`): they were written when this was one
@@ -82,6 +85,96 @@ def planned_transfer_legs(
         :attr:`~TransferLeg.record`; ``[]`` for an account no still-projected
         transfer touches.
     """
+    return _still_planned_legs(
+        account_id, options, Transfer.scenario_id == scenario_id,
+    )
+
+
+def offerable_transfer_legs(
+    account_id: int,
+    owner_id: int,
+    period_ids,
+    *,
+    options: tuple,
+    transfer_ids=None,
+) -> list[TransferLeg]:
+    """Return the still-planned legs on *account_id* a statement could settle.
+
+    The reconcile panel's loader (leaf ``X-bi-6-4c-2``): the owner's live,
+    still-Projected transfers on this account, either side, filed in one of
+    *period_ids*, each as the :class:`TransferLeg` on this account -- emitted
+    exactly while that side's own DATED movement does not exist, which is
+    ruling **R-BAL79**'s rule and the same test :func:`planned_transfer_legs`
+    applies (the two share :func:`_still_planned_legs`).  It is a SECOND
+    loader rather than that one with an argument, because its contract is a
+    different one: an offer screen's WINDOW is its contract (the periods that
+    had started by the statement's day), where a fold over a windowed plan is
+    a fold over a different account; and it is scoped by OWNER and not by
+    SCENARIO, because the panel deliberately takes no scenario
+    (``reconcile_service._rows.outstanding_scope`` carries the deferral).
+
+    **It equals the shadow scope the panel read before this leaf on every
+    door-written state** (a Projected parent's two shadows are Projected, live
+    and filed in its period -- Transfer Invariants 1, 3 and 4), and differs
+    only where a shadow has drifted from its parent, which no door writes.
+    The PARENT decides (ruling **R-JM**, a transfer leg reads its parent): a
+    parent that is not Projected is not emitted whatever its shadow says, and
+    a Projected parent's side is emitted while that side's own DATED movement
+    does not exist, whatever its shadow's status or soft-delete says.  What
+    the panel then does with such a leg is its pricing's: a soft-deleted
+    shadow breaks the pair, so the leg is WARNED about and not offered (ruling
+    **R-BAL148**); a Cancelled shadow prices at ``$0.00`` and its tick is
+    refused by the status seam's transition rule.
+    ``tests/test_services/test_reconcile_transfer_legs.py`` pins the
+    parent-side direction, the Cancelled-shadow direction and the dated-side
+    rule here, and the soft-delete direction at the panel.
+
+    Args:
+        account_id: The account the statement is for -- either side.
+        owner_id: The owner whose transfers may be offered.
+        period_ids: The pay-period ids an offer may be filed in; an empty set
+            admits nothing.
+        options: The loader options for every relationship the caller will
+            traverse on the parents, rooted at
+            :class:`~app.models.transfer.Transfer` -- required for
+            :func:`planned_transfer_legs`' reason.
+        transfer_ids: The writer's narrowing -- the transfer ids a form
+            posted.  ``None`` (the reader) means every transfer in scope; an id
+            outside the scope simply does not come back.
+
+    Returns:
+        One :class:`TransferLeg` per matching transfer, unordered and with no
+        :attr:`~TransferLeg.record`.
+    """
+    filters = [
+        Transfer.user_id == owner_id,
+        Transfer.pay_period_id.in_(period_ids),
+    ]
+    if transfer_ids is not None:
+        filters.append(Transfer.id.in_(transfer_ids))
+    return _still_planned_legs(account_id, options, *filters)
+
+
+def _still_planned_legs(
+    account_id: int, options: tuple, *filters,
+) -> list[TransferLeg]:
+    """Return the legs on *account_id* of live, still-Projected transfers, per side.
+
+    The ONE statement of "this transfer's leg on this account is still
+    planned" for :func:`planned_transfer_legs` and
+    :func:`offerable_transfer_legs`: the parent is live and Projected (the
+    shared :func:`~app.utils.balance_predicates.is_projected_clause`), the
+    account is one of its endpoints, and that side's dated covering movement
+    does not exist (ruling **R-BAL79**).  Each caller adds its own scope.
+
+    Args:
+        account_id: The account whose legs to load -- either side.
+        options: The caller's loader options, rooted at ``Transfer``.
+        *filters: The caller's further clauses over ``Transfer``.
+
+    Returns:
+        The legs, unordered, with no :attr:`~TransferLeg.record`.
+    """
     # The leg's RECORD, when it exists: a dated covering movement on this
     # account (ruling **R-BAL79**).  A correlated EXISTS rather than a join,
     # so a transfer is one row here whatever its shadows hold.
@@ -92,7 +185,7 @@ def planned_transfer_legs(
         db.session.query(Transfer)
         .options(*options)
         .filter(
-            Transfer.scenario_id == scenario_id,
+            *filters,
             Transfer.is_deleted.is_(False),
             is_projected_clause(Transfer),
             or_(
@@ -121,8 +214,9 @@ def _covering_movements_query():
     :func:`transfer_movement_rows` and the posting writer through
     :func:`transfer_family_movements` -- so when the movement re-parents onto
     ``budget.transfers`` (``X-bi-6-4d``, ruling **R-BAL88**) the join and
-    those expressions move HERE for every reader built on them; the readers
-    not yet on them are named in the module docstring.
+    those expressions move HERE for every reader built on them.  The readers
+    still reaching a movement through a shadow themselves are X-bi-6-4c's
+    leaves to move; the package docstring names the known ones.
 
     A deleted shadow's movement is not a leg's record (:func:`_leg_is_record`),
     and the query says so rather than leaving it to the caller.
@@ -152,9 +246,30 @@ def _movements_under_shadows():
     """
     return (
         db.session.query(TransactionEntry)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(TransactionEntry.covers_settlement.is_(True))
+        .join(Transaction, _movement_link())
+        .filter(_is_covering())
     )
+
+
+def _movement_link():
+    """Return the SQL truth of "this movement hangs off this row".
+
+    The join's ON clause, stated once so its correlated spelling
+    (:func:`transfers_holding_records`) cannot name a different link.
+    Through the interval a transfer movement's link is its shadow row's id;
+    at ``X-bi-6-4d`` it is the movement's side links (ruling **R-BAL88**).
+    """
+    return TransactionEntry.transaction_id == Transaction.id
+
+
+def _is_covering():
+    """Return the SQL truth of "this entry is a settlement's covering movement".
+
+    The mark the status seam writes on the movement it books at a settle;
+    ``status_seam.covering_clause`` is the same predicate, restated here
+    because this leaf imports no service.
+    """
+    return TransactionEntry.covers_settlement.is_(True)
 
 
 def _leg_is_record():
@@ -478,3 +593,51 @@ def grid_transfer_legs(
                 record=records.get((transfer.id, account_id)),
             ))
     return legs
+
+
+def transfers_holding_records(transfer_ids: Iterable[int]) -> set[int]:
+    """Return which of *transfer_ids* hold a covering movement or a statement link.
+
+    The recurrence engine's question about a transfer's LEGS (leaf
+    ``X-bi-6-4c-2``; ``transfer_recurrence._rows_holding_owner_records``
+    carries why each arm is the owner's record): on either side, a covering
+    movement -- dated or kept un-dated across a revert (ruling **R-BAL61**)
+    -- or a link to the statement that showed it.  Asked of every transfer
+    in ONE statement, because a regeneration considers a template's whole
+    future.
+
+    **Its body is the query that function ran before this leaf, moved
+    unchanged**, which is why it is not built on
+    :func:`_covering_movements_query`: that adds :func:`_leg_is_record`
+    (the shadow is live), and this has always asked every shadow a transfer
+    has, live or not.  A movement is joined by :func:`_movement_link` and
+    marked by :func:`_is_covering`, the join's own two terms in their
+    correlated form.  The link arm reads the shadow's ``reconciled_by_id``;
+    at ``X-bi-6-4d`` a movement-less side keeps no link (ruling
+    **R-BAL141**) and that arm goes.
+
+    Args:
+        transfer_ids: The transfers to ask about.  Empty answers ``set()``
+            without a query.
+
+    Returns:
+        The subset of *transfer_ids* holding a movement or a link on either
+        side.
+    """
+    ids = list(transfer_ids)
+    if not ids:
+        return set()
+    covered = (
+        db.session.query(TransactionEntry.id)
+        .filter(_movement_link(), _is_covering())
+        .exists()
+    )
+    return {
+        transfer_id
+        for (transfer_id,) in db.session.query(_leg_transfer_id())
+        .filter(
+            _leg_transfer_id().in_(ids),
+            or_(covered, Transaction.reconciled_by_id.isnot(None)),
+        )
+        .distinct()
+    }

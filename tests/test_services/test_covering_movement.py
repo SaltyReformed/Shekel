@@ -1797,7 +1797,7 @@ class TestAKeptMovementIsNotAPurchase:
             assert survivor.is_credit is False
             assert survivor.purchased_on <= statement.observed_on
             offered = {
-                group.transaction_id: group.purchases
+                group.key: group.purchases
                 for group in reconcile_service.outstanding_set(statement).groups
             }
             assert offered.get(envelope.id, ()) == (), (
@@ -1833,7 +1833,7 @@ class TestAKeptMovementIsNotAPurchase:
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
-            plan = next(p for p in preview.plans if p.transaction.id == envelope.id)
+            plan = next(p for p in preview.plans if p.item.id == envelope.id)
             assert plan.kind == carry_forward_service.PLAN_KIND_ENVELOPE
             assert plan.entries_sum == Decimal("0.00")
             assert plan.leftover == Decimal("100.00")

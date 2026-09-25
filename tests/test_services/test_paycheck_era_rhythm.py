@@ -502,8 +502,9 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
 
     Ruling **R-SAL70**.  The owner is the savings page's own current-pay
     owner (``TestTheCurrentPayIsThePassPricersCalibratedAndSummed``): a
-    made-up $52,000.00 profile paid every 14 days, no deductions, FICA seeded
-    and no bracket set or state config, so the current paycheck is::
+    made-up $52,000.00 profile paid every 14 days, no deductions, priced under
+    the made-up FICA-only law installed for tax year 2026 (federal and state
+    tax $0.00), so the current paycheck is::
 
         gross   52,000.00 / 26          = 2,000.00
         net     2,000.00 - 124.00 - 29.00 = 1,847.00
@@ -620,10 +621,11 @@ class TestTheRecurringSalaryRow:
     """The Recurring page's salary row is TODAY's priced paycheck (R-SAL71, R-SAL73).
 
     The owner is :class:`TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm`'s --
-    $52,000.00 paid every 14 days, FICA seeded, a weekly era recorded to take
-    effect after the saved record -- with the profile created through the
-    salary form, so its template is the real one (``POST /salary``).  The
-    template's stored ``default_amount`` is then overwritten with a made-up
+    $52,000.00 paid every 14 days under the made-up FICA-only law installed for
+    tax year 2026, a weekly era recorded to take effect after the saved
+    record -- with the profile created through the salary form, so its
+    template is the real one (``POST /salary``).  The template's stored
+    ``default_amount`` is then overwritten with a made-up
     STALE $1.00, which is what a stored copy becomes when a raise date passes
     between saves: the row must not read it.
     """
@@ -787,4 +789,3 @@ class TestTheCockpitsThirdPaycheckChip:
         ]
 
         assert salary_cockpit_service.base_regular_net(pairs, 2) == Decimal("1600")
-

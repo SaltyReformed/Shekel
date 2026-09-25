@@ -1,12 +1,12 @@
 """
-Shekel Budget App -- The shape a SOURCE-ROW arm of the outstanding set has
+Shekel Budget App -- The shape a SETTLE arm of the outstanding set has
 
-The scope, the bound and the loader that the two ``budget.transactions`` arms
-share: the transaction arm (an envelope's own close, and a bill) and the
-transfer arm (a transfer's shadow on this account).  Both ask the same
-question of the same table -- *which rows on this account had the bank not yet
-taken by the statement's day* -- and differ only in WHICH rows are theirs and
-what a tick MEANS for one.
+What the two arms whose tick SETTLES something share: the transaction arm (an
+envelope's own close, and a bill) and the transfer arm (a transfer's leg on
+this account).  Both ask *which of these on this account had the bank not yet
+taken by the statement's day*, bound it by the same landing day, and settle
+what was ticked through a per-item service verb -- and differ in WHICH items
+are theirs, how they are loaded, and what a tick MEANS for one.
 
 **This is finding N-225 fixed rather than paid.**  That row was opened by
 X-f2-c2's own adversarial design review, which measured the package's stated
@@ -14,12 +14,11 @@ cut: :mod:`app.services.reconcile_service` says it has "three row kinds whose
 settle verbs are genuinely different", and only ONE of the three is different
 in shape.  A PURCHASE settles by stamping one column, so its arm's scope is
 over :class:`~app.models.transaction_entry.TransactionEntry` and its writer is
-a bulk ``UPDATE`` (:mod:`._purchases`).  The other two are both "query
-``Transaction`` under a scope, narrow in Python by attribution date, loop
-dispatching to a per-row service verb" -- so building the transfer arm by
-copying the transaction arm would have put ~250 lines of one scope into two
-files that can then drift about what "outstanding" means, on a screen that
-moves money.
+a bulk ``UPDATE`` (:mod:`._purchases`).  The other two are both "load what is
+in scope, narrow in Python by attribution date, loop dispatching to a per-item
+service verb" -- so building the transfer arm by copying the transaction arm
+would have put ~250 lines of one scope into two files that can then drift
+about what "outstanding" means, on a screen that moves money.
 
 **The WRITER is here too, and this leaf had to be argued out of leaving it per
 arm.**  N-225 named the shared shape as *(extra scope clause, settle callable,
@@ -30,16 +29,23 @@ reported the pair twice -- first the telemetry tails, then the whole body once
 those were shared -- because the two loops were not similar, they were the same
 function.  The finding was right and the first reading of it was not.
 
-So :func:`record_settled` narrows the ticked ids through the arm's own scope,
-settles each row through the arm's own verb, counts what that verb says was a
+So :func:`record_settled` narrows the ticked ids through the arm's own loader,
+settles each item through the arm's own verb, counts what that verb says was a
 HUMAN's correction (finding **N-231**), and reports how much of what was asked
 for landed.  What stays the arm's is :class:`Arm`.
 
-**Membership of an arm is the arm's own clause, and it is the ONE thing this
-module refuses to decide.**  ``kind_clauses`` is not a convenience: the
-transaction arm's ``transfer_id IS NULL`` and the transfer arm's
-``transfer_id IS NOT NULL`` partition the table, and a shared default would be
-a third place for that partition to be stated.
+**The two arms stopped sharing a TABLE at leaf ``balance:X-bi-6-4c-2``**, and
+that is why an arm now states a LOADER rather than a clause.  Until then both
+queried ``budget.transactions`` and partitioned it on ``transfer_id`` -- the
+transfer arm offered a transfer's SHADOW row -- so an arm was its membership
+clause over one shared query.  The transfer arm offers the transfer's LEG now,
+loaded off ``budget.transfers`` (``transfer_legs.offerable_transfer_legs``), so
+no clause over this module's query can describe it.  What is still shared is
+the day bound (:func:`attributed_on` / :func:`lands_on_or_before`, over the
+row a leg is filed by -- its transfer), the writer, and the value naming the
+statement.  The ROW scope and loader (:func:`outstanding_scope`,
+:func:`outstanding_rows`, :func:`wholly_spent_by`) stay here beside them as
+the transaction arm's.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, ORM rows out.
@@ -48,7 +54,8 @@ Architecture (``CLAUDE.md``):
 """
 
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -57,9 +64,10 @@ from sqlalchemy.orm import joinedload, selectinload
 from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services.cash_ledger import AnchorPoint
 from app.services.stated_figure import StatedFigure
-from app.services.pay_calendar import FiledRow, PayCalendar
+from app.services.pay_calendar import DerivedPeriod, FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -276,22 +284,35 @@ class Statement:
 
 @dataclass(frozen=True)
 class Arm:
-    """What one SOURCE-ROW arm IS: which rows are its own, and what a tick does.
+    """What one SETTLE arm IS: what it loads, what a tick does, what it logs.
 
-    The four things this module cannot decide for an arm, as ONE value -- so an
+    The three things this module cannot decide for an arm, as ONE value -- so an
     arm states its shape once, as a module constant, and its reader and its
-    writer are structurally incapable of asking for different rows.  That is
+    writer are structurally incapable of asking for different items.  That is
     the same property the purchase arm gets from sharing a clause list, and it
     is the security property this package is built on rather than a tidiness
     one.
 
+    **It carried ``kind_clauses`` and ``load_options`` until leaf
+    ``balance:X-bi-6-4c-2``** -- a membership clause and eager loads over the
+    ONE ``budget.transactions`` query both arms shared.  The transfer arm loads
+    legs off ``budget.transfers`` now (the module docstring), so an arm names
+    its loader instead; the transaction arm's loader is that query with its
+    clause, unchanged.
+
     Attributes:
-        kind_clauses: The arm's membership clauses.  It has no default and must
-            not acquire one: the transaction arm's ``transfer_id IS NULL`` and
-            the transfer arm's ``transfer_id IS NOT NULL`` PARTITION the table,
-            and a default would be a third place for that partition to be
-            stated.
-        settle: ``(row, submitted, statement) -> bool`` -- settles one row
+        load: ``(statement, tick_ids) -> {tick id: item}`` -- everything the
+            arm offers for *statement*, both halves of its scope applied
+            (:func:`lands_on_or_before` among them), in landing-day order.
+            *tick_ids* is the writer's narrowing, the ids a form posted under
+            the arm's :class:`~app.services.reconcile_service.TickForm`;
+            ``None`` (the reader) means "everything in scope".  An id outside
+            the scope simply does not come back, which is the set-operation
+            form of the project's "404 for both not-found and not-yours" rule.
+            **Keyed by the id a tick posts**, so the id a form narrowed by and
+            the id its amount box is read under are one value by construction:
+            a row's own id, a leg's transfer id.
+        settle: ``(item, submitted, statement) -> bool`` -- settles one item
             through the arm's own service verb, *submitted* being the panel's
             figure and who wrote it
             (:class:`~app.services.stated_figure.StatedFigure`, always
@@ -306,15 +327,11 @@ class Arm:
             OWN rather than sharing one, because a reader asking why a second
             account's balance moved has to be able to find the transfer arm
             without knowing to look under transactions.
-        load_options: Eager loads this arm needs beyond the two the shared
-            bound already requires (``pay_period`` and ``entries``).  Empty for
-            an arm that prices its rows from columns alone.
     """
 
-    kind_clauses: tuple
-    settle: object
+    load: Callable[["Statement", "set[int] | None"], dict]
+    settle: Callable[..., bool]
     event: str
-    load_options: tuple = field(default=())
 
 
 def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
@@ -337,7 +354,12 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
     loader gives: one shared statement of "which rows exist at all" beats two
     hand-written filters that agree today.
 
-    Four shared clauses, each load-bearing, plus the arm's own:
+    **It is the TRANSACTION arm's scope since leaf ``balance:X-bi-6-4c-2``**,
+    where the transfer arm stopped reading this table (the module docstring);
+    *kind_clauses* is that arm's ``transfer_id IS NULL``, which keeps a transfer
+    shadow out because a transfer is offered as its LEG.
+
+    Four clauses, each load-bearing, plus the arm's own:
 
     * the row is on THIS account -- a balance assertion declares the real
       balance of one account, and a user may hold more than one checking
@@ -353,19 +375,19 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
       the calendar now, which is what makes :func:`attributed_on`'s span
       lookup total rather than merely unlikely to refuse.  That property, and
       the reachable state it closes, are on :attr:`Statement.owned_period_ids`.
-    * *kind_clauses* -- which rows are this ARM's.  See the module docstring
-      for why it has no default.
+    * *kind_clauses* -- which rows are the transaction arm's.
 
     Not scoped by ``scenario_id``, for the same reason
     :func:`app.services.reconcile_service._purchases._outstanding_scope` is
     not: Phase 1 is baseline-only, so ``account_id`` fully isolates the set
     today, and when what-if scenarios land the callers must thread an
     operating-scenario context into EVERY arm.  One deferral, stated once per
-    scope rather than differently per arm.
+    scope rather than differently per arm -- the transfer arm's loader takes
+    no scenario for the same reason (``transfer_legs.offerable_transfer_legs``).
 
     Args:
         statement: The statement being reconciled.
-        kind_clauses: The calling arm's own membership clauses.
+        kind_clauses: The transaction arm's membership clauses.
 
     Returns:
         A list of SQLAlchemy filter clauses to apply to a
@@ -380,7 +402,32 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
     ]
 
 
-def attributed_on(statement: Statement, txn: Transaction) -> date:
+def filed_period(statement: Statement, row: Transaction | Transfer) -> DerivedPeriod:
+    """Return the pay period *row* is filed in, as the statement's calendar derives it.
+
+    The one lookup :func:`attributed_on` clamps against and a transfer block's
+    heading names (``_transfers.outstanding_transfers``), so an offer's
+    caption and its block's period cannot describe two paychecks.  Why it
+    cannot refuse through an arm's scope, and why it raises anyway, is
+    :func:`attributed_on`'s.
+
+    Args:
+        statement: The statement being reconciled, carrying the owner's
+            calendar.
+        row: A row filed in a period -- a plan row, or the TRANSFER a leg is
+            filed by (a leg's period is its parent's).
+
+    Returns:
+        The derived period.
+
+    Raises:
+        RuntimeError: *row* names a pay period the statement's calendar does
+            not hold (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
+    """
+    return statement.calendar.require_period(FiledRow.for_row(row))
+
+
+def attributed_on(statement: Statement, txn: Transaction | Transfer) -> date:
     """Return the day the projection lands *txn* on.
 
     Stated once because two things read it: the bound
@@ -425,26 +472,35 @@ def attributed_on(statement: Statement, txn: Transaction) -> date:
     states: *where the precondition is carried by the QUERY, the total form is
     honest; where it rests on two reads agreeing, it is not.*
 
+    **A transfer's leg is dated by its TRANSFER** (leaf
+    ``balance:X-bi-6-4c-2``): a leg carries no period or due date of its own,
+    and both are the parent's, so the transfer arm hands this the transfer --
+    whose ``pay_period_id``, ``due_date``, ``id`` and ``__table__`` are what
+    this reads -- and the transfer loader's own clause on
+    :attr:`Statement.offerable_period_ids` makes the refusal just as
+    unconstructible there.  The shadow it handed before carried the same period
+    and due date by Transfer Invariant 3.
+
     Args:
         statement: The statement being reconciled, carrying the owner's
             calendar.
-        txn: The row, whose ``pay_period_id`` names its span.
+        txn: The row -- a plan row, or a leg's transfer -- whose
+            ``pay_period_id`` names its span and whose ``due_date`` it lands
+            on.
 
     Returns:
         Its clamped attribution date.
 
     Raises:
         RuntimeError: *txn* names a pay period the statement's calendar does
-            not hold -- unconstructible through :func:`outstanding_scope`, and
-            loud rather than silent if a future caller reaches this with a row
-            from somewhere else
-            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
+            not hold -- unconstructible through either arm's scope, and loud
+            rather than silent if a future caller reaches this with a row from
+            somewhere else (:func:`filed_period`).
     """
-    period = statement.calendar.require_period(FiledRow.for_row(txn))
-    return period.attribution_day(txn.due_date)
+    return filed_period(statement, txn).attribution_day(txn.due_date)
 
 
-def lands_on_or_before(statement: Statement, txn: Transaction) -> bool:
+def lands_on_or_before(statement: Statement, txn: Transaction | Transfer) -> bool:
     """Return whether the projection lands *txn* on or before the statement day.
 
     The Python half of the bound, and the reason it is not SQL: the landing day
@@ -463,7 +519,8 @@ def lands_on_or_before(statement: Statement, txn: Transaction) -> bool:
     Args:
         statement: The statement being reconciled -- its ``observed_on`` is the
             bound and its calendar dates the row.
-        txn: A row from the SQL superset.
+        txn: A row from the SQL superset, or a leg's transfer
+            (:func:`attributed_on`).
 
     Returns:
         True when the row is OVERDUE against that day.
@@ -505,23 +562,26 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
     is already-spent money handed back to the projection, which is the class of
     defect this arc exists to remove.
 
-    A row with no purchases answers True over an empty sequence, so a bill, a
-    deposit and a TRANSFER SHADOW are unaffected: they carry a single amount,
-    and :func:`lands_on_or_before` is the whole bound for them.  **A shadow
-    holds no PURCHASE** -- ``entry_service.create_entry`` refuses a parent
-    that is not ``tracks_purchases``, and a shadow has no template, so it
-    answers ``False`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
-    entry a shadow -- or a bill, or a paycheck -- does hold since plan step
-    ``balance:X-bi-3c`` is the status seam's covering movement, written when
-    the row SETTLES and, since plan step ``balance:X-bi-3e-2``, KEPT un-dated
-    when it leaves the band -- so a row this OUTSTANDING scope offers may
-    carry one, dated on the day of a close the owner has since withdrawn.
-    That is why the bound is over :attr:`~app.models.transaction.Transaction.
-    purchases` and not the family (ruling **R-BAL68**): a reverted row's
-    withdrawn close postdating the statement is no reason to hold the row
-    back.  It is asked of the transfer arm anyway, and that is the point of a
-    shared bound: an arm does not get to decide that half of "could this
-    statement settle this row" does not apply to it.
+    A row with no purchases answers True over an empty sequence, so a bill and
+    a deposit are unaffected: they carry a single amount, and
+    :func:`lands_on_or_before` is the whole bound for them.  The one entry a
+    bill or a paycheck does hold since plan step ``balance:X-bi-3c`` is the
+    status seam's covering movement, written when the row SETTLES and, since
+    plan step ``balance:X-bi-3e-2``, KEPT un-dated when it leaves the band --
+    so a row this OUTSTANDING scope offers may carry one, dated on the day of a
+    close the owner has since withdrawn.  That is why the bound is over
+    :attr:`~app.models.transaction.Transaction.purchases` and not the family
+    (ruling **R-BAL68**): a reverted row's withdrawn close postdating the
+    statement is no reason to hold the row back.
+
+    **The transfer arm does not ask it, because its answer there is a
+    constant**: a transfer's leg is not purchase-tracked
+    (``transfer_legs.TransferLeg.tracks_purchases`` is ``False``, as a shadow's
+    was -- ``entry_service.create_entry`` refuses a parent that is not, and
+    production held 342 shadows and 0 entries on 2026-09-15), so it holds no
+    purchase to postdate the statement and the bound is True for every leg.
+    Until leaf ``balance:X-bi-6-4c-2`` both arms shared one loader and it was
+    asked of a shadow for exactly that answer.
 
     **It takes the STATEMENT rather than a bare day**, which is the shape all
     three per-row predicates here share since plan step C4-a-2.  Two of them
@@ -543,18 +603,22 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
 
 
 def outstanding_rows(
-    arm: Arm,
     statement: Statement,
     *,
+    kind_clauses: tuple,
+    load_options: tuple = (),
     transaction_ids: "set[int] | None" = None,
 ) -> "list[Transaction]":
-    """Return the rows *arm* offers, both halves of its scope applied.
+    """Return the ROWS the transaction arm offers, both halves of its scope applied.
 
-    **The ONE place an arm's scope is expressed**, so its reader and its writer
-    cannot come to disagree about what "outstanding" means -- the property the
-    purchase arm gets by sharing a clause list, expressed as a shared loader
-    here because these arms' writers need the ROWS (their settle is a per-row
-    service verb, not a bulk ``UPDATE``).
+    **The ONE place that arm's scope is expressed**, so its reader and its
+    writer cannot come to disagree about what "outstanding" means -- the
+    property the purchase arm gets by sharing a clause list, expressed as a
+    shared loader here because the arm's writer needs the ROWS (its settle is a
+    per-row service verb, not a bulk ``UPDATE``).  The arm reaches it through
+    its :attr:`Arm.load`.  **Both source-row arms read it until leaf
+    ``balance:X-bi-6-4c-2``**, where the transfer arm moved onto its leg
+    loader (the module docstring).
 
     Two eager loads are ALWAYS applied.  ``entries`` feeds
     :func:`wholly_spent_by`.  ``pay_period`` feeds NOTHING NAMED any more, and
@@ -572,27 +636,28 @@ def outstanding_rows(
     no code this loader feeds names the relationship any more.  Three reads in
     ``loan_posting_service._payments`` moved the same way in the same step.
 
-    **What has NOT been established is whether anything else on the TRANSFER
-    arm reaches it**, and that is exactly the claim an adversarial code review
+    **What has NOT been established is whether anything else on the write
+    half reaches it**, and that is exactly the claim an adversarial code review
     narrowed here on 2026-08-28 -- so this step declines to widen it back by
     deleting the option on a census it did not take.  The predicate the next
     reader owes, rather than a count: an attribute read of ``pay_period`` on a
-    row :func:`outstanding_rows` RETURNED, reachable from either arm's write
+    row :func:`outstanding_rows` RETURNED, reachable from the arm's write
     half, which is a grep for an attribute read of ``pay_period`` across
     ``app/`` with the docstring mentions struck out and each survivor traced
-    to the query that produced its row.  ``loan_loaders`` has three, and whether a row from THIS
-    scope can reach them is the open half.  Removing the option is a
-    MEASUREMENT -- a lazy load here lands an AUTOFLUSH in the middle of a
-    settle that has already mutated the row -- and it belongs to whoever takes
-    that census, not to the step that emptied the named consumer.
-
-    An arm adds its own through :attr:`Arm.load_options` -- the transaction arm
-    loads ``template`` because it reads ``tracks_purchases``, which lazy-loads a
-    template per row otherwise.
+    to the query that produced its row.  ``loan_loaders`` has three, and
+    whether a row from THIS scope can reach them is the open half (the
+    transfer arm, whose shadows were the likeliest route there, no longer
+    loads through here).  Removing the option is a MEASUREMENT -- a lazy load
+    here lands an AUTOFLUSH in the middle of a settle that has already mutated
+    the row -- and it belongs to whoever takes that census, not to the step
+    that emptied the named consumer.
 
     Args:
-        arm: Which rows are the caller's, and what it needs loaded.
         statement: The statement being reconciled.
+        kind_clauses: The arm's membership clauses (:func:`outstanding_scope`).
+        load_options: Eager loads beyond the two above -- the transaction arm
+            loads ``template`` because it reads ``tracks_purchases``, which
+            lazy-loads a template per row otherwise.
         transaction_ids: The writer's narrowing -- the ids a form submitted.
             ``None`` (the reader) means "everything in scope".  An id outside
             the scope simply does not come back, which is the set-operation
@@ -607,9 +672,9 @@ def outstanding_rows(
         .options(
             joinedload(Transaction.pay_period),
             selectinload(Transaction.entries),
-            *arm.load_options,
+            *load_options,
         )
-        .filter(*outstanding_scope(statement, arm.kind_clauses))
+        .filter(*outstanding_scope(statement, kind_clauses))
     )
     if transaction_ids is not None:
         query = query.filter(Transaction.id.in_(transaction_ids))
@@ -625,23 +690,23 @@ def outstanding_rows(
 def record_settled(
     arm: Arm,
     statement: Statement,
-    transaction_ids: "set[int]",
+    tick_ids: "set[int]",
     corrections: "dict[int, Decimal]",
 ) -> int:
-    """Settle every row of *arm* the form ticked, and report what landed.
+    """Settle every item of *arm* the form ticked, and report what landed.
 
-    **The WRITER, once, for both source-row arms**, and what an arm keeps is
-    :class:`Arm`.  Three things happen per row and none of them is a money rule:
-    the arm's own settle runs, what it says about a human's figure is counted,
-    and the totals are logged once.
+    **The WRITER, once, for both settle arms**, and what an arm keeps is
+    :class:`Arm`.  Three things happen per item and none of them is a money
+    rule: the arm's own settle runs, what it says about a human's figure is
+    counted, and the totals are logged once.
 
-    **Recording WHICH statement showed the row is the ARM's** (ruling **R-FL**),
-    and that is not a preference: for the transfer arm the row is a SHADOW, and
-    ``CLAUDE.md``'s transfer invariant 4 says no code path mutates one directly.
-    A write here would be the first exception to a rule the project treats as
-    critical, so the transfer arm goes through
-    ``transfer_service.record_clearing`` and the transaction arm -- whose scope
-    is that arm's complement, ``transfer_id IS NULL`` -- writes its own row.
+    **Recording WHICH statement showed the item is the ARM's** (ruling
+    **R-FL**), and that is not a preference: for the transfer arm the money
+    still lands on a SHADOW row through the interval, and ``CLAUDE.md``'s
+    transfer invariant 4 says no code path mutates one directly.  A write here
+    would be the first exception to a rule the project treats as critical, so
+    the transfer arm goes through ``transfer_service.record_leg_clearing`` and
+    the transaction arm writes its own row through the status seam.
 
     **It is one function because the two writers HAD BECOME one**, and the gate
     is what said so rather than a preference.  X-f2-c2 left the loop per-arm on
@@ -652,13 +717,17 @@ def record_settled(
     clause, settle callable, OfferKind)*, and was right where the leaf's first
     reading of it was not.
 
-    **The ids are re-derived through the arm's own scope rather than trusted.**
-    An id belonging to another user, another account, a settled row or a row
-    this arm does not own simply does not come back from
-    :func:`outstanding_rows` and is silently skipped -- the set-operation form
-    of the project's "404 for both not-found and not-yours" rule.  Both arms
-    are handed the SAME id set, and their scopes are complements, so an id
-    settles through exactly one of them and can never settle twice.
+    **The ids are re-derived through the arm's own loader rather than
+    trusted.**  An id belonging to another user, another account, a settled
+    item or one this arm does not own simply does not come back from
+    :attr:`Arm.load` and is silently skipped -- the set-operation form of the
+    project's "404 for both not-found and not-yours" rule.  **Each arm is
+    handed its OWN form field's ids** since leaf ``balance:X-bi-6-4c-2``
+    (ruling **R-BAL145**): a row's tick posts ``transaction_ids`` and a
+    transfer's ``transfer_ids``, because a transfer id can equal a row id.
+    Until then both arms took the one ``transaction_ids`` set and their
+    complementary scopes kept an id from settling twice; the two fields keep it
+    so by construction.
 
     **The count is the VERB's answer, not the column's** (finding **N-231**).
     Reading ``actual_amount`` before and after counted every envelope close as
@@ -671,42 +740,42 @@ def record_settled(
     Does NOT commit -- the caller owns the session boundary.
 
     Args:
-        arm: Which rows are the caller's, and what a tick does to one.
+        arm: What the caller loads, and what a tick does to one.
         statement: The statement being reconciled.
-        transaction_ids: The ids the user ticked.  An empty set is a no-op that
-            issues no query.
-        corrections: ``{transaction id: amount}`` from the panel's amount
-            boxes.  An id with no entry settles at the row's own figure.
+        tick_ids: The ids the user ticked under the arm's form field.  An
+            empty set is a no-op that issues no query.
+        corrections: ``{tick id: amount}`` from the arm's amount boxes.  An id
+            with no entry settles at the item's own figure.
 
     Returns:
-        How many rows settled -- what actually CHANGED, never what was asked
+        How many items settled -- what actually CHANGED, never what was asked
         for.  The caller compares the two and tells the user their ticks landed
-        on rows something else had already moved.
+        on items something else had already moved.
 
     Raises:
         ValidationError: Propagated from the arm's settle verb -- an illegal
             transition a stale panel can still submit.  A 400 at the route.
         PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
     """
-    if not transaction_ids:
+    if not tick_ids:
         return 0
 
-    rows = outstanding_rows(arm, statement, transaction_ids=transaction_ids)
+    items = arm.load(statement, tick_ids)
     corrected = 0
-    for row in rows:
+    for tick_id, item in items.items():
         # A figure out of the panel's amount box is a PERSON's statement of
         # what the bank took, and the writer says so ONCE here for both arms
         # (plan step X-bi-3e-1, ruling R-BAL61): the verbs take the figure and
         # its writer as one value, and the panel is never the bank.
-        amount = corrections.get(row.id)
+        amount = corrections.get(tick_id)
         submitted = (
             None if amount is None
             else StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
         )
-        if arm.settle(row, submitted, statement):
+        if arm.settle(item, submitted, statement):
             corrected += 1
 
-    if rows:
+    if items:
         log_event(
             logger, logging.INFO,
             arm.event, BUSINESS,
@@ -714,9 +783,9 @@ def record_settled(
             user_id=statement.owner_id,
             account_id=statement.account_id,
             observed_on=statement.observed_on.isoformat(),
-            settled_count=len(rows),
-            requested_count=len(transaction_ids),
+            settled_count=len(items),
+            requested_count=len(tick_ids),
             corrected_count=corrected,
         )
 
-    return len(rows)
+    return len(items)
