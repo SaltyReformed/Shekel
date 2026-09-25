@@ -287,7 +287,8 @@ maintain rewrite and `compute_due_date` itself are DELETED, and `build_transient
 re-examined: its last callers are tests needing a rule only because `compute_due_date` takes one
 (carried from `R-F6`'s entry, archived 2026-08-19).
 **AN OPEN QUESTION for the developer at this re-derivation:** **R-R94**'s picked words say both
-`ck_*_template_row_needs_due_date` CHECKs are deleted, while the lane's precise form keeps them as
+`ck_*_template_row_needs_due_date` CHECKs (set up by **balance:R-BAL6**) are deleted, while the
+lane's precise form keeps them as
 `template_id IS NULL OR occurs_on IS NOT NULL OR due_on IS NOT NULL` until `R19-b` binds `occurs_on`
 NOT NULL; the two differ and he has not been told, so he rules which before either is built.
 `idx_transactions_due_date` is re-examined. The downgrade can restore `due_date` from the accessor,
@@ -490,21 +491,21 @@ that has none. Whatever this step rules, it states the value honestly at both si
       `recurrence_month_anchors`. `_describe._coordinate` must then dispatch on the coordinate KIND
       rather than on "WEEK or else".
 
-- [ ] **R8-d -- the business-day shift.** Blocked by **R5**, and WHICH leaf is an open question: the
-      shift moves an OCCURRENCE, and since `R5-a` a row is dated from its occurrence
-      (`recurrence/_row_day.date_row`), so a shifted occurrence would now move the stored date --
-      the due date with the cash date, where this step shifts the cash date alone (below) -- and no
-      leaf of R5 as specified gives the cash date a home apart from the due date.
-      **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
-      holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
-      composes with the nth-weekday machinery R8-c builds. **The holiday set and the weekend rule
-      live in the ONE business-day module `pay_calendar:C14-a` builds** (**R-PC47**, 2026-09-03), so
-      this step CONSUMES it for the cash date rather than building a second copy. The shift applies
-      to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still
-      satisfies the Aug 1 installment, so `due_on` is never shifted. `RecurrenceSpec` carries no
-      `shift` field today and `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. The PAY
-      SCHEDULE's own shift (once **F-4**, merged into `pay_calendar:N-398`) is `C14`'s question and
-      stays separate.
+- [ ] **R8-d -- the business-day shift.** Blocked by **R5**, and which leaf R8-d waits on, or
+      whether it needs a step of its own, is an open question: the shift moves an OCCURRENCE, and
+      since `R5-a` a row is dated from its occurrence (`recurrence/_row_day.date_row`), so a shifted
+      occurrence would now move the stored date -- the due date with the cash date, where this step
+      shifts the cash date alone (below) -- and no leaf of R5 as specified gives the cash date a
+      home apart from the due date. **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends
+      plus the eleven US federal holidays DERIVED as rules rather than seeded as rows, which needs
+      no per-year migration and composes with the nth-weekday machinery R8-c builds. **The holiday
+      set and the weekend rule live in the ONE business-day module `pay_calendar:C14-a` builds**
+      (**R-PC47**, 2026-09-03), so this step CONSUMES it for the cash date rather than building a
+      second copy. The shift applies to the CASH date only -- a bill due Aug 1 paid Friday because
+      Aug 1 is a Sunday still satisfies the Aug 1 installment, so `due_on` is never shifted.
+      `RecurrenceSpec` carries no `shift` field today and `resolve` hardcodes `NONE`; 46 of 46 live
+      rules carry `none`. The PAY SCHEDULE's own shift (once **F-4**, merged into
+      `pay_calendar:N-398`) is `C14`'s question and stays separate.
 
 ### R10 -- the regeneration's own defect
 
