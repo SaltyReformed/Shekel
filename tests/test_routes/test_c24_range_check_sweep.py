@@ -14,9 +14,12 @@ remediation plan:
     caps percent-method deductions at 100%.
   - F-074: ``SalaryProfile`` W-4 fields gain ``Range(min=0)``
     validators on both create and update schemas.
-  - F-075: ``TaxBracketSetSchema`` monetary fields gain
-    ``Range(min=0)`` validators; ``tax_year`` gains the same
-    ``Range(2000, 2100)`` enforced on raises.
+  - F-075: ``TaxBracketSetSchema`` monetary fields gained
+    ``Range(min=0)`` validators and ``tax_year`` the same
+    ``Range(2000, 2100)`` enforced on raises.  The schema, and the FICA
+    and state-tax form schemas beside it, went with their Settings forms
+    at plan step salary:X-at-1; the law's own import-time checks carry
+    those bounds now (``tests/test_tax_law.py``).
   - F-077: 21 storage-tier CHECK constraints across nine tables
     that reject raw-SQL bypasses of the form-layer validators.
 
@@ -60,15 +63,12 @@ from app.models.user import UserSettings
 from app.services import account_service
 from app.schemas.validation import (
     PaycheckLineCreateSchema,
-    FicaConfigSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
     RaiseCreateSchema,
     RetirementReadinessQuerySchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
-    StateTaxConfigSchema,
-    TaxBracketSetSchema,
 )
 from tests._test_helpers import constraint_name_from
 
@@ -384,98 +384,11 @@ class TestSalaryProfileSchemaBounds:
         assert "additional_income" in info.value.messages
 
 
-# ── F-075: TaxBracketSetSchema bounds ─────────────────────────────
-
-
-class TestTaxBracketSetSchemaBounds:
-    """Schema-layer bound checks on tax bracket monetary fields (F-075)."""
-
-    def _payload(self, **overrides):
-        """Build a baseline tax-bracket-set payload."""
-        base = {
-            "filing_status_id": "1",
-            "tax_year": "2026",
-            "standard_deduction": "15000",
-            "child_credit_amount": "2000",
-            "other_dependent_credit_amount": "500",
-        }
-        base.update(overrides)
-        return base
-
-    def test_zero_credits_accepted(self):
-        """Zero is a valid credit amount (the load_default value)."""
-        schema = TaxBracketSetSchema()
-        data = schema.load(self._payload(
-            child_credit_amount="0",
-            other_dependent_credit_amount="0",
-        ))
-        assert data["child_credit_amount"] == Decimal("0")
-        assert data["other_dependent_credit_amount"] == Decimal("0")
-
-    def test_negative_standard_deduction_rejected(self):
-        """DB CHECK ``standard_deduction >= 0`` matched at the schema."""
-        schema = TaxBracketSetSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load(self._payload(standard_deduction="-1"))
-        assert "standard_deduction" in info.value.messages
-
-    def test_negative_child_credit_rejected(self):
-        """DB CHECK ``child_credit_amount >= 0`` matched at the schema."""
-        schema = TaxBracketSetSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load(self._payload(child_credit_amount="-1"))
-        assert "child_credit_amount" in info.value.messages
-
-    def test_negative_other_dependent_credit_rejected(self):
-        """DB CHECK matched on the third credit too."""
-        schema = TaxBracketSetSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load(self._payload(other_dependent_credit_amount="-1"))
-        assert "other_dependent_credit_amount" in info.value.messages
-
-    def test_tax_year_below_2000_rejected(self):
-        """``tax_year`` is bounded to [2000, 2100] like raises and state."""
-        schema = TaxBracketSetSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load(self._payload(tax_year="1999"))
-        assert "tax_year" in info.value.messages
-
-    def test_tax_year_above_2100_rejected(self):
-        """A year typo (e.g. ``20226``) is rejected at the schema."""
-        schema = TaxBracketSetSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load(self._payload(tax_year="2101"))
-        assert "tax_year" in info.value.messages
-
-
 # ── Misc schema bounds ────────────────────────────────────────────
 
 
 class TestMiscSchemaBounds:
-    """Bounds added on F-077-adjacent schemas (FICA, state, investment)."""
-
-    def test_fica_tax_year_below_2000_rejected(self):
-        schema = FicaConfigSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load({
-                "tax_year": "1999",
-                "ss_rate": "6.2",
-                "ss_wage_base": "176100",
-                "medicare_rate": "1.45",
-                "medicare_surtax_rate": "0.9",
-                "medicare_surtax_threshold": "200000",
-            })
-        assert "tax_year" in info.value.messages
-
-    def test_state_tax_negative_standard_deduction_rejected(self):
-        schema = StateTaxConfigSchema()
-        with pytest.raises(ValidationError) as info:
-            schema.load({
-                "state_code": "NC",
-                "tax_year": "2026",
-                "standard_deduction": "-1",
-            })
-        assert "standard_deduction" in info.value.messages
+    """Bounds added on F-077-adjacent schemas (investment; FICA and state until X-at-1)."""
 
     def test_invest_negative_contribution_limit_rejected(self):
         schema = InvestmentParamsCreateSchema()

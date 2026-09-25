@@ -3,7 +3,10 @@ Shekel Budget App -- Registration: one sign-up builds a whole owner.
 
 Everything a new owner needs before they can be shown a screen: the ``User``
 row and its settings, the REAL pay calendar they stated, a baseline scenario,
-the default Checking account, the category tree and the tax reference data.
+the default Checking account and the category tree.  (It copied the tax law
+into per-user rows too until plan step salary:X-at-1; the law has one home,
+:mod:`app.tax_law`, and nothing reads the copies already made, which stay in
+their tables until plan step salary:X-at-2 drops them.)
 :func:`register_user` is the one door, and
 :class:`RegistrationSpec` is what a sign-up says.
 
@@ -46,12 +49,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, TaxTypeEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.category import Category
-from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
-from app.models.tax_config import FicaConfig
 from app.models.user import User, UserSettings
 from app.exceptions import ConflictError, ValidationError
 from app.services import (
@@ -63,16 +64,6 @@ from app.services import (
     pay_period_write,
     pay_rhythm,
     pay_schedule_service,
-)
-from app.services.tax_seed_data import (
-    DEFAULT_FEDERAL_BRACKETS,
-    DEFAULT_FICA,
-    DEFAULT_STATE_CHILD_DEDUCTIONS,
-    DEFAULT_STATE_TAX,
-    build_state_child_deductions,
-    build_state_tax_configs,
-    build_tax_bracket_set,
-    build_tax_brackets,
 )
 from app.utils import business_days
 from app.utils.dates import display_today
@@ -106,56 +97,6 @@ DEFAULT_CATEGORIES = [
     ("Transfers", "Outgoing"),
     ("Credit Card", "Payback"),
 ]
-
-
-def _seed_tax_data_for_user(user_id):
-    """Create default federal brackets, FICA, and NC state tax for a new user.
-
-    Fresh-user path: no existence checks (a brand-new user has no tax
-    rows).  The per-row construction is shared with the idempotent repair
-    script ``scripts/seed_tax_brackets.py`` via the ``build_*`` helpers in
-    ``tax_seed_data``; ``FicaConfig`` needs no builder -- its ``**data``
-    spread maps the defaults dict to columns directly at both sites.
-
-    Post-T-P5 the state layer is filing-status-aware: one
-    :class:`~app.models.tax_config.StateTaxConfig` per filing status (the NC
-    standard deduction is status-specific) plus the AGI-tiered NC per-child
-    deduction rows (:class:`~app.models.tax_config.StateChildDeduction`).
-    """
-    filing_statuses = {
-        fs.name: fs for fs in db.session.query(FilingStatus).all()
-    }
-    filing_status_ids = {name: fs.id for name, fs in filing_statuses.items()}
-
-    for tax_year, year_data in DEFAULT_FEDERAL_BRACKETS.items():
-        for status_name, data in year_data.items():
-            fs = filing_statuses.get(status_name)
-            if not fs:
-                continue
-            bracket_set = build_tax_bracket_set(
-                user_id, fs.id, tax_year, status_name, data,
-            )
-            db.session.add(bracket_set)
-            db.session.flush()
-
-            for bracket in build_tax_brackets(bracket_set.id, data["brackets"]):
-                db.session.add(bracket)
-
-    for tax_year, data in DEFAULT_FICA.items():
-        db.session.add(FicaConfig(user_id=user_id, tax_year=tax_year, **data))
-
-    flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
-    if flat_type_id:
-        for tax_year, data in DEFAULT_STATE_TAX.items():
-            for config in build_state_tax_configs(
-                user_id, flat_type_id, tax_year, data, filing_status_ids,
-            ):
-                db.session.add(config)
-        for tax_year, data in DEFAULT_STATE_CHILD_DEDUCTIONS.items():
-            for row in build_state_child_deductions(
-                user_id, tax_year, data, filing_status_ids,
-            ):
-                db.session.add(row)
 
 
 def _reject_impossible_first_payday(
@@ -371,8 +312,8 @@ def register_user(spec: RegistrationSpec):
 
     Creates a User, UserSettings (with model defaults), the owner's pay
     periods and schedule row, a baseline Scenario, the default Checking
-    account with its opening assertion, the default categories and the default
-    tax configuration -- atomically.  Does NOT commit; the caller owns the
+    account with its opening assertion and the default categories --
+    atomically.  Does NOT commit; the caller owns the
     transaction.
 
     **Every refusal happens before the ``User`` row is added**, which is a
@@ -386,7 +327,7 @@ def register_user(spec: RegistrationSpec):
 
     Returns:
         The newly created User object (settings, periods, schedule, scenario,
-        account, categories and tax rows are attached to the same session).
+        account and categories are attached to the same session).
 
     Raises:
         ValidationError: The email format is invalid, the display name is
@@ -561,8 +502,5 @@ def register_user(spec: RegistrationSpec):
             item_name=item,
             sort_order=sort_idx,
         ))
-
-    # Create default tax configuration (federal brackets, FICA, state).
-    _seed_tax_data_for_user(user.id)
 
     return user

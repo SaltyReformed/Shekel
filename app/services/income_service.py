@@ -128,19 +128,19 @@ class ProfilePaychecks:
     because the two must agree and a caller holding ``current_user.id`` beside
     a profile is a second chance to get it wrong.
 
-    **The tax series is loaded ONCE, here, and every year after is arithmetic**
-    (:func:`~app.services.tax_config_service.profile_tax_series` is three
-    queries whatever the horizon;
+    **The tax series is sliced ONCE, here, and every year after is arithmetic**
+    (:func:`~app.services.tax_config_service.profile_tax_series` slices the
+    law, :mod:`app.tax_law`, to the profile's filing status and state;
     :func:`~app.services.tax_config_service.configs_by_year` is the pure pick).
-    That is what lets :meth:`at` answer a payday nobody knew would be asked
-    for without re-reading the tax tables, and it is why this is a VALUE built
-    per read pass rather than a free function: a free function would have to
-    reload the series, or take it, and the second is the caller-supplied input
-    the pass exists to remove.
+    It was three queries of a per-user copy of the law until plan step
+    salary:X-at-1, which is why it was built here once rather than per payday;
+    it issues no query now, and :meth:`at` still answers a payday nobody knew
+    would be asked for without slicing the law again.
 
-    **This value's OWN database work is all at construction; the PROFILE's
-    need not be, and an adversarial review of plan step salary:S3-d corrected
-    a sentence here that claimed otherwise.**
+    **This value issues no query of its own since plan step salary:X-at-1
+    (the tax series was all of it, at construction); the PROFILE's reads need
+    not happen at construction either, and an adversarial review of plan step
+    salary:S3-d corrected a sentence here that claimed otherwise.**
     ``SalaryProfile.raises`` and ``.lines`` are ``lazy="select"``.  The
     deductions are read by
     :func:`~app.services.paycheck_calculator.calculate_paycheck` on the FIRST
@@ -173,7 +173,7 @@ class ProfilePaychecks:
     def __init__(
         self, profile, calendar: PayCalendar, raise_terms=None,
     ) -> None:
-        """Pin the profile to its owner's calendar and load the tax series.
+        """Pin the profile to its owner's calendar and slice the tax law for it.
 
         Args:
             profile: The :class:`~app.models.salary_profile.SalaryProfile` to
@@ -196,10 +196,10 @@ class ProfilePaychecks:
         Raises:
             ValueError: *profile* and *calendar* belong to different owners.
                 **The mispairing is SILENT without this**, which is why it is
-                refused here rather than described: the tax series would load
-                under one owner while every payday came from the other's
-                schedule, and the engine's own cross-owner guard cannot fire
-                on it -- :func:`~app.services.paycheck_calculator
+                refused here rather than described: the profile would be
+                priced on one owner's pay while every payday came from the
+                other's schedule, and the engine's own cross-owner guard
+                cannot fire on it -- :func:`~app.services.paycheck_calculator
                 ._month_ordinal` refuses a payday the calendar cannot place,
                 and the calendar places its OWN paydays perfectly well.  The
                 result is a plausible wrong paycheck.
@@ -218,7 +218,7 @@ class ProfilePaychecks:
             )
         self._profile = profile
         self._basis = PayrollBasis(profile, calendar, raise_terms)
-        self._series = profile_tax_series(profile.user_id, profile)
+        self._series = profile_tax_series(profile)
         self._by_payday: "dict[date, paycheck_calculator.PaycheckBreakdown]" = {}
 
     def over(
@@ -522,9 +522,11 @@ def paycheck_pricing(
 
     Resolves nothing ITSELF, so a holder that prices no paycheck pays nothing
     for holding one.  The first query lands at
-    :meth:`PaycheckPricing.for_profile`, which builds a
-    :class:`ProfilePaychecks` and loads that profile's tax series in three
-    queries; nothing is issued before a profile is named.
+    :meth:`PaycheckPricing.for_profile`, which derives the calendar from its
+    source on first use, reads that profile's raises when no set is given (a
+    SELECT when they are not loaded) and builds a :class:`ProfilePaychecks`,
+    whose tax series is sliced from the law without a query; nothing is issued
+    before a profile is named.
 
     Args:
         user_id: The owner whose paychecks may be priced.

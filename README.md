@@ -397,7 +397,6 @@ flask db upgrade
 # Seed reference data and the initial user
 python scripts/seed_ref_tables.py
 python scripts/seed_user.py
-python scripts/seed_tax_brackets.py
 ```
 
 ### 6. Run the App
