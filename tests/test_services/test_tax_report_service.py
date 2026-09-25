@@ -469,7 +469,7 @@ class TestSocialSecurityWageCap:
     def test_box3_capped_above_wage_base(self, app, db, seed_user):
         """260,000 salary (> 184,500 base) -> box 3 = 184,500; box 5 raw.
 
-        gross = 260,000 / 26 = 10,000.00 * 26 = 260,000.00.
+        gross = 10,000.00 a paycheck (260,000 / 26) * 26 = 260,000.00.
         Box 3 (SS wages) = min(260,000, 184,500) = 184,500.
         Box 5 (Medicare wages) = 260,000 (raw gross, uncapped).
         Box 1 = 260,000 (no pre-tax).
@@ -488,7 +488,11 @@ class TestSocialSecurityWageCap:
         assert report.w2_preview.wages.box3_ss_wages == Decimal("184500")
         assert report.w2_preview.wages.box5_medicare_wages == Decimal("260000.00")
         assert report.w2_preview.wages.box1_wages == Decimal("260000.00")
-        assert profile.annual_salary == Decimal("260000.00")
+        # The salary the gross is 26 paychecks of: the profile's one pay
+        # entry (plan step salary:X-av-3a replaced the yearly column).
+        assert [entry.amount for entry in profile.pay_entries] == [
+            Decimal("10000.00"),
+        ]
 
 
 # ── Degrade cases ─────────────────────────────────────────────────

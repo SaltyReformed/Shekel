@@ -851,24 +851,31 @@ class TestSalaryProfileCreateSchema:
     """Tests for SalaryProfileCreateSchema."""
 
     def test_valid_data(self):
-        """Valid salary profile data loads with defaults."""
+        """Valid salary profile data loads with defaults.
+
+        The salary is the first pay entry, typed per paycheck (plan step
+        salary:X-av-3a): its amount and the payday it pays from.
+        """
         data = SalaryProfileCreateSchema().load({
             "name": "My Salary",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
         })
-        assert data["annual_salary"] == Decimal("75000.00")
+        assert data["pay_amount"] == Decimal("2884.62")
+        assert data["pay_payday"] == date(2026, 1, 2)
 
     def test_missing_required_field(self):
-        """Missing annual_salary raises ValidationError."""
+        """Missing pay (amount and payday) raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load({
                 "name": "Bad Profile",
                 "filing_status_id": "1",
                 "state_code": "NC",
             })
-        assert "annual_salary" in exc.value.messages
+        assert "pay_amount" in exc.value.messages
+        assert "pay_payday" in exc.value.messages
 
     def test_pay_periods_per_year_cannot_be_submitted(self):
         """A submitted paycheck count reaches no column (R-F16).
@@ -1602,32 +1609,39 @@ class TestCategoryCreateSchemaBoundary:
 
 
 class TestAnnualSalaryRange:
-    """SalaryProfileCreateSchema rejects zero and negative annual_salary (H-06)."""
+    """SalaryProfileCreateSchema rejects zero and negative pay (H-06).
+
+    The salary is typed per paycheck since plan step salary:X-av-3a, so the
+    bound is ``pay_amount``'s: above zero (``min_inclusive=False``).
+    """
 
     def _base(self, **overrides):
         data = {
-            "name": "Test", "annual_salary": "75000.00",
+            "name": "Test",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1", "state_code": "NC",
         }
         data.update(overrides)
         return data
 
     def test_zero_salary_rejected(self):
-        """annual_salary=0 is rejected (min_inclusive=False)."""
+        """pay_amount=0 is rejected (min_inclusive=False)."""
         with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load(self._base(annual_salary="0"))
-        assert "annual_salary" in exc.value.messages
+            SalaryProfileCreateSchema().load(self._base(pay_amount="0"))
+        assert "pay_amount" in exc.value.messages
 
     def test_negative_salary_rejected(self):
-        """Negative annual_salary is rejected."""
+        """Negative pay_amount is rejected."""
         with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load(self._base(annual_salary="-50000"))
-        assert "annual_salary" in exc.value.messages
+            # -$50,000.00 a year / 26
+            SalaryProfileCreateSchema().load(self._base(pay_amount="-1923.08"))
+        assert "pay_amount" in exc.value.messages
 
     def test_positive_salary_accepted(self):
-        """Valid positive annual_salary passes."""
-        data = SalaryProfileCreateSchema().load(self._base(annual_salary="1.00"))
-        assert data["annual_salary"] == Decimal("1.00")
+        """Valid positive pay_amount passes."""
+        data = SalaryProfileCreateSchema().load(self._base(pay_amount="1.00"))
+        assert data["pay_amount"] == Decimal("1.00")
 
 
 class TestRaiseRangeValidation:

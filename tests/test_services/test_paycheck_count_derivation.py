@@ -278,14 +278,29 @@ class TestTheCountIsTheSchedule:
     ):
         """THE FIRING CONTROL: the cadence actually moves the answer.
 
-        Input: ONE profile, priced at 7 days and at 14 days.
-        Expected: the weekly gross is half the biweekly one, exactly.
+        Input: ONE profile -- one pay entry of $3,525.96 a paycheck
+        ($91,675.00 a year / 26, the owner's own 14-day rhythm) -- walked on a
+        7-day calendar and on a 14-day one.
+        Expected: the same $3,525.96 paycheck on both, counted 52 and 26 times
+        a year, so the weekly calendar's yearly figure is twice the biweekly
+        one's, exactly.
         Why: every assertion above would still pass if the engine ignored the
         cadence and hardcoded 26 for a 14-day-cadence fixture -- the suite
         would be green and the defect back.  This is the case that fails if
-        the divisor stops being a function of the argument, and it is the
-        assertion the whole pre-R-F16 suite lacked: nothing varied this axis,
-        so nothing could see a count that was not the schedule's.
+        the count stops being a function of the calendar argument, and it is
+        the assertion the whole pre-R-F16 suite lacked: nothing varied this
+        axis, so nothing could see a count that was not the schedule's.
+
+        **Re-stated on the pay list's walk at plan step salary:X-av-3a.**  It
+        priced one YEARLY salary on each calendar and asserted the paycheck
+        was that salary over the calendar's count ($1,762.98 weekly against
+        $3,525.96 biweekly).  The stored fact is one PAYCHECK now (ruling
+        **R-SAL59**), so no calendar divides anything: what survives is that
+        the count comes from the calendar the basis carries and the yearly
+        figure is the paycheck times it.  Each calendar holds one era and the
+        entry's payday (the owner's first saved payday, 2024-01-05) sits
+        below both, where the earliest era runs backward, so the walk crosses
+        no change of rhythm and carries nothing (R-SAL82).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -300,37 +315,29 @@ class TestTheCountIsTheSchedule:
             # The owner's own rhythm on the entry's payday is 14 days.
             start_test_pay_list(profile, _PAY_OF_91675_AT[26])
             db.session.flush()
-            configs = load_tax_configs_for_year(profile, 2026)
 
             weekly = _calendar(7, 52, user_id=user_id)
             biweekly = _calendar(14, 26, user_id=user_id)
 
-            weekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, weekly), weekly.periods[0], configs,
-            ).earnings.gross_biweekly
-            biweekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, biweekly), biweekly.periods[0], configs,
-            ).earnings.gross_biweekly
+            weekly_pay = PayrollBasis(profile, weekly).base_pay_on(
+                weekly.periods[0].start_date,
+            )
+            biweekly_pay = PayrollBasis(profile, biweekly).base_pay_on(
+                biweekly.periods[0].start_date,
+            )
 
-            # Hand-computed, and stated as the cents rather than as a
-            # tolerance band: $91,675 / 52 = $1,762.9807... -> $1,762.98 and
-            # $91,675 / 26 = $3,525.9615... -> $3,525.96, each one
-            # ROUND_HALF_UP at the cent.  A band would not catch a one-cent
-            # error, which is exactly the size of what the code around this
-            # computes.
-            #
-            # **Re-pinned at plan step balance:X-aw** from $1,762.99 /
-            # $3,525.97, which carried MED-05 / PA-07's residue cent (and
-            # whose comment misstated the biweekly residue as 10 cents; it
-            # was 4 -- $91,675 - $3,525.96 * 26 = $0.04).
-            assert weekly_gross == Decimal("1762.98")
-            assert biweekly_gross == Decimal("3525.96")
-            # The docstring's own claim, now literally true: two weekly
-            # paychecks make one biweekly one, to the cent.  Under the
-            # superseded rule it was FALSE at this salary -- $1,762.99 x 2 =
-            # $3,525.98 against a biweekly $3,525.97 -- because the residue
-            # was distributed independently in each of the two years.
-            assert weekly_gross * 2 == biweekly_gross
+            # The paycheck is the entry on both calendars: nothing divides it.
+            assert weekly_pay.per_paycheck == Decimal("3525.96")
+            assert biweekly_pay.per_paycheck == Decimal("3525.96")
+            # The count is each calendar's own.
+            assert weekly_pay.periods_per_year == Decimal("52")
+            assert biweekly_pay.periods_per_year == Decimal("26")
+            # Hand-computed, exact (a product rounds nothing):
+            # $3,525.96 x 52 = $183,349.92 and $3,525.96 x 26 = $91,674.96.
+            assert weekly_pay.annual == Decimal("183349.92")
+            assert biweekly_pay.annual == Decimal("91674.96")
+            # Twice the paychecks, twice the year, to the cent.
+            assert weekly_pay.annual == biweekly_pay.annual * 2
 
 
 class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
@@ -596,7 +603,11 @@ class TestTheSecondCountIsGone:
                 )
             }
             assert "pay_periods_per_year" not in columns
-            assert "annual_salary" in columns  # the census reached the table
+            # The census reached the table.  The witness was ``annual_salary``
+            # until plan step salary:X-av-3a dropped that column for
+            # ``salary.pay_entries``; ``filing_status_id`` is a live column of
+            # the same table that no step in flight removes.
+            assert "filing_status_id" in columns
 
     def test_the_columns_check_constraint_is_gone_too(self, app):
         """``ck_salary_profiles_positive_periods`` is dropped with its column.

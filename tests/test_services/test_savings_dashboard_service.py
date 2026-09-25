@@ -2565,17 +2565,17 @@ class TestDTIRaiseAware:
         """C26-1: With an applicable raise the DTI denominator is the
         post-raise engine gross.
 
-        Salary $104,000.00 + a one-time 3% raise effective month 1 of
-        the current period's year.  ``apply_raises`` applies the raise
-        once for the current period, so the engine's per-period gross
-        reflects the post-raise salary; the period-to-monthly factor
-        (26/12) is the structural biweekly-pay-schedule normalization
-        and is preserved.
+        Salary $4,000.00 a paycheck ($104,000.00 / 26, from the first
+        payday, 2026-01-02) + a one-time 3% raise effective month 2 of the
+        current period's year.  The raise lands on 2026-02-01, after the pay
+        entry (an entry holds every raise landing on or before its payday,
+        ruling R-SAL59, so a January raise would be inside it) and before the
+        current period's payday, so the engine's per-period gross reflects
+        the post-raise pay; the period-to-monthly factor (26/12) is the
+        structural biweekly-pay-schedule normalization and is preserved.
 
         Hand-computed engine output (MED-06 / F-032):
-            annual_after_raise = 104000.00 * 1.03 = 107120.00
-            gross_biweekly     = 107120.00 / 26   = 4120.0000 -> $4,120.00
-                                 (ROUND_HALF_UP via paycheck_calculator)
+            gross_biweekly     = 4000.00 * 1.03 = 4120.00
             gross_monthly      = 4120.00 * 26 / 12 = 8926.6666...
                                                    -> $8,926.67 ROUND_HALF_UP
 
@@ -2586,7 +2586,12 @@ class TestDTIRaiseAware:
 
         DTI ratio uses the engine-derived ``total_monthly_payments``
         (verified by sibling debt-summary tests) over the new
-        denominator, quantized to one decimal place.
+        denominator, quantized to one decimal place.  **The loan is
+        $10,000.00, not the helper's $1,000.00**, because a one-decimal
+        ratio cannot see the $260.00 over the small loan's $43.87 payment
+        (both denominators give 0.5%).  At $10,000.00, 5%, 24 months the
+        payment is $438.71: 438.71 / 8,926.67 = 4.91% -> 4.9, where the
+        dropped raise's 438.71 / 8,666.67 = 5.06% -> 5.1.
         """
         from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
         from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
@@ -2619,11 +2624,13 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))
-            _create_small_loan(seed_user, db.session)
+            _create_small_loan(
+                seed_user, db.session, principal=Decimal("10000.00"),
+            )
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -2825,10 +2832,12 @@ class TestDTIRaiseAware:
             36-43% -> moderate
             > 43%  -> high
 
-        Salary $50,000 + a one-time 3% raise effective month 1 of the
-        current year (applies once in the current period):
-            annual_after_raise = 50000.00 * 1.03 = 51500.00
-            gross_biweekly     = 51500.00 / 26   = 1980.7692... -> $1,980.77
+        Salary $1,923.08 a paycheck ($50,000 / 26, from the first payday,
+        2026-01-02) + a one-time 3% raise effective month 2 of the current
+        year -- landing 2026-02-01, after the pay entry, so it applies once
+        in the current period (a January raise would be inside the entry,
+        ruling R-SAL59):
+            gross_biweekly     = 1923.08 * 1.03 = 1980.7724 -> $1,980.77
             gross_monthly      = 1980.77 * 26 / 12 = 4291.6683...
                                                    -> $4,291.67 ROUND_HALF_UP
             36% band floor (engine)  = 4291.67 * 0.36 = $1,545.00
@@ -2878,7 +2887,7 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))

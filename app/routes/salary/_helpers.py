@@ -10,6 +10,7 @@ instances, preserving the pre-split monolith's behaviour.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -40,7 +41,7 @@ from app.services import (
     salary_regeneration,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import NEVER_ENDS, EndBound, picker_model
 from app.schemas.validation import (
     CalibrationConfirmSchema,
@@ -284,34 +285,45 @@ def _respond_after_raise_change(profile):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
-def _line_cadence_phrases(profile) -> dict[int, str]:
+def _line_cadence_phrases(
+    profile, calendar_source: "Callable[[], PayCalendar]",
+) -> dict[int, str]:
     """How often each of *profile*'s deductions is taken, worded for the page.
 
     The Frequency cell's one source since plan step salary:R15-b: each
     line's recurrence rule described through the recurrence package, or
     *every paycheck* for a line with none (R-SAL3).  A rule is resolved
-    against the owner's calendar, which this page otherwise never derives
-    (``_paychecks_per_year`` explains why: two pages load a calendar for
-    nothing else, and ``calendar_for`` refuses an owner with no schedule,
-    whom the form must still serve) -- so it is derived exactly when a line
-    carries a rule, which is exactly when the owner has one, a rule being
-    authored against it.
+    against the owner's calendar, asked of *calendar_source* exactly when a
+    line carries a rule (which is exactly when the owner has a schedule, a
+    rule being authored against one) and never otherwise, so a render with
+    no rule derives nothing here.
+
+    **It takes a SOURCE rather than deriving its own since plan step
+    salary:X-av-3a**, the shape :func:`~app.services.income_service
+    .paycheck_pricing` takes for the same reason: the edit page now derives
+    the owner's calendar on every render (the pay list), and this helper's
+    own ``calendar_for`` was then a SECOND derivation of one schedule in one
+    render -- measured at 2 by the page's one-derivation test.  The edit page
+    hands its pass's memo; the HTMX fragment, which holds no pass, hands
+    ``calendar_for`` bound to the owner, still asked only when a line recurs.
 
     Args:
         profile: The salary profile whose deductions the section lists.
+        calendar_source: A zero-argument callable answering the owner's
+            :class:`~app.services.pay_calendar.PayCalendar`.
 
     Returns:
         ``{deduction id: phrase}``.
     """
     calendar = (
-        calendar_for(profile.user_id)
-        if any(d.recurs for d in profile.lines)
-        else None
+        calendar_source() if any(d.recurs for d in profile.lines) else None
     )
     return payroll_line_cadence.cadence_phrases(profile.lines, calendar)
 
 
-def _line_cadence_context(profile) -> dict:
+def _line_cadence_context(
+    profile, calendar_source: "Callable[[], PayCalendar]",
+) -> dict:
     """The context the lines section renders each line's cadence and kind from.
 
     ONE producer for the two renders of ``salary/_lines_section.html``
@@ -350,6 +362,8 @@ def _line_cadence_context(profile) -> dict:
 
     Args:
         profile: The salary profile whose lines the section lists.
+        calendar_source: The owner's calendar, asked only when a line
+            carries a rule (:func:`_line_cadence_phrases`).
 
     Returns:
         The nine context keys.
@@ -359,7 +373,7 @@ def _line_cadence_context(profile) -> dict:
     return {
         "kind_options": options,
         "kind_labels": dict(options),
-        "cadence_phrases": _line_cadence_phrases(profile),
+        "cadence_phrases": _line_cadence_phrases(profile, calendar_source),
         "recurrence_picker": picker,
         "selected_cadences": {
             line.id: edit_form_cadence(line)
@@ -437,7 +451,9 @@ def _render_lines_partial(profile: SalaryProfile, notice: str | None = None) -> 
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         notice=notice,
-        **_line_cadence_context(profile),
+        **_line_cadence_context(
+            profile, lambda: calendar_for(profile.user_id),
+        ),
     )
 
 

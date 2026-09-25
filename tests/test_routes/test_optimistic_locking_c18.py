@@ -554,8 +554,10 @@ def test_concurrent_update_raises_stale_data_error(
                 "salary", "salary_profiles", SalaryProfile,
             )
 
+            # A monetary column of the row (the yearly salary it mutated
+            # went with plan step salary:X-av-3a).
             def mutate(o):
-                o.annual_salary = Decimal("99999.99")
+                o.additional_income = Decimal("99999.99")
         elif factory_fn == "salary_raise":
             profile = _make_salary_profile(
                 seed_user["user"].id, seed_user["scenario"].id,
@@ -1078,15 +1080,16 @@ class TestSalaryProfileStaleFormPrevention:
                 "salary", "salary_profiles", profile_id,
             )
             db.session.expire_all()
-            salary_before = db.session.get(
+            # The update takes no salary since plan step salary:X-av-3a, so
+            # the witness is the column the stale form tries to rename.
+            name_before = db.session.get(
                 SalaryProfile, profile_id,
-            ).annual_salary
+            ).name
 
             response = auth_client.post(
                 f"/salary/{profile_id}",
                 data={
                     "name": "Renamed Job",
-                    "annual_salary": "99999.99",
                     "filing_status_id": str(filing_status),
                     "state_code": "NC",
                     "version_id": str(stale),
@@ -1099,7 +1102,7 @@ class TestSalaryProfileStaleFormPrevention:
 
             db.session.expire_all()
             persisted = db.session.get(SalaryProfile, profile_id)
-            assert persisted.annual_salary == salary_before
+            assert persisted.name == name_before
 
 
 class TestSalaryRaiseStaleFormPrevention:

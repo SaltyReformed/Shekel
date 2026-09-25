@@ -1056,6 +1056,12 @@ class TestOneCalendarDerivationPerRender:
 
         An adversarial review of that step found the fix ungraded: this class
         covered only GETs, so nothing would have noticed it coming back.
+
+        **The POST and the edit page it redirects to are counted in two
+        windows** (plan step salary:X-av-3a).  The edit page prices the pay
+        list since that step, so it derives the calendar once of its own; one
+        window over both read 2, the POST's one and the page's one, and could
+        not tell that from a POST deriving twice.
         """
         with app.app_context():
             filing_status = (
@@ -1071,9 +1077,9 @@ class TestOneCalendarDerivationPerRender:
                 "pay_payday": first_payday,
                 "filing_status_id": status_id,
                 "state_code": "NC",
-            }, follow_redirects=True)
+            })
 
-        assert resp.status_code == 200
+        assert resp.status_code == 302
         with app.app_context():
             created = (
                 db.session.query(SalaryProfile)
@@ -1092,6 +1098,19 @@ class TestOneCalendarDerivationPerRender:
             f"POST /salary derived the pay calendar {counts['derive_periods']} "
             f"times; the route derives one and threads it into the template's "
             f"opening bound, its per-paycheck amount and the generate pass"
+        )
+
+        with counting_calls(_CALENDAR_DOOR) as page_counts:
+            page = auth_client.get(resp.headers["Location"])
+
+        assert page.status_code == 200
+        assert "Arch Job" in page.get_data(as_text=True), (
+            "the redirect did not land on the new profile's edit page"
+        )
+        assert page_counts["derive_periods"] == 1, (
+            f"the salary edit page derived the pay calendar "
+            f"{page_counts['derive_periods']} times; it derives one, for the "
+            f"pay list it prices"
         )
 
     def test_the_count_grows_with_the_account_set_when_a_producer_derives(

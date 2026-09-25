@@ -30,8 +30,9 @@ from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
-from app.services import retirement_levers, retirement_readiness
+from app.services import pension_calculator, retirement_levers, retirement_readiness
 from app.services.balance_at import BalanceContext
+from app.services.payroll_basis import PayrollBasis
 from app.services import retirement_plan
 from app.services.retirement_plan import (
     _stored_blend_percent,
@@ -39,7 +40,7 @@ from app.services.retirement_plan import (
     picture_at,
 )
 from app.utils.dates import add_months, display_today
-from tests._test_helpers import start_test_pay_list
+from tests._test_helpers import freeze_today, start_test_pay_list
 
 
 class _FakeAccount:
@@ -441,10 +442,11 @@ class TestTheBatchIsHorizonIndependent:
 # ── salary:S3-f-2b: the point BELIEVES a raise set, and a probe moves it ──
 
 
-def _seed_believed_plan(db, seed_user, *, effective_year):
+def _seed_believed_plan(db, seed_user, *, effective_year, effective_month=1):
     """The :func:`_seed_plan` scenario plus ONE forever raise reaching every read.
 
-    A recurring 5% January raise from *effective_year* with no end year, on the
+    A recurring 5% raise from *effective_year* (January unless
+    *effective_month* says otherwise) with no end year, on the
     profile that the pension projects from, that the income target scales
     from, that the current paycheck is priced from, AND that funds the 401(k)'s
     5%-of-gross employer contribution -- so the four salary-path reads plan
@@ -455,6 +457,8 @@ def _seed_believed_plan(db, seed_user, *, effective_year):
         db: The test database handle.
         seed_user: The ``seed_user`` fixture dict.
         effective_year: The year the raise first applies.
+        effective_month: The month it applies in each year (default
+            January).
 
     Returns:
         ``(profile, raise_row, account)``.
@@ -477,6 +481,7 @@ def _seed_believed_plan(db, seed_user, *, effective_year):
     )
     raise_row = make_recurring_raise(
         profile.id, db.session, effective_year=effective_year,
+        effective_month=effective_month,
     )
     params = (
         db.session.query(InvestmentParams)
@@ -598,13 +603,23 @@ class TestThePointBelievesARaiseSet:
     ):
         """Ending the raise after its first year lowers every figure it feeds.
 
-        The salary path is exact and hand-checkable.  $80,000.00 with a 5%
-        January raise from year N+1 (N is the pass's year), evaluated each
-        December 1:
+        The salary path is exact and hand-checkable.  $3,076.92 a paycheck
+        ($80,000.00 / 26) with a 5% January raise from year N+1 (N is the
+        pass's year), evaluated each December 1, each raise step rounded to
+        the cent (ruling R-SAL60) and the year's figure the pay times 26
+        (ruling R-SAL59):
 
-          stored (no end year):   N+1 = 80,000 x 1.05   = 84,000.00
-                                  N+2 = 80,000 x 1.05^2 = 88,200.00
-          probed (ends after N+1): N+1 = 84,000.00, N+2 = 84,000.00 (it stops)
+          stored (no end year):   N+1: 3,076.92 x 1.05 = 3,230.766 -> 3,230.77
+                                       x 26 = 84,000.02
+                                  N+2: 3,230.77 x 1.05 = 3,392.3085 -> 3,392.31
+                                       x 26 = 88,200.06
+          probed (ends after N+1): N+1 = 84,000.02, N+2 = 84,000.02 (it stops)
+
+        **The path is read off the walk the pension projects it with** --
+        :func:`~app.services.pension_calculator.project_profile_salaries` over
+        each point's believed set -- since plan step salary:X-av-3a deleted
+        the summary's copy of it; that the pension itself read the probed set
+        is the ``monthly_income`` inequality below.
 
         Every figure downstream of that path is then LOWER under the probe:
         the pension's monthly benefit (its high-4 average is over smaller
@@ -623,24 +638,35 @@ class TestThePointBelievesARaiseSet:
         """
         with app.app_context():
             year = display_today().year + 1
-            _, raise_row, account = _seed_believed_plan(
+            profile, raise_row, account = _seed_believed_plan(
                 db, seed_user, effective_year=year,
             )
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),
             )
-            stored = picture_at(inputs, inputs.stored_plan)
-            probed = picture_at(inputs, inputs.plan_with(
+            probed_point = inputs.plan_with(
                 raise_probes={raise_row.id: ("year", year)},
-            ))
+            )
+            stored = picture_at(inputs, inputs.stored_plan)
+            probed = picture_at(inputs, probed_point)
 
-            stored_path = dict(stored.pension.salary_by_year)
-            probed_path = dict(probed.pension.salary_by_year)
-            assert stored_path[year] == Decimal("84000.00")
-            assert stored_path[year + 1] == Decimal("88200.00")
-            assert probed_path[year] == Decimal("84000.00")
-            assert probed_path[year + 1] == Decimal("84000.00"), (
-                "the probed end year did not reach the pension's salary path"
+            def salary_path(point):
+                return dict(pension_calculator.project_profile_salaries(
+                    PayrollBasis(
+                        profile, inputs.balance_ctx.calendar(),
+                        point.terms_for(profile),
+                    ),
+                    year, year + 1,
+                ))
+
+            stored_path = salary_path(inputs.stored_plan)
+            probed_path = salary_path(probed_point)
+            assert stored_path[year] == Decimal("84000.02")
+            assert stored_path[year + 1] == Decimal("88200.06")
+            assert probed_path[year] == Decimal("84000.02")
+            assert probed_path[year + 1] == Decimal("84000.02"), (
+                "the probed end year did not reach the salary path the "
+                "pension walks"
             )
 
             assert probed.pension.monthly_income < stored.pension.monthly_income
@@ -664,17 +690,29 @@ class TestThePointBelievesARaiseSet:
             )
 
     def test_a_probe_before_this_year_moves_the_current_paycheck(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, monkeypatch, seed_user, seed_periods_52,
     ):
         """R-SAL21's case: an end year before this year re-prices TODAY's paycheck.
 
-        A 5% January raise effective the year BEFORE the current payday's,
+        A 5% February raise effective the year BEFORE the current payday's,
         believed forever, has applied twice by that payday; believed only
-        through its first year it applied once.  The current paycheck's
-        gross, biweekly, is then exact:
+        through its first year it applied once.  From $3,076.92 a paycheck
+        ($80,000.00 / 26), each step rounded to the cent (ruling R-SAL60),
+        the current paycheck's gross, biweekly, is then exact:
 
-          stored:  80,000 x 1.05^2 / 26 = 88,200 / 26 = 3,392.307... -> 3,392.31
-          probed:  80,000 x 1.05   / 26 = 84,000 / 26 = 3,230.769... -> 3,230.77
+          stored:  3,076.92 x 1.05 = 3,230.766 -> 3,230.77
+                   x 1.05          = 3,392.3085 -> 3,392.31
+          probed:  3,230.77
+
+        **The owner's pay record reaches back a year** (52 paydays from
+        2026-01-02, today pinned to 2027-03-20) since plan step
+        salary:X-av-3a.  The pay entry is recorded on the first payday and
+        holds every raise landing on or before it (ruling R-SAL59), and a
+        pay-list door refuses a payday below the record -- so on the
+        ten-payday window this case ran on, both applications of a raise
+        from the year before landed inside the entry and nothing was left to
+        probe.  February rather than January for the same reason: a January
+        2026 application lands on 2026-01-01, the day before the entry.
 
         The years are taken off the CURRENT PAYDAY rather than off today: in
         early January the period containing today can open in December, and
@@ -689,14 +727,15 @@ class TestThePointBelievesARaiseSet:
             compute_current_paycheck,
         )
 
+        freeze_today(monkeypatch, date(2027, 3, 20))
         with app.app_context():
             current_payday = max(
-                period.start_date for period in seed_periods_today
+                period.start_date for period in seed_periods_52
                 if period.start_date <= display_today()
             )
             last_year = current_payday.year - 1
             _, raise_row, _ = _seed_believed_plan(
-                db, seed_user, effective_year=last_year,
+                db, seed_user, effective_year=last_year, effective_month=2,
             )
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),

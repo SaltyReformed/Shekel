@@ -558,8 +558,8 @@ class PayrollBasis:
         payday's included, badges nothing.
 
         **Across a change of rhythm it compares YEARLY pay**, labelled ``a
-        year`` (the developer's 2026-09-25 ruling "Yearly pay across a seam",
-        amending R-SAL84): two paychecks paid at different counts are not
+        year`` (ruling **R-SAL89**, "Yearly pay across a seam", amending
+        R-SAL84): two paychecks paid at different counts are not
         comparable one to one, so ``$2,060.00`` biweekly followed by a
         recorded ``$1,030.00`` weekly is ``$53,560.00`` a year either side
         and badges nothing, where a per-paycheck comparison announced a

@@ -14,7 +14,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_line import PaycheckLine
 from app.models.calibration_override import CalibrationOverride
-from app.services import pay_period_write
+from app.services import pay_list_service, pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -216,7 +216,10 @@ class TestProfileList:
             response = auth_client.get("/salary/new")
 
             assert response.status_code == 200
-            assert b'name="annual_salary"' in response.data
+            # The first pay entry, typed per paycheck (plan step
+            # salary:X-av-3a, ruling R-SAL61).
+            assert b'name="pay_amount"' in response.data
+            assert b'name="pay_payday"' in response.data
             assert b'name="filing_status_id"' in response.data
             assert b"New Salary Profile" in response.data
 
@@ -271,60 +274,32 @@ class TestProfileCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Day Job")
                 .one()
             )
-            assert profile.annual_salary == Decimal("75000.00")
+            # The salary is the profile's pay list: ONE entry, what was typed,
+            # from the payday it was typed for (plan step salary:X-av-3a).
+            assert [(e.payday, e.amount) for e in profile.pay_entries] == [
+                (date(2026, 1, 2), Decimal("2884.62")),
+            ]
             assert profile.template is not None
             assert profile.template.is_active is True
 
-    def test_create_profile_template_amount(
+    def test_create_profile_yearly_pay_follows_the_cadence(
         self, app, auth_client, seed_user, seed_periods, tax_law,
     ):
-        """Created template amount equals annual_salary over the paycheck count."""
-        tax_law(EMPTY_TAX_LAW)
-        with app.app_context():
-            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+        """A weekly owner's created pay is 52 paychecks a year, not 26.
 
-            auth_client.post("/salary", data={
-                "name": "Salary Check",
-                "pay_amount": "2000.00",  # $52,000.00 a year / 26
-                "pay_payday": "2026-01-02",  # the first period's payday
-                "filing_status_id": filing_status.id,
-                "state_code": "NC",
-            }, follow_redirects=True)
-
-            profile = (
-                db.session.query(SalaryProfile)
-                .filter_by(user_id=seed_user["user"].id, name="Salary Check")
-                .one()
-            )
-            # 52000 / 26 = 2000
-            assert profile.template.default_amount == Decimal("2000.00")
-
-    def test_create_profile_template_amount_follows_the_cadence(
-        self, app, auth_client, seed_user, seed_periods, tax_law,
-    ):
-        """A weekly owner's paycheck template is the salary over 52, not 26.
-
-        Input: the same $52,000 create POST as the test above, from an owner
-        whose ``budget.pay_schedule.cadence_days`` is 7.
-        Expected: ``default_amount`` is $1,000.00 ($52,000 / 52).
-        Why: **the sibling above cannot see this** -- its owner is biweekly, so
-        a route that hardcoded 26, or read a per-profile count, produces the
-        same $2,000.00 either way.  Before plan step R-F16 nothing checked the
-        form's ``pay_periods_per_year`` against the schedule, so a weekly owner
-        accepting the dropdown's default seeded every paycheck row at DOUBLE
-        their pay.
-
-        **What this pins, measured rather than assumed.**  The figure asserted
-        is the one ``create_profile`` finally writes, which is the paycheck
-        ENGINE's answer for the reference period -- ``_paycheck_template``'s
-        own ``annual / count`` seed is overwritten by ``set_amount`` in the
-        same request, and mutating that seed to ``/ 26`` leaves this test
-        green.  Hardcoding the count
-        :meth:`PayrollBasis.base_pay_on` divides by (``periods_per_year``
-        until plan step salary:X-av-2) to 26 fails
-        it, and it is the ONLY test in this module that does -- which is the
-        point: every other case here is biweekly, where the derived count and
-        the old constant agree.
+        Input: a create POST of $1,000.00 a paycheck from 2026-01-02, from an
+        owner whose paydays are 7 days apart.
+        Expected: the template is born at $1,000.00 (no tax law, so net ==
+        gross), and the pay list states the entry at 52 paychecks a year,
+        $1,000.00 x 52 = $52,000.00 (ruling R-SAL59).
+        Why: pay is typed per paycheck since plan step salary:X-av-3a, so the
+        yearly division this case graded until then (the salary over the
+        derived count) is gone from the create door.  The derived count
+        survives in the yearly figure, and a count hardcoded to 26 -- the
+        regression plan step R-F16 removed, where a weekly owner accepting
+        the dropdown's default was modelled at double their pay -- reads
+        $26,000.00 here.  Every other case in this module is biweekly, where
+        the derived count and the old constant agree.
         """
         tax_law(EMPTY_TAX_LAW)
         with app.app_context():
@@ -350,8 +325,15 @@ class TestProfileCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Weekly Check")
                 .one()
             )
-            # 52000 / 52 = 1000, gross == net here (no tax configs seeded).
+            # Typed 1,000.00; gross == net here (no tax law).
             assert profile.template.default_amount == Decimal("1000.00")
+            rows = pay_list_service.pay_rows(
+                PayrollBasis(profile, calendar_for(seed_user["user"].id)),
+            )
+            # 1,000.00 x 52 = 52,000.00.
+            assert [(row.paychecks_a_year, row.yearly) for row in rows] == [
+                (52, Decimal("52000.00")),
+            ]
 
     def test_the_salary_form_states_the_derived_paycheck_count(
         self, app, auth_client, seed_user, seed_periods,
@@ -714,7 +696,6 @@ class TestProfileUpdate:
 
             response = auth_client.post(f"/salary/{profile.id}", data={
                 "name": "Updated Job",
-                "annual_salary": "80000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -722,8 +703,10 @@ class TestProfileUpdate:
             assert response.status_code == 200
             assert b"updated" in response.data
 
+            # The update takes no salary since plan step salary:X-av-3a (a
+            # salary change is the pay list's Fix); the name is the edit.
             db.session.refresh(profile)
-            assert profile.annual_salary == Decimal("80000.00")
+            assert profile.name == "Updated Job"
 
     def test_delete_profile(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/<id>/delete deactivates the profile and its template."""
@@ -3405,17 +3388,17 @@ class TestDeductionFrequencyDisplay:
     def test_the_page_derives_no_calendar_for_lines_without_a_rule(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A rule is described against the owner's calendar; no rule, no calendar.
+        """A rule is described against the owner's calendar; no rule, no calendar of its own.
 
-        The edit page deliberately loads no calendar of its own
-        (``profiles._paychecks_per_year`` gives the reason), so the cadence
-        reader derives one only when a line carries a rule -- which is also
-        the only case ``calendar_for``'s refusal of a schedule-less owner
-        cannot reach, a rule being authored against a calendar.  Counted at
+        Since plan step salary:X-av-3a the edit page prices the pay list, so
+        it derives the owner's calendar ONCE for every profile
+        (``edit_profile``'s ``PayrollBasis``); the cadence reader must add no
+        derivation of its own for a line that carries no rule.  Counted at
         the cursor: a calendar is derived by loading the owner's
         ``budget.pay_periods`` rows (their ``start_date``s); the page's own
         ``SELECT EXISTS`` over that table is not a derivation and is let
-        through.
+        through.  Exactly one, so a counter that never fired reads 0 and
+        fails here.
         """
         # pylint: disable=import-outside-toplevel
         from sqlalchemy import event
@@ -3438,13 +3421,21 @@ class TestDeductionFrequencyDisplay:
                 assert response.status_code == 200
                 return [s for s in statements if "pay_periods.start_date" in s]
 
-            assert not calendar_loads(), (
-                "the edit page derived a calendar for a line with no rule"
+            loads = calendar_loads()
+            assert len(loads) == 1, (
+                f"the edit page derived {len(loads)} calendars for a profile "
+                "whose one line has no rule; the pay list's is the one"
             )
-            # The positive control: give one line a rule and the same page
-            # derives the calendar it describes the rule against.
+            # The positive control: give one line a rule and the page still
+            # derives ONE calendar -- the pass's, which the rule is described
+            # against (the lines section is handed the pass's memo, plan step
+            # salary:X-av-3a; it derived a second of its own until then,
+            # measured at 2).  It also proves the counter fires.
             self._seed(profile, "Health Insurance", 24)
-            assert calendar_loads(), "the predicate never fires; the case above measured nothing"
+            assert len(calendar_loads()) == 1, (
+                "a line with a rule made the edit page derive the owner's "
+                "calendar more than once"
+            )
 
     def test_deduction_frequency_column_header(
         self, app, auth_client, seed_user, seed_periods
@@ -5215,10 +5206,11 @@ class TestCockpitContext:
         """Chips/composition are hand-correct for a no-tax $75,000 profile.
 
         With no tax configs, every withholding is $0, so net == gross.
-        Gross biweekly = round_money(75000 / 26) = 2884.62 (75000 / 26 =
+        Gross biweekly = the one pay entry, 2884.62 ($75,000 / 26 =
         2884.6153..., half-up to cents).  Net == gross == 2884.62; annual
-        salary (no raises) stays 75000.00; take-home = 2884.62/2884.62*100
-        = 100; net is 100.0% of gross.
+        salary (no raises) is the paycheck times the count (ruling
+        R-SAL59): 2884.62 x 26 = 75000.12; take-home =
+        2884.62/2884.62*100 = 100; net is 100.0% of gross.
         """
         tax_law(EMPTY_TAX_LAW)
         with app.app_context():
@@ -5233,7 +5225,7 @@ class TestCockpitContext:
             assert ctx["empty_state"] is None
             assert ctx["profile"].id == profile.id
             assert ctx["chips"]["gross"] == Decimal("2884.62")
-            assert ctx["chips"]["annual_salary"] == Decimal("75000.00")
+            assert ctx["chips"]["annual_salary"] == Decimal("75000.12")
             assert ctx["chips"]["take_home_rate_pct"] == Decimal("100")
             assert ctx["composition"]["net"] == Decimal("2884.62")
             assert ctx["composition"]["taxes_total"] == Decimal("0")

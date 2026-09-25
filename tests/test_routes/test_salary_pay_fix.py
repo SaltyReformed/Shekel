@@ -14,8 +14,8 @@ truth.  Every figure is made up.
 * ownership: another owner's entry is a 404, paired with the owner's own POST
   to the same URL shape resolving, so the 404 is the gate's and not the URL
   map's;
-* both doors take the stub door's payday rule (R-SAL48's bound, the
-  developer's 2026-09-25 ruling "Up to next payday"): a payday later than
+* both doors take the stub door's payday rule (R-SAL48's bound, ruling
+  **R-SAL90**, "Up to next payday"): a payday later than
   the owner's next one is refused with the stub door's own words.
 
 Today is pinned to 2026-03-20 (the stub tests' day): inside the seeded
@@ -471,3 +471,75 @@ class TestOwnership:
                 "amount": "1.00", "payday": "2026-01-02", "version_id": "1",
             })
             assert response.status_code == 404
+
+
+class TestACutReadsAsACut:
+    """A recorded pay cut renders amber with a down arrow; an increase stays green (R-SAL85).
+
+    The second entry is planted through the model: in this leaf no door
+    records a second entry (plan step salary:X-av-3b's "Record a pay
+    change" will), and the screens read the pay list whichever door wrote it.
+    Made-up: $2,000.00 from 2026-01-02, then $1,930.00 (a cut) or $2,070.00
+    (an increase) from 2026-02-13, the fourth seeded payday.
+    """
+
+    def _profile_changing_to(self, client, seed_user, seed_periods, amount):
+        """The profile, its first entry through the form, the second planted."""
+        profile = _create_through_the_form(
+            client, seed_user, "2000.00", seed_periods[0].start_date.isoformat(),
+        )
+        profile.pay_entries.append(SalaryPayEntry(
+            payday=seed_periods[3].start_date, amount=Decimal(amount),
+        ))
+        db.session.commit()
+        return profile
+
+    def test_the_projection_row_and_badge_of_a_cut_are_amber_with_a_down_arrow(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """02-13's row: ``sal-row-cut``, and its badge ``sal-badge-cut`` with the arrow."""
+        with app.app_context():
+            profile = self._profile_changing_to(
+                auth_client, seed_user, seed_periods, "1930.00",
+            )
+            page = auth_client.get(f"/salary/{profile.id}/projection").get_data(
+                as_text=True,
+            )
+            assert 'class="sal-row-cut"' in page
+            assert (
+                '<span class="sal-badge-cut"><i class="bi bi-arrow-down" '
+                'aria-hidden="true"></i> Pay -$70.00</span>'
+            ) in page
+            assert "sal-row-raise" not in page
+
+    def test_an_increase_keeps_the_green_row_and_no_arrow(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """$2,070.00: ``sal-row-raise``, ``sal-badge-raise``, 'Pay +$70.00', no cut class."""
+        with app.app_context():
+            profile = self._profile_changing_to(
+                auth_client, seed_user, seed_periods, "2070.00",
+            )
+            page = auth_client.get(f"/salary/{profile.id}/projection").get_data(
+                as_text=True,
+            )
+            assert 'class="sal-row-raise"' in page
+            assert '<span class="sal-badge-raise">Pay +$70.00</span>' in page
+            assert "sal-row-cut" not in page
+            assert "sal-badge-cut" not in page
+
+    def test_the_cockpit_banner_of_a_cut_says_pay_cut(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The 02-13 paycheck's anatomy: the amber 'Pay cut:' banner, not 'Raise:'."""
+        with app.app_context():
+            profile = self._profile_changing_to(
+                auth_client, seed_user, seed_periods, "1930.00",
+            )
+            response = auth_client.get(
+                f"/salary?profile={profile.id}&period={seed_periods[3].id}",
+            )
+            assert response.status_code == 200
+            page = response.get_data(as_text=True)
+            assert "<strong>Pay cut:</strong> Pay -$70.00" in page
+            assert "<strong>Raise:</strong>" not in page

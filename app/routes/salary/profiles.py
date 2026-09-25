@@ -104,8 +104,14 @@ def _paychecks_per_year() -> "int | None":
     calendar whenever a deduction line carries a cadence rule
     (``_helpers._line_cadence_phrases``: a rule is described against
     it, and a rule is authored against one, so that derivation cannot meet
-    the refusal); this read stays on the soft door because the page must
-    still render for the owner with no schedule and no rules.*
+    the refusal).*  **And since plan step salary:X-av-3a the EDIT page
+    derives it on every render**, for the pay list and the rhythm notice
+    (``edit_profile``), so for that page this soft read no longer spares the
+    owner with no schedule: the calendar door refuses one first.  No such
+    owner reaches it -- the create door derives the same calendar and no
+    door deletes a schedule -- and the NEW-profile page, which derives the
+    calendar only after this read finds a cadence, is where it still
+    answers rather than raises.
 
     Returns:
         The paycheck count as an ``int``, or ``None``.
@@ -335,8 +341,7 @@ def create_profile():
         db.session.add(profile)
         db.session.flush()
         # The payday rule is the stub door's, and so is its "today": the
-        # owner's civil day, as the stub route hands it (ruling "Up to next
-        # payday", 2026-09-25).
+        # owner's civil day, as the stub route hands it (ruling R-SAL90).
         pay_list_service.start_pay_list(
             profile, ctx, data["pay_amount"], data["pay_payday"],
             display_today(),
@@ -446,7 +451,7 @@ def edit_profile(profile_id):
         pay_rows=pay_list_service.pay_rows(basis),
         rhythm_changes=basis.rhythm_changes_without_pay(),
         stub_summaries=pay_stub_service.stub_summaries(profile),
-        **_line_cadence_context(profile),
+        **_line_cadence_context(profile, ctx.calendar),
     )
 
 

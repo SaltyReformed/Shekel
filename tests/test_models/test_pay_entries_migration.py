@@ -386,6 +386,24 @@ class TestTheDowngrade:
             assert _pay_list_exists()
             assert not _annual_column_exists()
 
+    def test_a_raise_landing_on_the_entry_payday_refuses(
+        self, app, db, seed_user,
+    ):
+        """Entry from 2026-01-01; a raise landing 2026-01-01 is ON it: the boundary of ``<=``."""
+        with app.app_context():
+            rebuild_calendar(seed_user["user"].id, date(2026, 1, 1), 6, 14)
+            migration = load_migration_module(_MIGRATION)
+            profile = make_salary_profile(seed_user, db.session, name="Day job")
+            _raise(profile, 2026, 1)
+            db.session.commit()
+
+            with pytest.raises(RuntimeError) as excinfo:
+                run_migration_callable(migration.downgrade, db.session)
+            db.session.rollback()
+
+            assert "on or before the pay entry of 2026-01-01" in str(excinfo.value)
+            assert _pay_list_exists()
+
     def test_a_raise_landing_after_the_entry_does_not_refuse(
         self, app, db, seed_user, seed_periods,
     ):

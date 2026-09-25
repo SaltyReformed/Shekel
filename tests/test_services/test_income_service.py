@@ -764,13 +764,19 @@ class TestConsumerIntegration:
         :class:`income_service.ProfilePaychecks`, the ONE spelling of a
         profile's projection, rather than re-derived here.
 
-        Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.
+        Hand arithmetic: ``4000.00 * 1.03 = 4120.00`` (the pay entry,
+        $104,000 / 26, raised once).  The raise is effective February 2026:
+        the pay entry is recorded on the window's first payday, 2026-01-19
+        (today pinned to 2026-03-20), and holds every raise landing on or
+        before it (ruling R-SAL59), so a January raise -- landing 2026-01-01
+        -- would be inside it; February lands after it and before the
+        current payday.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(
-                profile, effective_month=1, effective_year=2026,
+                profile, effective_month=2, effective_year=2026,
             )
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
@@ -1686,6 +1692,12 @@ class TestThePricerIsKeyedOnTheRaiseSet:
         FK through the ref cache instead, and the paycheck moves by the
         raise.  A second adversarial review of S3-f-1 found the relationship
         read raising ``AttributeError`` on exactly this row.
+
+        **The raise is effective February and the paycheck priced is the
+        first one in February** since plan step salary:X-av-3a.  The pay
+        entry is recorded on the first payday, 2026-01-02, and holds every
+        raise landing on or before it (ruling R-SAL59); a January raise lands
+        on 2026-01-01, so it would be inside the entry and move nothing.
         """
         with app.app_context():
             profile = _create_profile(
@@ -1695,9 +1707,13 @@ class TestThePricerIsKeyedOnTheRaiseSet:
             db.session.refresh(profile)
             calendar = calendar_for(profile.user_id)
             first = calendar.saved()[0]
+            february = next(
+                period for period in calendar.saved()
+                if period.start_date >= date(first.start_date.year, 2, 1)
+            )
             before = pricing_over(calendar).for_profile(
                 profile,
-            ).at(first).earnings.gross_biweekly
+            ).at(february).earnings.gross_biweekly
 
             with db.session.no_autoflush:
                 pending = SalaryRaise(
@@ -1705,7 +1721,7 @@ class TestThePricerIsKeyedOnTheRaiseSet:
                     raise_type_id=ref_cache.raise_type_id(
                         RaiseTypeEnum.CUSTOM,
                     ),
-                    effective_month=1, effective_year=first.start_date.year,
+                    effective_month=2, effective_year=first.start_date.year,
                     flat_amount=Decimal("26000.00"), percentage=None,
                     is_recurring=False, terminal_year=None,
                 )
@@ -1716,7 +1732,7 @@ class TestThePricerIsKeyedOnTheRaiseSet:
                 assert pending.raise_type is None
                 after = pricing_over(
                     calendar,
-                ).for_profile(profile).at(first)
+                ).for_profile(profile).at(february)
                 db.session.rollback()
 
             # $26,000 a year is exactly $1,000.00 a paycheck over 26.

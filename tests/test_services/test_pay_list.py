@@ -17,8 +17,8 @@ pins one ruling on its own worked example, every figure made up:
 * **R-SAL82** ("Yearly pay carries, said"): across a change of rhythm with no
   entry recorded, the pay is the yearly pay over the new count, and the
   salary page names it;
-* **R-SAL84** / **R-SAL85** and the 2026-09-25 ruling "Yearly pay across a
-  seam": the paycheck where a recorded entry begins badges ``PAY +/-$X``
+* **R-SAL84** / **R-SAL85** and **R-SAL89** ("Yearly pay across a
+  seam"): the paycheck where a recorded entry begins badges ``PAY +/-$X``
   against the one before it -- in yearly pay across a change of rhythm -- and
   a replaced forecast raise badges nothing.
 

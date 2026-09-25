@@ -1212,7 +1212,9 @@ class TestCrossResourceIDOR:
             start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
             db.session.commit()
             profile_id = profile.id
-            original_salary = profile.annual_salary
+            # The salary is the profile's pay list since plan step
+            # salary:X-av-3a.
+            original_pay = [(e.payday, e.amount) for e in profile.pay_entries]
 
             # Auth client (user 1) tries to access user 2's salary profile.
             resp = auth_client.get(f"/salary/{profile_id}/edit")
@@ -1220,7 +1222,7 @@ class TestCrossResourceIDOR:
 
             # Verify profile is unchanged in DB.
             db.session.refresh(profile)
-            assert profile.annual_salary == original_salary
+            assert [(e.payday, e.amount) for e in profile.pay_entries] == original_pay
             assert profile.name == "Other User Job"
 
     def test_delete_other_users_category(

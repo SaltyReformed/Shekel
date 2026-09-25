@@ -15,9 +15,9 @@ salary:X-av-3b's (ruling **R-SAL83**), and Remove never takes the last entry
   one later than the owner's next payday -- the stub door's own rule and
   message (**R-SAL49**, **R-SAL48**), asked through
   :func:`~app.services.pay_stub_service.payday_refusal` so the rule has one
-  home (the developer's 2026-09-25 ruling "Up to next payday": an entry is pay received,
-  and a mistyped year would otherwise replace every forecast raise before
-  it); asked of a Fix only when it CHANGES the payday, as the stub door asks
+  home (ruling **R-SAL90**, "Up to next payday": an entry is pay
+  received, and a mistyped year would otherwise replace every forecast raise
+  before it); asked of a Fix only when it CHANGES the payday, as the stub door asks
   it (**R-SAL53**), so an entry whose payday later left the pay record stays
   fixable in place;
 * a Fix moving an entry onto a payday another of the profile's entries
