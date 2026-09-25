@@ -260,7 +260,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **X-at-4** `5d5f5bc1` -- the alarms (**R-SAL74**, **R-SAL86**-**R-SAL88**), `$0.00`; where
         the newest year lacks a state, a missing year's one sentence names each part's year
         (**R-SAL91**); the publish job outputs the refusal's start instant and `build-and-push`'s
-        first step refuses once it has passed, so a re-run cannot reuse a November check.
+        first step refuses once it has passed, so a re-run reusing a November check still refuses.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
