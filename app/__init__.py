@@ -513,7 +513,7 @@ def _register_context_processors(app):
         # pull in app extensions/models kept out of ``app``-package import.
         # pylint: disable=import-outside-toplevel
         from flask_login import current_user
-        if not current_user.is_authenticated:
+        if not _current_user_is_owner():
             return {"mfa_nag_visible": False}
 
         # Suppress on the MFA enrolment / management endpoints.  ``request``
@@ -525,18 +525,6 @@ def _register_context_processors(app):
         if endpoint.startswith("auth.mfa_"):
             return {"mfa_nag_visible": False}
 
-        from app import ref_cache as _rc
-        from app.enums import RoleEnum as _RoleEnum
-        try:
-            owner_role_id = _rc.role_id(_RoleEnum.OWNER)
-        except (RuntimeError, KeyError):
-            # ref_cache not yet initialised (e.g. during migration or
-            # mid-startup).  Fail closed -- absent role data, we cannot
-            # confirm the user is an owner, so do not show the nag.
-            return {"mfa_nag_visible": False}
-        if current_user.role_id != owner_role_id:
-            return {"mfa_nag_visible": False}
-
         from sqlalchemy import exists
         from app.models.user import MfaConfig
         has_enabled_mfa = db.session.query(
@@ -546,6 +534,70 @@ def _register_context_processors(app):
             )
         ).scalar()
         return {"mfa_nag_visible": not has_enabled_mfa}
+
+    @app.context_processor
+    def inject_tax_law_notice():
+        """Hand ``base.html`` what the tax-law notice names, for the owner only.
+
+        Returns one template variable, ``tax_law_gaps``: what
+        :func:`app.services.tax_law_alarm.alarm` names as missing at the
+        NOTICE stage on the owner's display-timezone today.  It is empty --
+        and ``base.html`` draws no banner -- when the law is complete through
+        the year that day calls for.  From November 1 that is next year, so
+        the banner appears on every owner page until next year's law is added
+        (rulings salary:R-SAL74, R-SAL86 and R-SAL87: every page, owner only,
+        no close button).
+
+        Owner only, as the MFA nag above is: the owner is the one who can have
+        the law added.  It queries nothing -- the law is a module constant --
+        so an owner's render, a partial that never draws the layout included,
+        pays one clock read and a walk of the law's few years.
+        """
+        if not _current_user_is_owner():
+            return {"tax_law_gaps": ()}
+        # Pylint: ``import-outside-toplevel`` -- request-time imports inside the
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import like every processor above.
+        # pylint: disable=import-outside-toplevel
+        from app import tax_law
+        from app.services import tax_law_alarm
+        from app.utils import dates
+        return {
+            "tax_law_gaps": tax_law_alarm.alarm(
+                tax_law.LAW, dates.display_today(), tax_law_alarm.Stage.NOTICE,
+            ),
+        }
+
+
+def _current_user_is_owner():
+    """Return True iff the request has an authenticated OWNER-role user.
+
+    The one gate both owner-only banners read (the MFA nag and the tax-law
+    notice).  It fails CLOSED: while the reference cache cannot name the owner
+    role (mid-migration or mid-startup) nobody is confirmed an owner, so
+    neither banner shows -- a banner in an ambiguous startup window is worse
+    than one missed for a moment.
+
+    Returns:
+        bool: Whether the current user is authenticated and holds the owner
+            role.
+    """
+    # Pylint: ``import-outside-toplevel`` -- request-time imports (app-factory
+    # pattern), kept out of ``app``-package import like the processors'.
+    # pylint: disable=import-outside-toplevel
+    from flask_login import current_user
+    from app import ref_cache as _rc
+    from app.enums import RoleEnum as _RoleEnum
+    if not current_user.is_authenticated:
+        return False
+    try:
+        owner_role_id = _rc.role_id(_RoleEnum.OWNER)
+    except (RuntimeError, KeyError):
+        # ref_cache not yet initialised (e.g. during migration or
+        # mid-startup).  Fail closed -- absent role data, we cannot
+        # confirm the user is an owner.
+        return False
+    return current_user.role_id == owner_role_id
 
 
 # Route modules registered (IN ORDER) by ``_register_blueprints``.  Each

@@ -258,9 +258,12 @@ echo "Role ready."
 #
 # ONE transaction, committed once (plan step balance:X-cv): the fresh
 # build or the migrations, the reference-data seed, the three deploy
-# hooks, the tax seed and the audit-trigger check commit together or not
-# at all (rulings R-BAL105, R-BAL122).  Those seeds and that check were
-# steps 4, 6 and 7, run after this commit; the numbers below are kept.
+# hooks and the audit-trigger check commit together or not at all
+# (rulings R-BAL105, R-BAL122).  That seed and that check were steps 4
+# and 7, run after this commit; the numbers below are kept.  (Step 6
+# copied the tax law into every user's rows until plan step
+# salary:X-at-1 gave the law one home in the code, app/tax_law/, which
+# no deploy copies.)
 # A failure here leaves alembic_version unmoved, so
 # deploy/shekel-deploy.sh can re-pin the previous image; a failure in a
 # LATER step lands after this commit.
@@ -285,13 +288,11 @@ python scripts/init_database.py
 #
 # Alternative to seed-script: leave SEED_USER_EMAIL empty and use
 # /register instead.  seed_user.py delegates to
-# auth_service.register_user() -- the same provisioning path the
+# registration_service.register_user() -- the same provisioning path the
 # /register web route uses -- so both create the identical shape in
 # one transaction: user, settings, the pay-period schedule, checking
-# account, baseline scenario, default categories, AND default tax
-# data.  Step 3 seeds the tax rows every EXISTING user lacks, on every
-# start; on a first boot it finds no user yet, so this registration is
-# what writes the owner's.
+# account, baseline scenario and default categories.  Neither writes tax
+# data: the tax law is one copy in the code (plan step salary:X-at-1).
 #
 # SEED_USER_LAST_PAYDAY is REQUIRED when this step runs (plan step
 # X-ad-a): registration no longer invents a pay period, so the seeded

@@ -146,15 +146,15 @@ class TestProfileTaxSeries:
         law supports it.  A year with no state entry is a federal and FICA year
         only.
         """
-        tax_law(TaxLaw(years=(_nc_year(2024, Decimal("0.0399")), made_up_year(2031))))
+        tax_law(TaxLaw(years=(_nc_year(2024, Decimal("0.0399")), made_up_year(2025))))
         with app.app_context():
             profile = _make_profile(seed_user)
 
             series = profile_tax_series(profile)
 
             assert sorted(series.state_configs) == [2024]
-            assert sorted(series.fica_configs) == [2024, 2031]
-            assert sorted(series.bracket_sets) == [2024, 2031]
+            assert sorted(series.fica_configs) == [2024, 2025]
+            assert sorted(series.bracket_sets) == [2024, 2025]
 
 
     def test_the_state_is_sliced_to_the_profiles_filing_status(
