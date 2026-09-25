@@ -3,7 +3,7 @@
 ``carry_forward_unpaid`` applies the three-way partition's semantics --
 settle-and-roll for a definition's envelope rows (recurring or rule-less,
 ruling **R-BAL44**), move-whole for discrete rows, and
-``transfer_service.update_transfer`` for shadows -- as one atomic batch.
+``transfer_service.update_transfer`` for transfers -- as one atomic batch.
 The caller owns the surrounding commit; a ``ValidationError`` from the
 envelope branch must roll the whole batch back.
 """
@@ -48,14 +48,13 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
 
     Steps:
       1. Verify both periods are in the owner's pay calendar.
-      2. Find every non-deleted, projected transaction in the source
-         period that belongs to the specified scenario.
-      3. Partition into shadow / envelope / discrete buckets.
+      2. Find every non-deleted, projected transaction and transfer in the
+         source period that belongs to the specified scenario.
+      3. Partition into transfer / envelope / discrete buckets.
       4. Apply each bucket's semantic (settle-and-roll for envelope,
-         move-whole for discrete, ``transfer_service`` for shadows).
+         move-whole for discrete, ``transfer_service`` for transfers).
       5. Return the count of carried items (envelope settle counts
-         as 1; discrete move counts as 1; each transfer counts as 1
-         regardless of its two shadow rows).
+         as 1; discrete move counts as 1; each transfer counts as 1).
 
     The caller (typically the carry-forward route) is responsible for
     committing the surrounding transaction.  This service does not
@@ -109,7 +108,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     )
     user_id = ctx.user_id
 
-    if (not ctx.shadow_txns
+    if (not ctx.transfers
             and not ctx.envelope_txns
             and not ctx.discrete_txns):
         # Includes the same-period short-circuit and the
@@ -241,9 +240,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             )
             count += 1
 
-    # Move transfers via the service.  De-duplicate by transfer_id because
-    # the query is not account-scoped and may return both shadows from the
-    # same transfer.  Each transfer counts as 1 carried-forward item.
+    # Move transfers via the service, one call per TRANSFER: the context
+    # walks ``budget.transfers`` since plan step ``balance:X-bi-6-4c-2``, where
+    # this loop walked both SHADOWS of each and de-duplicated by
+    # ``transfer_id``.  Each transfer counts as 1 carried-forward item.
     #
     # **The flag is a RECURRING definition's transfer's alone** (plan step
     # ``balance:X-ci-1``, ruling **R-BAL93**; this arm was finding
@@ -258,24 +258,16 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # ``update_transfer`` (**R-BAL96**), so this door states the period and
     # nothing else, as the ``re_placed_ids`` pass states the same rule in
     # SQL for a transaction.  An ad-hoc transfer takes no flag either: no
-    # pass will ever write over it.  Asked of the shadow's parent through its
-    # ``transfer`` relationship -- a load per transfer, which is what the
-    # service call beside it already costs.  **Plan step ``balance:X-bi-6-4``
-    # rewrites this arm to walk ``budget.transfers``**; what it carries
-    # forward is the flag keyed on ``recurs``.
-    moved_transfer_ids = set()
-    for txn in ctx.shadow_txns:
-        if txn.transfer_id not in moved_transfer_ids:
-            # The service moves the parent transfer AND both shadows
-            # to the target period, even if only one shadow was in
-            # the query results.  This self-heals any period mismatch
-            # between siblings (design doc section 10A.2).
-            moved = {"pay_period_id": target_period_id}
-            if txn.transfer.recurs:
-                moved["is_override"] = True
-            transfer_service.update_transfer(txn.transfer_id, user_id, **moved)
-            moved_transfer_ids.add(txn.transfer_id)
-            count += 1
+    # pass will ever write over it.
+    for transfer in ctx.transfers:
+        # The service moves the transfer AND both legs to the target period
+        # together, which self-heals any period mismatch between a transfer
+        # and its shadows (design doc section 10A.2).
+        moved = {"pay_period_id": target_period_id}
+        if transfer.recurs:
+            moved["is_override"] = True
+        transfer_service.update_transfer(transfer.id, user_id, **moved)
+        count += 1
 
     db.session.flush()
 
@@ -319,7 +311,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
               to_period_id=target_period_id,
               envelope_count=len(ctx.envelope_txns),
               discrete_count=len(ctx.discrete_txns),
-              transfer_count=len(moved_transfer_ids))
+              transfer_count=len(ctx.transfers))
     return count
 
 

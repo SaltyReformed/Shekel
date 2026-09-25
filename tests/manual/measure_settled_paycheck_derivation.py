@@ -1,6 +1,7 @@
 """Re-derive every SETTLED paycheck and account for the distance to its record.
 
-Plan step **salary:S2** (``docs/plans/implementation_plan_salary.md`` section 4),
+Plan step **salary:S2** (shipped; its entry is archived in
+``docs/plans/historical/salary_s2_archived_2026-09-25.md``),
 finding **N-442**: production's seven March-June 2026 paychecks were generated
 and settled at ``$2,473.38`` and re-derive at ``$2,454.10`` with the calibration
 removed, a ``-$19.28`` the ledger row recorded as UNACCOUNTED FOR.  The row's

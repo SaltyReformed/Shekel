@@ -23,9 +23,18 @@ correction, is a release that edits these modules.
 **Adding a tax year** is a new ``_year_<YYYY>.py`` beside the others, listed
 in :data:`LAW` below.  Its federal rules must cover every filing status and it
 must cite its sources, or importing it fails (:mod:`app.tax_law._types`); the
-bracket ladders are checked for gaps.  Which year's law prices a given year is
-the resolver's rule, :func:`app.services.tax_config_service.resolve_tax_year`,
-not this package's.
+bracket ladders are checked for gaps, and so are the years (none skipped).
+Which year's law prices a given year is the resolver's rule,
+:func:`app.services.tax_config_service.resolve_tax_year`, not this package's.
+
+**Forgetting to add one is loud** (rulings salary:R-SAL74, R-SAL86, R-SAL87):
+from November 1 every owner page shows a banner and a weekly GitHub run fails
+until next year is here, and from December 1 CI refuses every pull request and
+no release image is built (salary:R-SAL88).
+"Here" means the year, listing every state an earlier year lists -- a year may
+ship federal first and a state later, and the alarms name the state until it
+lands.  The one check behind every alarm is :mod:`app.services.tax_law_alarm`;
+``python scripts/check_tax_law.py notice`` runs it by hand.
 """
 
 from app.tax_law._types import (

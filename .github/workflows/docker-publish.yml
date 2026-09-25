@@ -43,7 +43,70 @@ env:
   COSIGN_VERSION: v3.0.6
 
 jobs:
+  # ── Next year's tax law, before any image is built ──────────────
+  # From December 1 no release image is built until next year's tax law is
+  # in app/tax_law/ (plan step salary:X-at-4; rulings salary:R-SAL74,
+  # R-SAL86, R-SAL88).  ci.yml's ``tax-law`` job refuses the same thing on a
+  # pull request, but GitHub judges that when the PR is pushed and does not
+  # re-run it at merge: a release PR checked green on November 30 could merge
+  # on December 2, and a v* tag skips pull requests altogether.  This check is
+  # judged when the release is BUILT, so neither can ship one.  A December
+  # merge without next year leaves production on the previous image until the
+  # law is added (R-SAL88); the code on main runs ahead of it meanwhile.
+  #
+  # "Re-run failed jobs" re-runs only the build and REUSES this job's result,
+  # so a check that passed on November 28 would otherwise wave through a
+  # build re-run on December 3.  So this job also hands the build the instant
+  # the refusal starts for the law it checked (``refuse_from``), and the
+  # build's first step refuses once that instant has passed.  The date rule
+  # and the timezone stay in Python; the build compares two integers.
+  #
+  # Its OWN job, with read-only permissions, rather than a step of the build:
+  # installing the requirements runs third-party install code, and the build
+  # job holds ``id-token: write`` (it signs images) and ``packages: write``.
+  # ``build-and-push`` NEEDS this job, so a failure here builds nothing.
+  tax-law:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      refuse_from: ${{ steps.refuse_from.outputs.epoch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # The runtime requirements only: importing the law imports the ``app``
+      # package, and the check needs nothing the dev tools add.  No pip cache:
+      # a cache restored into a release workflow is a way to poison it.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The real clock, in the display timezone: fails from December 1 while
+      # next year is missing (scripts/check_tax_law.py).
+      - name: Is next year's tax law in? (refuses from December 1)
+        run: python scripts/check_tax_law.py refuse
+
+      # The Unix time this law's refusal starts (midnight Eastern), for the
+      # build's own check below.  An assignment, so a failing script fails
+      # the step rather than handing the build an empty value.
+      - name: When does the refusal start?
+        id: refuse_from
+        shell: bash
+        run: |
+          epoch="$(python scripts/check_tax_law.py refuse --starts-epoch)"
+          echo "epoch=${epoch}" >> "${GITHUB_OUTPUT}"
+
   build-and-push:
+    needs: tax-law
     runs-on: ubuntu-latest
     permissions:
       # ``id-token: write`` is required for sigstore keyless signing
@@ -56,6 +119,37 @@ jobs:
       packages: write
 
     steps:
+      # FIRST, before any checkout or login: refuse once the tax-law refusal
+      # has started, even when this job is a re-run whose ``tax-law`` result
+      # was judged before it (R-SAL88).  The ONLY way through is a well-formed
+      # instant still in the future: anything else -- a missing or malformed
+      # value, or a comparison that errors (``set -e`` does not fire inside an
+      # ``if``) -- falls to a refusal.  ``shell: bash`` makes GitHub run it
+      # as ``bash --noprofile --norc -eo pipefail``, the invocation
+      # tools/plan_gate/test_ci_scope.py RUNS this text under, with planted
+      # values.
+      - name: Is it still before the tax-law refusal?
+        shell: bash
+        env:
+          REFUSE_FROM: ${{ needs.tax-law.outputs.refuse_from }}
+        run: |
+          set -euo pipefail
+          # One to eighteen ASCII digits: the bracket lists them, so no locale
+          # widens it, and eighteen digits is a number bash can compare.
+          if ! [[ "${REFUSE_FROM}" =~ ^[0123456789]{1,18}$ ]]; then
+              echo "Refusing to build: the tax-law check handed no usable refusal instant ('${REFUSE_FROM}')." >&2
+              echo "That is a fault in the check, not the law: fix it, then re-run all jobs." >&2
+              exit 1
+          fi
+          now="$(date +%s)"
+          if [ "${now}" -lt "${REFUSE_FROM}" ]; then
+              echo "Before the tax-law refusal (${now} < ${REFUSE_FROM})."
+              exit 0
+          fi
+          echo "Refusing to build: the tax-law refusal started at ${REFUSE_FROM} (Unix time) and it is ${now}." >&2
+          echo "Next year's tax law is missing, so this commit cannot ship; the release that adds it builds on its own push." >&2
+          exit 1
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

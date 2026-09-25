@@ -126,6 +126,63 @@ _KIND_NOTES = {
 }
 
 
+class TickForm(enum.Enum):
+    """HOW the panel posts a settle tick: its ids field, amount box and control id.
+
+    Ruling **R-BAL145** (leaf ``balance:X-bi-6-4c-2``): a transfer's tick
+    posts ``transfer_ids`` and ``transfer_amount-<transfer id>`` beside the
+    bills' unchanged ``transaction_ids`` and ``settled_amount-<id>``, and the
+    field names are spelled ONCE, on the offer the service publishes.  They
+    had to become two because a tick stopped naming a row of ONE table: a
+    transfer's is its transfer's id, which can equal a bill's, so one field
+    carrying both could not say which a posted number meant.  This is that
+    once: the offer derives its fields from its member
+    (:attr:`OutstandingTransaction.tick_form`), the template prints them, and
+    the route parses the posted form with the same members -- three readers,
+    one spelling.
+
+    **The member is a function of the offer's KEY and nothing else**
+    (:meth:`of`): a row's key is its int id and a leg's the pair
+    ``transfer_legs.cell_key`` gives it (ruling **R-BAL87**), so the key's
+    shape already says which form a tick takes and no second field can
+    disagree with it.
+
+    Each value is ``(ids field, amount-box prefix, control-id prefix)``; the
+    third keeps a row's checkbox and a leg's apart in the page's DOM, where
+    one id number can name both.
+    """
+
+    ROW = ("transaction_ids", "settled_amount-", "t")
+    LEG = ("transfer_ids", "transfer_amount-", "l")
+
+    @property
+    def ids_field(self) -> str:
+        """Return the form field a tick of this form posts its id under."""
+        return self.value[0]
+
+    @property
+    def amount_prefix(self) -> str:
+        """Return the prefix an amount box's field name carries before its id."""
+        return self.value[1]
+
+    @property
+    def control_prefix(self) -> str:
+        """Return the prefix a tick's checkbox id carries before its id."""
+        return self.value[2]
+
+    @classmethod
+    def of(cls, key) -> "TickForm":
+        """Return the form a tick keyed *key* takes.
+
+        Args:
+            key: An offer's :attr:`OutstandingTransaction.key`.
+
+        Returns:
+            :attr:`LEG` for a transfer leg's pair, :attr:`ROW` for a row id.
+        """
+        return cls.LEG if isinstance(key, tuple) else cls.ROW
+
+
 @dataclass(frozen=True)
 class Section:
     """The heading a block STARTS, when it starts one.
@@ -149,17 +206,26 @@ class Section:
 
 @dataclass(frozen=True)
 class OutstandingTransaction:
-    """The source ROW itself, offered -- the envelope's close, or a bill.
+    """A settle tick offered -- an envelope's close, a bill, or a transfer's leg.
 
     The TRANSACTION arm's offer (plan step X-f2-c2, ruling **R-FA**), beside
-    the purchase arm's :class:`OutstandingPurchase`.  Ticking one settles the
-    row through ``transaction_service.settle_transaction`` -- the same verb the
-    grid's Mark Paid calls -- stamping the statement's own day.
+    the purchase arm's :class:`OutstandingPurchase`, and the TRANSFER arm's
+    too (plan step X-f2-c3).  Ticking a row settles it through
+    ``transaction_service.settle_transaction`` -- the same verb the grid's
+    Mark Paid calls -- stamping the statement's own day; ticking a leg settles
+    its transfer through ``transfer_service.settle_transfer``.
 
     Attributes:
-        transaction_id: The ``budget.transactions`` id, and the value the tick
-            posts back.  Re-scoped by the arm's writer rather than trusted, so
-            publishing it grants nothing.
+        key: WHICH thing is offered: a row's ``budget.transactions`` id, or a
+            transfer leg's ``(transfer id, account id)`` pair --
+            ``transfer_legs.cell_key``, the ONE place a row and a leg are told
+            apart (ruling **R-BAL87**).  It was ``transaction_id``, holding a
+            transfer SHADOW's row id for a leg, until leaf
+            ``balance:X-bi-6-4c-2`` offered the leg itself; a transfer id can
+            equal a bill's id, so the two shapes are what keep them apart.
+            What a tick POSTS is derived from it (:attr:`tick_form`,
+            :attr:`tick_id`), and the arm's writer re-scopes that rather than
+            trusting it, so publishing it grants nothing.
         attributed_on: The day the PROJECTION lands this row on -- its
             ``due_date``, falling back to its pay period's start and clamped
             into that period
@@ -203,13 +269,55 @@ class OutstandingTransaction:
             on every offer it makes (plan step X-f2-c3).
     """
 
-    transaction_id: int
+    key: "int | tuple[int, int]"
     attributed_on: date
     amount: Decimal
     cash_amount: "Decimal | None"
     is_correctable: bool
     is_income: bool
     kind: OfferKind
+
+    @property
+    def tick_form(self) -> TickForm:
+        """Return how this offer's tick is posted (ruling **R-BAL145**).
+
+        Returns:
+            :meth:`TickForm.of` over :attr:`key`.
+        """
+        return TickForm.of(self.key)
+
+    @property
+    def tick_id(self) -> int:
+        """Return the id this offer's tick posts under :attr:`tick_form`.
+
+        A row posts its own id; a leg posts its TRANSFER's, because the
+        account half of its key is the statement's own and a form posting it
+        back would be a second copy of a fact the route already holds.
+
+        Returns:
+            The row id, or the leg's transfer id.
+        """
+        if self.tick_form is TickForm.LEG:
+            return self.key[0]
+        return self.key
+
+    @property
+    def amount_field(self) -> str:
+        """Return the form field name of this offer's amount box.
+
+        Returns:
+            :attr:`TickForm.amount_prefix` followed by :attr:`tick_id`.
+        """
+        return f"{self.tick_form.amount_prefix}{self.tick_id}"
+
+    @property
+    def control_id(self) -> str:
+        """Return the suffix of this tick's checkbox DOM id.
+
+        Returns:
+            :attr:`TickForm.control_prefix` followed by :attr:`tick_id`.
+        """
+        return f"{self.tick_form.control_prefix}{self.tick_id}"
 
 
 @dataclass(frozen=True)
@@ -270,11 +378,16 @@ class OutstandingGroup:
     moves money.
 
     Attributes:
-        transaction_id: The parent ``budget.transactions`` id, and the key the
-            grouping is built on.  Published because plan step X-f2-c2 adds the
-            parent's OWN close tick to this block and posts it; nothing in this
-            leaf posts it.
-        name: The parent's name, for the block's heading.
+        key: The parent's identity, and the key the grouping is built on: a
+            row's ``budget.transactions`` id, or for a transfer's block its
+            leg's ``(transfer id, account id)`` pair -- the same value as its
+            :attr:`settle`'s :attr:`OutstandingTransaction.key`.  It was
+            ``transaction_id`` until leaf ``balance:X-bi-6-4c-2``, holding a
+            transfer SHADOW's row id for a transfer's block.
+        name: The parent's name, for the block's heading -- for a transfer's
+            block, its leg's label composed from the endpoints' CURRENT names
+            (``transfer_legs.TransferLeg.name``) since leaf
+            ``balance:X-bi-6-4c-2``, where it was the shadow's stored copy.
         period: The pay period the parent is budgeted in, as the owner's
             calendar DERIVES it, so the heading names WHICH one.  **Without it
             two blocks can carry the identical heading**: the recurrence engine
@@ -298,7 +411,7 @@ class OutstandingGroup:
             31, eleven templates across twelve paychecks).  Two such rows share
             a name AND a period, so this heading separates them no better than
             the name alone.  Nothing is mis-BOOKED -- a tick posts
-            :attr:`transaction_id`, which differs -- and no such row exists on
+            :attr:`key`'s id, which differs -- and no such row exists on
             either database today.  What would separate them is the occurrence
             each answers, which is exactly the value that step adds; it is
             named here rather than fixed because the column does not exist on
@@ -329,7 +442,7 @@ class OutstandingGroup:
     frozen object.
     """
 
-    transaction_id: int
+    key: "int | tuple[int, int]"
     name: str
     period: DerivedPeriod
     purchases: "tuple[OutstandingPurchase, ...]"
@@ -420,8 +533,49 @@ class OutstandingGroup:
 
 
 @dataclass(frozen=True)
-class OutstandingSet:
+class DamagedTransfer:
+    """A transfer on this account the panel cannot offer, because its pair is broken.
+
+    Ruling **R-BAL148** (developer, 2026-09-25, leaf
+    ``balance:X-bi-6-4c-2``), picked as *"Show the rest, warn"*: the panel
+    lists everything else as normal plus a warning naming the transfer, and
+    does not offer it for ticking, so it cannot be settled by a guess.  A leg
+    is priced through its transfer's verified shadow pair
+    (``transfer_service.leg_settle_amount``), and a pair that is not exactly
+    one live expense and one live income shadow is REFUSED there -- a state
+    no door writes (Transfer Invariant 1; integrity check DC-12 reports it)
+    and production held 0 of on 2026-09-24.  Refusing the whole panel would
+    have been a server error on the account's page, because the panel is
+    built inline there and in a true-up's response.  Plan step
+    ``X-bi-6-4d`` deletes the shadows, and with them this state and this
+    value.
+
+    Attributes:
+        label: The leg's label ("Transfer to Savings"), composed from the
+            endpoints' current names.
+        amount: The transfer's own planned figure
+            (``cash_ledger.resolve_transfer_amount``), printed to identify it.
+            It is NOT what a tick would book: nothing can be booked for a
+            broken pair, which is why it is not offered.
+        attributed_on: The day the projection lands it on, the same caption
+            day an offer carries.
+    """
+
+    label: str
+    amount: Decimal
+    attributed_on: date
+
+
+@dataclass(frozen=True)
+class OutstandingSet:  # pylint: disable=too-many-instance-attributes
     """What a statement of one civil day could still settle, grouped.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- the eighth is
+    :attr:`damaged` (ruling **R-BAL148**), and these eight ARE the panel's one
+    read: its blocks, three count/total pairs the copy pluralises on, and the
+    transfers it must warn about.  The panel renders them together from one
+    value; splitting the warnings into a second return would give the route two
+    producers' answers to keep in step for one render.
 
     **There are THREE tallies and deliberately no fourth that sums them**
     (ruling **R-FA**, extended by **R-FD**).  A single ``total`` double-counts
@@ -455,6 +609,10 @@ class OutstandingSet:
         deposit_count: How many INCOME rows the set offers -- money the
             projection is still waiting to arrive (ruling **R-FD**).
         deposit_total: What those rows would book.
+        damaged: The transfers on this account the panel cannot offer
+            (:class:`DamagedTransfer`), each printed as a warning.  Counted in
+            none of the tallies above, and not in :attr:`is_empty`: nothing
+            about one can be ticked.
 
     Counting lives here and not in the template because these are the figures
     the panel's copy pluralises on, and money-adjacent counting belongs on the
@@ -468,6 +626,7 @@ class OutstandingSet:
     payment_total: Decimal
     deposit_count: int
     deposit_total: Decimal
+    damaged: "tuple[DamagedTransfer, ...]"
 
     @classmethod
     def empty(cls) -> "OutstandingSet":
@@ -486,6 +645,7 @@ class OutstandingSet:
             purchase_count=0, purchase_total=zero,
             payment_count=0, payment_total=zero,
             deposit_count=0, deposit_total=zero,
+            damaged=(),
         )
 
     @property
@@ -494,7 +654,9 @@ class OutstandingSet:
 
         The steady state for a user who reconciles as they go, and the state
         the panel answers with its "nothing is being held back twice" copy
-        rather than an empty form.
+        rather than an empty form -- unless :attr:`damaged` is not empty
+        (ruling **R-BAL148**), when the panel prints only the warnings: a
+        transfer it cannot offer is still outstanding.
 
         **Read off the COUNTS, not off ``groups``**, and the difference is a
         wrong empty state rather than a style point.  This accessor was written
@@ -547,14 +709,24 @@ class ReconcileSubmission:
             and its ``observed_on`` is the day every settled row records its
             money as having moved.
         entry_ids: The purchase entry ids the user ticked.
-        transaction_ids: The source-row ids the user ticked.
-        corrections: ``{transaction id: amount}`` from the panel's amount
+        transaction_ids: The source-row ids the user ticked
+            (:attr:`TickForm.ROW`).
+        corrections: ``{transaction id: amount}`` from the rows' amount
             boxes.  Passed through: the arm decides which of them it may READ
             (ruling **R-FF**) and the settle verb decides whether each is a
             correction or an echo of the prefill.
+        transfer_ids: The transfer ids the user ticked (:attr:`TickForm.LEG`,
+            ruling **R-BAL145**) -- the TRANSFER's own id, never a shadow's,
+            since leaf ``balance:X-bi-6-4c-2``.
+        transfer_corrections: ``{transfer id: amount}`` from the transfer
+            ticks' amount boxes, passed through on the same terms as
+            :attr:`corrections`.  A field of its own because a transfer id and
+            a row id can be the same number.
     """
 
     statement: Statement
     entry_ids: "set[int]"
     transaction_ids: "set[int]"
     corrections: "dict[int, Decimal]"
+    transfer_ids: "set[int]"
+    transfer_corrections: "dict[int, Decimal]"

@@ -738,8 +738,8 @@ def check_data_consistency(session):
     # A settled TRANSFER's money is graded as its LEGS since leaf ``X-bi-6-4a``
     # (ruling **R-BAL106**; the UNION's second arm, one row per undated leg,
     # its ``sh`` join a second spelling ``X-bi-6-4d`` must move).  A SHADOW's
-    # own missing day stays on the row arm until ``X-bi-6-4b``: the loan
-    # readers still call ``settled_day`` on it (``loan_ledger._visible``).
+    # own missing day stays on the row arm until 6-4d; since ``X-bi-6-4b`` the
+    # loan readers ask the leg's record instead (``loan_ledger._visible``).
     results.append(_run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "

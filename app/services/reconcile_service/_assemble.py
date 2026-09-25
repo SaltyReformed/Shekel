@@ -51,9 +51,11 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import baseline_amount_basis
 from app.services.pay_calendar import DerivedPeriod, FiledRow
+from app.services.transfer_legs import key_order
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
+    DamagedTransfer,
     OutstandingGroup,
     ReconcileSubmission,
     OutstandingPurchase,
@@ -157,14 +159,26 @@ def _block_headings(
     return headings
 
 
-def _block_order(group: OutstandingGroup) -> "tuple[int, date, int, int]":
+def _block_order(
+    group: OutstandingGroup,
+) -> "tuple[int, date, int, tuple[int, int, int]]":
     """Return a block's sort key: its section, then its OLDEST offer.
 
-    One rule over both arms, and total: every offer contributes
-    ``(day, arm rank, row id)`` and the block takes the minimum.  A purchase
+    One rule over every arm, and total: every offer contributes
+    ``(day, arm rank, identity)`` and the block takes the minimum.  A purchase
     offers its purchase day, a settle its attribution day; the arm rank breaks
     a same-day tie between them so a block is never ordered by whichever arm
-    happened to be read first, and the row id breaks the rest.
+    happened to be read first, and the identity breaks the rest.
+
+    **The identity goes through ``transfer_legs.key_order``** since leaf
+    ``balance:X-bi-6-4c-2``: a settle's key is a row's int id or a transfer
+    leg's ``(transfer id, account id)`` pair (ruling **R-BAL87**), and Python
+    refuses to compare the two -- ``key_order`` is the one total order over
+    both (every row before every leg, rows by id, legs by transfer then
+    account).  A purchase's entry id rides the row arm of it, which orders it
+    exactly as the bare id did.  Within one section every key has one shape
+    today, so the order is unchanged for rows; a same-day pair of transfer
+    blocks now orders by transfer id where it ordered by shadow id.
 
     **The one-arm case is unchanged, which is what keeps this out of R-EY's
     way.**  With purchases alone the key reduces to (oldest purchase day, 0,
@@ -176,20 +190,20 @@ def _block_order(group: OutstandingGroup) -> "tuple[int, date, int, int]":
         group: The block, before its section label is resolved.
 
     Returns:
-        ``(section rank, day, arm rank, row id)``.  A block always carries at
-        least one offer -- :func:`outstanding_set` builds none otherwise -- so
-        the minimum is always defined.
+        ``(section rank, day, arm rank, identity order)``.  A block always
+        carries at least one offer -- :func:`outstanding_set` builds none
+        otherwise -- so the minimum is always defined.
     """
     offers = [
-        (purchase.purchased_on, 0, purchase.entry_id)
+        (purchase.purchased_on, 0, key_order(purchase.entry_id))
         for purchase in group.purchases
     ]
     if group.settle is not None:
         offers.append(
-            (group.settle.attributed_on, 1, group.settle.transaction_id),
+            (group.settle.attributed_on, 1, key_order(group.settle.key)),
         )
-    day, arm, row_id = min(offers)
-    return (group.kind.rank, day, arm, row_id)
+    day, arm, identity = min(offers)
+    return (group.kind.rank, day, arm, identity)
 
 
 def _sectioned(
@@ -260,6 +274,7 @@ def _tally(
 
 def _summarise(
     groups: "tuple[OutstandingGroup, ...]",
+    damaged: "tuple[DamagedTransfer, ...]",
 ) -> OutstandingSet:
     """Reduce the assembled blocks into the set the boundary publishes.
 
@@ -278,6 +293,8 @@ def _summarise(
     Args:
         groups: The blocks, ordered and sectioned -- the value the set will
             publish, so nothing here can tally a set the caller does not ship.
+        damaged: The transfers the transfer arm could not offer (ruling
+            **R-BAL148**), published beside the tallies and counted in none.
 
     Returns:
         The :class:`~app.services.reconcile_service.OutstandingSet`.
@@ -302,6 +319,7 @@ def _summarise(
         payment_total=payment_total,
         deposit_count=deposit_count,
         deposit_total=deposit_total,
+        damaged=damaged,
     )
 
 
@@ -312,12 +330,21 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     *observed_on*, labels every parent that came back, and reduces the result
     into the :class:`~app.services.reconcile_service.OutstandingSet` the
     boundary publishes.  THREE arms answer: purchases, the source rows
-    themselves (plan step X-f2-c2) and transfer shadows (plan step X-f2-c3).
+    themselves (plan step X-f2-c2) and transfer legs (plan step X-f2-c3,
+    offered as LEGS since leaf ``balance:X-bi-6-4c-2``).
 
-    **All three are unioned on the PARENT's id**, which is why each keys its
-    offers on it: an envelope with outstanding purchases AND an overdue close
-    is ONE block carrying both, which is ruling **R-EW**'s shape, while a bill
-    and a transfer shadow are each a block with a close and no children.
+    **The two ROW arms are unioned on the PARENT's id**, which is why each
+    keys its offers on it: an envelope with outstanding purchases AND an
+    overdue close is ONE block carrying both, which is ruling **R-EW**'s
+    shape, while a bill is a block with a close and no children.  **The
+    transfer arm hands over finished BLOCKS** instead
+    (:func:`~._transfers.outstanding_transfers`): a leg is always childless and
+    headed by its own label and period, so it has nothing to union and no
+    parent to look up, and its key -- a ``(transfer id, account id)`` pair --
+    never enters the row-keyed map, where a transfer id could otherwise meet
+    a bill's equal row id.  Until that leaf the arm offered the transfer's
+    SHADOW row into this map, and only the table's partition on
+    ``transfer_id`` kept the two apart.
 
     **The parents are read in ONE narrow statement, and that is a fix rather
     than a tidy-up.**  The flat reader this replaced returned bare
@@ -405,32 +432,36 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     # The two passes answer it differently on purpose and neither is reachable
     # today; stated so the next reader does not assume symmetry.
     basis = baseline_amount_basis(statement.owner_id)
-    # The two source-row arms union into ONE map, and they can: their scopes
-    # are complements (``transfer_id IS NULL`` against ``IS NOT NULL``), so no
-    # id is in both and the merge cannot silently drop one arm's offer.
-    settles = {
-        **_transactions.outstanding_transactions(statement, basis),
-        **_transfers.outstanding_transfers(statement, basis),
-    }
+    # The purchase and transaction arms union on the parent ROW's id: both key
+    # a ``budget.transactions`` id, so an envelope's purchases and its close
+    # meet in one block.
+    settles = _transactions.outstanding_transactions(statement, basis)
     parents = set(blocks) | set(settles)
     headings = _block_headings(statement, parents)
 
     groups = [
         OutstandingGroup(
-            transaction_id=transaction_id,
-            name=headings[transaction_id][0],
-            period=headings[transaction_id][1],
-            purchases=tuple(blocks.get(transaction_id, ())),
-            settle=settles.get(transaction_id),
+            key=row_id,
+            name=headings[row_id][0],
+            period=headings[row_id][1],
+            purchases=tuple(blocks.get(row_id, ())),
+            settle=settles.get(row_id),
             # Resolved by ``_sectioned`` once the order is known: a block
             # cannot know whether it STARTS a section before it knows what
             # precedes it.
             section=None,
         )
-        for transaction_id in parents
+        for row_id in parents
     ]
+    # The transfer arm's blocks are whole already -- childless, headed by
+    # their own leg -- and keyed by a pair no row id can equal.  What it
+    # could not offer comes back beside them (ruling R-BAL148).
+    transfer_blocks, damaged = _transfers.outstanding_transfers(
+        statement, basis,
+    )
+    groups.extend(transfer_blocks)
     groups.sort(key=_block_order)
-    return _summarise(_sectioned(groups))
+    return _summarise(_sectioned(groups), tuple(damaged))
 
 
 def record_reconciliation(submission: ReconcileSubmission) -> int:
@@ -464,22 +495,26 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     it: an order in a tier that owns neither arm, with nothing able to fail if a
     later edit swapped them.
 
-    **The transfer arm's position is FREE and is fixed anyway.**  Its scope is
-    the complement of the transaction arm's and disjoint from the purchase
-    arm's parents -- a shadow can hold no purchase, and its one possible entry
-    (the seam's covering movement, plan step ``balance:X-bi-3c``; un-dated
-    under a reverted shadow since ``balance:X-bi-3e-2``) is kept out of the
-    purchase arm's scope by ``status_seam.covering_clause()`` whatever its day
-    says -- so no ordering between it and either of them can
-    change an outcome.  It runs last because a sequence
-    with one hard rule in it should not also have an unstated arbitrary part:
-    the order is written down here so a reader learns which half is which.
+    **The transfer arm's position is FREE and is fixed anyway.**  Its items
+    are transfers' legs, which no other arm's scope admits -- the transaction
+    arm's clause excludes every shadow row, and a leg holds no purchase: its
+    one possible entry (the seam's covering movement, plan step
+    ``balance:X-bi-3c``; un-dated under a reverted leg since
+    ``balance:X-bi-3e-2``) is kept out of the purchase arm's scope by
+    ``status_seam.covering_clause()`` whatever its day says -- so no ordering
+    between it and either of them can change an outcome.  It runs last because
+    a sequence with one hard rule in it should not also have an unstated
+    arbitrary part: the order is written down here so a reader learns which
+    half is which.
 
-    **The three arms are handed ONE set of ticked transaction ids**, and each
-    re-scopes it.  The two source-row scopes partition ``budget.transactions``
-    on ``transfer_id``, so an id settles through exactly one of them and can
-    never settle twice; a second form field would be a second place for the
-    panel and the writers to agree about which control posts what.
+    **Each settle arm is handed its OWN form field's ids** (ruling
+    **R-BAL145**, leaf ``balance:X-bi-6-4c-2``): the rows' ``transaction_ids``
+    and the transfers' ``transfer_ids``, with their amount boxes, and each arm
+    re-scopes what it is handed.  They shared ONE ``transaction_ids`` set until
+    that leaf, when a transfer's tick carried its shadow's row id and the two
+    scopes partitioned ``budget.transactions``; a transfer's tick carries the
+    TRANSFER's id now, which can equal a row's, so one field could not say
+    which a posted number meant.
 
     **All three run in the caller's transaction and NONE commits.**  A
     statement is one act: four purchases, their envelope's close and the
@@ -512,13 +547,16 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         statement, submission.entry_ids,
     )
     source_rows = sum(
-        _rows.record_settled(
-            arm, statement,
-            submission.transaction_ids, submission.corrections,
-        )
-        for arm in (
-            _transactions.ARM,
-            _transfers.arm(statement.owner_id),
+        _rows.record_settled(arm, statement, tick_ids, corrections)
+        for arm, tick_ids, corrections in (
+            (
+                _transactions.ARM,
+                submission.transaction_ids, submission.corrections,
+            ),
+            (
+                _transfers.ARM,
+                submission.transfer_ids, submission.transfer_corrections,
+            ),
         )
     )
     return purchases + source_rows

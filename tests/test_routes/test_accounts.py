@@ -3955,18 +3955,18 @@ class TestTheTransferArmThroughItsROUTE:
         deleting the ``group.section.note`` block fails this.
         """
         with app.app_context():
-            _transfer, shadow = self._outstanding_transfer(
+            transfer, _shadow = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
-            shadow_id = shadow.id
+            transfer_id = transfer.id
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             body = auth_client.get(
                 f"/accounts/{seed_user['account'].id}/reconcile",
             ).data.decode()
 
-            assert f'value="{shadow_id}"' in body, (
-                "the transfer's shadow must be offered at all"
+            assert f'value="{transfer_id}"' in body, (
+                "the transfer must be offered at all"
             )
             assert "Transfers" in body
             assert "settles both sides" in body
@@ -3978,20 +3978,20 @@ class TestTheTransferArmThroughItsROUTE:
         """The arm end to end: one form POST moves three rows.
 
         The service case proves the verb does it; this proves the ROUTE
-        reaches the verb -- that the shadow's id posted in the shared
-        ``transaction_ids`` field lands in the transfer arm rather than the
-        transaction one, which would refuse a shadow outright.
+        reaches the verb -- that the transfer's id posted in its own
+        ``transfer_ids`` field (ruling R-BAL145) lands in the transfer arm
+        rather than the transaction one, which would refuse a shadow outright.
         """
         with app.app_context():
-            transfer, shadow = self._outstanding_transfer(
+            transfer, _shadow = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
-            transfer_id, shadow_id = transfer.id, shadow.id
+            transfer_id = transfer.id
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             response = auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
-                data={"transaction_ids": [str(shadow_id)]},
+                data={"transfer_ids": [str(transfer_id)]},
             )
             assert response.status_code == 200
             assert b"already been settled" not in response.data
@@ -4031,17 +4031,17 @@ class TestTheTransferArmThroughItsROUTE:
         the two accounts disagreeing about how much money moved between them.
         """
         with app.app_context():
-            transfer, shadow = self._outstanding_transfer(
+            transfer, _shadow = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
-            transfer_id, shadow_id = transfer.id, shadow.id
+            transfer_id = transfer.id
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             response = auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
-                    "transaction_ids": [str(shadow_id)],
-                    f"settled_amount-{shadow_id}": "80.25",
+                    "transfer_ids": [str(transfer_id)],
+                    f"transfer_amount-{transfer_id}": "80.25",
                 },
             )
             assert response.status_code == 200
@@ -4068,17 +4068,17 @@ class TestTheTransferArmThroughItsROUTE:
         transfer and destroy the signal that says a human typed one.
         """
         with app.app_context():
-            transfer, shadow = self._outstanding_transfer(
+            transfer, _shadow = self._outstanding_transfer(
                 seed_user, seed_periods_today[0],
             )
-            transfer_id, shadow_id = transfer.id, shadow.id
+            transfer_id = transfer.id
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             response = auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
-                    "transaction_ids": [str(shadow_id)],
-                    f"settled_amount-{shadow_id}": "75.00",
+                    "transfer_ids": [str(transfer_id)],
+                    f"transfer_amount-{transfer_id}": "75.00",
                 },
             )
             assert response.status_code == 200
