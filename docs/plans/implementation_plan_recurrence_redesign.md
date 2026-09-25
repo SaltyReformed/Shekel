@@ -293,7 +293,7 @@ accessor, since it is derivable, so whether it refuses is decided and stated.
 **`due_date` is a POSTING INPUT**: each `_POSTING_RELEVANT_FIELDS` names `due_on`,
 `loan_posting_service.backfill_all_loan_postings()` runs after the migration (the caveat
 `c4e91a7b2d38` carries), and the posted ledger is proven identical. The Python files naming
-`due_date` in code (census 63 code files `due_date` in `app/**/*.py`) are a SUPERSET of the column's
+`due_date` in code (census 64 code files `due_date` in `app/**/*.py`) are a SUPERSET of the column's
 sites, and two templates carry `<input name="due_date">`, so the wire moves too. **Rule 14 hazard:**
 `spending_analysis.py` spells the date in SQL (`COALESCE(due_date, PayPeriod.start_date)`), a second
 producer of the accessor; the step names ONE walk. **Carried relays:**
@@ -312,13 +312,18 @@ the Van Loan's terms say the 1st while its payment rule stays on the 22nd, when 
 `loan_installment_date(...)` becomes the single derivation, each payment covering the first contract
 day on or after its payment day, so a late-clearing payment keeps its installment.
 **There is no `recurrence_due_dates` table and there will not be.** The files carrying `payment_day`
-in code (census 18 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it only in prose,
-which a code census excludes by construction -- **already read it as the installment, bar two** --
-exactly two make it a CASH day, in `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`,
-and those two ARE D4's mechanism, which this step fixes; the Van's stored `payment_day` is corrected
-from 22 to 1 here too. Eight distinct producers of "when is this installment due" collapse into one;
-the plan previously counted them as one accessor plus a rule read. Kills D4.
-**This step needs its own review pass** -- it is the deepest cut into the ledger.
+in code (census 19 code files `payment_day` in `app/**/*.py`)
+**already read it as the installment, bar one** -- `loan_recurrence_sync.py` makes it a CASH day
+(`loan_cadence_start`), and that is D4's mechanism, which this step fixes;
+`routes/loan/payment_transfer.py`, which once typed `day_of_month=payment_day` itself, now calls
+that producer and names `payment_day` only in a comment (:190), so it is not among the code files.
+The other files of the (census 30 files `payment_day` in `app/**/*.py`) that name it at all carry it
+only in comments or string literals, which a code census blanks by construction, and not every one
+of those is prose: `routes/loan/_helpers.py`'s `_PARAM_FIELDS` keys a form field by the string. The
+Van's stored `payment_day` is corrected from 22 to 1 here too. Eight distinct producers of "when is
+this installment due" collapse into one; the plan previously counted them as one accessor plus a
+rule read. Kills D4. **This step needs its own review pass** -- it is the deepest cut into the
+ledger.
 
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.

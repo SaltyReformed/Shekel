@@ -13,14 +13,15 @@ is one of the loan TERM primitives the cash ledger itself imports
 (``cash_ledger._loan_installment`` -> ``load_loan_params`` /
 ``load_rate_changes`` / ``loan_payment_due_date``;
 ``cash_ledger._loan_pricing`` -> ``load_escrow_lines``), and plan step X-au-g-2a
-moved rule 4's producer DOWN precisely so that arrow runs ONE way.  Its
-``query_shadow_income`` returns nothing but transfer shadows, every one of them
-DERIVED since plan step X-au-g-2c-2, so it was the loader that most needed this
-(its one caller reads settled rows alone since plan step X-bi-6a, and the leg
-loader beside it takes :func:`transfer_pricing_load_options` for the same
-reason) -- and it cannot ask the cash ledger for it, at module level or at
-call time, because
-``cyclic-import`` (R0401) traces function-level imports too.  A leaf both tiers
+moved rule 4's producer DOWN precisely so that arrow runs ONE way.  Its two
+payment producers read ``budget.transfers`` and take their callers'
+transfer-rooted loads -- :func:`transfer_pricing_load_options` for a caller
+that prices the projected half -- plus :func:`transfer_period_load_option`
+for their own sort key, and they cannot ask the cash ledger for either, at
+module level or at call time, because ``cyclic-import`` (R0401) traces
+function-level imports too.  *The loader that first needed this was the
+shadow-income query, whose rows were all DERIVED transfer shadows; plan step
+balance:X-bi-6-4b deleted it when the settled half moved onto transfers.*  A leaf both tiers
 can reach is the same shape :mod:`app.services.row_valuation` already is, and
 this one is smaller: it names SQLAlchemy and four models and no service at all.
 
@@ -49,9 +50,10 @@ def period_load_option():
     rather than tidiness: a caller that states the pricing options ALSO goes
     through that partition, so the same relationship path is named twice in one
     query.  Two identical options merge; two options naming one path with
-    DIFFERENT strategies is a hard SQLAlchemy error, and
-    :func:`app.services.loan_loaders.query_shadow_income`'s own history records
-    that exact failure being how a duplicate load was found.  One producer makes
+    DIFFERENT strategies is a hard SQLAlchemy error, and the history of
+    ``loan_loaders.query_shadow_income`` (deleted at plan step
+    balance:X-bi-6-4b) records that exact failure being how a duplicate load
+    was found.  One producer makes
     the strategies unable to differ.
 
     Returns:
@@ -136,10 +138,11 @@ def pricing_load_options() -> tuple:
       zero.  Before that step the obligation was one loader's --
       ``loan_loaders.query_shadow_income`` eager-loaded it, and every caller of
       that derivation came through there -- and declaring every shadow derived
-      is what spread it to the grid and the cash fold.  *That loader carries no
-      such obligation now (plan step balance:X-bl-2a made the load its caller's
-      statement); the path is shared through :func:`period_load_option` instead,
-      which is what stops the two spellings differing.*
+      is what spread it to the grid and the cash fold.  *That loader carried no
+      such obligation after plan step balance:X-bl-2a made the load its
+      caller's statement, and plan step balance:X-bi-6-4b deleted it; the
+      path is shared through :func:`period_load_option` instead, which is
+      what stops the two spellings differing.*
 
     **The per-ROW chains are a true N+1 and the per-DEFINITION ones are not**: a
     template's collections are identity-mapped, so 44 templates served 452 rows

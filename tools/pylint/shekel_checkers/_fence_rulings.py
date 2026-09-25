@@ -302,9 +302,12 @@ _FENCED_MODULE_RULINGS = {
         # ``leg_settled_figure`` (``settled_figure``'s twin: the parent's
         # status decides, the record states the figure) and added
         # ``leg_fixed_contribution`` / ``leg_settled_contribution``, the twins
-        # of ``fixed_contribution`` / ``settled_contribution`` arm for arm --
-        # each answers about ONE LEG from its parent's columns and its own
-        # movement, and none folds, dates, sums or reads an anchor.
+        # of ``fixed_contribution`` / ``settled_contribution`` arm for arm
+        # (plan step balance:X-bi-6-4b gave ``leg_settled_contribution`` one
+        # arm more, ruling R-BAL140: a leg whose own money moved under a parent
+        # still Projected answers its movement's figure) -- each answers about
+        # ONE LEG from its parent's columns and its own movement, and none
+        # folds, dates, sums or reads an anchor.
         "leg_fixed_contribution",
         "leg_settled_amounts_by_key",
         "leg_settled_contribution",
@@ -504,17 +507,20 @@ _FENCED_MODULE_RULINGS = {
             # copy of the one clock; the prefix-sum that turns the list into a
             # balance-at-T stays seam-private (``balance_at._fold``).
             "dated_deltas",
-            # A date-bounded loader of settled payment ROWS.  It selects records,
-            # and carries no balance of any kind.
+            # A date-bounded loader of settled payments -- their transfers' legs
+            # since plan step balance:X-bi-6-4b.  It selects records, and
+            # carries no balance of any kind.
             "confirmed_shadows_through",
             # The payment feed's DATE half (plan step balance:X-bl-2a).  It
             # returns dates and nothing else, and that is structural rather than
             # incidental: ``PaymentInstallment`` has no money field to fill.  It
-            # selects the loan's shadow rows and states each one's three dates --
+            # selects the loan's payments -- each a leg of its transfer since
+            # plan step balance:X-bi-6-4b -- and states each one's three dates:
             # the same ruling ``confirmed_shadows_through`` carries, over the
-            # same rows.  It hands back the ORM row, so a figure is reachable by
-            # relationship exactly as it is from that loader; what it cannot do
-            # is sum one, which is the fence's subject.  (``schedule_dates``, the
+            # same payments.  It hands back the leg, whose transfer and record
+            # are ORM rows, so a figure is reachable by relationship exactly as
+            # it is from that loader; what it cannot do is sum one, which is
+            # the fence's subject.  (``schedule_dates``, the
             # slot assignment, is NOT here: it lives in the unfenced pure engine
             # ``amortization_engine``, which no scoped package covers.)
             "payment_installments",

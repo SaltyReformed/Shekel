@@ -350,7 +350,10 @@ def movement_cash_leg(txn: Transaction, entry) -> Decimal:
     what the bank would show for it.  The one figure all three want is this.
 
     Args:
-        txn: The movement's parent row, contributing or not.
+        txn: The movement's parent, contributing or not: a plan row, or a
+            :class:`~app.services.transfer_legs.TransferLeg` whose record the
+            movement is (leaf ``X-bi-6-4a``), which answers ``is_income``,
+            ``is_deleted`` and ``status`` off its transfer and side.
         entry: One of its ``budget.transaction_entries`` rows.
 
     Returns:
