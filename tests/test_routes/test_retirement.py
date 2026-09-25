@@ -29,7 +29,9 @@ from app.models.ref import (
     TransactionType,
 )
 from app.utils.dates import display_today
-from tests._test_helpers import freeze_today, make_every_period_rule, make_recurring_raise
+from tests._test_helpers import (
+    freeze_today, make_every_period_rule, make_recurring_raise, start_test_pay_list,
+)
 
 
 #: One recurring-raise row of the assumptions rail: ``(raise id, inner markup)``.
@@ -81,9 +83,9 @@ def _create_salary_profile(seed_user, db_session, name="Main Job"):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name=name,
-        annual_salary=Decimal("80000.00"),
     )
     db_session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db_session.flush()
     return profile
 

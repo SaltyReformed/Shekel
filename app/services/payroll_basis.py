@@ -557,6 +557,16 @@ class PayrollBasis:
         with the entry's payday).  An entry changing nothing, the first
         payday's included, badges nothing.
 
+        **Across a change of rhythm it compares YEARLY pay**, labelled ``a
+        year`` (the developer's 2026-09-25 ruling "Yearly pay across a seam",
+        amending R-SAL84): two paychecks paid at different counts are not
+        comparable one to one, so ``$2,060.00`` biweekly followed by a
+        recorded ``$1,030.00`` weekly is ``$53,560.00`` a year either side
+        and badges nothing, where a per-paycheck comparison announced a
+        ``$1,030.00`` cut.  "A change of rhythm" is a change of COUNT, the
+        test :func:`_carry` also turns on: a new phase paying as often is
+        compared per paycheck.
+
         Args:
             payday: The paycheck's payday.
             period: The pay period, handed to ``get_raise_event``.
@@ -569,13 +579,17 @@ class PayrollBasis:
             previous = self.calendar.span_containing(payday - timedelta(days=1))
             if previous is None:
                 return ""
-            change = walked.base.per_paycheck - self.base_pay_on(
-                previous.start_date,
-            ).per_paycheck
+            before = self.base_pay_on(previous.start_date)
+            if before.periods_per_year == walked.base.periods_per_year:
+                change = walked.base.per_paycheck - before.per_paycheck
+                unit = ""
+            else:
+                change = walked.base.annual - before.annual
+                unit = " a year"
             if not change:
                 return ""
             sign = "+" if change > 0 else "-"
-            return f"PAY {sign}${abs(change):,.2f}"
+            return f"PAY {sign}${abs(change):,.2f}{unit}"
         return get_raise_event(self.raises, period, walked.entry_payday)
 
     def rhythm_changes_without_pay(self) -> "list[RhythmChangeWithoutPay]":

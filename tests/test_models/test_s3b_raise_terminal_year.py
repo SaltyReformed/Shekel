@@ -57,7 +57,11 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.services.salary_raises import apply_raises
-from tests._test_helpers import constraint_name_from, load_migration_module
+from tests._test_helpers import (
+    constraint_name_from,
+    load_migration_module,
+    start_test_pay_list,
+)
 
 
 #: The three constraint names, kept as constants so a rename in
@@ -100,9 +104,9 @@ def _make_profile(seed_user) -> SalaryProfile:
         scenario_id=seed_user["scenario"].id,
         filing_status_id=single_id,
         name="S3-b",
-        annual_salary=BASE,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3525.96"))  # BASE $91,675.00 a year / 26
     db.session.commit()
     return profile
 

@@ -64,6 +64,7 @@ from tests._test_helpers import (
     payroll_basis,
     pricing_over,
     repriced_by_the_owner,
+    start_test_pay_list,
 )
 
 
@@ -75,7 +76,8 @@ _AS_OF_BEFORE_RAISE = date(2026, 1, 5)  # inside seed_periods period 0
 
 
 def _create_profile(
-    user_id: int, scenario_id: int, *, annual_salary: str = "104000.00",
+    user_id: int, scenario_id: int, *,
+    pay: str = "4000.00",  # $104,000.00 a year / 26
 ) -> SalaryProfile:
     """Create an active SalaryProfile for the user.
 
@@ -88,11 +90,11 @@ def _create_profile(
         scenario_id=scenario_id,
         filing_status_id=filing.id,
         name="Test Salary",
-        annual_salary=Decimal(annual_salary),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal(pay))
     db.session.flush()
     return profile
 

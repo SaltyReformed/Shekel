@@ -334,8 +334,12 @@ def create_profile():
         )
         db.session.add(profile)
         db.session.flush()
+        # The payday rule is the stub door's, and so is its "today": the
+        # owner's civil day, as the stub route hands it (ruling "Up to next
+        # payday", 2026-09-25).
         pay_list_service.start_pay_list(
-            profile, calendar, data["pay_amount"], data["pay_payday"],
+            profile, ctx, data["pay_amount"], data["pay_payday"],
+            display_today(),
         )
 
         # The reference period: the one holding the pass's pinned day -- the
@@ -571,8 +575,8 @@ def fix_pay_entry(entry_id):
 
     try:
         pay_list_service.fix_entry(
-            entry, BalanceContext.build(current_user.id).calendar(),
-            data["amount"], data["payday"],
+            entry, BalanceContext.build(current_user.id),
+            data["amount"], data["payday"], display_today(),
         )
     except ValidationError as refused:
         db.session.rollback()

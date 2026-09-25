@@ -884,7 +884,8 @@ class TestSalaryProfileCreateSchema:
         """
         data = SalaryProfileCreateSchema().load({
             "name": "Stale client",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
             "pay_periods_per_year": "52",
@@ -896,7 +897,8 @@ class TestSalaryProfileCreateSchema:
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load({
                 "name": "Bad",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",
                 "filing_status_id": "1",
                 "state_code": "NCC",  # 3 chars, max is 2.
             })
@@ -1516,7 +1518,8 @@ class TestSalaryProfileCreateSchemaBoundary:
         """Return a valid salary profile payload with optional overrides."""
         data = {
             "name": "Test Profile",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
         }

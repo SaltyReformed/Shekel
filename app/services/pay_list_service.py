@@ -11,12 +11,15 @@ salary:X-av-3b's (ruling **R-SAL83**), and Remove never takes the last entry
 
 **What the doors refuse, and whose rule each refusal is:**
 
-* a day that is not a payday the app holds or projects a paycheck for --
-  the stub door's own rule and message, asked through
-  :func:`~app.services.pay_stub_service.not_a_payday` so "is this a payday"
-  has one home (R-SAL50's shape); asked of a Fix only when it CHANGES the
-  payday, as the stub door asks it (**R-SAL53**), so an entry whose payday
-  later left the pay record stays fixable in place;
+* a day that is not a payday the app holds or projects a paycheck for, or
+  one later than the owner's next payday -- the stub door's own rule and
+  message (**R-SAL49**, **R-SAL48**), asked through
+  :func:`~app.services.pay_stub_service.payday_refusal` so the rule has one
+  home (the developer's 2026-09-25 ruling "Up to next payday": an entry is pay received,
+  and a mistyped year would otherwise replace every forecast raise before
+  it); asked of a Fix only when it CHANGES the payday, as the stub door asks
+  it (**R-SAL53**), so an entry whose payday later left the pay record stays
+  fixable in place;
 * a Fix moving an entry onto a payday another of the profile's entries
   holds: one entry per payday (``uq_pay_entries_profile_payday``), and a Fix
   never overwrites an entry unseen.
@@ -27,21 +30,29 @@ entry covers; the route follows it with
 :func:`~app.services.salary_regeneration.regenerate_salary_transactions`, the
 walk every salary write is followed by.
 
-Flask-free: ORM rows and plain values in, the row out.  Flushes so a caller
-sees assigned ids; never commits -- the route owns the unit of work.
+Flask-free: ORM rows and plain values in, the row out.  Never commits -- the
+route owns the unit of work.  :func:`start_pay_list` flushes, so its caller
+prices the new entry in the same unit of work; :func:`fix_entry` only STAGES
+its change, so the flush that can lose a version race or meet
+``uq_pay_entries_profile_payday`` runs inside the route's guard
+(:func:`~app.routes._commit_helpers.regenerate_commit_or_report`) and is
+reported there, never as a 500.
 """
 
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
-from app.services.pay_calendar import PayCalendar, cadence_on
-from app.services.pay_stub_service import not_a_payday
+from app.services.pay_stub_service import payday_refusal
 from app.services.payroll_basis import PayrollBasis
+
+if TYPE_CHECKING:
+    from app.services.balance_at import BalanceContext
 
 
 @dataclass(frozen=True)
@@ -65,39 +76,46 @@ class PayRow:
 def pay_rows(basis: PayrollBasis) -> list[PayRow]:
     """Return the profile's pay list as the salary page shows it, payday ascending.
 
+    Each entry's yearly figure is :meth:`~app.services.payroll_basis
+    .PayrollBasis.base_pay_on` its own payday -- the ONE producer of a
+    yearly figure (``BasePay.annual``, rule 14), which on an entry's own
+    payday walks nothing past the entry: no raise lands in ``(payday,
+    payday]`` and the rhythm walked from is the rhythm arrived at, so it is
+    the entry's amount times the paychecks a year in force that day.
+
     Args:
-        basis: The profile's :class:`~app.services.payroll_basis.PayrollBasis`
-            -- read for its profile's entries and its calendar, whose rhythm
-            on each entry's payday gives that entry's yearly figure.
+        basis: The profile's :class:`~app.services.payroll_basis.PayrollBasis`.
 
     Returns:
         One :class:`PayRow` per entry.
     """
     rows = []
     for entry in sorted(basis.profile.pay_entries, key=lambda e: e.payday):
-        count = cadence_on(basis.calendar, entry.payday).periods_per_year
-        rows.append(PayRow(entry, int(count), entry.amount * count))
+        base = basis.base_pay_on(entry.payday)
+        rows.append(PayRow(entry, int(base.periods_per_year), base.annual))
     return rows
 
 
-def _refuse_non_payday(calendar: PayCalendar, payday: date) -> None:
-    """Raise when *payday* is not a payday the calendar holds or projects.
+def _refuse_payday(ctx: "BalanceContext", payday: date, today: date) -> None:
+    """Raise when *payday* is not a payday, or is later than the owner's next one.
 
     Args:
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+        ctx: The route's pass, read for the owner's calendar.
         payday: The day an entry would take effect on.
+        today: The owner's civil today, as the stub door is handed it.
 
     Raises:
         ValidationError: With :func:`~app.services.pay_stub_service
-            .not_a_payday`'s message.
+            .payday_refusal`'s message.
     """
-    refusal = not_a_payday(calendar, payday)
+    refusal = payday_refusal(ctx, payday, today)
     if refusal is not None:
         raise ValidationError(refusal)
 
 
 def start_pay_list(
-    profile: SalaryProfile, calendar: PayCalendar, amount: Decimal, payday: date,
+    profile: SalaryProfile, ctx: "BalanceContext", amount: Decimal,
+    payday: date, today: date,
 ) -> SalaryPayEntry:
     """Write a new profile's FIRST pay entry: *amount* a paycheck from *payday* on.
 
@@ -107,17 +125,19 @@ def start_pay_list(
 
     Args:
         profile: The new, flushed profile.
-        calendar: Its owner's calendar.
+        ctx: The route's pass (its owner's calendar).
         amount: What one paycheck pays, above zero (the schema's bound).
         payday: The payday it pays it from.
+        today: The owner's civil today.
 
     Returns:
         The entry, flushed.
 
     Raises:
-        ValidationError: *payday* is not a payday.
+        ValidationError: *payday* is not a payday, or is later than the
+            owner's next one.
     """
-    _refuse_non_payday(calendar, payday)
+    _refuse_payday(ctx, payday, today)
     entry = SalaryPayEntry(payday=payday, amount=amount)
     # Through the relationship, so the profile's loaded pay list holds the
     # entry before the create door prices it in the same unit of work.
@@ -127,7 +147,8 @@ def start_pay_list(
 
 
 def fix_entry(
-    entry: SalaryPayEntry, calendar: PayCalendar, amount: Decimal, payday: date,
+    entry: SalaryPayEntry, ctx: "BalanceContext", amount: Decimal,
+    payday: date, today: date,
 ) -> SalaryPayEntry:
     """Correct one pay entry's amount, its payday, or both (ruling **R-SAL61**, "Fix").
 
@@ -138,19 +159,24 @@ def fix_entry(
     Args:
         entry: The entry, its ownership and version already checked by the
             route.
-        calendar: Its owner's calendar.
+        ctx: The route's pass (its owner's calendar).
         amount: The corrected amount, above zero.
         payday: The corrected payday.
+        today: The owner's civil today.
 
     Returns:
-        The entry, flushed.
+        The entry, its change staged and NOT flushed: the version-pinned
+        UPDATE runs at the caller's guarded flush (module docstring), where a
+        concurrent Fix surfaces as ``StaleDataError`` and a concurrent move
+        onto the same payday as the unique key's ``IntegrityError``.
 
     Raises:
-        ValidationError: A CHANGED payday that is not a payday, or that
-            another of the profile's entries holds.
+        ValidationError: A CHANGED payday that is not a payday, is later
+            than the owner's next one, or another of the profile's entries
+            holds.
     """
     if payday != entry.payday:
-        _refuse_non_payday(calendar, payday)
+        _refuse_payday(ctx, payday, today)
         held = db.session.query(SalaryPayEntry.id).filter(
             SalaryPayEntry.salary_profile_id == entry.salary_profile_id,
             SalaryPayEntry.payday == payday,
@@ -163,7 +189,6 @@ def fix_entry(
             )
     entry.amount = amount
     entry.payday = payday
-    db.session.flush()
     return entry
 
 

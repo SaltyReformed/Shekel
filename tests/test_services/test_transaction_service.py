@@ -57,6 +57,7 @@ from tests._test_helpers import (
     net_posted_by_day,
     repriced_by_the_owner,
     settlement_if_settling,
+    start_test_pay_list,
 )
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
@@ -832,11 +833,11 @@ class TestASettleBooksTheFreshestFigure:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=filing.id,
             name="X-aq Salary",
-            annual_salary=Decimal("104000.00"),
             state_code="NC",
             is_active=True,
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
         db.session.flush()
 
         template = _make_template(

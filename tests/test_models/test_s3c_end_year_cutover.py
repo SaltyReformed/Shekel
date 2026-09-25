@@ -50,7 +50,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services.salary_raises import get_raise_event
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import load_migration_module, start_test_pay_list
 
 MIGRATION = "d4e8b1c62f07_the_end_year_moves_onto_the_raise.py"
 
@@ -90,9 +90,9 @@ def _profile(seed_user, name="S3-c") -> SalaryProfile:
         scenario_id=seed_user["scenario"].id,
         filing_status_id=single_id,
         name=name,
-        annual_salary=Decimal("91675.00"),
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3525.96"))  # $91,675.00 a year / 26
     db.session.commit()
     return profile
 

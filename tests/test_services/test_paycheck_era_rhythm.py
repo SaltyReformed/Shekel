@@ -47,6 +47,8 @@ today's priced paycheck rather than the template's stored copy).
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum, GoalModeEnum, IncomeUnitEnum
 from app.models.savings_goal import SavingsGoal
@@ -76,9 +78,9 @@ from app.services.payroll_basis import PayrollBasis
 from app.utils.dates import display_today
 from tests._test_helpers import (
     era_of,
+    fica_only_law,
     make_recurring_raise,
     make_salary_profile,
-    seed_fica_config,
 )
 from tests.test_services.test_paycheck_calculator import (
     FakeBracket,
@@ -170,10 +172,18 @@ def _tax_configs(ss_wage_base="168600"):
     }
 
 
-def _profile(lines=None):
-    """A made-up $60,000 salary with no raises."""
+def _profile(
+    lines=None, pay=Decimal("5000.00"), pay_from=date(2026, 1, 1),
+):
+    """A made-up $60,000 salary with no raises.
+
+    Its one pay entry sits on the first payday of the calendar a case prices,
+    at that payday's rhythm: by default the MONTHLY 2026-01-01 that
+    :func:`_monthly_then_biweekly` and :func:`_with_a_displaced_first_payday`
+    both open on -- $60,000.00 a year / 12.
+    """
     return FakeProfile(
-        annual_salary=60000, lines=lines, created_at=date(2026, 1, 1),
+        pay=pay, pay_from=pay_from, lines=lines, created_at=date(2026, 1, 1),
     )
 
 
@@ -474,7 +484,14 @@ class TestARecordPaidEarlyBeforeASeam:
 
         assert cadence_on(calendar, payday).periods_per_year == Decimal("52")
         assert calculate_paycheck(
-            PayrollBasis(_profile(), calendar),
+            PayrollBasis(
+                _profile(
+                    # This calendar opens BIWEEKLY on 2026-01-02:
+                    # $60,000.00 a year / 26.
+                    pay=Decimal("2307.69"), pay_from=date(2026, 1, 2),
+                ),
+                calendar,
+            ),
             _period_on(calendar, payday),
             _tax_configs(),
         ).earnings.base_biweekly == Decimal("1153.85")
@@ -497,15 +514,19 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
     until this step, and each expected value is paired with what that read.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     @staticmethod
     def _seed(db, seed_user, periods, *, goal_unit=None):
         """The owner above, the later weekly era, and optionally a 3x income goal."""
         user_id = seed_user["user"].id
         make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 / 26
         )
         db.session.flush()
-        seed_fica_config(user_id)
         last_payday = max(period.start_date for period in periods)
         pay_era_write.mint_era(
             user_id, era_of(last_payday + timedelta(days=28), 7),
@@ -607,6 +628,11 @@ class TestTheRecurringSalaryRow:
     between saves: the row must not read it.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     def test_amount_monthly_and_the_forward_per_paycheck_unit(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
@@ -634,7 +660,6 @@ class TestTheRecurringSalaryRow:
     def _seed_with_a_stale_copy(db, auth_client, seed_user, periods):
         """The owner above through the salary form, then its copy made stale."""
         user_id = seed_user["user"].id
-        seed_fica_config(user_id)
         last_payday = max(period.start_date for period in periods)
         pay_era_write.mint_era(
             user_id, era_of(last_payday + timedelta(days=28), 7),
@@ -643,7 +668,10 @@ class TestTheRecurringSalaryRow:
         filing = db.session.query(FilingStatus).filter_by(name="single").one()
         auth_client.post("/salary", data={
             "name": "Main Job",
-            "annual_salary": "52000.00",
+            "pay_amount": "2000.00",  # $52,000.00 a year / 26
+            "pay_payday": min(
+                period.start_date for period in periods
+            ).isoformat(),
             "filing_status_id": filing.id,
             "state_code": "NC",
         }, follow_redirects=True)

@@ -60,6 +60,7 @@ from tests._test_helpers import (
     mark_purchase_settled,
     open_books_before_the_first_assertion,
     fica_only_law,
+    start_test_pay_list,
 )
 
 
@@ -159,11 +160,11 @@ class TestThePicturesPublishedSurface:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Main",
-                annual_salary=Decimal("80000"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
             db.session.flush()
 
             pension = PensionProfile(
@@ -575,11 +576,11 @@ class TestTheRenderDayOpensTheSalaryPath:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Main",
-                annual_salary=Decimal("80000"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
             db.session.flush()
             db.session.add(PensionProfile(
                 user_id=seed_user["user"].id,
@@ -655,7 +656,7 @@ class TestTheCurrentPaycheckIsThePassPricers:
     def _seed_owner(db, seed_user, *, calibrated):
         """The owner above, with the calibration row present or not."""
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 / 26
         )
         db.session.flush()
         settings = (
@@ -927,15 +928,16 @@ class TestRetirementProjectionEntryAware:
 
             # Active salary profile so the gap path is reachable.
             filing = db.session.query(FilingStatus).first()
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user.id,
                 scenario_id=scenario.id,
                 filing_status_id=filing.id,
                 name="Day Job",
-                annual_salary=Decimal("80000.00"),
                 state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
 
             inv_type = (
                 db.session.query(AccountType)
@@ -1184,11 +1186,11 @@ def _seed_active_salary_profile(db_session, user, scenario):
         scenario_id=scenario.id,
         filing_status_id=filing.id,
         name="C20 Day Job",
-        annual_salary=Decimal("80000.00"),
         state_code="NC",
         is_active=True,
     )
     db_session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db_session.flush()
     return profile
 

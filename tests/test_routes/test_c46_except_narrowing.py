@@ -106,7 +106,8 @@ class TestSalaryNarrowCatch:
                     "/salary",
                     data={
                         "name": "New Profile",
-                        "annual_salary": "75000.00",
+                        "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                        "pay_payday": "2026-01-02",  # the first period's payday
                         "filing_status_id": filing_status.id,
                         "state_code": "NC",
                     },
@@ -561,7 +562,6 @@ class TestRegenerateHelperNarrowCatch:
                         f"/salary/{profile.id}",
                         data={
                             "name": "Day Job",
-                            "annual_salary": "80000.00",
                             "filing_status_id": filing_status.id,
                             "state_code": "NC",
                         },
@@ -618,7 +618,8 @@ class TestNonSqlAlchemyErrorPropagates:
                         "/salary",
                         data={
                             "name": "New Profile",
-                            "annual_salary": "75000.00",
+                            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                            "pay_payday": "2026-01-02",  # the first period's payday
                             "filing_status_id": filing_status.id,
                             "state_code": "NC",
                         },

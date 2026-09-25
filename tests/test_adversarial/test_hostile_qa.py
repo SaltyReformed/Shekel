@@ -27,6 +27,7 @@ from tests._test_helpers import (
     rhythm_of,
     settle_day_columns,
     settlement_if_settling,
+    start_test_pay_list,
 )
 
 
@@ -1205,10 +1206,10 @@ class TestCrossResourceIDOR:
                 scenario_id=second_user["scenario"].id,
                 filing_status_id=filing_single.id,
                 name="Other User Job",
-                annual_salary=Decimal("60000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
             db.session.commit()
             profile_id = profile.id
             original_salary = profile.annual_salary

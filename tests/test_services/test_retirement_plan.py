@@ -39,6 +39,7 @@ from app.services.retirement_plan import (
     picture_at,
 )
 from app.utils.dates import add_months, display_today
+from tests._test_helpers import start_test_pay_list
 
 
 class _FakeAccount:
@@ -198,11 +199,11 @@ def _seed_plan(db, seed_user, *, balance, annual_return, months_out=240):
         scenario_id=seed_user["scenario"].id,
         filing_status_id=filing.id,
         name="Day Job",
-        annual_salary=Decimal("80000.00"),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db.session.flush()
 
     settings = (
@@ -809,11 +810,12 @@ class TestThePointBelievesARaiseSet:
                 scenario_id=seed_second_user["scenario"].id,
                 filing_status_id=db.session.query(FilingStatus).first().id,
                 name="Second Job",
-                annual_salary=Decimal("65000.00"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(foreign_profile)
+            # $65,000.00 a year / 26
+            start_test_pay_list(foreign_profile, Decimal("2500.00"))
             db.session.flush()
             foreign = make_recurring_raise(
                 foreign_profile.id, db.session, effective_year=year + 2,

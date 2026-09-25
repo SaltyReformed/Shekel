@@ -50,6 +50,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     fica_only_law,
     settle_day_columns,
+    start_test_pay_list,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -519,10 +520,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -623,10 +624,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -1602,14 +1603,15 @@ class TestDebtSummary:
         """
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Equivalence Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2380,10 +2382,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2419,10 +2421,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
                 TransferSpec(
@@ -2596,10 +2598,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Raise Salary",
-                annual_salary=Decimal("104000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -2670,10 +2672,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI No-Raise Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2858,10 +2860,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Band Raise Salary",
-                annual_salary=Decimal("50000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -7154,7 +7156,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
                     multiplier=Decimal("3.00")):
         """The owner above, with the calibration row and the second profile as asked."""
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 a year / 26
         )
         db.session.flush()
         if calibrated:
@@ -7175,7 +7177,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         if second_profile:
             make_salary_profile(
                 seed_user, db.session, name="Second Job",
-                annual_salary=Decimal("26000.00"),
+                pay=Decimal("1000.00"),  # $26,000.00 a year / 26
             )
         db.session.add(SavingsGoal(
             user_id=seed_user["user"].id,

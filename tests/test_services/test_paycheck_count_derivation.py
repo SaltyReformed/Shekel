@@ -43,6 +43,7 @@ from app.services.tax_report_service import compute_tax_report
 
 from tests._test_helpers import (
     era_of,
+    start_test_pay_list,
     strip_owner_schedule,
 )
 
@@ -117,10 +118,11 @@ def _investment_account_with_an_active_deduction(db, seed_user, name):
     profile = SalaryProfile(
         user_id=user_id, scenario_id=seed_user["scenario"].id,
         filing_status_id=1, name=f"{name} profile",
-        annual_salary=Decimal("50000.00"), state_code="NC",
+        state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
     db.session.flush()
     db.session.add(PaycheckLine(
         salary_profile_id=profile.id, name=name,
@@ -162,6 +164,17 @@ _CADENCES = [
     (30, 12),    # monthly
     (365, 1),    # annual (a contractor)
 ]
+
+#: The $91,675.00 salary's pay entry at each count above: what ONE paycheck
+#: pays at that rhythm, rounded to the cent ROUND_HALF_UP (plan step
+#: salary:X-av-3a stores the paycheck, not the year).
+_PAY_OF_91675_AT = {
+    52: Decimal("1762.98"),   # $91,675.00 a year / 52
+    26: Decimal("3525.96"),   # $91,675.00 a year / 26
+    24: Decimal("3819.79"),   # $91,675.00 a year / 24
+    12: Decimal("7639.58"),   # $91,675.00 a year / 12
+    1: Decimal("91675.00"),   # $91,675.00 a year / 1
+}
 
 
 def _calendar(cadence_days, count, user_id=1, first=date(2026, 1, 1)):
@@ -234,10 +247,10 @@ class TestTheCountIsTheSchedule:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=1,
                 name=f"Cadence {cadence_days}",
-                annual_salary=Decimal("91675.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, _PAY_OF_91675_AT[count])
             db.session.flush()
 
             calendar = _calendar(cadence_days, count, user_id=user_id)
@@ -281,10 +294,11 @@ class TestTheCountIsTheSchedule:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=1,
                 name="One profile, two rhythms",
-                annual_salary=Decimal("91675.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            # The owner's own rhythm on the entry's payday is 14 days.
+            start_test_pay_list(profile, _PAY_OF_91675_AT[26])
             db.session.flush()
             configs = load_tax_configs_for_year(profile, 2026)
 
@@ -365,12 +379,14 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No paydays",
-                annual_salary=Decimal("50000.00"), state_code="NC",
+                state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             _strip_every_payday_keeping_the_schedule(db, user_id)
 
             report = compute_tax_report(user_id, 2026, date(2026, 3, 1))
@@ -394,12 +410,14 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No cadence",
-                annual_salary=Decimal("50000.00"), state_code="NC",
+                state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             _strip_every_payday(db, user_id)
 
             with pytest.raises(PayCalendarError, match="no pay calendar"):

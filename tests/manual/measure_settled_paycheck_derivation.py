@@ -244,7 +244,12 @@ def _grade_profile(profile, cards):
     return {
         "profile_id": profile.id,
         "user_id": profile.user_id,
-        "annual_salary": str(profile.annual_salary),
+        # The pay list since plan step salary:X-av-3a, which dropped the one
+        # yearly figure this record carried.
+        "pay_list": ", ".join(
+            f"{entry.amount} from {entry.payday.isoformat()}"
+            for entry in sorted(profile.pay_entries, key=lambda e: e.payday)
+        ),
         "stored_calibration": (
             None if profile.calibration is None
             else profile.calibration.pay_stub_date.isoformat()
@@ -364,7 +369,7 @@ def _report(records):
     status = 0
     for record in records:
         print(f"\n=== profile {record['profile_id']} "
-              f"(user {record['user_id']}, salary {record['annual_salary']}, "
+              f"(user {record['user_id']}, pay {record['pay_list']}, "
               f"stored calibration {record['stored_calibration']}) ===")
         states = list(record["paychecks"][0]["derived"])
         print("target = the figure the row was GENERATED at: its stored plan "

@@ -49,6 +49,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     open_owner_calendar,
     rebuild_calendar,
+    start_test_pay_list,
     EMPTY_TAX_LAW,
     bracket_set_law,
     state_and_fica_law,
@@ -105,10 +106,10 @@ def _create_profile(seed_user):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Day Job",
-        annual_salary=Decimal("75000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -182,10 +183,10 @@ def _create_other_user_profile():
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Other Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
 
     return {"user": other_user, "profile": profile}
@@ -255,7 +256,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -283,7 +285,8 @@ class TestProfileCreate:
 
             auth_client.post("/salary", data={
                 "name": "Salary Check",
-                "annual_salary": "52000.00",
+                "pay_amount": "2000.00",  # $52,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -336,7 +339,8 @@ class TestProfileCreate:
 
             auth_client.post("/salary", data={
                 "name": "Weekly Check",
-                "annual_salary": "52000.00",
+                "pay_amount": "1000.00",  # $52,000.00 a year / 52
+                "pay_payday": "2026-01-02",  # the first weekly payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -409,7 +413,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -430,7 +435,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -468,7 +474,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -530,7 +537,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -574,7 +582,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -625,7 +634,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -647,7 +657,8 @@ class TestProfileCreate:
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
             data = {
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }
@@ -672,7 +683,8 @@ class TestProfileCreate:
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
             response = auth_client.post("/salary", data={
                 "name": "Link Test",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -3820,10 +3832,10 @@ def _create_second_user_salary_profile(second_user_data):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Other Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -3848,7 +3860,6 @@ class TestSalaryNegativePaths:
 
             resp = auth_client.post("/salary/999999", data={
                 "name": "Ghost",
-                "annual_salary": "50000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -4047,7 +4058,8 @@ class TestNetBiweeklyMismatchFixes:
 
             auth_client.post("/salary", data={
                 "name": "Net Test Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -4086,7 +4098,8 @@ class TestNetBiweeklyMismatchFixes:
 
             auth_client.post("/salary", data={
                 "name": "No Tax Job",
-                "annual_salary": "60000.00",
+                "pay_amount": "2307.69",  # $60,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -5161,11 +5174,11 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name=name,
-        annual_salary=Decimal("40000.00"),
         state_code="NC",
         is_active=False,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("1538.46"))  # $40,000.00 a year / 26
     db.session.commit()
     return profile
 

@@ -60,6 +60,7 @@ from tests._test_helpers import (
     make_expense_template,
     one_off_row_of,
     repriced_by_the_owner,
+    start_test_pay_list,
 )
 
 
@@ -226,10 +227,10 @@ def _make_salary_profile(user_id, scenario_id):
         scenario_id=scenario_id,
         filing_status_id=filing_status.id,
         name="Day Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
     return profile
 

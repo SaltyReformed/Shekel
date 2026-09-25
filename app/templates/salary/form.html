@@ -90,8 +90,9 @@
               <input type="date" id="pay_payday" name="pay_payday" class="form-control" required
                      value="{{ current_payday.isoformat() if current_payday else '' }}">
               <div class="form-text">
-                The payday this pay starts on: your current payday unless it
-                started later.  A raise already in this pay is not added on top.
+                The payday this pay starts on, no later than your next
+                payday.  A forecast raise dated on or before it is taken to be
+                in this pay already.
               </div>
             </div>
           </div>

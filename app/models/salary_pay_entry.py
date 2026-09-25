@@ -33,7 +33,8 @@ class SalaryPayEntry(
     :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`'s answer, and
     this row is read nowhere else by the engine: the latest entry on or before
     the payday (else the first), then every forecast raise landing after that
-    entry's payday (:func:`~app.services.salary_raises.pay_on`).
+    entry's payday (:func:`~app.services.salary_raises.applications_between`,
+    each step rounded by :func:`~app.services.salary_raises.raise_pay`).
 
     A profile holds at least one entry, and every door keeps it so: the
     create form writes the first, and no door removes the last (**R-SAL68**;

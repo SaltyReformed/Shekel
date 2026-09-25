@@ -112,9 +112,11 @@ def clean_raise_label(raw_label: str) -> str:
     :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on` emits a
     third, alone, for a recorded pay change (ruling **R-SAL84**):
     ``"PAY +${amount:,.2f}"`` or ``"PAY -${amount:,.2f}"``, the one shape
-    carrying a minus.  This cleaner reformats each event for
-    display: the type word is title-cased (``COLA`` -> ``Cola``, matching
-    the app-wide ``raise_type.name|title`` convention) and a percentage's
+    carrying a minus, with a trailing ``" a year"`` when the change is
+    measured in yearly pay across a change of rhythm (kept verbatim here).
+    This cleaner reformats each event for display: the type word is
+    title-cased (``COLA`` -> ``Cola``, matching the app-wide
+    ``raise_type.name|title`` convention) and a percentage's
     trailing zeros are trimmed (``+2.5000%`` -> ``+2.5%``,
     ``+3.0000%`` -> ``+3%``).  Flat amounts keep their to-the-cent money
     formatting verbatim.  Pure string manipulation on the emitter's own

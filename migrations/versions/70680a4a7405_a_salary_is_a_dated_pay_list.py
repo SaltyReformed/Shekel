@@ -54,11 +54,22 @@ payday; measured on the 2026-09-23 clone).
 how many (ruling **R-SAL47**'s shape): the older schema has one number per
 profile, and a second entry is history that number cannot hold.  It refuses a
 profile holding NO entry (no door leaves one; there is nothing to restore
-from), and an owner with more than one pay era for the upgrade's reason.  Otherwise it
+from), an owner with more than one pay era for the upgrade's reason, and --
+the upgrade's third refusal read from the other side -- **a raise landing on
+or before the profile's entry**: the entry already holds that raise, and the
+older engine applies every raise to the one yearly figure, so it would apply
+it a second time.  The create form's default payday (the current one) dates
+an entry after this year's raise, so the state is the ordinary one: made-up,
+``$2,060.00`` from 2026-09-24 over a 3% July 2026 raise restores
+``$53,560.00``, which the older engine prices at ``$2,121.80`` a paycheck from
+July on.  It needs no saved payday, because it dates nothing.  Otherwise it
 restores ``annual_salary`` as the entry times its paychecks a year, which is
 the entry's yearly figure: a round trip moves the stored yearly figure to a
-multiple of the paychecks a year (``$52,000.13`` becomes ``$52,000.12`` at 26
-a year, made-up figures) and prices every paycheck identically.
+multiple of the paychecks a year (``$52,000.13`` becomes ``$52,000.26`` at 26
+a year, made-up figures: 52,000.13 / 26 = 2,000.005, half-up 2,000.01, times
+26), and with no raise landing on or before the entry it prices every
+paycheck identically, up to the per-step rounding of each raise
+(**R-SAL60**) that the older engine rounds once.
 
 Literals a stored value is derived from are spelled here, not imported (the
 standing rule ``f2b7c40d918e`` states): the mean Gregorian year and the two
@@ -129,6 +140,20 @@ _WRITE_ONE_ENTRY_PER_PROFILE = sa.text(
     "JOIN budget.pay_eras e ON e.user_id = sp.user_id"
 )
 
+#: Every raise whose first landing is on or before its profile's pay entry --
+#: which the entry already holds, and which the older schema's one yearly
+#: figure would take again.  Read after the history refusal, so each profile
+#: holds exactly one entry.
+_RAISES_LANDING_BY_THE_ENTRY = sa.text(
+    "SELECT sp.id, sp.name, r.id, r.effective_year, r.effective_month, "
+    "pe.payday "
+    "FROM salary.salary_profiles sp "
+    f"JOIN {_SCHEMA}.{_TABLE} pe ON pe.salary_profile_id = sp.id "
+    "JOIN salary.salary_raises r ON r.salary_profile_id = sp.id "
+    "WHERE make_date(r.effective_year, r.effective_month, 1) <= pe.payday "
+    "ORDER BY sp.id, r.id"
+)
+
 #: How many profiles hold more than one entry, for the downgrade's refusal.
 _PROFILES_WITH_HISTORY = sa.text(
     f"SELECT count(*) FROM (SELECT salary_profile_id FROM {_SCHEMA}.{_TABLE} "
@@ -153,12 +178,17 @@ _RESTORE_ANNUAL = sa.text(
 )
 
 
-def _refuse_unconvertible_owners(bind, direction: str) -> None:
-    """Refuse a profile whose owner has no saved payday, or not exactly one era.
+def _refuse_unconvertible_owners(
+    bind, direction: str, *, dates_an_entry: bool,
+) -> None:
+    """Refuse a profile whose owner has not exactly one era, or (upgrade) no saved payday.
 
     Args:
         bind: The migration's connection.
         direction: ``"upgrade"`` or ``"downgrade"``, for the message.
+        dates_an_entry: Whether this direction dates an entry on the first
+            saved payday -- the upgrade does, so an owner with none is
+            refused; the downgrade dates nothing and asks only the count.
 
     Raises:
         RuntimeError: Naming each such profile; nothing is written.
@@ -166,9 +196,12 @@ def _refuse_unconvertible_owners(bind, direction: str) -> None:
     facts = bind.execute(sa.text(_OWNER_FACTS + " ORDER BY sp.id")).fetchall()
     unconvertible = [
         f"profile {profile_id} ({name}): "
-        + ("no saved payday" if first_payday is None else f"{eras} pay eras")
+        + (
+            "no saved payday" if dates_an_entry and first_payday is None
+            else f"{eras} pay eras"
+        )
         for profile_id, name, first_payday, eras in facts
-        if first_payday is None or eras != 1
+        if (dates_an_entry and first_payday is None) or eras != 1
     ]
     if unconvertible:
         raise RuntimeError(
@@ -187,7 +220,7 @@ def upgrade():
             payday -- each named; nothing is written.
     """
     bind = op.get_bind()
-    _refuse_unconvertible_owners(bind, "upgrade")
+    _refuse_unconvertible_owners(bind, "upgrade", dates_an_entry=True)
     early = bind.execute(_RAISES_LANDING_BY_FIRST_PAYDAY).fetchall()
     if early:
         listing = "; ".join(
@@ -255,12 +288,13 @@ def upgrade():
 
 
 def downgrade():
-    """Refuse a profile holding pay history, else restore ``annual_salary``.
+    """Refuse what one yearly figure cannot hold, else restore ``annual_salary``.
 
     Raises:
         RuntimeError: Any profile holds more than one entry (naming how
-            many) or none, or an owner has no saved payday or not exactly
-            one pay era; nothing is written.
+            many) or none, an owner has not exactly one pay era, or a raise
+            lands on or before its profile's entry -- each named; nothing is
+            written.
     """
     bind = op.get_bind()
     with_history = bind.execute(_PROFILES_WITH_HISTORY).scalar_one()
@@ -280,7 +314,21 @@ def downgrade():
             "these salary profiles hold no pay entry, so the older schema's "
             f"yearly figure has nothing to be restored from: {listing}."
         )
-    _refuse_unconvertible_owners(bind, "downgrade")
+    _refuse_unconvertible_owners(bind, "downgrade", dates_an_entry=False)
+    held = bind.execute(_RAISES_LANDING_BY_THE_ENTRY).fetchall()
+    if held:
+        listing = "; ".join(
+            f"profile {profile_id} ({name}): raise {raise_id} lands "
+            f"{year}-{month:02d}-01, on or before the pay entry of {payday}"
+            for profile_id, name, raise_id, year, month, payday in held
+        )
+        raise RuntimeError(
+            "a pay entry already holds every forecast raise due on or before "
+            "its payday (ruling R-SAL59), and the older schema applies every "
+            "raise to its one yearly figure, so these raises would be applied "
+            f"a second time: {listing}.  Remove or re-date the raise, then "
+            "downgrade again."
+        )
 
     op.add_column(
         "salary_profiles",

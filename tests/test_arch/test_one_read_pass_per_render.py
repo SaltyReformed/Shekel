@@ -1062,11 +1062,13 @@ class TestOneCalendarDerivationPerRender:
                 db.session.query(FilingStatus).filter_by(name="single").one()
             )
             status_id = filing_status.id
+            first_payday = seed_periods[0].start_date.isoformat()
 
         with counting_calls(_CALENDAR_DOOR) as counts:
             resp = auth_client.post("/salary", data={
                 "name": "Arch Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": first_payday,
                 "filing_status_id": status_id,
                 "state_code": "NC",
             }, follow_redirects=True)
