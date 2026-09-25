@@ -54,15 +54,16 @@ the grid since leaf ``X-bi-6-1``, the dashboard's bills, the calendar and the
 Spending report since leaf ``X-bi-6-1b``.  **The ROW spelling of the rule --
 ``paycheck_rows_clause``, every member's rows less the far-leg shadow through
 ``far_leg_clause`` -- was DELETED at ``X-bi-6-1b`` with its last reader**: a
-fence with no reader is deleted, not kept.  :func:`far_legs_of` still reads
-the SETTLED far-leg shadows for the balance seam's subtotal (Transfer
-Invariant 5's record half) until ``X-bi-6``'s remaining leaves move that join.
+fence with no reader is deleted, not kept.  :func:`far_legs_of` read the
+SETTLED far-leg shadows for the balance seam's subtotal until leaf
+``X-bi-6-4a``, when the fold's facts came to name their transfer (ruling
+**R-BAL106**) and that read went: both halves are excluded by transfer id.
 
 Services boundary (``CLAUDE.md``): no Flask symbol.  The clauses are built,
 never executed, here; the queries this module DOES run are
 :func:`set_transfer_legs_in_periods` (the readers' period-windowed transfer
 load, with the record load :func:`set_transfer_legs` reaches through
-``transfer_legs``) and :func:`far_legs_of`'s two for the seam.
+``transfer_legs``) and :func:`far_legs_of`'s one for the seam.
 """
 
 from collections.abc import Iterable
@@ -81,7 +82,6 @@ from app.services.transfer_legs import (
     grid_transfer_legs,
 )
 from app.utils.amount_relationships import transfer_pricing_load_options
-from app.utils.balance_predicates import settled_status_ids
 
 
 @dataclass(frozen=True)
@@ -448,50 +448,49 @@ class PlanItems(NamedTuple):
 
 @dataclass(frozen=True)
 class FarLegs:
-    """The far legs of the set's intra-set transfers, by both identities.
+    """The far legs of the set's intra-set transfers, by their transfer.
 
     What the balance seam needs to keep its composed subtotal in step with the
     items the readers draw (:func:`leg_accounts_shown`).  A member's budget legs
     (:func:`~app.services.balance_at._cash_periods._budget_legs`) hold a
-    transfer two ways, and each is excluded by its own key:
+    transfer two ways, and both are excluded by the TRANSFER's id: for a leg
+    on a NON-balance member, "far" is exactly "its transfer has both endpoints
+    in the set", so :attr:`transfer_ids` is every intra-set transfer, read off
+    ``budget.transfers`` alone.
 
     * a STILL-PROJECTED transfer is a
-      :class:`~app.services.transfer_legs.TransferLeg` derived from
-      ``budget.transfers`` (plan step X-bi-6a), keyed here by its TRANSFER's
-      id -- and for a leg on a NON-balance member, "far" is exactly "its
-      transfer has both endpoints in the set", so :attr:`transfer_ids` is
-      every intra-set transfer, read off ``budget.transfers`` alone;
-    * a SETTLED transfer is a :class:`~app.services.cash_ledger.CashSourceFact`
-      keyed by its SHADOW's ``transaction_id`` (the shadow's own fact and its
-      covering movement's both carry it), so :attr:`transaction_ids` is read
-      off the settled shadow rows -- the record half Transfer Invariant 5
-      admits a balance reader to read until ``X-bi-4`` re-keys it.
+      :class:`~app.services.transfer_legs.TransferLeg` derived from its
+      parent (plan step X-bi-6a);
+    * a SETTLED one is a :class:`~app.services.cash_ledger.CashSourceFact`
+      whose :attr:`~app.services.cash_ledger.CashSourceFact.transfer_id` names
+      it (leaf ``X-bi-6-4a``, ruling **R-BAL106**).  It was keyed by the
+      SHADOW's ``transaction_id`` until then, read off the settled shadow
+      rows by a second query; a fact that names its transfer needs neither,
+      and a leg's money excluded by its transfer is excluded whatever its
+      shadow's status says.
 
-    **No projected shadow row is read** (Transfer Invariant 5: "no balance
-    reader reads a projected shadow row").  The planned half needs none, and
-    the settled half filters on the settled statuses, so when ``X-bi-6``
-    deletes the projected shadows nothing here empties.
+    **No shadow row is read** (Transfer Invariant 5: "no balance reader reads
+    a projected shadow row"), so when ``X-bi-6`` deletes the shadows nothing
+    here moves.
 
     Attributes:
-        transaction_ids: The settled far-leg shadows' ``budget.transactions.id``.
         transfer_ids: Every intra-set transfer's ``budget.transfers.id``.
     """
 
-    transaction_ids: frozenset[int]
     transfer_ids: frozenset[int]
 
     @classmethod
     def none(cls) -> "FarLegs":
         """The empty answer, for a set with nothing to exclude."""
-        return cls(transaction_ids=frozenset(), transfer_ids=frozenset())
+        return cls(transfer_ids=frozenset())
 
 
 def far_legs_of(cash_flow: CashFlowSet) -> FarLegs:
-    """Return the set's far legs -- two queries, for the balance seam.
+    """Return the set's far legs -- one query, for the balance seam.
 
     Issues nothing for a one-member set: it has no other member to hold a far
     leg, so the answer is empty by construction rather than by a round trip.
-    Neither query filters on scenario or soft-deletion, on purpose: the
+    The query filters on neither scenario nor soft-deletion, on purpose: the
     seam's walk and plan are scenario-scoped and read live rows only, so an
     id here that names a row they never hold excludes nothing, and a filter
     would be a second statement of "which rows are live" beside theirs.
@@ -502,24 +501,10 @@ def far_legs_of(cash_flow: CashFlowSet) -> FarLegs:
     Returns:
         The :class:`FarLegs`.
     """
-    other_ids = tuple(a.id for a in cash_flow.others)
-    if not other_ids:
+    if not cash_flow.others:
         return FarLegs.none()
-    transfer_ids = frozenset(
-        row.id for row in _intra_set_transfers(cash_flow).all()
-    )
-    if not transfer_ids:
-        return FarLegs.none()
-    settled_shadows = (
-        db.session.query(Transaction.id)
-        .filter(
-            Transaction.account_id.in_(other_ids),
-            Transaction.transfer_id.in_(transfer_ids),
-            Transaction.status_id.in_(settled_status_ids()),
-        )
-        .all()
-    )
     return FarLegs(
-        transaction_ids=frozenset(row.id for row in settled_shadows),
-        transfer_ids=transfer_ids,
+        transfer_ids=frozenset(
+            row.id for row in _intra_set_transfers(cash_flow).all()
+        ),
     )
