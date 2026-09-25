@@ -1569,7 +1569,7 @@ class TestThirdPaycheckDetection:
             db.session.add(profile)
             db.session.flush()
 
-            configs = load_tax_configs_for_year(user_id, profile, 2026)
+            configs = load_tax_configs_for_year(profile, 2026)
             breakdowns = paycheck_calculator.project_salary(
                 PayrollBasis(profile, calendar),
                 [p for p in calendar.saved() if p.start_date.year == 2026],

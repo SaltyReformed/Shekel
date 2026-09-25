@@ -15,8 +15,6 @@
 #   - scripts/seed_user.py      Seed initial owner (entrypoint.sh +
 #                               docker exec ops)
 #   - scripts/seed_ref_tables.py    Seed lookup tables (docker exec repair)
-#   - scripts/seed_tax_brackets.py  Seed US tax brackets (imported by
-#                                   init_database.py + docker exec repair)
 #   - scripts/seed_companion.py     Seed companion user (docker exec)
 #   - scripts/audit_cleanup.py  Audit log retention (docker exec)
 #   - scripts/integrity_check.py    Integrity sweep (docker exec)

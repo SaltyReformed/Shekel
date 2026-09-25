@@ -193,6 +193,21 @@ class TaxTypeEnum(enum.Enum):
     BRACKET = "bracket"
 
 
+class FilingStatusEnum(enum.Enum):
+    """Federal filing status values.
+
+    Values match ``ref.filing_statuses.name`` in the database.  The tax law
+    (:mod:`app.tax_law`) is keyed on these members, so a profile's
+    ``filing_status_id`` reaches its rules through
+    ``ref_cache.filing_status_member`` and never through a name.
+    """
+
+    SINGLE = "single"
+    MARRIED_JOINTLY = "married_jointly"
+    MARRIED_SEPARATELY = "married_separately"
+    HEAD_OF_HOUSEHOLD = "head_of_household"
+
+
 class RaiseTypeEnum(enum.Enum):
     """Salary-raise type values.
 

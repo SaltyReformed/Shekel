@@ -54,7 +54,6 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
-from app.services.registration_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
@@ -97,9 +96,8 @@ def _make_profile(
     return profile
 
 
-def _seed_and_profile(seed_user, **kwargs):
-    """Seed the DEFAULT_* 2025/2026 tax configs and build a profile."""
-    _seed_tax_data_for_user(seed_user["user"].id)
+def _committed_profile(seed_user, **kwargs):
+    """Build and flush a profile; it prices under the shipped law."""
     profile = _make_profile(seed_user, **kwargs)
     _db.session.flush()
     return profile
@@ -174,7 +172,7 @@ def _add_checkpoint(profile, as_of_date, **figures):
     return cp
 
 
-def _expected_projected(user_id, basis, year, periods):
+def _expected_projected(basis, year, periods):
     """Sum ``project_salary`` over *periods* -- the independent oracle.
 
     Same configs SSOT and calibration-aware path as the producer, over the
@@ -192,7 +190,7 @@ def _expected_projected(user_id, basis, year, periods):
     pinned with absolute hand-computed dollars in ``TestFullYearCapContext``,
     which is where the context is graded.
     """
-    configs = load_tax_configs_for_year(user_id, basis.profile, year)
+    configs = load_tax_configs_for_year(basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
         basis, periods, configs, calibration=basis.profile.calibration,
     )
@@ -221,7 +219,7 @@ class TestLatestCheckpoint:
 
     def test_returns_max_as_of_date_in_year(self, app, db, seed_user):
         """Two 2026 checkpoints -> the later-dated one is returned."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_checkpoint(profile, date(2026, 2, 1), ytd_gross=Decimal("10000.00"))
         march = _add_checkpoint(
             profile, date(2026, 3, 1), ytd_gross=Decimal("20000.00"),
@@ -235,14 +233,14 @@ class TestLatestCheckpoint:
 
     def test_none_when_no_checkpoint_in_year(self, app, db, seed_user):
         """A 2025-dated checkpoint is not a candidate for year 2026."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_checkpoint(profile, date(2025, 12, 20))
         db.session.commit()
         assert latest_checkpoint(profile.id, 2026) is None
 
     def test_ignores_other_profiles_checkpoint(self, app, db, seed_user):
         """A different profile's checkpoint is never returned."""
-        profile_a = _seed_and_profile(seed_user, name="Profile A")
+        profile_a = _committed_profile(seed_user, name="Profile A")
         profile_b = _make_profile(seed_user, name="Profile B")
         _add_checkpoint(profile_b, date(2026, 4, 1))
         db.session.commit()
@@ -254,7 +252,7 @@ class TestSaveCheckpoint:
 
     def test_insert_new_date(self, app, db, seed_user):
         """A new date inserts a row with the given figures."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         db.session.commit()
         figures = CheckpointFigures(
             as_of_date=date(2026, 6, 30),
@@ -280,7 +278,7 @@ class TestSaveCheckpoint:
 
     def test_resave_same_date_updates_in_place(self, app, db, seed_user):
         """Re-entering the same date REPLACES the row (no second row)."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         db.session.commit()
         base = CheckpointFigures(
             as_of_date=date(2026, 6, 30),
@@ -318,7 +316,7 @@ class TestSaveCheckpoint:
 
     def test_new_date_inserts_second_row(self, app, db, seed_user):
         """A different date inserts a second row (history-keeping)."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         db.session.commit()
         save_checkpoint(profile.id, CheckpointFigures(
             as_of_date=date(2026, 3, 31),
@@ -357,15 +355,15 @@ class TestComputeNoCheckpoint:
         independent oracle over the same 10 periods.  total == projected
         (measured is zero).
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026,
+            _oracle_basis(seed_user, profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -400,7 +398,7 @@ class TestComputeWithCheckpoint:
         projected.gross = 5,000.00 * 9 = 45,000.00; projected withholding ==
         oracle over P1..P9.  total.<line> = measured + projected.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         cp = _add_checkpoint(
             profile, date(2026, 1, 15),
             ytd_gross=Decimal("5000.00"),
@@ -413,11 +411,11 @@ class TestComputeWithCheckpoint:
 
         remainder = _derived(seed_user["user"].id)[1:]  # P1..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026, remainder,
+            _oracle_basis(seed_user, profile), 2026, remainder,
         )
 
         assert result.checkpoint is not None
@@ -449,17 +447,17 @@ class TestComputeWithCheckpoint:
         the remainder -- its paycheck is covered by the stub.  Remainder is
         P2..P9 (8 periods); projected.gross = 5,000.00 * 8 = 40,000.00.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_checkpoint(profile, date(2026, 1, 16))
         db.session.commit()
 
         remainder = _derived(seed_user["user"].id)[2:]  # P2..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026, remainder,
+            _oracle_basis(seed_user, profile), 2026, remainder,
         )
 
         assert result.measured_through == date(2026, 1, 16)
@@ -470,16 +468,16 @@ class TestComputeWithCheckpoint:
         self, app, db, seed_user, seed_periods,
     ):
         """A 2025 checkpoint is ignored for year 2026 -> fully modeled."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_checkpoint(profile, date(2025, 12, 20))
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026,
+            _oracle_basis(seed_user, profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -504,7 +502,7 @@ class TestComputeEmptyPeriods:
 
     def test_a_year_with_no_paydays_and_a_checkpoint(self, app, db, seed_user):
         """No paydays -> projected zeros; total == measured (the checkpoint)."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_checkpoint(
             profile, date(2026, 6, 30),
             ytd_gross=Decimal("60000.00"),
@@ -530,7 +528,7 @@ class TestComputeEmptyPeriods:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2099,
+            profile, 2099,
             calendar_for(seed_user["user"].id),
         )
         assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
@@ -547,11 +545,11 @@ class TestComputeEmptyPeriods:
 
     def test_a_year_with_no_paydays_and_no_checkpoint(self, app, db, seed_user):
         """No paydays AND no checkpoint -> everything zero."""
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         db.session.commit()
         assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2099,
+            profile, 2099,
             calendar_for(seed_user["user"].id),
         )
         assert result.total.gross == ZERO
@@ -578,7 +576,7 @@ class TestCalibrationExactWithholding:
           gross 10,000.00; federal 1,000.00; state 500.00; medicare 145.00;
           SS 620.00.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         calibration = CalibrationOverride(
             salary_profile_id=profile.id,
             actual_gross_pay=Decimal("5000.00"),
@@ -624,7 +622,7 @@ class TestCalibrationExactWithholding:
         )
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
 
@@ -692,7 +690,7 @@ class TestFullYearCapContext:
         statutory annual maximum exactly -- the number the fix exists to
         get right.
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user,
             name="High Earner",
             annual_salary="260000.00",
@@ -710,7 +708,7 @@ class TestFullYearCapContext:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            profile, 2026,
             calendar_for(seed_user["user"].id),
         )
 
