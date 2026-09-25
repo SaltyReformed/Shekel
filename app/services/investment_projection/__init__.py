@@ -7,9 +7,11 @@ from raw deduction, contribution, and investment params data.
 Used by both the investment detail route and the savings dashboard to avoid
 duplicating contribution/employer/YTD calculation logic.
 
-Contributions are derived from shadow income transactions (transfer_id IS NOT
-NULL) in the investment/retirement account.  The caller queries these
-transactions and passes them in; this module has no database access.
+Contributions are the to-side LEGS of transfers into the investment/retirement
+account -- the loan loaders' one partition since plan step balance:X-bi-6-4b
+(``recorded_contributions``), where they were shadow income transactions
+(``transfer_id IS NOT NULL``).  The caller loads and prices them and passes
+them in; this module has no database access.
 
 **They arrive PRICED, as :class:`PricedContribution` records rather than ORM
 rows** (plan step X-au-c2, a developer ruling of 2026-08-12).  Four readers here

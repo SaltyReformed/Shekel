@@ -91,18 +91,20 @@ def panel_id(account_id: int) -> str:
     return f"reconcile-panel-{account_id}"
 
 
-#: The prefix a submitted amount box carries, so its row is named by its own
-#: field rather than by position.  Paired arrays would depend on the browser
-#: submitting two lists in the same order, which is a property of the document
-#: rather than of the form.
-_AMOUNT_FIELD_PREFIX = "settled_amount-"
-
-
-def _submitted_corrections(form) -> dict[int, Decimal]:
-    """Return ``{transaction id: amount}`` for the amount boxes submitted.
+def _submitted_corrections(
+    form, tick_form: "reconcile_service.TickForm",
+) -> dict[int, Decimal]:
+    """Return ``{tick id: amount}`` for one tick form's amount boxes.
 
     Ruling **R-FB** gives a bill's tick a prefilled, editable figure, so the
-    form carries one box per correctable row named ``settled_amount-<id>``.
+    form carries one box per correctable offer, named by its own field rather
+    than by position -- paired arrays would depend on the browser submitting
+    two lists in the same order, which is a property of the document rather
+    than of the form.  **Its prefix is the service's**
+    (:class:`~app.services.reconcile_service.TickForm`, ruling **R-BAL145**):
+    a row's box is ``settled_amount-<row id>`` and a transfer's
+    ``transfer_amount-<transfer id>``, and this parses each with the member the
+    offer rendered it from, so the name is spelled once.
 
     **Each value is validated by ``MarkDoneSchema`` -- the SAME schema the
     grid's Mark Paid loads** -- because it is the same question feeding the same
@@ -121,12 +123,13 @@ def _submitted_corrections(form) -> dict[int, Decimal]:
 
     Args:
         form: The submitted ``request.form``.
+        tick_form: Which form's boxes to read.
 
     Returns:
-        The corrections, keyed by transaction id.  Empty when no box was
-        submitted.  A key whose row is not correctable, or was not ticked, is
-        ignored by the service -- this function does not know which rows those
-        are and must not guess.
+        The corrections, keyed by the id the box names (a row id, or a
+        transfer id).  Empty when no box was submitted.  A key whose offer is
+        not correctable, or was not ticked, is ignored by the service -- this
+        function does not know which those are and must not guess.
 
     Raises:
         ValidationError: On a value that is not a non-negative two-place
@@ -138,10 +141,11 @@ def _submitted_corrections(form) -> dict[int, Decimal]:
     """
     corrections: dict[int, Decimal] = {}
     schema = MarkDoneSchema()
+    prefix = tick_form.amount_prefix
     for field, raw in form.items():
-        if not field.startswith(_AMOUNT_FIELD_PREFIX):
+        if not field.startswith(prefix):
             continue
-        row_id = parse_row_id(field[len(_AMOUNT_FIELD_PREFIX):])
+        row_id = parse_row_id(field[len(prefix):])
         if row_id is None:
             continue
         errors = schema.validate({"settled_amount": raw})
@@ -491,7 +495,10 @@ def record_reconciliation(account_id):
     becomes that day, and a transaction settles through the same service verb
     the grid's Mark Paid calls, stamped with it (ruling **R-FA**).  After it the
     projection stops holding those budgets back -- on a date the USER supplied
-    rather than one the engine guessed.
+    rather than one the engine guessed.  A ticked transfer posts its own id
+    under its own field (ruling **R-BAL145**, leaf ``balance:X-bi-6-4c-2``),
+    both field names read off
+    :class:`~app.services.reconcile_service.TickForm`.
 
     **The ORDER the two arms run in is NOT this module's** -- it is
     ``reconcile_service.record_reconciliation``'s, because it is a rule about
@@ -558,15 +565,22 @@ def record_reconciliation(account_id):
             ),
         )
 
+    rows = reconcile_service.TickForm.ROW
+    legs = reconcile_service.TickForm.LEG
     entry_ids = parse_row_ids(request.form.getlist("entry_ids"))
-    transaction_ids = parse_row_ids(request.form.getlist("transaction_ids"))
+    transaction_ids = parse_row_ids(request.form.getlist(rows.ids_field))
+    transfer_ids = parse_row_ids(request.form.getlist(legs.ids_field))
     try:
         recorded = reconcile_service.record_reconciliation(
             reconcile_service.ReconcileSubmission(
                 statement=statement,
                 entry_ids=entry_ids,
                 transaction_ids=transaction_ids,
-                corrections=_submitted_corrections(request.form),
+                corrections=_submitted_corrections(request.form, rows),
+                transfer_ids=transfer_ids,
+                transfer_corrections=_submitted_corrections(
+                    request.form, legs,
+                ),
             ),
         )
         db.session.commit()
@@ -583,7 +597,7 @@ def record_reconciliation(account_id):
     # landed at all, or some of it did.  Answered as a 200 either way -- the
     # request itself succeeded and the refreshed list is the useful part; only
     # the silent reassurance would have been false.
-    asked = len(entry_ids) + len(transaction_ids)
+    asked = len(entry_ids) + len(transaction_ids) + len(transfer_ids)
     notice = None
     if asked and not recorded:
         notice = _STALE_MESSAGE

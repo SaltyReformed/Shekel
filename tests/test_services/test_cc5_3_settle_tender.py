@@ -853,6 +853,7 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
                 reconcile_service.ReconcileSubmission(
                     statement=statement, entry_ids=set(),
                     transaction_ids={txn.id}, corrections={},
+                    transfer_ids=set(), transfer_corrections={},
                 ),
             )
             db.session.commit()
