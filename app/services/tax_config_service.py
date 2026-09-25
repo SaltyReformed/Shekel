@@ -154,21 +154,23 @@ def profile_tax_series(profile) -> ProfileTaxSeries:
         The profile's :class:`ProfileTaxSeries`.
     """
     status = ref_cache.filing_status_member(profile.filing_status_id)
-    years = tax_law.LAW.years
+    law = tax_law.LAW
     return ProfileTaxSeries(
         bracket_sets={
             year.tax_year: year.federal[status]
-            for year in years
+            for year in law.years
             if status is not None
         },
+        # The state's series is the law's ONE spelling of it, which the
+        # tax-law alarms read too (plan step salary:X-at-4).
         state_configs={
             year.tax_year: _state_rules(
                 profile.state_code, year.states[profile.state_code], status,
             )
-            for year in years
-            if status is not None and profile.state_code in year.states
+            for year in law.years_listing(profile.state_code)
+            if status is not None
         },
-        fica_configs={year.tax_year: year.fica for year in years},
+        fica_configs={year.tax_year: year.fica for year in law.years},
     )
 
 

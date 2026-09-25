@@ -56,10 +56,10 @@
 #     the last 10 releases were pure digest reverts.
 #
 # Since plan step balance:X-cv, entrypoint step 3 is ONE transaction: the
-# migrations, the reference and tax seeds, the three deploy hooks and the
-# audit-trigger check in `scripts/init_database.py` commit together or not at
-# all.  So a failure INSIDE step 3 -- a migration that errors, a hook that
-# refuses, a missing audit trigger -- leaves the stamp where it was, and this
+# migrations, the reference seed, the three deploy hooks and the audit-trigger
+# check in `scripts/init_database.py` commit together or not at all.  So a
+# failure INSIDE step 3 -- a migration that errors, a hook that refuses, a
+# missing audit trigger -- leaves the stamp where it was, and this
 # script re-pins the previous image even for a migration-bearing release.
 # Only a failure AFTER step 3 has committed (a later entrypoint step, or the
 # health check) leaves the new stamp, and that is the case the refusal still
