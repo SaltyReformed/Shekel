@@ -53,6 +53,7 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
+from collections.abc import Callable
 from decimal import Decimal
 
 from sqlalchemy import and_
@@ -243,13 +244,8 @@ def _settle_one(
     return corrected
 
 
-def _load(
-    statement: _rows.Statement, transaction_ids: "set[int] | None",
-) -> "dict[int, Transaction]":
-    """Return this arm's rows, ``{row id: row}``, for :data:`ARM`'s ``load``.
-
-    :func:`~._rows.outstanding_rows` over this scope's clauses and eager load,
-    keyed by the id a row's tick posts (its own).
+def _own_clauses(statement: _rows.Statement) -> tuple:
+    """Return the rows-ON-this-account scope's membership clauses, for :data:`ARM`.
 
     The row is on THIS account -- the account clause
     :func:`~._rows.outstanding_scope` carried as its own first clause until
@@ -265,29 +261,58 @@ def _load(
     ``budget.transfers`` since leaf ``balance:X-bi-6-4c-2``; until then its
     clause was this one's complement over this table.
 
-    ``template`` is loaded here and not in the shared loader because only this
-    arm reads ``tracks_purchases``, which lazy-loads a template per row
-    otherwise -- an N+1 on a list the user is about to read.
-
     Args:
         statement: The statement being reconciled.
-        transaction_ids: The writer's narrowing, or ``None`` for the reader.
 
     Returns:
-        The rows in landing-day order, keyed by id.
+        The clauses, for :func:`_scope_loader`.
     """
-    return {
-        txn.id: txn
-        for txn in _rows.outstanding_rows(
-            statement,
-            scope_clauses=(
-                Transaction.account_id == statement.account_id,
-                Transaction.transfer_id.is_(None),
-            ),
-            load_options=(selectinload(Transaction.template),),
-            transaction_ids=transaction_ids,
-        )
-    }
+    return (
+        Transaction.account_id == statement.account_id,
+        Transaction.transfer_id.is_(None),
+    )
+
+
+def _scope_loader(
+    clauses: "Callable[[_rows.Statement], tuple]",
+) -> "Callable[[_rows.Statement, set[int] | None], dict[int, Transaction]]":
+    """Return the ``load`` of one of this arm's scopes, over *clauses*.
+
+    Both scopes load the same way -- :func:`~._rows.outstanding_rows` over the
+    scope's clauses, keyed by the id a row's tick posts (its own, under the
+    SAME field for both scopes, ruling **R-CC116**) -- and differ only in
+    WHICH rows, so the body is written once and each scope hands it its
+    clauses (plan step ``credit_card:CC-5-4b``, whose review measured the two
+    bodies identical but for the clauses).
+
+    ``template`` is loaded here and not in the shared loader because only this
+    arm reads ``tracks_purchases``, which lazy-loads a template per row
+    otherwise -- an N+1 on a list the user is about to read.  The row's
+    ``account``, whose name the second scope's label reads, is a joined load
+    on the model.
+
+    Args:
+        clauses: ``statement -> scope clauses`` -- :func:`_own_clauses` or
+            :func:`_settlement_clauses`.
+
+    Returns:
+        ``(statement, transaction_ids) -> {row id: row}``, in landing-day
+        order; *transaction_ids* is the writer's narrowing, ``None`` the
+        reader's "everything in scope".
+    """
+    def load(
+        statement: _rows.Statement, transaction_ids: "set[int] | None",
+    ) -> "dict[int, Transaction]":
+        return {
+            txn.id: txn
+            for txn in _rows.outstanding_rows(
+                statement,
+                scope_clauses=clauses(statement),
+                load_options=(selectinload(Transaction.template),),
+                transaction_ids=transaction_ids,
+            )
+        }
+    return load
 
 
 #: What this arm IS (:class:`app.services.reconcile_service._rows.Arm`): what it
@@ -297,7 +322,7 @@ def _load(
 #: :func:`app.services.reconcile_service._assemble.record_reconciliation` both
 #: name it, and it being ONE value is what stops them scoping differently.
 ARM = _rows.Arm(
-    load=_load,
+    load=_scope_loader(_own_clauses),
     settle=_settle_one,
     event=EVT_TRANSACTIONS_RECONCILED,
 )
@@ -325,9 +350,12 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
       with the endpoint), so the next clause admits none today; this one
       keeps the scope inside the verb's domain rather than relying on that.
     * it holds an UN-DATED covering movement ON THIS ACCOUNT -- the payment
-      the statement may show.  Un-dated, because a dated one already posts
-      and folds on its own day, so offering it would count the money twice;
-      on this account, because a statement can show only this account's
+      the statement may show.  Un-dated, because that is the payment R-CC44
+      lists: a dated one already posts and folds on its own day, so it is in
+      this account's books and is not outstanding (a Projected row over a
+      dated payment is a drift the seam does not write, and ticking it would
+      only re-date that one movement); on this account, because a statement
+      can show only this account's
       money (the tick then books where the payment already is,
       :func:`_settle_one`).
     * it holds NO purchase -- ruling **R-CC113** ("Hide it"): a row holding
@@ -342,7 +370,7 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
         statement: The statement being reconciled.
 
     Returns:
-        The clauses, for :func:`~._rows.outstanding_rows`.
+        The clauses, for :func:`_scope_loader`.
     """
     covering = status_seam.covering_clause()
     return (
@@ -357,36 +385,6 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
     )
 
 
-def _load_settlements(
-    statement: _rows.Statement, transaction_ids: "set[int] | None",
-) -> "dict[int, Transaction]":
-    """Return the "Paid from this account" rows, ``{row id: row}``.
-
-    :data:`SETTLEMENT_ARM`'s ``load``: :func:`~._rows.outstanding_rows` over
-    :func:`_settlement_clauses`, keyed by the id a row's tick posts -- its
-    own, under the SAME field the row's own list posts it (ruling
-    **R-CC116**).  ``template`` is loaded for the reason :func:`_load` loads
-    it; the row's ``account``, whose name the label reads, is a joined load
-    on the model.
-
-    Args:
-        statement: The statement being reconciled.
-        transaction_ids: The writer's narrowing, or ``None`` for the reader.
-
-    Returns:
-        The rows in landing-day order, keyed by id.
-    """
-    return {
-        txn.id: txn
-        for txn in _rows.outstanding_rows(
-            statement,
-            scope_clauses=_settlement_clauses(statement),
-            load_options=(selectinload(Transaction.template),),
-            transaction_ids=transaction_ids,
-        )
-    }
-
-
 #: The transaction arm's SECOND scope (plan step ``credit_card:CC-5-4b``): the
 #: rows planned on another account whose kept payment is on this one.  Its own
 #: :class:`~app.services.reconcile_service._rows.Arm` because it loads
@@ -394,7 +392,7 @@ def _load_settlements(
 #: SECOND account, which an analyst has to be able to find -- while its settle
 #: is :data:`ARM`'s own.  PUBLIC within the package for :data:`ARM`'s reason.
 SETTLEMENT_ARM = _rows.Arm(
-    load=_load_settlements,
+    load=_scope_loader(_settlement_clauses),
     settle=_settle_one,
     event=EVT_SETTLEMENTS_RECONCILED,
 )

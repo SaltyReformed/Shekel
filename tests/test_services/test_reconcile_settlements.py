@@ -30,11 +30,17 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
+from app.enums import (
+    MovementFigureSourceEnum,
+    PostingSourceEnum,
+    SettledDayBasisEnum,
+    StatusEnum,
+)
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
+    anchor_service,
     cash_ledger,
     entry_service,
     reconcile_service,
@@ -45,10 +51,13 @@ from app.services.cash_ledger import settled_cash_facts
 from app.services.pay_calendar import calendar_for
 from app.services.transaction_service import settle_transaction
 from tests._test_helpers import (
+    correction_net_in_period,
     create_account_of_type,
     create_transfer,
     figure_source_columns,
     generate_row_of,
+    ledger_net,
+    linked_ledger_account,
     make_expense_template,
     make_income_template,
     state_template_price,
@@ -231,14 +240,22 @@ class TestTheListOffersAReopenedPaymentFromHere:
 
             assert txn.id in _settlement_keys(seed_user, card_a.id)
             assert txn.id not in _groups(seed_user, card_b.id)
+            # And a tick of it posted to card B's form settles nothing.
+            assert _tick(seed_user, card_b.id, {txn.id}) == 0
+            db.session.expire_all()
+            assert db.session.get(Transaction, txn.id).status_id == (
+                ref_cache.status_id(StatusEnum.PROJECTED)
+            )
 
     def test_a_DATED_payment_under_a_projected_row_is_not_offered(
         self, app, seed_user, seed_periods,
     ):
-        """Un-dated is load-bearing: a dated payment already folds, so offering it counts twice.
+        """Un-dated is load-bearing: R-CC44 lists un-dated payments, and a dated one is already in the books.
 
-        The seam keeps a covering movement's day in step with its row, so this
-        state is PLANTED: the reopened row's payment given back a day.
+        A dated payment posts and folds on its own day, so it is not
+        outstanding on this statement.  The seam keeps a covering movement's
+        day in step with its row, so this state is PLANTED: the reopened row's
+        payment given back a day.
         """
         with app.app_context():
             card = _card(seed_user)
@@ -317,8 +334,26 @@ class TestTheListOffersAReopenedPaymentFromHere:
                 covers_settlement=True,
             ))
             db.session.commit()
+            # The positive control: the SAME planted payment under a plain row
+            # is offered, so only the transfer clause keeps the shadow out.
+            plain = _row(seed_user, seed_periods[0], name="Water")
+            db.session.add(TransactionEntry(
+                **figure_source_columns(),
+                transaction_id=plain.id,
+                account_id=card.id,
+                owner_id=seed_user["user"].id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("75.00"),
+                description="Planted",
+                purchased_on=seed_periods[0].start_date,
+                is_credit=False,
+                covers_settlement=True,
+            ))
+            db.session.commit()
 
-            assert shadow.id not in _groups(seed_user, card.id)
+            groups = _groups(seed_user, card.id)
+            assert plain.id in groups
+            assert shadow.id not in groups
 
     def test_a_CANCELLED_row_is_not_offered(self, app, seed_user, seed_periods):
         """Only a Projected row is money the projection still holds."""
@@ -480,7 +515,9 @@ class TestTheTick:
             card = _card(seed_user)
             txn = _paid_from_and_reopened(_row(seed_user, seed_periods[0]), card)
 
-            _tick(seed_user, card.id, {txn.id}, {txn.id: Decimal("118.50")})
+            assert _tick(
+                seed_user, card.id, {txn.id}, {txn.id: Decimal("118.50")},
+            ) == 1
 
             payment = _payment(txn)
             assert payment.amount == Decimal("118.50")
@@ -554,6 +591,58 @@ class TestTheTick:
             assert txn.id not in _groups(seed_user, seed_user["account"].id)
             assert _tick(seed_user, seed_user["account"].id, {txn.id}) == 0
 
+    def test_a_ticked_deposit_is_received_into_this_account(
+        self, app, seed_user, seed_periods,
+    ):
+        """A deposit settles Received, and its money arrives on the card on the statement's day."""
+        with app.app_context():
+            card = _card(seed_user)
+            txn = _paid_from_and_reopened(
+                _row(seed_user, seed_periods[0], name="Refund",
+                     amount="45.00", income=True),
+                card,
+            )
+
+            assert _tick(seed_user, card.id, {txn.id}) == 1
+
+            db.session.expire_all()
+            row = db.session.get(Transaction, txn.id)
+            payment = _payment(txn)
+            assert row.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
+            assert payment.account_id == card.id
+            assert payment.settled_on == _OBSERVED_ON
+            on_the_day = sum(
+                (
+                    fact.delta
+                    for fact in settled_cash_facts(card.id, seed_user["scenario"].id)
+                    if fact.settled_on == _OBSERVED_ON
+                ),
+                Decimal("0"),
+            )
+            assert on_the_day == Decimal("45.00")
+
+    def test_a_ticked_empty_envelope_closes_at_its_kept_figure(
+        self, app, seed_user, seed_periods,
+    ):
+        """R-CC119's act: the tick closes the envelope at the kept typed $120, on the card."""
+        with app.app_context():
+            card = _card(seed_user)
+            txn = _paid_from_and_reopened(
+                _row(seed_user, seed_periods[0], is_envelope=True, amount="300.00"),
+                card, submitted=typed(_GROCERIES),
+            )
+
+            assert _tick(seed_user, card.id, {txn.id}) == 1
+
+            db.session.expire_all()
+            payment = _payment(txn)
+            assert db.session.get(Transaction, txn.id).status_id == (
+                ref_cache.status_id(StatusEnum.DONE)
+            )
+            assert payment.account_id == card.id
+            assert payment.amount == _GROCERIES
+            assert payment.settled_on == _OBSERVED_ON
+
     def test_a_zero_tick_settles_the_row_and_links_nothing(
         self, app, seed_user, seed_periods,
     ):
@@ -607,3 +696,67 @@ class TestAStatementLinksEveryFactOnItsOwnAccount:
 
             assert _payment(txn).reconciled_by_id == anchor_id
             assert db.session.get(Transaction, txn.id).reconciled_by_id == anchor_id
+
+
+class TestTheCardsGapClosesByThePayment:
+    """R-CC44's worked result on a real statement: the books-vs-bank difference closes by $120."""
+
+    def test_the_statements_correction_goes_to_zero_and_checking_does_not_move(
+        self, app, seed_user, seed_periods,
+    ):
+        """The card opened at -$500 on 1/5; its 1/10 statement says -$620; the reopened $120 is the gap.
+
+        The statement is the 1/10 ASSERTION itself (its own day, not a later
+        assertion presented for an earlier one), so the assertion's posted
+        correction is the books-vs-bank difference: -$120.00 before the tick,
+        $0.00 after.  Checking's cash facts and posted ledger do not move --
+        the money was never Checking's.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            checking_id = seed_user["account"].id
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"), observed_on=date(2026, 1, 5),
+            )
+            db.session.commit()
+            txn = _paid_from_and_reopened(_row(seed_user, seed_periods[0]), card)
+            anchor_service.apply_anchor_true_up(
+                account=card, new_balance=Decimal("-620.00"),
+                observed_on=_OBSERVED_ON,
+            )
+            statement = reconcile_service.Statement(
+                calendar_for(seed_user["user"].id), card.id,
+                cash_ledger.governing_anchor(card.id),
+            )
+            assert statement.observed_on == _OBSERVED_ON
+            card_ledger = linked_ledger_account(db.session, card.id).id
+            checking_ledger = linked_ledger_account(db.session, checking_id).id
+
+            def correction():
+                return correction_net_in_period(
+                    db.session, card_ledger, scenario_id,
+                    PostingSourceEnum.ACCOUNT_TRUEUP, seed_periods[0].id,
+                )
+
+            checking_facts = settled_cash_facts(checking_id, scenario_id)
+            checking_net = ledger_net(db.session, checking_ledger, scenario_id)
+            assert correction() == Decimal("-120.00")
+
+            recorded = reconcile_service.record_reconciliation(
+                reconcile_service.ReconcileSubmission(
+                    statement=statement, entry_ids=set(),
+                    transaction_ids={txn.id}, corrections={},
+                    transfer_ids=set(), transfer_corrections={},
+                ),
+            )
+            db.session.commit()
+
+            assert recorded == 1
+            assert correction() == Decimal("0.00")
+            payment = _payment(txn)
+            assert payment.account_id == card.id
+            assert payment.settled_on == _OBSERVED_ON
+            assert payment.reconciled_by_id == statement.anchor.anchor_id
+            assert settled_cash_facts(checking_id, scenario_id) == checking_facts
+            assert ledger_net(db.session, checking_ledger, scenario_id) == checking_net

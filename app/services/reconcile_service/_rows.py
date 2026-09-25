@@ -735,8 +735,9 @@ def record_settled(
     reading of it was not.
 
     **The ids are re-derived through the arm's own loader rather than
-    trusted.**  An id belonging to another user, another account, a settled
-    item or one this arm does not own simply does not come back from
+    trusted.**  An id belonging to another user, outside the arm's scope (on
+    another account, for the scopes that offer this account's own rows), a
+    settled item or one this arm does not own simply does not come back from
     :attr:`Arm.load` and is silently skipped -- the set-operation form of the
     project's "404 for both not-found and not-yours" rule.  **Each arm is
     handed its OWN TABLE's form field** since leaf ``balance:X-bi-6-4c-2``
@@ -766,7 +767,11 @@ def record_settled(
         arm: What the caller loads, and what a tick does to one.
         statement: The statement being reconciled.
         tick_ids: The ids the user ticked under the arm's form field.  An
-            empty set is a no-op that issues no query.
+            empty set is a no-op that issues no query.  The transaction arm's
+            two scopes are each handed the ROW field's whole set (ruling
+            **R-CC116**), so for them this is every row tick, not only the
+            scope's own -- which is what the logged ``requested_count`` below
+            then counts.
         corrections: ``{tick id: amount}`` from the arm's amount boxes.  An id
             with no entry settles at the item's own figure.
 
@@ -807,6 +812,11 @@ def record_settled(
             account_id=statement.account_id,
             observed_on=statement.observed_on.isoformat(),
             settled_count=len(items),
+            # The ids posted under the arm's FORM FIELD.  The two row scopes
+            # share one field (ruling R-CC116), so each logs every row tick
+            # and a scope's settled below requested is not by itself a tick
+            # that failed to land -- the route compares the whole submission
+            # with what landed and says so to the owner.
             requested_count=len(tick_ids),
             corrected_count=corrected,
         )
