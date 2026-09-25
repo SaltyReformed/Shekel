@@ -813,10 +813,10 @@ def record_settled(
             observed_on=statement.observed_on.isoformat(),
             settled_count=len(items),
             # The ids posted under the arm's FORM FIELD.  The two row scopes
-            # share one field (ruling R-CC116), so each logs every row tick
-            # and a scope's settled below requested is not by itself a tick
-            # that failed to land -- the route compares the whole submission
-            # with what landed and says so to the owner.
+            # share one field (ruling R-CC116), so each that settles anything
+            # logs every row tick, and a scope's settled below requested is not
+            # by itself a tick that failed to land -- the route compares the
+            # whole submission with what landed and says so to the owner.
             requested_count=len(tick_ids),
             corrected_count=corrected,
         )

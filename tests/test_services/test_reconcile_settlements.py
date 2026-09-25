@@ -37,6 +37,7 @@ from app.enums import (
     StatusEnum,
 )
 from app.extensions import db
+from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -50,8 +51,11 @@ from app.services import (
 from app.services.cash_ledger import settled_cash_facts
 from app.services.pay_calendar import calendar_for
 from app.services.transaction_service import settle_transaction
+from app.utils.log_events import (
+    EVT_SETTLEMENTS_RECONCILED,
+    EVT_TRANSACTIONS_RECONCILED,
+)
 from tests._test_helpers import (
-    correction_net_in_period,
     create_account_of_type,
     create_transfer,
     figure_source_columns,
@@ -472,7 +476,13 @@ class TestTheTick:
     def test_a_tick_settles_the_row_from_here_and_links_the_payment_not_the_row(
         self, app, seed_user, seed_periods,
     ):
-        """R-CC44's worked example: the card's books-vs-bank gap closes by $120."""
+        """The tick settles the row on the card and links the payment, not the row.
+
+        The gap itself is graded on a real statement by
+        :class:`TestTheCardsGapClosesByThePayment`; this case presents the
+        card's opening assertion for an earlier day, so it grades the writes
+        and the cash facts only.
+        """
         with app.app_context():
             card = _card(seed_user)
             checking_id = seed_user["account"].id
@@ -660,6 +670,51 @@ class TestTheTick:
             assert row.reconciled_by_id is None
 
 
+class TestTheTwoRowScopesLogOneFieldsTicks:
+    """Both row scopes read the ROW field (R-CC116), and each event says so in its counts."""
+
+    def test_each_event_counts_its_own_settles_and_the_whole_row_field(
+        self, app, seed_user, seed_periods, caplog,
+    ):
+        """A card bill, a Checking bill paid from the card (typed 118.50) and a stale id: 2 land.
+
+        Each scope's event reports what IT settled and corrected, and the
+        ROW field's whole posted set as ``requested_count`` -- the documented
+        meaning since the field became shared; the route's own notice
+        compares the submission with what landed across both.
+        """
+        with app.app_context():
+            card = _card(seed_user)
+            own = _row(seed_user, seed_periods[0], account=card, name="Phone",
+                       amount="45.00")
+            elsewhere = _paid_from_and_reopened(
+                _row(seed_user, seed_periods[0]), card,
+            )
+            stale = _row(seed_user, seed_periods[0], name="Electricity")
+
+            with caplog.at_level("INFO"):
+                recorded = _tick(
+                    seed_user, card.id, {own.id, elsewhere.id, stale.id},
+                    {elsewhere.id: Decimal("118.50")},
+                )
+
+            def counts(event):
+                records = [
+                    record for record in caplog.records
+                    if getattr(record, "event", None) == event
+                ]
+                assert len(records) == 1, f"{event}: {len(records)} records"
+                record = records[0]
+                return (
+                    record.settled_count, record.requested_count,
+                    record.corrected_count,
+                )
+
+            assert recorded == 2
+            assert counts(EVT_TRANSACTIONS_RECONCILED) == (1, 3, 0)
+            assert counts(EVT_SETTLEMENTS_RECONCILED) == (1, 3, 1)
+
+
 class TestAStatementLinksEveryFactOnItsOwnAccount:
     """``status_seam.record_clearing``'s one rule, called bare."""
 
@@ -707,9 +762,10 @@ class TestTheCardsGapClosesByThePayment:
         """The card opened at -$500 on 1/5; its 1/10 statement says -$620; the reopened $120 is the gap.
 
         The statement is the 1/10 ASSERTION itself (its own day, not a later
-        assertion presented for an earlier one), so the assertion's posted
-        correction is the books-vs-bank difference: -$120.00 before the tick,
-        $0.00 after.  Checking's cash facts and posted ledger do not move --
+        assertion presented for an earlier one), so that assertion's own
+        posted correction -- its true-up legs dated 1/10, not the pay period's
+        net, which would net the 1/5 opening in too -- is the books-vs-bank
+        difference: -$120.00 before the tick, $0.00 after.  Checking's cash facts and posted ledger do not move --
         the money was never Checking's.
         """
         with app.app_context():
@@ -734,9 +790,21 @@ class TestTheCardsGapClosesByThePayment:
             checking_ledger = linked_ledger_account(db.session, checking_id).id
 
             def correction():
-                return correction_net_in_period(
-                    db.session, card_ledger, scenario_id,
-                    PostingSourceEnum.ACCOUNT_TRUEUP, seed_periods[0].id,
+                """The 1/10 assertion's OWN posted correction: its true-up legs dated 1/10."""
+                return (
+                    db.session.query(
+                        db.func.coalesce(db.func.sum(Posting.amount), Decimal("0.00")),
+                    )
+                    .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                    .filter(
+                        Posting.ledger_account_id == card_ledger,
+                        JournalEntry.scenario_id == scenario_id,
+                        JournalEntry.entry_date == _OBSERVED_ON,
+                        JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                            PostingSourceEnum.ACCOUNT_TRUEUP,
+                        ),
+                    )
+                    .scalar()
                 )
 
             checking_facts = settled_cash_facts(checking_id, scenario_id)

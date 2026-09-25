@@ -365,7 +365,10 @@ EVT_TRANSACTIONS_RECONCILED = _register(
     "transactions_reconciled", BUSINESS,
     "User confirmed which outstanding transactions their bank statement "
     "shows; each settled through the transaction service on the day the "
-    "balance was observed, some carrying a corrected amount.",
+    "balance was observed, some carrying a corrected amount.  Its "
+    "requested_count is every ROW tick of the submission, a field "
+    "settlements_reconciled reads too since credit_card:CC-5-4b (ruling "
+    "R-CC116), so a settled count below it is not by itself a stale tick.",
 )
 EVT_TRANSFERS_RECONCILED = _register(
     "transfers_reconciled", BUSINESS,

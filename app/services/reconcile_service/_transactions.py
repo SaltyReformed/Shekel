@@ -388,9 +388,10 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
 #: The transaction arm's SECOND scope (plan step ``credit_card:CC-5-4b``): the
 #: rows planned on another account whose kept payment is on this one.  Its own
 #: :class:`~app.services.reconcile_service._rows.Arm` because it loads
-#: differently and logs under its own event -- the row it settles is on a
-#: SECOND account, which an analyst has to be able to find -- while its settle
-#: is :data:`ARM`'s own.  PUBLIC within the package for :data:`ARM`'s reason.
+#: differently and logs under its own event -- the row it settles is planned on
+#: a SECOND account, so its settles are counted apart from this account's own
+#: bills -- while its settle is :data:`ARM`'s own.  PUBLIC within the package
+#: for :data:`ARM`'s reason.
 SETTLEMENT_ARM = _rows.Arm(
     load=_scope_loader(_settlement_clauses),
     settle=_settle_one,
