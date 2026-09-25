@@ -71,9 +71,9 @@ Transfer invariants (critical -- violating any one is a critical bug):
   is counted once, by whichever half holds it. The reverse drift, a settled parent
   over a still-Projected shadow that holds no movement, is counted by neither half
   of the cash fold and, since balance:X-bi-6-4b, once by the loan walk, as a $0.00
-  payment; a settled parent over a shadow reverted alone, whose kept movement is
-  un-dated, makes the loan walk refuse (UndatedSettleError, naming the shadow's
-  row; R-BAL147). That is pinned, not a new defect, but any door that could WRITE
+  payment (R-BAL140); a settled parent over its loan-side (income) shadow reverted
+  alone, whose kept movement is un-dated, makes the loan walk refuse
+  (UndatedSettleError, naming the shadow's row; R-BAL147). That is pinned, not a new defect, but any door that could WRITE
   such a drift is one.
 
 Design (DRY / SOLID / pythonic):
