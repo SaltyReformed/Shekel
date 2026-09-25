@@ -771,4 +771,3 @@ class TestTheCockpitsThirdPaycheckChip:
         ]
 
         assert salary_cockpit_service.base_regular_net(pairs, 2) == Decimal("1600")
-
