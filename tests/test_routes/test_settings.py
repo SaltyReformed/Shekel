@@ -12,12 +12,21 @@ Tests for user settings page:
 from decimal import Decimal
 
 import pytest
+from markupsafe import escape
 
 from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.user import UserSettings
+from app.tax_law import TaxLaw
+from tests._test_helpers import (
+    MADE_UP_SOURCES,
+    made_up_federal,
+    made_up_fica,
+    made_up_state,
+    made_up_year,
+)
 
 
 class TestSettingsShow:
@@ -247,11 +256,11 @@ class TestSettingsDashboard:
             assert b'name="group_name"' in resp.data
 
     def test_settings_dashboard_tax_section(self, app, auth_client, seed_user):
-        """GET /settings?section=tax renders tax configuration."""
+        """GET /settings?section=tax renders the tax law, read-only, as Tax Rates."""
         with app.app_context():
             resp = auth_client.get("/settings?section=tax")
             assert resp.status_code == 200
-            assert b"Tax Configuration" in resp.data
+            assert b"Tax Rates" in resp.data
             assert b"Federal Tax Brackets" in resp.data
 
     def test_settings_dashboard_retirement_section_redirects(
@@ -720,3 +729,41 @@ class TestDefaultGridAccountPicker:
             assert b"Checking" in resp.data
             # The loan is not.
             assert b"Picker Gate Mortgage" not in resp.data
+
+
+class TestTheTaxRatesSectionShowsTheLawReadOnly:
+    """The Settings tax section renders the law, read-only (plan step salary:X-at-1).
+
+    The law lives in :mod:`app.tax_law` and nothing in the app writes it
+    (ruling R-SAL74), so the section is a view of whatever law the app prices
+    on: a made-up one installed here shows its own figures and source, and no
+    form on the section posts anywhere.
+    """
+
+    def test_the_section_shows_the_installed_laws_figures_and_sources(
+        self, app, auth_client, seed_user, tax_law,
+    ):
+        """Every figure is the installed law's, with the year's source listed."""
+        tax_law(TaxLaw(years=(made_up_year(
+            2031,
+            federal=made_up_federal(),
+            fica=made_up_fica(),
+            states={"NC": made_up_state(Decimal("0.0612"))},
+        ),)))
+        with app.app_context():
+            html = auth_client.get("/settings?section=tax").data.decode()
+
+        assert "The newest tax year in the app is 2031" in html
+        assert "6.12%" in html            # the state rate
+        assert "$176,100" in html         # the Social Security wage base
+        assert "$11,600" in html          # a federal rung boundary
+        assert str(escape(MADE_UP_SOURCES[0])) in html  # autoescaped, as rendered
+
+    def test_no_form_on_the_section_posts_anywhere(self, app, auth_client, seed_user):
+        """The shipped law renders with no form: nothing on the page edits it."""
+        with app.app_context():
+            html = auth_client.get("/settings?section=tax").data.decode()
+
+        section = html[html.index("Tax Rates</h5>"):]
+        assert "Federal Tax Brackets" in section  # positive control: the section rendered
+        assert "<form" not in section

@@ -51,13 +51,9 @@ import logging
 from datetime import date
 from typing import NamedTuple
 
-from sqlalchemy import or_
-
 from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
-from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services.amount_ownership import derived_ownership
 from app.services._recurrence_common import (
@@ -76,7 +72,7 @@ from app.services.recurrence_engine import (
     regenerate_definition,
     resolve_generation_plan,
 )
-from app.services import status_seam, transfer_service
+from app.services import transfer_legs, transfer_service
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
@@ -599,11 +595,12 @@ def _rows_holding_owner_records(existing) -> "set[int]":
     considers every future transfer of a template -- 62 of them on one live
     template on a production clone -- so reading each transfer's shadows in the
     classifier would issue a query per row on the hot path of every template
-    edit.  The legs are joined to their covering movements
-    (``status_seam.covering_clause``, the query-side spelling of
-    ``Transaction.covering_movements``); a leg holds no purchase
-    (``entry_service`` refuses a shadow), so that is every entry a leg can
-    hold, and the mark is what the seam's own record is called.
+    edit.  The query is :func:`app.services.transfer_legs.transfers_holding_records`
+    since leaf ``balance:X-bi-6-4c-2``, moved there unchanged so the one place
+    a transfer's movement is reached through a shadow row answers it (plan step
+    ``X-bi-6-4d`` moves that join once); a leg holds no purchase
+    (``entry_service`` refuses a shadow), so a covering movement is every entry
+    a leg can hold, and the mark is what the seam's own record is called.
 
     Args:
         existing: The transfers this pass is considering.
@@ -612,26 +609,9 @@ def _rows_holding_owner_records(existing) -> "set[int]":
         The subset of their ids that hold a note, or on either leg a covering
         movement or a statement link.
     """
-    ids = [xfer.id for xfer in existing]
-    if not ids:
-        return set()
-    covered = (
-        db.session.query(TransactionEntry.id)
-        .filter(
-            TransactionEntry.transaction_id == Transaction.id,
-            status_seam.covering_clause(),
-        )
-        .exists()
+    holding = transfer_legs.transfers_holding_records(
+        xfer.id for xfer in existing
     )
-    holding = {
-        transfer_id
-        for (transfer_id,) in db.session.query(Transaction.transfer_id)
-        .filter(
-            Transaction.transfer_id.in_(ids),
-            or_(covered, Transaction.reconciled_by_id.isnot(None)),
-        )
-        .distinct()
-    }
     for xfer in existing:
         # ``notes`` is free text the owner typed and no writer derives; a
         # whitespace-only note is not a record worth blocking an edit over.

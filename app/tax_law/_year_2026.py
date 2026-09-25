@@ -1,0 +1,116 @@
+"""The 2026 tax law, transcribed from the documents :data:`SOURCES` names.
+
+**One figure here is known to be wrong, and it stands as transcribed.**  Rev.
+Proc. 2025-32 sec. 4.01 Table 2 puts the head-of-household 24% / 32% bracket
+boundary at $201,750; the ladder below carries $201,775, the single filer's
+figure, which is what the app has priced 2026 on since it was first seeded.
+Plan step salary:X-at-1 moved the law into this module without changing a
+figure, so the correction is finding **salary:SAL-577**'s, not a side effect of
+the move.
+
+North Carolina's standard deduction is the enacted, unindexed statutory amount;
+re-verify it against the 2026 Form D-401 instructions when NCDOR posts them.
+"""
+
+from decimal import Decimal
+
+from app.enums import FilingStatusEnum
+from app.tax_law import _north_carolina
+from app.tax_law._types import (
+    FederalRules,
+    FicaRules,
+    TaxYearLaw,
+    ladder,
+)
+
+SOURCES = (
+    "IRS Rev. Proc. 2025-32, sec. 4.01 (tax rate tables), sec. 4.05 (child "
+    "tax credit $2,200; refundable $1,700 per child) and sec. 4.14 (standard "
+    "deduction)",
+    "IRC sec. 24(h)(4) (credit for other dependents $500)",
+    "SSA 2026 COLA fact sheet (Social Security wage base $184,500)",
+    "IRC sec. 3101(a) and (b)(1) (Social Security 6.2%, Medicare 1.45%); "
+    "sec. 3102(f) (Additional Medicare 0.9% withheld on wages over $200,000)",
+    "N.C.G.S. 105-153.7(a) (North Carolina flat rate 3.99% after 2025)",
+    "N.C.G.S. 105-153.5(a)(1) and (a1) (North Carolina standard and child "
+    "deductions)",
+)
+
+_FEDERAL = {
+    FilingStatusEnum.SINGLE: FederalRules(
+        standard_deduction=Decimal("16100.00"),
+        child_credit_amount=Decimal("2200.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+        child_credit_refundable_cap=Decimal("1700.00"),
+        brackets=ladder(
+            ("0.00", "12400.00", "0.1000"),
+            ("12400.00", "50400.00", "0.1200"),
+            ("50400.00", "105700.00", "0.2200"),
+            ("105700.00", "201775.00", "0.2400"),
+            ("201775.00", "256225.00", "0.3200"),
+            ("256225.00", "640600.00", "0.3500"),
+            ("640600.00", None, "0.3700"),
+        ),
+    ),
+    FilingStatusEnum.MARRIED_JOINTLY: FederalRules(
+        standard_deduction=Decimal("32200.00"),
+        child_credit_amount=Decimal("2200.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+        child_credit_refundable_cap=Decimal("1700.00"),
+        brackets=ladder(
+            ("0.00", "24800.00", "0.1000"),
+            ("24800.00", "100800.00", "0.1200"),
+            ("100800.00", "211400.00", "0.2200"),
+            ("211400.00", "403550.00", "0.2400"),
+            ("403550.00", "512450.00", "0.3200"),
+            ("512450.00", "768700.00", "0.3500"),
+            ("768700.00", None, "0.3700"),
+        ),
+    ),
+    FilingStatusEnum.MARRIED_SEPARATELY: FederalRules(
+        standard_deduction=Decimal("16100.00"),
+        child_credit_amount=Decimal("2200.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+        child_credit_refundable_cap=Decimal("1700.00"),
+        brackets=ladder(
+            ("0.00", "12400.00", "0.1000"),
+            ("12400.00", "50400.00", "0.1200"),
+            ("50400.00", "105700.00", "0.2200"),
+            ("105700.00", "201775.00", "0.2400"),
+            ("201775.00", "256225.00", "0.3200"),
+            ("256225.00", "384350.00", "0.3500"),
+            ("384350.00", None, "0.3700"),
+        ),
+    ),
+    FilingStatusEnum.HEAD_OF_HOUSEHOLD: FederalRules(
+        standard_deduction=Decimal("24150.00"),
+        child_credit_amount=Decimal("2200.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+        child_credit_refundable_cap=Decimal("1700.00"),
+        brackets=ladder(
+            ("0.00", "17700.00", "0.1000"),
+            ("17700.00", "67450.00", "0.1200"),
+            ("67450.00", "105700.00", "0.2200"),
+            ("105700.00", "201775.00", "0.2400"),
+            ("201775.00", "256200.00", "0.3200"),
+            ("256200.00", "640600.00", "0.3500"),
+            ("640600.00", None, "0.3700"),
+        ),
+    ),
+}
+
+_FICA = FicaRules(
+    ss_rate=Decimal("0.0620"),
+    ss_wage_base=Decimal("184500.00"),
+    medicare_rate=Decimal("0.0145"),
+    medicare_surtax_rate=Decimal("0.0090"),
+    medicare_surtax_threshold=Decimal("200000.00"),
+)
+
+YEAR_2026 = TaxYearLaw(
+    tax_year=2026,
+    sources=SOURCES,
+    federal=_FEDERAL,
+    fica=_FICA,
+    states={"NC": _north_carolina.state_year("0.0399")},
+)

@@ -40,6 +40,7 @@ from app.enums import (
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
+    FilingStatusEnum,
     PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     GoalModeEnum,
@@ -239,6 +240,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(MovementFigureSourceEnum, ref_models.MovementFigureSource),
         _RefSpec(StatementBalanceEvidenceEnum, ref_models.StatementBalanceEvidence),
         _RefSpec(WithholdingKindEnum, ref_models.WithholdingKind),
+        _RefSpec(FilingStatusEnum, ref_models.FilingStatus),
     ]
 
 

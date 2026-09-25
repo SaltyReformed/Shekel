@@ -207,7 +207,7 @@ def _grade_profile(profile, cards):
     basis = PayrollBasis(profile, calendar)
     periods = calendar.saved()
     configs_by_year = _configs_by_year(
-        profile_tax_series(profile.user_id, profile),
+        profile_tax_series(profile),
         {period.start_date.year for period in periods},
     )
 

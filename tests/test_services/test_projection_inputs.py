@@ -1588,8 +1588,9 @@ class TestTheFeedIsBuiltOverTheWiring:
             wiring = load_payroll_wiring(
                 ids["user_id"], [ids["acct_a_id"]], params_by_account,
             )
-            # The pricers' own construction loads a tax series, so both are
-            # built BEFORE the count opens: the claim is about the builds.
+            # Both pricers are built BEFORE the count opens (their construction
+            # loaded a tax series until plan step salary:X-at-1): the claim is
+            # about the builds.
             stored_pricers = {profile.id: pricing.for_profile(profile)}
             believed_pricers = {
                 profile.id: pricing.for_profile(profile, terms),

@@ -4,13 +4,12 @@ Shekel Budget App -- The TRANSACTION arm of the outstanding set
 One of the package's arms (see :mod:`app.services.reconcile_service` for what
 an arm is and how many there are): the SOURCE ROWS a statement can still
 settle -- an envelope's own close, and a bill -- as opposed to the purchase
-entries recorded against one, or a transfer's shadow.  It owns the three things
+entries recorded against one, or a transfer's leg.  It owns the three things
 an arm owns, its SCOPE, its READ and its WRITE.
 
 **Its scope, bound and loader are :mod:`._rows`', and that is finding N-225.**
-This arm and the transfer arm ask one question of one table and differ only in
-which rows are theirs; the shared half lives once, and the reader and the
-writer here still share it literally, which is the security property.  What
+The shared half lives once, and the reader and the writer here share it
+literally through :data:`ARM`'s loader, which is the security property.  What
 stays here is what is genuinely this arm's: WHICH rows (``transfer_id IS
 NULL``), what one is WORTH, and what a tick MEANS for it.
 
@@ -210,29 +209,55 @@ def _settle_one(
     return corrected
 
 
-#: What this arm IS (:class:`app.services.reconcile_service._rows.Arm`): which
-#: rows are its own, how one settles, and what it calls the act in the log.
-#:
-#: ``transfer_id IS NULL`` -- a transfer shadow settles through
-#: ``transfer_service.update_transfer`` so both legs and the parent move
-#: together (``CLAUDE.md`` transfer invariant 3), and
-#: ``transaction_service.settle_transaction`` REFUSES one, so admitting it here
-#: would turn a design boundary into a 400.  It is the transfer arm's
-#: (:mod:`._transfers`), whose own clause is this one's complement -- the two
-#: partition the table, which is why neither is a default.
-#:
-#: ``template`` is loaded here and not in the shared loader because only this
-#: arm reads ``tracks_purchases``, which lazy-loads a template per row
-#: otherwise -- an N+1 on a list the user is about to read.
+def _load(
+    statement: _rows.Statement, transaction_ids: "set[int] | None",
+) -> "dict[int, Transaction]":
+    """Return this arm's rows, ``{row id: row}``, for :data:`ARM`'s ``load``.
+
+    :func:`~._rows.outstanding_rows` over this arm's clause and eager load,
+    keyed by the id a row's tick posts (its own).
+
+    ``transfer_id IS NULL`` -- a transfer settles through
+    ``transfer_service.settle_transfer`` so both legs and the parent move
+    together (``CLAUDE.md`` transfer invariant 3), and
+    ``transaction_service.settle_transaction`` REFUSES a shadow, so admitting
+    one here would turn a design boundary into a 400.  A transfer is the
+    transfer arm's (:mod:`._transfers`), which offers its LEG off
+    ``budget.transfers`` since leaf ``balance:X-bi-6-4c-2``; until then its
+    clause was this one's complement over this table.
+
+    ``template`` is loaded here and not in the shared loader because only this
+    arm reads ``tracks_purchases``, which lazy-loads a template per row
+    otherwise -- an N+1 on a list the user is about to read.
+
+    Args:
+        statement: The statement being reconciled.
+        transaction_ids: The writer's narrowing, or ``None`` for the reader.
+
+    Returns:
+        The rows in landing-day order, keyed by id.
+    """
+    return {
+        txn.id: txn
+        for txn in _rows.outstanding_rows(
+            statement,
+            kind_clauses=(Transaction.transfer_id.is_(None),),
+            load_options=(selectinload(Transaction.template),),
+            transaction_ids=transaction_ids,
+        )
+    }
+
+
+#: What this arm IS (:class:`app.services.reconcile_service._rows.Arm`): what it
+#: loads, how a row settles, and what it calls the act in the log.
 #:
 #: PUBLIC within the package: the reader below and
 #: :func:`app.services.reconcile_service._assemble.record_reconciliation` both
 #: name it, and it being ONE value is what stops them scoping differently.
 ARM = _rows.Arm(
-    kind_clauses=(Transaction.transfer_id.is_(None),),
+    load=_load,
     settle=_settle_one,
     event=EVT_TRANSACTIONS_RECONCILED,
-    load_options=(selectinload(Transaction.template),),
 )
 
 
@@ -281,8 +306,8 @@ def outstanding_transactions(
         owns whether that bound is right.
     """
     return {
-        txn.id: _offer(statement, txn, basis)
-        for txn in _rows.outstanding_rows(ARM, statement)
+        txn_id: _offer(statement, txn, basis)
+        for txn_id, txn in ARM.load(statement, None).items()
     }
 
 
@@ -307,7 +332,7 @@ def _offer(
     """
     booked = transaction_service.settle_amount(txn, basis)
     return OutstandingTransaction(
-        transaction_id=txn.id,
+        key=txn.id,
         attributed_on=_rows.attributed_on(statement, txn),
         amount=booked,
         cash_amount=_cash_amount(txn, booked),

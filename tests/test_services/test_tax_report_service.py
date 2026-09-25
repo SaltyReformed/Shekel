@@ -6,11 +6,11 @@ producer that fuses the T-P1 annual liability and the T-P2
 withholding-to-date into the refund, hero chips, hybrid W-2 preview, and
 Schedule A check the analytics Taxes tab (T-P4) renders.
 
-Configs are seeded through the canonical
-``registration_service._seed_tax_data_for_user`` path so every figure anchors on the
-same 2026 DEFAULT_* seeds a registered user receives (single, NC, standard
-deduction 16,100; brackets 10/12/22/24/32/35/37; NC flat 3.99%, std ded
-12,750; FICA ss_wage_base 184,500).
+The law is the shipped one, the default every test prices under (ruling
+salary:R-SAL80) -- the same figures the signup seed copied to every user until
+plan step salary:X-at-1 -- so every figure anchors on 2026's (single, NC,
+standard deduction 16,100; brackets 10/12/22/24/32/35/37; NC flat 3.99%, std
+ded 12,750; FICA ss_wage_base 184,500).
 
 Where the withholding total is delegated to ``project_salary`` (Pub 15-T
 per-period, not hand-summable), the tests pin it against an INDEPENDENT
@@ -37,7 +37,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import balance_at, paycheck_calculator
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.registration_service import _seed_tax_data_for_user
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (
@@ -100,9 +99,8 @@ def _make_profile(
     return profile
 
 
-def _seed_and_profile(seed_user, **kwargs):
-    """Seed the DEFAULT_* 2025/2026 tax configs and build a profile."""
-    _seed_tax_data_for_user(seed_user["user"].id)
+def _committed_profile(seed_user, **kwargs):
+    """Build and flush a profile; it prices under the shipped law."""
     profile = _make_profile(seed_user, **kwargs)
     _db.session.flush()
     return profile
@@ -156,7 +154,7 @@ def _derived(user_id, year=2026):
     )
 
 
-def _project_sum(user_id, profile, year, periods):
+def _project_sum(profile, year, periods):
     """Independent oracle: sum ``project_salary`` over *periods*.
 
     Same configs SSOT and calibration-aware path as the producer.  For the
@@ -171,7 +169,7 @@ def _project_sum(user_id, profile, year, periods):
     same year-to-date context and what stays independent is the period
     SUBSET each is asked to sum.
     """
-    configs = load_tax_configs_for_year(user_id, profile, year)
+    configs = load_tax_configs_for_year(profile, year)
     breakdowns = paycheck_calculator.project_salary(
         payroll_basis(profile, periods), periods, configs,
         calibration=profile.calibration,
@@ -213,7 +211,7 @@ class TestSingleProfileFullyModeled:
         Marginal = 24% (113,900 in (105,700, 201,775]).
         next_stub with today 2026-03-01: first payday > 03-01 is 2026-03-13.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
         periods = _derived(seed_user["user"].id)
         db.session.commit()
@@ -221,7 +219,7 @@ class TestSingleProfileFullyModeled:
         report = compute_tax_report(
             seed_user["user"].id, 2026, date(2026, 3, 1),
         )
-        oracle = _project_sum(seed_user["user"].id, profile, 2026, periods)
+        oracle = _project_sum(profile, 2026, periods)
 
         assert isinstance(report, TaxReport)
         # Withholding: gross exact, lines == oracle, fully modeled.
@@ -312,7 +310,7 @@ class TestActcDrivesFederalRefund:
         the old nonrefundable-clamp model (liability 0, refund = withheld)
         would have missed entirely.
         """
-        _seed_and_profile(
+        _committed_profile(
             seed_user, filing_status_name="married_jointly",
             annual_salary="78000.00", qualifying_children=4,
         )
@@ -354,7 +352,7 @@ class TestCheckpointMovesRefundByDelta:
         and (liability unchanged) refund.federal_refund moves by +1,000.
         Box 2 == total.federal == measured.federal + modeled.federal.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
         db.session.commit()
 
@@ -368,7 +366,7 @@ class TestCheckpointMovesRefundByDelta:
         ]
         assert len(elapsed) == 13  # 06-19 is the last elapsed payday
         elapsed_oracle = _project_sum(
-            seed_user["user"].id, profile, 2026, elapsed,
+            profile, 2026, elapsed,
         )
         assert elapsed_oracle["gross"] == Decimal("65000.00")
 
@@ -435,7 +433,7 @@ class TestPreTaxDeductions:
         Marginal = 22% (100,900 in (50,400, 105,700]).
         Schedule A state component == the hybrid state withholding.
         """
-        profile = _seed_and_profile(seed_user)
+        profile = _committed_profile(seed_user)
         _add_pretax_deduction(profile, "500.0000")
         _make_full_year_periods(seed_user["user"])
         db.session.commit()
@@ -472,7 +470,7 @@ class TestSocialSecurityWageCap:
         Box 5 (Medicare wages) = 260,000 (raw gross, uncapped).
         Box 1 = 260,000 (no pre-tax).
         """
-        profile = _seed_and_profile(
+        profile = _committed_profile(
             seed_user, name="High Earner", annual_salary="260000.00",
         )
         _make_full_year_periods(seed_user["user"])
@@ -497,7 +495,6 @@ class TestDegradeCases:
 
     def test_no_active_profile_returns_none(self, app, db, seed_user):
         """A user with a baseline scenario but no active profile -> None."""
-        _seed_tax_data_for_user(seed_user["user"].id)
         db.session.commit()
         assert compute_tax_report(
             seed_user["user"].id, 2026, date(2026, 3, 1),
@@ -511,7 +508,7 @@ class TestDegradeCases:
         refunds are 0.  box 1 is 0 -> effective_rate None; no periods ->
         next_stub None.
         """
-        _seed_and_profile(seed_user)
+        _committed_profile(seed_user)
         db.session.commit()
 
         report = compute_tax_report(
@@ -568,7 +565,6 @@ class TestMultiProfileSum:
         Marginal = 32% (213,899.90 in (201,775, 256,225]).
         Filing inputs disclosed as coming from the primary profile.
         """
-        _seed_tax_data_for_user(seed_user["user"].id)
         primary = _make_profile(
             seed_user, name="Primary Job", filing_status_name="single",
             annual_salary="130000.00", qualifying_children=2, sort_order=0,
@@ -642,7 +638,7 @@ class TestScheduleAMortgageInterest:
         on alone.  The value is pinned by the hand-computed test beneath.
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
-        _seed_and_profile(seed_user)
+        _committed_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
         # A MORTGAGE, which is what this test's name and docstring always
         # claimed: the fixture took ``create_loan_with_trueup``'s AUTO_LOAN
@@ -713,7 +709,7 @@ class TestScheduleAMortgageInterest:
         to AUTO_LOAN, and taking that default is what hid N-9 in the first place.
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
-        _seed_and_profile(seed_user)
+        _committed_profile(seed_user)
         # The ORM rows: this case WRITES a transfer into one of them, which
         # needs the row a ``pay_period_id`` points at.
         periods = _make_full_year_periods(seed_user["user"])
@@ -779,7 +775,7 @@ class TestScheduleAMortgageInterest:
         which flips it for anyone near the threshold.
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
-        _seed_and_profile(seed_user)
+        _committed_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
         create_loan_with_trueup(
             seed_user, db.session,

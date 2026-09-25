@@ -838,9 +838,10 @@ class TestThePointBelievesARaiseSet:
         pricers.  At the STORED set that is a memo hit -- zero statements,
         zero ``ProfilePaychecks`` -- because the point's ``terms_for`` equals
         the rows' terms by value and ``for_profile`` keys on the canonical set.
-        A PROBED set is a pricer of its own: one construction, and the three
-        tax-series SELECTs that construction issues (measured here rather than
-        quoted), which is the whole query cost of a probe.
+        A PROBED set is a pricer of its own: one construction, and no
+        statement at all (measured here rather than quoted).  The construction
+        issued three tax-series SELECTs until plan step salary:X-at-1 moved the
+        tax law into the code, so a probe now costs no query.
         """
         # pylint: disable=import-outside-toplevel
         from sqlalchemy import event
@@ -885,7 +886,8 @@ class TestThePointBelievesARaiseSet:
                 "should have hit the pricer the batch loader built"
             )
             assert probed_counts["ProfilePaychecks"] == 1
-            assert len(statements) - stored_statements == 3, (
+            assert len(statements) - stored_statements == 0, (
                 f"a probed set issued {len(statements) - stored_statements} "
-                "statements; a new pricer's whole cost is its tax series"
+                "statements; a new pricer reads the tax law from the code and "
+                "should issue none"
             )

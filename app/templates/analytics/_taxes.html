@@ -142,7 +142,7 @@
             {{ report.assumptions.filing.state_code }}
             {%- if display.state_rate_pct is not none %} &middot; {{ display.state_rate_pct }}% flat
             {%- if report.liability.state.standard_deduction is not none %} after {{ money(report.liability.state.standard_deduction, cents=false) }}{% endif %}
-            {%- else %} &middot; no income tax configured{% endif %}
+            {%- else %} &middot; no state income tax priced{% endif %}
           </dd>
           <dt class="col-6 fw-normal">Withholding basis</dt>
           <dd class="col-6 text-end mb-1">
