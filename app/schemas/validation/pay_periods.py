@@ -178,6 +178,12 @@ class PayPeriodExtendSchema(BaseSchema):
     asked for.  ``BaseSchema``'s ``unknown = EXCLUDE`` means an old client that
     still posts one is not refused -- the value is simply ignored, which is now
     what it means.
+
+    **"Add earlier paychecks" validates with it too** (plan step
+    ``pay_calendar:C18-b``, ruling **R-PC87**: "asking only how many
+    paychecks to add before your first"), for the same reason in the other
+    direction: that door states no date and no rhythm either, so this one
+    field is its whole question.
     """
 
     num_periods = num_periods_field(required=True)

@@ -37,8 +37,11 @@ differently than it did inside the writer -- a move and a rename, ``$0.00``.
 **The dependency runs ONE WAY**: the writer imports this module, and this
 module imports nothing from the writer, ``pay_period_admin`` or the routes.
 Its imports are the derivation (:mod:`app.services.pay_calendar`, whose
-producers the batch's days and its floor are answered by), the rhythm value
-and the form error it raises.
+producers the batch's days and its floor are answered by), the rhythm value,
+the form error it raises, the calendar's window
+(:data:`~app.utils.dates.CALENDAR_DATE_MIN`) and, since plan step
+``pay_calendar:C18-b``, the one history predicate
+(``pay_schedule_service.record_below_history``, ruling **R-PC104**).
 
 The floor and its mirror, and why a third refusal was DELETED
 =============================================================
@@ -49,9 +52,12 @@ it wrong in both directions, so the developer ruled it into two (2026-08-10): a
 structural floor and a financial coverage rule.  What survives is the floor,
 and since plan step ``pay_calendar:C17-c-2a`` its mirror stands beside it.
 
-:func:`reject_backward_payday` -- **structural, and TEMPORARY.**  A new payday
-may not land inside a paycheck the owner already has.  Its only job is keeping
-plan step **C6**'s mid-schedule insert closed, and **C6 removes it.**
+:func:`reject_backward_payday` -- **structural, and HALF TEMPORARY.**  A
+STATED batch may not start inside a paycheck the owner already has -- plan
+step **C6**'s mid-schedule insert, which **C6 removes** -- nor before their
+first one, which splits nothing and which "Add earlier paychecks" records
+instead, stating nothing (ruling **R-PC87**, plan step ``pay_calendar:C18-b``;
+that half stays).
 
 :func:`reject_skipped_paycheck` -- **structural, and PERMANENT** (rulings
 **R-PC67** and **R-PC76**).  A batch's first new payday may not fall at or
@@ -109,7 +115,8 @@ each refusal actually is, so the route that took the input renders it.
 from datetime import date, datetime
 
 from app.exceptions import ValidationError
-from app.services import pay_calendar, pay_rhythm
+from app.services import pay_calendar, pay_rhythm, pay_schedule_service
+from app.utils.dates import CALENDAR_DATE_MIN
 
 #: Inclusive bounds on how many pay periods ONE call may create.
 #:
@@ -271,7 +278,7 @@ def reject_backward_payday(
     new_paydays: "list[date]",
     stored_eras: "tuple[pay_rhythm.Era, ...] | None",
 ) -> None:
-    """Refuse a batch whose earliest new payday would land inside a paycheck.
+    """Refuse a STATED batch whose earliest payday falls below the floor.
 
     **The forward-only rule, keyed on the PAYDAY** (ruling **R-PC1** as split
     2026-08-10).  It replaces ``pay_period_service._reject_overlapping_batch``,
@@ -279,16 +286,36 @@ def reject_backward_payday(
     C4-c dropped, and one that made the guard do a second job nothing credited
     it with.
 
-    That second job is this function's ONLY job: **keeping plan step C6 closed.**
-    Under the derivation a gap and an overlap are not expressible -- consecutive
-    paydays define adjacent intervals -- so there is nothing left here to refuse
-    except a payday landing INSIDE an existing paycheck, which splits it.  C6
-    owns that, behind two questions ledger row **P10** records as unruled: what
-    happens to a row ``DerivedPeriod.attribution_day`` would now clamp into the
-    wrong half,
-    and whether the split-off payday is repopulated (a monthly billed twice) or
-    left empty (income understated for the whole horizon).  **When C6 answers
-    them, this function is what it deletes.**
+    **It refuses TWO things, and until plan step ``pay_calendar:C18-b`` it
+    described one** (ledger row **PC-499**; ruling **R-PC87**: "The date
+    check stays for forms that state a start; its description is
+    corrected").  The floor is the day the owner's LATEST paycheck ends, so
+    everything below it is refused, and that span holds two states with
+    different reasons and, since ruling **R-PC103**, a message each:
+
+    * **A payday INSIDE a paycheck the owner already has** -- from their
+      first payday up to the floor -- splits it: **keeping plan step C6
+      closed.**  Under the derivation a gap and an overlap are not
+      expressible -- consecutive paydays define adjacent intervals -- so a
+      split is the one harm left.  C6 owns it, behind two questions ledger
+      row **P10** records as unruled: what happens to a row
+      ``DerivedPeriod.attribution_day`` would now clamp into the wrong half,
+      and whether the split-off payday is repopulated (a monthly billed
+      twice) or left empty (income understated for the whole horizon).
+      **When C6 answers them, this half is what it deletes.**  The message
+      names the paycheck by its span as
+      :func:`~app.services.pay_calendar.derive_periods` draws it over the
+      kept paydays -- the day before the next kept payday, or the floor's
+      eve for the latest -- rather than restating either end here.
+    * **A payday BEFORE the first paycheck** splits nothing, and the message
+      that said it would was PC-499.  It stays refused for the doors that
+      reach it -- they STATE a start, and ``regenerate``, the only one with a
+      kept record, rebuilds a tail: a stated batch opening below the record
+      would run its own grid forward through the kept paychecks.  The
+      paydays before the first are recorded by "Add earlier paychecks"
+      (``pay_period_write.prepend_paydays``), which states no date or rhythm
+      and so can neither split a paycheck nor leave a gap; the message
+      points there.  That half is not C6's and outlives it.
 
     **The floor is WHERE THE LAST PAYCHECK ENDS, and since plan step C14-d it
     asks the derivation rather than restating it.**  It is
@@ -394,26 +421,41 @@ def reject_backward_payday(
             has to be, because the producer takes the eras.
 
     Raises:
-        ValidationError: The earliest new payday falls before the floor.
+        ValidationError: The earliest new payday falls before the floor --
+            before the owner's first paycheck, or inside one of theirs.
     """
     if not surviving_paydays or not new_paydays:
         return
     latest_payday = max(surviving_paydays)
     floor = pay_calendar.payday_after(stored_eras, latest_payday)
     earliest_new = min(new_paydays)
-    if earliest_new < floor:
-        era = stored_eras[pay_calendar.era_index_at(stored_eras, floor)]
+    if earliest_new >= floor:
+        return
+    # Two refusals, one message each (ruling R-PC103): a day before the first
+    # paycheck splits nothing and has its own door; a day at or after it lands
+    # inside a paycheck, named by its span as the calendar derives it.
+    first_payday = min(surviving_paydays)
+    if earliest_new < first_payday:
         raise ValidationError(
-            f"A new payday, or the first payday of a new pay rhythm, must "
-            f"fall on or after {floor.isoformat()} -- the "
-            f"day the next paycheck opens after your latest recorded payday "
-            f"({latest_payday.isoformat()}, paid "
-            f"{era.rhythm.cadence.phrase}); "
-            f"got {earliest_new.isoformat()}.  An earlier date lands inside a "
-            f"paycheck you already have and would split it in half, which this "
-            f"app cannot yet do safely.  Choose a later date, or rebuild the "
-            f"tail from the payday you want."
+            f"{earliest_new.isoformat()} is before your first paycheck "
+            f"({first_payday.isoformat()}). To add paychecks before it, use "
+            f"Add earlier paychecks in Settings > Pay Periods."
         )
+    paycheck = pay_calendar.containing_period(
+        pay_calendar.derive_periods(
+            ((None, payday) for payday in surviving_paydays), stored_eras,
+        ),
+        earliest_new,
+    )
+    era = stored_eras[pay_calendar.era_index_at(stored_eras, floor)]
+    raise ValidationError(
+        f"{earliest_new.isoformat()} falls inside a paycheck you already have "
+        f"({paycheck.start_date.isoformat()} to "
+        f"{paycheck.end_date.isoformat()}), and splitting a paycheck isn't "
+        f"supported yet. Choose {floor.isoformat()} or later, when the next "
+        f"paycheck opens after your latest ({latest_payday.isoformat()}, paid "
+        f"{era.rhythm.cadence.phrase})."
+    )
 
 
 def reject_skipped_paycheck(
@@ -529,4 +571,67 @@ def reject_skipped_paycheck(
             f"into the paycheck before it.  Choose a date before "
             f"{ceiling.isoformat()}, or extend your current rhythm to the "
             f"paycheck you mean and rebuild from there."
+        )
+
+
+def reject_payday_before_calendar(earliest: date) -> None:
+    """Refuse an EARLIER batch that reaches below the application's calendar.
+
+    **Asked of "Add earlier paychecks" alone** (plan step
+    ``pay_calendar:C18-b``), because it is the one door that COMPUTES a day
+    below the record rather than taking one from a form:
+    ``app.schemas.validation.pay_periods.payday_field`` holds every STATED
+    payday to :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, and every other persisted
+    date in the application is held to the same window, while
+    ``budget.pay_periods.start_date`` carries no CHECK of its own.  A long
+    cadence times a large count reaches past it -- 27 paychecks 365 days
+    apart below a record opening 2026-01-02 reach 1999-01-09 -- so the door
+    asks here, before anything is written.  Only the lower bound: the batch
+    lies below a record that is itself inside the window.
+
+    Args:
+        earliest: The earliest payday the batch would record.
+
+    Raises:
+        ValidationError: *earliest* falls before
+            :data:`~app.utils.dates.CALENDAR_DATE_MIN`.  The message names
+            both days.
+    """
+    if earliest < CALENDAR_DATE_MIN:
+        raise ValidationError(
+            f"{earliest.isoformat()} is before "
+            f"{CALENDAR_DATE_MIN.isoformat()}, the earliest day Shekel's "
+            f"calendar holds. Add fewer."
+        )
+
+
+def reject_payday_before_history(
+    earliest: date, history_opens_on: "date | None",
+) -> None:
+    """Refuse an EARLIER batch that reaches below the owner's stated history.
+
+    **Ruling pay_calendar:R-PC104** (plan step ``pay_calendar:C18-b``): when
+    a payday "Add earlier paychecks" would record falls before the day the
+    owner saved as when their paychecks started, nothing is added.  The test
+    is :func:`~app.services.pay_schedule_service.record_below_history`, the
+    one predicate the history setter's refusal asks too -- so the two doors
+    can never disagree about which records a stated history admits.  The
+    message is this door's, as the ruling worded it; an unstated history
+    (``None``) admits every batch.
+
+    Args:
+        earliest: The earliest payday the batch would record.
+        history_opens_on: The owner's stated ``history_opens_on``, or
+            ``None``.
+
+    Raises:
+        ValidationError: *earliest* falls before *history_opens_on*.  The
+            message names the earliest offending payday and the saved day.
+    """
+    if pay_schedule_service.record_below_history(earliest, history_opens_on):
+        raise ValidationError(
+            f"{earliest.isoformat()} is before "
+            f"{history_opens_on.isoformat()}, the day you saved as when your "
+            f"paychecks started. Change that date first, or add fewer."
         )

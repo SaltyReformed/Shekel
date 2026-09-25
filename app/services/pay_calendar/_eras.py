@@ -21,7 +21,10 @@ commit then landed the producers here -- :func:`first_payday_of`,
 docstrings where the anchor they described had moved.  Rejected, on the fork
 presented: moving only the error type and the producer (a weaker subject
 line for the module), and trimming :mod:`._derive`'s prose to fit (the shape
-**R-PC60** and **R-PC69** refused).
+**R-PC60** and **R-PC69** refused).  Plan step ``pay_calendar:C18-b`` added
+the rhythm's other end beside the plan past the record:
+:func:`grid_below_record` and :func:`earlier_paydays`, the grid below the
+record's first payday.
 
 Placed between :mod:`._grid` and :mod:`._derive` in the package's one-way
 chain: it imports the nominal grid and nothing above it, and every module
@@ -627,6 +630,92 @@ def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
         The next projected payday, displaced under its era's convention.
     """
     return next(planned_paydays_after(eras, last_payday))
+
+
+def grid_below_record(
+    eras: "tuple[Era, ...]", opening: date,
+) -> "tuple[Era, int]":
+    """Return the era the rhythm runs on BELOW the record, and its top step there.
+
+    **Where the owner's paydays continue below their first recorded one,
+    stated once** (plan step ``pay_calendar:C18-b``).  Two readers walk that
+    rhythm: :func:`~._rhythm._backdated_paydays` COUNTS the paydays below the
+    record back to a stated history, and :func:`earlier_paydays` hands the
+    "Add earlier paychecks" door the ones it RECORDS.  Both halves of the
+    answer -- which grid, and which step on it is the last one below the
+    record -- are this function's, so the door cannot record a day the count
+    does not hold.
+
+    **The grid is the EARLIEST era's** (ruling **R-PC66**: that era alone
+    runs backward below the record).  The record's opening payday stands for
+    a step of that era -- step ``0`` for every owner a door has written, and
+    ruling **R-PC105** keeps it so at the one door that records below it,
+    which moves the era's phase down with the paydays it adds.
+
+    **The top step is the one below the step the opening STANDS FOR**
+    (:func:`matched_step`), never the grid day below the opening's DATE:
+    the two halves of the count are partitioned by grid index, for the
+    reason :func:`~._rhythm._backdated_paydays` measures -- an opening
+    recorded before its displacing convention was chosen stands beside its
+    own displacement, which is one paycheck and not two.
+
+    Args:
+        eras: The owner's eras, validated.
+        opening: The record's first payday.
+
+    Returns:
+        The earliest era and the highest grid step on it whose payday falls
+        below the record: ``-1`` wherever the opening is the era's own first
+        payday.
+    """
+    era = eras[0]
+    return era, matched_step(era.effective_from, era.rhythm, opening) - 1
+
+
+def earlier_paydays(
+    eras: "tuple[Era, ...]", opening: date, count: int,
+) -> "tuple[Era, tuple[date, ...]]":
+    """Return the *count* paydays the plan puts just below the record, and their era.
+
+    **What "Add earlier paychecks" records** (plan step
+    ``pay_calendar:C18-b``, ruling **R-PC87**): the paydays the owner's
+    earliest rhythm projects just before their first recorded one, read off
+    :func:`grid_below_record` so they are exactly the days the backward
+    count already stands on.  The mirror of :func:`planned_paydays_after`,
+    which the continue door records a prefix of.
+
+    **The era comes back RE-PHASED onto the earliest of them** (ruling
+    **R-PC105**, which narrows R-PC87's "moves nothing" to paychecks): the
+    same rhythm, its ``effective_from`` moved down to the NOMINAL grid day
+    the earliest new payday is paid for.  It is the same grid -- every kind
+    steps from its anchor by whole cadences, months or half-months -- so
+    every payday it plans is unchanged, and the record's new first payday
+    stands for the era's first grid step, as every door's does.  Left where
+    it was, the record would open below that step, and a regenerate keeping only
+    earlier paychecks would restate a rhythm from that phase and collide on
+    ``uq_pay_eras_user_effective_from``, or from inside the next paycheck
+    and leave an era :func:`~._derive.validate_eras` refuses on every read.
+
+    Args:
+        eras: The owner's eras, validated.
+        opening: The record's first payday.
+        count: How many paydays to return, at least 1.
+
+    Returns:
+        ``(era, paydays)``: the earliest era re-phased, and the paydays,
+        displaced under its convention, ascending.  Unbounded below: the
+        caller bounds them to the application's calendar.
+    """
+    era, top = grid_below_record(eras, opening)
+    first = top - count + 1
+    rephased = Era(
+        effective_from=nominal_payday(era.effective_from, era.rhythm.cadence, first),
+        rhythm=era.rhythm,
+    )
+    return rephased, tuple(
+        projected_payday(era.effective_from, era.rhythm, steps)
+        for steps in range(first, top + 1)
+    )
 
 
 def validate_cadence(cadence) -> None:

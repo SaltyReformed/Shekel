@@ -130,7 +130,7 @@ from itertools import takewhile
 
 from ._cadence import PayCadence
 from ._calendar import PayCalendar
-from ._eras import era_index_at, matched_planned, matched_step, projected_payday
+from ._eras import grid_below_record, matched_planned, projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
@@ -388,10 +388,14 @@ def _backdated_paydays(
     records DISPLACED -- so an owner whose record opens on a closed day had
     every backdated payday off by that displacement, in the half that feeds
     the FICA wage base and every ``annual_cap``: **22** of the 684 rhythm days
-    below production's record displace under either convention.  The era is
-    asked for by day (:func:`~._eras.era_index_at`), and below the record that
-    is the earliest era by the rule an era's span is derived by: a day before
-    every era's first payday is the earliest era's.
+    below production's record displace under either convention.  The era and
+    the top step come from :func:`~._eras.grid_below_record` since plan step
+    ``pay_calendar:C18-b``, the one statement of the grid below the record
+    that the "Add earlier paychecks" door records from too, so the door
+    cannot write a payday this count does not stand on.  *It asked for the
+    era by the span's upper day (:func:`~._eras.era_index_at`) until then,
+    which answers the earliest era for every day below a record that opens
+    in that era's span -- every record a door writes.*
 
     **A floor at or after the opening payday yields nothing, and that is a real
     answer rather than a degenerate one.**  It is what an owner whose first
@@ -499,7 +503,7 @@ def _backdated_paydays(
     upper = min(last_day, opening - timedelta(days=1))
     if upper < lower:
         return ()
-    era = calendar.eras[era_index_at(calendar.eras, upper)]
+    era, top_step = grid_below_record(calendar.eras, opening)
     anchor, rhythm = era.effective_from, era.rhythm
     cadence = rhythm.cadence
     # The GRID indices whose PAYDAY can fall in ``[lower, upper]``, counted
@@ -510,12 +514,10 @@ def _backdated_paydays(
     # above carries the theorem.
     first_step = cadence_steps_to(anchor, cadence, lower)
     # Never the opening's own step: that index IS the recorded opening payday,
-    # which the SAVED half answers.  Under ``prior`` its displacement falls
-    # below ``upper`` and would stand beside it as a phantom paycheck.
-    last_step = min(
-        cadence_steps_to(anchor, cadence, upper) + 1,
-        matched_step(anchor, rhythm, opening) - 1,
-    )
+    # which the SAVED half answers (``top_step`` is the one below it).  Under
+    # ``prior`` its displacement falls below ``upper`` and would stand beside
+    # it as a phantom paycheck.
+    last_step = min(cadence_steps_to(anchor, cadence, upper) + 1, top_step)
     return tuple(
         payday
         for payday in (

@@ -2,9 +2,9 @@
 Shekel Budget App -- Pay Period Admin Service
 
 The structural / destructive pay-period operations -- the lock
-classifier and extend / truncate / regenerate -- kept out of the heavily
-imported read/generate ``pay_period_service`` so the destructive paths
-live in one isolated place.  Flask-isolated: takes and returns plain
+classifier and extend / add-earlier / truncate / regenerate -- kept out of
+the heavily imported read/generate ``pay_period_service`` so the destructive
+paths live in one isolated place.  Flask-isolated: takes and returns plain
 data, never imports ``request`` / ``session``; flushes / bulk-deletes,
 never commits (the route owns the transaction).
 
@@ -171,6 +171,45 @@ def extend_pay_periods(user_id, num_periods):
     # 500.
     user_write_lock.lock_user_writes(user_id)
     return pay_period_write.continue_paydays(user_id, num_periods)
+
+
+def add_earlier_pay_periods(user_id, num_periods):
+    """Add ``num_periods`` pay periods BEFORE the user's first one.
+
+    **"Add earlier paychecks"** (plan step ``pay_calendar:C18-b``, ruling
+    **R-PC87**): :func:`extend_pay_periods`' twin at the other end of the
+    schedule, and the same shape -- the lock, then one call to the writer's
+    door, :func:`~app.services.pay_period_write.prepend_paydays`, which
+    records the paydays the owner's earliest rhythm projects just before
+    their first and moves that rhythm's phase down to the earliest of them
+    (ruling **R-PC105**).  It states nothing and retires nothing, so neither
+    gate this module holds for the destructive doors is asked; the new
+    periods come back EMPTY and the caller populates them (ruling
+    **R-R38**), where the books bound (``pay_calendar:C18-a``) generates no
+    item into a period that falls before the books of an account the item
+    moves money in.
+
+    Args:
+        user_id: The owning user's id.
+        num_periods: How many periods to add (>= 1; the route's schema
+            validates the range and the writer re-asks it).
+
+    Returns:
+        The newly created :class:`~app.models.pay_period.PayPeriod` objects,
+        flushed, ``start_date`` ascending, and EMPTY.
+
+    Raises:
+        ValidationError: The writer refuses the batch -- its size, an owner
+            with no paydays, a payday before the application's calendar or
+            before the owner's stated history (ruling **R-PC104**).
+        PayCalendarError: The owner holds no ``budget.pay_schedule`` row or
+            no era, as at :func:`extend_pay_periods`.
+    """
+    # The same serialisation as extend: the record is read under the lock, so
+    # a concurrent add or reset cannot move the first payday this batch is
+    # placed below.
+    user_write_lock.lock_user_writes(user_id)
+    return pay_period_write.prepend_paydays(user_id, num_periods)
 
 
 def truncate_pay_periods(

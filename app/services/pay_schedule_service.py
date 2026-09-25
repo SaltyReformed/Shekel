@@ -625,6 +625,36 @@ def reject_out_of_range_history_opening(history_opens_on: date | None) -> None:
         )
 
 
+def record_below_history(
+    first_payday: date | None, history_opens_on: date | None,
+) -> bool:
+    """Return whether a record opening on *first_payday* starts below the stated history.
+
+    **The ONE predicate for "a payday before the day the owner said their
+    paychecks started"** (ruling **pay_calendar:R-PC104**).  Two refusals
+    ask it and word it for their own door: :func:`reject_history_opening_after_payday`
+    (a history STATED after the record's first payday) and
+    ``pay_period_batch.reject_payday_before_history`` ("Add earlier
+    paychecks" reaching below the stated history, plan step
+    ``pay_calendar:C18-b``).  One predicate is what the ruling's "the same
+    rule" means: the two doors can never admit different sets.
+
+    Args:
+        first_payday: The record's first payday, or the one a door would make
+            first; ``None`` for an owner with no paydays.
+        history_opens_on: The stated day, or ``None`` for not stated.
+
+    Returns:
+        ``True`` when both are present and the history opens after the
+        payday.  Equality is not below: a history ON the first payday counts
+        nothing under the record, which is an ordinary statement.
+    """
+    return (
+        first_payday is not None and history_opens_on is not None
+        and history_opens_on > first_payday
+    )
+
+
 def reject_history_opening_after_payday(
     history_opens_on: date | None, opening_payday: date | None,
 ) -> None:
@@ -638,6 +668,7 @@ def reject_history_opening_after_payday(
     it of the payday the schedule RECORDS, because by then there is a schedule
     to read.  Two spellings of "your paychecks cannot have begun after your
     first one" would be two chances for the two doors to admit different sets.
+    The test itself is :func:`record_below_history`, which a third door asks.
 
     Equality passes, and it is the ordinary answer for one whole class of
     owner: a floor ON the opening payday means "count nothing below the
@@ -655,9 +686,7 @@ def reject_history_opening_after_payday(
         ValidationError: *history_opens_on* falls after *opening_payday*.  The
             message names both days, so a surface can render it verbatim.
     """
-    if history_opens_on is None or opening_payday is None:
-        return
-    if history_opens_on > opening_payday:
+    if record_below_history(opening_payday, history_opens_on):
         raise ValidationError(
             f"Your paychecks cannot have started on "
             f"{history_opens_on.isoformat()}: that is after your first "

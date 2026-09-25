@@ -1,8 +1,9 @@
 {% from "_form_macros.html" import render_field, render_select %}
 {% from "_pay_cadence_fields.html" import cadence_kind_controls with context %}
 {# Manage an existing pay-period schedule: a read-only period list with
-   lock badges, plus the extend / truncate / regenerate actions.  Included
-   by settings/_pay_periods.html only when the user already has periods.
+   lock badges, plus the add-earlier / extend / truncate / regenerate
+   actions.  Included by settings/_pay_periods.html only when the user
+   already has periods.
    pp_periods (rows of {period, locked, badge_label, badge_class}) and the
    optional pp_confirm ({op, count, params}) come from the route context.
    `period` is a pay_calendar.DerivedPeriod since plan step C2-f3b, so its
@@ -71,8 +72,36 @@
 </div>
 
 <div class="row g-3">
+  {# --- Add earlier paychecks (plan step pay_calendar:C18-b, ruling R-PC87) ---
+     Extend's twin at the schedule's other end, and the label is the
+     ruling's: it asks only how many, and records the paydays the earliest
+     pay rhythm projects just before the first one.  It states no date or
+     rhythm, so it cannot split a paycheck or leave a gap.  Default 1, the
+     ruling's own example.  Four actions share this row since this step, so
+     each column is half width until xl, where they sit four across. #}
+  <div class="col-md-6 col-xl-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Add earlier paychecks</h6>
+        <p class="card-text text-muted small">
+          Add paychecks before your first one, on your earliest pay
+          rhythm.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.add_earlier') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ render_field("num_periods", "Paychecks to add", type="number",
+                          value="1", required=true,
+                          input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
+          <button type="submit" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-plus-circle"></i> Add earlier
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   {# --- Extend --- #}
-  <div class="col-md-4">
+  <div class="col-md-6 col-xl-3">
     <div class="card h-100">
       <div class="card-body">
         <h6 class="card-title">Extend forward</h6>
@@ -93,7 +122,7 @@
   </div>
 
   {# --- Truncate --- #}
-  <div class="col-md-4">
+  <div class="col-md-6 col-xl-3">
     <div class="card h-100">
       <div class="card-body">
         <h6 class="card-title">Remove the tail</h6>
@@ -131,7 +160,7 @@
   </div>
 
   {# --- Regenerate --- #}
-  <div class="col-md-4">
+  <div class="col-md-6 col-xl-3">
     <div class="card h-100">
       <div class="card-body">
         <h6 class="card-title">Regenerate the tail</h6>

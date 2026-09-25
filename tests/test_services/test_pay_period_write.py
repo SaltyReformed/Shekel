@@ -295,7 +295,7 @@ class TestTheForwardOnlyFloor:
             self._two_fortnightly_periods(user_id)
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="on or after 2026-01-30"):
+            with pytest.raises(ValidationError, match="Choose 2026-01-30 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 9),
                     num_periods=4, rhythm=rhythm_of(14),
@@ -321,7 +321,7 @@ class TestTheForwardOnlyFloor:
             self._two_fortnightly_periods(user_id)
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="on or after 2026-01-30"):
+            with pytest.raises(ValidationError, match="Choose 2026-01-30 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 29),
                     num_periods=1, rhythm=rhythm_of(14),
@@ -362,7 +362,7 @@ class TestTheForwardOnlyFloor:
             self._two_fortnightly_periods(user_id)
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="on or after 2026-01-30"):
+            with pytest.raises(ValidationError, match="Choose 2026-01-30 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 23),
                     num_periods=2, rhythm=rhythm_of(7),
@@ -669,7 +669,7 @@ class TestTheCeilingRefusesASkippedPaycheck:
                 record_paydays_across_a_hole(
                     user_id, date(2026, 1, 30), 1, rhythm_of(14),
                 )
-            with pytest.raises(ValidationError, match="on or after 2026-01-30"):
+            with pytest.raises(ValidationError, match="Choose 2026-01-30 or later"):
                 record_paydays_across_a_hole(
                     user_id, date(2026, 1, 20), 1, rhythm_of(14),
                 )
@@ -782,7 +782,7 @@ class TestTheFloorFollowsTheProducer:
             )
 
             with pytest.raises(
-                ValidationError, match=f"on or after {floor.isoformat()}",
+                ValidationError, match=f"Choose {floor.isoformat()} or later",
             ):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=below,
@@ -857,7 +857,7 @@ class TestTheFloorFollowsTheProducer:
             db.session.commit()
             doomed = {created[-1].id}
 
-            with pytest.raises(ValidationError, match="on or after 2025-12-18"):
+            with pytest.raises(ValidationError, match="Choose 2025-12-18 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2025, 12, 17),
                     num_periods=1,
@@ -937,7 +937,7 @@ class TestTheFloorFollowsTheProducer:
                 date(2030, 11, 28), forward, 1,
             ) == date(2030, 12, 12), "and the owner's real next payday is this"
 
-            with pytest.raises(ValidationError, match="on or after 2030-12-13"):
+            with pytest.raises(ValidationError, match="Choose 2030-12-13 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2030, 12, 12),
                     num_periods=1,
@@ -1040,7 +1040,7 @@ class TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS:
             assert calendar_for(user_id).horizon() == date(2030, 11, 28)
 
             with pytest.raises(
-                ValidationError, match="on or after 2030-11-29",
+                ValidationError, match="Choose 2030-11-29 or later",
             ):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2030, 11, 27),
@@ -1106,7 +1106,7 @@ class TestTheFloorAnchorsOnTheEra:
             self._paid_a_day_early(user_id)
 
             assert calendar_for(user_id).periods[-1].end_date == date(2026, 2, 12)
-            with pytest.raises(ValidationError, match="on or after 2026-02-13"):
+            with pytest.raises(ValidationError, match="Choose 2026-02-13 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 2, 12),
                     num_periods=1, rhythm=rhythm_of(14),
@@ -1180,7 +1180,7 @@ class TestTheFloorAnchorsOnTheEra:
             pay_period_write.retire_paydays(user_id, doomed)
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="on or after 2026-01-20"):
+            with pytest.raises(ValidationError, match="Choose 2026-01-20 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 19),
                     num_periods=2,

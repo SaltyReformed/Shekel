@@ -201,7 +201,10 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     **R-PC58**).  Called by ``pay_period_write.record_paydays`` when a batch
     states a rhythm the era covering its first payday does not already hold
     -- a first schedule, a cadence or convention changed going forward, or a
-    phase off the covering grid -- and by nothing else: a batch that continues
+    phase off the covering grid -- and by ``pay_period_write.prepend_paydays``
+    to move the EARLIEST era's phase down onto the paydays it adds below the
+    record (plan step ``pay_calendar:C18-b``, ruling **R-PC105**; the same
+    rhythm, so nothing it plans moves).  Nothing else: a batch that continues
     an era mints nothing, which is what closed the read-path re-judging
     ledger row **N-494** recorded.
 
@@ -243,7 +246,13 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             writer retired every era "taking effect on or after" the mint's
             day, which it never did; a rebuild from an existing era's day
             with a changed convention and every lower payday held reached
-            the key as an IntegrityError.*
+            the key as an IntegrityError.*  The earlier door's re-phased era
+            falls below every stored era's day, and the one it replaces is
+            retired first.  **That floor argument needs the record to stand
+            on the earliest era's first grid step or above**, which is why
+            the earlier door moves the phase (**R-PC105**): with only earlier
+            paychecks kept below an unmoved phase, the floor IS that phase,
+            and a rebuild from it with a new rhythm reached this key.
 
     Returns:
         The new :class:`~app.models.pay_era.PayEra` row, flushed.
