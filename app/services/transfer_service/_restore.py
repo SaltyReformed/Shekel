@@ -226,10 +226,12 @@ def restore_transfer(transfer_id, user_id):
     # Re-post the confirmed effect when the restored transfer is settled: a
     # settled transfer that was soft-deleted had its effect reversed by
     # ``delete_transfer``, so restoring re-syncs the ledger to what its
-    # movements now say.  Runs AFTER the shadows are un-deleted above, so each
-    # covering movement's parent is contributing again and a dated one posts
-    # (plan step ``balance:X-bi-6-3``, ruling **R-BAL101**: the door reads the
-    # movements, it is told no settled sense).  A no-op for a restored
+    # movements now say.  Runs AFTER the transfer and its shadows are
+    # un-deleted above, so each covering movement is its leg's record again
+    # under a contributing transfer and a dated one posts (plan step
+    # ``balance:X-bi-6-3``, ruling **R-BAL101**: the door reads the
+    # movements, it is told no settled sense; the leg's gate is the
+    # transfer's since leaf ``X-bi-6-4a``).  A no-op for a restored
     # projected transfer (the common path -- its movements are un-dated).
     posting_service.sync_transfer_postings(xfer)
     # Posting ledger: re-reconcile the loan's genesis ledger for a restored,

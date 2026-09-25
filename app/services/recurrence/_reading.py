@@ -17,7 +17,8 @@ through.  One composition and its projections:
   what the rule MEANS and not where its rows land.
 * :func:`rule_occurrences` -- the second half alone, the shape three surfaces
   and the frozen baseline have always taken.
-* :func:`placed_periods` -- the projection three surfaces take of that answer.
+* :func:`placed_occurrences` -- the filter three surfaces take of that answer,
+  and :func:`placed_periods`, its projection onto the period.
 
 **One caller needs both halves, and that is why :func:`read_rule` exists**
 (plan step R7a).  The Recurring surface resolves every rule to date its "Next"
@@ -313,11 +314,12 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
 
     **What ``budget.recurrence_rules.day_of_month`` HELD, derived from the
     columns that survive** (plan step R7c-c, developer ruling 2026-08-16 on
-    plan ledger row **D37**).  ``recurrence.compute_due_date`` dates
-    every generated row from that day and plan step **R5** is what deletes that
-    function; this leaf drops the column four steps ahead of it, so the reader
-    reads the derivation the write door was encoding the column FROM rather
-    than a column that is gone.
+    plan ledger row **D37**).  ``recurrence.compute_due_date`` dated every
+    generated row from that day until plan step recurrence:R5-a, which dates a
+    row from its OCCURRENCE and reads this only for whether it is ``None``;
+    R7c-c dropped the column ahead of that, so the reader reads the derivation
+    the write door was encoding the column FROM rather than a column that is
+    gone.
 
     It is ``_authoring._author``'s own expression, moved rather than restated:
     the day the cadence fires on
@@ -340,8 +342,8 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
     wrong-money defects that came of reaching for the other predicate.
 
     Reads no calendar, because none of its inputs needs one -- which is what
-    lets ``compute_due_date`` stay the pure function of a rule and a period
-    that its callers, the frozen baseline included, take it as.
+    lets ``compute_due_date`` stay the pure function of a rule, an occurrence
+    and a period that its callers, the frozen baseline included, take it as.
 
     **``None`` means "date this row from its PAYCHECK", so a unit that cannot
     be dated either way is REFUSED rather than answered** -- plan step R8-a's
@@ -533,7 +535,6 @@ def recurrence_spec_with_cadence(
             if is_offerable_nominal_day(unit, rule.starts_on, rule.nominal_day)
             else None
         ),
-        due_day_of_month=rule.due_day_of_month,
         # The exclusive arc rejoined into the one value that authored it --
         # the inverse of ``_authoring._author``'s split, and the only other
         # place the two columns are seen apart (plan step R7b-3).
@@ -877,46 +878,48 @@ def has_ended(
     return resolved.closing.has_closed(on=on, reading=reading.bound_reading)
 
 
-def placed_periods(
+def placed_occurrences(
     placements: Iterable[OccurrencePlacement],
     *,
     ending_on_or_after: date | None = None,
-) -> list[DerivedPeriod]:
-    """Project *placements* onto the pay periods a caller can show or write.
+) -> list[OccurrencePlacement]:
+    """Keep the *placements* a caller can show or write, occurrence and all.
 
-    The projection three surfaces take of :func:`rule_occurrences` -- the
+    The filter every display surface takes of :func:`rule_occurrences` -- the
     Recurring surface's next-date column, the form's occurrence preview, and
     the frozen baseline oracle -- held once so they cannot come to filter
-    differently.  It is exactly what the retired ``match_periods`` adapter
-    returned, which is also why the baseline blob did not move when the adapter
-    went.
+    differently.  **It keeps the whole placement since plan step
+    recurrence:R5-a**, because a row is dated from its OCCURRENCE now
+    (:func:`~app.services.recurrence.compute_due_date`, ruling **R-R94**) and
+    a surface that states the date a row carries has to hold the occurrence
+    to ask it; :func:`placed_periods` is the same filter projected onto the
+    period alone, for a surface that asks nothing else.
 
-    The generation seam does NOT use it: that path needs the
-    ``(occurrence, period)`` pair and the write window, so it walks the
-    placements itself.
+    The generation seam does NOT use it: that path needs the write window
+    too, so it walks the placements itself.
 
     Args:
         placements: The answer from :func:`rule_occurrences`.
-        ending_on_or_after: Drop periods ENDING before this date.  ``None``
-            (the default) applies no bound.  It is the CALLER's display or
-            regeneration boundary and never the rule's own -- the rule's
-            opening bound is its anchor, and conflating the two is what defect
-            D2 was.  **The end it compares is the DERIVED one** (plan step
-            C2-b2), so on a schedule whose stored column disagrees this can
-            keep or drop a period the stored value would not -- see
-            ``recurrence/_occurrence.py``'s module docstring for the three
-            shapes.  Every caller of this projection is a DISPLAY surface; the
-            generation seam applies its own bound to the ORM row it resolves,
-            for exactly that reason (``recurrence_engine``'s
-            ``resolve_generation_plan``), because that bound also has to agree
-            with an SQL sweep over the stored column.
+        ending_on_or_after: Drop placements whose period ENDS before this
+            date.  ``None`` (the default) applies no bound.  It is the
+            CALLER's display or regeneration boundary and never the rule's
+            own -- the rule's opening bound is its anchor, and conflating the
+            two is what defect D2 was.  **The end it compares is the DERIVED
+            one** (plan step C2-b2), so on a schedule whose stored column
+            disagrees this can keep or drop a period the stored value would
+            not -- see ``recurrence/_occurrence.py``'s module docstring for
+            the three shapes.  Every caller of this filter is a DISPLAY
+            surface; the generation seam applies its own bound to the ORM row
+            it resolves, for exactly that reason (``recurrence_engine``'s
+            ``resolve_generation_plan``), because that bound also has to
+            agree with an SQL sweep over the stored column.
 
     Returns:
-        The placed periods, ascending by occurrence date, one entry per
-        occurrence and therefore possibly repeating.
+        The placed placements, ascending by occurrence date, every one with
+        a period.
     """
     return [
-        placement.period
+        placement
         for placement in placements
         if placement.period is not None
         and (
@@ -926,10 +929,39 @@ def placed_periods(
     ]
 
 
+def placed_periods(
+    placements: Iterable[OccurrencePlacement],
+    *,
+    ending_on_or_after: date | None = None,
+) -> list[DerivedPeriod]:
+    """Project *placements* onto the pay periods a caller can show or write.
+
+    :func:`placed_occurrences`' filter, keeping the period alone -- what the
+    form's occurrence preview reads.  It is exactly what the retired
+    ``match_periods`` adapter returned, which is also why the baseline blob
+    did not move when the adapter went.
+
+    Args:
+        placements: The answer from :func:`rule_occurrences`.
+        ending_on_or_after: See :func:`placed_occurrences`.
+
+    Returns:
+        The placed periods, ascending by occurrence date, one entry per
+        occurrence and therefore possibly repeating.
+    """
+    return [
+        placement.period
+        for placement in placed_occurrences(
+            placements, ending_on_or_after=ending_on_or_after,
+        )
+    ]
+
+
 __all__ = [
     "RuleReading",
     "cadence_of",
     "has_ended",
+    "placed_occurrences",
     "placed_periods",
     "read_rule",
     "recurrence_spec",

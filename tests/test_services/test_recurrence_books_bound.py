@@ -42,7 +42,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RecurrenceUnitEnum, TxnTypeEnum
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum, TxnTypeEnum
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -66,7 +66,7 @@ from app.services.recurrence import (
 from app.services import recurrence_engine
 from app.services.recurring_definition import read_definition
 from tests._test_helpers import make_cadence_rule, state_template_price
-from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY, MONTHLY_FIRST
 from tests.test_services.test_recurrence_resolution import build_calendar
 
 _USER_ID = 1
@@ -77,17 +77,22 @@ _PREPENDED = date(2026, 3, 12)
 
 
 def _monthly(
-    day: date, *, due_day_of_month: int | None = None, times: int | None = None,
+    day: date, *,
+    placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE,
+    times: int | None = None,
 ):
     """Return a monthly rule's resolved value on the prepended calendar.
 
-    *times* bounds it to that many occurrences; ``None`` never ends.
+    *placement* is which paycheck funds each occurrence -- the one containing
+    it, or the first starting on or after it, whose row is then due on that
+    later payday.  *times* bounds it to that many occurrences; ``None`` never
+    ends.
     """
     spec = RecurrenceSpec(
         user_id=_USER_ID,
         unit=RecurrenceUnitEnum.MONTH,
         starts_on=day,
-        due_day_of_month=due_day_of_month,
+        placement=placement,
     )
     if times is not None:
         spec = replace(spec, end_bound=EndsAfterOccurrences(count=times))
@@ -318,26 +323,36 @@ class TestTheCashDayIsCompared:
     """Ruling R-PC86: the day the money lands, not the day the rule schedules."""
 
     def test_a_bill_scheduled_BEFORE_the_books_and_due_AFTER_is_kept(self):
-        """A card bill scheduled the 25th, due the 15th of the next month.
+        """A bill scheduled the 24th, funded -- and so due -- on the next payday.
 
-        Scheduled 03-25, one day before the 03-26 opening; its money lands
-        04-15, after it -- so it is a real payment the books do not contain.
+        Scheduled 03-24, one day before the 03-25 opening; funded from the
+        first paycheck starting on or after it, 03-26, which is the day its
+        money lands (ruling R-R95) -- after the opening, so it is a real
+        payment the books do not contain.  It was a separate due day on a
+        rule until plan step recurrence:R5-a dropped that column (ruling
+        R-R96); a later funding paycheck is the shape where a row's cash day
+        and its occurrence still part company.
         """
         calendar = build_calendar(
             first_payday=_PREPENDED, cadence_days=14, count=12,
         )
         bounded = replace(
-            _monthly(date(2026, 3, 25), due_day_of_month=15),
-            books_opened_on=date(2026, 3, 26),
+            _monthly(
+                date(2026, 3, 24),
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            ),
+            books_opened_on=date(2026, 3, 25),
         )
 
         placements = occurrence_placements(bounded, calendar)
 
-        assert placements[0].occurrence == date(2026, 3, 25)
-        assert bounded.row_date(placements[0].period) == date(2026, 4, 15)
+        assert placements[0].occurrence == date(2026, 3, 24)
+        assert bounded.row_date(
+            placements[0].occurrence, placements[0].period,
+        ) == date(2026, 3, 26)
 
-    def test_the_same_bill_with_no_separate_due_day_is_dropped(self):
-        """Without the due day its money lands on 03-25, inside the opening."""
+    def test_the_same_bill_funded_by_its_containing_paycheck_is_dropped(self):
+        """Funded by the paycheck CONTAINING it, its money lands on 03-25, inside the opening."""
         calendar = build_calendar(
             first_payday=_PREPENDED, cadence_days=14, count=12,
         )
@@ -379,29 +394,48 @@ class TestTheRowDateIsOneDerivation:
     def test_row_date_agrees_with_compute_due_date_on_every_placed_period(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Graded against the rule-row reading, across a due-day offset.
+        """Graded against the rule-row reading, where the row day is not the occurrence.
 
         ``compute_due_date`` reads a stored rule; ``row_date`` reads the
         resolved value.  Both hand their coordinates to one body, and this is
         what would fail if either re-derived the day on its own.
         """
         with app.app_context():
-            template = _transaction_template(seed_user, "Card bill")
             scheduled = seed_periods[0].start_date + timedelta(days=3)
-            # A due day BEFORE the scheduling day: the next-month convention,
-            # the branch where the row day and the occurrence part company.
-            assert scheduled.day > 1
-            rule = _monthly_rule(template, scheduled, due_day_of_month=1)
-            ctx = BalanceContext.build(seed_user["user"].id)
-            resolved = ctx.resolved_recurrence_of(rule)
+            # BOTH branches of the one body: a rule dated from its day (the
+            # row day IS the occurrence), and one funded from the FIRST
+            # paycheck starting on or after each occurrence (the row day is
+            # that payday) -- where the two part company since plan step
+            # recurrence:R5-a dropped the separate due day that used to be
+            # this case's lever.
+            for name, cadence, row_day_is_occurrence in (
+                ("Card bill", MONTHLY, True),
+                ("Card bill, first paycheck", MONTHLY_FIRST, False),
+            ):
+                template = _transaction_template(seed_user, name)
+                rule = _monthly_rule(template, scheduled, cadence=cadence)
+                ctx = BalanceContext.build(seed_user["user"].id)
+                resolved = ctx.resolved_recurrence_of(rule)
 
-            placed = [
-                p.period for p in occurrence_placements(resolved, ctx.calendar())
-                if p.period is not None
-            ]
-            assert placed
-            for period in placed:
-                assert resolved.row_date(period) == compute_due_date(rule, period)
+                placed = [
+                    p for p in occurrence_placements(resolved, ctx.calendar())
+                    if p.period is not None
+                ]
+                assert placed, name
+                if row_day_is_occurrence:
+                    assert all(
+                        resolved.row_date(p.occurrence, p.period) == p.occurrence
+                        for p in placed
+                    ), name
+                else:
+                    assert any(
+                        resolved.row_date(p.occurrence, p.period) != p.occurrence
+                        for p in placed
+                    ), "precondition: some row day differs from its occurrence"
+                for p in placed:
+                    assert resolved.row_date(p.occurrence, p.period) == (
+                        compute_due_date(rule, p.occurrence, p.period)
+                    ), name
 
 
 class TestTheFloorIsTheAccounts:
@@ -829,12 +863,13 @@ def _transaction_template(seed_user, name, *, account_id=None, is_envelope=False
     return template
 
 
-def _monthly_rule(template, starts_on, *, due_day_of_month=None):
-    """Author a monthly rule onto *template* through the write door."""
-    rule = make_cadence_rule(
-        template, MONTHLY, starts_on=starts_on,
-        due_day_of_month=due_day_of_month,
-    )
+def _monthly_rule(template, starts_on, *, cadence=MONTHLY):
+    """Author a monthly rule onto *template* through the write door.
+
+    *cadence* is ``MONTHLY`` (funded by the paycheck containing each
+    occurrence) or ``MONTHLY_FIRST`` (by the first starting on or after it).
+    """
+    rule = make_cadence_rule(template, cadence, starts_on=starts_on)
     _db.session.refresh(template)
     return rule
 

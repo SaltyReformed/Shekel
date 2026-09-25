@@ -114,7 +114,7 @@ from tests._test_helpers import (
 #: column at all, and the two owning FKs that replaced it are
 #: :data:`_OWNING_ARC_COLUMNS`.
 _AUTHORED_COLUMNS = (
-    "due_day_of_month", "end_date", "max_occurrences",
+    "end_date", "max_occurrences",
 )
 
 #: The OWNING ARC: which definition this rule belongs to (plan step R-F6).

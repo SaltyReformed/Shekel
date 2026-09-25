@@ -250,7 +250,9 @@ def _believed(pay):
     )
 
 
-def _current_paycheck(net_pay, gross_biweekly, annual_salary):
+def _current_paycheck(
+    net_pay, gross_biweekly, annual_salary, cadence=PayCadence(FixedDays(14)),
+):
     """The engine's breakdown for one current paycheck, with hand-set figures.
 
     ``compute_gap_net_biweekly`` takes the current paycheck as the engine's own
@@ -269,12 +271,17 @@ def _current_paycheck(net_pay, gross_biweekly, annual_salary):
             case may hand in ``0`` to reach the no-positive-gross arm, a
             state the engine cannot price into being.
         annual_salary: The annual figure the earnings record carries.
+        cadence: The rhythm the paycheck was priced at (ruling R-SAL70):
+            biweekly, the gap inputs' own, unless a case prices the current
+            paycheck under an earlier era than the latest.
 
     Returns:
         The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`.
     """
     return paycheck_calculator.PaycheckBreakdown(
-        period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
+        period=paycheck_calculator.PeriodInfo(
+            date(2026, 1, 2), period_id=1, cadence=cadence,
+        ),
         earnings=paycheck_calculator.Earnings(
             annual_salary=annual_salary,
             base_biweekly=gross_biweekly,
@@ -335,7 +342,7 @@ class TestComputeGapNetBiweekly:
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
             salary_by_year, _AS_OF,
         )
-        assert result == Decimal("4030.77")
+        assert result.net == Decimal("4030.77")
 
     def test_a_non_terminating_rate_is_carried_at_full_precision(self):
         """The take-home rate reaches the scaling UNROUNDED.
@@ -366,7 +373,7 @@ class TestComputeGapNetBiweekly:
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
             salary_by_year, _AS_OF,
         )
-        assert result == Decimal("1666.67")
+        assert result.net == Decimal("1666.67")
 
     def test_returns_current_net_when_no_retirement_horizon(self):
         """No planned retirement date -> current net biweekly, unscaled.
@@ -384,7 +391,7 @@ class TestComputeGapNetBiweekly:
             _gap_inputs(profile), _believed(pay), None,
             [(2026, Decimal("120000.00"))], _AS_OF,
         )
-        assert result == Decimal("1800.00")
+        assert result.net == Decimal("1800.00")
 
     def test_returns_zero_when_there_is_no_current_paycheck(self):
         """No current paycheck -> ``Decimal("0")``, whatever else is set.
@@ -400,7 +407,7 @@ class TestComputeGapNetBiweekly:
             _gap_inputs(SalaryProfile()), _believed(None), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], _AS_OF,
         )
-        assert result == Decimal("0")
+        assert result.net == Decimal("0")
 
     def test_returns_current_net_when_current_gross_is_zero(self):
         """A non-positive gross -> unscaled net, no divide-by-zero.
@@ -418,7 +425,7 @@ class TestComputeGapNetBiweekly:
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], _AS_OF,
         )
-        assert result == Decimal("1500.00")
+        assert result.net == Decimal("1500.00")
 
 
 class TestTheRenderDayOpensTheSalaryPath:
@@ -507,7 +514,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         before = retirement_dashboard_service.compute_gap_net_biweekly(
             gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
         )
-        assert before == Decimal("3076.92")
+        assert before.net == Decimal("3076.92")
 
         # Pass pinned AFTER it: no year to project, so the producer falls back
         # to the current net.  A producer reading its own clock would answer
@@ -515,7 +522,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         after = retirement_dashboard_service.compute_gap_net_biweekly(
             gap, _believed(pay), date(2030, 6, 30), None, date(2032, 3, 20),
         )
-        assert after == Decimal("2000.00")
+        assert after.net == Decimal("2000.00")
 
     def test_a_weekly_owners_gap_divides_by_52(self):
         """THE CADENCE AXIS: the projected paycheck follows the owner's rhythm.
@@ -538,7 +545,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # $1,538.46.
         assert retirement_dashboard_service.compute_gap_net_biweekly(
             gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
-        ) == Decimal("1538.46")
+        ).net == Decimal("1538.46")
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(
         self, app, db, seed_user, seed_periods,

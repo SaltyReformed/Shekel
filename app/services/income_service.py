@@ -636,6 +636,38 @@ class SalaryPricing:
         self._paychecks = paychecks
         self._profiles: "dict[int, SalaryProfile] | None" = None
 
+    def paycheck_on(
+        self, template_id: int, period,
+    ) -> "paycheck_calculator.PaycheckBreakdown | None":
+        """Return the paycheck the profile driving *template_id* pays on *period*.
+
+        **The one walk from a recurring definition to its paycheck** (plan step
+        salary:X-av-2, ruling **R-SAL71**): :meth:`net_for` reads a ROW's
+        figure through it, and the Recurring surface's salary row reads
+        TODAY's paycheck through it
+        (``obligations_aggregator.occurrence_amount``) -- the net AND the
+        rhythm it was priced at
+        (:attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`), which a
+        monthly figure must convert with.  The whole breakdown rather than a
+        net because that pair is what the second reader needs, and one door
+        answering both keeps them one pricing of one paycheck.
+
+        Args:
+            template_id: The recurring definition.
+            period: The :class:`~app.services.pay_calendar.DerivedPeriod` to
+                price -- saved, or projected past the horizon; the pricer
+                prices either.
+
+        Returns:
+            The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`,
+            or ``None`` when no ACTIVE profile in this scenario names that
+            template.
+        """
+        profile = self._profile_by_template().get(template_id)
+        if profile is None:
+            return None
+        return self._paychecks.for_profile(profile).at(period)
+
     def net_for(
         self, template_id: int, pay_period_id: int,
     ) -> Decimal | None:
@@ -651,8 +683,10 @@ class SalaryPricing:
             owner's saved calendar holds.  Both are the refusals amount rule 2
             raises rather than substituting a stored figure.
         """
-        profile = self._profile_by_template().get(template_id)
-        if profile is None:
+        # The profile is asked FIRST, before the calendar, so a row on a
+        # template no profile names derives nothing (the laziness this class
+        # docstring argues); :meth:`paycheck_on` then prices it.
+        if self._profile_by_template().get(template_id) is None:
             return None
         paychecks = self._paychecks
         # The period is resolved by ID off the owner's calendar, and that is
@@ -665,7 +699,7 @@ class SalaryPricing:
         period = paychecks.calendar.period_by_id(pay_period_id)
         if period is None:
             return None
-        return paychecks.for_profile(profile).at(period).earnings.net_pay
+        return self.paycheck_on(template_id, period).earnings.net_pay
 
     def _profile_by_template(self) -> "dict[int, SalaryProfile]":
         """Return ``{template_id: profile}`` for this owner and scenario.

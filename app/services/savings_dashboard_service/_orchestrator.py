@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import is_liability_account
-from app.services.pay_calendar import cadence_for
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -198,21 +197,19 @@ def _debt_summary_with_dti(
         current_pay.gross_biweekly if current_pay is not None
         else Decimal("0.00")
     )
-    # The paycheck -> monthly conversion happens HERE, at the owner's own
-    # cadence (plan step R7a-2a), and the schedule is read only when there is
-    # something to convert.  Taking a resolved ``PayCadence`` as a parameter
-    # instead put a 500 in front of an owner with a mortgage and no salary
-    # profile: ``_dti_metrics`` answers ``None`` for a zero gross, so the
-    # cadence was resolved -- and could refuse -- for a figure the page never
-    # publishes.  That is the same defect ``_DashboardCoreData``'s docstring
-    # records, one guard further in, and an adversarial review of this step
-    # found it.
+    # The paycheck -> monthly conversion happens HERE, at the rhythm the
+    # paycheck was PRICED at (ruling R-SAL70, plan step salary:X-av-2), which
+    # rides on ``current_pay``.  It read ``cadence_for`` -- the LATEST era's
+    # rhythm -- which agreed with the engine only while the engine divided
+    # every payday by that count too (see ``CurrentPay``).  It stays read only
+    # when there is something to convert, for plan step R7a-2a's reason: a
+    # resolved cadence taken eagerly put a 500 in front of an owner with a
+    # mortgage and no salary profile, for a figure ``_dti_metrics`` never
+    # publishes at a zero gross -- and ``current_pay`` is ``None`` for exactly
+    # that owner, so the conversion is not reached.
     gross_monthly = (
-        round_money(
-            cadence_for(balance_ctx.user_id)
-            .per_paycheck_to_monthly(gross_biweekly)
-        )
-        if gross_biweekly > Decimal("0.00")
+        round_money(current_pay.cadence.per_paycheck_to_monthly(gross_biweekly))
+        if current_pay is not None and gross_biweekly > Decimal("0.00")
         else Decimal("0.00")
     )
     return _compute_debt_summary(
@@ -367,17 +364,14 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     ctx = _build_projection_context(core, params)
     account_data = _compute_account_projections(goal_accounts, ctx)
 
-    current_pay = _current_pay(core.balance_ctx, core.current_period)
-    net_biweekly_pay = (
-        current_pay.net_biweekly if current_pay is not None
-        else Decimal("0.00")
-    )
-
     return _compute_goal_progress(
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            net_biweekly_pay=net_biweekly_pay,
+            # The whole current pay, net AND the rhythm it was priced at
+            # (ruling R-SAL70): a goal stated in months of income converts at
+            # that rhythm.
+            current_pay=_current_pay(core.balance_ctx, core.current_period),
             # The PASS itself (plan step R7d-e), where the inputs carried its
             # reported window, its calendar and its day as three scalars: the
             # contribution filter reads the composed door now, which folds a
@@ -787,17 +781,14 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
     # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
     # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_pay = _current_pay(core.balance_ctx, core.current_period)
-    net_biweekly_pay = (
-        current_pay.net_biweekly if current_pay is not None
-        else Decimal("0.00")
-    )
 
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            net_biweekly_pay=net_biweekly_pay,
+            # Net AND the rhythm it was priced at (ruling R-SAL70).
+            current_pay=current_pay,
             # The pass, whole (plan step R7d-e): its calendar is the one
             # ``calendar`` above was read off, its reported window is the goal
             # count's domain, and its day is the build's ONE day (plan step
