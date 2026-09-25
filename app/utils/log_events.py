@@ -377,6 +377,18 @@ EVT_TRANSFERS_RECONCILED = _register(
     "an analyst asking why that account's balance moved has to be able to "
     "find this without knowing to look under transactions.",
 )
+EVT_SETTLEMENTS_RECONCILED = _register(
+    "settlements_reconciled", BUSINESS,
+    "User confirmed which reopened payments recorded on this account, for "
+    "rows planned on ANOTHER account, their bank statement shows (the "
+    "reconcile panel's 'Paid from this account' list, plan step "
+    "credit_card:CC-5-4b); each row settled through the transaction service "
+    "on the day the balance was observed, its payment kept on this account, "
+    "some carrying a corrected amount.  Its own event because the row that "
+    "settles is planned on a SECOND account: an analyst asking why that "
+    "account's plan moved has to be able to find this without knowing to "
+    "look under transactions.",
+)
 
 # ── Business events: pay periods ───────────────────────────────────
 
