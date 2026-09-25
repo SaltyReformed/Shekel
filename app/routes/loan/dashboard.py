@@ -322,7 +322,10 @@ def _build_band_context(ctx, scenarios, installments, params):
     """
     band_chart = build_band_chart(
         ctx.account, ctx.balance_ctx,
-        band_chart_dates(scenarios, ctx.payoff_date, installments, params),
+        band_chart_dates(
+            scenarios, ctx.payoff_date, installments, params,
+            ctx.figures.terms.recorded_start,
+        ),
     )
     return {
         "band_chart": band_chart,

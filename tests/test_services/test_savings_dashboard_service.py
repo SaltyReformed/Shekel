@@ -3745,7 +3745,7 @@ class TestBuildTrendPeriods:
 
         ``anchor_period_index`` is mapped to the matching ``_period`` id
         (``100 + index``); ``None`` leaves the account unanchored.
-        ``account_id`` keys the loan gate's ``debt_schedules`` lookup.
+        ``account_id`` keys the loan gate's ``loan_starts`` lookup.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
@@ -3761,30 +3761,16 @@ class TestBuildTrendPeriods:
         return SimpleNamespace(id=account_id, account_type=acct_type)
 
     @staticmethod
-    def _debt_schedule(first_payment_period_index, periods):
-        """A one-row loan schedule first paying in a period.
+    def _recorded_start(start_period_index, periods):
+        """A loan whose record starts in a period: that period's ``end_date``.
 
-        The row's ``payment_date`` is that period's ``end_date``, so the
-        loan gate resolves the loan's honest start to that period's index.
-        The gate reads only the schedule ROWS -- which is why it is now handed
-        rows (``debt_schedule_rows``) rather than the balance-bearing
-        ``DebtSchedule`` bundle.
+        The loan gate resolves the loan's honest start to that period's index.
+        It reads the day the loan's record starts (ruling R-R111); until plan
+        step recurrence:R16-c-2 it read the earliest row of the loan's
+        schedule, which this helper built as a one-row schedule dated the
+        same day.
         """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-        return [SimpleNamespace(
-            payment_date=periods[first_payment_period_index].end_date,
-            remaining_balance=Decimal("1000.00"),
-        )]
-
-    @staticmethod
-    def _empty_debt_schedule():
-        """An EMPTY loan schedule (a paid-off / fully-resolved loan).
-
-        The gate must NOT constrain the window for such a loan -- its flat
-        current balance is its real balance at every period.
-        """
-        return []
+        return periods[start_period_index].end_date
 
     def test_history_reaches_back_past_the_cash_anchor(self):
         """A cash account's anchor no longer bounds the history (N-44).
@@ -3988,10 +3974,10 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: self._debt_schedule(5, periods)}
+        loan_starts = {8: self._recorded_start(5, periods)}
 
         window, current_index, honest_start = build_trend_periods(
-            accounts, periods, periods[7], debt_schedules,
+            accounts, periods, periods[7], loan_starts,
         )
 
         assert honest_start == 5
@@ -4003,7 +3989,10 @@ class TestBuildTrendPeriods:
 
         An empty schedule means the loan sits at its current balance at every
         period (a paid-off / fully-resolved loan), which IS its real balance,
-        so it is honest throughout and must not gate.  PLAIN anchored at
+        so it is honest throughout and must not gate.  The dashboard passes
+        no start for such a loan (``_orchestrator._build_trend_window``), so
+        it is absent from ``loan_starts`` here -- until plan step
+        recurrence:R16-c-2 it was present with an empty row list.  PLAIN anchored at
         index 1, an AMORTIZING loan with an empty schedule, today at index 7:
         nothing gates, so the honest start is 0 and the
         ``_TREND_HISTORY_PERIODS`` cap bounds the tail at 7 - 6 = 1.  Window
@@ -4019,10 +4008,8 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: self._empty_debt_schedule()}
-
         window, current_index, honest_start = build_trend_periods(
-            accounts, periods, periods[7], debt_schedules,
+            accounts, periods, periods[7], {},
         )
 
         assert honest_start == 0
@@ -7272,3 +7259,47 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
             db.session.query(CalibrationOverride).delete()
             db.session.commit()
             assert _summary().dti.ratio == calibrated.dti.ratio
+
+
+class TestTheTrendWindowPassesEachGatingLoansRecordedStart:
+    """Ruling R-R111 at the dashboard: the gate gets each loan's recorded start.
+
+    ``_orchestrator._build_trend_window`` hands the net-worth gate the day each
+    loan's record starts (``LoanTerms.recorded_start``) -- and none for a loan
+    whose schedule is EMPTY (paid off or fully resolved), which does not gate.
+    Until plan step recurrence:R16-c-2 it handed the gate every loan's
+    schedule rows and the gate skipped an empty list; the empty-schedule rule
+    moved here with the start.
+    """
+
+    def test_an_empty_schedule_passes_no_start(self, monkeypatch):
+        """Loan 8's schedule is empty, loan 9's is not: only 9 gates, from its start."""
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service import _orchestrator
+
+        passed = {}
+        monkeypatch.setattr(
+            _orchestrator.balance_at, "debt_schedule_rows",
+            lambda accounts, ctx: {8: [], 9: [SimpleNamespace()]},
+        )
+        monkeypatch.setattr(
+            _orchestrator.balance_at, "loan_terms",
+            lambda account, ctx: SimpleNamespace(
+                recorded_start=date(2026, 3, account.id),
+            ),
+        )
+        monkeypatch.setattr(
+            _orchestrator, "build_trend_periods",
+            lambda accounts, periods, current, starts: passed.update(starts),
+        )
+        core = SimpleNamespace(
+            accounts=[SimpleNamespace(id=1), SimpleNamespace(id=8),
+                      SimpleNamespace(id=9)],
+            balance_ctx=SimpleNamespace(reported_periods=lambda: []),
+            current_period=None,
+        )
+        _orchestrator._build_trend_window(  # pylint: disable=protected-access
+            core, SimpleNamespace(loan_params_map={8: None, 9: None}),
+        )
+        assert passed == {9: date(2026, 3, 9)}

@@ -373,7 +373,10 @@ def _loans(user_id, scenario_id, accounts):
                 history if isinstance(history, dict)
                 else None if history is None
                 else [
-                    [str(row.installment), _money(row.cash), _money(row.principal),
+                    # ``due_date`` before ruling R-R108, ``installment`` after
+                    # it: read whichever the tree carries.
+                    [str(getattr(row, 'installment', None) or getattr(row, 'due_date')),
+                     _money(row.cash), _money(row.principal),
                      _money(row.interest), _money(row.escrow)]
                     for row in history
                 ]

@@ -370,7 +370,7 @@ def get_payment_history(
     taken WHOLE off its
     :class:`~app.services.loan_ledger.PaymentInstallment` and derived nowhere
     near here: ``period_start`` is the pay-period start (the funding basis),
-    ``due_date`` is the installment it satisfies, from the ONE derivation the
+    ``due_date`` is its own due date, from the ONE derivation the
     genesis write walk also uses
     (:func:`app.services.loan_loaders.loan_payment_due_date`), and
     ``settled_on`` is the day the cash moved, from the ONE derivation the
@@ -380,7 +380,7 @@ def get_payment_history(
     *two names for one fact -- until plan step* **balance:X-bl-2b** *made both
     types compose the dates.*
 
-    The ``due_date`` here is the payment's OWN installment, never the schedule
+    The ``due_date`` here is the payment's OWN due date, never the schedule
     slot :func:`app.services.amortization_engine.schedule_dates` may invent for it: the
     slot is assigned by :func:`._engine_prep.prepare_payments_for_engine`, after
     the escrow subtraction has keyed on the real one.

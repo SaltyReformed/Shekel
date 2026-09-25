@@ -186,7 +186,10 @@ def _payoff_extra_payment_result(account, params, ctx, data, has_plan):
         ),
         overlay=accelerated_overlay(
             account, ctx.balance_ctx,
-            band_chart_dates(scenarios, committed[0], plan, params),
+            band_chart_dates(
+                scenarios, committed[0], plan, params,
+                ctx.figures.terms.recorded_start,
+            ),
             extra,
         ),
         has_plan=has_plan,

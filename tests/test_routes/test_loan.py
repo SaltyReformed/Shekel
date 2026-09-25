@@ -3234,6 +3234,7 @@ class TestBandChartLongestBaseline:
             balance_at.loan_payoff_date(acct, balance_ctx),
             balance_at.loan_installments(acct, balance_ctx),
             params,
+            balance_at.loan_terms(acct, balance_ctx).recorded_start,
         )
         return balance_ctx, scenarios, dates
 
@@ -9525,7 +9526,18 @@ class TestTheLoanPageNamesAPaymentByItsInstallment:
     def test_the_card_and_the_chart_name_the_feb_22_installment(
         self, app, auth_client, seed_user, db, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The card lists it under ``Feb 2026``; the chart's history point is Feb."""
+        """The card lists it under ``Feb 2026``; the chart plots every installment.
+
+        Ruling R-R110 (amends R-R109's "the loan chart plots the payment on
+        Feb 22"): the chart's months are the loan's installment dates, each
+        the balance the ledger holds that day.  Feb 22: ``$200,000.00`` (the
+        payment's money moves Mar 10).  Mar 22: the Mar 10 payment's
+        ``$199.10`` of principal and the planned Mar 22 installment's
+        ``$200.10`` (interest ``199800.90 * 0.06 / 12 = 999.00`` of its
+        ``$1,199.10`` P&I) -- ``$199,600.80``.  Apr 22: ``$201.10`` more
+        (interest ``998.00``) -- ``$199,399.70``.  Before R-R110 the chart read
+        Feb $200,000.00 then Apr: the payment never showed and March was gone.
+        """
         acct = self._mortgage_paid_off_day(seed_user, seed_periods, db.session)
 
         response = auth_client.get(f"/accounts/{acct.id}/loan")
@@ -9534,4 +9546,8 @@ class TestTheLoanPageNamesAPaymentByItsInstallment:
         assert "Ledger-confirmed through Feb 2026" in html
         assert "<td>Feb 2026</td>" in html
         assert "<td>Mar 2026</td>" not in html
-        assert _parse_band_chart(html)["labels"][0] == "Feb 2026"
+        band = _parse_band_chart(html)
+        assert list(zip(band["labels"][:3], band["balance"][:3])) == [
+            ("Feb 2026", 200000.0), ("Mar 2026", 199600.8),
+            ("Apr 2026", 199399.7),
+        ]

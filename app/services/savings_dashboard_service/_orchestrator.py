@@ -452,11 +452,15 @@ def _build_trend_window(
 ) -> tuple[list, int, int]:
     """Build the net-worth trend window and its honest-history gate.
 
-    Generates the loan amortization schedules the honest-history gate reads
-    -- each loan's first-payment date, the data the balance maps do NOT carry
-    -- then delegates to :func:`build_trend_periods`.  The schedules feed
-    ONLY the gate; the dense-map build assembles its own inside the
-    :mod:`app.services.balance_at` seam.
+    Reads the day each loan's record starts -- the data the balance maps do
+    NOT carry -- then delegates to :func:`build_trend_periods`.  The start is
+    the loan's :attr:`~app.services.balance_at.LoanTerms.recorded_start` (its
+    ``tracking_start`` assertion, else its origination; ruling **R-R111**), off
+    the read pass's one memoized resolution.  It was the earliest amortization
+    row's date until plan step recurrence:R16-c-2.  A loan whose schedule is
+    EMPTY (paid off or fully resolved) still does not gate, so the schedules
+    are read for that and nothing else; the dense-map build assembles its own
+    inside the :mod:`app.services.balance_at` seam.
 
     **It carries no no-baseline guard of its own** (plan step X-t2, finding
     N-107): its one caller owns that rule for the whole region, so this is
@@ -476,10 +480,16 @@ def _build_trend_window(
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
+    schedules = balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx)
     return build_trend_periods(
         core.accounts, core.balance_ctx.reported_periods(),
         core.current_period,
-        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx),
+        {
+            acct.id: balance_at.loan_terms(
+                acct, core.balance_ctx,
+            ).recorded_start
+            for acct in loan_accounts if schedules.get(acct.id)
+        },
     )
 
 

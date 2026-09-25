@@ -857,6 +857,19 @@ class TestPropertyEquityChartProducer:
                 origination_date=date(2025, 11, 1), payment_day=1,
             )
             loan.collateral_account_id = prop.id
+            # Imported mid-life: tracked from 2026-01-01 at the contract's own
+            # balance then, so the months before it are the estimated
+            # back-projection (ruling R-R111 reads the loan's RECORDED start;
+            # an in-app loan, tracked from its origination, has none -- its
+            # unpaid months read the ledger).  Until plan step
+            # recurrence:R16-c-2 this loan was in-app and the stand-in (the
+            # first schedule row's date) made its months before the first
+            # payment "pre-tracking"; Josh approved this fixture change
+            # (rule 5, 2026-09-25).
+            insert_tracking_start_event(
+                load_loan_params(loan.id), Decimal("239422.06"),
+                date(2026, 1, 1),
+            )
             db.session.commit()
             # Two confirmed monthly payments, both historical (Jan/Feb periods),
             # settled on their period starts so they are visible by the frozen
@@ -897,10 +910,9 @@ class TestPropertyEquityChartProducer:
 
             # The loan's series comes from the PRODUCTION seam
             # (``balance_at.secured_loan_series``), which is what the property
-            # route calls.  The resolved schedule opens at the FIRST confirmed
-            # payment, so the months from origination to that payment become the
-            # estimated back-projection (a real, non-empty prefix here); the
-            # reconciliation keys off the confirmed / fold tier.
+            # route calls.  The months from origination to the tracking start
+            # are the estimated back-projection (a real, non-empty prefix
+            # here); the reconciliation keys off the confirmed / fold tier.
             series = _series_for(prop, loan, today)
             assert any(
                 tier == property_equity_chart.TIER_ESTIMATED

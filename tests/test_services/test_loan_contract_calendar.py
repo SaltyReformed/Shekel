@@ -595,6 +595,8 @@ class TestTheBandChartsExtension:
     """The loan page's grid past the contract steps the loan's own calendar."""
 
     _PARAMS = SimpleNamespace(origination_date=date(2026, 12, 31), payment_day=31)
+    #: The loan is tracked from its origination (ruling R-R111's recorded start).
+    _START = date(2026, 12, 31)
     # A contract whose last installment is a CLAMPED February 28th.
     _SCENARIOS = SimpleNamespace(
         history_rows=[SimpleNamespace(payment_date=date(2027, 1, 31))],
@@ -609,7 +611,7 @@ class TestTheBandChartsExtension:
         would keep the clamp: Mar 28, Apr 28, and so on.
         """
         assert band_chart_dates(
-            self._SCENARIOS, date(2027, 6, 30), [], self._PARAMS,
+            self._SCENARIOS, date(2027, 6, 30), [], self._PARAMS, self._START,
         ) == [
             date(2027, 1, 31), date(2027, 2, 28), date(2027, 3, 31),
             date(2027, 4, 30), date(2027, 5, 31), date(2027, 6, 30),
@@ -618,5 +620,65 @@ class TestTheBandChartsExtension:
     def test_a_payoff_between_installments_runs_to_the_next_one(self):
         """A payoff on 2027-04-15 (a definition's own cadence) ends on Apr 30."""
         assert band_chart_dates(
-            self._SCENARIOS, date(2027, 4, 15), [], self._PARAMS,
+            self._SCENARIOS, date(2027, 4, 15), [], self._PARAMS, self._START,
         )[-2:] == [date(2027, 3, 31), date(2027, 4, 30)]
+
+
+class TestTheBandChartsMonthsAreTheLoansInstallments:
+    """Ruling R-R110: every installment from the loan's recorded start, whatever the rows say.
+
+    The rows only say where the contract ends and whether there is anything
+    to chart; the months are the loan's own installment dates.
+    """
+
+    _PARAMS = SimpleNamespace(origination_date=date(2026, 1, 22), payment_day=22)
+
+    def test_repeated_and_skipped_row_dates_do_not_shape_the_axis(self):
+        """Two confirmed rows on Feb 22 and a forward from Apr 22: Feb, Mar, Apr, May.
+
+        The shape ruling R-R109 left the axis in: two payments inside Feb 22's
+        interval both dated Feb 22, and the replay's forward starting from a
+        payment's own due date (Mar 10 -> Apr 22), skipping Mar 22.  The grid
+        is every installment, one point each.
+        """
+        scenarios = SimpleNamespace(
+            history_rows=[
+                SimpleNamespace(payment_date=date(2026, 2, 22)),
+                SimpleNamespace(payment_date=date(2026, 2, 22)),
+            ],
+            original_forward=[
+                SimpleNamespace(payment_date=date(2026, 4, 22)),
+                SimpleNamespace(payment_date=date(2026, 5, 22)),
+            ],
+        )
+        assert band_chart_dates(
+            scenarios, date(2026, 5, 22), [], self._PARAMS, date(2026, 1, 22),
+        ) == [
+            date(2026, 2, 22), date(2026, 3, 22), date(2026, 4, 22),
+            date(2026, 5, 22),
+        ]
+
+    def test_a_loan_tracked_mid_life_starts_at_its_first_tracked_installment(self):
+        """Tracked from Mar 1: the first installment after it is Mar 22."""
+        scenarios = SimpleNamespace(
+            history_rows=[],
+            original_forward=[SimpleNamespace(payment_date=date(2026, 5, 22))],
+        )
+        assert band_chart_dates(
+            scenarios, None, [], self._PARAMS, date(2026, 3, 1),
+        ) == [date(2026, 3, 22), date(2026, 4, 22), date(2026, 5, 22)]
+
+    def test_a_tracking_start_on_an_installment_starts_at_the_next(self):
+        """Tracked from Feb 22 itself: the assertion already states Feb 22's balance.
+
+        The walk applies an assertion after its own day's charge and
+        payments, so the balance it states is the one after Feb 22's
+        installment, and the first installment the record owes is Mar 22.
+        """
+        scenarios = SimpleNamespace(
+            history_rows=[],
+            original_forward=[SimpleNamespace(payment_date=date(2026, 4, 22))],
+        )
+        assert band_chart_dates(
+            scenarios, None, [], self._PARAMS, date(2026, 2, 22),
+        ) == [date(2026, 3, 22), date(2026, 4, 22)]

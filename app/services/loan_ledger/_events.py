@@ -134,9 +134,10 @@ def loan_event_stream(
     (:func:`.._replay.replay_loan_events`) then decides the order between kinds
     and folds them.
 
-    **This is CONTRACT time, not cash time.**  A payment is dated by the
-    installment it satisfies (its DUE date,
-    :func:`app.services.loan_loaders.loan_payment_due_date`), never by when its
+    **This is CONTRACT time, not cash time.**  A payment is dated by its DUE
+    date (:func:`app.services.loan_loaders.loan_payment_due_date`; the
+    installment it pays is the one that date falls in,
+    :func:`~app.services.installment_calendar.installment_paid_by`), never by when its
     cash settled, so a late or out-of-order settlement can never reorder
     installments or re-split one (ruling R-A).  That derivation is threaded onto
     the event rather than recomputed downstream (plan step E1c), and it is the

@@ -6861,3 +6861,95 @@ class TestTheReadPassProjectsOverOneCalendar:
             assert len(ctx.calendar().projection_axis(
                 date(2026, 1, 1), date(2036, 1, 1),
             )) == 0
+
+
+class TestThePreTrackingEstimateReadsTheRecordedStart:
+    """Ruling R-R111: the property chart's pre-tracking estimate ends at the loan's recorded start.
+
+    A loan imported mid-life has no record before its ``tracking_start``
+    assertion, so the months before it take the contract's amortized balance
+    (``_secured_debt._back_projection_by_month``).  Until plan step
+    recurrence:R16-c-2 the reader took the FIRST schedule row's date as the
+    tracking start; ruling R-R109 dates a confirmed row by the installment its
+    payment pays, so a first payment due off the loan's day put that row
+    BEFORE the tracking start and the month between read the untracked
+    origination principal as ``confirmed``.
+
+    Made-up figures: ``$300,000.00`` at 6% for 360 months from 2024-01-22,
+    due the 22nd, level payment ``$1,798.65``; stepped month by month with
+    each month's interest rounded to the cent, installment 24 (2026-01-22)
+    leaves ``$292,404.74`` and installment 25 (2026-02-22) ``$292,068.11``.
+    Tracked from 2026-03-01 at ``$290,000.00``; the first payment is due and
+    paid Mar 10 -- installment 25's interval.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the payment (the seed periods run through 2026-05)."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import freeze_today
+        freeze_today(monkeypatch, date(2026, 3, 20))
+
+    def test_an_off_day_first_payment_does_not_move_the_start(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """February stays estimated at $292,068.11 though the first row reads Feb 22."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._resolution import resolved_loan
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            insert_tracking_start_event,
+            loan_params_for,
+        )
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported Mortgage",
+                principal=Decimal("300000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2024, 1, 22), payment_day=22,
+            )
+            db.session.commit()
+            insert_tracking_start_event(
+                loan_params_for(db.session, loan.id), Decimal("290000.00"),
+                date(2026, 3, 1),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[4], amount=Decimal("1798.65"),
+                settled_on=date(2026, 3, 10), due_date=date(2026, 3, 10),
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(
+                loan, BalanceContext.build(seed_user["user"].id, date(2026, 3, 20)),
+            )
+            assert resolved.recorded_start == date(2026, 3, 1)
+            assert resolved.state.schedule[0].payment_date == date(2026, 2, 22)
+            estimated = _back_projection_by_month(resolved)
+            assert (estimated[(2026, 1)], estimated[(2026, 2)]) == (
+                Decimal("292404.74"), Decimal("292068.11"),
+            )
+            assert (2026, 3) not in estimated
+
+    def test_a_loan_tracked_from_origination_estimates_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """No tracking start: the record starts at origination, so no month is estimated."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._resolution import resolved_loan
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import create_loan_account
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="In-app Mortgage",
+                principal=Decimal("300000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2026, 1, 22), payment_day=22,
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(
+                loan, BalanceContext.build(seed_user["user"].id, date(2026, 3, 20)),
+            )
+            assert resolved.recorded_start == date(2026, 1, 22)
+            assert _back_projection_by_month(resolved) == {}

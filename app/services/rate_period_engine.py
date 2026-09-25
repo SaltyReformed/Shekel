@@ -250,7 +250,7 @@ def is_confirmed_payment_eligible(
     since its balance was last verified."  A payment counts iff BOTH boundaries
     clear, and each reads the date that is CORRECT for its job:
 
-    * its ``due_date`` -- the installment it satisfies -- is strictly AFTER
+    * its ``due_date`` -- its own due date in contract time -- is strictly AFTER
       ``anchor_date`` (:func:`due_after_anchor`, the one spelling of that
       boundary): it came due after the anchor balance was verified, so it
       is not already baked into that balance; AND
@@ -302,7 +302,7 @@ def is_confirmed_payment_eligible(
             (:attr:`~app.services.amortization_engine.PaymentDates.settled_on`),
             or ``None`` for a payment that has not settled -- which this
             answers ``False`` for, per the paragraph above.
-        due_date: The monthly installment the payment satisfies
+        due_date: The payment's own due date in contract time
             (:attr:`~app.services.amortization_engine.PaymentDates.due_date`).
         anchor_date: The latest balance anchor's verified date
             (``LoanAnchorEvent.anchor_date`` / ``BalanceAnchor.as_of_date``).
@@ -735,7 +735,7 @@ def replay_schedule(
     boundaries, in due-date order (see :func:`_replay_payment_row` for the
     per-step math):
 
-    * its ``due_date`` -- the installment it satisfies -- is strictly after
+    * its ``due_date`` -- its own due date in contract time -- is strictly after
       ``anchor.as_of_date``: the payment came due after the balance was last
       verified, so it is not already baked into the anchor; and
     * its ``settled_on`` -- the day its cash moved -- is at or before ``as_of``,

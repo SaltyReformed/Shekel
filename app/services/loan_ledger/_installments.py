@@ -95,10 +95,10 @@ class PaymentInstallment:
 
     All three dates are read through the derivation that already owns each, so
     this value introduces none of its own: the funding period off the parent
-    transfer's :class:`~app.models.pay_period.PayPeriod`, the installment through
+    transfer's :class:`~app.models.pay_period.PayPeriod`, the due date through
     :func:`app.services.loan_loaders.loan_payment_due_date`, the cash day through
     :func:`._visible.payment_visible_on`.  The ``due_date`` here is always the
-    payment's OWN installment, never the slot
+    payment's OWN due date, never the slot
     :func:`~app.services.amortization_engine.schedule_dates` may invent for it;
     a consumer that needs slots applies
     :func:`~app.services.amortization_engine.slotted_dates` to the feed.
@@ -118,7 +118,7 @@ class PaymentInstallment:
             the source's shape.
         dates: The payment's
             :class:`~app.services.amortization_engine.PaymentDates` -- its
-            funding period, the installment it satisfies, and the day its cash
+            funding period, its own due date, and the day its cash
             moved.  ``settled_on`` is non-``None`` exactly for a row from the
             settled set, which is what makes "has this happened?" a property of
             the query rather than of a second reading of the status column.

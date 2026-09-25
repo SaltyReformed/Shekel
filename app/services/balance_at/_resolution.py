@@ -45,6 +45,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 from app.models.account import Account
 from app.models.loan_params import LoanParams
@@ -131,6 +132,17 @@ class ResolvedLoan:
             of them, so "which definitions pay in" and "which one is the
             standing payment" are one query and cannot disagree.  ``[]`` for a
             loan with no definition, whose plan is then the contract's.
+        recorded_start: (A property, not a field.)  The day the app's record
+            of the loan STARTS: its ``tracking_start`` assertion's date for a
+            loan imported mid-life, else its origination (ruling **R-R111**).
+            Before it the ledger holds nothing but the origination principal,
+            so the readers that ask "since when is this loan's balance real?"
+            -- the property chart's pre-tracking estimate, the net-worth
+            trend's honest start and the loan chart's first month -- read it
+            here.  They read the FIRST confirmed schedule row's date until
+            plan step recurrence:R16-c-2, which ruling R-R109 broke: a row
+            dated by the installment its payment pays can fall before the
+            tracking start.
     """
 
     params: LoanParams
@@ -143,6 +155,14 @@ class ResolvedLoan:
     def standing(self) -> TransferTemplate | None:
         """The oldest of :attr:`definitions`, or ``None``: DERIVED, never stored beside it."""
         return self.definitions[0] if self.definitions else None
+
+    @property
+    def recorded_start(self) -> date:
+        """The tracking-start assertion's date, else the origination: DERIVED from the facts."""
+        return next(
+            (fact.anchor_date for fact in self.anchor_facts if fact.is_tracking_start),
+            self.params.origination_date,
+        )
 
 
 def resolved_loan(

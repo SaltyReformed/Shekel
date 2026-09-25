@@ -57,8 +57,9 @@ class LoanTerms:
     """A loan's CONTRACT facts -- everything derivable without a scenario.
 
     The scenario-INDEPENDENT half of what a loan surface reads.  Every field here
-    comes from the loan's params and its rate history evaluated at the pass's
-    ``as_of``: no projected payment, no ledger walk, no baseline scenario.
+    comes from the loan's params, its rate history evaluated at the pass's
+    ``as_of`` and its recorded balance assertions: no projected payment, no
+    ledger walk, no baseline scenario.
 
     **Why this is its own type (plan step C8e).**  :class:`LoanFigures` used to
     carry these four fields alongside the scenario-scoped ones, and that mixture
@@ -104,12 +105,20 @@ class LoanTerms:
             ``ResolvedLoan`` -- it reached for ``resolved_loan(account, ctx).params``
             to read this ONE boolean, and a route holding a ``ResolvedLoan`` is a
             route one attribute read away from an unfenced loan balance.
+        recorded_start: The day the app's record of the loan starts -- its
+            ``tracking_start`` assertion's date, else its origination
+            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.recorded_start`,
+            ruling **R-R111**).  A fact of the loan's recorded assertions
+            rather than of its params or rates, and as scenario-independent:
+            the loan chart's first month reads it (ruling **R-R110**), where
+            it read the first confirmed schedule row's date.
     """
 
     monthly_payment: Decimal
     current_rate: Decimal
     is_originated: bool
     is_arm: bool
+    recorded_start: date
 
 
 @dataclass(frozen=True)
@@ -261,6 +270,7 @@ def _terms_from(resolved: ResolvedLoan, as_of: date) -> LoanTerms:
         current_rate=resolved.state.current_rate,
         is_originated=_is_originated(resolved, as_of),
         is_arm=bool(resolved.params.is_arm),
+        recorded_start=resolved.recorded_start,
     )
 
 

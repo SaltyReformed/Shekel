@@ -230,10 +230,14 @@ def _reject_effective_date(effective_date, params, boundary):
     * It cannot predate the loan's origination -- a version before the loan existed
       is meaningless (skipped when ``params`` is ``None``, an unconfigured loan).
     * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's DUE
-      date, :func:`_forward_boundary` -- the date its split resolves escrow on,
-      ruling D5), or it would retroactively move an already-settled payment's
-      escrow split and desync it from the cash frozen at settlement (spec
-      Sec. 4.2).
+      date, :func:`_forward_boundary` -- on or after the installment its split
+      resolves escrow on, ruling D5 as ruling R-R104 amends it), or it could
+      retroactively move an already-settled payment's escrow split and desync
+      it from the cash frozen at settlement (spec Sec. 4.2).  For a payment
+      due off the loan's day the bound is wider than it needs to be (finding
+      REC-544), and the message names it as the payment's due date rather
+      than an installment (ruling **R-R108**: the loan page names a payment's
+      installment as the one it pays).
 
     Args:
         effective_date: The candidate version effective date.
@@ -252,7 +256,7 @@ def _reject_effective_date(effective_date, params, boundary):
     if boundary is not None and effective_date <= boundary:
         return (
             "An escrow change must take effect after your latest recorded payment "
-            f"(installment due {boundary.strftime('%b %-d, %Y')})."
+            f"(due {boundary.strftime('%b %-d, %Y')})."
         )
     return None
 

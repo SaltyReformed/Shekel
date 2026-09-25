@@ -245,9 +245,18 @@ def _display_lines(label, account, ctx):
     )
     from app.services.scenario_resolver import get_baseline_scenario  # pylint: disable=import-outside-toplevel
 
-    card = confirmed_loan_payment_history(
-        account.id, get_baseline_scenario(USER_ID).id, ctx.as_of,
-    )
+    # The card answers only a read on or before today (a later one is a
+    # forward projection), and DOOR 2 reads after it on a run before that
+    # read day (2026-10-25 on the grade clones): that door states so rather
+    # than reading another day.  Its line therefore depends on the RUN's day,
+    # so only a base and a branch run on the same day compare.
+    if ctx.as_of > date.today():
+        card = None
+        print(f"{label}\tCARD\taccount={account.id}\tas_of after today")
+    else:
+        card = confirmed_loan_payment_history(
+            account.id, get_baseline_scenario(USER_ID).id, ctx.as_of,
+        )
     for row in card or ():
         named = getattr(row, "installment", None) or getattr(row, "due_date")
         print(

@@ -432,9 +432,11 @@ def _forward_boundary(account_id, scenario_id):
     """Return the escrow forward-only guard boundary for a loan, or ``None``.
 
     The latest settled payment's DUE date
-    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- the
-    exact date the genesis split resolves each payment's escrow at (ruling D5's
-    contract time, finding N-34), so a new or edited escrow version strictly
+    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- on
+    or after the installment the genesis split resolves each payment's escrow
+    at (ruling D5's contract time, finding N-34, as ruling R-R104 amends it:
+    the installment the payment pays, wider than it needs to be for a payment
+    due off the loan's day, finding REC-544), so a new or edited escrow version strictly
     after it cannot move any settled payment's split.
     ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
     has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
@@ -453,27 +455,51 @@ def _forward_boundary(account_id, scenario_id):
     return latest_settled_payment_due_date(account_id, scenario_id)
 
 
-def band_chart_dates(scenarios, payoff, installments, params) -> list[date]:
-    """Return the band chart's x-axis: the contractual monthly grid, run to the payoff.
+def band_chart_dates(
+    scenarios, payoff, installments, params, start,
+) -> list[date]:
+    """Return the band chart's x-axis: the loan's installments, its record's start to the payoff.
 
-    One installment date per month from the loan's confirmed history through
-    the CONTRACT's last installment (the composer's ``history_rows`` and
-    ``original_forward``, one date each), extended month by month whenever the
-    seam's DERIVED payoff falls later -- an underpaying plan clears the loan
-    in the post-contractual extension, and the line must run to where the
-    balance actually reaches zero rather than stop at the last labelled tick.
-    A plan that never clears it runs to the plan's last installment instead;
-    a retired loan (no payoff, no plan) ends with its history.  The same grid
-    serves the lever's preview (:func:`accelerated_overlay`), which is what
-    keeps the overlay aligned to the band one point to one.
+    **Every installment the loan owes, whatever days its payments fall on**
+    (ruling **R-R110**, plan step recurrence:R16-c-2): the loan's own
+    installment calendar
+    (:func:`~app.services.installment_calendar.installment_dates`, the ONE
+    producer its charges are dated by, so a loan due on the 31st returns to
+    the month's end after a February) from the first installment AFTER the
+    day the app's record of the loan starts (*start*, ruling **R-R111**) --
+    an origination is never itself an installment, and a tracking-start
+    assertion dated on one already states the balance after it, since the
+    walk applies an assertion after its day's charge and payments -- through
+    the CONTRACT's last installment, extended month by month whenever
+    the seam's DERIVED payoff falls later -- an underpaying plan clears the
+    loan in the post-contractual extension, and the line must run to where
+    the balance actually reaches zero rather than stop at the last labelled
+    tick.  A plan that never clears it runs to the plan's last installment
+    instead; a retired loan (no payoff, no plan) ends with its history.  Each
+    point is the balance the ledger holds that day (:func:`build_band_chart`),
+    so a payment shows as the drop into the first installment after its money
+    moved, and two payments inside one installment's interval are one point.
+    The same grid serves the lever's preview (:func:`accelerated_overlay`),
+    which is what keeps the overlay aligned to the band one point to one.
 
-    Pure over values the caller already holds -- the pass's payoff figure
-    and the plan's installments -- so the grid costs the page no fold of its
-    own (the payoff is folded once per pass, ``balance_at.memoized_payoff``).
+    **The months were the rows' own dates until R-R110**: the confirmed rows'
+    then the contractual forward's.  Once ruling R-R109 dated a confirmed row
+    by the installment its payment pays, a payment due off the loan's day was
+    plotted at an installment before its money moved and never after it, and
+    the month after it vanished, because the forward starts from the
+    payment's own due date (``rate_period_engine.replay_schedule``); two
+    payments in one interval repeated a month, and a month nobody paid had no
+    point at all.
+
+    Pure over values the caller already holds -- the pass's payoff figure,
+    the plan's installments and the loan's terms -- so the grid costs the page
+    no fold of its own (the payoff is folded once per pass,
+    ``balance_at.memoized_payoff``).
 
     Args:
-        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`
-            (the confirmed history and the contractual forward).
+        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`;
+            its confirmed history and contractual forward say only where the
+            contract ends and whether there is anything to chart.
         payoff: The seam's derived payoff
             (:attr:`~app.routes.loan._helpers._RouteLoanContext.payoff_date`),
             ``None`` for a retired loan or a plan that never clears.
@@ -482,32 +508,33 @@ def band_chart_dates(scenarios, payoff, installments, params) -> list[date]:
             never-clears case's last date.
         params: The loan's :class:`~app.models.loan_params.LoanParams`, whose
             origination and due day name its installment calendar.
+        start: The day the loan's record starts
+            (:attr:`~app.services.balance_at.LoanTerms.recorded_start`).
 
     Returns:
-        Ascending installment dates; empty for a loan whose history and
-        contract both hold no row (a retired loan the composer drops).
+        Ascending installment dates, one per month; empty for a loan whose
+        history and contract both hold no row (a retired loan the composer
+        drops).
     """
-    dates = [row.payment_date for row in scenarios.history_rows] + [
-        row.payment_date for row in scenarios.original_forward
-    ]
-    if not dates:
-        return dates
+    rows = [*scenarios.history_rows, *scenarios.original_forward]
+    if not rows:
+        return []
+    contract_end = rows[-1].payment_date
     if payoff is None:
-        payoff = installments[-1].due_date if installments else dates[-1]
-    # The extension is the loan's own installment calendar past the
-    # contract's last row -- the ONE producer the charges are dated by
-    # (plan step recurrence:R16-c-2), so the grid's dates are the fold's and
-    # a loan due on the 31st returns to the month's end after a February --
-    # run to the first installment on or after the payoff (a payoff on a
-    # definition's own cadence can fall between two).
-    contract_end = dates[-1]
+        payoff = installments[-1].due_date if installments else contract_end
+    # Through the contract's last installment, or the first installment on or
+    # after a later payoff (a payoff on a definition's own cadence can fall
+    # between two).
+    last = max(contract_end, payoff)
+    dates: list[date] = []
     for due in installment_dates(
-        params.origination_date, params.payment_day, add_months(payoff, 1),
+        params.origination_date, params.payment_day, add_months(last, 1),
     ):
-        if dates[-1] >= payoff:
+        if due <= start:
+            continue
+        dates.append(due)
+        if due >= last:
             break
-        if due > contract_end:
-            dates.append(due)
     return dates
 
 
@@ -691,7 +718,7 @@ def build_loan_band_chart(account, params):
         band_chart_dates(
             scenarios, ctx.payoff_date,
             balance_at.loan_installments(account, ctx.balance_ctx),
-            params,
+            params, ctx.figures.terms.recorded_start,
         ),
     )
 
