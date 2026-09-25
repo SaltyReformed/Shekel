@@ -264,3 +264,28 @@ def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:
         .all()
     )
     return {row[0] for row in rows}
+
+
+def booked_entry_counts(period_ids: "list[int]") -> "dict[int, int]":
+    """Return ``{period_id: n}`` for each of *period_ids* holding a journal entry.
+
+    **"Remove earlier paychecks" refuses ANY entry the posted ledger booked
+    in a paycheck, balanced or not** (plan step ``pay_calendar:C21``, ruling
+    **R-PC109**), where truncate refuses only an UNBALANCED one
+    (:func:`_period_ids_with_unbalanced_ledger` above).  It asks here
+    because this is where a period's ledger is read: the ledger-model fence
+    (W9908) admits this module and not the gates, and a second importer of
+    the model would widen the fence rather than use it.
+
+    Args:
+        period_ids: The pay-period ids being asked about.
+
+    Returns:
+        How many journal entries each period holds, for those holding any.
+    """
+    return dict(
+        db.session.query(JournalEntry.pay_period_id, db.func.count(JournalEntry.id))
+        .filter(JournalEntry.pay_period_id.in_(period_ids))
+        .group_by(JournalEntry.pay_period_id)
+        .all()
+    )

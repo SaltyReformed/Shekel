@@ -154,9 +154,11 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
     cadence-convention pairing before it writes, when
     ``pay_period_write.record_paydays`` records a batch stating a rhythm the
     era covering its first payday does not already hold.
-    ``rephase_earliest_era`` moves the earliest era's phase DOWN in place, its
-    rhythm untouched, when ``pay_period_write.prepend_paydays`` records
-    paydays below the record (plan step ``C18-b``, ruling **R-PC105**).
+    ``rephase_earliest_era`` moves the earliest era's phase in place, its
+    rhythm untouched: DOWN when ``pay_period_write.prepend_paydays`` records
+    paydays below the record (plan step ``C18-b``, ruling **R-PC105**), UP
+    when ``pay_period_write.retire_paydays`` takes the record's first
+    paydays (plan step ``C21``, ruling **R-PC110**).
     ``retire_eras`` deletes every era whose first payday falls after the last
     payday a recording batch leaves standing -- the earliest excepted while
     any payday stands -- and every era when none does.

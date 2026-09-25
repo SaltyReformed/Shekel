@@ -1,8 +1,8 @@
 {% from "_form_macros.html" import render_field, render_select %}
 {% from "_pay_cadence_fields.html" import cadence_kind_controls with context %}
 {# Manage an existing pay-period schedule: a read-only period list with
-   lock badges, plus the add-earlier / extend / truncate / regenerate
-   actions.  Included by settings/_pay_periods.html only when the user
+   lock badges, plus the extend / add-earlier / remove-earlier / truncate /
+   regenerate actions.  Included by settings/_pay_periods.html only when the user
    already has periods.
    pp_periods (rows of {period, locked, badge_label, badge_class}) and the
    optional pp_confirm ({op, count, params}) come from the route context.
@@ -98,8 +98,9 @@
      ruling's: it asks only how many, and records the paydays the earliest
      pay rhythm projects just before the first one.  It states no date or
      rhythm, so it cannot split a paycheck or leave a gap.  Default 1, the
-     ruling's own example.  Four actions share this row since this step, so
-     each column is half width until xl, where they sit four across.  AFTER
+     ruling's own example.  The actions share this row, each column half
+     width until xl, where they sit four across; since C21 there are five,
+     so Regenerate, the last, opens the next line there.  AFTER
      Extend, not before it: the form macro gives every num_periods input the
      same id (PC-518), a label binds to the FIRST, and Extend's label must
      keep binding to Extend's own box. #}
@@ -118,6 +119,48 @@
                           input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
           <button type="submit" class="btn btn-primary btn-sm w-100">
             <i class="bi bi-plus-circle"></i> Add earlier
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# --- Remove earlier paychecks (plan step pay_calendar:C21, rulings
+     R-PC108 to R-PC111) ---
+     Add earlier's undo, beside it, and the card text, label and button are
+     the ruled preview's.  It names the paycheck to START FROM by id (R-PC111,
+     finding P13, as the Remove the tail select does), so a page left open
+     while more paychecks were added still means "this one is first"; the
+     first option is the current first paycheck, so the default removes
+     nothing.  A select rather than the num_periods macro, so the macro's
+     shared id (PC-518) gains no fifth box.  Paychecks holding money are
+     refused by the service, not by this list (R-PC109): every paycheck is
+     offered, as Remove the tail offers every one. #}
+  <div class="col-md-6 col-xl-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Remove earlier paychecks</h6>
+        <p class="card-text text-muted small">
+          Delete every paycheck before the one you start from. Paychecks
+          holding money are never removed.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.remove_earlier') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="start_from_period_id" class="form-label">
+              Start from paycheck
+            </label>
+            <select id="start_from_period_id" name="start_from_period_id"
+                    class="form-select" required>
+              {% for row in pp_periods %}
+              <option value="{{ row.period.period_id }}">
+                #{{ row.period.period_index }} ({{ row.period.label }})
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+            <i class="bi bi-scissors"></i> Remove earlier
           </button>
         </form>
       </div>

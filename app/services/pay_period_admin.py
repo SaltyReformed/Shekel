@@ -2,7 +2,7 @@
 Shekel Budget App -- Pay Period Admin Service
 
 The structural / destructive pay-period operations -- extend / add-earlier /
-truncate / regenerate / reset -- kept out of
+remove-earlier / truncate / regenerate / reset -- kept out of
 the heavily imported read/generate ``pay_period_service`` so the destructive
 paths live in one isolated place.  Flask-isolated: takes and returns plain
 data, never imports ``request`` / ``session``; flushes / bulk-deletes,
@@ -51,9 +51,9 @@ schedule read once through ``pay_calendar``, in
 :class:`~app.services.pay_calendar.DerivedPeriod` values.  Every door but
 truncate RETURNS ``list[PayPeriod]`` from ``pay_period_write`` to its own
 caller, which populates them -- the writer's OUTPUT, not an input to any
-decision here.  What truncate, regenerate and reset hand the writer beside
-any batch they state is the set of ``budget.pay_periods.id`` to retire;
-extend and add-earlier hand it a count and nothing else.
+decision here.  What truncate, remove-earlier, regenerate and reset hand the
+writer beside any batch they state is the set of ``budget.pay_periods.id`` to
+retire; extend and add-earlier hand it a count and nothing else.
 
 **Each door resolves "today" ONCE, as the OWNER's civil day**
 (``utils.dates.display_today``), and both halves of that are plan step C2-f3b's.
@@ -214,6 +214,71 @@ def add_earlier_pay_periods(user_id, num_periods):
     return pay_period_write.prepend_paydays(user_id, num_periods)
 
 
+def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
+    """Delete every pay period before the one *start_from_period_id* names.
+
+    **"Remove earlier paychecks"** (plan step ``pay_calendar:C21``, rulings
+    **R-PC108** to **R-PC111**): the undo of :func:`add_earlier_pay_periods`,
+    as :func:`truncate_pay_periods` is :func:`extend_pay_periods`'.  Its shape
+    is truncate's at the schedule's other end -- the lock, one read of the
+    calendar, an id the owner picked resolved against their OWN periods, a
+    gate that decides, the writer that deletes -- and each difference is a
+    ruling:
+
+    * **It names the paycheck to START FROM, never a count** (**R-PC111**,
+      truncate's rule since finding **P13**): the id names the row the owner
+      picked, so a page left open while more paychecks were added still
+      means "this one is first".  That paycheck is always KEPT, so this door
+      never empties a schedule -- the second half of **R-PC110**'s "keep one"
+      made structural rather than refused.
+    * **Its gate asks what a paycheck HOLDS, not how it is locked**
+      (:func:`~app.services.pay_period_gates.gate_removable_head`,
+      **R-PC109**): every paycheck it exists to remove is past, which the
+      lock classifier calls HISTORICAL.  No confirmation step.
+    * **The writer moves the earliest era's phase UP with the removal**, or
+      refuses a removal that would take every payday that era pays
+      (``pay_period_write.retire_paydays``, **R-PC110**).
+
+    Nothing is populated: a removal records no payday.  Deletion is the
+    writer's one bulk ``DELETE``, whose cascade takes the template rows the
+    gate let go (with both shadows of a transfer).
+
+    Args:
+        user_id: The owning user's id.
+        start_from_period_id: The ``budget.pay_periods.id`` of the paycheck
+            the schedule should start from.  Must name one of *user_id*'s
+            own periods.
+
+    Returns:
+        How many pay periods were deleted -- ``0`` when the named one is
+        already the first.
+
+    Raises:
+        PayPeriodUnresolved: The id names no pay period of *user_id*'s --
+            "no such period" and "not yours" alike, as at truncate.
+        ValidationError: A paycheck before it holds money or money is dated
+            inside them (**R-PC109**), or it is a later era's paycheck
+            (**R-PC110**).  Nothing is written.
+    """
+    # The same serialisation as add-earlier: the calendar is read under the
+    # lock, so a concurrent add, truncate or reset cannot move the head this
+    # removal was gated on.
+    user_write_lock.lock_user_writes(user_id)
+    calendar = calendar_for(user_id)
+    first_kept = calendar.period_by_id(start_from_period_id)
+    if first_kept is None:
+        pay_period_gates.log_unresolved_period(user_id, start_from_period_id)
+        raise PayPeriodUnresolved(
+            start_from_period_id, "the paycheck to start from",
+        )
+    doomed = pay_period_gates.gate_removable_head(
+        user_id, calendar.saved(), first_kept, display_today(),
+    )
+    return pay_period_write.retire_paydays(
+        user_id, {period.period_id for period in doomed},
+    )
+
+
 def truncate_pay_periods(
     user_id: int, keep_through_period_id: int, confirm_discard: bool = False,
 ) -> int:
@@ -316,7 +381,9 @@ def truncate_pay_periods(
     kept = calendar.period_by_id(keep_through_period_id)
     if kept is None:
         pay_period_gates.log_unresolved_period(user_id, keep_through_period_id)
-        raise PayPeriodUnresolved(keep_through_period_id)
+        raise PayPeriodUnresolved(
+            keep_through_period_id, "the period to keep through",
+        )
     doomed = pay_period_gates.gate_deletable_tail(
         calendar.saved(), kept, confirm_discard,
         classify_schedule_locks(calendar, as_of=display_today()),

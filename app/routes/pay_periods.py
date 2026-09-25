@@ -2,8 +2,8 @@
 Shekel Budget App -- Pay Period Routes
 
 Generates the biweekly schedule and manages its lifecycle: extend the
-schedule forward, add paychecks before the first, truncate the tail, and
-regenerate a wrong future tail.
+schedule forward, add paychecks before the first or remove the ones before a
+chosen paycheck, truncate the tail, and regenerate a wrong future tail.
 All management actions are full-page POST + redirect (or a 422 re-render
 of the settings dashboard when a discard needs confirming); they live on
 the settings "pay-periods" section.
@@ -31,6 +31,7 @@ from app.schemas.validation import (
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
+    PayPeriodRemoveEarlierSchema,
     PayPeriodResetSchema,
     PayPeriodTruncateSchema,
     PayScheduleSchema,
@@ -50,6 +51,7 @@ pay_periods_bp = Blueprint("pay_periods", __name__)
 _generate_schema = PayPeriodGenerateSchema()
 _extend_schema = PayPeriodExtendSchema()
 _truncate_schema = PayPeriodTruncateSchema()
+_remove_earlier_schema = PayPeriodRemoveEarlierSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
 _reset_schema = PayPeriodResetSchema()
 _schedule_schema = PayScheduleSchema()
@@ -412,6 +414,48 @@ def add_earlier():
         pay_period_admin.add_earlier_pay_periods, data["num_periods"],
         "Added {count} earlier paycheck(s).",
     )
+
+
+@pay_periods_bp.route("/pay-periods/remove-earlier", methods=["POST"])
+@require_owner
+def remove_earlier():
+    """Remove the paychecks before a chosen one ("Remove earlier paychecks").
+
+    Plan step ``pay_calendar:C21`` (rulings **R-PC108** to **R-PC111**): the
+    undo of :func:`add_earlier`, shaped as :func:`truncate` is at the other
+    end -- the form posts the paycheck to START FROM by id, and every
+    paycheck before it goes
+    (:func:`~app.services.pay_period_admin.remove_earlier_pay_periods`).
+    Nothing is populated, since nothing is recorded.
+
+    **Every refusal is a flash and nothing is staged by one**: an id that is
+    not the owner's (``PayPeriodUnresolved``, one message for "no such" and
+    "not yours", as at truncate), a paycheck holding money or money dated
+    inside the removed ones (**R-PC109**), and a removal taking every payday
+    of the earliest pay rhythm (**R-PC110**) -- the last two are the
+    service's ``ValidationError``, raised before its first statement.  The
+    rollback is for the page this redirects to, which reads the owner's
+    schedule back and should read committed state.  There is no
+    discard-confirm panel: the ruling refused one.
+    """
+    errors = _remove_earlier_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _remove_earlier_schema.load(request.form)
+    try:
+        removed = pay_period_admin.remove_earlier_pay_periods(
+            current_user.id, data["start_from_period_id"],
+        )
+    except (PayPeriodUnresolved, ValidationError) as exc:
+        db.session.rollback()
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash(f"Removed {removed} earlier paycheck(s).", "success")
+    return _pay_periods_redirect()
 
 
 @pay_periods_bp.route("/pay-periods/truncate", methods=["POST"])

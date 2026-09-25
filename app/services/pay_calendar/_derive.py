@@ -581,9 +581,14 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
       rebuild from there leaves the era paying nothing past it.
       ``C18-b``'s door is the one that records below, and it keeps the
       argument whole by moving the earliest era's phase down with the
-      paydays it adds (ruling **R-PC105**, :func:`~._eras.earlier_paydays`),
-      so the record's first payday stands for that era's first step for
-      every owner a door has written; the one era the ``C17-a`` migration
+      paydays it adds (ruling **R-PC105**, :func:`~._eras.earlier_paydays`).
+      ``C21``'s door, which retires the first paydays, cannot void it -- it
+      leaves the record ABOVE the phase, the migrated shape below -- and it
+      moves the phase up to the payday left first anyway (ruling
+      **R-PC110**, :func:`~._eras.opening_rephase`), refusing a removal that
+      would leave the earliest era none of its paydays.  So the record's
+      first payday stands for that era's first step for every owner a door
+      has written; the one era the ``C17-a`` migration
       backfilled may be phased up to a cadence below it
       (``models/pay_era.py``), which leaves that record at or above the
       era's first step, so the argument holds there too.

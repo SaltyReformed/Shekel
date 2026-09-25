@@ -20,7 +20,9 @@ Four contracts, one class each:
   ``pay_period_admin.add_earlier_pay_periods``) -- what they record, what they
   move, what they refuse and that a refusal writes nothing -- and the era
   writer's own bounds (``pay_era_write.rephase_earliest_era`` moves the phase
-  only to a day at or below it on the era's own grid);
+  only along the era's own grid, and up only as far as the era still pays --
+  ruling **R-PC110**, plan step ``C21``, whose door is graded in
+  ``test_pay_period_remove_earlier.py``);
 * the HAZARD R-PC105 exists for -- a regenerate keeping only earlier paychecks
   restating a rhythm from the old phase or just past it -- driven through the
   real doors.
@@ -539,14 +541,15 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
             assert schedule.eras[0].effective_from == date(2025, 12, 19)
 
 
-class TestThePhaseMovesDownOnly:
-    """``pay_era_write.rephase_earliest_era`` moves the phase DOWN its own grid.
+class TestThePhaseMovesOnItsOwnGrid:
+    """``pay_era_write.rephase_earliest_era`` moves the phase along its own grid.
 
-    Down: the earliest era moved down cannot reach a later era's day, pass
-    it, or be left paying nothing; a move UP could do all three, and the
-    writer asks none of them (review 2 of C18-b).  Its own grid: a phase off
-    it moves every planned payday, and for a fixed-days era only this
-    refusal can see that (review 3 of C18-b).
+    Its own grid: a phase off it moves every planned payday, and for a
+    fixed-days era only this refusal can see that (review 3 of C18-b).  Down,
+    the earliest era cannot reach a later era's day, pass it, or be left
+    paying nothing; UP it can (ruling **R-PC110**, plan step ``C21``, which
+    moves it up when the record's first paydays are retired), so a move up
+    is judged against the eras after it and refused where it would collide.
     """
 
     def test_a_phase_off_the_eras_grid_is_refused_and_writes_nothing(
@@ -557,51 +560,78 @@ class TestThePhaseMovesDownOnly:
             user_id = bare_user["user"].id
             _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
-            earliest = schedule_for(user_id).eras[0]
 
             with pytest.raises(ValidationError, match="not on the era's grid"):
                 pay_era_write.rephase_earliest_era(
                     user_id,
                     pay_era_write.EarliestRephase(
-                        earliest=earliest, phase=date(2025, 12, 29),
+                        eras=schedule_for(user_id).eras, phase=date(2025, 12, 29),
                     ),
                 )
 
             _unchanged(user_id, paydays, eras)
 
-    def test_a_move_up_is_refused_and_writes_nothing(self, app, db, bare_user):
-        """One step up, still on the grid: refused before the UPDATE."""
+    def test_a_move_up_that_leaves_the_era_a_paycheck_is_saved(
+        self, app, db, bare_user,
+    ):
+        """One step up, still on the grid, no later era: the row moves."""
         with app.app_context():
             user_id = bare_user["user"].id
             _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
-            paydays, eras = _paydays(user_id), _stored_eras(user_id)
-            earliest = schedule_for(user_id).eras[0]
 
-            with pytest.raises(ValidationError, match="cannot move up"):
+            pay_era_write.rephase_earliest_era(
+                user_id,
+                pay_era_write.EarliestRephase(
+                    eras=schedule_for(user_id).eras, phase=date(2026, 1, 16),
+                ),
+            )
+            db.session.commit()
+
+            assert _stored_eras(user_id) == [(date(2026, 1, 16), None, None)]
+
+    def test_a_move_up_onto_a_later_eras_start_is_refused_and_writes_nothing(
+        self, app, db, bare_user,
+    ):
+        """The fortnight moved onto 02-13, where the weekly era starts.
+
+        01-02, 01-16, 01-30 on a fortnight, then weekly from 02-13 -- the
+        plan's next payday after 01-30, so a legal rebuild.  02-13 is on the
+        fortnight's grid (01-02 + 42), so only the sequence can refuse it.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            _record(user_id, date(2026, 2, 13), 2, rhythm_of(7))
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+            assert eras == [
+                (date(2026, 1, 2), None, None), (date(2026, 2, 13), None, None),
+            ]
+
+            with pytest.raises(PayCalendarError, match="strictly ascending"):
                 pay_era_write.rephase_earliest_era(
                     user_id,
                     pay_era_write.EarliestRephase(
-                        earliest=earliest, phase=date(2026, 1, 16),
+                        eras=schedule_for(user_id).eras, phase=date(2026, 2, 13),
                     ),
                 )
 
             _unchanged(user_id, paydays, eras)
 
     def test_a_move_to_the_same_day_is_admitted(self, app, db, bare_user):
-        """Equality is admitted: "at or below", as the Args state.
+        """Equality is admitted: the era's own phase is a day of its grid.
 
-        The door reaches it for the one era the C17-a migration backfilled a
-        cadence below the record, when a single paycheck is added.
+        The earlier door reaches it for the one era the C17-a migration
+        backfilled a cadence below the record, when a single paycheck is
+        added.
         """
         with app.app_context():
             user_id = bare_user["user"].id
             _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
-            earliest = schedule_for(user_id).eras[0]
 
             pay_era_write.rephase_earliest_era(
                 user_id,
                 pay_era_write.EarliestRephase(
-                    earliest=earliest, phase=date(2026, 1, 2),
+                    eras=schedule_for(user_id).eras, phase=date(2026, 1, 2),
                 ),
             )
             db.session.commit()

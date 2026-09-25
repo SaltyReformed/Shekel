@@ -101,7 +101,7 @@ second answer.
 
 from ._cadence import DAYS_PER_YEAR, PayCadence
 from ._calendar import PayCalendar
-from ._derive import DerivedPeriod, derive_periods
+from ._derive import DerivedPeriod, derive_periods, validate_eras
 from ._eras import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
@@ -109,6 +109,7 @@ from ._eras import (
     earlier_paydays,
     era_index_at,
     first_payday_of,
+    opening_rephase,
     payday_after,
     planned_paydays_after,
     projected_payday,
@@ -163,6 +164,7 @@ __all__ = [
     "latest_started_period",
     "nominal_payday",
     "opening_payday",
+    "opening_rephase",
     "paychecks_from",
     "span_starting_on_or_after",
     "paydays_in_month_through",
@@ -173,4 +175,5 @@ __all__ = [
     "projected_payday",
     "saved_paydays_in_month_through",
     "schedule_for",
+    "validate_eras",
 ]

@@ -95,10 +95,13 @@ Statement's window defaults and the transfer create form -- and both moved
 inside C2-f3a, so the constraint was satisfied rather than broken by splitting
 the leaves this way.*
 
-**What is left is one function**, and it is here rather than in the calendar
+**What is left is one rule**, and it is here rather than in the calendar
 package because it is not a calendar question: :func:`earliest_recordable_day`
 takes the EARLIER of the owner's first payday and today, so the clock is half
-its answer.
+its answer.  :func:`recordable_floor` is that rule over a first payday a caller
+already holds -- ``pay_period_gates.gate_removable_head`` asks it of the first
+payday a removal would leave (plan step ``pay_calendar:C21``) -- so the floor
+is spelled once whether it is read or anticipated.
 """
 
 from datetime import date
@@ -157,12 +160,33 @@ def earliest_recordable_day(user_id: int) -> date:
         periods at all -- every caller's own operation then fails on the missing
         schedule, which is a clearer error than a date bound.
     """
-    today = display_today()
     earliest = (
         db.session.query(db.func.min(PayPeriod.start_date))
         .filter(PayPeriod.user_id == user_id)
         .scalar()
     )
-    if earliest is None:
+    return recordable_floor(earliest, display_today())
+
+
+def recordable_floor(first_payday: "date | None", today: date) -> date:
+    """Return the earliest recordable day for a schedule opening on *first_payday*.
+
+    The rule :func:`earliest_recordable_day` reads off the owner's stored
+    schedule, stated over a value so a caller that holds the first payday --
+    or is about to change it -- asks the same rule rather than a second
+    spelling of it.  ``pay_period_gates.gate_removable_head`` is that caller
+    (plan step ``pay_calendar:C21``, ruling **R-PC109**): it asks where the
+    floor stands now and where it would stand once the first paydays go, and
+    refuses a removal that would leave recorded money below it.
+
+    Args:
+        first_payday: The schedule's first payday, or ``None`` for an owner
+            with no pay periods.
+        today: The owner's civil day (``display_today``).
+
+    Returns:
+        The earlier of the two; *today* when there is no first payday.
+    """
+    if first_payday is None:
         return today
-    return min(earliest, today)
+    return min(first_payday, today)

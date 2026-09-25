@@ -332,11 +332,12 @@ class PayPeriodDiscardRequired(ShekelError):
 class PayPeriodUnresolved(ShekelError):
     """A submitted pay-period id names no period the requesting owner has.
 
-    Raised by ``pay_period_admin.truncate_pay_periods`` when the id the
-    truncate form posted resolves to none of the caller's own periods -- it
-    was never theirs, it never existed, or a concurrent truncate deleted it
-    between the discard-confirm 422 and the confirmation post.  The operation
-    deletes nothing.
+    Raised by ``pay_period_admin.truncate_pay_periods`` and
+    ``remove_earlier_pay_periods`` (plan step ``pay_calendar:C21``) when the
+    id the form posted resolves to none of the caller's own periods -- it
+    was never theirs, it never existed, or a concurrent removal deleted it
+    after the page rendered (for truncate, also between the discard-confirm
+    422 and the confirmation post).  The operation deletes nothing.
 
     **One class for all three cases, and that is the security property**
     (plan step C3-a, finding **P13**).  The house rule is that "not found" and
@@ -344,7 +345,7 @@ class PayPeriodUnresolved(ShekelError):
     oracle; here that is structural rather than remembered, because there is
     only one exception to raise and one message on it.  Which case it was IS
     distinguished -- in the ACCESS log, where an analyst can see it and a
-    prober cannot (``pay_period_admin._log_unresolved_period``).
+    prober cannot (``pay_period_gates.log_unresolved_period``).
 
     Its own class rather than a bare
     :class:`ValidationError`, because the truncate route has to catch it: a
@@ -352,16 +353,23 @@ class PayPeriodUnresolved(ShekelError):
     the period again" for any future business-rule refusal raised anywhere
     below it, turning a real defect into advice about a dropdown.
 
+    Args:
+        period_id: The submitted id that resolved to nothing.
+        choice: What the owner picks again, in the words of the form that
+            posted it -- "the period to keep through" for truncate, "the
+            paycheck to start from" for remove-earlier.
+
     Attributes:
         period_id: The submitted id that resolved to nothing.
     """
 
-    def __init__(self, period_id):
+    def __init__(self, period_id, choice):
+        """Name the id and the choice to make again from the list."""
         self.period_id = period_id
         super().__init__(
             f"Pay period {period_id} is not one of yours, or no longer "
-            f"exists. Reload the pay-periods settings page and choose the "
-            f"period to keep through from the current list."
+            f"exists. Reload the pay-periods settings page and choose "
+            f"{choice} from the current list."
         )
 
 

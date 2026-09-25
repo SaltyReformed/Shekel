@@ -24,7 +24,8 @@ line for the module), and trimming :mod:`._derive`'s prose to fit (the shape
 **R-PC60** and **R-PC69** refused).  Plan step ``pay_calendar:C18-b`` added
 the rhythm's other end beside the plan past the record:
 :func:`grid_below_record` and :func:`earlier_paydays`, the grid below the
-record's first payday.
+record's first payday; plan step ``C21`` added :func:`opening_rephase`, the
+same move made when the record's first paydays are retired.
 
 Placed between :mod:`._grid` and :mod:`._derive` in the package's one-way
 chain: it imports the nominal grid and nothing above it, and every module
@@ -649,8 +650,11 @@ def grid_below_record(
     **The grid is the EARLIEST era's** (ruling **R-PC66**: that era alone
     runs backward below the record).  The record's opening payday stands for
     a step of that era -- step ``0`` for every owner a door has written, and
-    ruling **R-PC105** keeps it so at the one door that records below it,
-    which moves the era's phase down with the paydays it adds.
+    two rulings keep it so at the two doors that move the opening: **R-PC105**
+    at the one that records below it, which moves the era's phase down with
+    the paydays it adds, and **R-PC110** at the one that retires the first
+    paydays, which moves it up to the payday left first
+    (:func:`opening_rephase`).
 
     **The top step is the one below the step the opening STANDS FOR**
     (:func:`matched_step`), never the grid day below the opening's DATE:
@@ -708,13 +712,76 @@ def earlier_paydays(
     """
     era, top = grid_below_record(eras, opening)
     first = top - count + 1
-    rephased = Era(
-        effective_from=nominal_payday(era.effective_from, era.rhythm.cadence, first),
-        rhythm=era.rhythm,
-    )
-    return rephased, tuple(
+    return _rephased(era, first), tuple(
         projected_payday(era.effective_from, era.rhythm, steps)
         for steps in range(first, top + 1)
+    )
+
+
+def opening_rephase(eras: "tuple[Era, ...]", opening: date) -> "Era | None":
+    """Return the earliest era re-phased onto the paycheck a new OPENING stands for.
+
+    **What "Remove earlier paychecks" moves** (plan step
+    ``pay_calendar:C21``, ruling **R-PC110**): :func:`earlier_paydays`'
+    inverse.  When the record's first paydays are retired, the payday that
+    becomes the first is matched to the planned paycheck it stands for
+    (:func:`matched_planned`, over the piecewise plan) and the earliest
+    era's phase moves UP onto that grid step's NOMINAL day -- the same
+    rhythm on the same grid, so every payday it plans is unchanged, and the
+    record's first payday stands for the era's first grid step again, as
+    every door leaves it.  *Not because a calendar needs it*: a record
+    above the phase is the migrated era's legal shape
+    (``_derive.validate_eras``).  The ruling moves it so the era's "since"
+    keeps naming the first paycheck the owner holds, and so removing what
+    "Add earlier paychecks" added leaves the era as that door found it.
+    Nominal and not the cash day, for the reason C18-b's third review
+    measured on the way down: a displaced opening's cash day is off the
+    grid, and a phase there moves every planned payday.
+
+    **``None`` when a LATER era pays the opening**: the removal took every
+    paycheck the earliest era pays in the record, and ruling **R-PC110**
+    keeps at least one, so the caller refuses.  Moving the phase onto a
+    later era's paycheck would put it on that era's day, past it, or leave
+    it paying nothing (**R-PC75**) -- the three sequences
+    ``_derive.validate_eras`` refuses.
+
+    Args:
+        eras: The owner's eras, validated.
+        opening: The payday that would be the record's first.
+
+    Returns:
+        The earliest era re-phased onto the paycheck *opening* stands for,
+        or ``None`` when that paycheck is a later era's.
+    """
+    index, steps = matched_planned(eras, opening)
+    if index:
+        return None
+    return _rephased(eras[0], steps)
+
+
+def _rephased(era: Era, steps: int) -> Era:
+    """Return *era* re-phased onto its own grid step *steps*.
+
+    The one spelling of the move both ends of the record make -- down to
+    the earliest payday "Add earlier paychecks" records (ruling
+    **R-PC105**), up to the payday that becomes the first when "Remove
+    earlier paychecks" retires the ones before it (ruling **R-PC110**).
+    Every kind steps from its anchor by whole cadences, months or
+    half-months, so a phase moved to one of its own grid days keeps the
+    grid, and every payday it plans.
+
+    Args:
+        era: The era to move.
+        steps: The grid step, counted from *era*'s current phase, that
+            becomes step ``0``.
+
+    Returns:
+        The era with its ``effective_from`` on that step's nominal day and
+        its rhythm untouched.
+    """
+    return Era(
+        effective_from=nominal_payday(era.effective_from, era.rhythm.cadence, steps),
+        rhythm=era.rhythm,
     )
 
 

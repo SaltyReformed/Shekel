@@ -216,6 +216,21 @@ class PayPeriodTruncateSchema(BaseSchema):
     confirm_discard = fields.Boolean(load_default=False)
 
 
+class PayPeriodRemoveEarlierSchema(BaseSchema):
+    """Validates POST data for removing the paychecks before a chosen one.
+
+    Plan step ``pay_calendar:C21``, ruling **R-PC111**: "Remove earlier
+    paychecks" names the paycheck to START FROM, by ``id``, for
+    :class:`PayPeriodTruncateSchema`'s reason (finding **P13**) -- the field
+    selects which periods a CASCADE takes, so it names the row the owner
+    picked rather than a count or a position.  No ``confirm_discard``: the
+    door refuses a paycheck holding anything the owner entered rather than
+    asking to discard it (ruling **R-PC109**).
+    """
+
+    start_from_period_id = RowId(required=True)
+
+
 class PayPeriodRegenerateSchema(RequiredRhythmFields, BaseSchema):
     """Validates POST data for regenerating the future tail.
 
