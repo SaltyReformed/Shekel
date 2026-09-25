@@ -47,6 +47,8 @@ today's priced paycheck rather than the template's stored copy).
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum, GoalModeEnum, IncomeUnitEnum
 from app.models.savings_goal import SavingsGoal
@@ -76,9 +78,9 @@ from app.services.payroll_basis import PayrollBasis
 from app.utils.dates import display_today
 from tests._test_helpers import (
     era_of,
+    fica_only_law,
     make_recurring_raise,
     make_salary_profile,
-    seed_fica_config,
 )
 from tests.test_services.test_paycheck_calculator import (
     FakeBracket,
@@ -497,6 +499,11 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
     until this step, and each expected value is paired with what that read.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     @staticmethod
     def _seed(db, seed_user, periods, *, goal_unit=None):
         """The owner above, the later weekly era, and optionally a 3x income goal."""
@@ -505,7 +512,6 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
             seed_user, db.session, annual_salary=Decimal("52000.00"),
         )
         db.session.flush()
-        seed_fica_config(user_id)
         last_payday = max(period.start_date for period in periods)
         pay_era_write.mint_era(
             user_id, era_of(last_payday + timedelta(days=28), 7),
@@ -607,6 +613,11 @@ class TestTheRecurringSalaryRow:
     between saves: the row must not read it.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     def test_amount_monthly_and_the_forward_per_paycheck_unit(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
@@ -634,7 +645,6 @@ class TestTheRecurringSalaryRow:
     def _seed_with_a_stale_copy(db, auth_client, seed_user, periods):
         """The owner above through the salary form, then its copy made stale."""
         user_id = seed_user["user"].id
-        seed_fica_config(user_id)
         last_payday = max(period.start_date for period in periods)
         pay_era_write.mint_era(
             user_id, era_of(last_payday + timedelta(days=28), 7),
