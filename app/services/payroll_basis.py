@@ -11,9 +11,10 @@ all nine still reached the type through the engine, which is a claim its own
 import graph refuted.
 
 No Flask, no clock, no database access of its own.  What it reads off the
-profile it is handed -- the raise rows, and since plan step salary:R15-b each
-deduction's recurrence rule -- it reads as ATTRIBUTES the caller loaded (the
-engine's loader eager-loads both; ``test_projection_inputs`` counts the
+profile it is handed -- the raise rows, since plan step salary:R15-b each
+deduction's recurrence rule, and since salary:X-av-3a the pay list -- it reads
+as ATTRIBUTES the caller loaded (the engine's loader eager-loads all three;
+``test_projection_inputs`` counts the
 statements a walk issues and finds none), converting each to a value through
 the reader that owns its vocabulary: :func:`~app.services.salary_raises
 .terms_of` for a raise, :func:`~app.services.recurrence.recurrence_spec` for
@@ -25,14 +26,25 @@ from decimal import Decimal
 from functools import cached_property
 from typing import Any
 
-from app.services.pay_calendar import PayCadence, PayCalendar, cadence_on
+from app.services.pay_calendar import (
+    PayCadence,
+    PayCalendar,
+    cadence_on,
+    first_payday_of,
+)
 from app.services.recurrence import (
     ResolvedRecurrence,
     projected_occurrence_placements,
     recurrence_spec,
     resolve,
 )
-from app.services.salary_raises import RaiseTerms, apply_raises, terms_of
+from app.services.salary_raises import (
+    RaiseTerms,
+    applications_between,
+    get_raise_event,
+    raise_pay,
+    terms_of,
+)
 from app.utils.money import round_money
 
 #: How far past an ask a cadence is walked before it is asked again: every
@@ -108,22 +120,24 @@ class _WalkedCadence:
 
 @dataclass(frozen=True)
 class BasePay:
-    """What the salary pays on one payday: the rate, and the two facts it divides.
+    """What the salary pays on one payday: the rate, and the rhythm it is paid at.
 
-    Plan step **salary:X-av-2** (ruling **R-SAL66**; ledger row **SAL-569**).
-    The value :meth:`PayrollBasis.base_pay_on` returns, so the paycheck engine
-    reads a payday's three salary figures from ONE read: the per-paycheck
-    rate every paycheck prices from, the annual
+    Plan step **salary:X-av-2** (ruling **R-SAL66**; ledger row **SAL-569**),
+    and since plan step **salary:X-av-3a** the RATE is the stored fact's
+    (ruling **R-SAL59**).  The value :meth:`PayrollBasis.base_pay_on` returns,
+    so the paycheck engine reads a payday's salary figures from ONE read: the
+    per-paycheck rate every paycheck prices from, the yearly figure
     :class:`~app.services.paycheck_calculator.Earnings` reports, and the
     count Pub 15-T annualises the paycheck's wages by.  The count rides here
     rather than being asked again by the withholding because it is a fact of
     the payday, and two reads of it would be two places for a paycheck's
-    divisor and its annualiser to part.
+    annualiser and its yearly figure to part.
 
-    **The rate is a property of the other two, never a third field**: a field
-    could be constructed disagreeing with them, and a value holding three
-    figures of which one is a function of the others is the stored-derived
-    shape rule 14 deletes.
+    **The yearly figure is a property of the other two, never a third field**
+    (R-SAL59: "The yearly figure is pay x paychecks a year, shown, never
+    stored").  Until X-av-3a it was the field and the rate its division,
+    rounded; a pay list stores the rate, so the product is exact and the
+    division is gone.
 
     **It carries the CADENCE, not only its count** (ruling **R-SAL70**): the
     engine hands it on as :attr:`~app.services.paycheck_calculator.PeriodInfo
@@ -133,13 +147,15 @@ class BasePay:
     never at a count read off the calendar a second time.
 
     Attributes:
-        annual_salary: The post-raise annual salary in effect on the payday,
-            as :func:`~app.services.salary_raises.apply_raises` returns it.
+        per_paycheck: What one paycheck pays on the payday, cent-exact: the
+            pay entry it is priced from, carried across any change of rhythm
+            and raised by every forecast raise landing after that entry
+            (:meth:`PayrollBasis.base_pay_on`).
         cadence: The rhythm in force on the payday --
             :func:`~app.services.pay_calendar.cadence_on`'s answer.
     """
 
-    annual_salary: Decimal
+    per_paycheck: Decimal
     cadence: PayCadence
 
     @property
@@ -148,9 +164,69 @@ class BasePay:
         return self.cadence.periods_per_year
 
     @property
-    def per_paycheck(self) -> Decimal:
-        """Return what one paycheck pays: :func:`gross_per_paycheck` of the two fields."""
-        return gross_per_paycheck(self.annual_salary, self.periods_per_year)
+    def annual(self) -> Decimal:
+        """Return the yearly figure: :attr:`per_paycheck` times the paychecks a year, exact."""
+        return self.per_paycheck * self.periods_per_year
+
+
+@dataclass(frozen=True)
+class RhythmChangeWithoutPay:
+    """A change of rhythm no pay entry is recorded from, as the salary page names it.
+
+    Plan step **salary:X-av-3a**, ruling **R-SAL82** ("Yearly pay carries,
+    said"): where the owner's rhythm changes and no entry is recorded ON the
+    new rhythm's first payday, that payday's pay is the yearly pay carried
+    across the change -- the pay before it times the old count, over the new
+    count -- and the salary page says so rather than believing the figure
+    silently.
+
+    Attributes:
+        first_payday: The new rhythm's first payday.
+        per_paycheck: What that payday is priced at.
+        carried_annual: The yearly pay carried across: the pay just before
+            the change times the paychecks a year it was paid at.
+    """
+
+    first_payday: date
+    per_paycheck: Decimal
+    carried_annual: Decimal
+
+
+@dataclass(frozen=True)
+class _Walked:
+    """One payday's walk of the pay list: its :class:`BasePay`, and what it carried.
+
+    Private to :class:`PayrollBasis`: the walk's answer plus the two facts
+    only the rhythm notice and the pay-change banner read.
+
+    Attributes:
+        base: The payday's :class:`BasePay`.
+        entry_payday: The payday of the entry the pay was walked from.
+        carried: ``(day, yearly pay)`` of the LAST change of count the walk
+            carried the pay across, or ``None`` when it crossed none.
+    """
+
+    base: BasePay
+    entry_payday: date
+    carried: "tuple[date, Decimal] | None"
+
+
+def _carry(pay: Decimal, paid_at: PayCadence, to: PayCadence) -> Decimal:
+    """Return *pay* at rhythm *paid_at* carried to rhythm *to*, keeping its yearly pay.
+
+    Ruling **R-SAL82**: at a change of rhythm with no pay recorded from it,
+    the paycheck becomes the yearly pay (pay x paychecks a year) over the new
+    count, rounded to the cent.
+
+    Args:
+        pay: The per-paycheck pay before the change, cent-exact.
+        paid_at: The rhythm it was paid at.
+        to: The rhythm it is carried to.
+
+    Returns:
+        The carried pay, quantized to the cent.
+    """
+    return round_money(BasePay(pay, paid_at).annual / to.periods_per_year)
 
 
 @dataclass(frozen=True)
@@ -213,7 +289,7 @@ class PayrollBasis:
     figures its rows carry, read through the same walk.
 
     Attributes:
-        profile: The ``SalaryProfile`` -- read for the annual salary, the
+        profile: The ``SalaryProfile`` -- read for its pay list, the
             deductions and the W-4 inputs, and for the raises when no
             :attr:`raise_terms` are supplied.  Typed loosely because every
             consumer reads attributes rather than the ORM class, and because
@@ -223,10 +299,10 @@ class PayrollBasis:
         calendar: The owner's whole
             :class:`~app.services.pay_calendar.PayCalendar` -- the payday set
             every calendar question the engine asks is answered from, and the
-            eras whose cadence :meth:`base_pay_on` divides each payday's
-            salary by.  ONE value because they are one fact: the cadence is a
-            field of the calendar, so a paycheck cannot be priced at one
-            rhythm and placed in a month counted at another.
+            eras whose rhythm :meth:`base_pay_on` prices each payday at.  ONE
+            value because they are one fact: the cadence is a field of the
+            calendar, so a paycheck cannot be priced at one rhythm and placed
+            in a month counted at another.
         raise_terms: The raise set to price from INSTEAD of the profile's
             rows, as a tuple of :class:`~app.services.salary_raises.RaiseTerms`,
             or ``None`` for the rows' own terms -- the default, and what every
@@ -339,165 +415,240 @@ class PayrollBasis:
         cadence = self._line_cadences[line]
         return cadence is None or cadence.admits(self.calendar, payday)
 
+    @cached_property
+    def _pay_list(self) -> "tuple[tuple[date, Decimal], ...]":
+        """The profile's pay entries as ``(payday, amount)``, payday ascending.
+
+        Read once per basis, as :attr:`raises` is.  Every door keeps a profile
+        holding at least one entry (the create form writes the first; no door
+        removes the last), so an empty list is a writer's defect, refused
+        here by name rather than answered with an ``IndexError`` below.
+
+        Raises:
+            ValueError: The profile holds no pay entry.
+        """
+        entries = tuple(sorted(
+            (entry.payday, entry.amount) for entry in self.profile.pay_entries
+        ))
+        if not entries:
+            raise ValueError(
+                f"salary profile {getattr(self.profile, 'id', None)} holds no "
+                "pay entry, so no paycheck of it can be priced"
+            )
+        return entries
+
+    def _entry_for(self, payday: date) -> "tuple[date, Decimal]":
+        """Return the entry *payday* is priced from: the latest on or before it, else the first.
+
+        Ruling **R-SAL59**: "Paychecks before the first entry use it."
+        """
+        chosen = self._pay_list[0]
+        for entry in self._pay_list:
+            if entry[0] > payday:
+                break
+            chosen = entry
+        return chosen
+
+    @cached_property
+    def _walked(self) -> "dict[date, _Walked]":
+        """Every payday walked so far, keyed by payday: each is walked ONCE per basis.
+
+        A paycheck asks its own payday twice -- its base pay and its banner --
+        and the year-to-date replays ask every earlier payday of the year
+        again for each paycheck they price, so without this a projection
+        re-walks the same day many times for the same answer.  Sound for the
+        reason :attr:`_pay_list` and :attr:`raises` are cached: a walk reads
+        only those two and the calendar, all fixed for one basis.  Cached as
+        :attr:`_line_cadences` is: a frozen dataclass admits
+        ``cached_property`` because it writes the instance dict directly.
+        """
+        return {}
+
+    def _walk_of(self, payday: date) -> _Walked:
+        """Return *payday*'s :class:`_Walked`, walking it only the first time it is asked."""
+        walked = self._walked.get(payday)
+        if walked is None:
+            walked = self._walked[payday] = self._walk(payday)
+        return walked
+
+    def _walk(self, payday: date) -> _Walked:
+        """Walk the pay list to *payday*: the one derivation of what it pays.
+
+        Rulings **R-SAL59**, **R-SAL60**, **R-SAL65** and **R-SAL82**, in
+        date order from the entry the payday is priced from:
+
+        * each change of rhythm (an era's first payday, ``first_payday_of``)
+          carries the pay across at the yearly figure (:func:`_carry`);
+        * each forecast raise landing after the entry's payday
+          (:func:`~app.services.salary_raises.applications_between`) raises
+          it by one cent-exact step
+          (:func:`~app.services.salary_raises.raise_pay`), a flat raise
+          spread over the count of the rhythm in force where it lands;
+        * on one day a change of rhythm comes first, because that day's
+          paycheck is paid at the new rhythm.
+
+        The walk ends at :func:`~app.services.pay_calendar.cadence_on`'s
+        rhythm for the payday, which is the rhythm the paycheck is placed and
+        annualised at: a record paid a day early before a seam stands for the
+        NEXT era's first payday and is carried to it, though that era's first
+        payday is after it.  A payday BEFORE the first entry takes the entry
+        carried to its own rhythm and no raise: every application after the
+        entry lands after the payday too.
+
+        Args:
+            payday: The day the paycheck arrives.
+
+        Returns:
+            The :class:`_Walked` of the payday.
+        """
+        entry_payday, pay = self._entry_for(payday)
+        paid_at = cadence_on(self.calendar, entry_payday)
+        final = cadence_on(self.calendar, payday)
+        carried = None
+        events = [
+            (first_payday_of(era), 0, 0, era)
+            for era in self.calendar.eras[1:]
+            if entry_payday < first_payday_of(era) <= payday
+        ] + [
+            (landed, 1, method_rank, raise_obj)
+            for landed, method_rank, raise_obj in applications_between(
+                self.raises, entry_payday, payday,
+            )
+        ]
+        for landed, kind, _rank, subject in sorted(events, key=lambda e: e[:3]):
+            if kind == 0:
+                rhythm = PayCadence(subject.rhythm.cadence)
+                if rhythm.periods_per_year != paid_at.periods_per_year:
+                    carried = (landed, BasePay(pay, paid_at).annual)
+                    pay = _carry(pay, paid_at, rhythm)
+                paid_at = rhythm
+            else:
+                pay = raise_pay(pay, subject, paid_at.periods_per_year)
+        if final.periods_per_year != paid_at.periods_per_year:
+            carried = (payday, BasePay(pay, paid_at).annual)
+            pay = _carry(pay, paid_at, final)
+        return _Walked(BasePay(pay, final), entry_payday, carried)
+
     def base_pay_on(self, payday: date) -> BasePay:
-        """Return what the salary pays on *payday*, with the two facts it divides.
+        """Return what the salary pays on *payday*, with the rhythm it is paid at.
 
         **The one spelling of base pay for the engine** (plan step
         **salary:X-av-2**, ruling **R-SAL66**; ledger row **SAL-569**).  The
         paycheck, the FICA wage-base cumulative and a capped line's
-        year-to-date each spelled ``gross_per_paycheck(
-        basis.annual_salary_on(payday), basis.periods_per_year)`` for
-        themselves: three walks of one value, which ``CLAUDE.md`` rule 14
-        counts as three homes however long they agree.  This method is the
-        walk and all three read it.  It replaced both of those names.  The
-        annual half keeps the reason ``annual_salary_on`` was written for
-        (plan step salary:S3-f-1): one read of :attr:`raises`, so a supplied
-        raise set reaches all three readers.
+        year-to-date each read it, as does the pension's salary path since
+        plan step salary:X-av-3a.  One read of :attr:`raises`, so a supplied
+        raise set reaches every reader.
 
-        **The count is the rhythm in force ON THE PAYDAY**, through
+        **It walks the PAY LIST since plan step salary:X-av-3a** (rulings
+        **R-SAL59**, **R-SAL60**, **R-SAL65**, **R-SAL82**; :meth:`_walk`
+        states the rules).  Until then it divided the post-raise annual
+        salary by the payday's own count and rounded once; the stored fact
+        is what one paycheck pays now, and each raise rounds as a stub
+        prints it.
+
+        **The rhythm is the one in force ON THE PAYDAY**, through
         :func:`~app.services.pay_calendar.cadence_on`, which reads the era
-        whose planned payday the day stands for, in cash days.
-        ``periods_per_year`` read
-        :attr:`~app.services.pay_calendar.PayCalendar.cadence` -- the LATEST
-        era's -- for every payday, so a paycheck paid under an earlier rhythm
-        was divided, and annualised for withholding, by a count it was never
-        paid at.  For an owner holding ONE era that era is both, so every such
-        owner's paycheck is unchanged by construction.  The cadence rides on
-        to :attr:`~app.services.paycheck_calculator.PeriodInfo.cadence` (ruling
-        **R-SAL70**), which is what every reader converting the paycheck to
-        a month or a year converts with.
+        whose planned payday the day stands for, in cash days.  It rides on
+        to :attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`
+        (ruling **R-SAL70**), which is what every reader converting the
+        paycheck to a month or a year converts with.
 
-        **Total, as the property it replaced was since plan step
-        pay_calendar:C4-d** (ruling **R-PC45**): a calendar in hand carries at
-        least one era, because ``pay_calendar.calendar_for`` refuses an owner
-        with no ``budget.pay_schedule`` row rather than answering one with no
-        rhythm.  Resolved per call and never at construction, so building a
-        basis still reads nothing.
+        **Total** for a calendar in hand (ruling **R-PC45**: a calendar
+        carries at least one era) and a profile holding a pay entry.
+        Resolved the first time each payday is asked (:meth:`_walk_of`
+        remembers it for the basis) and never at construction, so building
+        a basis still reads nothing.
 
         Args:
             payday: The day the paycheck arrives -- saved, projected, or below
-                the record.  The raises read only its year and month
-                (:func:`~app.services.salary_raises.apply_raises`); the count
-                reads the whole day, because an era takes effect on a day.
+                the record.  The raises read only its year and month; the
+                rhythm reads the whole day, because an era takes effect on a
+                day.
 
         Returns:
             The :class:`BasePay` of that payday.
         """
-        return BasePay(
-            annual_salary=apply_raises(
-                self.profile.annual_salary, self.raises, payday,
-            ),
-            cadence=cadence_on(self.calendar, payday),
-        )
+        return self._walk_of(payday).base
+
+    def pay_event_on(self, period) -> str:
+        """Return the banner of *period*'s paycheck: a recorded pay change, or its forecast raises.
+
+        Ruling **R-SAL84** ("Banner the pay change"): the paycheck where a
+        recorded pay entry begins shows ``PAY +$X`` -- its base pay against
+        the paycheck before it -- and a forecast raise that entry replaces
+        badges nothing (:func:`~app.services.salary_raises.get_raise_event`
+        with the entry's payday).  An entry changing nothing badges nothing.
+
+        **The FIRST entry badges no pay change**: every paycheck before it is
+        priced FROM it (R-SAL59), so there is no earlier recorded pay to
+        compare it with, and across a change of rhythm the comparison would
+        read only the carry's rounding.  Made-up: a first entry of
+        ``$4,333.33`` on the first payday of a 12-a-year rhythm, after a
+        26-a-year one; the paycheck before it is that entry carried back,
+        ``$4,333.33 x 12 / 26 = $2,000.00``, so the yearly comparison read
+        ``$51,999.96`` against ``$52,000.00`` and badged a ``$0.04`` cut no
+        one took (an adversarial review of this step).  Its payday badges
+        nothing at all: a raise of its month lands on the 1st, on or before
+        the payday, so the entry holds it (``get_raise_event`` with the
+        entry's payday).
+
+        **Across a change of rhythm it compares YEARLY pay**, labelled ``a
+        year`` (ruling **R-SAL89**, "Yearly pay across a seam", amending
+        R-SAL84): two paychecks paid at different counts are not
+        comparable one to one, so ``$2,060.00`` biweekly followed by a
+        recorded ``$1,030.00`` weekly is ``$53,560.00`` a year either side
+        and badges nothing, where a per-paycheck comparison announced a
+        ``$1,030.00`` cut.  "A change of rhythm" is a change of COUNT, the
+        test :func:`_carry` also turns on: a new phase paying as often is
+        compared per paycheck.
+
+        Args:
+            period: The paycheck's pay period: its ``start_date`` is the
+                payday, and it is handed on to ``get_raise_event``.  One
+                argument, so the payday and the period cannot disagree.
+
+        Returns:
+            The comma-joined labels, or ``""``.
+        """
+        payday = period.start_date
+        walked = self._walk_of(payday)
+        if walked.entry_payday == payday and payday != self._pay_list[0][0]:
+            previous = self.calendar.span_containing(payday - timedelta(days=1))
+            if previous is None:
+                return ""
+            before = self.base_pay_on(previous.start_date)
+            if before.periods_per_year == walked.base.periods_per_year:
+                change = walked.base.per_paycheck - before.per_paycheck
+                unit = ""
+            else:
+                change = walked.base.annual - before.annual
+                unit = " a year"
+            if not change:
+                return ""
+            sign = "+" if change > 0 else "-"
+            return f"PAY {sign}${abs(change):,.2f}{unit}"
+        return get_raise_event(self.raises, period, walked.entry_payday)
+
+    def rhythm_changes_without_pay(self) -> "list[RhythmChangeWithoutPay]":
+        """Return each change of rhythm whose first paycheck is priced by carrying the yearly pay.
+
+        Ruling **R-SAL82**: the salary page names a change of rhythm no pay is
+        recorded from.  A change keeping the count (a new phase at the same
+        rhythm) carries nothing and is not named.
+
+        Returns:
+            One :class:`RhythmChangeWithoutPay` per such change, oldest
+            first; empty for an owner with one rhythm.
+        """
+        changes = []
+        for era in self.calendar.eras[1:]:
+            first = first_payday_of(era)
+            walked = self._walk_of(first)
+            if walked.carried is not None and walked.carried[0] == first:
+                changes.append(RhythmChangeWithoutPay(
+                    first, walked.base.per_paycheck, walked.carried[1],
+                ))
+        return changes
 
 
-def gross_per_paycheck(
-    annual_salary: Decimal, periods_per_year: Decimal,
-) -> Decimal:
-    """Return what ONE paycheck pays, for a salary paid *periods_per_year* a year.
-
-    **The one place the per-paycheck division is spelled, for its callers**:
-    :attr:`BasePay.per_paycheck` -- which the paycheck engine reads for the
-    paycheck and for the two cumulatives that replay prior paydays, through
-    :meth:`PayrollBasis.base_pay_on` since plan step salary:X-av-2 -- and
-    ``retirement_dashboard_service.compute_gap_net_biweekly``'s retirement-gap
-    take-home basis.  Stated as MEMBERSHIP rather than a count, for the reason
-    :mod:`app.services.pay_calendar` states it that way: a count of a census
-    goes stale silently, and this one was wrong twice before it was written
-    down -- *and a fourth member left at plan step salary:R14-b, which deleted
-    ``investment_projection``'s percentage-deduction spelling outright, and a
-    fifth at salary:S3-e-2, ``retirement_projection``'s employer-match basis,
-    which this list went on naming until X-av-2.*
-
-    **One site is deliberately NOT here and saying so is the point.**
-    ``routes.salary.profiles`` sets a template's ``default_amount`` from
-    :meth:`~app.services.pay_calendar.PayCadence.annual_to_per_paycheck`
-    UNQUANTIZED, letting the ``Numeric(12, 2)`` column round it -- a money
-    boundary outside :func:`~app.utils.money.round_money`.  It agrees with this
-    function on every value today; it is a pre-existing smell this step did not
-    open and does not fix, found by an adversarial review of X-aw.
-
-    The first two callers each spelled the division themselves until plan step
-    **balance:X-aw**, and the two RULES were
-    measured answering differently on 5 of the owner's 63 saved periods
-    (2027-01-14 .. 2027-03-11: ``$3,722.54`` under the engine's residue
-    distribution against ``$3,722.53`` under the projection's plain division,
-    at the same ``$96,785.88``), because only one of them apportioned a
-    residue.  ``docs/audits/pylint-cleanup/deep-quality-hunt.md:721`` had
-    recorded that divergence as an open design fork; this is its answer.
-
-    **There WAS a second side, and plan step salary:R14-b deleted it rather
-    than reconciling it.**  This paragraph read "it does NOT make the two
-    sides agree on a paycheck": they shared the rounding rule and still
-    differed in what they FED it, the engine passing ``apply_raises(...)`` for
-    the period while ``investment_projection.adapt_deductions`` stamped the
-    profile's RAW ``annual_salary`` -- a divergence of the whole raise, which
-    is finding **D45**.  The contribution feed reads the engine's own
-    breakdown now, so there is one side, and the agreement this function used
-    to make partial is total by construction.
-
-    **The gross is a RATE, not a share of a year** (ruling **balance:R-HW**).
-    Every paycheck in one salary segment pays the same figure -- a segment that
-    also ends where the owner's rhythm changes, since plan step salary:X-av-2
-    divides each payday by its own era's count -- and the figure is a function
-    of the salary and the cadence ALONE: no period, no period LIST, and
-    therefore nothing a schedule extend can move.  That is finding **N-239**
-    made unrepresentable rather than guarded -- the defect was that the engine
-    decided which paychecks got a
-    residue cent by counting the ``budget.pay_periods`` rows that happened to
-    exist, so filling 2028 from 16 rows to 26 moved six settled paychecks by a
-    cent each.
-
-    **What it gives up, stated because it is a real cost**: a calendar year's
-    grosses no longer sum to the annual salary exactly.  The bound is half a
-    cent per paycheck -- ``0.005 x periods_per_year``, ``$0.13`` at a biweekly
-    cadence and ``$1.83`` at the daily one the schedule legally admits -- and
-    on the owner's own salary ``26 x $3,525.96 = $91,674.96``, four cents
-    under.  That supersedes audit finding MED-05 / PA-07, which added the
-    residue distribution to close exactly that gap.  The module docstring of
-    :mod:`app.services.paycheck_calculator` carries the argument and the
-    per-year figures; both are stated there once rather than in two places.
-
-    **It takes the COUNT rather than a**
-    :class:`~app.services.pay_calendar.PayCadence`, which would let it delegate
-    to :meth:`~app.services.pay_calendar.PayCadence.annual_to_per_paycheck` and
-    leave ONE division in the codebase.  The count is what
-    :attr:`BasePay.periods_per_year` carries, and the two divisions
-    answer different questions at different precisions besides: that one
-    converts a rate and is deliberately NOT quantized (its module forbids
-    quantizing at all), where this one is a money boundary.  *A second reason
-    stood here until plan step salary:R14-b -- that widening
-    ``investment_projection.AdaptedDeduction`` to hold a cadence would reach
-    four services and their fakes -- and that namedtuple no longer exists.*
-
-    **The stored input is the ANNUAL salary, and plan step salary:X-av flips
-    it.** Under ruling R-HW the FACT is what one paycheck pays and the annual
-    figure is the derivation; until that lands, the annual is what the profile
-    holds and this is where it is converted.  So this function is the seam that
-    flip edits, and the contract it states -- a constant rate per paycheck,
-    independent of the schedule -- is the contract that survives it unchanged.
-
-    Args:
-        annual_salary: The salary in effect for the paycheck, post-raise, as
-            :func:`~app.services.salary_raises.apply_raises` returns it.
-            **Always post-raise since plan step salary:R14-b**, which retired
-            the one caller that passed a profile's raw annual (D45, above).
-            A ``Decimal`` at full precision, NOT coerced here: a
-            ``float`` is refused by the division below with a ``TypeError``
-            before :func:`~app.utils.money.round_money` is reached at all, and
-            coercing through ``str()`` here would launder exactly the
-            imprecision that refusal exists to keep out.
-        periods_per_year: How many paychecks a year the paycheck's rhythm
-            pays: off :attr:`BasePay.periods_per_year` for the engine -- the
-            cadence of the ``budget.pay_eras`` era covering the payday
-            (:func:`~app.services.pay_calendar.cadence_on`) -- and off the
-            latest era's cadence for the retirement gap, whose paycheck lies
-            in a year that era governs.
-
-    Returns:
-        The gross for one paycheck, quantized to the cent.
-    """
-    return round_money(annual_salary / periods_per_year)
-
-
-__all__ = ["BasePay", "PayrollBasis", "gross_per_paycheck"]
+__all__ = ["BasePay", "PayrollBasis", "RhythmChangeWithoutPay"]

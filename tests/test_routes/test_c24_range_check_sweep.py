@@ -70,7 +70,7 @@ from app.schemas.validation import (
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
 )
-from tests._test_helpers import constraint_name_from
+from tests._test_helpers import constraint_name_from, start_test_pay_list
 
 
 # ── Constraint name constants ─────────────────────────────────────
@@ -328,7 +328,8 @@ class TestSalaryProfileSchemaBounds:
             )
         base = {
             "name": "Test Profile",
-            "annual_salary": "100000",
+            "pay_amount": "3846.15",  # $100,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": str(single_id),
             "state_code": "NC",
         }
@@ -802,9 +803,9 @@ class TestPaycheckLineCheck:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=single_id,
             name="Profile",
-            annual_salary=Decimal("100000.00"),
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("3846.15"))  # $100,000.00 a year / 26
         db.session.commit()
         return profile
 
@@ -885,9 +886,9 @@ class TestSalaryRaiseCheck:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=single_id,
             name="P",
-            annual_salary=Decimal("100000.00"),
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("3846.15"))  # $100,000.00 a year / 26
         db.session.commit()
         return profile
 
@@ -1061,9 +1062,9 @@ class TestCalibrationOverrideCheck:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=single_id,
             name="Cal",
-            annual_salary=Decimal("100000.00"),
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("3846.15"))  # $100,000.00 a year / 26
         db.session.commit()
         return profile
 

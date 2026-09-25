@@ -1,0 +1,89 @@
+{% from "_money_macros.html" import money %}
+{# The pay list (plan step salary:X-av-3a): what one paycheck pays, from a
+   dated payday on (R-SAL59), each entry beside its yearly figure (R-SAL61)
+   and a Fix that changes only the paychecks it covers.  Record a pay change
+   and Remove are X-av-3b's.  Every figure is the route's; nothing here
+   computes. #}
+<div class="card mb-3" id="pay-section">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-cash-stack" aria-hidden="true"></i> Pay</h6>
+  </div>
+  <div class="card-body">
+    {# A change of rhythm no pay is recorded from is priced by carrying the
+       yearly pay across it, and says so (R-SAL82). #}
+    {% for change in rhythm_changes %}
+    <div class="alert alert-warning py-2" role="status">
+      <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+      Your pay rhythm changes on {{ change.first_payday.isoformat() }} and no
+      pay is recorded from then: priced at {{ money(change.per_paycheck) }}
+      from your yearly {{ money(change.carried_annual) }}.
+    </div>
+    {% endfor %}
+    <div class="table-responsive">
+    <table class="table table-sm table-token mb-0">
+      <thead>
+        <tr>
+          <th>From payday</th>
+          <th class="text-end">A paycheck</th>
+          <th class="text-end">A year</th>
+          <th class="table-sticky-actions"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in pay_rows %}
+        <tr>
+          <td class="font-mono">{{ row.entry.payday.isoformat() }}</td>
+          <td class="text-end font-mono">{{ money(row.entry.amount) }}</td>
+          <td class="text-end font-mono">
+            {{ money(row.yearly) }}
+            <small class="text-muted">({{ row.paychecks_a_year }} paychecks)</small>
+          </td>
+          <td class="text-nowrap text-end table-sticky-actions">
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#fix-pay-{{ row.entry.id }}"
+                    aria-expanded="false"
+                    aria-controls="fix-pay-{{ row.entry.id }}">
+              <i class="bi bi-pencil" aria-hidden="true"></i> Fix
+            </button>
+          </td>
+        </tr>
+        <tr class="collapse" id="fix-pay-{{ row.entry.id }}">
+          <td colspan="4">
+            <form method="POST" class="row g-2 align-items-end"
+                  action="{{ url_for('salary.fix_pay_entry', entry_id=row.entry.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {# Optimistic-locking pin: a stale form is refused, never
+                 applied over another tab's fix. #}
+              <input type="hidden" name="version_id" value="{{ row.entry.version_id }}">
+              <div class="col-sm-5">
+                <label for="fix-pay-{{ row.entry.id }}-payday" class="form-label small">From payday</label>
+                <input type="date" class="form-control form-control-sm"
+                       id="fix-pay-{{ row.entry.id }}-payday" name="payday" required
+                       value="{{ row.entry.payday.isoformat() }}">
+              </div>
+              <div class="col-sm-5">
+                <label for="fix-pay-{{ row.entry.id }}-amount" class="form-label small">A paycheck</label>
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">$</span>
+                  <input type="number" step="0.01" min="0.01" class="form-control"
+                         id="fix-pay-{{ row.entry.id }}-amount" name="amount" required
+                         value="{{ row.entry.amount }}">
+                </div>
+              </div>
+              <div class="col-sm-2">
+                <button type="submit" class="btn btn-sm btn-primary w-100">Save</button>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="form-text mb-0">
+      A fix corrects an entry and moves only the paychecks it covers.
+      Paychecks before your first entry are paid at it.
+    </p>
+  </div>
+</div>

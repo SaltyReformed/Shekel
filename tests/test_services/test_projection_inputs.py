@@ -63,6 +63,7 @@ from tests._test_helpers import (
     make_line_cadence_rule,
     pricing_over,
     shadow_amount,
+    start_test_pay_list,
 )
 from app.services.settle_day import record_settle_day
 
@@ -274,23 +275,26 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
 
     active_profile = SalaryProfile(
         user_id=user_id, scenario_id=scenario_id,
-        name="Active", annual_salary=Decimal("100000"),
+        name="Active",
         state_code="NC",
         filing_status_id=filing_status_id, is_active=True,
     )
     inactive_profile = SalaryProfile(
         user_id=user_id, scenario_id=scenario_id,
-        name="Inactive", annual_salary=Decimal("80000"),
+        name="Inactive",
         state_code="NC",
         filing_status_id=filing_status_id, is_active=False,
     )
     other_profile = SalaryProfile(
         user_id=other_user_id, scenario_id=other_scenario_id,
-        name="Other", annual_salary=Decimal("100000"),
+        name="Other",
         state_code="NC",
         filing_status_id=filing_status_id, is_active=True,
     )
     db.session.add_all([active_profile, inactive_profile, other_profile])
+    start_test_pay_list(active_profile, Decimal("3846.15"))  # $100,000.00 a year / 26
+    start_test_pay_list(inactive_profile, Decimal("3076.92"))  # $80,000.00 a year / 26
+    start_test_pay_list(other_profile, Decimal("3846.15"))  # $100,000.00 a year / 26
     db.session.flush()
 
     active_a = PaycheckLine(
@@ -1641,11 +1645,12 @@ class TestTheFeedIsBuiltOverTheWiring:
             )
             second = SalaryProfile(
                 user_id=ids["user_id"], scenario_id=seed_user["scenario"].id,
-                name="Second", annual_salary=Decimal("52000"),
+                name="Second",
                 state_code="NC", is_active=True,
                 filing_status_id=active.filing_status_id,
             )
             db.session.add(second)
+            start_test_pay_list(second, Decimal("2000.00"))  # $52,000.00 a year / 26
             db.session.flush()
             params_by_account[ids["acct_b_id"]] = (
                 TestLoadPayrollFeeds._params_for(ids["acct_b_id"], second.id)

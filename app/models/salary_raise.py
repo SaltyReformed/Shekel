@@ -2,7 +2,7 @@
 Shekel Budget App -- Salary Raise Model (salary schema)
 
 Tracks scheduled salary raises (merit, COLA, custom) that apply at
-a specific month/year to adjust the annual salary for paycheck calculation.
+a specific month/year to adjust the pay for paycheck calculation.
 """
 
 from app import ref_cache
@@ -167,12 +167,14 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
     #: global belief in per-raise clothing.
     #:
     #: **It is THE horizon, for every engine.**
-    #: :func:`app.services.salary_raises.apply_raises` reads it on the shared
-    #: walk both the paycheck pipeline and
-    #: :func:`app.services.pension_calculator.project_salaries_by_year` go
-    #: through, and since salary:S3-c neither of them invents a cutoff of its
-    #: own -- so the two long-horizon salary paths that used to disagree past
-    #: a global cutoff are one path.
+    #: :func:`app.services.salary_raises.applications_between` reads it on
+    #: the pay list's walk (:meth:`app.services.payroll_basis.PayrollBasis
+    #: .base_pay_on`), which both the paycheck pipeline and the pension's
+    #: salary path (:func:`app.services.pension_calculator
+    #: .project_profile_salaries`) read since plan step salary:X-av-3a, and
+    #: since salary:S3-c neither invents a cutoff of its own -- so the two
+    #: long-horizon salary paths that used to disagree past a global cutoff
+    #: are one path.
     terminal_year = db.Column(db.Integer)
     notes = db.Column(db.Text)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.

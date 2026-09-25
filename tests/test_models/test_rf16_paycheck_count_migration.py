@@ -52,7 +52,10 @@ from sqlalchemy import text
 from app.extensions import db as _db
 from app.models.pay_schedule import PaySchedule
 from app.services import pay_era_write, pay_schedule_service
-from tests._test_helpers import restore_pay_period_derived_columns
+from tests._test_helpers import (
+    restore_pay_period_derived_columns,
+    start_test_pay_list,
+)
 from app.models.salary_profile import SalaryProfile
 
 _MIGRATIONS_DIR = (
@@ -184,11 +187,11 @@ def _profile(db, seed_user, name="R-F16"):
         scenario_id=seed_user["scenario"].id,
         filing_status_id=1,
         name=name,
-        annual_salary=Decimal("91675.00"),
         state_code="NC",
     )
     db.session.add(profile)
     db.session.flush()
+    start_test_pay_list(profile, Decimal("3525.96"))  # $91,675.00 a year / 26
     return profile
 
 
@@ -322,6 +325,11 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
         """
         with app.app_context():
             user_id = seed_user["user"].id
+            # The profile is built while the owner still has a payday, since
+            # its first pay entry must be dated on one (plan step
+            # salary:X-av-3a); the entry references no pay period, so the
+            # deletes below leave the state this case names.
+            profile = _profile(db, seed_user, name="No schedule")
             # PERIODS FIRST, then the schedule row.  Since plan step
             # ``pay_calendar:C4-b-2`` that order is the only legal one:
             # ``fk_pay_periods_schedule`` is ``ON DELETE RESTRICT``, so
@@ -336,7 +344,6 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
             # (``fk_pay_eras_schedule``); it goes before the parent too.
             pay_era_write.retire_eras(user_id, ())
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
-            profile = _profile(db, seed_user, name="No schedule")
             db.session.commit()
 
             _run(_M_RF16.downgrade, db.session)

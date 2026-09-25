@@ -33,6 +33,7 @@ from tests._test_helpers import (
     rhythm_of,
     set_default_grid_account,
     settle_day_columns,
+    start_test_pay_list,
 )
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 from tests._test_helpers import (
@@ -1882,12 +1883,12 @@ def _seed_taxes_profile(seed_user, db):
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name="Taxes Tab Profile",
-        annual_salary=Decimal("130000.00"),
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("5000.00"))  # $130,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -2023,13 +2024,13 @@ class TestTaxesTab:
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 name="MFJ Four Kids",
-                annual_salary=Decimal("130000.00"),
                 filing_status_id=filing_status.id,
                 state_code="NC",
                 is_active=True,
                 qualifying_children=4,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("5000.00"))  # $130,000.00 a year / 26
             db.session.commit()
 
             resp = auth_client.get(

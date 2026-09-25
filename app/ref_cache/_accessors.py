@@ -420,8 +420,8 @@ def filing_status_member(filing_status_id):
 def raise_type_id(member):
     """Return the integer primary key for a RaiseTypeEnum member.
 
-    The retirement salary projection
-    (:func:`app.services.pension_calculator.project_salaries_by_year`) used
+    The retirement salary projection (``pension_calculator
+    .project_salaries_by_year``, deleted at plan step salary:X-av-3a) used
     this to branch its merit horizon on ``salary.salary_raises
     .raise_type_id`` without ever reading the string ``name`` (Gate A ruling
     3 / fork F4); plan step **salary:S3-c** deleted that branch with the
