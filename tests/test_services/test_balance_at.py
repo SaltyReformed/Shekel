@@ -3033,12 +3033,12 @@ class TestTheSubtotalsAreThePaychecksAcrossTheSet:
     def test_a_settled_far_leg_is_excluded_too(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """The far leg of a PAID payment is a fact in the card's walk, keyed by its shadow.
+        """The far leg of a PAID payment is a fact in the card's walk, keyed by its transfer.
 
-        A settled shadow reads as ``0 + its covering movement``
-        (``CashSourceFact`` carries no transfer id), so the seam's exclusion
-        has to reach it by the shadow's ``transaction_id`` -- the second
-        identity ``FarLegs`` carries.  Paid in the fixture paycheck: the
+        A settled leg is its covering movement's fact, which names its
+        transfer (``CashSourceFact.transfer_id``, leaf ``X-bi-6-4a``; it was
+        reached by the shadow's ``transaction_id`` until then), so the seam's
+        exclusion is the same transfer id as the planned leg's.  Paid in the fixture paycheck: the
         card's balance delta is the same ``+120.00`` and its income the same
         ``165.00`` whether the payment is still projected or settled.
         """

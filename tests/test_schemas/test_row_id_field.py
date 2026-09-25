@@ -441,7 +441,6 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # ``nominal_day`` below is what survives of the pair -- the 0-or-1 day a
     # short month clamped.  ``deductions_per_year`` left at plan step
     # salary:R15-b with its column: a deduction's cadence is a recurrence rule.
-    "due_day_of_month",
     "effective_month",
     "effective_year",
     "first_day_of_month",

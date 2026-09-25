@@ -29,6 +29,8 @@ from app.services.paycheck_calculator import (
     PeriodInfo,
     TaxLines,
 )
+from app.services.pay_calendar import PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.services import account_service
 from app.utils.dates import display_today
 from app.utils.dates import add_months
@@ -670,7 +672,9 @@ class TestPaycheckBreakdownTotals:
     def test_total_pre_tax(self):
         """total_pre_tax sums pre-tax deduction amounts."""
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
                 base_biweekly=Decimal("2884.62"),
@@ -688,7 +692,9 @@ class TestPaycheckBreakdownTotals:
     def test_total_post_tax(self):
         """total_post_tax sums post-tax deduction amounts."""
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
                 base_biweekly=Decimal("2884.62"),
@@ -706,7 +712,9 @@ class TestPaycheckBreakdownTotals:
     def test_total_taxes(self):
         """total sums federal + state + ss + medicare."""
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
                 base_biweekly=Decimal("2884.62"),
@@ -724,7 +732,9 @@ class TestPaycheckBreakdownTotals:
     def test_empty_deductions_return_zero(self):
         """Empty deduction lists produce Decimal('0') totals."""
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
                 base_biweekly=Decimal("2884.62"),
@@ -743,7 +753,9 @@ class TestPaycheckBreakdownTotals:
         Expected: net_pay == Decimal('1607.69').
         """
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
                 base_biweekly=Decimal("2307.69"),
@@ -785,7 +797,9 @@ class TestPaycheckBreakdownTotals:
         Expected: net_pay == Decimal('2000.00').
         """
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("52000"),
                 base_biweekly=Decimal("2000.00"),
@@ -807,7 +821,9 @@ class TestPaycheckBreakdownTotals:
         Expected: net_pay == Decimal('-200.00').
         """
         breakdown = PaycheckBreakdown(
-            period=PeriodInfo(date(2026, 1, 2), period_id=1),
+            period=PeriodInfo(
+                date(2026, 1, 2), period_id=1, cadence=PayCadence(FixedDays(14)),
+            ),
             earnings=Earnings(
                 annual_salary=Decimal("52000"),
                 base_biweekly=Decimal("2000.00"),

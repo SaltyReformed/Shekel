@@ -106,6 +106,7 @@ from app.services._posting_write import (
     _PostingLeg,
     emit_typed_source_deltas,
 )
+from app.services.cash_ledger import settled_cash_facts
 from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
@@ -2615,6 +2616,272 @@ class TestTransactionShadowFamily:
             # The movement's own family: the cash leg, the planted entry, and
             # nothing the sync added.
             assert len(_entries_for_transfer(transfer.id)) == 3
+
+
+def _live_shadow_id(transfer_id, account_id):
+    """Return the id of the transfer's LIVE shadow row on *account_id*."""
+    return (
+        _db.session.query(Transaction.id)
+        .filter(
+            Transaction.transfer_id == transfer_id,
+            Transaction.account_id == account_id,
+            Transaction.is_deleted.is_(False),
+        )
+        .scalar()
+    )
+
+
+def _drift(sql, **params):
+    """Write one row AROUND the service by raw SQL, commit, and expire the session.
+
+    Each case below writes a state no door writes (Transfer Invariants 3 and
+    4) the way it has occurred -- past the services -- so the writer is
+    asked about exactly the rows the database holds.
+    """
+    _db.session.execute(_db.text(sql), params)
+    _db.session.commit()
+    _db.session.expire_all()
+
+
+class TestTheWriterBooksATransferMovementUnderItsLeg:
+    """Leaf ``balance:X-bi-6-4a``: a transfer movement's parent is its LEG, never its shadow.
+
+    Every door hands the writer the parent
+    ``transfer_legs.movement_parent`` resolves, so a transfer movement's
+    period, contributing gate and owner are its TRANSFER's -- the ones the
+    cash fold has read since the leaf's first half (ruling **R-BAL106**).
+    Each case writes a drift around the service and asks the pair's door.
+    The period, gate and oracle cases are red on the tree before the leaf,
+    where the writer and the oracle read the shadow row or the status; the
+    dead-shadow case pins the one term the leaf ADDED (a leg posts its
+    record alone), whose answer the old tree gave through the dead shadow's
+    own gate.
+    """
+
+    def test_a_legs_entries_file_under_its_transfers_period(
+        self, app, db, seed_user, seed_periods, savings,
+    ):  # pylint: disable=unused-argument
+        """R-JA, the parent decides: a shadow moved to another period moves no entry.
+
+        ``$100.00`` Checking -> Savings settled in P; the CHECKING shadow's
+        period is rewritten to F by SQL.  Tearing the pair down and posting
+        it again through its door files both sides' entries under P, the
+        transfer's: over the family Checking nets ``-100.00`` in P and F
+        holds nothing.  Before the leaf the re-post read the shadow's period,
+        so Checking's ``-100.00`` landed in F and P netted ``0.00``.
+        """
+        with app.app_context():
+            period, drifted = seed_periods[0], seed_periods[5]
+            checking = seed_user["account"]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings, period,
+                amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            _drift(
+                "UPDATE budget.transactions SET pay_period_id = :p WHERE id = :id",
+                p=drifted.id, id=_live_shadow_id(transfer.id, checking.id),
+            )
+
+            posting_service.reverse_transfer_postings_before_delete(transfer)
+            reposted = posting_service.sync_transfer_postings(transfer)
+            _db.session.commit()
+
+            assert [entry.pay_period_id for entry in reposted] == [
+                period.id, period.id,
+            ]
+            per_period = _period_nets_for_transfer(transfer.id)
+            assert drifted.id not in per_period
+            assert per_period[period.id][_ledger_id(checking)] == (
+                Decimal("-100.00")
+            )
+            assert per_period[period.id][_ledger_id(savings)] == (
+                Decimal("100.00")
+            )
+
+    def test_a_transfer_deleted_around_the_service_holds_nothing(
+        self, app, db, seed_user, savings,
+    ):  # pylint: disable=unused-argument
+        """The gate is the TRANSFER's: its live shadows keep no leg posted.
+
+        ``$100.00`` Checking -> Savings settled; the TRANSFER row alone is
+        flagged deleted by SQL, its two shadows left live (Transfer Invariant
+        4 drift).  The pair's door reverses both legs: Checking is back on its
+        ``$1,000.00`` opening and Savings on its ``$100.00`` one, which is
+        what the cash fold reads too (its leg arm gates on the transfer, so
+        no fact names it).  Before the leaf the writer read each live
+        shadow's gate and left both legs posted (``900.00`` / ``200.00``).
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = _scenario_id(seed_user)
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+                settled_on=display_today(),
+            )
+            _db.session.commit()
+            _drift(
+                "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :id",
+                id=transfer.id,
+            )
+
+            reversed_entries = posting_service.sync_transfer_postings(transfer)
+            _db.session.commit()
+
+            assert len(reversed_entries) == 2
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("100.00")
+            assert not [
+                fact for account in (checking, savings)
+                for fact in settled_cash_facts(account.id, scenario_id)
+                if fact.transfer_id == transfer.id
+            ]
+
+    def test_a_row_teardown_on_a_shadow_reverses_its_side_under_the_leg(
+        self, app, db, seed_user, savings,
+    ):  # pylint: disable=unused-argument
+        """The row teardown reaching a shadow types its movement by the LEG.
+
+        ``$100.00`` Checking -> Savings settled; ``reverse_postings_before_delete``
+        is handed the SAVINGS shadow.  Its movement is booked under the
+        Savings leg, so the reversal is read back and written under the
+        ``transfer_movement`` source: one entry, {Savings -100.00, transit
+        +100.00}, and Savings is back on its ``$100.00`` opening while
+        Checking keeps its side (``900.00``).  MUTATION: hand the writer the
+        shadow row instead and it types the movement as a PURCHASE, reads
+        nothing posted under that source, reverses nothing, and strands the
+        ``$100.00`` -- the case ``posting_service`` has promised since plan
+        step ``balance:X-bi-6-3`` ("a transfer shadow reaching here is
+        reversed like any row") and no test held it to.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = _scenario_id(seed_user)
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+                settled_on=display_today(),
+            )
+            _db.session.commit()
+            income_shadow = _db.session.get(
+                Transaction, _live_shadow_id(transfer.id, savings.id),
+            )
+            entries_before = len(_entries_for_transfer(transfer.id))
+
+            posting_service.reverse_postings_before_delete(income_shadow)
+            _db.session.commit()
+
+            [reversal] = _entries_for_transfer(transfer.id)[entries_before:]
+            assert reversal.source_kind_id == ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER_MOVEMENT,
+            )
+            assert _legs_by_ledger(reversal.id) == {
+                _ledger_id(savings): Decimal("-100.00"),
+                _transit_ledger_id(seed_user): Decimal("100.00"),
+            }
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("100.00")
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("900.00")
+
+    def test_a_movement_under_a_dead_shadow_posts_nothing(
+        self, app, db, seed_user, savings,
+    ):  # pylint: disable=unused-argument
+        """A leg posts its RECORD alone: a dead shadow's movement reverses, the live side stays.
+
+        ``$100.00`` Checking -> Savings settled; the CHECKING shadow alone is
+        soft-deleted by SQL, the transfer left live and settled (Transfer
+        Invariant 4 drift).  Its movement is no leg's record
+        (``movement_parent`` gives its leg none: the join's live-shadow test
+        over one loaded movement), so the pair's door reverses Checking's leg --
+        Checking back on its ``$1,000.00`` opening -- and keeps Savings'
+        (``$100.00`` opening + ``100.00`` = ``200.00``); the row door on the
+        dead shadow then finds its family at target.  MUTATION: drop
+        ``purchase_posts``' record term and the dead shadow's movement is
+        booked under the LIVE transfer's leg and stays posted (Checking
+        ``900.00``).
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = _scenario_id(seed_user)
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+                settled_on=display_today(),
+            )
+            _db.session.commit()
+            dead_shadow_id = _live_shadow_id(transfer.id, checking.id)
+            _drift(
+                "UPDATE budget.transactions SET is_deleted = TRUE WHERE id = :id",
+                id=dead_shadow_id,
+            )
+
+            [reversal] = posting_service.sync_transfer_postings(transfer)
+            _db.session.commit()
+
+            assert _legs_by_ledger(reversal.id) == {
+                _ledger_id(checking): Decimal("100.00"),
+                _transit_ledger_id(seed_user): Decimal("-100.00"),
+            }
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("200.00")
+            assert posting_service.sync_transaction_postings(
+                _db.session.get(Transaction, dead_shadow_id),
+            ) == []
+
+    def test_the_oracle_counts_a_dated_leg_whatever_the_transfers_status(
+        self, app, db, seed_user, savings,
+    ):  # pylint: disable=unused-argument
+        """The oracle states the writer's rule: a dated leg of a contributing transfer.
+
+        ``$100.00`` Checking -> Savings settled; the TRANSFER's status alone
+        is rewritten to Projected by SQL (a status drift: both movements stay
+        dated).  The writer keeps both legs posted -- a movement posts iff it
+        is dated under a contributing parent (ruling **R-BAL101**) -- and
+        ``settled_transfer_effect`` agrees on both accounts: Checking
+        ``900.00`` = ``1,000.00`` + ``-100.00``, Savings ``200.00`` =
+        ``100.00`` + ``100.00``.  Before the leaf the oracle filtered on the
+        settled STATUS and answered ``0.00`` on both, grading a correct
+        ledger as ``$100.00`` off.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = _scenario_id(seed_user)
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+                settled_on=display_today(),
+            )
+            _db.session.commit()
+            _drift(
+                "UPDATE budget.transfers SET status_id = :s WHERE id = :id",
+                s=ref_cache.status_id(StatusEnum.PROJECTED), id=transfer.id,
+            )
+
+            assert posting_service.sync_transfer_postings(transfer) == []
+            _db.session.commit()
+
+            for account, opening, effect in (
+                (checking, Decimal("1000.00"), Decimal("-100.00")),
+                (savings, Decimal("100.00"), Decimal("100.00")),
+            ):
+                assert posting_service.settled_transfer_effect(
+                    account.id, scenario_id,
+                ) == effect
+                assert posting_service.account_posting_total(
+                    account.id, scenario_id,
+                ) == opening + effect
 
 
 class TestTransactionEntryDate:

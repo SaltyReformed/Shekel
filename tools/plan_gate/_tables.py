@@ -368,6 +368,25 @@ def key_list(cell: str) -> list[str]:
     return out
 
 
+def is_table_row(line: str) -> bool:
+    """Return whether *line* is a markdown table row.
+
+    **The one spelling of this test in the gate.**  It was written four times,
+    as ``strip`` in two places and ``lstrip`` in two, which agree on every
+    string (``strip`` only adds a right strip, and that cannot reach a leading
+    pipe) -- but two spellings that agree today are still two producers, and
+    :mod:`_duplication` needs its blanker and its splitter to ask the SAME
+    question of every line.
+
+    Args:
+        line: One line of a document.
+
+    Returns:
+        ``True`` when the line opens with a pipe, leading whitespace aside.
+    """
+    return line.lstrip().startswith("|")
+
+
 def cells(line: str) -> list[str] | None:
     """Return a markdown row's cells, or ``None`` when *line* is not a row.
 
@@ -377,7 +396,7 @@ def cells(line: str) -> list[str] | None:
     Returns:
         The stripped cells between the outer pipes, or ``None``.
     """
-    if not line.strip().startswith("|"):
+    if not is_table_row(line):
         return None
     return [c.strip() for c in UNESCAPED_PIPE_RX.split(line)[1:-1]]
 

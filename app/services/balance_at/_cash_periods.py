@@ -404,10 +404,12 @@ def _budget_legs(
     **Less the far legs** (ruling ``credit_card:R-CC23``, plan step CC-4-1):
     *far* names the transfer legs this account holds as the NON-balance member
     of a cash-flow set, which the paycheck grid shows from the balance line's
-    side and not from here.  A settled one is a fact keyed by its shadow's
-    ``transaction_id``; a still-projected one is a
-    :class:`~app.services.transfer_legs.TransferLeg` keyed by its
-    transfer's id.  The balance account itself passes
+    side and not from here.  Both halves are excluded by their TRANSFER's id:
+    a settled one is a fact naming it
+    (:attr:`~app.services.cash_ledger.CashSourceFact.transfer_id`, leaf
+    ``X-bi-6-4a``; its shadow's ``transaction_id`` until then), a
+    still-projected one a :class:`~app.services.transfer_legs.TransferLeg`
+    carrying it.  The balance account itself passes
     :meth:`~app.services.cash_flow_set.FarLegs.none` -- every leg it holds is
     the near side by definition -- so :func:`period_view_of`'s columns are
     unchanged by the parameter.
@@ -438,7 +440,7 @@ def _budget_legs(
         walk: The account's walk -- its settled facts carry both clocks.
         plan: The account's :class:`~._cash_fold._CashPlan`.
         window: The reported periods.
-        far: The far legs to leave out, by both identities.
+        far: The far legs to leave out, by their transfers.
 
     Returns:
         ``{period_id: (income, expense)}`` -- SIGNED, UNROUNDED (the caller
@@ -451,7 +453,7 @@ def _budget_legs(
     for fact in walk.source_facts:
         if fact.pay_period_id not in income:
             continue
-        if fact.transaction_id in far.transaction_ids:
+        if fact.transfer_id in far.transfer_ids:
             continue
         if fact.is_income:
             income[fact.pay_period_id] += fact.delta

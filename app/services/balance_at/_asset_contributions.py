@@ -35,9 +35,7 @@ from app.services import growth_engine
 from app.services.cash_ledger import (
     AmountBasis,
     ReconciledThrough,
-    contributions_by_id,
     planned_leg_contribution,
-    settlement_load_options,
     transfer_pricing_load_options,
 )
 from app.services.account_projection import (
@@ -53,6 +51,7 @@ from app.services.loan_loaders import (
     settled_income_shadows,
 )
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.services.row_valuation import leg_settled_contribution
 
 _ZERO = Decimal("0")
 
@@ -169,16 +168,19 @@ def _recorded_contributions(
     loaders' ONE settled/projected partition -- the app's one definition of "a
     contribution into this account" (a transfer INTO it, excluding soft-deleted
     and balance-excluded ones), which the YTD and limit accounting already
-    read.  **Two relations since plan step balance:X-bi-6a** (ruling
-    **R-BAL13**): a contribution that has SETTLED is its income-shadow row,
-    read from ``budget.transactions`` by
-    :func:`~app.services.loan_loaders.settled_income_shadows` and worth what it
-    recorded; one still PROJECTED is a leg of its parent transfer, read from
-    ``budget.transfers`` by
+    read.  **Both halves are legs of their transfers since plan step
+    balance:X-bi-6-4b**, divided by one test (ruling **R-BAL140**): a
+    contribution that has SETTLED is read by
+    :func:`~app.services.loan_loaders.settled_income_shadows` and worth what
+    its record moved
+    (:func:`~app.services.row_valuation.leg_settled_contribution`); one still
+    PROJECTED is read by
     :func:`~app.services.loan_loaders.projected_income_legs` and worth what
     the parent resolves to
-    (:func:`~app.services.cash_ledger.planned_leg_contribution`).  Both file
-    under the same period the fold lands them in.
+    (:func:`~app.services.cash_ledger.planned_leg_contribution`).  The settled
+    half was the income-shadow row, read from ``budget.transactions``, from
+    plan step balance:X-bi-6a until then.  Both file under their transfer's
+    period, the one the fold lands them in.
 
     These rows are NOT contributed by this module: they are ordinary ACTUAL /
     PLANNED events in the cash fold underneath it, which is exactly why the
@@ -192,17 +194,17 @@ def _recorded_contributions(
     starts in.  It is windowed by account and scenario, which is the whole
     domain.
 
-    **The settled half states no pricing load and the projected half states
-    the transfer's own.**  A settled row is valued from its settlement record
-    (:func:`~app.services.row_valuation.fixed_contribution` answers before the
-    amount model is asked), which is the row's ENTRIES since plan step
-    ``balance:X-bi-4b-1``, so that path takes
-    :func:`~app.utils.amount_relationships.settlement_load_options` and no
-    pricing load; a leg's parent is priced through its definition, so that
-    path takes
+    **The settled half states no load and the projected half states the
+    transfer's own.**  A settled leg is valued from its record, the covering
+    movement the producer's one join attaches, so that path loads nothing it
+    does not already carry (it took
+    :func:`~app.utils.amount_relationships.settlement_load_options` for the
+    shadow's ENTRIES until plan step balance:X-bi-6-4b); a projected leg's
+    parent is priced through its definition, so that path takes
     :func:`~app.utils.amount_relationships.transfer_pricing_load_options`.
-    *It passed ``pricing_load_options()`` over ONE mixed row set until this
-    step, because the projected shadows in it walked to their parents.*
+    *It passed ``pricing_load_options()`` over ONE mixed row set until plan
+    step balance:X-bi-6a, because the projected shadows in it walked to their
+    parents.*
 
     Args:
         basis: The read pass's
@@ -212,17 +214,15 @@ def _recorded_contributions(
 
     Returns:
         ``{pay_period_id: total}`` over what each contribution is WORTH -- the
-        realized actual for a settled shadow, the parent's resolved amount for
-        a projected leg.  ``{}`` for an account with none.
+        realized actual for a settled leg, the parent's resolved amount for
+        a projected one.  ``{}`` for an account with none.
     """
-    settled = settled_income_shadows(
-        account_id, basis.scenario_id, options=settlement_load_options(),
-    )
-    contributions = contributions_by_id(settled, basis)
     totals: dict[int, Decimal] = {}
-    for txn in settled:
-        totals[txn.pay_period_id] = (
-            totals.get(txn.pay_period_id, _ZERO) + contributions[txn.id]
+    for leg in settled_income_shadows(
+        account_id, basis.scenario_id, options=(),
+    ):
+        totals[leg.pay_period_id] = (
+            totals.get(leg.pay_period_id, _ZERO) + leg_settled_contribution(leg)
         )
     for leg in projected_income_legs(
         account_id, basis.scenario_id,

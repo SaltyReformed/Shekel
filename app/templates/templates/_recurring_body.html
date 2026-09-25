@@ -81,7 +81,7 @@
 {% macro row_sort_attrs(row) %}
 data-recurring-row
 data-sort-name="{{ row.template.name|lower }}"
-data-sort-amount="{{ row.template.default_amount }}"
+data-sort-amount="{{ row.amount }}"
 data-sort-monthly="{{ row.equivalent.monthly if row.equivalent.monthly is not none else '' }}"
 data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
 {% endmacro %}
@@ -128,7 +128,7 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
             {% endif %}
           </td>
           <td>{{ t.category.display_name if t.category else '--' }}</td>
-          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+          <td class="text-end font-mono">{{ money(row.amount) }}</td>
           <td>{{ recurrence_cell(row.recurrence) }}</td>
           <td class="text-end">
             <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>
@@ -184,7 +184,7 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
             <i class="bi bi-arrow-right mx-1"></i>
             {{ t.to_account.name if t.to_account else '--' }}
           </td>
-          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+          <td class="text-end font-mono">{{ money(row.amount) }}</td>
           <td>{{ recurrence_cell(row.recurrence) }}</td>
           <td class="text-end">
             <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>

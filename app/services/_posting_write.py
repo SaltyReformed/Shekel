@@ -42,6 +42,7 @@ from app.enums import LedgerAccountClassEnum, PostingKindEnum, PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_reads import PostingError
+from app.services.transfer_legs import TransferLeg
 
 logger = logging.getLogger(__name__)
 
@@ -57,37 +58,48 @@ _MIN_POSTING_LEGS = 2
 # descriptions.
 _MAX_DESCRIPTION_LENGTH = 200
 
-# The two ``journal_entries`` source links whose legs a parent ROW types
-# (:func:`emit_typed_source_deltas`): the row's own leg and its movements'.
-# A transfer's legs are its shadows' movements since plan step
-# ``balance:X-bi-6-3`` (ruling **R-BAL101**) and come through here like every
-# other movement; only the LEGACY one-entry transfer source, keyed
-# ``transfer_id``, is reconciled outside them, by
-# ``_posting_legacy.reverse_legacy_transfer_entry`` (the pair's door's legacy
-# arm, until ``X-bi-6-5``).
+# The two ``journal_entries`` source links whose legs a PARENT types
+# (:func:`emit_typed_source_deltas`): a row's own leg and a movement's.
+# A transfer's legs are its movements since plan step ``balance:X-bi-6-3``
+# (ruling **R-BAL101**), typed by their transfer LEG since leaf
+# ``X-bi-6-4a``, and come through here like every other movement; only the
+# LEGACY one-entry transfer source, keyed ``transfer_id``, is reconciled
+# outside them, by ``_posting_legacy.reverse_legacy_transfer_entry`` (the
+# pair's door's legacy arm, until ``X-bi-6-5``).
 _TYPED_SOURCE_LINKS = frozenset({"transaction_id", "transaction_entry_id"})
 
 
-def is_transfer_leg(txn) -> bool:
-    """Return whether *txn* is one leg of a transfer -- a shadow row.
+def is_transfer_leg(parent) -> bool:
+    """Return whether *parent* is one leg of a transfer.
 
     The ONE spelling of the writer's shape dispatch (plan step
-    ``balance:X-bi-6-3``, ruling **R-BAL101**): a shadow's movement books
+    ``balance:X-bi-6-3``, ruling **R-BAL101**): a transfer's movement books
     against the owner's transit account under the ``transfer_movement``
-    source with the ``transfer`` leg kind, and the three sites that decide
-    that -- the counter leg, the source kind, the leg kind -- ask this rather
-    than each reading ``transfer_id`` for themselves (the leaf's adversarial
-    review counted three spellings).  A shadow names its transfer; nothing
-    else does.  Plan step ``X-bi-6-5`` deletes the shadow rows and this
-    predicate with them.
+    source with the ``transfer`` leg kind, and the sites that decide that --
+    the counter leg, the source kind, the leg kind, whether it posts -- ask
+    this rather than each testing the shape for themselves (the leaf's
+    adversarial review counted three spellings).
+
+    **It asks what the parent IS, not a shadow's column** (leaf
+    ``X-bi-6-4a``, ruling **R-BAL106**): every door hands the writer the
+    parent :func:`app.services.transfer_legs.movement_parent` resolved, a
+    plan row or a :class:`~app.services.transfer_legs.TransferLeg`, so no
+    door of this writer reaches a movement's parent through
+    ``transaction.transfer_id``.  Two readers of the column remain beside it:
+    the loan ledger's stale-movement probe (``loan_posting_service._sync``)
+    still finds a movement's transfer through its shadow until leaf
+    ``X-bi-6-4b`` moves the loan family, and the deploy resync's row selector
+    keeps shadow rows out of its ROW arm (the fold's ``_movements_of`` twin)
+    until ``X-bi-6-5`` drops the column.  Through ``X-bi-6-3`` this was
+    ``txn.transfer_id is not None`` over the shadow row itself.
 
     Args:
-        txn: The parent row.
+        parent: A movement's parent: a plan row or a transfer leg.
 
     Returns:
-        ``True`` for a transfer shadow.
+        ``True`` for a transfer leg.
     """
-    return txn.transfer_id is not None
+    return isinstance(parent, TransferLeg)
 
 
 def ledger_class_of(txn) -> LedgerAccountClassEnum:
@@ -114,15 +126,15 @@ def ledger_class_of(txn) -> LedgerAccountClassEnum:
     )
 
 
-def posting_kind_of(txn) -> int:
-    """Return the ``ref.posting_kinds`` id every leg of *txn*'s money carries.
+def posting_kind_of(parent) -> int:
+    """Return the ``ref.posting_kinds`` id every leg of *parent*'s money carries.
 
     Both legs of an ordinary-transaction entry carry the same kind, by the
     transaction type; no Step-3 reader differentiates per-leg kind.  A
     MOVEMENT's legs carry its PARENT's kind (plan step ``balance:X-bi-3b``): a
     purchase against an envelope is an ``expense`` posting and a paycheck's
     covering movement an ``income`` one, for the one reason
-    :func:`ledger_class_of` gives -- and a transfer shadow's covering movement
+    :func:`ledger_class_of` gives -- and a transfer leg's covering movement
     a ``transfer`` one (plan step ``balance:X-bi-6-3``, ruling **R-BAL101**),
     because a transfer between the owner's own accounts is neither income nor
     expense, which is why its counter leg is the transit account and not a
@@ -130,17 +142,17 @@ def posting_kind_of(txn) -> int:
     carried is the kind its two per-movement entries carry.
 
     Args:
-        txn: The parent row: an income or expense transaction, or a transfer
-            shadow (``transfer_id`` set).
+        parent: An income or expense transaction, or a transfer leg
+            (:func:`is_transfer_leg`).
 
     Returns:
-        The stored id of :attr:`PostingKindEnum.TRANSFER` for a shadow's
+        The stored id of :attr:`PostingKindEnum.TRANSFER` for a leg's
         money, else of :attr:`PostingKindEnum.INCOME` or ``.EXPENSE``.
     """
-    if is_transfer_leg(txn):
+    if is_transfer_leg(parent):
         return ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
     return ref_cache.posting_kind_id(
-        PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
+        PostingKindEnum.INCOME if parent.is_income else PostingKindEnum.EXPENSE
     )
 
 
@@ -444,7 +456,7 @@ def source_entry_builder(
 
 
 def emit_typed_source_deltas(
-    txn,
+    parent,
     *,
     targets: "dict[tuple[int, date], dict[int, Decimal]]",
     source: PostingSourceEnum,
@@ -452,22 +464,24 @@ def emit_typed_source_deltas(
     log_label: str,
     **linkage: int,
 ) -> "list[JournalEntry]":
-    """Reconcile ONE source whose money is TYPED by *txn* to *targets*.
+    """Reconcile ONE source whose money is TYPED by *parent* to *targets*.
 
-    :func:`emit_source_deltas` for the two sources a transaction row types --
-    its OWN cash leg (``posting_service._emit_transaction_deltas``) and each
-    of its MOVEMENTS (``_posting_purchases.emit_purchase_deltas``) -- stated
+    :func:`emit_source_deltas` for the two sources a parent types -- a
+    row's OWN cash leg (``posting_service._emit_transaction_deltas``) and
+    each MOVEMENT (``_posting_purchases.emit_purchase_deltas``) -- stated
     once since plan step ``balance:X-bi-3b``, when a movement's legs took its
     parent's kind (:func:`posting_kind_of`) and the two emits came to differ
     in nothing but WHICH source they name.  Everything the parent decides --
-    the kind, the owner (``txn.user_id``, the one home ruling
-    ``pay_calendar:C13-b`` gave a row's owner), the scenario -- is read off
-    *txn* here; everything the source decides arrives by argument.
+    the kind, the owner (``parent.user_id``: the one home ruling
+    ``pay_calendar:C13-b`` gave a row's owner, a transfer's own for a leg),
+    the scenario -- is read off *parent* here; everything the source decides
+    arrives by argument.
 
     Args:
-        txn: The parent row whose type, owner, scenario and kind the legs
-            carry: a transaction, or a transfer shadow (whose movement's legs
-            carry the ``transfer`` kind, :func:`posting_kind_of`).
+        parent: What the legs are typed by -- their kind, owner and
+            scenario: a transaction, or a transfer LEG (leaf ``X-bi-6-4a``;
+            its movement's legs carry the ``transfer`` kind,
+            :func:`posting_kind_of`).
         targets: What the ledger should net to, per ``(pay period, entry
             date)``; EMPTY to reverse the source to zero.
         source: The ``ref.posting_sources`` kind this source posts under.  It
@@ -510,10 +524,10 @@ def emit_typed_source_deltas(
             getattr(JournalEntry, link_column) == link_id,
             JournalEntry.source_kind_id == source_kind_id,
         ),
-        kind_id=posting_kind_of(txn),
+        kind_id=posting_kind_of(parent),
         build_entry=source_entry_builder(
-            user_id=txn.user_id,
-            scenario_id=txn.scenario_id,
+            user_id=parent.user_id,
+            scenario_id=parent.scenario_id,
             source_kind_id=source_kind_id,
             description=description,
             **linkage,

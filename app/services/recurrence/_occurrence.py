@@ -58,9 +58,10 @@ What an occurrence IS, per unit
   is kept out of the offer set by
   :func:`~app.services.recurrence._offer.has_row_date_coordinate`, because
   a weekly occurrence is neither a payday nor a day of the month and
-  ``recurrence.compute_due_date`` can date a generated row from nothing
-  else.  Plan step **R5** gives a row its own ``occurs_on`` and the unit
-  becomes authorable by that deletion.  It is implemented here rather than
+  ``recurrence.compute_due_date`` dates a row from its occurrence only for
+  a cadence naming a day of the month (plan step R5-a).  Plan step **R8-b**
+  dates a weekly row from its occurrence too, and the unit becomes
+  authorable by deleting that predicate.  It is implemented here rather than
   refused because a partial function over an enum is the defect this redesign
   exists to remove, and because a walk that silently ignored the unit would be
   a wrong answer rather than an error.
@@ -90,9 +91,9 @@ plan's section 3 says the opposite ("a mid-period bound places differently
 under the two placements"); that claim reads the anchor as the emitted
 occurrence, which the paragraph above is exactly the decision not to do.
 Emitting the payday is what reproduced the reverse matcher's date as well as
-its period: ``compute_due_date`` returns ``period.start_date`` for a rule with
-no ``day_of_month``, so a mid-period bound emitted verbatim would have moved
-the first row's date.
+its period: ``compute_due_date`` returns ``period.start_date`` for a rule
+naming no day of the month, so a mid-period bound emitted verbatim would have
+moved the first row's date.
 
 The per-month CEILING (plan step salary:R15-a, ruling R-SAL29)
 --------------------------------------------------------------
@@ -192,12 +193,11 @@ Two consequences ride on the first two.  Where the change puts a SECOND
 occurrence of one template into one paycheck, both rows are now GENERATED and
 stored -- plan step **R17** re-keyed the unique index onto the occurrence, and
 the refusal a 30-day-or-longer cadence used to earn went with it.  Where it
-does not repeat, the row is generated with a date
-``compute_due_date`` reads off the paycheck's two ENDPOINT months rather than
-off the occurrence this module found, so it can be dated in the wrong month
-entirely -- plan ledger row **D18**, whose fix is recurrence plan step **R5**
-(it gives the occurrence its own column and deletes ``compute_due_date``).
-Both are measured and pinned by
+does not repeat, the row was generated with a date ``compute_due_date`` read
+off the paycheck's two ENDPOINT months rather than off the occurrence this
+module found, so it could be dated in the wrong month entirely -- plan ledger
+row **D18**, closed by recurrence plan step **R5-a**, which dates a row from
+the occurrence it answers.  Both are measured and pinned by
 ``test_recurrence_engine.TestALegacyScheduleHole``.  Of the three shapes only
 the HOLE ever had a detector -- ``scripts/integrity_check.py`` **BA-07**, a
 query over the stored column -- and it died with that column at plan step

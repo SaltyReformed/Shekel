@@ -67,7 +67,6 @@ its rows exactly as :func:`~app.services.loan_ledger.walk_loan_ledger` does.
 from dataclasses import dataclass
 from datetime import date
 
-from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentDates
 from app.services.loan_loaders import income_shadows, loan_payment_due_date
 from app.services.transfer_legs import TransferLeg
@@ -94,8 +93,8 @@ class PaymentInstallment:
     here, ``payment_date`` there) for one fact.
 
     All three dates are read through the derivation that already owns each, so
-    this value introduces none of its own: the funding period off the shadow's
-    own :class:`~app.models.pay_period.PayPeriod`, the installment through
+    this value introduces none of its own: the funding period off the parent
+    transfer's :class:`~app.models.pay_period.PayPeriod`, the installment through
     :func:`app.services.loan_loaders.loan_payment_due_date`, the cash day through
     :func:`._visible.payment_visible_on`.  The ``due_date`` here is always the
     payment's OWN installment, never the slot
@@ -104,18 +103,18 @@ class PaymentInstallment:
     :func:`~app.services.amortization_engine.slotted_dates` to the feed.
 
     Attributes:
-        source: What this installment was read off: the loan-side income
-            SHADOW row for a payment that has settled, or the
-            :class:`~app.services.transfer_legs.TransferLeg` of its
-            parent transfer for one still projected (plan step
-            **balance:X-bi-6a**, ruling **R-BAL13** -- a projected payment is
-            not a row of its own).  Carried so a caller that ALSO needs the
-            source -- pricing it, or keying a map by its id -- takes it from
-            here rather than issuing a second query, the same reason
+        source: What this installment was read off: the
+            :class:`~app.services.transfer_legs.TransferLeg` of its parent
+            transfer, settled or projected alike (plan step
+            **balance:X-bi-6-4b**; a settled payment was its loan-side income
+            SHADOW row from X-bi-6a until then, and a projected one has been a
+            leg since X-bi-6a, ruling **R-BAL13**).  A settled leg carries its
+            covering movement as its ``record``.  Carried so a caller that
+            ALSO needs the source -- pricing it -- takes it from here rather
+            than issuing a second query, the same reason
             :class:`~app.services.loan_ledger.PaymentOutcome` carries one on
-            its event.
-            Which of the two it is says which relation the payment came from,
-            and therefore whether it has happened, exactly as ``dates`` does.
+            its event.  Whether it has happened is ``dates``' to say, never
+            the source's shape.
         dates: The payment's
             :class:`~app.services.amortization_engine.PaymentDates` -- its
             funding period, the installment it satisfies, and the day its cash
@@ -124,7 +123,7 @@ class PaymentInstallment:
             the query rather than of a second reading of the status column.
     """
 
-    source: Transaction | TransferLeg
+    source: TransferLeg
     dates: PaymentDates
 
 
@@ -170,14 +169,13 @@ def payment_installments(
     today.*
 
     **The tie-break is the PARENT transfer's id since plan step
-    balance:X-bi-6a**, because the two halves no longer share a row id space:
-    a settled payment is a shadow row and a projected one is a leg of its
-    parent, and ``(pay_period.start_date, id)`` over both would compare a
-    transaction id with a transfer id.  What both halves DO carry is the
-    parent -- a settled shadow's ``transfer_id``, a leg's ``transfer.id`` --
-    and the transfer service writes a parent before its shadows, so the
-    parent's id orders payments exactly as the shadow's id did.  One key over
-    two relations rather than a rule for which half goes first.
+    balance:X-bi-6a**, when the two halves stopped sharing a row id space (a
+    settled payment was a shadow row, a projected one a leg), and since plan
+    step balance:X-bi-6-4b both halves ARE legs, so the key is each leg's
+    ``transfer.id`` with no mapping at all.  The parent's id orders payments
+    as the shadow's id did wherever a transfer's shadows were written with it
+    (0 inversions measured on the 2026-09-23 21:17 production dump).  One key
+    over both halves rather than a rule for which half goes first.
 
     Args:
         account_id: The loan account whose payments to read.
@@ -186,11 +184,11 @@ def payment_installments(
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only to
             reconstruct the due date of a payment that stores none.
         options: The loader options for every relationship the CALLER will
-            traverse on the SETTLED rows this hands back (see
-            :func:`app.services.loan_loaders.query_shadow_income`).  ``()`` for a
-            caller that reads only the dates -- the schedule replay's reference
-            -- and, since the settled half is valued from its RECORD, ``()``
-            for ``get_payment_history`` too: nothing on that valuation's path
+            traverse on the SETTLED legs' parents, rooted at
+            :class:`~app.models.transfer.Transfer`.  ``()`` for a caller that
+            reads only the dates -- the schedule replay's reference -- and,
+            since the settled half is valued from its RECORD, ``()`` for
+            ``get_payment_history`` too: nothing on that valuation's path
             walks a relationship.  THIS function's own reads need only the
             pay period, and the producer loads that itself.
         leg_options: The same statement for the PROJECTED legs' parents,
@@ -204,29 +202,31 @@ def payment_installments(
         parent transfer id)``; ``[]`` when the loan has no payment history.
 
     Raises:
-        UndatedSettleError: When a shadow in a settled status carries no
+        UndatedSettleError: When a settled payment's record carries no
             ``settled_on`` -- raised by :func:`._visible.payment_visible_on`,
             because dating a settled payment by a fallback would put real money
             on a day nothing recorded.
         ValueError: Propagated from
-            :func:`app.services.loan_loaders.income_shadows` for a shadow whose
-            status it cannot place.  Named here because this function widened
+            :func:`app.services.loan_loaders.income_shadows` for a transfer
+            whose status it cannot place.  Named here because this function widened
             that refusal's reach: the partition is now also behind
             ``walk_loan_ledger``, ``confirmed_shadows_through``, the posting
             reader and the escrow forward-only guard, so a broken status seed
             is loud on every loan surface rather than on one.
     """
-    shadows = income_shadows(
+    payments = income_shadows(
         account_id, scenario_id, options=options, leg_options=leg_options,
     )
-    # The merge key is the PARENT's id, which both halves carry (see the
-    # docstring); each half arrives in its own order and is re-keyed here.
-    dated: list[tuple[Transaction | TransferLeg, date | None, int]] = [
-        (shadow, payment_visible_on(shadow), shadow.transfer_id)
-        for shadow in shadows.settled
+    # Each half arrives in its own order; the merge key is the PARENT's id,
+    # which every leg carries (see the docstring).
+    dated: list[tuple[TransferLeg, date | None]] = [
+        (leg, payment_visible_on(leg, payment_day))
+        for leg in payments.settled
     ]
-    dated += [(leg, None, leg.transfer.id) for leg in shadows.projected]
-    dated.sort(key=lambda entry: (entry[0].pay_period.start_date, entry[2]))
+    dated += [(leg, None) for leg in payments.projected]
+    dated.sort(
+        key=lambda entry: (entry[0].pay_period.start_date, entry[0].transfer.id),
+    )
     return [
         PaymentInstallment(
             source=source,
@@ -236,5 +236,5 @@ def payment_installments(
                 settled_on=settled_on,
             ),
         )
-        for source, settled_on, _parent_id in dated
+        for source, settled_on in dated
     ]

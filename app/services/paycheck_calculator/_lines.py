@@ -24,8 +24,8 @@ compared against the payday's month ordinal by ``_deduction_applies_at``)
 is gone with its column.
 
 **A PERCENTAGE line is a percentage of BASE PAY** (R-SAL38), the salary rate
-:func:`~app.services.payroll_basis.gross_per_paycheck` derives, and never of
-gross: so no existing line moves when a taxable earning joins the gross, a
+:meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on` derives, and never
+of gross: so no existing line moves when a taxable earning joins the gross, a
 percentage EARNING is not circular, and the employer-contribution basis
 (:mod:`app.services.projection_inputs`) reads the same figure.  Until R18-b
 the percentage base was ``gross_biweekly``, which WAS base pay: byte-identical
@@ -52,7 +52,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import CalcMethodEnum, PaycheckLineKindEnum
 from app.services.pay_calendar import paydays_in_year_before
-from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
+from app.services.payroll_basis import PayrollBasis
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
 
@@ -65,9 +65,9 @@ class _LineContext:
 
     Carries the whole :class:`~app.services.payroll_basis.PayrollBasis` rather
     than a bare profile: the annual-cap cumulative replays prior paydays'
-    base pay through :func:`~app.services.payroll_basis.gross_per_paycheck`,
-    which needs the paycheck COUNT, and it walks those prior paydays off the
-    calendar the same value carries.
+    base pay through :meth:`~app.services.payroll_basis.PayrollBasis
+    .base_pay_on`, which needs the raise set and each payday's paycheck COUNT,
+    and it walks those prior paydays off the calendar the same value carries.
 
     ``_DeductionContext`` until plan step salary:R18-b, keyed by a
     ``DerivedPeriod``; it is keyed by the PAYDAY now because the year-to-date
@@ -271,8 +271,10 @@ def _cumulative_line_before(line, ctx, pct_id):
     ``ctx.payday``, skip the ones where the line is not taken (its rule's
     answer, the same read the live line makes), and sum each applicable
     payday's raw amount -- recomputing that paycheck's base pay through
-    :func:`~app.services.payroll_basis.gross_per_paycheck` so a percentage
-    line tracks the raise-adjusted base exactly as the live paycheck does.
+    :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, the read the
+    live paycheck makes, so a percentage line tracks the raise-adjusted base
+    -- and, since plan step salary:X-av-2, the base of the rhythm that payday
+    was paid at -- exactly as the live paycheck does.
     Summing the raw (pre-cap) amounts is equivalent to summing the capped
     ones (see ``cap_period_amount``), so no capped running state has to be
     threaded across the per-paycheck calls.
@@ -313,7 +315,7 @@ def _cumulative_line_before(line, ctx, pct_id):
     for payday in paydays_in_year_before(basis.calendar, ctx.payday):
         if not basis.line_applies_on(line, payday):
             continue
-        base = gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
+        base = basis.base_pay_on(payday).per_paycheck
         cumulative += _raw_line_amount(
             line, base, payday, profile, pct_id,
         )

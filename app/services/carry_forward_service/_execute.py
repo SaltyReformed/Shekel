@@ -3,7 +3,7 @@
 ``carry_forward_unpaid`` applies the three-way partition's semantics --
 settle-and-roll for a definition's envelope rows (recurring or rule-less,
 ruling **R-BAL44**), move-whole for discrete rows, and
-``transfer_service.update_transfer`` for shadows -- as one atomic batch.
+``transfer_service.update_transfer`` for transfers -- as one atomic batch.
 The caller owns the surrounding commit; a ``ValidationError`` from the
 envelope branch must roll the whole batch back.
 """
@@ -48,14 +48,13 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
 
     Steps:
       1. Verify both periods are in the owner's pay calendar.
-      2. Find every non-deleted, projected transaction in the source
-         period that belongs to the specified scenario.
-      3. Partition into shadow / envelope / discrete buckets.
+      2. Find every non-deleted, projected transaction and transfer in the
+         source period that belongs to the specified scenario.
+      3. Partition into transfer / envelope / discrete buckets.
       4. Apply each bucket's semantic (settle-and-roll for envelope,
-         move-whole for discrete, ``transfer_service`` for shadows).
+         move-whole for discrete, ``transfer_service`` for transfers).
       5. Return the count of carried items (envelope settle counts
-         as 1; discrete move counts as 1; each transfer counts as 1
-         regardless of its two shadow rows).
+         as 1; discrete move counts as 1; each transfer counts as 1).
 
     The caller (typically the carry-forward route) is responsible for
     committing the surrounding transaction.  This service does not
@@ -109,7 +108,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     )
     user_id = ctx.user_id
 
-    if (not ctx.shadow_txns
+    if (not ctx.transfers
             and not ctx.envelope_txns
             and not ctx.discrete_txns):
         # Includes the same-period short-circuit and the
@@ -241,9 +240,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             )
             count += 1
 
-    # Move transfers via the service.  De-duplicate by transfer_id because
-    # the query is not account-scoped and may return both shadows from the
-    # same transfer.  Each transfer counts as 1 carried-forward item.
+    # Move transfers via the service, one call per TRANSFER: the context
+    # walks ``budget.transfers`` since plan step ``balance:X-bi-6-4c-2``, where
+    # this loop walked both SHADOWS of each and de-duplicated by
+    # ``transfer_id``.  Each transfer counts as 1 carried-forward item.
     #
     # **The flag is a RECURRING definition's transfer's alone** (plan step
     # ``balance:X-ci-1``, ruling **R-BAL93**; this arm was finding
@@ -258,24 +258,16 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # ``update_transfer`` (**R-BAL96**), so this door states the period and
     # nothing else, as the ``re_placed_ids`` pass states the same rule in
     # SQL for a transaction.  An ad-hoc transfer takes no flag either: no
-    # pass will ever write over it.  Asked of the shadow's parent through its
-    # ``transfer`` relationship -- a load per transfer, which is what the
-    # service call beside it already costs.  **Plan step ``balance:X-bi-6-4``
-    # rewrites this arm to walk ``budget.transfers``**; what it carries
-    # forward is the flag keyed on ``recurs``.
-    moved_transfer_ids = set()
-    for txn in ctx.shadow_txns:
-        if txn.transfer_id not in moved_transfer_ids:
-            # The service moves the parent transfer AND both shadows
-            # to the target period, even if only one shadow was in
-            # the query results.  This self-heals any period mismatch
-            # between siblings (design doc section 10A.2).
-            moved = {"pay_period_id": target_period_id}
-            if txn.transfer.recurs:
-                moved["is_override"] = True
-            transfer_service.update_transfer(txn.transfer_id, user_id, **moved)
-            moved_transfer_ids.add(txn.transfer_id)
-            count += 1
+    # pass will ever write over it.
+    for transfer in ctx.transfers:
+        # The service moves the transfer AND both legs to the target period
+        # together, which self-heals any period mismatch between a transfer
+        # and its shadows (design doc section 10A.2).
+        moved = {"pay_period_id": target_period_id}
+        if transfer.recurs:
+            moved["is_override"] = True
+        transfer_service.update_transfer(transfer.id, user_id, **moved)
+        count += 1
 
     db.session.flush()
 
@@ -319,7 +311,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
               to_period_id=target_period_id,
               envelope_count=len(ctx.envelope_txns),
               discrete_count=len(ctx.discrete_txns),
-              transfer_count=len(moved_transfer_ids))
+              transfer_count=len(ctx.transfers))
     return count
 
 
@@ -726,19 +718,56 @@ def _resolve_or_create_target_row(source_txn, target_period,
         )
         state_own_amount(placed, Decimal("0"))
         return placed
+    # The occurrences the rule names in the target, read off the pass's
+    # memoised walk (the one the classifier's prediction reads when it asks),
+    # so the override row is dated from what the rule says about THIS
+    # paycheck (ruling R-R97) rather than from a guess about it.
     return _create_target_override_row(
         source_txn, target_period, basis.scenario_id,
+        recurrence_engine.occurrences_in_period(
+            source_txn.template, target_period.period_id, basis.scenario_id,
+            schedule=schedule,
+        ),
     )
 
 
-def _leftover_due_date(template, target_period) -> date:
+def _leftover_due_date(template, target_period, occurrences) -> date:
     """Return the day a leftover row of *template* is due in *target_period*.
 
-    **The date the definition's own rule gives for that paycheck** (developer
-    ruling 2026-09-06, from the option space this leaf put to them; the balance
-    arc's ruling id for it is reserved and NOT YET MINTED, so this cites the
-    ruling by date rather than by an id that does not resolve).  It goes
-    through :func:`~app.services.recurrence.compute_due_date`, the one
+    **Ruling R-R97** (developer, 2026-09-23, refining **balance:R-BAL6**; plan
+    step recurrence:R5-a): where the definition's rule fires inside the target
+    paycheck, the row is dated as the definition's own row answering that
+    occurrence is -- ``compute_due_date`` over it, so the occurrence itself
+    for a rule naming a day and the payday for one naming none -- taking the
+    EARLIEST where it fires there twice, the one
+    ``_context._leftover_recipient`` bumps; where it fires nowhere in it, the
+    paycheck's payday.  The first arm is
+    R-BAL6's rule, "the date the definition's own rule gives for that
+    paycheck", kept wherever its premise holds: the leftover is dated exactly
+    as the definition's own row there is, so a hand-back prices it on the
+    same day that row prices.  The second is the date ruling **R-BAL22**
+    gives any row answering no occurrence and ruling **R-R95** gives a rule
+    naming no day, stated through R-BAL22's producer
+    (:func:`~app.services.one_off.due_date_for`).  A definition that no longer
+    recurs (archived: ``recurrence_engine.definition_recurs``) names no
+    occurrence anywhere, so a row of one reaching here -- a settled row
+    reverted after the archive -- takes the payday too.
+
+    **What the second arm replaced was a counterfactual.**
+    ``compute_due_date`` was a pure function of ``(rule, period)`` until
+    R5-a and answered for a paycheck the rule never names -- the yearly
+    Father's Day envelope rolling into an off-anniversary paycheck, the case
+    ``_create_target_override_row`` exists for -- with the rule's day of the
+    month in the month the paycheck opens in.  That could land BEFORE the
+    paycheck opened, so the row read overdue on the dashboard the moment it
+    was created.  R5-a dates a row from its OCCURRENCE (ruling **R-R94**),
+    and here there is none; R-R97 is the developer's answer for that case,
+    over "always the payday" (R-BAL6's rejected option, which would re-date
+    the first arm too), keeping the guess, and the rule's next occurrence (a
+    September leftover dated next June).
+
+    The first arm goes through
+    :func:`~app.services.recurrence.compute_due_date`, the one
     producer of "what date does a row of this definition in this period carry"
     -- shared with the transaction engine (``_amounts._derive_row_fields``)
     and the transfer engine (``transfer_recurrence``), the two that outlive
@@ -749,26 +778,6 @@ def _leftover_due_date(template, target_period) -> date:
     written and is deliberately not listed: it is retired (2026-09-06) by the
     step that merges immediately BEFORE this one, precisely BECAUSE this change
     breaks the provenance filter it read a leftover row's missing date as.
-
-    A leftover row is therefore dated exactly as a row generation placed in
-    that paycheck would be -- defect and all: ledger row **recurrence:D18** is
-    that ``compute_due_date`` picks the wrong month at a cadence whose firing
-    month is neither of the paycheck's endpoints, and plan step
-    **recurrence:R5** fixes that for every caller at once.  Deriving a "better"
-    date here would be a second spelling of one value (``CLAUDE.md`` rule 14)
-    that R5 would then have to find.
-
-    **On the branch that owns this constructor the answer is a
-    COUNTERFACTUAL, and calling it "the definition's own date" would overstate
-    it.**  ``_create_target_override_row`` runs when the engine will NOT
-    generate here -- the yearly Father's Day envelope rolling into an
-    off-anniversary paycheck -- so there is no occurrence in this period for
-    the rule to date.  ``compute_due_date`` is a pure function of
-    ``(rule, period)`` and answers anyway, falling back to the rule's day of
-    month in the month the paycheck opens in, which can land outside the
-    paycheck entirely.  That is the price of one producer over a second
-    spelling, and it is deliberate: ``attribution_day`` clamps such a date back
-    into the period, so no period total and no period-end balance moves.
 
     **Why the row is dated at all**, where it carried ``None`` until this step:
     a row that names a recurring definition can be handed BACK to it -- that is
@@ -787,9 +796,9 @@ def _leftover_due_date(template, target_period) -> date:
 
     *The reason the old ``None`` gave does not carry over.*  It was that
     copying the SOURCE row's date -- a past period's -- would render the new
-    row overdue.  True, and this is not that: ``compute_due_date`` is anchored
-    on the TARGET period, so the day it answers is at worst a few days outside
-    that paycheck rather than a whole rollover behind it.
+    row overdue.  True, and this is not that: both arms answer a day INSIDE
+    the TARGET paycheck -- an occurrence the rule seats there, or its
+    payday.
 
     **WHAT MOVED, traced rather than assumed.**  No figure changes and no
     period total moves, because every consumer that places a row on a DAY goes
@@ -821,20 +830,30 @@ def _leftover_due_date(template, target_period) -> date:
             ``tracks_purchases``.
         target_period: The destination
             :class:`~app.services.pay_calendar.DerivedPeriod`.
+        occurrences: The occurrences the rule names in *target_period*,
+            ascending (``recurrence_engine.occurrences_in_period``); empty
+            where it names none.
 
     Returns:
         The ``date`` the leftover row is due on.
 
     Raises:
-        RecurrenceResolutionError: From ``compute_due_date``, when the rule
+        RecurrenceResolutionError: From ``compute_due_date`` -- or earlier,
+            from ``occurrences_in_period``'s read of the rule -- when the rule
             names a unit or a placement this application does not model.  It
             propagates rather than being absorbed, which is the refusal every
             other reader of that rule already makes.
     """
-    return compute_due_date(template.recurrence_rule, target_period)
+    if not occurrences:
+        return due_date_for(None, target_period)
+    return compute_due_date(
+        template.recurrence_rule, occurrences[0], target_period,
+    )
 
 
-def _create_target_override_row(source_txn, target_period, scenario_id):
+def _create_target_override_row(
+    source_txn, target_period, scenario_id, occurrences,
+):
     """Create a fresh override row in *target_period* for the leftover.
 
     Used for a RECURRING definition when no mutable destination row exists
@@ -853,10 +872,12 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
     collides with a canonical or soft-deleted sibling, and (b) the recurrence engine
     skips it on later passes (``_recurrence_common.OccurrenceClaims`` -- a row
     answering no OCCURRENCE claims its whole paycheck).  ``template_id`` is
-    copied verbatim, and ``due_date`` is :func:`_leftover_due_date` -- the day
-    the definition's own rule places in *target_period*, which is what makes
+    copied verbatim, and ``due_date`` is :func:`_leftover_due_date` -- the
+    occurrence the definition's rule seats in *target_period*, else that
+    paycheck's payday -- which is what makes
     the copied link safe to hand back to (see that function).  It was ``None``
-    until the developer's ruling of 2026-09-06.
+    until the developer's ruling of 2026-09-06 (**R-BAL6**), and is ruling
+    **R-R97**'s since plan step recurrence:R5-a.
 
     **``occurs_on`` and ``due_date`` are different facts and only the second
     moved.**  The occurrence is which firing of the cadence a row answers, and
@@ -881,6 +902,8 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
         target_period: The destination
             :class:`~app.services.pay_calendar.DerivedPeriod`.
         scenario_id: Scenario the new row belongs to.
+        occurrences: The occurrences the rule names in *target_period*,
+            ascending -- what :func:`_leftover_due_date` dates the row from.
 
     Returns:
         The newly added (unflushed) Transaction.
@@ -899,7 +922,9 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
         category_id=source_txn.category_id,
         transaction_type_id=source_txn.transaction_type_id,
         amount_ownership=AmountOwnership.own(Decimal("0")),
-        due_date=_leftover_due_date(source_txn.template, target_period),
+        due_date=_leftover_due_date(
+            source_txn.template, target_period, occurrences,
+        ),
         is_override=True,
         is_deleted=False,
     )
