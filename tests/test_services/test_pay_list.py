@@ -16,7 +16,7 @@ pins one ruling on its own worked example, every figure made up:
   the paychecks a year in force where it lands;
 * **R-SAL82** ("Yearly pay carries, said"): across a change of rhythm with no
   entry recorded, the pay is the yearly pay over the new count, and the
-  salary page names it;
+  salary page names it; on a day a raise also lands, the change comes first;
 * **R-SAL84** / **R-SAL85** and **R-SAL89** ("Yearly pay across a
   seam"): the paycheck where a recorded entry begins badges ``PAY +/-$X``
   against the one before it -- in yearly pay across a change of rhythm -- and
@@ -144,7 +144,7 @@ def _pay(basis, payday):
 
 def _badge(basis, payday):
     """The banner of *payday*'s paycheck."""
-    return basis.pay_event_on(payday, _paycheck(basis, payday))
+    return basis.pay_event_on(_paycheck(basis, payday))
 
 
 _EVERY_JULY = (_percent(2026, 7, "0.03", recurring=True),)
@@ -197,6 +197,24 @@ class TestADatedPayList:
         )
         assert _pay(basis, date(2026, 1, 15)) == Decimal("2000.00")
         assert _pay(basis, date(2026, 3, 26)) == Decimal("2000.00")
+
+    def test_a_raise_landing_ON_the_entry_payday_is_inside_it(self):
+        """Entry from 2026-01-01, and 3% landing 2026-01-01: the entry holds it (R-SAL59).
+
+        "On or before its date": 01-15 pays 2,000.00, not 2,060.00, and
+        neither January paycheck badges the raise the entry replaced.  Every
+        other case dates its entry strictly off the 1st a raise lands on, so
+        this is the one that tells "on or before" from "before" (an
+        adversarial review of this step: the boundary flipped passed 1,111
+        tests).
+        """
+        basis = _basis(
+            _biweekly(), [(date(2026, 1, 1), "2000.00")],
+            (_percent(2026, 1, "0.03"),),
+        )
+        assert _pay(basis, date(2026, 1, 15)) == Decimal("2000.00")
+        assert _badge(basis, date(2026, 1, 1)) == ""
+        assert _badge(basis, date(2026, 1, 15)) == ""
 
 
 class TestEachRaiseRounds:
@@ -343,6 +361,54 @@ class TestThePayChangeBadge:
         badge = _badge(basis, date(2027, 1, 7))
         assert badge == "PAY +$1,040.00 a year"
         assert not is_pay_cut(badge)
+
+
+    def test_a_first_entry_at_a_seam_badges_no_carry_rounding(self):
+        """The ONLY entry, 4,333.33 on a 12-a-year rhythm's first payday after a 26-a-year one.
+
+        The paycheck before it is that entry carried back, 4,333.33 x 12 / 26
+        = 1,999.998 -> 2,000.00, so a yearly comparison read 51,999.96
+        against 52,000.00 and badged 'PAY -$0.04 a year', an amber cut no one
+        took (an adversarial review of this step): the first entry has no
+        earlier recorded pay to compare with.
+        """
+        biweekly = [date(2026, 1, 8) + timedelta(days=14 * step) for step in range(26)]
+        monthly = [date(2027, 1, 7) + timedelta(days=30 * step) for step in range(20)]
+        basis = _basis(
+            _calendar(
+                biweekly + monthly,
+                (_era(date(2026, 1, 8), 14), _era(date(2027, 1, 7), 30)),
+            ),
+            [(date(2027, 1, 7), "4333.33")],
+        )
+        assert _pay(basis, date(2026, 12, 24)) == Decimal("2000.00")
+        assert basis.base_pay_on(date(2027, 1, 7)).periods_per_year == Decimal("12")
+        assert _badge(basis, date(2027, 1, 7)) == ""
+
+
+class TestOnOneDayTheRhythmChangesFirst:
+    """A change of rhythm and a raise landing on one day: the change applies first (``_walk``)."""
+
+    def test_the_raise_compounds_on_the_carried_pay(self):
+        """2,001.01 biweekly; weekly from 2027-07-01, and 3% landing 2027-07-01.
+
+        Rhythm first: 2,001.01 x 26 / 52 = 1,000.505 -> 1,000.51, x 1.03 =
+        1,030.5253 -> 1,030.53.  The raise first would read 2,001.01 x 1.03
+        = 2,061.0403 -> 2,061.04, x 26 / 52 = 1,030.52: the day's paycheck
+        is paid at the new rhythm, so the raise lands on the carried pay.
+        """
+        biweekly = [date(2027, 1, 14) + timedelta(days=14 * step) for step in range(12)]
+        weekly = [date(2027, 7, 1) + timedelta(days=7 * step) for step in range(10)]
+        basis = _basis(
+            _calendar(
+                biweekly + weekly,
+                (_era(date(2027, 1, 14), 14), _era(date(2027, 7, 1), 7)),
+            ),
+            [(date(2027, 1, 14), "2001.01")],
+            (_percent(2027, 7, "0.03"),),
+        )
+        assert _pay(basis, date(2027, 6, 17)) == Decimal("2001.01")
+        assert _pay(basis, date(2027, 7, 1)) == Decimal("1030.53")
 
 
 class TestARecordPaidEarlyBeforeASeam:

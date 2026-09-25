@@ -154,7 +154,7 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
         period=PeriodInfo(
             period.start_date, period.period_id,
             _is_third_paycheck(month_ordinal),
-            basis.pay_event_on(period.start_date, period),
+            basis.pay_event_on(period),
             cadence=base_pay.cadence,
         ),
         earnings=Earnings(

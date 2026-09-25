@@ -25,7 +25,7 @@ schedule (biweekly from 2026-01-02), 03-13 the current payday and 03-27 the
 next.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from html.parser import HTMLParser
 
@@ -35,7 +35,8 @@ from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
-from tests._test_helpers import freeze_today, start_test_pay_list
+from app.services import pay_era_write
+from tests._test_helpers import era_of, freeze_today, start_test_pay_list
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +138,7 @@ class TestCreateByPayPerPaycheck:
     def test_the_form_writes_the_first_entry(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``$2,000.00`` from 2026-01-15's payday: one entry, exactly that."""
+        """``$2,000.00`` from 2026-01-16's payday: one entry, exactly that."""
         with app.app_context():
             profile = _create_through_the_form(
                 auth_client, seed_user, "2000.00", seed_periods[1].start_date.isoformat(),
@@ -146,12 +147,20 @@ class TestCreateByPayPerPaycheck:
                 (entry.payday, entry.amount) for entry in profile.pay_entries
             ] == [(seed_periods[1].start_date, Decimal("2000.00"))]
 
-    def test_the_payday_defaults_to_a_payday(self, app, auth_client, seed_periods):
-        """The rendered payday box holds a payday of the owner's, not an empty box."""
+    def test_the_payday_defaults_to_the_current_payday(
+        self, app, auth_client, seed_periods,
+    ):
+        """On 03-20 the rendered payday box holds 03-13, the current payday (R-SAL90).
+
+        R-SAL90's picked text: the first entry's "payday defaults to your
+        current one" -- not an empty box, and not the first saved payday, which
+        would date pay typed today before this year's raises and apply them
+        again on top.
+        """
         with app.app_context():
             controls = _rendered_form(auth_client, "/salary/new", "/salary")
-            paydays = {period.start_date.isoformat() for period in seed_periods}
-            assert controls["pay_payday"] in paydays | {""}
+            assert date(2026, 3, 13) in {period.start_date for period in seed_periods}
+            assert controls["pay_payday"] == "2026-03-13"
             assert "pay_amount" in controls
 
     def test_a_day_that_is_not_a_payday_creates_nothing(
@@ -556,3 +565,62 @@ class TestACutReadsAsACut:
             page = response.get_data(as_text=True)
             assert "<strong>Pay cut:</strong> Pay -$70.00" in page
             assert "<strong>Raise:</strong>" not in page
+
+
+class TestTheRhythmNotice:
+    """The salary page names a change of rhythm no pay is recorded from (R-SAL82).
+
+    "Yearly pay carries, said": the ruled sentence is the page's, so it is
+    graded as the page renders it, not only as
+    ``PayrollBasis.rhythm_changes_without_pay`` returns it (an adversarial
+    review of this step removed the notice from the template and every test
+    passed).  Made-up: $2,000.00 a paycheck every two weeks from today's
+    payday, and a weekly rhythm recorded four weeks after the saved record.
+    """
+
+    def test_the_page_says_the_carried_pay_and_its_yearly_figure(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """2,000.00 x 26 / 52 = 1,000.00 weekly, from the yearly 52,000.00."""
+        with app.app_context():
+            switch = max(period.start_date for period in seed_periods) + timedelta(days=28)
+            pay_era_write.mint_era(seed_user["user"].id, era_of(switch, 7))
+            db.session.commit()
+            profile = _create_through_the_form(
+                auth_client, seed_user, "2000.00", "2026-03-13",
+            )
+
+            page = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert page.status_code == 200
+            text = " ".join(page.get_data(as_text=True).split())
+            assert (
+                f"Your pay rhythm changes on {switch.isoformat()} and no pay is "
+                "recorded from then: priced at $1,000.00 from your yearly "
+                "$52,000.00."
+            ) in text
+
+    def test_pay_recorded_from_the_switch_is_not_named(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """An entry on the switch's payday prices it: the page names no carry.
+
+        The second entry is planted through the model, as
+        :class:`TestACutReadsAsACut`'s is: no door of this leaf records one.
+        """
+        with app.app_context():
+            switch = max(period.start_date for period in seed_periods) + timedelta(days=28)
+            pay_era_write.mint_era(seed_user["user"].id, era_of(switch, 7))
+            db.session.commit()
+            profile = _create_through_the_form(
+                auth_client, seed_user, "2000.00", "2026-03-13",
+            )
+            profile.pay_entries.append(SalaryPayEntry(
+                payday=switch, amount=Decimal("1000.00"),
+            ))
+            db.session.commit()
+
+            page = auth_client.get(f"/salary/{profile.id}/edit")
+
+            assert page.status_code == 200
+            assert "Your pay rhythm changes on" not in page.get_data(as_text=True)

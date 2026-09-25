@@ -2645,7 +2645,7 @@ class TestDTIRaiseAware:
             # which no longer stores it (plan step X-s3) -- and the identity is
             # the stronger pin, since the off-engine $8,666.67 would fail it.
             # total_monthly_payments is the engine-derived monthly P&I
-            # from _create_small_loan ($1,000 @ 5% for 24mo); we
+            # from _create_small_loan ($10,000 @ 5% for 24mo); we
             # consume it as an input here so the test pins behaviour
             # without re-deriving the amortization engine's output.
             expected_dti = (

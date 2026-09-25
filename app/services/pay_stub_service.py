@@ -362,7 +362,7 @@ def not_a_payday(calendar: PayCalendar, day: date) -> str | None:
 
     **The one statement of "is this day a payday" for the salary doors that
     take one** (ruling **R-SAL49** for a stub; plan step salary:X-av-3a's pay
-    list asks it too, rulings **R-SAL50** and **R-SAL61**): the calendar's
+    list asks it too, rulings **R-SAL61** and **R-SAL90**): the calendar's
     span covering *day* STARTS on it (:func:`_paycheck_on`).  A day below the
     record is refused as the record's, since the calendar holds no paycheck
     there.

@@ -226,7 +226,7 @@ def _carry(pay: Decimal, paid_at: PayCadence, to: PayCadence) -> Decimal:
     Returns:
         The carried pay, quantized to the cent.
     """
-    return round_money(pay * paid_at.periods_per_year / to.periods_per_year)
+    return round_money(BasePay(pay, paid_at).annual / to.periods_per_year)
 
 
 @dataclass(frozen=True)
@@ -449,6 +449,28 @@ class PayrollBasis:
             chosen = entry
         return chosen
 
+    @cached_property
+    def _walked(self) -> "dict[date, _Walked]":
+        """Every payday walked so far, keyed by payday: each is walked ONCE per basis.
+
+        A paycheck asks its own payday twice -- its base pay and its banner --
+        and the year-to-date replays ask every earlier payday of the year
+        again for each paycheck they price, so without this a projection
+        re-walks the same day many times for the same answer.  Sound for the
+        reason :attr:`_pay_list` and :attr:`raises` are cached: a walk reads
+        only those two and the calendar, all fixed for one basis.  Cached as
+        :attr:`_line_cadences` is: a frozen dataclass admits
+        ``cached_property`` because it writes the instance dict directly.
+        """
+        return {}
+
+    def _walk_of(self, payday: date) -> _Walked:
+        """Return *payday*'s :class:`_Walked`, walking it only the first time it is asked."""
+        walked = self._walked.get(payday)
+        if walked is None:
+            walked = self._walked[payday] = self._walk(payday)
+        return walked
+
     def _walk(self, payday: date) -> _Walked:
         """Walk the pay list to *payday*: the one derivation of what it pays.
 
@@ -497,13 +519,13 @@ class PayrollBasis:
             if kind == 0:
                 rhythm = PayCadence(subject.rhythm.cadence)
                 if rhythm.periods_per_year != paid_at.periods_per_year:
-                    carried = (landed, pay * paid_at.periods_per_year)
+                    carried = (landed, BasePay(pay, paid_at).annual)
                     pay = _carry(pay, paid_at, rhythm)
                 paid_at = rhythm
             else:
                 pay = raise_pay(pay, subject, paid_at.periods_per_year)
         if final.periods_per_year != paid_at.periods_per_year:
-            carried = (payday, pay * paid_at.periods_per_year)
+            carried = (payday, BasePay(pay, paid_at).annual)
             pay = _carry(pay, paid_at, final)
         return _Walked(BasePay(pay, final), entry_payday, carried)
 
@@ -545,17 +567,27 @@ class PayrollBasis:
         Returns:
             The :class:`BasePay` of that payday.
         """
-        return self._walk(payday).base
+        return self._walk_of(payday).base
 
-    def pay_event_on(self, payday: date, period) -> str:
-        """Return the banner of *payday*'s paycheck: a recorded pay change, or its forecast raises.
+    def pay_event_on(self, period) -> str:
+        """Return the banner of *period*'s paycheck: a recorded pay change, or its forecast raises.
 
         Ruling **R-SAL84** ("Banner the pay change"): the paycheck where a
         recorded pay entry begins shows ``PAY +$X`` -- its base pay against
         the paycheck before it -- and a forecast raise that entry replaces
         badges nothing (:func:`~app.services.salary_raises.get_raise_event`
-        with the entry's payday).  An entry changing nothing, the first
-        payday's included, badges nothing.
+        with the entry's payday).  An entry changing nothing badges nothing.
+
+        **The FIRST entry badges no pay change**: every paycheck before it is
+        priced FROM it (R-SAL59), so there is no earlier recorded pay to
+        compare it with, and across a change of rhythm the comparison would
+        read only the carry's rounding.  Made-up: a first entry of
+        ``$4,333.33`` on the first payday of a 12-a-year rhythm, after a
+        26-a-year one; the paycheck before it is that entry carried back,
+        ``$4,333.33 x 12 / 26 = $2,000.00``, so the yearly comparison read
+        ``$51,999.96`` against ``$52,000.00`` and badged a ``$0.04`` cut no
+        one took (an adversarial review of this step).  Its payday badges its
+        forecast raises like any payday it prices.
 
         **Across a change of rhythm it compares YEARLY pay**, labelled ``a
         year`` (ruling **R-SAL89**, "Yearly pay across a seam", amending
@@ -568,14 +600,16 @@ class PayrollBasis:
         compared per paycheck.
 
         Args:
-            payday: The paycheck's payday.
-            period: The pay period, handed to ``get_raise_event``.
+            period: The paycheck's pay period: its ``start_date`` is the
+                payday, and it is handed on to ``get_raise_event``.  One
+                argument, so the payday and the period cannot disagree.
 
         Returns:
             The comma-joined labels, or ``""``.
         """
-        walked = self._walk(payday)
-        if walked.entry_payday == payday:
+        payday = period.start_date
+        walked = self._walk_of(payday)
+        if walked.entry_payday == payday and payday != self._pay_list[0][0]:
             previous = self.calendar.span_containing(payday - timedelta(days=1))
             if previous is None:
                 return ""
@@ -606,7 +640,7 @@ class PayrollBasis:
         changes = []
         for era in self.calendar.eras[1:]:
             first = first_payday_of(era)
-            walked = self._walk(first)
+            walked = self._walk_of(first)
             if walked.carried is not None and walked.carried[0] == first:
                 changes.append(RhythmChangeWithoutPay(
                     first, walked.base.per_paycheck, walked.carried[1],

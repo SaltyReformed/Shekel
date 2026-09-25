@@ -518,10 +518,12 @@ class TestARaiseStopsBadgingAfterItsEndYear:
     ):
         """2032 is past 2031, so nothing is announced.
 
-        The obligation itself.  ``apply_raises`` stopped accruing this raise's
-        applications after 2031 the moment plan step salary:S3-b landed, so a
-        badge here is a banner on a paycheck the raise did not move -- the two
-        walks reading one column and disagreeing about it.
+        The obligation itself.  The raise walk stops accruing this raise's
+        applications after 2031 -- ``apply_raises`` did from plan step
+        salary:S3-b, and since salary:X-av-3a the pay list's walk does through
+        ``applications_between`` -- so a badge here is a banner on a paycheck
+        the raise did not move: the two walks reading one column and
+        disagreeing about it.
         """
         with app.app_context():
             profile = _profile(seed_user)
@@ -532,7 +534,7 @@ class TestARaiseStopsBadgingAfterItsEndYear:
                 profile.raises, self._Period(date(2032, 1, 15)),
             ) == "", (
                 "get_raise_event badged a raise in 2032 whose last believed "
-                "year is 2031; apply_raises stopped applying it, so the "
+                "year is 2031; the raise walk stopped applying it, so the "
                 "surfaces now announce a raise that moves no money"
             )
 

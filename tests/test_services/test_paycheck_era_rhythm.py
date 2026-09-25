@@ -517,7 +517,7 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
 
     @pytest.fixture(autouse=True)
     def _fica_and_nothing_else(self, tax_law):
-        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        """Install the owner's law: the made-up FICA-only law, for tax year 2026."""
         tax_law(fica_only_law())
 
     @staticmethod
@@ -632,7 +632,7 @@ class TestTheRecurringSalaryRow:
 
     @pytest.fixture(autouse=True)
     def _fica_and_nothing_else(self, tax_law):
-        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        """Install the owner's law: the made-up FICA-only law, for tax year 2026."""
         tax_law(fica_only_law())
 
     def test_amount_monthly_and_the_forward_per_paycheck_unit(

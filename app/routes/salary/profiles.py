@@ -73,9 +73,13 @@ def _paychecks_per_year() -> "int | None":
     """Return how many paychecks the owner receives a year, or ``None``.
 
     **The form's read-only replacement for the ``pay_periods_per_year``
-    dropdown** (plan step R-F16).  The yearly figure beside the pay is the pay
-    times this number (ruling **R-SAL59**, plan step salary:X-av-3a), so the
-    page has to state it -- but it is not the owner's to choose HERE: it derives from
+    dropdown** (plan step R-F16).  It is the count of the owner's LATEST
+    rhythm (``resolve_cadence``).  A yearly figure is a pay times the count
+    in force on ITS payday (ruling **R-SAL59**; since plan step salary:X-av-2
+    each payday's own, **R-SAL66**), which is this number for an owner with
+    one rhythm and not, before the change, for an owner with a later one
+    recorded; the pay list states each entry's own count beside it.  It is
+    not the owner's to choose HERE: it derives from
     the owner's pay era's cadence (``budget.pay_eras`` since plan step
     ``pay_calendar:C17-a``; ``budget.pay_schedule.cadence_days`` until then),
     which the pay-period settings own, and offering a second control was the

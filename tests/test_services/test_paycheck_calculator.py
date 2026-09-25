@@ -766,7 +766,7 @@ class TestChronologicalRaiseOrder:
         assert result == Decimal("4353.84")
 
     def test_percentage_only_raises_are_completely_unaffected(self):
-        """Ordering cannot matter when every raise is a percentage -- to the cent, now.
+        """Every raise a percentage: the order leaves the COUNTS alone, and can move a cent.
 
         Multiplication commutes, so regrouping the applications changed
         nothing on the yearly walk -- which is why this rule moved no money

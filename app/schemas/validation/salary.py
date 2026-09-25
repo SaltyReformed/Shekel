@@ -62,8 +62,10 @@ class SalaryProfileCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     # The profile's FIRST pay entry: what one paycheck pays, and the payday it
     # pays it from (plan step salary:X-av-3a, rulings R-SAL59 and R-SAL61:
-    # "Pay is only ever typed per paycheck").  Whether the day is a payday is
-    # the service's question (``pay_stub_service.not_a_payday``).
+    # "Pay is only ever typed per paycheck").  Whether the day is a payday, and
+    # not later than the owner's next one, is the service's question
+    # (``pay_list_service``, through ``pay_stub_service.payday_refusal_for_door``:
+    # rulings R-SAL90 and R-SAL93).
     pay_amount = fields.Decimal(
         required=True, places=2, as_string=True, validate=_PAY_AMOUNT_RANGE,
     )

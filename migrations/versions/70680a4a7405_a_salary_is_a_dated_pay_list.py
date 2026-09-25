@@ -12,6 +12,14 @@ carries, said"), closing finding **N-237** and the app half of **N-391**::
     salary.salary_profiles               - annual_salary,
                                          - ck_salary_profiles_positive_salary
 
+Review: Josh, 2026-09-25 -- APPROVED as built (AskUserQuestion, "Approve
+both"): one entry per profile (yearly figure over paychecks a year, half-up,
+on the first saved payday), the three upgrade refusals, the downgrade's
+restore of pay x paychecks a year and its refusals, the column and its CHECK
+dropped.  The drop itself is his ruling R-SAL59 (the stored fact becomes a
+dated pay list); the money it moves was approved on the production grade the
+same morning ("Proceed"); the rollback's re-pricing is his ruling R-SAL92.
+
 **The salary's stored fact becomes what ONE paycheck pays, from a dated payday
 on.**  ``annual_salary`` was one undated yearly figure for all time: editing
 it re-priced every paycheck not yet received, back to January, and a typo fix
@@ -27,10 +35,12 @@ first, so every paycheck before the entry uses it) and then applies every
 forecast raise landing AFTER that entry's payday -- so an entry dated before
 every raise's first landing prices exactly the raises the yearly salary was
 priced under.  The one difference is WHERE a raise rounds: on the yearly
-figure once, before; on each per-paycheck step, after (R-SAL60).  Measured on
-the 2026-09-23 production clone by local arithmetic: exactly-one-cent moves on
-some projected paydays from 2028 on and none earlier; no settled record moves,
-because a settled record holds its own figure.
+figure once, before; on each per-paycheck step, after (R-SAL60).  So no
+paycheck moves before the first raise lands, a projected paycheck after it
+can move by the cents the two roundings part by -- more, the more raises
+compound -- and no settled record moves, because a settled record holds its
+own figure.  The production grade's figures are the release notes', never
+this file's.
 
 **It REFUSES, before writing anything, the three states it cannot convert
 exactly**, naming each profile.  The developer's production data holds none of
@@ -72,14 +82,14 @@ paycheck identically, up to the per-step rounding of each raise
 (**R-SAL60**) that the older engine rounds once.
 
 **A rollback does not restore the pre-upgrade yearly figure, and so can
-re-price projected paychecks by a cent** (ruling **R-SAL92**, "Accept and
+re-price projected paychecks by cents** (ruling **R-SAL92**, "Accept and
 declare").  The upgrade keeps only the per-paycheck amount (R-SAL59): the
 remainder the division rounded off is discarded, and nothing stores the old
 yearly figure a second time.  The restored figure is the entry times its
 paychecks a year, higher or lower than the old one wherever it did not divide
 evenly, and the older engine prices every projected paycheck from it again.
 Before a raise the two agree (``$2,000.01`` a paycheck either way in the
-example above); after raises they can part by a cent.  Made-up:
+example above); after raises they can part by cents.  Made-up:
 ``$52,000.13`` at 26 a year with a 3% raise compounding yearly.  In the
 fourth raised year the older engine priced ``$2,251.02`` a paycheck before
 the upgrade (``$58,526.60 / 26``) and prices ``$2,251.03`` after a rollback
@@ -190,6 +200,15 @@ _RESTORE_ANNUAL = sa.text(
     f"SET annual_salary = pe.amount * ({_ERA_PAYCHECKS_A_YEAR}) "
     f"FROM {_SCHEMA}.{_TABLE} pe, budget.pay_eras e "
     "WHERE pe.salary_profile_id = sp.id AND e.user_id = sp.user_id"
+)
+
+#: Every profile the restore left without a yearly figure: the check before
+#: ``annual_salary`` goes NOT NULL.  The refusals above leave none (each
+#: profile holds one entry and its owner one era, so the UPDATE's join meets
+#: every profile once); it is asked rather than assumed.
+_PROFILES_NOT_RESTORED = (
+    "SELECT sp.id, sp.name FROM salary.salary_profiles sp "
+    "WHERE sp.annual_salary IS NULL ORDER BY sp.id"
 )
 
 
@@ -309,7 +328,9 @@ def downgrade():
         RuntimeError: Any profile holds more than one entry (naming how
             many) or none, an owner has not exactly one pay era, or a raise
             lands on or before its profile's entry -- each named; nothing is
-            written.
+            written.  Or, after the restore, a profile left without a yearly
+            figure (the refusals leave none), named with the diagnostic
+            SELECT before the column goes NOT NULL.
     """
     bind = op.get_bind()
     with_history = bind.execute(_PROFILES_WITH_HISTORY).scalar_one()
@@ -351,6 +372,16 @@ def downgrade():
         schema=_SCHEMA,
     )
     bind.execute(_RESTORE_ANNUAL)
+    not_restored = bind.execute(sa.text(_PROFILES_NOT_RESTORED)).fetchall()
+    if not_restored:
+        listing = "; ".join(
+            f"profile {profile_id} ({name})" for profile_id, name in not_restored
+        )
+        raise RuntimeError(
+            "the downgrade restored no yearly figure for these salary "
+            f"profiles, so annual_salary cannot be made NOT NULL: {listing}.  "
+            f"Diagnose with: {_PROFILES_NOT_RESTORED}"
+        )
     op.alter_column(
         "salary_profiles", "annual_salary", nullable=False, schema=_SCHEMA,
     )

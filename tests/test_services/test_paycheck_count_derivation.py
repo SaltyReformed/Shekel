@@ -212,12 +212,15 @@ class TestTheCountIsTheSchedule:
     def test_a_years_paychecks_sum_to_a_years_salary(
         self, app, db, seed_user, cadence_days, count,
     ):
-        """The year's grosses total the annual salary, at every rhythm.
+        """A year's grosses total the yearly figure the engine reports, at every rhythm.
 
-        Input: a $91,675 raise-free profile -- the developer's own salary --
-        projected over one full year at each authorable cadence.
-        Expected: the grosses sum to $91,675.00 within HALF A CENT PER
-        PAYCHECK, whatever the rhythm.
+        Input: a raise-free profile whose one pay entry is $91,675.00 a year's
+        worth at the rhythm tested (91,675.00 / count, half-up), projected
+        over one full year at each authorable cadence.
+        Expected: exactly ``count`` paychecks, every one the same figure,
+        summing EXACTLY to the yearly figure the engine reports
+        (``Earnings.annual_salary``: the pay times the count it annualises
+        by); and within half a cent per paycheck of $91,675.00.
         Why: **this is the money property finding F-16 destroyed**, and it is
         an identity rather than a figure, so it holds at every cadence without
         a per-cadence expected value to get wrong.  Before R-F16 the engine
@@ -226,19 +229,17 @@ class TestTheCountIsTheSchedule:
         cadence, 46% at 30 days.  Measured on this exact salary at plan step
         R-F16.
 
-        **The bound replaced an exact equality at plan step balance:X-aw**
-        (ruling **balance:R-HW**), and it is derived rather than chosen.  The
-        gross is ``round_money(salary / count)``, one ROUND_HALF_UP at the
-        cent, so a single paycheck sits at most half a cent from its exact
-        share and ``count`` of them at most ``count / 2`` cents from the
-        salary -- $0.04 at the 7 / 14 / 15 / 30-day cadences here, against a
-        bound of $0.13 at 26, and exactly $0.00 at the 365-day one, whose single
-        yearly paycheck IS the salary and rounds nothing.
-        MED-05 / PA-07 bought the exact equality by giving the earliest
-        paychecks of a year an extra cent, which made a paycheck's value
-        depend on how many pay-period rows existed (finding **N-239**).
-        **The bound is far tighter than the defect this case guards**: F-16
-        was wrong by 100% and 54% of a year's salary, not by cents.
+        **Since plan step salary:X-av-3a the stored fact is the paycheck**
+        (ruling **R-SAL59**) and nothing divides it, so the property F-16
+        needs is that the COUNT the yearly figure is multiplied by is the
+        number of paydays the calendar pays in a year: the exact equality
+        grades that, and a count read anywhere but the calendar (hardcoded to
+        26, say) fails it at every other rhythm.  The half-cent bound against
+        $91,675.00 is the property as ruling **balance:R-HW** stated it for a
+        divided salary; each fixture's pay is already that salary over its
+        own count, so the bound now holds by construction and cannot fail on
+        its own (an adversarial review of this step hardcoded the count to 26
+        and found the bound alone passing).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -272,6 +273,10 @@ class TestTheCountIsTheSchedule:
             # ruling R-HW states.  Without this the bound above would pass
             # for an engine that varied the gross period by period.
             assert len({b.earnings.gross_biweekly for b in breakdowns}) == 1
+            # The identity F-16 needs on a pay list: the year holds ``count``
+            # paydays, and they sum exactly to the reported yearly figure.
+            assert len(breakdowns) == count
+            assert total == breakdowns[0].earnings.annual_salary
 
     def test_the_same_profile_prices_differently_at_two_rhythms(
         self, app, db, seed_user,
