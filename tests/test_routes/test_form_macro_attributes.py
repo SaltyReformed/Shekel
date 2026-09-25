@@ -31,7 +31,6 @@ import re
 import pytest
 
 from app.services.pay_period_batch import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
-from app.services.registration_service import _seed_tax_data_for_user
 from tests._test_helpers import make_salary_profile
 
 #: The tell of an attribute whose SYNTAX went through autoescape: an equals
@@ -160,10 +159,10 @@ class TestTheCallersRenderParseableAttributes:
         """
         with app.app_context():
             # The tab computes a tax report before it renders the card, so
-            # the owner needs the tax seeds and an active profile -- the
-            # taxes-tab route tests' own recipe.  An HTMX request, because a
-            # direct GET renders the analytics shell and loads the tab later.
-            _seed_tax_data_for_user(seed_user["user"].id)
+            # the owner needs an active profile (the shipped tax law prices
+            # it) -- the taxes-tab route tests' own recipe.  An HTMX request,
+            # because a direct GET renders the analytics shell and loads the
+            # tab later.
             make_salary_profile(seed_user, db.session)
             db.session.commit()
             page = auth_client.get(

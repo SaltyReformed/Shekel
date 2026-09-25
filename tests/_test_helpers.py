@@ -21,9 +21,17 @@ from datetime import (
     timezone as _real_timezone,
 )
 from decimal import Decimal
-from app.enums import BusinessDayShiftEnum
+from app.enums import BusinessDayShiftEnum, FilingStatusEnum, TaxTypeEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services import pay_era_write, pay_rhythm, pay_schedule_service
+from app.tax_law import (
+    FederalRules,
+    FicaRules,
+    StateYearLaw,
+    TaxLaw,
+    TaxYearLaw,
+    ladder,
+)
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2617,6 +2625,35 @@ def replay_paycheck_lines_rename(db_session):
     )
     run_migration_callable(
         load_migration_module(_R18B_REVISION_FILE).upgrade, db_session,
+    )
+
+
+#: Plan step ``recurrence:R5-a``'s revision, which dropped the rule's due day.
+_R5A_REVISION_FILE = "1c569c51b449_a_rules_day_is_its_due_day.py"
+
+
+def restore_rule_due_day_column(db_session):
+    """Re-create ``budget.recurrence_rules.due_day_of_month``, which R5-a dropped.
+
+    **For a test whose subject is an EARLIER revision's shipped SQL**, the
+    reason :func:`restore_pay_period_derived_columns` exists, and built the
+    same way: it runs plan step ``recurrence:R5-a``'s own ``downgrade()``
+    (ruling R-R96) rather than issuing DDL of its own, so the column comes back
+    with its CHECK exactly as the shipped statement rebuilds it -- nullable and
+    empty.  Revision ``542c61e48ee8`` (plan step ``salary:R15-b``) reads the
+    column in its own SQL, so a test driving that revision meets
+    ``UndefinedColumn`` at head without it.  Alembic undoes the NEWEST revision
+    first, so a caller rewinding further runs this before its older rewinds.
+
+    It does not put the database at any particular revision.  The ORM model on
+    this tree does not map the column, so an ORM insert leaves it ``NULL``.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that holds the
+            table's locks (see :func:`run_migration_callable`).
+    """
+    run_migration_callable(
+        load_migration_module(_R5A_REVISION_FILE).downgrade, db_session,
     )
 
 
@@ -6787,7 +6824,6 @@ def _cadence_spec(
     fires_in_month=None,
     interval_n=1,
     nominal_day=None,
-    due_day_of_month=None,
     end_date=None,
     max_per_month=None,
 ):
@@ -6810,7 +6846,6 @@ def _cadence_spec(
         fires_in_month: See :func:`make_cadence_rule`.
         interval_n: See :func:`make_cadence_rule`.
         nominal_day: See :func:`make_cadence_rule`.
-        due_day_of_month: See :func:`make_cadence_rule`.
         end_date: See :func:`make_cadence_rule`.
         max_per_month: See :func:`make_cadence_rule`.
 
@@ -6866,7 +6901,6 @@ def _cadence_spec(
             else calendar.opening_bound()
         ),
         nominal_day=nominal_day,
-        due_day_of_month=due_day_of_month,
         end_bound=(
             NEVER_ENDS if end_date is None else EndsOnDate(end_date)
         ),
@@ -6928,8 +6962,6 @@ def make_cadence_rule(owner, cadence, **kwargs):
             constant, not the model.)
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it (ruling R-R3).
-        due_day_of_month: Real bill due day, when it differs from the
-            scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
         max_per_month: The per-month ceiling (plan step salary:R15-a), or
             ``None`` for none.
@@ -7984,157 +8016,208 @@ def linked_ledger_total(account_id):
     return sum((amount for (amount,) in rows), Decimal("0.00"))
 
 
-def _tax_config_models():
-    """Return the session and the ``ref`` / tax models the seeders below need.
-
-    Imported lazily, like every other helper in this module: importing the ORM
-    at module scope would make this file unimportable outside an app context.
-
-    Returns:
-        ``(db, {name: model})`` for the four tax tables and the two ``ref``
-        lookups the seeders resolve by name.
-    """
-    # Pylint: ``import-outside-toplevel`` -- deferred, like every other
-    # helper in this module: importing the ORM at module scope would bind the
-    # mappers before the test app configures them, so this file would be
-    # unimportable outside an app context.
-    from app.extensions import db  # pylint: disable=import-outside-toplevel
-    # Pylint: ``import-outside-toplevel`` -- deferred; see above.
-    from app.models.ref import (  # pylint: disable=import-outside-toplevel
-        FilingStatus,
-        TaxType,
-    )
-    # Pylint: ``import-outside-toplevel`` -- deferred; see above.
-    from app.models.tax_config import (  # pylint: disable=import-outside-toplevel
-        FicaConfig,
-        StateTaxConfig,
-        TaxBracket,
-        TaxBracketSet,
-    )
-
-    return db, {
-        "FilingStatus": FilingStatus,
-        "TaxType": TaxType,
-        "FicaConfig": FicaConfig,
-        "StateTaxConfig": StateTaxConfig,
-        "TaxBracket": TaxBracket,
-        "TaxBracketSet": TaxBracketSet,
-    }
-
-
-# --- Tax configuration -------------------------------------------------------
+# --- The tax law a test prices under (plan step salary:X-at-1) --------------
 #
-# The three rows ``paycheck_calculator.calculate_paycheck`` needs before it can
-# answer at all: a federal bracket set, a state config and a FICA config.  They
-# lived as private helpers inside ``tests/test_routes/test_salary.py`` until
-# plan step R4b-1, whose own tests need a REAL paycheck computed through
-# generation; copying them would have made a financial fixture exist twice.
-# Values match the shipped seeds closely enough to be recognisable and are
-# otherwise arbitrary -- the assertions that use them compute their expected
-# figures from these same rows.
+# The law lives once, in :mod:`app.tax_law`, and every test prices under it
+# unless the test installs another through the ``tax_law`` fixture in
+# ``tests/conftest.py`` (ruling salary:R-SAL80, "Real law, tests may swap").
+# Until X-at-1 a test wrote its law as per-user tax ROWS through three seeders
+# here; the builders below make the same figures as a law, so a test that
+# seeded those rows installs exactly what it priced before and no expected
+# figure moves.  A law must pass :mod:`app.tax_law._types`' checks, which the
+# rows never had to, and each builder's docstring says where that shaped it.
 
-def seed_state_tax_config(user_id, rate, tax_year=2026, state_code="NC"):
-    """Create a flat state tax config for testing.
+#: A made-up law's one source line: a test's figures cite no document.
+MADE_UP_SOURCES = ("A test's made-up figures, not a published law",)
 
-    Args:
-        user_id: The owning user's ID.
-        rate: Decimal flat rate in decimal form (e.g. 0.0399).
-        tax_year: Tax year for the config.
-        state_code: Two-letter state code.
-
-    Returns:
-        StateTaxConfig: The created config.
-    """
-    db, models = _tax_config_models()
-    flat_type = db.session.query(models["TaxType"]).filter_by(name="flat").one()
-    # T-P5: state configs are filing-status-keyed.  These net-biweekly tests
-    # all use single-filer profiles, so the config carries the single status
-    # (matching the withholding path's filing-status-scoped lookup).
-    single_status = (
-        db.session.query(models["FilingStatus"]).filter_by(name="single").one()
-    )
-    config = models["StateTaxConfig"](
-        user_id=user_id,
-        state_code=state_code,
-        tax_year=tax_year,
-        tax_type_id=flat_type.id,
-        filing_status_id=single_status.id,
-        flat_rate=rate,
-        standard_deduction=Decimal("25500.00"),
-    )
-    db.session.add(config)
-    db.session.flush()
-    return config
+#: No tax at all: every kind resolves no rules, so every tax line is $0.00 --
+#: what a test that seeded no tax rows priced.
+EMPTY_TAX_LAW = TaxLaw(years=())
 
 
-def seed_fica_config(user_id, tax_year=2026):
-    """Create a standard FICA config for testing.
+def zero_federal():
+    """Return federal rules that price $0.00 at every income, with no credits.
+
+    What a made-up year states for its federal rules when the test's rows held
+    no bracket set: a year cannot lack federal rules, and a single 0% rung
+    prices what no row priced on a paycheck.  The two differ in two places no
+    test installing this reaches: the withholding adds the W-4's extra
+    withholding to a bracket figure, and the annual liability REFUSES a missing
+    bracket set where it prices these rules at $0.00.
 
     Returns:
-        FicaConfig: The created config.
+        FederalRules: Zero deduction, zero credits, one 0% rung from $0.
     """
-    db, models = _tax_config_models()
-    config = models["FicaConfig"](
-        user_id=user_id,
-        tax_year=tax_year,
+    return FederalRules(
+        standard_deduction=Decimal("0.00"),
+        child_credit_amount=Decimal("0.00"),
+        other_dependent_credit_amount=Decimal("0.00"),
+        child_credit_refundable_cap=Decimal("0.00"),
+        brackets=ladder(("0.00", None, "0.0000")),
+    )
+
+
+def made_up_federal():
+    """Return the made-up federal rules ``seed_tax_bracket_set`` wrote as rows.
+
+    The same deduction, credits and two rungs.  The rows' ladder STOPPED at
+    $47,150, which a law refuses (income above a closed top would be taxed by
+    nothing), so a 0% open rung carries it on: the tax on every income is the
+    rows' tax, and only :func:`app.services.tax_calculator.marginal_rate_for`
+    above $47,150 reads 0% where the rows read 12%.  The refundable credit cap
+    is the column default the rows took, $0.00.
+
+    Returns:
+        FederalRules: The made-up single filer's rules.
+    """
+    return FederalRules(
+        standard_deduction=Decimal("14600.00"),
+        child_credit_amount=Decimal("2000.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+        child_credit_refundable_cap=Decimal("0.00"),
+        brackets=ladder(
+            ("0.00", "11600.00", "0.1000"),
+            ("11600.00", "47150.00", "0.1200"),
+            ("47150.00", None, "0.0000"),
+        ),
+    )
+
+
+def zero_fica():
+    """Return FICA rules that price $0.00 Social Security and Medicare.
+
+    What a made-up year states when the test's rows held no FICA row: a year
+    cannot lack FICA, and zero rates price what no row priced on a paycheck.
+    The wage base and threshold must be above zero, so they carry
+    ``made_up_fica``'s -- which caps the Taxes tab's W-2 preview of Social
+    Security wages at that base where no row left it uncapped; no test
+    installing this renders that preview.
+
+    Returns:
+        FicaRules: Every rate 0.
+    """
+    return FicaRules(
+        ss_rate=Decimal("0.0000"),
+        ss_wage_base=Decimal("176100.00"),
+        medicare_rate=Decimal("0.0000"),
+        medicare_surtax_rate=Decimal("0.0000"),
+        medicare_surtax_threshold=Decimal("200000.00"),
+    )
+
+
+def made_up_fica():
+    """Return the made-up FICA rules ``seed_fica_config`` wrote as a row.
+
+    Returns:
+        FicaRules: 6.2% on a $176,100 base, 1.45%, 0.9% over $200,000.
+    """
+    return FicaRules(
         ss_rate=Decimal("0.0620"),
         ss_wage_base=Decimal("176100.00"),
         medicare_rate=Decimal("0.0145"),
         medicare_surtax_rate=Decimal("0.0090"),
         medicare_surtax_threshold=Decimal("200000.00"),
     )
-    db.session.add(config)
-    db.session.flush()
-    return config
 
 
-def seed_tax_bracket_set(user_id, tax_year=2026):
-    """Create a bracket set with sample brackets for testing.
+def made_up_state(rate, standard_deduction=Decimal("25500.00")):
+    """Return a made-up flat-rate state, as ``seed_state_tax_config`` wrote it.
 
-    Seeds a 'single' filing status bracket set with two brackets so
-    that the federal brackets section renders with visible data.
+    The row carried ONE filing status (single); a law states every status, so
+    each carries the row's deduction.  The row held no child deduction tiers.
 
     Args:
-        user_id: The owning user's ID.
-        tax_year: Tax year for the bracket set.
+        rate: The flat rate as a fraction (``Decimal("0.0399")``).
+        standard_deduction: Every status's standard deduction.
 
     Returns:
-        TaxBracketSet: The created bracket set with two brackets.
+        StateYearLaw: The made-up state.
     """
-    db, models = _tax_config_models()
-    filing_status = (
-        db.session.query(models["FilingStatus"]).filter_by(name="single").one()
+    return StateYearLaw(
+        tax_type=TaxTypeEnum.FLAT,
+        flat_rate=rate,
+        standard_deduction={status: standard_deduction for status in FilingStatusEnum},
+        child_deduction_tiers={status: () for status in FilingStatusEnum},
     )
-    bracket_set = models["TaxBracketSet"](
-        user_id=user_id,
-        filing_status_id=filing_status.id,
-        tax_year=tax_year,
-        standard_deduction=Decimal("14600.00"),
-        child_credit_amount=Decimal("2000.00"),
-        other_dependent_credit_amount=Decimal("500.00"),
-    )
-    db.session.add(bracket_set)
-    db.session.flush()
 
-    brackets = [
-        models["TaxBracket"](
-            bracket_set_id=bracket_set.id,
-            min_income=Decimal("0.00"),
-            max_income=Decimal("11600.00"),
-            rate=Decimal("0.1000"),
-            sort_order=1,
+
+def made_up_year(tax_year=2026, *, federal=None, fica=None, states=None):
+    """Return one made-up tax year, one set of federal rules for every status.
+
+    The rows these years replace carried ONE status (single); every status
+    carries the same rules here, which a single-filer test cannot see.
+
+    Args:
+        tax_year: The year.
+        federal: The federal rules every filing status carries
+            (default :func:`zero_federal`).
+        fica: The year's FICA rules (default :func:`zero_fica`).
+        states: ``{state_code: StateYearLaw}`` (default none).
+
+    Returns:
+        TaxYearLaw: The made-up year.
+    """
+    rules = federal if federal is not None else zero_federal()
+    return TaxYearLaw(
+        tax_year=tax_year,
+        sources=MADE_UP_SOURCES,
+        federal={status: rules for status in FilingStatusEnum},
+        fica=fica if fica is not None else zero_fica(),
+        states=states if states is not None else {},
+    )
+
+
+def bracket_set_law(*tax_years):
+    """Return the law ``seed_tax_bracket_set`` wrote, once per year asked for.
+
+    The rows held a bracket set and nothing else, so each year carries
+    :func:`made_up_federal` for every status, zero FICA and no state.
+
+    Args:
+        *tax_years: The years the rows were written for (default 2026 alone).
+
+    Returns:
+        TaxLaw: Those years, oldest first.
+    """
+    return TaxLaw(years=tuple(
+        made_up_year(year, federal=made_up_federal())
+        for year in sorted(tax_years or (2026,))
+    ))
+
+
+def fica_only_law(tax_year=2026):
+    """Return the law ``seed_fica_config`` alone wrote: made-up FICA, nothing else.
+
+    Federal prices $0.00 on the zero rules a year cannot lack, and no state
+    is listed.
+
+    Args:
+        tax_year: The one year the row was written for.
+
+    Returns:
+        TaxLaw: That one year.
+    """
+    return TaxLaw(years=(made_up_year(tax_year, fica=made_up_fica()),))
+
+
+def state_and_fica_law(rate=Decimal("0.0399"), tax_year=2026):
+    """Return the law the ``seed_state_tax_config`` + ``seed_fica_config`` pair wrote.
+
+    The commonest setup the rows had: a North Carolina flat rate and the
+    made-up FICA, and no bracket set, so federal prices $0.00.
+
+    Args:
+        rate: The North Carolina flat rate.
+        tax_year: The one year the rows were written for.
+
+    Returns:
+        TaxLaw: That one year.
+    """
+    return TaxLaw(years=(
+        made_up_year(
+            tax_year, fica=made_up_fica(), states={"NC": made_up_state(rate)},
         ),
-        models["TaxBracket"](
-            bracket_set_id=bracket_set.id,
-            min_income=Decimal("11600.00"),
-            max_income=Decimal("47150.00"),
-            rate=Decimal("0.1200"),
-            sort_order=2,
-        ),
-    ]
-    db.session.add_all(brackets)
-    db.session.flush()
-    return bracket_set
+    ))
 
 
 # ── Recurrence cadence payloads (plan step R7b-2) ─────────────────

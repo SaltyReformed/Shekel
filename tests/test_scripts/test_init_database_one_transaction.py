@@ -48,7 +48,6 @@ from app.enums import PostingKindEnum, PostingSourceEnum, StatementSourceEnum
 from app.models.category import Category
 from app.ref_seeds import ACCT_TYPE_SEEDS
 from app.services.posting_reads import PostingError
-from app.services.tax_seed_data import DEFAULT_FICA
 from scripts.build_test_db_image import template_checks
 from tests._test_helpers import (
     create_loan_with_trueup,
@@ -363,15 +362,17 @@ def _delete_the_unreferenced_ref_row(db) -> None:
 
 
 def _seeded(db, user_id: int) -> dict:
-    """Read, over a connection of its own, what the two deploy seeds COMMITTED.
+    """Read, over a connection of its own, what the deploy's seed COMMITTED.
 
     Args:
         db: The Flask-SQLAlchemy handle.
-        user_id: The user whose tax defaults the tax seed adds.
+        user_id: The user whose FICA rows are counted: the deploy copied the
+            tax law into them until plan step salary:X-at-1 deleted that seed.
 
     Returns:
         ``ref_row`` (whether the deleted ref row is back) and ``fica`` (how
-        many FICA configurations the user holds; ``seed_user`` makes none).
+        many FICA configurations the user holds; ``seed_user`` makes none, and
+        the deploy adds none).
     """
     with db.engine.connect() as conn:
         return {
@@ -391,13 +392,15 @@ class TestTheSeedsAndTheCheckAreInsideTheOneTransaction:
     The reference seed, the tax seed and the audit-trigger check used to run
     after ``init_database.py`` had committed, so a failure in one of them left
     the release's stamp behind a dead container: the case ``shekel-deploy``
-    cannot re-pin.  Now they commit with the migration or roll back with it.
+    cannot re-pin.  Now they commit with the migration or roll back with it --
+    all but the tax seed (step 6), which plan step salary:X-at-1 deleted: the
+    tax law lives in the code, and no deploy copies it.
     """
 
-    def test_a_clean_run_commits_both_seeds_with_the_migration(
+    def test_a_clean_run_commits_the_seed_with_the_migration(
         self, app, db, seed_user, pending_migration, uncorrected_payment,
     ):
-        """The deleted ref row and the user's tax defaults commit with the stamp.
+        """The deleted ref row commits with the stamp, and no tax row is copied.
 
         It also pins ruling R-BAL122's ORDER on an existing database: the ref
         row is missing when the deploy starts, so a cache read before the seed
@@ -412,9 +415,7 @@ class TestTheSeedsAndTheCheckAreInsideTheOneTransaction:
         assert _committed(db, uncorrected_payment) == {
             "stamp": _PROBE_REVISION, "probe": True, "corrections": 1,
         }
-        assert _seeded(db, user_id) == {
-            "ref_row": 1, "fica": len(DEFAULT_FICA),
-        }
+        assert _seeded(db, user_id) == {"ref_row": 1, "fica": 0}
         # The deploy loaded ref_cache itself, from the seeded rows: the
         # re-inserted row has a NEW id, which only a load after the seed can
         # know (conftest's per-test load read the deleted row's id).
@@ -432,7 +433,7 @@ class TestTheSeedsAndTheCheckAreInsideTheOneTransaction:
     ):
         """One audit trigger is gone: the check refuses and nothing commits.
 
-        Not the migration, not the hook's correction, and neither seed's rows:
+        Not the migration, not the hook's correction, and not the seed's rows:
         before X-cv's leaf 2 this check was entrypoint step 7, run after step 3
         had committed all of them.
         """
@@ -548,8 +549,10 @@ def _with_stray_calls(monkeypatch, db, hook, *, before=None, after=None):
         db: The Flask-SQLAlchemy handle whose session the hooks use.
         hook: ``(module, function name)`` of the step's real function: the
             loan backfill is the SECOND deploy hook (more follow it), and the
-            tax seed the LAST step that uses the session (ruling R-BAL122's
-            order; only the audit-trigger count, on the connection, follows).
+            anchor-posting backfill, the THIRD, the LAST step that uses the
+            session (ruling R-BAL122's order, less the tax seed plan step
+            salary:X-at-1 deleted; only the audit-trigger count, on the
+            connection, follows).
         before: ``"commit"`` or ``"rollback"``, called on ``db.session`` before
             the real service runs; ``None`` for no call.
         after: The same, called after it.
@@ -570,7 +573,7 @@ def _with_stray_calls(monkeypatch, db, hook, *, before=None, after=None):
 
 
 _SECOND_HOOK = (_INIT_DB.loan_posting_service, "backfill_all_loan_postings")
-_LAST_SESSION_STEP = (_INIT_DB, "seed_tax_brackets")
+_LAST_SESSION_STEP = (_INIT_DB, "backfill_all_account_anchor_postings_after_migration")
 
 
 class TestNothingInsideTheSequenceCanCommit:
@@ -648,9 +651,11 @@ class TestNothingInsideTheSequenceCanCommit:
     ):
         """The last session step rolls back after its work: the deploy's commit refuses.
 
-        That step is the tax seed since ruling R-BAL122 put the seeds and the
-        audit-trigger check after the hooks; it was the third hook before
-        (re-expressed with the developer's confirmation, rule 5).
+        That step is the third hook: it was before ruling R-BAL122 put the
+        seeds and the audit-trigger check after the hooks, the tax seed from
+        then, and the third hook again since plan step salary:X-at-1 deleted
+        the tax seed (re-expressed with the developer's confirmation, rule 5,
+        both times).
         """
         _with_stray_calls(monkeypatch, db, _LAST_SESSION_STEP, after="rollback")
         with pytest.raises(InvalidRequestError) as refused:
@@ -667,8 +672,9 @@ class TestNothingInsideTheSequenceCanCommit:
     ):
         """The last session step commits after its work: everything commits, once.
 
-        The tax seed since ruling R-BAL122, the third hook before (re-expressed
-        with the developer's confirmation, rule 5).
+        The third hook, as it was before ruling R-BAL122 and is again since
+        plan step salary:X-at-1 deleted the tax seed between them (re-expressed
+        with the developer's confirmation, rule 5, both times).
         """
         _with_stray_calls(monkeypatch, db, _LAST_SESSION_STEP, after="commit")
 

@@ -556,7 +556,7 @@ class TestEveryDoorReachesTheSameFigure:
         """
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, shadow_id = xfer.id, shadow.id
+            xfer_id = xfer.id
             account_id = xfer.from_account_id
             # The day the panel measures the offer against is the row's own
             # LANDING day, not its period's start: a loan payment carries a
@@ -578,7 +578,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         response = auth_client.post(
             f"/accounts/{account_id}/reconcile",
-            data={"transaction_ids": [str(shadow_id)]},
+            data={"transfer_ids": [str(xfer_id)]},
         )
         assert response.status_code == 200, response.data
 

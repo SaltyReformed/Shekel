@@ -3,13 +3,10 @@
 Locks the STORAGE tier: what the table itself refuses, with no service, no
 schema and no form in front of it.  Two families live here.
 
-**The day bound that survives**: ``due_day_of_month`` falls in 1..31 when
-populated, materialised by ``ck_recurrence_rules_due_dom`` (migration
-f15a72a3da6c).  Without it the recurrence engine would translate a value like
-99 into an impossible calendar date, silently dating generated rows on days
-that do not exist and corrupting balance projections downstream.  What the case
-covers is a restore, a hand edit, or a caller that reaches the table without
-the door -- the schema and the write door both refuse it first.
+**The last day bound left at plan step recurrence:R5-a with its column.**
+``ck_recurrence_rules_due_dom`` (migration f15a72a3da6c) bounded
+``due_day_of_month`` to 1..31; ruling **R-R96** dropped the column (a rule's
+own day is the day its rows are due), and its three cases went with it.
 
 **Two SIBLING bounds left at plan step R7c-c with their columns.**
 ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy`` (both migration
@@ -149,36 +146,8 @@ def _refused(seed_user, constraint, label="", **columns):
 
 
 class TestRecurrenceRuleRangeConstraints:
-    """Out-of-range day values rejected at flush time."""
-
-    def test_due_day_of_month_above_31_rejected(self, app, db, seed_user):
-        """due_day_of_month=99 raises IntegrityError on insert.
-
-        Mirrors the day_of_month bound; this constraint already
-        existed in production before the H-3 fix (added by migration
-        f15a72a3da6c) and the test is here as a complementary backstop
-        so all three recurrence-rule range checks are exercised in
-        one file.
-        """
-        with app.app_context():
-            _refused(
-                seed_user, "ck_recurrence_rules_due_dom",
-                due_day_of_month=99,
-            )
-
-    def test_due_day_of_month_zero_rejected(self, app, db, seed_user):
-        """due_day_of_month=0 raises IntegrityError on insert.
-
-        Zero would map to "the day before the 1st", which the date
-        arithmetic would silently shift into the previous month.  Pinning the
-        lower bound at 1 makes the rejection explicit, and pinning BOTH ends
-        is what stops a predicate that lost its lower branch passing here.
-        """
-        with app.app_context():
-            _refused(
-                seed_user, "ck_recurrence_rules_due_dom",
-                due_day_of_month=0,
-            )
+    """A rule's plain columns at flush time (the day bounds left with their
+    columns; see the module docstring)."""
 
     def test_interval_n_defaults_non_null(self, app, db, seed_user):
         """A rule created without ``interval_n`` persists 1, never NULL.
@@ -202,26 +171,6 @@ class TestRecurrenceRuleRangeConstraints:
             db.session.flush()
             assert rule.interval_n == 1
             db.session.rollback()
-
-    def test_a_rule_with_no_due_day_inserts(self, app, db, seed_user):
-        """``due_day_of_month`` is genuinely optional.
-
-        Most definitions state no separate due day -- the bill falls on the
-        day the cadence schedules it -- so the CHECK's NULL branch must admit
-        the common case.  A future regression that tightened the predicate
-        (dropping the ``IS NULL`` branch) would break here loudly instead of
-        breaking every ordinary recurring bill silently.
-        """
-        with app.app_context():
-            rule = RecurrenceRule(
-                transaction_template_id=_owner_id(seed_user), **_storable_columns(),
-            )
-            db.session.add(rule)
-            db.session.flush()
-            assert rule.id is not None
-            assert rule.due_day_of_month is None
-            db.session.rollback()
-
 
 class TestTheNominalDayIsOnlyEverAClamp:
     """``ck_recurrence_rules_nominal_day``, completed at plan step R7c-b.

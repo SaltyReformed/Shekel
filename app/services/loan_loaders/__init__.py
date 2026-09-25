@@ -37,14 +37,17 @@ This package is a LEAF: it imports models, the pure engine primitives
 (:class:`~app.services.amortization_engine.RateChangeRecord`,
 :func:`~app.services.installment_calendar.monthly_due_date`), the shared
 balance predicates and the transfer-leg leaf
-(:mod:`app.services.transfer_legs`, itself models and predicates only) --
-never another loan service.  Flask-isolated, reads only, no commits.
+(:mod:`app.services.transfer_legs`, itself a leaf: models, the session, the
+reference cache and the shared predicates, and no service) -- never another
+loan service.  Flask-isolated, reads only, no commits.
 
-Its SETTLED half queries ``budget.transactions`` (the record of a payment
-that moved) and, since plan step balance:X-bi-6a, its PROJECTED half queries
-``budget.transfers`` (the plan, as legs derived from the parent) -- the two
-halves of Transfer Invariant 5 as restated at that step (ruling R-BAL13).  No
-amount is read off a transfer for a payment that has settled.
+Both halves query ``budget.transfers``.  The PROJECTED half has since plan step
+balance:X-bi-6a (the plan, as legs derived from the parent; ruling R-BAL13);
+the SETTLED half has since plan step balance:X-bi-6-4b (ruling R-BAL140):
+the transfers into the account that are no longer Projected or whose to-side
+money has moved, each leg carrying its covering movement -- the record of a
+payment that moved -- through the one join in :mod:`app.services.transfer_legs`.
+No amount is read off a transfer for a payment that has settled.
 """
 
 from ._shadows import (

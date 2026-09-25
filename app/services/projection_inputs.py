@@ -340,8 +340,11 @@ def load_payroll_feeds(
     period it is handed, whichever one that is, and the pricer's memo makes
     the second ask free.  What this function still does up front is build
     the per-profile pricers (:meth:`~app.services.income_service
-    .PaycheckPricing.for_profile`), because THAT is where the tax series
-    loads -- so the loader keeps every query, and a resolver fired inside
+    .PaycheckPricing.for_profile`), because THAT is where the pass's calendar
+    is derived on its first use (the raises it may read are eager-loaded by
+    :func:`_load_funding_profiles`, and the tax series loaded there too, three
+    queries, until plan step salary:X-at-1 moved the law into the code) -- so
+    the loader keeps every query, and a resolver fired inside
     :mod:`app.services.investment_projection`'s *no database access*
     contract issues none.
 
@@ -524,11 +527,14 @@ def price_payroll_feeds(
     wrong set.
 
     The PRICERS are built here rather than inside a resolver:
-    :meth:`~app.services.income_service.PaycheckPricing.for_profile` loads
-    the profile's tax series on first construction of a pricer for a set, and
-    that query belongs to this loader, not to the pure module the resolver
-    will fire in.  A pricer prices nothing until asked, so an account whose
-    feed no consumer reads costs the series and no paycheck -- and a set
+    :meth:`~app.services.income_service.PaycheckPricing.for_profile` derives
+    the pass's calendar on its first use -- the raises it reads when no set is
+    given are eager-loaded by :func:`_load_funding_profiles`, and the tax
+    series it also loaded there is sliced from the law without a query since
+    plan step salary:X-at-1 -- and that query belongs to this loader, not to
+    the pure module the resolver will fire in.  A pricer prices nothing until asked, so an account
+    whose feed no consumer reads costs that construction and no paycheck --
+    and a set
     equal to the rows costs nothing at all, because ``for_profile`` keys its
     memo on the canonical set and answers the pricer the rows already built.
 

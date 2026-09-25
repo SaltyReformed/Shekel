@@ -1,25 +1,28 @@
 """
 Shekel Budget App -- Tax Config Service
 
-Loads tax configuration objects (bracket sets, state configs, FICA)
-required by the paycheck calculator.  Extracted from the salary route
-to eliminate a route-to-route import and a duplicate copy in
-chart_data_service.py.
+Resolves which tax law prices a salary profile's paycheck in a given year,
+for the paycheck calculator and the Taxes tab.  The law itself is
+:mod:`app.tax_law` -- ONE copy, in the code (ruling **salary:R-SAL74**, plan
+step **salary:X-at-1**); this module reads it and decides which of its years
+applies.  Until X-at-1 it read a copy of the law stored per user in five
+``salary`` tables, which signup and every deploy copied in and the Settings
+page could overwrite.
 
-**Which year's configuration applies to a given year is ONE rule and it lives
-here** (:func:`resolve_tax_year`).  A user seeds configuration for the years the
-app knows about -- 2025 and 2026 on production -- while pay periods run ~2 years
-ahead, so most projected periods ask for a year that has none.  Answering that
-with "no configuration" is not an option: the paycheck engine reads a missing
+**Which year's law applies to a given year is ONE rule and it lives here**
+(:func:`resolve_tax_year`).  The app carries the years that have been
+published -- 2025 and 2026 at X-at-1 -- while pay periods run ~2 years ahead,
+so most projected periods ask for a year the law does not have yet.  Answering
+that with "no law" is not an option: the paycheck engine reads a missing
 ``fica_config`` as zero Social Security
 (:func:`~app.services.tax_calculator.capped_social_security`, which documents
 that arm for bootstrap), so an unresolved year silently inflates net pay by the
 whole SS line.
 
 The rule this module used to apply was "fall back to the CURRENT CALENDAR YEAR",
-and it had a cliff the day the current year is itself unconfigured -- which is
-every New Year, for every user, because configuration is seeded per year and
-nothing seeds the next one.  Measured on a clone of production 2026-08-11: on
+and it had a cliff the day the current year is itself unconfigured -- which was
+every New Year, for every user, because configuration was seeded per year and
+nothing seeded the next one.  Measured on a clone of production 2026-08-11: on
 2027-01-01, with no write and no user action, 40 of 51 live-priced salary rows
 change and the projected income over the horizon rises by **$8,460.50** (period
 22 goes from ``NET 2,639.30`` with ``ss 205.19`` to ``NET 2,844.49`` with
@@ -47,192 +50,145 @@ description of live code.*
 
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 
-from app.extensions import db
-from app.models.tax_config import (
-    FicaConfig,
-    StateChildDeduction,
-    StateTaxConfig,
-    TaxBracketSet,
-)
+from app import ref_cache, tax_law
+from app.tax_law import ChildDeductionTier, FederalRules, FicaRules
 
 logger = logging.getLogger(__name__)
 
 
-def load_tax_configs(user_id, profile, tax_year):
-    """Load the tax configuration stored for EXACTLY ``tax_year``.
+@dataclass(frozen=True)
+class StateTaxRules:
+    """One state's law for one tax year as it applies to ONE filing status.
 
-    Queries TaxBracketSet, StateTaxConfig, and FicaConfig for a given
-    tax year, matching the given salary profile's filing status and
-    state code.
+    The law states a state's rate once per year and its deductions per filing
+    status (:class:`app.tax_law.StateYearLaw`); a profile files under one
+    status, so this is that status's slice with the rate beside it -- the
+    attributes :func:`app.services.tax_calculator.calculate_state_tax` reads,
+    plus the child-deduction tiers the annual liability resolves.
 
-    **This is the exact-year primitive and it substitutes nothing.**  A year with
-    no configuration returns three ``None``s, and every tax figure computed from
-    that is wrong in a specific direction -- zero federal withholding, zero state
-    withholding, and zero Social Security.  Unless you are asking "is this exact
-    year configured", call :func:`load_tax_configs_for_year`, which answers
-    "which configuration APPLIES to this year" and is what every consumer wants.
+    ``tax_type_id`` is the ``ref.tax_types`` id of the law's tax type, because
+    the calculator compares ids (IDs for logic).
 
-    **``tax_year`` is required, and it stopped being optional as the root-cause
-    half of the New Year cliff** (see the module docstring).  The parameter used
-    to default to ``date.today().year``, which put an unresolved clock read
-    behind an omitted argument at six call sites; a defaulted year is exactly the
-    shape that made the defect invisible at each of them.
-
-    Args:
-        user_id (int): The owning user's ID -- all tax configs are
-            per-user so the query is ownership-scoped.
-        profile (SalaryProfile): Must have ``filing_status_id`` and
-            ``state_code`` attributes.
-        tax_year (int): The tax year to load configs for.  No substitution
-            is made for a year that has none.
-
-    Returns:
-        dict: Keys ``bracket_set``, ``state_config``, ``fica_config``.
-            Each value is the matching model instance or ``None`` if no
-            configuration exists for the requested year.
+    Attributes:
+        state_code: The two-letter state.
+        tax_type_id: The ``ref.tax_types`` id of the state's tax type.
+        flat_rate: The state's flat rate for the year, or ``None``.
+        standard_deduction: This filing status's state standard deduction.
+        child_deduction_tiers: This filing status's per-child deduction tiers,
+            lowest AGI first; empty for a state with none.
     """
-    bracket_set = (
-        db.session.query(TaxBracketSet)
-        .filter_by(
-            user_id=user_id,
-            filing_status_id=profile.filing_status_id,
-            tax_year=tax_year,
-        )
-        .first()
-    )
 
-    # T-P5: the state config is filing-status-keyed (the NC standard
-    # deduction is status-specific), so the query filters by the profile's
-    # filing status.  The withholding path resolves the profile's own
-    # status; the analytics liability resolves the primary filer's.
-    state_config = (
-        db.session.query(StateTaxConfig)
-        .filter_by(
-            user_id=user_id,
-            state_code=profile.state_code,
-            tax_year=tax_year,
-            filing_status_id=profile.filing_status_id,
-        )
-        .first()
-    )
-
-    fica_config = (
-        db.session.query(FicaConfig)
-        .filter_by(user_id=user_id, tax_year=tax_year)
-        .first()
-    )
-
-    return {
-        "bracket_set": bracket_set,
-        "state_config": state_config,
-        "fica_config": fica_config,
-    }
+    state_code: str
+    tax_type_id: int
+    flat_rate: Decimal | None
+    standard_deduction: Decimal
+    child_deduction_tiers: tuple[ChildDeductionTier, ...]
 
 
 @dataclass(frozen=True)
 class ProfileTaxSeries:
-    """Every tax configuration row a profile can resolve against, by kind and year.
+    """Every year of the law a profile can resolve against, by kind and year.
 
     **Three INDEPENDENT year series, and their independence is the whole point.**
     An earlier draft of this module resolved ONE year for the profile from the
-    UNION of the three tables and then loaded all three under it.  That is wrong
-    in a way that moves money, because the loader needs each table to have its
-    own row for that year: a year present in only one table became the resolved
-    year for itself AND for every later year, and the other two lines silently
-    became zero across the whole horizon.
+    UNION of the three kinds and then loaded all three under it.  That is wrong
+    in a way that moves money, because the loader needs each kind to have its
+    own entry for that year: a year present in only one kind became the
+    resolved year for itself AND for every later year, and the other two lines
+    silently became zero across the whole horizon.  Measured on a clone of
+    production 2026-08-11, when the law was stored per user and the Settings
+    page could write a single kind for any year: saving one 2027 state-tax row
+    made 2028 resolve to 2027, dropping the bracket set and FICA to ``None``
+    and Social Security to ``$0.00`` -- **+$216.63 a period**.
 
-    It is not a hypothetical.  The settings screen writes ``StateTaxConfig`` and
-    ``FicaConfig`` for any year in ``[2000, 2100]``
-    (:mod:`app.routes.salary.tax_config`), and NOTHING in ``app/`` ever creates a
-    ``TaxBracketSet`` outside the signup seed -- so "one table has this year and
-    the others do not" is precisely the state that screen produces.  Measured on
-    a clone of production 2026-08-11 under the union rule: saving a single 2027
-    state-tax row made 2028 resolve to 2027, dropping ``bracket_set`` and
-    ``fica_config`` to ``None`` and Social Security to ``$0.00`` -- **+$216.63 a
-    period** on a paycheck that was correct beforehand.  Resolving each kind
-    against its own series makes that unrepresentable.
-
-    Loading the whole series per kind rather than querying per year is what
-    keeps the multi-year caller cheap: THREE queries for any horizon, with the
-    year resolution then a pure in-memory pick.  The row counts are bounded by
-    (years x filing statuses) and are single digits in practice -- eight bracket
-    sets, eight state configs and two FICA rows on production.
+    The law now carries federal rules and FICA for every year it carries
+    (:class:`app.tax_law.TaxYearLaw` refuses a year without them), so that
+    state can no longer arise between those two kinds.  A STATE still can: the
+    law lists a state only for the years the app supports it, so a state added
+    in a later year has no entry for the years before it.  Resolving each kind
+    against its own series confines that gap to the state line -- the years
+    before the state's first entry reach FORWARD to it, the approximation
+    :func:`resolve_tax_year` states -- instead of letting it move the federal
+    and FICA lines too.
 
     Attributes:
-        bracket_sets: ``{tax_year: TaxBracketSet}`` for the profile's filing
+        bracket_sets: ``{tax_year: FederalRules}`` for the profile's filing
             status.
-        state_configs: ``{tax_year: StateTaxConfig}`` for the profile's state
+        state_configs: ``{tax_year: StateTaxRules}`` for the profile's state
             and filing status.
-        fica_configs: ``{tax_year: FicaConfig}`` for the user.  FICA is keyed on
-            the user ALONE -- it carries no filing status and no state -- which
-            is a second reason the three cannot share one candidate set.
+        fica_configs: ``{tax_year: FicaRules}``.  FICA carries no filing status
+            and no state.
     """
 
-    bracket_sets: "dict[int, TaxBracketSet]"
-    state_configs: "dict[int, StateTaxConfig]"
-    fica_configs: "dict[int, FicaConfig]"
+    bracket_sets: "dict[int, FederalRules]"
+    state_configs: "dict[int, StateTaxRules]"
+    fica_configs: "dict[int, FicaRules]"
 
 
-def _series(model, **key) -> dict:
-    """Return ``{tax_year: row}`` for one config kind under one query key.
-
-    Args:
-        model: The config model to load (``TaxBracketSet``, ``StateTaxConfig``
-            or ``FicaConfig``).
-        **key: The ownership / identity filter for this kind.  It must match
-            what :func:`load_tax_configs` filters that same table by, or a year
-            would count as configured here and load as ``None`` there.
-
-    Returns:
-        The kind's rows keyed by tax year.  A table's uniqueness constraint
-        makes the key unique for a given filter, so no row can be lost to a
-        collision.
-    """
-    return {
-        row.tax_year: row
-        for row in db.session.query(model).filter_by(**key).all()
-    }
-
-
-def profile_tax_series(user_id: int, profile) -> ProfileTaxSeries:
-    """Load all three tax-configuration series for *profile*, in three queries.
+def profile_tax_series(profile) -> ProfileTaxSeries:
+    """Return the law's three series for *profile*: every year, sliced to its status and state.
 
     The candidate sets :func:`resolve_tax_year` picks from, and the reason that
-    rule needs no clock: they are derived entirely from what the user has
-    stored.
+    rule needs no clock: they are the years the law carries.  Reads
+    :data:`app.tax_law.LAW` and issues no query.
 
-    Each kind is queried under the SAME key :func:`load_tax_configs` loads it by
-    -- the bracket set by ``(user, filing_status)``, the state config by
-    ``(user, state, filing_status)``, FICA by ``(user)``.  Keeping those in step
-    is what makes a resolved year loadable: a year counted as configured under a
-    looser key would resolve and then come back ``None``, which is the
-    silent-zero-withholding failure this module exists to remove.  In
-    particular a year configured for a DIFFERENT filing status is not a
-    candidate here, so a married filer's year can never resolve onto a single
-    filer's brackets.
+    **A filing status the law does not model resolves no federal rules**, and a
+    state the law does not list resolves no state rules, which is what the
+    per-user copy answered for a status or state it held no row for.  What
+    follows differs by line: a paycheck prices missing federal rules as zero
+    federal withholding (``paycheck_calculator/_withholding.py``) where the
+    annual liability refuses them
+    (:func:`~app.services.tax_calculator.calculate_annual_federal_liability`
+    raises ``InvalidFilingStatusError``), and both price missing state rules as
+    zero state tax (:func:`~app.services.tax_calculator.calculate_state_tax`).
+    Plan step **salary:X-at-3** makes the state case unsaveable (ruling
+    **R-SAL78**, finding **SAL-575**).
 
     Args:
-        user_id: The owning user's ID.
         profile (SalaryProfile): Supplies ``filing_status_id`` and
             ``state_code``.
 
     Returns:
-        The profile's :class:`ProfileTaxSeries`; a kind the user has configured
-        nothing for is an empty mapping.
+        The profile's :class:`ProfileTaxSeries`.
     """
+    status = ref_cache.filing_status_member(profile.filing_status_id)
+    years = tax_law.LAW.years
     return ProfileTaxSeries(
-        bracket_sets=_series(
-            TaxBracketSet,
-            user_id=user_id, filing_status_id=profile.filing_status_id,
-        ),
-        state_configs=_series(
-            StateTaxConfig,
-            user_id=user_id,
-            state_code=profile.state_code,
-            filing_status_id=profile.filing_status_id,
-        ),
-        fica_configs=_series(FicaConfig, user_id=user_id),
+        bracket_sets={
+            year.tax_year: year.federal[status]
+            for year in years
+            if status is not None
+        },
+        state_configs={
+            year.tax_year: _state_rules(
+                profile.state_code, year.states[profile.state_code], status,
+            )
+            for year in years
+            if status is not None and profile.state_code in year.states
+        },
+        fica_configs={year.tax_year: year.fica for year in years},
+    )
+
+
+def _state_rules(state_code, state_year, status) -> StateTaxRules:
+    """Slice one state-year of the law to one filing status.
+
+    Args:
+        state_code: The two-letter state the law keys *state_year* under.
+        state_year: The :class:`app.tax_law.StateYearLaw`.
+        status: The profile's :class:`~app.enums.FilingStatusEnum` member.
+
+    Returns:
+        The status's :class:`StateTaxRules`.
+    """
+    return StateTaxRules(
+        state_code=state_code,
+        tax_type_id=ref_cache.tax_type_id(state_year.tax_type),
+        flat_rate=state_year.flat_rate,
+        standard_deduction=state_year.standard_deduction[status],
+        child_deduction_tiers=state_year.child_deduction_tiers[status],
     )
 
 
@@ -281,32 +237,34 @@ def resolve_tax_year(tax_year: int, configured: tuple[int, ...]) -> int | None:
 
 
 def _pick(series: dict, tax_year: int):
-    """Return the row from ONE kind's *series* whose rules apply to ``tax_year``.
+    """Return the entry from ONE kind's *series* whose rules apply to ``tax_year``.
 
     Args:
-        series: That kind's ``{tax_year: row}`` mapping.
+        series: That kind's ``{tax_year: rules}`` mapping.
         tax_year: The tax year whose rules are wanted.
 
     Returns:
-        The applicable row, or ``None`` when the kind has no rows at all.
+        ``(resolved_year, rules)``, or ``(None, None)`` when the kind has no
+        entries at all.
     """
     resolved = resolve_tax_year(tax_year, tuple(series))
-    return None if resolved is None else series[resolved]
+    return (None, None) if resolved is None else (resolved, series[resolved])
 
 
 def _configs_from_series(series: ProfileTaxSeries, tax_year: int) -> dict:
     """Resolve each kind in *series* independently for ``tax_year``.
 
     The shared body of :func:`load_tax_configs_for_year` and
-    :func:`configs_by_year`, so the multi-year caller loads the series ONCE
-    and every year after the first is pure computation.
+    :func:`configs_by_year`, so the multi-year caller slices the law ONCE and
+    every year after the first is pure computation.
 
     A substitution is logged at DEBUG rather than INFO because it is the
-    STEADY STATE, not an event: every projected period beyond the last
-    configured year resolves this way, on every read, forever.  What is not yet
-    recorded anywhere a user can see is that a figure was computed against
-    another year's rules -- an approximation the surfaces present as a plain
-    dollar amount.
+    STEADY STATE, not an event: every projected period beyond the newest year
+    the law carries resolves this way, on every read, until that year is
+    published.  What is not yet recorded anywhere a user can see is that a
+    figure was computed against another year's rules -- an approximation the
+    surfaces present as a plain dollar amount (ruling **R-SAL75**, plan steps
+    salary:X-at-5 and X-at-6).
 
     Args:
         series: The profile's :class:`ProfileTaxSeries`.
@@ -314,75 +272,68 @@ def _configs_from_series(series: ProfileTaxSeries, tax_year: int) -> dict:
 
     Returns:
         dict: Keys ``bracket_set``, ``state_config``, ``fica_config``; each
-            value is the applicable row, or ``None`` when that kind has no rows.
+            value is the applicable rules, or ``None`` when that kind has no
+            entries.
     """
-    configs = {
+    picked = {
         "bracket_set": _pick(series.bracket_sets, tax_year),
         "state_config": _pick(series.state_configs, tax_year),
         "fica_config": _pick(series.fica_configs, tax_year),
     }
     substituted = {
-        kind: config.tax_year
-        for kind, config in configs.items()
-        if config is not None and config.tax_year != tax_year
+        kind: resolved
+        for kind, (resolved, _rules) in picked.items()
+        if resolved is not None and resolved != tax_year
     }
     if substituted:
         logger.debug(
-            "Tax year %d is unconfigured for %s; applying %s",
+            "Tax year %d is not in the law for %s; applying %s",
             tax_year, sorted(substituted), substituted,
         )
-    return configs
+    return {kind: rules for kind, (_resolved, rules) in picked.items()}
 
 
-def load_tax_configs_for_year(user_id, profile, tax_year):
-    """Load the tax configuration that APPLIES to ``tax_year``.
+def load_tax_configs_for_year(profile, tax_year):
+    """Return the tax law that APPLIES to ``tax_year`` for *profile*.
 
-    The resolving loader every consumer wants: each kind's own series decides
-    which of ITS years applies (:func:`resolve_tax_year`).  Every surface that
-    resolves per-year configs -- the recurrence engine (which GENERATES the
-    stored grid net pay), the year-end summary, the tax report / withholding /
-    liability services, and the salary projection, breakdown and dashboard paths
-    -- goes through here, so the generated amount and the live recompute cannot
-    diverge on which year's brackets and FICA wage base/cap apply (deep-hunt
-    DH-#30).
+    The resolving loader every single-year consumer wants: each kind's own
+    series decides which of ITS years applies (:func:`resolve_tax_year`).
+    Every surface that resolves per-year rules -- the tax report / withholding /
+    liability services and, through :func:`configs_by_year`, the salary
+    projection, breakdown and dashboard paths -- goes through here, so two
+    surfaces cannot disagree on which year's brackets and FICA wage base/cap
+    apply (deep-hunt DH-#30).
 
     Args:
-        user_id (int): The owning user's ID.
         profile (SalaryProfile): Supplies ``filing_status_id`` and
             ``state_code``.
         tax_year (int): The tax year whose rules are wanted.
 
     Returns:
         dict: Keys ``bracket_set``, ``state_config``, ``fica_config``.  A value
-            is ``None`` only when the user has configured NO year for that kind
-            -- never merely because *tax_year* itself is unconfigured, and never
-            because a SIBLING kind is missing that year.
+            is ``None`` only when the law carries NO year for that kind and
+            profile -- never merely because *tax_year* itself is not in the law,
+            and never because a SIBLING kind lacks that year.
     """
-    return _configs_from_series(
-        profile_tax_series(user_id, profile), tax_year,
-    )
+    return _configs_from_series(profile_tax_series(profile), tax_year)
 
 
 def configs_by_year(series: ProfileTaxSeries, tax_years) -> dict:
-    """Resolve a LOADED series for each of *tax_years*, issuing no query.
+    """Resolve a sliced series for each of *tax_years*.
 
     The MULTI-YEAR resolving door, so a projection spanning more than one tax
-    year applies each period's OWN year's rules -- the per-year resolution the
-    recurrence engine already performs when generating the stored grid amounts
-    (DH-#30).  Its answer is a function of the stored series alone: asking for
-    2027 beside 2026 gives the same answer as asking for it alone, on every
-    date, because :func:`resolve_tax_year` consults no clock.
+    year applies each period's OWN year's rules.  Its answer is a function of
+    the law alone: asking for 2027 beside 2026 gives the same answer as asking
+    for it alone, on every date, because :func:`resolve_tax_year` consults no
+    clock.
 
-    **It takes the SERIES rather than an owner and a period list, and plan
-    step salary:S3-d is why.**  It was ``load_tax_configs_for_periods(user_id,
-    profile, periods)``, which loaded the series itself -- three queries -- on
-    every call.  That is right for a caller that knows its whole domain up
-    front and wrong for one that does not:
+    **It takes the SERIES rather than a profile and a period list, and plan
+    step salary:S3-d is why.**
     :class:`~app.services.income_service.ProfilePaychecks` prices a payday
-    when it is asked for one, so a self-loading door would have cost three
-    queries per payday.  Loading the series ONCE and resolving years against
-    it is what makes pricing on demand free, and it is the split that already
-    existed inside that function rather than a new rule.
+    when it is asked for one, so it slices the law once
+    (:func:`profile_tax_series`) and resolves each payday's year against that
+    -- when the series was a stored copy, a self-loading door would have cost
+    three queries per payday.
 
     **A caller holding periods rather than years** writes
     ``configs_by_year(series, {p.start_date.year for p in periods})``.  Only
@@ -391,7 +342,7 @@ def configs_by_year(series: ProfileTaxSeries, tax_years) -> dict:
 
     Args:
         series: The profile's :class:`ProfileTaxSeries`, from
-            :func:`profile_tax_series`.  THREE queries whatever the horizon.
+            :func:`profile_tax_series`.
         tax_years: The tax years wanted -- any iterable; duplicates collapse.
 
     Returns:
@@ -399,36 +350,3 @@ def configs_by_year(series: ProfileTaxSeries, tax_years) -> dict:
             entry per distinct year asked for, empty for an empty ask.
     """
     return {year: _configs_from_series(series, year) for year in set(tax_years)}
-
-
-def load_state_child_deductions(user_id, state_code, tax_year, filing_status_id):
-    """Load the state per-child deduction tiers for a state/year/filing status.
-
-    Returns every :class:`~app.models.tax_config.StateChildDeduction` tier row
-    for the given key (the NC AGI-tiered child deduction, T-P5), ordered by
-    ``agi_min`` for readability.  The tier LOOKUP itself keys on ``agi_max``
-    (see :func:`app.services.tax_calculator.resolve_child_deduction_per_child`),
-    so the order here is only presentational.  A state/year/status with no
-    seeded tiers (e.g. any non-NC state) yields an empty list, which the
-    resolver treats as "no child deduction."
-
-    Args:
-        user_id (int): The owning user's ID (tiers are per-user seed rows).
-        state_code (str): Two-letter state code.
-        tax_year (int): The tax year to load tiers for.
-        filing_status_id (int): The filing status the tiers apply to.
-
-    Returns:
-        list[StateChildDeduction]: The matching tier rows (possibly empty).
-    """
-    return (
-        db.session.query(StateChildDeduction)
-        .filter_by(
-            user_id=user_id,
-            state_code=state_code,
-            tax_year=tax_year,
-            filing_status_id=filing_status_id,
-        )
-        .order_by(StateChildDeduction.agi_min)
-        .all()
-    )

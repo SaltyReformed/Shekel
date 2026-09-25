@@ -142,7 +142,7 @@ from app.services.recurrence import (
     ResolvedRecurrence,
     RuleReading,
     describe,
-    placed_periods,
+    placed_occurrences,
 )
 from app.services.recurrence import compute_due_date
 from app.services.recurring_definition import (
@@ -353,7 +353,9 @@ def next_placement(
     :func:`~app.services.recurring_definition.read_definition` already
     produced for this row -- the same walk that generates the grid instances --
     and ``compute_due_date`` gives the due date the generated instance would
-    carry.  Returns the first such placement whose due date is on or after
+    carry, over each placement's own occurrence (plan step R5-a: two
+    occurrences seated in one long paycheck are two dates, not one).  Returns
+    the first such placement whose due date is on or after
     ``as_of`` (the current period can match with a due date already past, so
     the search advances to the next matching period), or ``None`` when no
     matching period has a due date on or after ``as_of`` -- an expired rule
@@ -365,7 +367,7 @@ def next_placement(
     **``as_of`` is this surface's own display boundary, not the rule's** -- the
     rule's opening bound is its anchor, and putting a caller's window inside the
     producer is what defect D2 was.  So the bound is stated here and the
-    PROJECTION is shared (:func:`~app.services.recurrence.placed_periods`),
+    FILTER is shared (:func:`~app.services.recurrence.placed_occurrences`),
     which is the same split the retired ``match_periods`` adapter fused: it
     both filtered and bounded, so a caller's window looked like a property of
     the recurrence.
@@ -383,12 +385,12 @@ def next_placement(
         paycheck it is placed in and the due date its row carries -- or
         ``None`` when the reading places nothing there.
     """
-    for period in placed_periods(
+    for placement in placed_occurrences(
         reading.placements, ending_on_or_after=as_of,
     ):
-        due = compute_due_date(rule, period)
+        due = compute_due_date(rule, placement.occurrence, placement.period)
         if due >= as_of:
-            return period, due
+            return placement.period, due
     return None
 
 

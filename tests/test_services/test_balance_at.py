@@ -99,6 +99,7 @@ from app.services.balance_at._resolution import (
     resolved_loan,
 )
 from tests.conftest import SEED_USER_BOOTSTRAP_START
+from tests._test_helpers import EMPTY_TAX_LAW
 from tests._test_helpers import (
     account_never_asserted,
     add_txn,
@@ -1776,7 +1777,7 @@ class TestTheSeamOwnsTheIncomeBasis:
     """
 
     def test_a_stale_stored_amount_is_priced_live_without_being_asked(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, tax_law,
     ):
         """A salary row is priced by its profile on both maps, unasked.
 
@@ -1791,6 +1792,7 @@ class TestTheSeamOwnsTheIncomeBasis:
         instead of merely absent.
         """
         # pylint: disable=import-outside-toplevel
+        tax_law(EMPTY_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,
@@ -1818,7 +1820,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             )[periods[5].id] == Decimal("5000.00")
 
     def test_an_interest_account_is_on_the_same_live_basis_as_a_plain_one(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, tax_law,
     ):
         """The kind that used to read STORED income reads LIVE income too.
 
@@ -1828,6 +1830,7 @@ class TestTheSeamOwnsTheIncomeBasis:
         pure interest rather than an income mismatch.
         """
         # pylint: disable=import-outside-toplevel
+        tax_law(EMPTY_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,
