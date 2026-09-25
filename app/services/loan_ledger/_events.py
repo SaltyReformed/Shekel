@@ -8,8 +8,9 @@ stream.  THREE kinds of fact enter it, and nothing else:
   balance true-up, all loaded as
   :class:`~app.services.loan_loaders.LoanAnchorFact` and all RESETTING the running
   balance at their own date (a ``tracking_start`` is never the opening -- step C1);
-* a **PAYMENT** -- a settled loan-side income shadow, the record that cash
-  actually moved (:func:`~app.services.loan_loaders.settled_income_shadows`);
+* a **PAYMENT** -- the to-side leg of a settled transfer into the loan, its
+  covering movement the record that cash actually moved
+  (:func:`~app.services.loan_loaders.settled_income_shadows`);
 * a **CHARGE** -- what an accrual period cost the loan
   (:func:`.._charges.contract_charges`), one per CONTRACTUAL installment from
   origination (plan step recurrence:R16-c-2, ruling **R-R100**).  It joined the
@@ -42,11 +43,10 @@ half of the pass's visibility bound (:func:`.._walk.load_loan_stream`).
 
 from datetime import date
 
-from app.models.transaction import Transaction
 from app.services import loan_loaders
 from app.services.loan_loaders import LoanAnchorFact
-from app.services.row_valuation import settled_contribution
-from app.utils.amount_relationships import settlement_load_options
+from app.services.row_valuation import leg_settled_contribution
+from app.services.transfer_legs import TransferLeg
 
 from ._charges import LoanCalendar
 from ._replay import (
@@ -62,13 +62,16 @@ def confirmed_shadows_through(
     loan_account_id: int,
     scenario_id: int,
     as_of: date,
-) -> list[Transaction]:
-    """Return the settled shadows whose CASH had moved by ``as_of``.
+    payment_day: int,
+) -> list[TransferLeg]:
+    """Return the settled payments whose CASH had moved by ``as_of``.
 
     The DISPLAY subset of
     :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the
     balance readers count as confirmed history at ``as_of`` (their shared
-    visible-on bound).  The posted ledger's payment-history table
+    visible-on bound).  It returns LEGS since plan step balance:X-bi-6-4b and
+    keeps its shadow-era name until ``X-bi-6-4d``.  The posted ledger's
+    payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`)
     consumed this until plan step ``balance:X-bi-6-3``, when it began reading
     the walk's outcomes by the same ``visible_on`` bound, and since plan
@@ -78,46 +81,45 @@ def confirmed_shadows_through(
     payment -- see :func:`~app.services.loan_loaders.settled_income_shadows`
     for why).
 
-    A payment's visible-on date is its SETTLED date (step C2, ruling R-A), read
-    through the SAME :func:`._visible.payment_visible_on` the fold uses, so the
-    history rows and the fold cannot key a payment on two different days.  The SQL
-    reader that must agree with this (:func:`app.services.loan_posting_service`)
-    bounds the same postings by their ``entry_date``, which the writer stamps with
-    that identical settled date.
+    A payment's visible-on date is its SETTLED date (step C2, ruling R-A) --
+    or, for a ``$0.00`` close that moved nothing, the installment it skips
+    (ruling **R-BAL139**) -- read through the SAME
+    :func:`._visible.payment_visible_on` the fold uses, so the history rows and
+    the fold cannot key a payment on two different days.  The SQL reader that
+    must agree with this (:func:`app.services.loan_posting_service`) bounds the
+    same postings by their ``entry_date``, which the writer stamps with that
+    identical day.
 
     Args:
-        loan_account_id: The loan account whose shadows to load.
+        loan_account_id: The loan account whose payments to load.
         scenario_id: The budget scenario to scope to.
         as_of: The display boundary; a payment whose settled date has not arrived
             by it is a forward projection, excluded.
+        payment_day: The loan's contractual day-of-month due day, for
+            R-BAL139's day of a payment storing no ``due_date`` (see
+            :func:`._visible.payment_visible_on`).
 
     Returns:
-        The settled income shadows through ``as_of``, ascending by pay-period
-        start then ``id``.
+        The settled payments' legs through ``as_of``, ascending by pay-period
+        start then transfer id.
     """
     return [
-        shadow
-        # The record's load and no pricing load, and the reason covers the
-        # RETURNED rows and not only the filter below (plan step
-        # balance:X-bl-2a).  This reads ``payment_visible_on`` -- the
-        # ``settled_on`` column -- and its callers read the same rows:
-        # ``confirmed_loan_payment_history`` takes each shadow's due date and
-        # its settlement, which is the row's ENTRIES since plan step
-        # balance:X-bi-4b-1 (``settled_contribution`` sums them), plus the
-        # pay period ``income_shadows`` loads itself.  No consumer of this
-        # list prices a row, which is what makes stating no pricing load
-        # correct rather than merely locally true; it was ``options=()``
-        # while the record was the row's own two columns.
-        for shadow in loan_loaders.settled_income_shadows(
-            loan_account_id, scenario_id, options=settlement_load_options(),
+        leg
+        # No load stated: a leg's record rides the producer's one join, and
+        # this reads ``payment_visible_on`` -- the record's ``settled_on``, or
+        # the parent's due date and period -- while its callers read the same
+        # legs.  The shadow's ENTRIES were loaded here while the shadow was the
+        # payment (plan step balance:X-bl-2a to X-bi-6-4b).
+        for leg in loan_loaders.settled_income_shadows(
+            loan_account_id, scenario_id, options=(),
         )
-        if payment_visible_on(shadow) <= as_of
+        if payment_visible_on(leg, payment_day) <= as_of
     ]
 
 
 def loan_event_stream(
     anchor_facts: list[LoanAnchorFact],
-    shadows: list[Transaction],
+    shadows: list[TransferLeg],
     calendar: LoanCalendar,
 ) -> LoanEventStream:
     """Map a loan's anchors, settled payments and charges into ONE event stream.
@@ -156,7 +158,7 @@ def loan_event_stream(
     keep :func:`~app.services.loan_loaders.load_loan_anchor_facts`'
     ``(anchor_date, created_at, event_id)``, payments keep
     :func:`~app.services.loan_loaders.settled_income_shadows`'
-    ``(pay_period.start_date, id)``.  The stream was re-sorted on ``(anchor_date,
+    ``(pay_period.start_date, transfer id)``.  The stream was re-sorted on ``(anchor_date,
     created_at)`` until X-an-b, which was a SECOND statement of a rule the loader
     is now the one home of, and an incomplete one: ``created_at`` is evaluated at
     TRANSACTION START, so two anchors written together shared an instant, the
@@ -168,25 +170,26 @@ def loan_event_stream(
             list, PRE-ORDERED by ``(anchor_date, created_at, event_id)``
             (:func:`~app.services.loan_loaders.load_loan_anchor_facts`, which is
             where that order is decided).
-        shadows: The settled income shadows, PRE-SORTED by
-            ``(pay_period.start_date, id)``
-            (:func:`~app.services.loan_loaders.settled_income_shadows`).  Each
-            row's cash is read through
-            :func:`~app.services.row_valuation.settled_contribution` -- the accessor
-            whose NAME asserts the row has SETTLED -- rather than a resolver,
-            because every row here has, so it answers from the settlement it
-            RECORDED -- its covering movement (plan step ``balance:X-bi-4b-1``)
-            -- and there is no plan to reach; a row holding none is the
-            ``$0.00`` record (ruling **R-BAL82**), a payment of nothing, never
-            a fallback to a forecast, and since plan step X-bx a row that has
-            not settled at all REFUSES, which is what makes the loader's status
-            filter a precondition this replay states rather than merely relies
-            on.
+        shadows: The settled payments' legs, PRE-SORTED by
+            ``(pay_period.start_date, transfer id)``
+            (:func:`~app.services.loan_loaders.settled_income_shadows`; the
+            name is the shadow era's and goes at ``X-bi-6-4d``).  Each leg's
+            cash is read through
+            :func:`~app.services.row_valuation.leg_settled_contribution` -- the
+            accessor whose NAME asserts the payment has SETTLED -- rather than
+            a resolver, because every leg here has, so it answers from the
+            settlement it RECORDED -- its covering movement -- and there is no
+            plan to reach; a leg holding none is the ``$0.00`` record (ruling
+            **R-BAL82**), a payment of nothing, never a fallback to a
+            forecast, and a leg that has not settled at all REFUSES, which is
+            what makes the loader's partition a precondition this replay
+            states rather than merely relies on.
         calendar: The loan's contract terms
             (:class:`~.._charges.LoanCalendar`): its due day is the fallback
-            coordinate for a shadow carrying no stored ``due_date``, and each
-            charge carries the rate period and the escrow in force on its own
-            installment date.
+            coordinate for a payment whose transfer stores no ``due_date``
+            (for its contract date and, for a ``$0.00`` close, its visible-on
+            day, ruling **R-BAL139**), and each charge carries the rate period
+            and the escrow in force on its own installment date.
 
     Returns:
         The loan's :class:`~._replay.LoanEventStream` -- its RECORDED facts.
@@ -196,17 +199,19 @@ def loan_event_stream(
     """
     payments = [
         LoanCashEvent(
-            on_date=loan_loaders.loan_payment_due_date(shadow, calendar.payment_day),
-            cash=settled_contribution(shadow),
-            source=shadow,
+            on_date=loan_loaders.loan_payment_due_date(
+                leg, calendar.payment_day,
+            ),
+            cash=leg_settled_contribution(leg),
+            source=leg,
             # The ONE clock, read once here: the settled day the posting
             # writer stamps the entry with, and the day the fold counts the
             # principal from (plan step recurrence:R16-c-1 moved the read
             # from ``dated_deltas`` onto the event, so the projections the
             # seam appends carry their own day under the same name).
-            visible_on=payment_visible_on(shadow),
+            visible_on=payment_visible_on(leg, calendar.payment_day),
         )
-        for shadow in shadows
+        for leg in shadows
     ]
     return with_contract_charges(
         LoanEventStream(

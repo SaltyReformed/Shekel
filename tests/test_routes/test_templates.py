@@ -1959,7 +1959,14 @@ class TestTemplateNegativePaths:
             # archiving an already-inactive template.
 
     def test_unarchive_already_active_template(self, app, auth_client, seed_user, seed_periods_today):
-        """Unarchiving an already-active template is idempotent."""
+        """Unarchiving an already-active template restores nothing and says why.
+
+        Since plan step ``pay_calendar:C18-a`` (ruling R-PC95) the door
+        refuses an active template: its soft-deleted rows are its owner's
+        own deletions, which an unarchive used to bring back.  The expected
+        message changed with the developer's rule-5 confirmation
+        (2026-09-23); the rest of the test is as written.
+        """
         with app.app_context():
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
             assert template.is_active is True
@@ -1969,14 +1976,13 @@ class TestTemplateNegativePaths:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"unarchived" in resp.data
-            # No soft-deleted transactions to restore.
-            assert b"0 projected transaction(s) restored" in resp.data
+            assert (
+                b"Recurring transaction &#39;Rent&#39; is not archived, so "
+                b"nothing was restored."
+            ) in resp.data
 
             db.session.refresh(template)
             assert template.is_active is True
-            # NOTE: unarchive is idempotent -- no guard against
-            # unarchiving an already-active template.
 
     def test_create_template_missing_name(self, app, auth_client, seed_user):
         """Creating a template without name fails schema validation."""

@@ -28,6 +28,15 @@ payment's schedule takes.  The transaction form has no destination control,
 sends none, and is narrowed by nothing -- which is the door's own answer for
 a definition that pays into no account.
 
+**It reads where the definition's BOOKS open too, since plan step
+``pay_calendar:C18-a``** (rulings **R-PC85**, **R-PC86**).  A save bounds a
+definition's occurrences by the books of every account it moves money in, so
+the transaction form's ``account_id`` and the transfer form's
+``from_account_id`` ride on the request beside ``to_account_id``, each
+through the same ownership gate, and the walk drops an occurrence whose row
+would land on or before the latest of their openings -- the same composition
+(``BalanceContext.resolved_for``) the save's own walk takes.
+
 **It stopped building a transient ROW at plan step R-F6.**  It used to author
 the submission onto an unsaved ``RecurrenceRule`` and hand that to
 ``rule_occurrences``, which read it straight back into a spec -- a submission
@@ -325,13 +334,22 @@ def _submitted_preview(
     return unit, placement, starts_on
 
 
-def _submitted_destination() -> UnsavedDefinition:
-    """Return the destination the request names, owner-checked, or abort 404.
+def _submitted_definition() -> UnsavedDefinition:
+    """Return the accounts the request names, owner-checked, or abort 404.
 
     The transfer form's ``to_account_id`` control (plan step R7d-f-2, plan
-    ledger row **REC-515**): the one fact about a definition beyond its rule
-    that decides where its occurrences stop, because a transfer into a loan
-    stops when the loan does.
+    ledger row **REC-515**): the fact about a definition beyond its rule that
+    decides where its occurrences STOP, because a transfer into a loan stops
+    when the loan does.  **And, since plan step ``pay_calendar:C18-a`` (ruling
+    R-PC85), the accounts that decide where they START**: the transaction
+    form's ``account_id`` and the transfer form's ``from_account_id`` beside
+    its ``to_account_id`` -- every account the definition moves money in,
+    whose books the walk may not write below.  A save bounds by them, so a
+    preview that did not would list a date saving would not generate.  The
+    transaction form's envelope box rides for the same reason (ruling
+    **R-PC89**: an envelope's row is compared with the books on its
+    paycheck's last day); it is a flag, not an id, so no gate applies, and
+    an absent or unreadable value is the unticked box.
 
     **An untrusted id becomes a row through the ownership gate and nowhere
     else.**  A missing account and another owner's account are both answered
@@ -347,15 +365,38 @@ def _submitted_destination() -> UnsavedDefinition:
 
     Returns:
         The :class:`~app.services.recurring_definition.UnsavedDefinition`
-        the door composes the derived stop from.
+        the door composes the derived stop and the books floor from.
     """
-    account_id = request.args.get("to_account_id", type=int)
+    return UnsavedDefinition(
+        to_account_id=_submitted_account_id("to_account_id"),
+        account_id=_submitted_account_id("account_id"),
+        from_account_id=_submitted_account_id("from_account_id"),
+        is_envelope=request.args.get("is_envelope") == "1",
+    )
+
+
+def _submitted_account_id(field: str) -> int | None:
+    """Return the account id *field* names, owner-checked, or abort 404.
+
+    ONE gate for the three account controls :func:`_submitted_definition`
+    reads, so a new one cannot arrive un-checked.  Absent or unparseable is
+    ``None`` (see :func:`_submitted_definition` for why); a present id is
+    resolved through :func:`~app.utils.auth_helpers.get_or_404`, and a missing
+    or foreign account is ``404``.
+
+    Args:
+        field: The query-argument name to read.
+
+    Returns:
+        The owner's account id, or ``None`` when the request names none.
+    """
+    account_id = request.args.get(field, type=int)
     if account_id is None:
-        return UnsavedDefinition(to_account_id=None)
+        return None
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
-    return UnsavedDefinition(to_account_id=account.id)
+    return account.id
 
 
 def recurrence_preview_fragment() -> str:
@@ -413,10 +454,10 @@ def recurrence_preview_fragment() -> str:
     refused by it.
     :func:`_submitted_iso_date` handles it -- BOTH closing-bound dates, through
     one parser since plan step R7b-4 -- and the docstring there says why an
-    unparseable bound is dropped rather than refused.  **The destination is
-    the other exception, and it is REFUSED**: ``to_account_id`` names a row,
-    so it goes through the ownership gate (:func:`_submitted_destination`)
-    before the door sees it.
+    unparseable bound is dropped rather than refused.  **The accounts are
+    the other exception, and they are REFUSED**: each id names a row, so it
+    goes through the ownership gate (:func:`_submitted_definition`) before the
+    door sees it.
 
     Returns:
         The fragment markup, or a muted one-line explanation when there is
@@ -442,7 +483,7 @@ def recurrence_preview_fragment() -> str:
     if isinstance(requested, str):
         return requested
     unit, placement, starts_on = requested
-    destination = _submitted_destination()
+    definition = _submitted_definition()
     # The READ PASS, built here because this is the route (the 2026-08-16
     # ruling): the door resolves the rule against its calendar and folds the
     # destination loan in its scenario, so the schedule the preview walks and
@@ -459,7 +500,7 @@ def recurrence_preview_fragment() -> str:
 
     try:
         resolved = resolved_submission(
-            build_preview_spec(unit, placement, starts_on), destination, ctx,
+            build_preview_spec(unit, placement, starts_on), definition, ctx,
         )
         if resolved is None:
             return _muted("No pay periods generated yet")

@@ -10,9 +10,9 @@ The pure data-loading functions every loan consumer shares, in two leaves:
   :class:`~app.models.escrow_line.EscrowLine` loaders, the synthesized
   origination anchor, and the contract-time due date each loan payment
   satisfies.
-* :mod:`._shadows` -- WHICH rows are an account's payments and which of them
-  have HAPPENED: the shadow-income predicate and the single settled/projected
-  partition every settled-payment consumer reads.
+* :mod:`._shadows` -- WHICH transfers are an account's payments and which of
+  them have HAPPENED: the single settled/projected partition every
+  settled-payment consumer reads.
 
 The graph is a line -- ``_terms`` imports ``_shadows`` for the settled set the
 escrow forward-only guard bounds on, and nothing there reads back.
@@ -51,7 +51,6 @@ from ._shadows import (
     ShadowSets,
     income_shadows,
     projected_income_legs,
-    query_shadow_income,
     settled_income_shadows,
 )
 from ._terms import (
@@ -89,7 +88,6 @@ __all__ = [
     "load_standing_loan_assertions",
     "loan_payment_due_date",
     "projected_income_legs",
-    "query_shadow_income",
     "settled_income_shadows",
     "synthesize_origination_anchor",
 ]

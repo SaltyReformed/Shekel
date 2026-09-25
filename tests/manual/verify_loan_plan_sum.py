@@ -114,7 +114,9 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
-from app.services import balance_at, template_amount_service, transfer_service
+from app.services import (
+    balance_at, loan_loaders, template_amount_service, transfer_service,
+)
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import loan_plan
@@ -283,6 +285,16 @@ def _plan_lines(label, account, ctx, *, months=GRID_MONTHS):
 def _loan(account_id):
     """Return the loan account, freshly loaded."""
     return db.session.get(Account, account_id)
+
+
+def _payment_day(account_id):
+    """Return the loan's contractual payment day.
+
+    The source the app's own caller of ``confirmed_shadows_through`` reads
+    (``loan_ledger._walk.load_loan_stream``: ``params.payment_day``), which
+    dates a ``$0.00`` payment by the installment it skips (ruling R-BAL139).
+    """
+    return loan_loaders.load_loan_params(account_id).payment_day
 
 
 def _last_saved_period():
@@ -479,6 +491,7 @@ def main():
         from app.services.scenario_resolver import get_baseline_scenario  # pylint: disable=import-outside-toplevel
         settled = confirmed_shadows_through(
             VAN_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
+            _payment_day(VAN_ACCOUNT_ID),
         )
         latest = max(settled, key=lambda shadow: shadow.due_date)
         # Five days after the settled installment, inside its own month, so
@@ -510,6 +523,7 @@ def main():
         settled6 = sorted(
             confirmed_shadows_through(
                 VAN_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
+                _payment_day(VAN_ACCOUNT_ID),
             ),
             key=lambda shadow: shadow.due_date,
         )
@@ -521,7 +535,7 @@ def main():
         )
         for shadow in skipped:
             transfer_service.update_transfer(
-                shadow.transfer_id, USER_ID,
+                shadow.transfer.id, USER_ID,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
         db.session.flush()
@@ -540,6 +554,7 @@ def main():
         settled7 = sorted(
             confirmed_shadows_through(
                 MORTGAGE_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
+                _payment_day(MORTGAGE_ACCOUNT_ID),
             ),
             key=lambda shadow: shadow.due_date,
         )
@@ -551,7 +566,7 @@ def main():
         )
         for shadow in skipped7:
             transfer_service.update_transfer(
-                shadow.transfer_id, USER_ID,
+                shadow.transfer.id, USER_ID,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
         db.session.flush()

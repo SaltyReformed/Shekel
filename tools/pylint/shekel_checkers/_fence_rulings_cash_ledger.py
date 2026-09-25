@@ -290,14 +290,12 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # per-movement leg.  Where one lands and what the plan holds at time T
     # are ``balance_at._cash_fold``'s, exactly as for ``planned_cash_rows``.
     "in_flight_movements",
-    # ``movements_with_parents`` (plan step ``balance:X-bi-6-3``) -- the ONE
-    # join of a movement to its parent row, returned as an unexecuted query:
-    # a LOADER on ``settled_cash_facts``'s ground, which SELECTS rows and
-    # returns them unchanged.  It exists because the posting writer's
-    # transfer-family loader spelled the same five lines as the fold's
-    # ``_movements_of`` and the cross-file duplicate-code gate said so; it
-    # values nothing and folds nothing.
-    "movements_with_parents",
+    # (``movements_with_parents``, ruled here from plan step
+    # ``balance:X-bi-6-3`` because the posting writer's transfer-family
+    # loader shared the fold's join, was folded into the fold's
+    # ``_movements_of``, its last reader, at leaf ``X-bi-6-4a``: that loader
+    # moved onto ``transfer_legs``' join, where a transfer movement's parent
+    # is its LEG.)
     # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
     # ``account_openings`` row: returning a recorded balance is not
     # computing one.  The FOLD seeds from it.
@@ -308,7 +306,7 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     "governing_account_opening",
     # ``_books`` (X-f3c-2b, N-378; X-f3c-2b-2a; X-f3c-2b-2b, N-383) -- FIVE
     # REFUSALS stating the books boundary, each returning nothing, plus the
-    # three DAYS they bound against and the one COMPARISON they share.
+    # three DAYS they bound against.
     # (It read "FOUR ... two DAYS" until the counts were taken against the
     # module: it states five ``reject_*`` and three ``earliest_*``, and its
     # own docstring says so.  A count in a ruling is a claim like any
@@ -319,14 +317,13 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # restatement form renders both, and a day is not a balance (the
     # ``latest_statement_day`` hatch, ruled below).
     #
-    # ``books_hold`` is the strongest case in the set rather than the
-    # weakest: it takes two dates, returns a ``bool`` and reads nothing at
-    # all, so it cannot answer a balance whatever a caller does with it.
-    # It is public because the SCREEN asks it -- ``statement_match``
-    # splits its bank lines on the same comparison the doors refuse on, and
-    # a second spelling of it there is the drift this whole set exists to
-    # make visible.
-    "books_hold",
+    # The one COMPARISON they share, ``books_hold``, was ruled here until
+    # plan step pay_calendar:C18-a moved its definition to the pure leaf
+    # ``app/utils/books_boundary.py`` (the recurrence walk asks it too and
+    # may not import this package).  ``_books`` imports it back, so it is no
+    # longer a name this module DEFINES and a ruling here would be stale; a
+    # two-date ``bool`` that reads nothing answers no balance wherever it
+    # lives, and the leaf is outside every fenced module.
     "reject_books_open_after_an_assertion",
     # ``reject_books_open_on_or_after_matched_lines`` and its reader
     # (X-f3c-2b-2b) carry the same ruling as the movement pair beside

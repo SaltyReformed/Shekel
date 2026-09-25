@@ -3034,12 +3034,12 @@ class TestTheSubtotalsAreThePaychecksAcrossTheSet:
     def test_a_settled_far_leg_is_excluded_too(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """The far leg of a PAID payment is a fact in the card's walk, keyed by its shadow.
+        """The far leg of a PAID payment is a fact in the card's walk, keyed by its transfer.
 
-        A settled shadow reads as ``0 + its covering movement``
-        (``CashSourceFact`` carries no transfer id), so the seam's exclusion
-        has to reach it by the shadow's ``transaction_id`` -- the second
-        identity ``FarLegs`` carries.  Paid in the fixture paycheck: the
+        A settled leg is its covering movement's fact, which names its
+        transfer (``CashSourceFact.transfer_id``, leaf ``X-bi-6-4a``; it was
+        reached by the shadow's ``transaction_id`` until then), so the seam's
+        exclusion is the same transfer id as the planned leg's.  Paid in the fixture paycheck: the
         card's balance delta is the same ``+120.00`` and its income the same
         ``165.00`` whether the payment is still projected or settled.
         """
@@ -6770,6 +6770,15 @@ class TestTheReadPassResolvesARuleByWhatItSays:
         The resolver cannot tell two rules with the same spec apart, so
         neither does the memo; and a transient rule (``id`` ``None``) needs
         no special case, because its spec is the key like any other's.
+
+        **Its third assertion was re-expressed at plan step
+        ``pay_calendar:C18-a``** under ``CLAUDE.md`` rule 5, the developer
+        confirming it 2026-09-22 ("Yes: same cadence, no floor"): since
+        ruling **R-PC85** the resolved value carries its definition's BOOKS
+        floor, and an owner-less transient rule has no definition, so it
+        resolves to the owned value with no books day -- equal in every other
+        field -- rather than to the same object.  The two OWNED rules, on one
+        account, still share one value.
         """
         with app.app_context():
             first = make_expense_template(db.session, seed_user, name="Rent")
@@ -6787,7 +6796,12 @@ class TestTheReadPassResolvesARuleByWhatItSays:
 
             resolved = ctx.resolved_recurrence_of(first.recurrence_rule)
             assert ctx.resolved_recurrence_of(second.recurrence_rule) is resolved
-            assert ctx.resolved_recurrence_of(transient) is resolved
+            assert resolved.books_opened_on is not None, (
+                "precondition: the owned rules carry their account's books"
+            )
+            assert ctx.resolved_recurrence_of(transient) == replace(
+                resolved, books_opened_on=None,
+            )
 
 
 class TestTheReadPassProjectsOverOneCalendar:

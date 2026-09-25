@@ -871,11 +871,12 @@ class TestARenderWalksAGoalTransferOnce:
         the read rather than the memo serving it.
         """
         # Pylint: ``import-outside-toplevel`` -- the walk-once control patches
-        # the name the PASS calls at call time (``_context``), a seam-private
+        # the name the PASS calls at call time (``_recurrence_memos``, the
+        # module of the context's mixin since ruling R-BAL146), a seam-private
         # module this file otherwise has no business importing; kept local
         # so the import states its one purpose beside its one use.
         # pylint: disable=import-outside-toplevel
-        from app.services.balance_at import _context
+        from app.services.balance_at import _recurrence_memos
         from tests._test_helpers import make_transfer_template
 
         with app.app_context():
@@ -906,13 +907,13 @@ class TestARenderWalksAGoalTransferOnce:
             db.session.commit()
 
             calls = []
-            real = _context.occurrence_placements
+            real = _recurrence_memos.occurrence_walk
 
             def counting(resolved, calendar, **kwargs):
                 calls.append(resolved)
                 return real(resolved, calendar, **kwargs)
 
-            monkeypatch.setattr(_context, "occurrence_placements", counting)
+            monkeypatch.setattr(_recurrence_memos, "occurrence_walk", counting)
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -963,6 +964,119 @@ class TestEmergencyFundMetrics:
             # Both Checking ($1000, liquid) and Savings ($8000, liquid)
             # contribute to total_savings.
             assert result["total_savings"] == Decimal("9000.00")
+
+
+class TestTheHistoricalOperandReadsATransferAsItsFromLeg:
+    """A settled transfer out of checking is one expense: its FROM-side leg.
+
+    The historical operand of the emergency-fund denominator
+    (``_metrics._recent_settled_expenses_monthly``) reads a transfer as its
+    legs since leaf ``balance:X-bi-6-4a`` (ruling **R-BAL106**): the
+    transfers are selected in SQL (out of checking, in the window, in the
+    scenario, settled, live) and their legs filtered to the from side by
+    ``expense_legs``.  No test put a settled transfer through it (the leaf's
+    adversarial review, finding M3), so deleting any of those clauses, or
+    the leg arm whole, left the suite green.  This class grades three of the
+    clauses (out of checking, the window, the scenario), ``expense_legs`` and
+    the leg arm.  **The settled and live clauses stay ungraded here**: every
+    transfer in it is settled and live.  A soft-deleted parent's legs are
+    dropped with its shadows already (``transfer_legs
+    ._covering_movements_query`` reads live shadows only) and valued ``0``
+    by ``row_valuation.leg_fixed_contribution``.
+    """
+
+    def test_a_transfer_out_of_checking_counts_once_and_nothing_else_does(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Five settled transfers; two count, once each.
+
+        The pass is pinned to the first period's start, so the window is that
+        period alone (``len(recent_periods) == 1``), and the owner is paid
+        biweekly (26 paychecks a year).  In the window period, baseline
+        scenario:
+
+        * ``$200.00`` checking -> savings counts.
+        * ``$150.00`` checking -> a SECOND checking account counts ONCE.  Both
+          of its legs sit on the checking set, so this is the case that
+          grades the SIDE rather than the account: filtering legs by account
+          instead of by ``expense_legs`` counts it twice.
+        * ``$300.00`` savings -> checking does not count: it arrives in
+          checking, it does not leave it.
+
+        Out of scope, each checking -> savings, neither counts:
+
+        * ``$40.00`` in the SECOND period, which the one-period window ends
+          before (the window clause).
+        * ``$25.00`` in a what-if scenario (the scenario clause).
+
+        Per period: ``200.00 + 150.00 = 350.00``.  Monthly, unquantized, in
+        production's own order (``per_period * 26 / 12``):
+        ``350.00 * 26 / 12 = 758.333...``.  What each lost clause reads
+        instead, per period: no ``expense_legs``, every to-side leg too,
+        ``200 + 200 + 150 + 150 = 700``; legs filtered by ACCOUNT,
+        ``200 + 150 + 150 = 500``; no leg arm, ``0``; no out-of-checking
+        clause, the savings -> checking transfer's from-side leg too,
+        ``350 + 300 = 650``; no window clause, ``350 + 40 = 390``; no
+        scenario clause, ``350 + 25 = 375``.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._metrics import (
+            _recent_settled_expenses_monthly,
+        )
+        from tests._test_helpers import (
+            create_account_of_type,
+            create_settled_transfer,
+        )
+
+        with app.app_context():
+            checking = seed_user["account"]
+            second_checking = create_account_of_type(
+                seed_user, db.session, "Checking", "Joint Checking",
+                anchor_balance=Decimal("500.00"),
+            )
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("5000.00"),
+            )
+            what_if = Scenario(
+                user_id=seed_user["user"].id, name="What if",
+                is_baseline=False,
+            )
+            db.session.add(what_if)
+            db.session.flush()
+            in_window, after_window = seed_periods[0], seed_periods[1]
+            for from_account, to_account, amount, period, scenario in (
+                (checking, savings, "200.00", in_window, None),
+                (checking, second_checking, "150.00", in_window, None),
+                (savings, checking, "300.00", in_window, None),
+                (checking, savings, "40.00", after_window, None),
+                (checking, savings, "25.00", in_window, what_if),
+            ):
+                create_settled_transfer(
+                    seed_user, db.session, from_account, to_account, period,
+                    amount=Decimal(amount), settled_on=period.start_date,
+                    scenario=scenario,
+                )
+            db.session.commit()
+
+            ctx = BalanceContext.build(
+                seed_user["user"].id, as_of=in_window.start_date,
+            )
+            calendar = ctx.calendar()
+            monthly = _recent_settled_expenses_monthly(
+                [checking.id, second_checking.id],
+                ctx.reported_periods(),
+                calendar.period_containing(ctx.as_of),
+                ctx.scenario_id,
+                calendar.cadence,
+            )
+
+            assert monthly == Decimal("350.00") * 26 / 12, (
+                f"expected $350.00 a period ($200.00 + $150.00, each from-side "
+                f"leg once) as 350.00 * 26 / 12 a month, got {monthly}"
+            )
 
 
 # ── Paid-Off Flag Tests (Commit 5.9-2) ──────────────────────────────

@@ -49,9 +49,9 @@ class LoanPaymentHistoryRow:
     producer bounds to payments whose CASH had moved by ``as_of``), so the
     table renders a Confirmed badge on each.
 
-    ``cash`` is the payment's full cash (the loan-side income shadow's
-    :func:`~app.services.row_valuation.settled_contribution`, read once by the
-    walk's event); ``principal + interest + escrow`` equals it for an
+    ``cash`` is the payment's full cash (the settled payment leg's
+    :func:`~app.services.row_valuation.leg_settled_contribution`, read once by
+    the walk's event); ``principal + interest + escrow`` equals it for an
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
@@ -63,11 +63,11 @@ class LoanPaymentHistoryRow:
     Attributes:
         due_date: The monthly installment the payment satisfies
             (:func:`app.services.loan_loaders.loan_payment_due_date` -- the
-            shadow's own stored ``due_date``) -- the same date the amortization
+            transfer's own stored ``due_date``) -- the same date the amortization
             schedule rows it.  NOT derived from the pay period, so a payment
             settled late still reports the installment it actually paid.
-        cash: The full cash paid (the income shadow's
-            :func:`~app.services.row_valuation.settled_contribution`),
+        cash: The full cash paid (the settled payment leg's
+            :func:`~app.services.row_valuation.leg_settled_contribution`),
             cent-quantized.
         principal: The real debt paid down, cent-quantized; may be negative
             for an underpayment, and equals the payment's net on the loan's
@@ -146,9 +146,9 @@ def confirmed_loan_payment_history(
     loan-side shadow's ``transaction_id`` in three more reads; the split has no
     row link now and the walk the ledger is reconciled from already holds
     every figure this table shows, so the walk is the table's one producer.
-    ``cash`` is the outcome's (the income shadow's
-    :func:`~app.services.row_valuation.settled_contribution`, read once by the
-    walk's event); ``principal`` equals the payment's net on the loan's linked
+    ``cash`` is the outcome's (the settled payment leg's
+    :func:`~app.services.row_valuation.leg_settled_contribution`, read once by
+    the walk's event); ``principal`` equals the payment's net on the loan's linked
     ledger by the split's construction; for an ordinary payment ``principal +
     interest + escrow == cash``; a payoff overpayment's surplus is a lender
     refund excluded from all three (see :class:`LoanPaymentHistoryRow`).
@@ -193,14 +193,17 @@ def confirmed_loan_payment_history(
     # reads.  The walk's outcomes arrive in CONTRACT order already, but a
     # payment pre-paid for a later installment and one paid late for an
     # earlier one are ordered here by the same key the schedule rows by, and
-    # ``shadow.id`` breaks a tie (two payments against one installment) with
-    # the stable recording order.
+    # the payment's TRANSFER id breaks a tie (two payments against one
+    # installment) with the stable recording order.  It was the shadow's id
+    # until plan step balance:X-bi-6-4b; the two orders agree wherever a
+    # transfer's shadows were written with it (0 inversions measured on the
+    # 2026-09-23 21:17 production dump).
     by_installment = sorted(
         (
             outcome for outcome in walk.settled_splits
             if outcome.visible_on <= as_of
         ),
-        key=lambda outcome: (outcome.due_date, outcome.source.id),
+        key=lambda outcome: (outcome.due_date, outcome.source.transfer.id),
     )
     return [
         LoanPaymentHistoryRow(

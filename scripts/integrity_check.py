@@ -680,13 +680,13 @@ def check_data_consistency(session):
     # DC-10: An UN-DATED movement holding a live journal leg (critical).
     #
     # ``_posting_purchases.purchase_posts`` is the write side's one statement
-    # of "this movement is in the ledger": a contributing parent, a debit,
-    # and a RECORDED posting day.  So a movement with no ``settled_on`` owes
-    # the ledger nothing, and a non-zero net of postings linked to it is
-    # money booked for a day nobody has stated.  Reachable since plan step
-    # ``balance:X-bi-3e-2``, when a revert began KEEPING the status seam's
-    # covering movement un-dated (ruling **R-BAL61**): the seam releases the
-    # day and the DOOR's family reconcile reverses the legs
+    # of "this movement is in the ledger": a contributing parent, a debit, a
+    # RECORDED posting day, and for a transfer leg its record.  So a movement
+    # with no ``settled_on`` owes the ledger nothing, and a non-zero net of
+    # postings linked to it is money booked for a day nobody has stated.
+    # Reachable since plan step ``balance:X-bi-3e-2``, when a revert began
+    # KEEPING the status seam's covering movement un-dated (ruling **R-BAL61**):
+    # the seam releases the day and the DOOR's family reconcile reverses the legs
     # (``transaction_service.apply_requested_status`` ->
     # ``posting_service.sync_transaction_postings``), so a caller that
     # reached the bare seam and never reconciled would leave exactly this
@@ -735,13 +735,18 @@ def check_data_consistency(session):
     # migration ``45f10b870c8b``, which refused any row where the two
     # disagreed, and a settled row with no movement is the ``$0.00`` record
     # since, ruling **R-BAL82**.)
+    # A settled TRANSFER's money is graded as its LEGS since leaf ``X-bi-6-4a``
+    # (ruling **R-BAL106**; the UNION's second arm, one row per undated leg,
+    # its ``sh`` join a second spelling ``X-bi-6-4d`` must move).  A SHADOW's
+    # own missing day stays on the row arm until ``X-bi-6-4b``: the loan
+    # readers still call ``settled_day`` on it (``loan_ledger._visible``).
     results.append(_run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "
-        "movement with no day",
+        "movement with no day; settled transfers holding an undated leg",
         """
-        SELECT t.id AS transaction_id, t.account_id, s.name AS status,
-               t.settled_on,
+        SELECT t.id AS transaction_id, NULL::integer AS transfer_id,
+               t.account_id, s.name AS status, t.settled_on,
                (SELECT COUNT(*) FROM budget.transaction_entries e
                  WHERE e.transaction_id = t.id AND e.covers_settlement)
                  AS covering_movements,
@@ -751,17 +756,24 @@ def check_data_consistency(session):
                  AS undated_covering_movements
         FROM budget.transactions t
         JOIN ref.statuses s ON s.id = t.status_id
-        WHERE s.is_settled
-          AND NOT t.is_deleted
+        WHERE s.is_settled AND NOT t.is_deleted
           AND (
             t.settled_on IS NULL
-            OR EXISTS (
+            OR t.transfer_id IS NULL AND EXISTS (
               SELECT 1 FROM budget.transaction_entries e
               WHERE e.transaction_id = t.id AND e.covers_settlement
                 AND e.settled_on IS NULL
             )
           )
-        ORDER BY t.id
+        UNION ALL
+        SELECT NULL::integer, x.id, e.account_id, s.name, NULL::date, 1, 1
+        FROM budget.transfers x
+        JOIN ref.statuses s ON s.id = x.status_id
+        JOIN budget.transactions sh ON sh.transfer_id = x.id AND NOT sh.is_deleted
+        JOIN budget.transaction_entries e
+          ON e.transaction_id = sh.id AND e.covers_settlement
+        WHERE s.is_settled AND NOT x.is_deleted AND e.settled_on IS NULL
+        ORDER BY transaction_id NULLS LAST, transfer_id, account_id
         """,
     )))
 

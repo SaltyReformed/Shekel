@@ -135,9 +135,9 @@ class LoanCashEvent:
         cash: The cash this payment moved.  Never negative: the caller reads a
             record's own figure, and the allocation surfaces an underpayment as
             NEGATIVE principal rather than as negative cash (plan D5).
-        source: The caller's record, carried through untouched.  A settled income
-            :class:`~app.models.transaction.Transaction` for a recorded payment,
-            a ``PlannedPayment`` for a projected one.
+        source: The caller's record, carried through untouched.  The settled
+            transfer's :class:`~app.services.transfer_legs.TransferLeg` for a
+            recorded payment, a ``PlannedPayment`` for a projected one.
         visible_on: The day this cash COUNTS from in a balance read -- the ONE
             clock (:mod:`._visible`): a recorded payment's SETTLED day, a
             projection's effective day (``max(due, as_of + 1d)``, ruling D1).

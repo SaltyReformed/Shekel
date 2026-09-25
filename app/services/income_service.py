@@ -634,6 +634,38 @@ class SalaryPricing:
         self._paychecks = paychecks
         self._profiles: "dict[int, SalaryProfile] | None" = None
 
+    def paycheck_on(
+        self, template_id: int, period,
+    ) -> "paycheck_calculator.PaycheckBreakdown | None":
+        """Return the paycheck the profile driving *template_id* pays on *period*.
+
+        **The one walk from a recurring definition to its paycheck** (plan step
+        salary:X-av-2, ruling **R-SAL71**): :meth:`net_for` reads a ROW's
+        figure through it, and the Recurring surface's salary row reads
+        TODAY's paycheck through it
+        (``obligations_aggregator.occurrence_amount``) -- the net AND the
+        rhythm it was priced at
+        (:attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`), which a
+        monthly figure must convert with.  The whole breakdown rather than a
+        net because that pair is what the second reader needs, and one door
+        answering both keeps them one pricing of one paycheck.
+
+        Args:
+            template_id: The recurring definition.
+            period: The :class:`~app.services.pay_calendar.DerivedPeriod` to
+                price -- saved, or projected past the horizon; the pricer
+                prices either.
+
+        Returns:
+            The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`,
+            or ``None`` when no ACTIVE profile in this scenario names that
+            template.
+        """
+        profile = self._profile_by_template().get(template_id)
+        if profile is None:
+            return None
+        return self._paychecks.for_profile(profile).at(period)
+
     def net_for(
         self, template_id: int, pay_period_id: int,
     ) -> Decimal | None:
@@ -649,8 +681,10 @@ class SalaryPricing:
             owner's saved calendar holds.  Both are the refusals amount rule 2
             raises rather than substituting a stored figure.
         """
-        profile = self._profile_by_template().get(template_id)
-        if profile is None:
+        # The profile is asked FIRST, before the calendar, so a row on a
+        # template no profile names derives nothing (the laziness this class
+        # docstring argues); :meth:`paycheck_on` then prices it.
+        if self._profile_by_template().get(template_id) is None:
             return None
         paychecks = self._paychecks
         # The period is resolved by ID off the owner's calendar, and that is
@@ -663,7 +697,7 @@ class SalaryPricing:
         period = paychecks.calendar.period_by_id(pay_period_id)
         if period is None:
             return None
-        return paychecks.for_profile(profile).at(period).earnings.net_pay
+        return self.paycheck_on(template_id, period).earnings.net_pay
 
     def _profile_by_template(self) -> "dict[int, SalaryProfile]":
         """Return ``{template_id: profile}`` for this owner and scenario.
@@ -671,19 +705,20 @@ class SalaryPricing:
         One indexed query, memoized -- the CHEAP stage, so a row on a template
         no profile names is answered without projecting anything.
 
-        **The query is ORDERED, and it was not before.**  Two active profiles
-        naming ONE template in one scenario is expressible (nothing constrains
-        it) and this map keeps the last writer.  Unordered, that was whichever
-        row the planner reached first, so one owner could be priced two ways
-        across two requests; ordering by id makes the collision resolve the same
-        way every time.  The collision itself is finding **N-294**, reported
-        rather than fixed here: which profile SHOULD win is a question for the
-        salary arc, and answering it inside a reader refactor would be an
-        unreviewed ruling.
+        **One profile per template in a scenario is the TABLE's rule since plan
+        step salary:X-av-1** (``uq_salary_profiles_scenario_template``, ruling
+        **R-SAL63** as scoped by **R-SAL69**, closing finding **N-294**), and
+        this query reads ONE scenario, so no key here can have two profiles
+        behind it.  Until then two active profiles naming one template were
+        storable and this map kept whichever the query returned last; an
+        ``ORDER BY id`` made that the same profile on every request without
+        deciding which should price the row, and it is deleted with the state
+        it ordered.  A profile whose template was hard-deleted (``SET NULL``)
+        is left out: it prices no row, and several may share that NULL.
 
         Returns:
             ``{template_id: SalaryProfile}``; empty for an owner with no active
-            profile in this scenario.
+            profile on a template in this scenario.
         """
         if self._profiles is None:
             profiles = (
@@ -692,8 +727,8 @@ class SalaryPricing:
                     SalaryProfile.user_id == self._paychecks.user_id,
                     SalaryProfile.scenario_id == self._scenario_id,
                     SalaryProfile.is_active.is_(True),
+                    SalaryProfile.template_id.isnot(None),
                 )
-                .order_by(SalaryProfile.id)
                 .all()
             )
             self._profiles = {p.template_id: p for p in profiles}

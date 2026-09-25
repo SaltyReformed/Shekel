@@ -2912,6 +2912,13 @@ class TestTheReconcileRoute:
                 ),
             )
             db.session.add(account_b)
+            # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md
+            # rule 5, developer-confirmed 2026-09-22 ("Yes: open books before
+            # rows"): this account's books open before the schedule, as the
+            # seeded account's do.  ``create_account`` opens them TODAY, after
+            # the paycheck the grocery row is generated into, and since ruling
+            # R-PC85 a definition's occurrences start above its account's books.
+            open_books_before_the_first_assertion(db.session, account_b)
             db.session.commit()
             account_b_id = account_b.id
 
@@ -3773,6 +3780,13 @@ class TestTheReconcileRoutesUngradedBranches:
                 ),
             )
             db.session.flush()
+            # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md
+            # rule 5, developer-confirmed 2026-09-22 ("Yes: open books before
+            # rows"): this account's books open before the schedule, as the
+            # seeded account's do.  ``create_account`` opens them TODAY, after
+            # the paycheck the grocery row is generated into, and since ruling
+            # R-PC85 a definition's occurrences start above its account's books.
+            open_books_before_the_first_assertion(db.session, other)
             elsewhere = self._make_grocery_txn_with_entries(
                 seed_user, seed_periods_today, [], account=other,
                 name="Elsewhere",

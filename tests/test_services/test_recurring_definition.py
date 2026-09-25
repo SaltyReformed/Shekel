@@ -42,8 +42,9 @@ from app.services.recurrence import (
 from app.services.recurrence import _reading
 # The same reason, one memo over: the pass walks a resolved recurrence through
 # the name ITS module imported (plan step R7d-f-2), so the walk-once control
-# patches ``_context.occurrence_placements``.
-from app.services.balance_at import _context
+# patches ``_recurrence_memos.occurrence_walk`` (the module of the context's
+# mixin since ruling R-BAL146).
+from app.services.balance_at import _recurrence_memos
 from app.services.balance_at import is_standing_loan_payment
 from app.services.recurring_definition import (
     read_definition,
@@ -595,13 +596,13 @@ class TestTheDoorWalksTheDefinitionOnce:
     def _counting_walk(self, monkeypatch):
         """Patch the pass's walk with a counter; return the list it fills."""
         calls = []
-        real = _context.occurrence_placements
+        real = _recurrence_memos.occurrence_walk
 
         def counting(resolved, calendar, **kwargs):
             calls.append(resolved)
             return real(resolved, calendar, **kwargs)
 
-        monkeypatch.setattr(_context, "occurrence_placements", counting)
+        monkeypatch.setattr(_recurrence_memos, "occurrence_walk", counting)
         return calls
 
     def test_reading_one_definition_twice_walks_it_once(

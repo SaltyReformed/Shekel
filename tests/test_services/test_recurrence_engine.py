@@ -79,6 +79,7 @@ from tests._test_helpers import (
     last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
+    open_books_before_the_first_assertion,
     rebuild_calendar_from_spans,
     resolved_amount,
     rhythm_of,
@@ -2455,6 +2456,15 @@ class TestRegenerateForTemplate:
             )
             db.session.add(moved_to)
             db.session.flush()
+            # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md
+            # rule 5, developer-confirmed 2026-09-22 ("Yes: open books before
+            # rows"): the new account's books open before the schedule, as
+            # the seeded account's do.  ``create_account`` opened them TODAY,
+            # after these rows, and since ruling R-PC85 a definition's
+            # occurrences start above its books -- so the maintain pass would
+            # retire or conflict the moved rows before this test reached
+            # R-CC36, and the edit door now refuses that move (R-PC90).
+            open_books_before_the_first_assertion(db.session, moved_to)
             template.account_id = moved_to.id
             db.session.flush()
 
