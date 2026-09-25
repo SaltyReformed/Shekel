@@ -20,8 +20,13 @@ none of them:
   hangs off a DEAD shadow, so that movement's postings reverse.
 
 Every figure is made up (ruling R-BAL132).  The loan is ``$100,000.00`` at 6%
-from 2026-01-01, due on the 1st: one month's charge is
-``round(100000.00 * 0.06 / 12) = 500.00``.
+from 2026-02-01, due on the 1st: one month's charge is
+``round(100000.00 * 0.06 / 12) = 500.00``.  It originates the month before
+the 03-01 installment every payment below satisfies, so no earlier
+installment stands unpaid: the walk charges every contractual installment
+from origination (plan step recurrence:R16-c-2), and a loan from 2026-01-01
+would owe 02-01's charge too.  The origination was 2026-01-01 until that
+step's leaf restated it under ruling R-R101; every figure stayed.
 """
 
 from datetime import date
@@ -78,11 +83,11 @@ _CLOSED_ON = date(2026, 3, 5)
 
 
 def _loan(seed_user):
-    """A $100,000.00 loan at 6% from 2026-01-01, due on the 1st."""
+    """A $100,000.00 loan at 6% from 2026-02-01, due on the 1st."""
     loan = create_loan_account(
         seed_user, db.session, name="Settled Leg Loan",
         principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
-        origination_date=date(2026, 1, 1), payment_day=_PAYMENT_DAY,
+        origination_date=date(2026, 2, 1), payment_day=_PAYMENT_DAY,
     )
     db.session.commit()
     return loan

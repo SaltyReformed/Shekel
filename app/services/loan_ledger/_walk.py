@@ -280,6 +280,16 @@ def load_loan_stream(
     # since-removed version still applies to a historical period and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
+    # The loan's ONE calendar (ruling R-R100), built before the payments load
+    # because the visibility bound reads its due day too: a ``$0.00`` close is
+    # visible from the installment it skips (ruling R-BAL139), and the stream
+    # keys every payment on the same day.
+    calendar = LoanCalendar(
+        origination_date=params.origination_date,
+        payment_day=params.payment_day,
+        periods=periods,
+        escrow_lines=escrow_lines,
+    )
     # The stream reads each settled payment's LEG: its parent's due date and
     # pay period (the producer loads the period as its sort key) and its
     # RECORD, the covering movement the producer's one join attaches (plan
@@ -293,19 +303,10 @@ def load_loan_stream(
         )
         if visible_by is None
         else confirmed_shadows_through(
-            loan_account_id, scenario_id, visible_by, params.payment_day,
+            loan_account_id, scenario_id, visible_by, calendar.payment_day,
         )
     )
-    return loan_event_stream(
-        anchor_facts,
-        shadows,
-        LoanCalendar(
-            origination_date=params.origination_date,
-            payment_day=params.payment_day,
-            periods=periods,
-            escrow_lines=escrow_lines,
-        ),
-    )
+    return loan_event_stream(anchor_facts, shadows, calendar)
 
 
 def walk_loan_ledger(

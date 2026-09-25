@@ -330,17 +330,14 @@ def _installment_cash(
     assertion states the balance owed, so the escrow its cash carries pays
     principal.
 
-    **The cash is dated from the PARENT and the split's installment from the
-    SHADOW, and the two are one date**: ``due_date`` is a mirrored field with
-    the parent canonical (``models/transfer.py``), written to all three rows in
-    one statement by ``transfer_service._update`` and corrected on restore.  A
-    census of every writer of a shadow's ``due_date`` or ``pay_period_id``
-    across ``app/`` returns those three sites and no other -- no bulk update, no
-    ``setattr`` splat reaches a leg -- so the two reads are one value.
-    **It is one value with TWO HOMES kept equal by a maintenance contract,
-    which is rule 14's own shape**: plan step X-au-f-2 created the second read
-    rather than inheriting it, and what deletes it is ``X-bi-6`` removing the
-    shadow rows -- one row is left to date anything from.
+    **The cash and the split's installment are dated from ONE row, the PARENT
+    transfer.**  Plan step X-au-f-2 put the cash on the parent while the split
+    still read the SHADOW's mirrored ``due_date`` -- one value with two homes
+    kept equal by a maintenance contract, rule 14's own shape.  Plan step
+    balance:X-bi-6-4b deleted the second read: the loan walk reads each
+    settled payment's :class:`~app.services.transfer_legs.TransferLeg`, whose
+    ``due_date`` and ``pay_period`` are its parent's, so both answers come off
+    the same two columns.
 
     **Why contract time and not the pay-period start** (ruling D5, finding
     N-34): a pay period begins up to ~2 weeks before the installment it pays,

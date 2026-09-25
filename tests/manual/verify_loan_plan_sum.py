@@ -92,7 +92,8 @@ it, so the database is unchanged and no door sees another's writes.
 **The clone must be STAMPED and it must be production's**: ``occurs_on`` is
 what answers an occurrence, and a clone whose loan rows carry NULL there reads
 every occurrence as unanswered.  Both loan payments' rows were stamped on
-the production clones measured (none NULL, 2026-09-11 and 2026-09-23).
+the production clones measured (none NULL: 2026-09-11 and 2026-09-23, and
+0 of 59 on the dumps of 2026-09-24 and 2026-09-25).
 
 Usage::
 
@@ -103,7 +104,7 @@ Usage::
 on ``sys.path``, not the working directory.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import create_app
@@ -128,8 +129,9 @@ from app.utils.dates import add_months
 USER_ID = 1
 #: The read day every door is measured at.
 AS_OF = date(2026, 9, 11)
-#: A read on or after every fact the clone records (plan step R16-c-2's clone,
-#: a production dump of 2026-09-23 carrying recurrence:R23).
+#: A read on or after every fact the clone records: on plan step R16-c-2's
+#: two grade clones (production dumps of 2026-09-24 09:24 and 2026-09-25
+#: 06:00, both carrying recurrence:R23) the last loan settle day is 2026-09-23.
 TODAY = date(2026, 9, 24)
 #: The two live loans and their payment definitions (ids are stable on the
 #: production clone; names are printed beside them).
@@ -291,8 +293,9 @@ def _payment_day(account_id):
     """Return the loan's contractual payment day.
 
     The source the app's own caller of ``confirmed_shadows_through`` reads
-    (``loan_ledger._walk.load_loan_stream``: ``params.payment_day``), which
-    dates a ``$0.00`` payment by the installment it skips (ruling R-BAL139).
+    (``loan_ledger._walk.load_loan_stream``: the loan calendar's
+    ``payment_day``, built from ``params.payment_day``), which dates a
+    ``$0.00`` payment by the installment it skips (ruling R-BAL139).
     """
     return loan_loaders.load_loan_params(account_id).payment_day
 
@@ -344,7 +347,7 @@ def _adhoc_projected(account_id, period, amount, due):
 
 
 def main():
-    """Print the baseline and the five doors."""
+    """Print the baseline, the TODAY read and the seven doors."""
     app = create_app()
     with app.app_context():
         print(f"# as_of={AS_OF}")
@@ -420,12 +423,29 @@ def main():
         db.session.rollback()
 
         # --- DOOR 2: the reset door's hole (D46) ---------------------------
-        # Read three days after the Van's 2026-09-22 installment, which on the
-        # clone is a PROJECTED row in a period that has started: the shape
-        # ``reset_pay_periods`` wipes before it repopulates.  Hard-deleted
-        # (rows CASCADE from the period), so no tombstone answers it.
+        # Read three days after the Van's next PROJECTED installment, whose
+        # period has then started: the row ``reset_pay_periods`` wipes before
+        # it repopulates (a reset refuses outright while any row is settled,
+        # so a settled installment is never the shape).  Hard-deleted (rows
+        # CASCADE from the period), so no tombstone answers it.  Chosen from
+        # the data rather than pinned to a date: the 2026-09-22 installment it
+        # was pinned to is Paid on the 2026-09-24 and 2026-09-25 clones.
         db.session.begin_nested()
-        as_of_2 = date(2026, 9, 25)
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+        next_projected = (
+            db.session.query(Transfer)
+            .filter(
+                Transfer.transfer_template_id == VAN_TEMPLATE_ID,
+                Transfer.status_id == projected_id,
+                Transfer.is_deleted.is_(False),
+                Transfer.due_date > AS_OF,
+            )
+            .order_by(Transfer.due_date)
+            .first()
+        )
+        as_of_2 = next_projected.due_date + timedelta(days=3)
         started = (
             db.session.query(PayPeriod.id)
             .filter(PayPeriod.user_id == USER_ID, PayPeriod.start_date <= as_of_2)
@@ -437,7 +457,9 @@ def main():
             .filter(
                 Transfer.transfer_template_id == VAN_TEMPLATE_ID,
                 Transfer.pay_period_id.in_(started_ids),
-                Transfer.due_date > date(2026, 9, 1),
+                Transfer.status_id == projected_id,
+                Transfer.is_deleted.is_(False),
+                Transfer.due_date > AS_OF,
                 Transfer.due_date <= as_of_2,
             )
             .all()
@@ -518,8 +540,6 @@ def main():
         # charges first).  The two settled Van installments before the latest
         # settled one are REVERTED to projected through the status door.
         db.session.begin_nested()
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
         settled6 = sorted(
             confirmed_shadows_through(
                 VAN_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
