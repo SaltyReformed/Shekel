@@ -6,11 +6,14 @@ it goes.  Ruling **R-PC109**: a paycheck may go only when it holds no money --
 an unpaid row its template made and nobody changed goes with it, anything else
 the owner entered, changed or paid refuses the removal and is named, as does
 any entry the posted ledger booked in it, a pay stub on its payday, and money
-DATED inside it anywhere in the budget.  Ruling **R-PC110**: at least one
+DATED inside it anywhere in the budget.  Ruling **R-PC114** (amending
+R-PC109's booked-entry clause): what the posted ledger booked in a removed
+paycheck is re-filed through Reset's two re-syncs, and the removal is refused
+only if a posted total still moves.  Ruling **R-PC110**: at least one
 paycheck of the earliest pay rhythm always stays, and that rhythm's start
 moves UP to the new first paycheck (the reverse of R-PC105's move down).
 
-Seven contracts, one class each:
+Eight contracts, one class each:
 
 * the PRODUCER (``pay_calendar.opening_rephase``) -- pure: the exact inverse
   of ``earlier_paydays``' re-phase over every cadence kind and convention,
@@ -18,10 +21,13 @@ Seven contracts, one class each:
 * the DOOR (``pay_period_admin.remove_earlier_pay_periods``) -- what it
   removes, where it moves the phase, and that the paycheck it starts from
   stays;
-* an ADD UNDONE -- add N with C18-b's door and remove them with this one,
-  template rows and a recurring transfer included, and every stored row the
-  owner had before comes back unchanged;
+* an ADD UNDONE -- add N with C18-b's door, re-sync the ledger, remove them
+  with this one, template rows and a recurring transfer included: paydays,
+  eras, rows and posted totals come back (the test names what it compares);
 * WHAT A PAYCHECK MAY HOLD (R-PC109's filed half), one case per kind;
+* the LEDGER RE-FILED (R-PC114) -- an account's and a loan's opening filed
+  in an added paycheck go back, a self-cancelling pair goes, and an entry no
+  re-sync rebuilds refuses in the ruled words;
 * MONEY DATED inside the removed span (R-PC109's dated half), one case per
   arm, and the case the span excludes;
 * the EARLIEST RHYTHM KEEPS A PAYCHECK (R-PC110);
@@ -40,9 +46,15 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app import ref_cache
-from app.enums import BusinessDayShiftEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    BusinessDayShiftEnum,
+    PostingSourceEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import PayPeriodUnresolved, ValidationError
 from app.extensions import db as _db
+from app.models.journal_entry import JournalEntry
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_era import PayEra
 from app.models.pay_stub import PayStub
@@ -51,9 +63,14 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    account_posting_service,
+    loan_posting_service,
     pay_period_admin,
+    pay_period_locks,
     pay_period_write,
     pay_schedule_service,
+    posting_service,
+    status_seam,
     transfer_service,
 )
 from app.services.pay_calendar import (
@@ -71,6 +88,7 @@ from tests._test_helpers import (
     add_txn,
     all_periods,
     assert_pay_period_invariants,
+    create_loan_account,
     create_loan_with_trueup,
     create_savings_account,
     make_balanced_entry,
@@ -545,19 +563,29 @@ def _rows_by_period(user_id):
 
 
 class TestAnAddUndoneLeavesNothingBehind:
-    """C18-b's door and this one, in turn: the owner's rows are as they were.
+    """C18-b's door and this one, in turn, with the ledger re-synced between.
 
     The seeded owner (10 fortnightly paychecks from 2026-01-02, books open
     2024-01-04) with a monthly bill and a monthly transfer from 2025-11-24,
     both populated -- so the paychecks "Add earlier" records receive template
     rows and a recurring transfer with both shadows, which the removal must
-    take with them (R-PC109's "template rows go").
+    take with them (R-PC109's "template rows go").  Between the add and the
+    removal the ledger is re-synced, as any loan or balance door does, which
+    files the books' opening (dated 2024-01-04, before every paycheck) in the
+    earliest paycheck -- an added one (R-PC114's case).
     """
 
-    def test_every_stored_row_comes_back_unchanged(
+    def test_paydays_eras_rows_and_the_posted_ledger_come_back(
         self, app, db, seed_user, seed_periods,
     ):
-        """Add 3, remove them: paydays, eras and every row the owner had match."""
+        """Add 3, re-sync, remove them.
+
+        Compared: the paydays, the stored eras, every live row's period,
+        id, name, status, transfer link and delete flag, and every posted
+        total per scenario and ledger account.  Not compared: journal entry
+        ROWS, which a re-sync appends to by design (a reversal and a
+        re-post), and amounts on rows, which no door here writes.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             savings = create_savings_account(
@@ -575,9 +603,14 @@ class TestAnAddUndoneLeavesNothingBehind:
             db.session.commit()
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
             rows = _rows_by_period(user_id)
+            totals = pay_period_locks.posted_totals(user_id)
 
             head = _added_head(user_id, 3)
             added = {period.id for period in head}
+            loan_posting_service.resync_user_loan_postings(user_id)
+            account_posting_service.resync_user_account_anchor_postings(user_id)
+            db.session.commit()
+            assert _entries_in(added), "the re-sync must file the opening in the head"
             assert _db.session.query(Transfer).filter(
                 Transfer.pay_period_id.in_(added),
             ).count() == 2, "the added paychecks must hold the recurring transfer"
@@ -595,7 +628,15 @@ class TestAnAddUndoneLeavesNothingBehind:
             assert _paydays(user_id) == paydays
             assert _stored_eras(user_id) == eras
             assert _rows_by_period(user_id) == rows
+            assert pay_period_locks.posted_totals(user_id) == totals
             assert_pay_period_invariants(db.session, user_id)
+
+
+def _entries_in(period_ids):
+    """Return the journal entries filed in *period_ids* as ``(id, source kind id)``."""
+    return _db.session.query(JournalEntry.id, JournalEntry.source_kind_id).filter(
+        JournalEntry.pay_period_id.in_(list(period_ids)),
+    ).all()
 
 
 def _two_ledger_ids(seed_user):
@@ -752,34 +793,6 @@ class TestWhatAPaycheckMayHold:
 
             assert message.startswith("The 2025-12-19 paycheck holds 1 item ")
 
-    def test_a_balanced_entry_the_ledger_booked_is_refused(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A self-cancelling pair -- which truncate would let go -- refuses here.
-
-        An entry and its reversal net to zero on each ledger account, so
-        truncate's LEDGER_POSTINGS lock would not fire; R-PC109 refuses ANY
-        entry the ledger booked in the paycheck.
-        """
-        with app.app_context():
-            user_id, head = self._world(seed_user)
-            checking, other = _two_ledger_ids(seed_user)
-            make_balanced_entry(
-                db.session, seed_user, from_ledger_id=checking,
-                to_ledger_id=other, period_id=head[1].id,
-            )
-            make_balanced_entry(
-                db.session, seed_user, from_ledger_id=other,
-                to_ledger_id=checking, period_id=head[1].id,
-            )
-            paydays, eras = _paydays(user_id), _stored_eras(user_id)
-
-            assert _held(user_id, seed_periods[0]) == (
-                "The 2025-12-19 paycheck holds 2 balance entries the app booked, "
-                "which can't be moved. Start from 2025-12-19 or earlier."
-            )
-            _unchanged(user_id, paydays, eras)
-
     def test_a_pay_stub_on_a_removed_payday_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
@@ -798,6 +811,45 @@ class TestWhatAPaycheckMayHold:
                 "A pay stub is saved for 2025-12-05. Delete it first, or start "
                 "from 2025-12-05 or earlier."
             )
+
+    def test_a_template_row_paid_then_un_paid_goes_with_the_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The revert keeps the seam's covering mark on the row; it is no purchase.
+
+        Since plan step balance:X-bi-3e-2 a revert keeps the settlement mark,
+        un-dated, under the Projected row (``Transaction.purchases`` excludes
+        it, R-BAL68).  The posting writer reverses the paid leg in the same
+        paycheck and entry date, so the pair nets to $0.00 there and goes
+        with the paycheck (R-PC114: no posted total moves).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _monthly_bill_from(seed_user, date(2025, 12, 20))
+            db.session.commit()
+            head = _added_head(user_id, 2)
+            row = db.session.query(Transaction).filter_by(
+                pay_period_id=head[1].id,
+            ).one()
+            settle_cash_row(row, settled_on=head[1].start_date)
+            db.session.commit()
+            # Un-paid as the route does it: the seam, then the posting
+            # writer, which reverses the leg in the same paycheck and day.
+            status_seam.apply_status_change(
+                row, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            posting_service.sync_transaction_postings(row)
+            db.session.commit()
+            assert row.entries and not row.purchases, (
+                "the revert must leave the covering mark and no purchase"
+            )
+            assert len(_entries_in({head[1].id})) == 2, (
+                "the paid leg and its reversal must both sit in the paycheck"
+            )
+
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
 
     def test_template_rows_alone_go_with_the_paycheck(
         self, app, db, seed_user, seed_periods,
@@ -821,6 +873,122 @@ class TestWhatAPaycheckMayHold:
             assert db.session.query(Transaction).filter(
                 Transaction.pay_period_id.in_(held),
             ).count() == 0
+
+
+class TestTheLedgerIsReFiledAndLosesNothing:
+    """R-PC114 (amending R-PC109): booked entries are re-filed, and no total may move.
+
+    The ledger files an entry dated before the first paycheck in the
+    EARLIEST one (R-PC53), and every re-sync re-files there -- so once a
+    paycheck is added below the record, the books' or a loan's opening sits
+    in it.  The removal re-files through Reset's two re-syncs, and is
+    refused only if a posted total still moves.
+    """
+
+    def test_an_account_opening_filed_in_an_added_paycheck_goes_back(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Review 1's first probe: a re-sync after the add, then the removal."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            head = _added_head(user_id, 2)
+            account_posting_service.resync_user_account_anchor_postings(user_id)
+            db.session.commit()
+            opening = ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING)
+            assert opening in {kind for _id, kind in _entries_in({head[0].id})}
+            totals = pay_period_locks.posted_totals(user_id)
+
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
+            db.session.commit()
+
+            assert pay_period_locks.posted_totals(user_id) == totals
+            assert opening in {
+                kind for _id, kind in _entries_in({seed_periods[0].id})
+            }
+
+    def test_a_loans_opening_filed_in_an_added_paycheck_goes_back(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Review 1's second probe: a loan from 2020, the loan re-sync after the add."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("20000.00"), rate=Decimal("0.05"),
+                origination_date=date(2020, 1, 1),
+            )
+            db.session.commit()
+            head = _added_head(user_id, 2)
+            loan_posting_service.resync_user_loan_postings(user_id)
+            db.session.commit()
+            loan_opening = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
+            assert loan_opening in {kind for _id, kind in _entries_in({head[0].id})}
+            totals = pay_period_locks.posted_totals(user_id)
+
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
+            db.session.commit()
+
+            assert pay_period_locks.posted_totals(user_id) == totals
+
+    def test_a_self_cancelling_pair_goes_with_its_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An entry and its reversal net to $0.00 on each ledger account."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            head = _added_head(user_id, 2)
+            checking, other = _two_ledger_ids(seed_user)
+            make_balanced_entry(
+                db.session, seed_user, from_ledger_id=checking,
+                to_ledger_id=other, period_id=head[1].id,
+            )
+            make_balanced_entry(
+                db.session, seed_user, from_ledger_id=other,
+                to_ledger_id=checking, period_id=head[1].id,
+            )
+            totals = pay_period_locks.posted_totals(user_id)
+
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
+            db.session.commit()
+
+            assert pay_period_locks.posted_totals(user_id) == totals
+
+    def test_an_entry_no_re_sync_rebuilds_is_refused_in_the_ruled_words(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One entry in an added paycheck that no record rebuilds: refused, rolled back.
+
+        Built by hand, because no door books money into a paycheck with
+        nothing in it: this is the guard's own firing case, and its message
+        is the ruled one.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            head = _added_head(user_id, 2)
+            checking, other = _two_ledger_ids(seed_user)
+            make_balanced_entry(
+                db.session, seed_user, from_ledger_id=checking,
+                to_ledger_id=other, period_id=head[1].id,
+            )
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+            totals = pay_period_locks.posted_totals(user_id)
+
+            message = _held(user_id, seed_periods[0])
+            db.session.rollback()
+
+            assert message == (
+                f"Removing these paychecks would change the balance the app has "
+                f"booked for {seed_user['account'].name}, so nothing was "
+                f"removed. Start from an earlier paycheck."
+            )
+            _unchanged(user_id, paydays, eras)
+            assert pay_period_locks.posted_totals(user_id) == totals
 
 
 class TestMoneyDatedInsideTheHead:
@@ -930,6 +1098,61 @@ class TestMoneyDatedInsideTheHead:
             add_txn(
                 db.session, seed_user, seed_periods[0], "Water", "40.00",
                 status_enum=StatusEnum.DONE, settled_on=date(2025, 11, 30),
+            )
+            db.session.commit()
+
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
+
+
+    def test_a_purchase_a_companion_recorded_inside_is_refused(
+        self, app, db, seed_user, seed_periods, seed_companion,
+    ):
+        """The purchase is the owner's whoever typed it (review 1's M1)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _added_head(user_id, 2)
+            row = add_txn(db.session, seed_user, seed_periods[0], "Food", "90.00")
+            add_entry(
+                db.session, seed_companion, row, Decimal("25.00"), self.DAY,
+                settled_on=self.DAY, description="Market",
+            )
+            db.session.commit()
+
+            assert _held(user_id, seed_periods[0]) == self._refusal(
+                "The purchase Market is marked paid on",
+            )
+
+    def test_a_loans_tracking_start_inside_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The balance stated at a loan's setup stands like a true-up (review 1's M2)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("20000.00"), rate=Decimal("0.05"),
+                origination_date=date(2020, 1, 1),
+                tracked_balance=Decimal("15000.00"), tracked_from=self.DAY,
+            )
+            db.session.commit()
+            _added_head(user_id, 2)
+
+            assert _held(user_id, seed_periods[0]) == self._refusal(
+                "Car Loan's balance is recorded for",
+            )
+
+    def test_money_on_the_new_first_payday_is_admitted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The span stops BEFORE the paycheck kept first: its own payday is inside the schedule."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _added_head(user_id, 2)
+            add_txn(
+                db.session, seed_user, seed_periods[0], "Water", "40.00",
+                status_enum=StatusEnum.DONE, settled_on=seed_periods[0].start_date,
             )
             db.session.commit()
 

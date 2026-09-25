@@ -428,15 +428,17 @@ def remove_earlier():
     (:func:`~app.services.pay_period_admin.remove_earlier_pay_periods`).
     Nothing is populated, since nothing is recorded.
 
-    **Every refusal is a flash and nothing is staged by one**: an id that is
-    not the owner's (``PayPeriodUnresolved``, one message for "no such" and
-    "not yours", as at truncate), a paycheck holding money or money dated
-    inside the removed ones (**R-PC109**), and a removal taking every payday
-    of the earliest pay rhythm (**R-PC110**) -- the last two are the
-    service's ``ValidationError``, raised before its first statement.  The
-    rollback is for the page this redirects to, which reads the owner's
-    schedule back and should read committed state.  There is no
-    discard-confirm panel: the ruling refused one.
+    **Every refusal is a flash, and the rollback leaves nothing staged**: an
+    id that is not the owner's (``PayPeriodUnresolved``, one message for "no
+    such" and "not yours", as at truncate), a paycheck holding money or money
+    dated inside the removed ones (**R-PC109**), a removal taking every
+    payday of the earliest pay rhythm (**R-PC110**), and one that would
+    change a posted total the ledger's re-syncs do not rebuild (**R-PC114**)
+    -- the last three the service's ``ValidationError``.  R-PC114's arrives
+    AFTER the delete and the re-syncs it judges, so the rollback is what
+    undoes them; for the others it is for the page this redirects to, which
+    reads the owner's schedule back.  There is no discard-confirm panel: the
+    ruling refused one.
     """
     errors = _remove_earlier_schema.validate(request.form)
     if errors:

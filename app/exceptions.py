@@ -366,10 +366,13 @@ class PayPeriodUnresolved(ShekelError):
     def __init__(self, period_id, choice):
         """Name the id and the choice to make again from the list."""
         self.period_id = period_id
+        # The id stays on the exception and in the ACCESS log, never in the
+        # sentence: app text shows a person no system id (the developer,
+        # 2026-09-23), and a stale page's owner could not act on one anyway.
         super().__init__(
-            f"Pay period {period_id} is not one of yours, or no longer "
-            f"exists. Reload the pay-periods settings page and choose "
-            f"{choice} from the current list."
+            f"That pay period is not one of yours, or no longer exists. "
+            f"Reload the pay-periods settings page and choose {choice} from "
+            f"the current list."
         )
 
 

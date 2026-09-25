@@ -46,11 +46,10 @@ that called a door would be the cycle the C3-a split exists to prevent.
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app import ref_cache
-from app.enums import LoanAnchorSourceEnum
 from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
@@ -58,15 +57,16 @@ from app.exceptions import (
 )
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.loan_anchor_event import LoanAnchorEvent
+from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.pay_stub import PayStub
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
-from app.services import pay_period_locks, pay_period_service
+from app.services import pay_period_locks, pay_period_service, status_seam
 from app.services._recurrence_common import log_resource_access_denied
+from app.services.loan_loaders import load_standing_loan_assertions
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
 from app.utils.balance_predicates import (
@@ -76,6 +76,9 @@ from app.utils.balance_predicates import (
 from app.utils.log_events import ACCESS, EVT_RESOURCE_NOT_FOUND, log_event
 
 logger = logging.getLogger(__name__)
+
+#: A ledger total a key does not reach: no posting, no money.
+_NO_MONEY = Decimal("0")
 
 
 def log_unresolved_period(user_id: int, period_id: int) -> None:
@@ -277,19 +280,30 @@ def gate_removable_head(
        row holding a purchase (:func:`transactions_holding_purchases`); a
        transfer made by hand -- "items you entered or changed", the ruling's
        wording, naming each.
-    2. Any entry the posted ledger booked in the paycheck, balanced or not:
-       a journal entry's period is fixed once written (**R-PC53**), so it
-       cannot follow the paycheck anywhere, and the ``CASCADE`` would take it.
-    3. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
+    2. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
        the app holds (**R-SAL49**), and this would leave it on none.
-    4. Money DATED inside the removed paychecks anywhere in the budget -- a
+    3. Money DATED inside the removed paychecks anywhere in the budget -- a
        settle day on any row (a transfer's shadows included) or purchase, or
-       a balance recorded for an account or a loan -- because the removal raises the recordable
-       floor (``pay_period_service.recordable_floor``) over it.  A settle day
-       under that floor is refused on every save that keeps its row paid
-       (``status_seam``), and an assertion under it is the back-dated state
-       ``anchor_service.resolve_observation_day`` exists to refuse.  Rows
-       filed in the head are refused by (1) first whatever they are dated.
+       a balance recorded for an account or a loan -- because the removal
+       raises the recordable floor (``pay_period_service.recordable_floor``)
+       over it.  A settle day under that floor is refused on every save that
+       keeps its row paid (``status_seam``), and an assertion under it is the
+       back-dated state ``anchor_service.resolve_observation_day`` exists to
+       refuse.  Rows filed in the head are refused by (1) first whatever they
+       are dated.
+
+    **What the posted ledger booked in the head is NOT asked here** (ruling
+    **R-PC114**, amending R-PC109's "a balance entry the app booked").  The
+    ledger files every entry dated before the first paycheck in the EARLIEST
+    one (``PayCalendar.filing_period``, **R-PC53**), and every re-sync
+    re-files there -- so after "Add earlier paychecks" a loan's opening
+    dated years back sits in an added paycheck, and refusing on it made the
+    undo die at the first loan payment (review 1 of C21, measured on the
+    developer's data).  The door re-files those entries through Reset's two
+    re-syncs instead and asks :func:`reject_moved_ledger` of the result: the
+    ledger may lose nothing.  An entry of a row the head holds is refused by
+    (1) when the row is money; a paid-then-unpaid pair nets to zero and goes
+    with its paycheck.
 
     **No confirmation step**: the ruling refused one, because a Credit row is
     a real card charge and a confirmation could delete real spending.  And
@@ -309,34 +323,32 @@ def gate_removable_head(
         already the first.
 
     Raises:
-        ValidationError: A period in the head holds money, or money is dated
-            inside the head.  Nothing is written.
+        ValidationError: A period in the head holds a row the owner made or a
+            pay stub, or money is dated inside the head.  Nothing is written.
     """
     head = [period for period in periods if period.start_date < first_kept.start_date]
     if not head:
         return []
     _reject_held_rows(head)
-    _reject_booked_entries(head)
     _reject_stubs(user_id, head)
     _reject_dated_money(user_id, head, first_kept, as_of)
     return head
 
 
 def transactions_holding_purchases(transaction_ids) -> "set[int]":
-    """Return the subset of *transaction_ids* holding a purchase the owner entered.
+    """Return the subset of *transaction_ids* holding a purchase.
 
-    **The ONE home of "this row holds a purchase"** (plan step
-    ``pay_calendar:C21``, ruling **R-PC109**; the coordinator's ruling that
-    ledger row **PC-524**'s step, ``C22`` under ruling **R-PC112**, reuses it
-    for truncate and regenerate rather than spelling it again).  A purchase
-    is a ``budget.transaction_entries`` row the purchase door wrote
-    (``covers_settlement`` false).  The settlement movement the status seam
-    writes for a settled row is not one, and a row holding it is settled,
-    which every gate refuses on its status first.
-
-    A set query rather than a property on the row: the gates ask it over a
-    whole head or tail at once, and a per-row lazy load would be one query
-    per row.
+    **A set reader, not a rule of its own.**  What a purchase IS has one
+    home: ``Transaction.purchases`` (ruling **R-BAL68**, "the ONE reading of
+    what did a person record against this row") -- a row's entries less the
+    seam's covering mark -- whose query-side twin is
+    ``status_seam.covering_clause``, negated here.  The mark is NOT confined
+    to settled rows: since plan step ``balance:X-bi-3e-2`` a revert KEEPS it,
+    un-dated, under a Projected row, which is why a gate may not read "has
+    any entry" as "holds a purchase".  This asks the same question over a
+    whole head at once, where the property would load one collection per
+    row.  Plan step ``pay_calendar:C22`` (ruling **R-PC112**, ledger row
+    **PC-524**) reuses the same clause for truncate and regenerate.
 
     Args:
         transaction_ids: ``budget.transactions.id`` values.
@@ -350,7 +362,7 @@ def transactions_holding_purchases(transaction_ids) -> "set[int]":
         db.session.query(TransactionEntry.transaction_id)
         .filter(
             TransactionEntry.transaction_id.in_(transaction_ids),
-            TransactionEntry.covers_settlement.is_(False),
+            ~status_seam.covering_clause(),
         )
         .distinct()
         .all()
@@ -407,36 +419,49 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     raise ValidationError(" ".join(sentences))
 
 
-def _reject_booked_entries(head: "list[DerivedPeriod]") -> None:
-    """Refuse a head holding any entry the posted ledger booked.
+def reject_moved_ledger(
+    before: "dict[tuple[int, int], Decimal]",
+    after: "dict[tuple[int, int], Decimal]",
+) -> None:
+    """Refuse a removal that changed any posted total (ruling **R-PC114**).
 
-    Refusal 2 of :func:`gate_removable_head`.  Named on the EARLIEST such
-    paycheck, since the owner cannot move an entry and keeping that paycheck
-    keeps every later one.
+    "Remove earlier paychecks"' ledger half, asked AFTER its write:
+    ``pay_period_admin.remove_earlier_pay_periods`` re-syncs the ledger,
+    reads :func:`~app.services.pay_period_locks.posted_totals`, retires the
+    head (whose entries the ``CASCADE`` takes), re-syncs again so every
+    entry rebuilt from a surviving record is re-filed onto the kept
+    paychecks, and reads the totals again.  Equal totals mean the head held
+    no booked money; a total that moved is an entry no re-sync rebuilds,
+    and the door refuses.  It is asked after the write because only the
+    re-syncs can say what they rebuild -- a list of rebuildable entry kinds
+    here would be a second statement of the posting modules' own rules --
+    and the refusal leaves nothing behind because the route rolls back.
 
     Args:
-        head: The periods the removal would take.
+        before: The totals before the removal, after a re-sync.
+        after: The totals after the removal and its re-sync.
 
     Raises:
-        ValidationError: A journal entry is filed in *head*.
+        ValidationError: A total differs; the message is the ruled one,
+            naming the account(s) whose booked balance moved.
     """
-    booked = pay_period_locks.booked_entry_counts([p.period_id for p in head])
-    if not booked:
+    moved = {
+        key[1] for key in set(before) | set(after)
+        if before.get(key, _NO_MONEY) != after.get(key, _NO_MONEY)
+    }
+    if not moved:
         return
-    period = next(p for p in head if p.period_id in booked)
-    count = booked[period.period_id]
-    noun = "balance entry" if count == 1 else "balance entries"
     raise ValidationError(
-        f"{_paycheck(period)} holds {count} {noun} the app booked, which "
-        f"can't be moved. Start from {period.start_date.isoformat()} or "
-        f"earlier."
+        f"Removing these paychecks would change the balance the app has "
+        f"booked for {', '.join(pay_period_locks.ledger_account_names(moved))}, "
+        f"so nothing was removed. Start from an earlier paycheck."
     )
 
 
 def _reject_stubs(user_id: int, head: "list[DerivedPeriod]") -> None:
     """Refuse a head whose payday carries one of the owner's pay stubs.
 
-    Refusal 3 of :func:`gate_removable_head`.  Every stubbed payday is named;
+    Refusal 2 of :func:`gate_removable_head`.  Every stubbed payday is named;
     the owner can delete a stub, so the remedy offers that first.
 
     Args:
@@ -477,7 +502,7 @@ def _reject_dated_money(
 ) -> None:
     """Refuse a removal that would leave recorded money below the floor.
 
-    Refusal 4 of :func:`gate_removable_head`.  The span is what the removal
+    Refusal 3 of :func:`gate_removable_head`.  The span is what the removal
     moves the recordable floor over: from where it stands to where it would
     stand, both read through ``pay_period_service.recordable_floor``.  Money
     already below today's floor is a state the removal did not make, so it
@@ -549,15 +574,18 @@ def _settled_transaction(user_id, low, high):
 def _settled_purchase(user_id, low, high):
     """The earliest settle day in ``[low, high)`` on a purchase under a live row.
 
-    Purchases only: a settled row's covering movement carries its parent's
-    settle day, which :func:`_settled_transaction` already asks.
+    Purchases only (``status_seam.covering_clause``, negated): a settled
+    row's covering movement carries its parent's settle day, which
+    :func:`_settled_transaction` already asks.  Scoped by the purchase's
+    OWNER, never ``user_id`` -- that is its AUTHOR, a companion's id when a
+    companion recorded it (review 1 of C21 measured one slipping through).
     """
     return _earliest(
         db.session.query(TransactionEntry.settled_on, TransactionEntry.description)
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .filter(
-            TransactionEntry.user_id == user_id,
-            TransactionEntry.covers_settlement.is_(False),
+            TransactionEntry.owner_id == user_id,
+            ~status_seam.covering_clause(),
             Transaction.is_deleted.is_(False),
             TransactionEntry.settled_on >= low,
             TransactionEntry.settled_on < high,
@@ -583,27 +611,38 @@ def _recorded_balance(user_id, low, high):
 
 
 def _recorded_loan_balance(user_id, low, high):
-    """The earliest loan balance the owner recorded (a true-up) in ``[low, high)``."""
-    return _earliest(
-        db.session.query(LoanAnchorEvent.anchor_date, Account.name)
-        .join(Account, LoanAnchorEvent.account_id == Account.id)
-        .filter(
-            Account.user_id == user_id,
-            LoanAnchorEvent.source_id == ref_cache.loan_anchor_source_id(
-                LoanAnchorSourceEnum.USER_TRUEUP,
-            ),
-            LoanAnchorEvent.anchor_date >= low,
-            LoanAnchorEvent.anchor_date < high,
+    """The earliest STANDING loan statement in ``[low, high)``: a recorded loan balance.
+
+    Read through ``loan_loaders.load_standing_loan_assertions``, the loans'
+    one reader of their statements (ruling ``recurrence:R-R98``): the
+    ``tracking_start`` balance stated at setup and every ``user_trueup``,
+    less any the owner withdrew -- a withdrawn statement describes nothing.
+    The origination is not among them: it is the loan's opening, legal
+    before any schedule.  Per configured loan, since that reader is.
+    """
+    found = []
+    for account_id, name in (
+        db.session.query(Account.id, Account.name)
+        .join(LoanParams, LoanParams.account_id == Account.id)
+        .filter(Account.user_id == user_id)
+    ):
+        found.extend(
+            (fact.anchor_date, f"{name}'s balance is recorded for")
+            for fact in load_standing_loan_assertions(account_id)
+            if low <= fact.anchor_date < high
         )
-        .order_by(LoanAnchorEvent.anchor_date),
-        lambda name: f"{name}'s balance is recorded for",
-    )
+    return min(found, key=lambda each: each[0]) if found else None
 
 
-#: Every kind of money a day is recorded on that the recordable floor bounds
+#: The kinds of money a day is recorded on that the recordable floor bounds
 #: or the ruling names (R-PC109: "a settle day on any row ... or a balance
 #: recorded for a day inside them"), each asked for its earliest day in the
-#: span.  A transfer is here through its two shadows, which are rows and
+#: span.  An account's recorded balances are every row of
+#: ``account_anchor_history`` -- a bank level a later import RELEASED
+#: included, the conservative side: whether a withdrawn level may sit below
+#: the floor is the bank-import arc's question, and its one narrowing
+#: (``statement_import._balance.standing_bank_levels``) is not exported.  A
+#: transfer is here through its two shadows, which are rows and
 #: carry its settle days (``Transfer.settled_on`` is a property over them, not
 #: a column).  A loan's ORIGINATION is not here: it is the loan's opening,
 #: legal before any schedule, as an account's books opening is.

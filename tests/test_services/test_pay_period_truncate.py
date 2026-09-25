@@ -366,7 +366,10 @@ class TestTruncateRefusesAnIdItCannotResolve:
                     user_id, keep_through_period_id=absent,
                 )
 
-            assert str(absent) in str(excinfo.value)
+            # App text shows a person no system id (the developer,
+            # 2026-09-23; this line asserted the echo until pay_calendar:C21,
+            # approved under rule 5): the id goes to the ACCESS log only.
+            assert str(absent) not in str(excinfo.value)
             assert _count_periods(db.session, user_id) == before
 
     def test_another_owners_period_is_refused_identically(

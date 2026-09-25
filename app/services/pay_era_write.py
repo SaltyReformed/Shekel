@@ -641,9 +641,12 @@ def era_to_move(
     Args:
         eras: The owner's eras as read, ``effective_from`` ascending.
         paydays: Every recorded payday BEFORE the removal, ascending -- the
-            refusal names the latest the earliest era pays, and the record's
-            first is always one of them (every door leaves it standing for
-            that era's first grid step).
+            refusal names the latest the earliest era pays.  The record's
+            first is one of them for every state a door writes (each leaves
+            it standing for that era's first grid step, or above it for the
+            C17-a migrated era); a hand-built record whose first payday sits
+            at an exact half-cadence tie with a later era's first would match
+            the later one and leave the list empty, and no door writes that.
         opening: The payday the removal leaves first.
 
     Returns:
