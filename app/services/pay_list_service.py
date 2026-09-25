@@ -12,14 +12,16 @@ salary:X-av-3b's (ruling **R-SAL83**), and Remove never takes the last entry
 **What the doors refuse, and whose rule each refusal is:**
 
 * a day that is not a payday the app holds or projects a paycheck for, or
-  one later than the owner's next payday -- the stub door's own rule and
-  message (**R-SAL49**, **R-SAL48**), asked through
-  :func:`~app.services.pay_stub_service.payday_refusal` so the rule has one
-  home (ruling **R-SAL90**, "Up to next payday": an entry is pay
+  one later than the owner's next payday -- the stub door's own rule
+  (**R-SAL49**, **R-SAL48**), asked through
+  :func:`~app.services.pay_stub_service.payday_refusal_for_door` so the rule
+  has one home (ruling **R-SAL90**, "Up to next payday": an entry is pay
   received, and a mistyped year would otherwise replace every forecast raise
-  before it); asked of a Fix only when it CHANGES the payday, as the stub door asks
-  it (**R-SAL53**), so an entry whose payday later left the pay record stays
-  fixable in place;
+  before it), in this door's own words, "Pay can be recorded up to your next
+  payday, ..." (ruling **R-SAL93**, "Each door names its own", which amends
+  R-SAL90); asked of a Fix only when it CHANGES the payday, as the stub door
+  asks it (**R-SAL53**), so an entry whose payday later left the pay record
+  stays fixable in place;
 * a Fix moving an entry onto a payday another of the profile's entries
   holds: one entry per payday (``uq_pay_entries_profile_payday``), and a Fix
   never overwrites an entry unseen.
@@ -48,7 +50,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
-from app.services.pay_stub_service import payday_refusal
+from app.services.pay_stub_service import payday_refusal_for_door
 from app.services.payroll_basis import PayrollBasis
 
 if TYPE_CHECKING:
@@ -106,9 +108,12 @@ def _refuse_payday(ctx: "BalanceContext", payday: date, today: date) -> None:
 
     Raises:
         ValidationError: With :func:`~app.services.pay_stub_service
-            .payday_refusal`'s message.
+            .payday_refusal_for_door`'s message in this door's words
+            (ruling **R-SAL93**).
     """
-    refusal = payday_refusal(ctx, payday, today)
+    refusal = payday_refusal_for_door(
+        ctx, payday, today, door_words="Pay can be recorded",
+    )
     if refusal is not None:
         raise ValidationError(refusal)
 

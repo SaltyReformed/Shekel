@@ -71,6 +71,21 @@ a year, made-up figures: 52,000.13 / 26 = 2,000.005, half-up 2,000.01, times
 paycheck identically, up to the per-step rounding of each raise
 (**R-SAL60**) that the older engine rounds once.
 
+**A rollback does not restore the pre-upgrade yearly figure, and so can
+re-price projected paychecks by a cent** (ruling **R-SAL92**, "Accept and
+declare").  The upgrade keeps only the per-paycheck amount (R-SAL59): the
+remainder the division rounded off is discarded, and nothing stores the old
+yearly figure a second time.  The restored figure is the entry times its
+paychecks a year, higher or lower than the old one wherever it did not divide
+evenly, and the older engine prices every projected paycheck from it again.
+Before a raise the two agree (``$2,000.01`` a paycheck either way in the
+example above); after raises they can part by a cent.  Made-up:
+``$52,000.13`` at 26 a year with a 3% raise compounding yearly.  In the
+fourth raised year the older engine priced ``$2,251.02`` a paycheck before
+the upgrade (``$58,526.60 / 26``) and prices ``$2,251.03`` after a rollback
+(the restored ``$52,000.26`` raised to ``$58,526.75``, ``/ 26``).  Settled
+records never move: each holds its own figure.
+
 Literals a stored value is derived from are spelled here, not imported (the
 standing rule ``f2b7c40d918e`` states): the mean Gregorian year and the two
 month-kind counts are :attr:`app.services.pay_calendar.PayCadence

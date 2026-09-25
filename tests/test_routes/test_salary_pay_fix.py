@@ -15,8 +15,10 @@ truth.  Every figure is made up.
   to the same URL shape resolving, so the 404 is the gate's and not the URL
   map's;
 * both doors take the stub door's payday rule (R-SAL48's bound, ruling
-  **R-SAL90**, "Up to next payday"): a payday later than
-  the owner's next one is refused with the stub door's own words.
+  **R-SAL90**, "Up to next payday"): a payday later than the owner's next
+  one is refused, in the pay doors' own words (ruling **R-SAL93**, "Each
+  door names its own"): "Pay can be recorded up to your next payday, ...",
+  never the stub door's "A stub can be entered ...".
 
 Today is pinned to 2026-03-20 (the stub tests' day): inside the seeded
 schedule (biweekly from 2026-01-02), 03-13 the current payday and 03-27 the
@@ -172,12 +174,22 @@ class TestCreateByPayPerPaycheck:
 
 
 class TestUpToTheNextPayday:
-    """Neither door takes a payday past the owner's next one (R-SAL48's bound)."""
+    """Neither door takes a payday past the owner's next one (R-SAL48's bound).
+
+    Each refusal is pinned WHOLE, in the pay doors' words (R-SAL93): the rule
+    is the stub door's, the words are not.
+    """
+
+    #: What both pay doors say of 04-10 on 03-20 (R-SAL93, "Each door names its own").
+    REFUSAL = (
+        b"2026-04-10 has not been paid yet.  Pay can be recorded up to your "
+        b"next payday, 2026-03-27."
+    )
 
     def test_create_refuses_a_payday_after_the_next(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """04-10 has not been paid yet on 03-20: the stub door's words; no profile."""
+        """04-10 has not been paid yet on 03-20: the pay doors' words; no profile."""
         with app.app_context():
             controls = _rendered_form(auth_client, "/salary/new", "/salary")
             controls.update({
@@ -187,8 +199,8 @@ class TestUpToTheNextPayday:
             response = auth_client.post(
                 "/salary", data=controls, follow_redirects=True,
             )
-            assert b"2026-04-10 has not been paid yet." in response.data
-            assert b"up to your next payday, 2026-03-27." in response.data
+            assert self.REFUSAL in response.data
+            assert b"A stub can be entered" not in response.data
             assert db.session.query(SalaryProfile).filter_by(
                 user_id=seed_user["user"].id,
             ).count() == 0
@@ -222,7 +234,8 @@ class TestUpToTheNextPayday:
                 _fix_url(entry), data=controls, follow_redirects=True,
             )
 
-            assert b"2026-04-10 has not been paid yet." in response.data
+            assert self.REFUSAL in response.data
+            assert b"A stub can be entered" not in response.data
             assert _state(entry.id) == before
 
 
