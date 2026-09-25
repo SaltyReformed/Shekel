@@ -55,7 +55,7 @@ from itertools import groupby
 from pathlib import Path
 
 import _registry as registry
-from _tables import UNESCAPED_PIPE_RX
+from _tables import UNESCAPED_PIPE_RX, is_table_row
 from _plan_gate import _blank_fenced_regions
 
 def live_docs() -> dict[str, Path]:
@@ -193,25 +193,6 @@ def _name(path: Path) -> str:
         return path.name
 
 
-def _is_table_row(line: str) -> bool:
-    """Return whether *line* is a markdown table row.
-
-    One predicate for :func:`_scannable` and :func:`_units`, so a line the
-    blanker isolated as a row is a line the splitter cuts into cells: a row
-    blanked as prose could lose its pipes to a quote from the next line, and
-    :func:`_units` would then fold it into a paragraph.  The two apply it on
-    either side of the blanking, which only turns characters into spaces, so
-    a row it isolated still opens with its pipe when :func:`_units` reads it.
-
-    Args:
-        line: One line of a document.
-
-    Returns:
-        ``True`` when the line opens with a pipe, leading whitespace aside.
-    """
-    return line.lstrip().startswith("|")
-
-
 def _blank_span(match: re.Match[str]) -> str:
     """Return *match*'s text with every character but a newline made a space.
 
@@ -240,6 +221,14 @@ def _scannable(text: str) -> str:
     quoted span can begin in one and end in another; the row pattern's comment
     says why that has to be structural.
 
+    **A row is what :func:`_tables.is_table_row` says, here and in
+    :func:`_units` alike**, so a line isolated as a row is a line the splitter
+    cuts into cells: a row blanked as prose could lose its pipes to a quote
+    from the next line, and :func:`_units` would then fold it into a
+    paragraph.  The two ask on either side of the blanking, which only turns
+    characters into spaces, so a row isolated here still opens with its pipe
+    when :func:`_units` reads it.
+
     Args:
         text: The whole document.
 
@@ -249,7 +238,7 @@ def _scannable(text: str) -> str:
     """
     blocks: list[str] = []
     lines = _blank_fenced_regions(text).split("\n")
-    for is_row, run in groupby(lines, key=_is_table_row):
+    for is_row, run in groupby(lines, key=is_table_row):
         if is_row:
             blocks.extend(_ROW_QUOTED_RX.sub(_blank_span, row) for row in run)
         else:
@@ -274,7 +263,7 @@ def _units(text: str) -> list[str]:
     units: list[str] = []
     paragraph: list[str] = []
     for line in text.splitlines():
-        if _is_table_row(line):
+        if is_table_row(line):
             if paragraph:
                 units.append(" ".join(paragraph))
                 paragraph = []
