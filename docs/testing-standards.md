@@ -213,8 +213,10 @@ decodable; DO NOT cite these timings in new measurements.
 Total then, in that era's own figures: ~5,504 tests / ~65 s at `-n 12` via `./scripts/test.sh` (full
 suite is faster than the sum of batches because pytest startup + 12-worker bootstrap overhead
 amortises over the full inventory rather than paying 8x); DO NOT cite these timings in new
-measurements either. `tests/test_performance/` is excluded from the default `addopts` and must be
-invoked explicitly: `./scripts/test.sh tests/test_performance -v -s`.
+measurements either. `tests/test_performance/` (the audit trigger's overhead REPORT, which prints
+and asserts no time) is excluded from the default `addopts` and runs SERIALLY, as CI step 7b runs
+it: `./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=`. The
+required check is `tests/test_integration/test_audit_trigger_work.py`, in the ordinary suite.
 
 ## Building the test template
 

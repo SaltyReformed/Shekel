@@ -6453,8 +6453,8 @@ def bare_expense_template(
     ``ck_transactions_one_pricing_link`` to ``= 1``, so a bare row must name
     a definition to be storable at all.  A rule-less definition of the
     owner's is the one such a row would have had the grid mint it
-    (**R-BAL20**), and this is the shared builder of that shape (the trigger
-    benchmark keeps a local one beside its clock, ``test_trigger_overhead
+    (**R-BAL20**), and this is the shared builder of that shape (the audit
+    trigger's workloads keep a local one, ``tests._audit_trigger_workloads
     ._rule_less_definition``); each such row takes its OWN definition,
     because two undated rows of one definition in one paycheck collide on
     ``idx_transactions_template_scenario_undated`` and two dated ones on the

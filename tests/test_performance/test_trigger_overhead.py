@@ -1,105 +1,40 @@
-"""Performance tests for audit trigger overhead on the recurrence engine (Phase 8B WU-6).
+"""The audit trigger's overhead, TIMED and PRINTED: a report, never a gate.
 
-These tests measure the execution time of recurrence engine operations
-with and without audit triggers enabled.  Each workload is held to its
-OWN ceiling (:data:`MAX_OVERHEAD_PERCENT`); the Phase 8 master plan's
-single 20% figure was not a budget these five could share.
+**No assertion here reads a time** (plan step balance:X-cy, ruling
+**balance:R-BAL144**, 'Count work, report time').  The required check is
+``tests/test_integration/test_audit_trigger_work.py``: it counts what the
+trigger WRITES and pins what the trigger COSTS to run.  This file times the
+same five workloads (:mod:`tests._audit_trigger_workloads`) with the trigger
+on and off and prints the ratio; when a changed trigger fails that pin, this is
+how it is re-measured, and the figures are recorded beside the pin.  Until this
+step each workload held a wall-clock ceiling, and on GitHub's shared runners
+those ceilings failed the required check four times in about fourteen hours
+with no change to the trigger (finding **recurrence:REC-533**).
 
-The directory is excluded from the default (parallel) run, because
-these assert a wall-clock RATIO and oversubscription inflates the ratio
-itself.  CI runs them serially in their own step; run them the same way:
+**A benchmark that RAISES still fails** (**R-BAL152**).  Its CI step stays
+graded, because an exception is deterministic, and this directory has already
+rotted unseen once: its tests errored at setup from 2026-05-20 to 2026-08-28
+while nothing ran them.  So does one that HANGS: the suite's per-test timeout
+(``pytest.ini``, 50 s) still applies (**R-BAL153**).  Measured 2026-09-25 on a
+busy dev box: the whole report takes about 10 s, and with the trigger slowed to
+about 1 ms per row (some 25-35 times today's cost) it still finished in 18 s,
+so the timeout trips only on a hang or a trigger far slower than that.
 
-    pytest tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+The figures print on a PASSING run, through ``capsys.disabled()``, while the
+app's own logs stay captured.  The directory is excluded from the default
+(parallel) run, because oversubscription inflates the very ratio this prints
+(``pytest.ini``).  CI runs it serially in its own step; run it the same way:
+
+    ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
 """
 import time
-from decimal import Decimal
 
 import pytest
 
-from app.extensions import db
-from app.models.transaction_template import TransactionTemplate
-from app.models.ref import TransactionType
-from app.services import recurrence_engine
-from app.services.balance_at import BalanceContext
-from app.services.generation_schedule import GenerationSchedule
-from app.services.one_off import place_row_of
-from app.services.pay_calendar import calendar_for
-from tests._test_helpers import make_every_period_rule, state_template_price
-
-# Per-workload overhead ceilings, in percent.
-#
-# **One global 20% (the Phase 8 plan's figure) is not a budget these five
-# workloads can share, and two of them could never have met it.**  The
-# audit trigger writes one ``system.audit_log`` row per changed row, so
-# its cost is set by the ROW COUNT and is ~22-35 us per row in every one
-# of the five (measured 2026-08-28: +1.8 to +3.6 ms per 52 rows, +5.8 ms
-# for the 260-row UPDATE).  What differs by a factor of ~45 is the
-# DENOMINATOR: the audit-free base cost is 1.8 ms for a one-statement
-# bulk UPDATE and 81 ms for a regenerate that walks the ORM row by row.
-# The same trigger therefore reads as 0.2% of one workload and ~300% of
-# another.
-#
-# Raising the row count does not rescue the cheap workloads, and for
-# UPDATE it makes the ratio LARGER rather than leaving it alone.  The
-# ratio is scale-invariant only where both halves scale with rows; a
-# bare ``UPDATE ... WHERE name LIKE`` is dominated by its FIXED costs
-# (parse, plan, one round trip) and measures 1.8 ms for 260 rows as
-# readily as 1.7 ms for 52, while the audit half scales per row.  Going
-# from 52 to 260 rows therefore moved the figure from ~125% to ~300%.
-# It is still the better measurement -- the band tightens from 50 points
-# to 20, and the baseline clears this test's own "too fast to measure"
-# guard -- but no ceiling in the low tens was ever reachable for it, on
-# an audit trigger whose function body has not changed since 2026-05-20.
-#
-# Measured 2026-08-28 (dev box, PostgreSQL 17 in docker) over FOURTEEN
-# serial runs of the paired harness in :func:`_paired_overhead`, taken
-# across a range of machine load:
-#
-#   generate    2.5 -   9.6 %      base 34-37 ms
-#   regenerate -3.7 -   1.3 %      base 78-82 ms
-#   insert      3.1 -  10.3 %      base 51-53 ms
-#   update    290.2 - 309.7 %      base  1.8-1.9 ms  (260 rows)
-#   delete     21.4 -  31.9 %      base  7.7-7.7 ms
-#
-# Re-measured 2026-09-18 for the three workloads whose rows moved onto
-# the one-off row placer (plan step balance:X-bi-7c; the hand-built rows
-# were the shape the cutover's pricing-link CHECK refuses), FIVE serial
-# runs, ordinary machine load:
-#
-#   insert      6.1 -  12.3 %      base 26-28 ms   (one INSERT + flush per row)
-#   update    125.2 - 140.8 %      base  4.6 ms    (the ``notes`` column; 260 rows)
-#   delete     21.3 -  25.4 %      base  5.5-5.7 ms
-#
-# The ceilings stand: each is still >= 2x the re-measured maximum.
-#
-# Each ceiling is ~1.5-2x its measured maximum: loose enough to survive
-# a busier runner, tight enough that a trigger doing materially more
-# work still trips it.  A ceiling that a workload's PHYSICS cannot meet
-# is not a budget, it is a permanent red light, which is what the two
-# cheap statements had.
-#
-# **UPDATE is deliberately the loosest and it does not need to be the
-# sensitive one.**  Its base is 1.8 ms of mostly fixed cost, the
-# smallest denominator here, so its ratio is both the largest and the
-# one that moves most with machine load.  Detection is a property of the
-# SUITE, not of every arm: doubling the trigger's per-row cost moves
-# delete from ~28% to ~56% and regenerate from ~0% to ~19%, tripping
-# both of the tighter ceilings.  So UPDATE is kept as a reported figure
-# with a ceiling that catches only a gross regression, rather than
-# tightened into a flake.
-MAX_OVERHEAD_PERCENT = {
-    "generate": 20,
-    "regenerate": 15,
-    "insert": 25,
-    "update": 450,
-    "delete": 55,
-}
+from app.extensions import db as _db
+from tests._audit_trigger_workloads import WORKLOADS
 
 # Number of timing iterations for more stable measurements.
-# Rows the UPDATE benchmark writes per pay period.  One row per
-# period is too narrow to measure; see that test's own comment.
-ROWS_PER_PERIOD = 5
-
 ITERATIONS = 15
 # Warmup iterations discarded before timing.
 WARMUP = 3
@@ -134,8 +69,8 @@ def _paired_overhead(sample):
     Args:
         sample: Callable taking no arguments that performs its own
             untimed setup, runs ONE timed iteration, and returns the
-            elapsed milliseconds.  It must leave the database as it
-            found it, since it is called many times.
+            elapsed milliseconds.  It must leave the database ready for
+            another call, since it is called many times.
 
     Returns:
         Tuple of (median overhead percent, median with-trigger ms,
@@ -162,460 +97,64 @@ def _paired_overhead(sample):
     return _median(ratios), _median(with_ms), _median(without_ms)
 
 
-def _fastest(times):
-    """Return the fastest sample in milliseconds.
-
-    Each sampler in this file collects ``iterations`` timings and reduces
-    them here.  The minimum is the right reducer for a batch: it is the
-    iteration least disturbed by OS preemption, GC, and PostgreSQL
-    background work, so it approximates the pure code cost, and a real
-    regression shifts the whole distribution including its minimum.
-
-    **It is no longer what makes the comparisons trustworthy, and it was
-    never enough on its own.**  Taking the fastest of each arm still
-    compared two arms measured in two different time windows, which is
-    the confound :func:`_paired_overhead` exists to remove; a min-of-15
-    two-window run reported the generate benchmark at -22.6% overhead.
-    The benchmarks now call their samplers one iteration at a time from
-    inside that harness, so in practice this receives a single sample.
-    It is kept because a sampler may still be asked for a batch.
-
-    Args:
-        times: Elapsed milliseconds, one per timed iteration.
-
-    Returns:
-        The smallest sample.
-    """
-    return min(times)
-
-
-def _report_and_assert(workload, label, overhead_pct, time_with, time_without):
-    """Print one benchmark's figures and hold it to its own ceiling.
-
-    The five benchmarks all end the same way -- ratio, four printed
-    lines, one assertion -- and each ceiling belongs to its workload
-    rather than to the file (see :data:`MAX_OVERHEAD_PERCENT`).  Doing
-    that in one place is what keeps a new benchmark from quietly
-    inheriting another workload's budget.
-
-    Args:
-        workload: Key into :data:`MAX_OVERHEAD_PERCENT`.
-        label: Human-readable name of the benchmark, sized, e.g.
-            ``"Bulk UPDATE (52 transactions)"``.
-        overhead_pct: Overhead percent from :func:`_paired_overhead`.
-        time_with: Milliseconds with the audit trigger enabled.
-        time_without: Milliseconds with it disabled.
-
-    Raises:
-        AssertionError: When the overhead exceeds the workload's ceiling.
-    """
-    ceiling = MAX_OVERHEAD_PERCENT[workload]
-
-    print(f"\n  {label}:")
-    print(f"    With triggers:    {time_with:.1f} ms")
-    print(f"    Without triggers: {time_without:.1f} ms")
-    print(f"    Overhead:         {overhead_pct:.1f}%")
-
-    assert overhead_pct < ceiling, (
-        f"{label}: trigger overhead {overhead_pct:.1f}% exceeds "
-        f"the {ceiling}% ceiling for this workload"
-    )
-
-
-def _rule_less_definition(perf_user, *, name):
-    """Return a flushed, priced definition with NO cadence -- a one-off's.
-
-    The twin of :func:`_create_template` without the rule: the definition
-    whose rows ``one_off.place_row_of`` places, one per paycheck.
-    """
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    template = TransactionTemplate(
-        user_id=perf_user["user"].id,
-        account_id=perf_user["account"].id,
-        category_id=perf_user["category"].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=Decimal("50.00"),
-    )
-    db.session.add(template)
-    db.session.flush()
-    state_template_price(template)
-    return template
-
-
-def _create_template(perf_user):
-    """Create a template with a recurrence rule for benchmarking.
-
-    It took a ``pattern_name`` until plan step R9, read by nothing but a
-    ``ref.recurrence_patterns`` lookup whose result was never used; neither
-    caller ever passed one, and the table it read is dropped.
-    """
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-
-    template = TransactionTemplate(
-        user_id=perf_user["user"].id,
-        account_id=perf_user["account"].id,
-        category_id=perf_user["category"].id,
-        transaction_type_id=expense_type.id,
-        name="Benchmark Expense",
-        default_amount=Decimal("150.00"),
-    )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    # The rule is written for its effect on the template; nothing here
-    # reads it back.
-    make_every_period_rule(db.session, template)
-
-    # Reload to get relationships populated.
-    db.session.refresh(template)
-    return template
-
-
-def _delete_generated_transactions(template_id):
-    """Delete all transactions generated from a template."""
-    db.session.execute(
-        db.text("DELETE FROM budget.transactions WHERE template_id = :tid"),
-        {"tid": template_id},
-    )
-    db.session.flush()
-
-
 def _disable_triggers():
     """Disable audit triggers on budget.transactions."""
-    db.session.execute(
-        db.text("ALTER TABLE budget.transactions DISABLE TRIGGER audit_transactions")
+    _db.session.execute(
+        _db.text("ALTER TABLE budget.transactions DISABLE TRIGGER audit_transactions")
     )
 
 
 def _enable_triggers():
     """Re-enable audit triggers on budget.transactions."""
-    db.session.execute(
-        db.text("ALTER TABLE budget.transactions ENABLE TRIGGER audit_transactions")
+    _db.session.execute(
+        _db.text("ALTER TABLE budget.transactions ENABLE TRIGGER audit_transactions")
     )
 
 
-def _time_generate(template, periods, scenario_id, iterations=ITERATIONS,
-                   warmup=WARMUP):
-    """Time generate_for_template over multiple iterations, return median ms."""
-    # Warmup to stabilize caches and connection pools.
-    for _ in range(warmup):
-        _delete_generated_transactions(template.id)
-        db.session.commit()
-        recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-            BalanceContext.build(template.user_id), {p.id for p in periods},
-        ), scenario_id)
-        db.session.flush()
-        db.session.commit()
+def _report(capsys, label, overhead_pct, time_with, time_without):
+    """Print one workload's figures past pytest's capture.  Asserts nothing (R-BAL144).
 
-    times = []
-    for _ in range(iterations):
-        _delete_generated_transactions(template.id)
-        db.session.commit()
+    ``capsys.disabled()`` rather than ``-s``: the figures reach the terminal on
+    a passing run, and the app's JSON logs, which ``-s`` would release too
+    (about 94 lines against five blocks, measured by this step's review), stay
+    captured.
 
-        start = time.perf_counter()
-        recurrence_engine.generate_for_template(
-            template, GenerationSchedule.for_period_ids(
-                BalanceContext.build(template.user_id), {p.id for p in periods},
-            ), scenario_id
-        )
-        db.session.flush()
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        times.append(elapsed_ms)
-
-    return _fastest(times)
+    Args:
+        capsys: The test's ``capsys`` fixture.
+        label: The workload's :attr:`~tests._audit_trigger_workloads.Workload.label`.
+        overhead_pct: Overhead percent from :func:`_paired_overhead`.
+        time_with: Milliseconds with the audit trigger enabled.
+        time_without: Milliseconds with it disabled.
+    """
+    with capsys.disabled():
+        print(f"\n  {label}:")
+        print(f"    With triggers:    {time_with:.1f} ms")
+        print(f"    Without triggers: {time_without:.1f} ms")
+        print(f"    Overhead:         {overhead_pct:.1f}%")
 
 
-class TestRecurrenceEngineOverhead:
-    """Benchmark recurrence engine with and without audit triggers."""
+class TestAuditTriggerOverheadReport:
+    """Time every workload with and without the audit trigger, and print it."""
 
-    def test_generate_for_template_overhead(self, app, db, perf_user, perf_periods):
-        """generate_for_template() stays within its audit-overhead ceiling.
+    @pytest.mark.parametrize("workload_class", WORKLOADS, ids=lambda cls: cls.key)
+    def test_overhead_is_reported(self, app, db, perf_user, capsys, workload_class):  # pylint: disable=unused-argument
+        """Time one workload through the paired harness and print the ratio.
 
-        Steps:
-        1. Create a template with 'every_period' recurrence (52 txns).
-        2. Time generate_for_template() with triggers enabled.
-        3. Disable triggers on budget.transactions.
-        4. Time generate_for_template() without triggers.
-        5. Re-enable triggers.
-        6. Assert overhead is under MAX_OVERHEAD_PERCENT.
+        Each sample is one :meth:`~tests._audit_trigger_workloads.Workload.reset`
+        (untimed) and one :meth:`~tests._audit_trigger_workloads.Workload.act`
+        (timed); the commit after it is untimed too.
+
+        Pylint: ``unused-argument`` -- ``app`` and ``db`` are requested for the
+        application context and the test's own database.
         """
-        template = _create_template(perf_user)
-        scenario_id = perf_user["scenario"].id
+        workload = workload_class(perf_user)
 
-        overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_generate(
-                template, perf_periods, scenario_id, iterations=1, warmup=0,
-            ),
-        )
+        def _sample():
+            workload.reset()
+            start = time.perf_counter()
+            workload.act()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            _db.session.commit()
+            return elapsed_ms
 
-        _report_and_assert(
-            "generate", "generate_for_template (52 periods)",
-            overhead_pct, time_with, time_without,
-        )
-
-    def test_regenerate_for_template_overhead(self, app, db, perf_user, perf_periods):
-        """regenerate_for_template() stays within its audit-overhead ceiling.
-
-        Measures the delete + recreate cycle.
-        """
-        template = _create_template(perf_user)
-        scenario_id = perf_user["scenario"].id
-
-        def _time_regenerate(iterations=ITERATIONS, warmup=WARMUP):
-            # Warmup.
-            for _ in range(warmup):
-                _delete_generated_transactions(template.id)
-                recurrence_engine.generate_for_template(
-                    template, GenerationSchedule.for_period_ids(
-                        BalanceContext.build(template.user_id), {p.id for p in perf_periods},
-                    ), scenario_id
-                )
-                db.session.commit()
-                recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_period_ids(
-                        BalanceContext.build(template.user_id), {p.id for p in perf_periods},
-                    ), scenario_id
-                )
-                db.session.flush()
-                db.session.commit()
-
-            times = []
-            for _ in range(iterations):
-                # Ensure transactions exist to be regenerated.
-                _delete_generated_transactions(template.id)
-                recurrence_engine.generate_for_template(
-                    template, GenerationSchedule.for_period_ids(
-                        BalanceContext.build(template.user_id), {p.id for p in perf_periods},
-                    ), scenario_id
-                )
-                db.session.commit()
-
-                start = time.perf_counter()
-                recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_period_ids(
-                        BalanceContext.build(template.user_id), {p.id for p in perf_periods},
-                    ), scenario_id
-                )
-                db.session.flush()
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                times.append(elapsed_ms)
-            return _fastest(times)
-
-        overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_regenerate(iterations=1, warmup=0),
-        )
-
-        _report_and_assert(
-            "regenerate", "regenerate_for_template (52 periods)",
-            overhead_pct, time_with, time_without,
-        )
-
-    def test_bulk_transaction_insert_overhead(self, app, db, perf_user, perf_periods):
-        """Bulk INSERT of one transaction per pay period, within its ceiling.
-
-        One row per paycheck of ONE rule-less definition, through the app's
-        row placer (``one_off.place_row_of``, ruling R-BAL24's shape: a
-        bank-born envelope's row in each later paycheck) -- one INSERT and
-        one flush per row on ``budget.transactions``, the table whose
-        trigger ``_disable_triggers`` toggles.  A bare ``Transaction(...)``
-        was the shape the cutover's pricing-link CHECK refuses; the whole
-        one-off producer per row would add a definition and a version INSERT
-        on two tables whose triggers fire in BOTH arms, tripling the
-        denominator against one table's trigger (found by 7c-5's review);
-        and the engine's bulk insert is the ``generate`` workload above.
-        The definition and the owner's calendar are resolved outside the
-        clock.  Measured 2026-09-18 (plan step balance:X-bi-7c), five
-        serial runs: 6.1 - 12.3 % over a 26-28 ms base (the header's table).
-        """
-        scenario_id = perf_user["scenario"].id
-        definition = _rule_less_definition(perf_user, name="Bulk Txn")
-        db.session.commit()
-        calendar = calendar_for(perf_user["user"].id)
-        paychecks = [calendar.period_by_id(p.id) for p in perf_periods[:100]]
-
-        def _bulk_insert():
-            for paycheck in paychecks:
-                place_row_of(definition, paycheck, scenario_id=scenario_id)
-            db.session.flush()
-
-        def _time_bulk(iterations=ITERATIONS, warmup=WARMUP):
-            # Warmup.
-            for _ in range(warmup):
-                db.session.execute(
-                    db.text("DELETE FROM budget.transactions WHERE name LIKE 'Bulk Txn%'")
-                )
-                db.session.commit()
-                _bulk_insert()
-                db.session.commit()
-
-            times = []
-            for _ in range(iterations):
-                db.session.execute(
-                    db.text("DELETE FROM budget.transactions WHERE name LIKE 'Bulk Txn%'")
-                )
-                db.session.commit()
-
-                start = time.perf_counter()
-                _bulk_insert()
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                times.append(elapsed_ms)
-            return _fastest(times)
-
-        overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_bulk(iterations=1, warmup=0),
-        )
-
-        # Skip if baseline is too fast for reliable measurement.
-        if time_without < 1.0:
-            pytest.skip("Baseline too fast for reliable overhead measurement")
-
-        _report_and_assert(
-            "insert", f"Bulk INSERT (52 transactions)",
-            overhead_pct, time_with, time_without,
-        )
-
-    def test_bulk_update_trigger_overhead(self, app, db, perf_user, perf_periods):
-        """Bulk UPDATE of ROWS_PER_PERIOD rows per period, within its ceiling.
-
-        UPDATEs are the most common write operation in a budgeting app
-        (editing amounts, marking done, changing statuses).  The column
-        written is ``notes`` -- the ROW's own: a placed row carries no
-        figure (its definition does), and ``ck_transactions_amount_ownership``
-        refuses a stored one on a derived row (plan step balance:X-bi-7c).
-        Measured 2026-09-18, five serial runs: 125.2 - 140.8 % over a 4.6 ms
-        base (the 2026-08-28 figure on the amount column was ~300 % over
-        1.8 ms), inside the 450 ceiling; the header's table.
-        """
-        scenario_id = perf_user["scenario"].id
-        batch_size = min(len(perf_periods), 100)
-
-        # Pre-insert rows to update: ROWS_PER_PERIOD rule-less definitions,
-        # each placed in every paycheck through the app's row placer (the
-        # insert workload's vehicle; a definition holds one row per paycheck
-        # and day, so the copies are definitions, not rows).
-        # ROWS_PER_PERIOD rows per period rather than one.  A 52-row
-        # UPDATE runs in ~1.7 ms, which is small enough that the fixed
-        # per-statement costs (parse, plan, one round trip) are a large
-        # share of it, and small enough to trip this test's own
-        # "baseline too fast to measure" guard -- observed skipping one
-        # run in eight, and a skipped benchmark measures nothing while
-        # reporting no failure.  A wider batch amortises the fixed costs
-        # into the per-row work the trigger actually affects.
-        definitions = [
-            _rule_less_definition(perf_user, name=f"Update Txn {copy}")
-            for copy in range(ROWS_PER_PERIOD)
-        ]
-        calendar = calendar_for(perf_user["user"].id)
-        for period in perf_periods[:batch_size]:
-            paycheck = calendar.period_by_id(period.id)
-            for definition in definitions:
-                place_row_of(definition, paycheck, scenario_id=scenario_id)
-        db.session.flush()
-        db.session.commit()
-
-        def _bulk_update(note):
-            """Update all benchmark transactions' notes."""
-            db.session.execute(
-                db.text(
-                    "UPDATE budget.transactions "
-                    "SET notes = :note "
-                    "WHERE name LIKE 'Update Txn%'"
-                ),
-                {"note": note},
-            )
-            db.session.flush()
-
-        def _time_update(note, iterations=ITERATIONS, warmup=WARMUP):
-            """Time bulk UPDATE over multiple iterations, return median ms."""
-            for _ in range(warmup):
-                _bulk_update(note)
-                db.session.commit()
-
-            times = []
-            for _ in range(iterations):
-                start = time.perf_counter()
-                _bulk_update(note)
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                times.append(elapsed_ms)
-                db.session.commit()
-            return _fastest(times)
-
-        # Time with triggers enabled.
-        overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_update("benchmark touch", iterations=1, warmup=0),
-        )
-
-        if time_without < 1.0:
-            pytest.skip("Baseline too fast for reliable overhead measurement")
-
-        _report_and_assert(
-            "update", f"Bulk UPDATE ({batch_size * ROWS_PER_PERIOD} transactions)",
-            overhead_pct, time_with, time_without,
-        )
-
-    def test_bulk_delete_trigger_overhead(self, app, db, perf_user, perf_periods):
-        """Bulk DELETE of transactions stays within its audit ceiling.
-
-        The rows are one rule-less definition's per batch, placed through the
-        app's row placer (the insert workload's vehicle); the raw DELETE
-        takes the rows and leaves the definition, which is what the timed
-        statement is about.
-        """
-        scenario_id = perf_user["scenario"].id
-        batch_size = min(len(perf_periods), 100)
-        calendar = calendar_for(perf_user["user"].id)
-        paychecks = [calendar.period_by_id(p.id) for p in perf_periods[:batch_size]]
-
-        def _insert_batch(label):
-            """Insert a batch of transactions for deletion benchmarking."""
-            definition = _rule_less_definition(perf_user, name=f"Delete {label}")
-            for paycheck in paychecks:
-                place_row_of(definition, paycheck, scenario_id=scenario_id)
-            db.session.flush()
-            db.session.commit()
-
-        def _time_delete(label, iterations=ITERATIONS, warmup=WARMUP):
-            """Time bulk DELETE over multiple iterations, return median ms."""
-            for warmup_idx in range(warmup):
-                _insert_batch(f"{label}_w{warmup_idx}")
-                db.session.execute(
-                    db.text(
-                        "DELETE FROM budget.transactions "
-                        "WHERE name LIKE :pattern"
-                    ),
-                    {"pattern": f"Delete {label}_w{warmup_idx}%"},
-                )
-                db.session.flush()
-                db.session.commit()
-
-            times = []
-            for iteration in range(iterations):
-                batch_label = f"{label}_{iteration}"
-                _insert_batch(batch_label)
-                start = time.perf_counter()
-                db.session.execute(
-                    db.text(
-                        "DELETE FROM budget.transactions "
-                        "WHERE name LIKE :pattern"
-                    ),
-                    {"pattern": f"Delete {batch_label}%"},
-                )
-                db.session.flush()
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                times.append(elapsed_ms)
-                db.session.commit()
-            return _fastest(times)
-
-        # Time with triggers enabled.
-        overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_delete("pair", iterations=1, warmup=0),
-        )
-
-        if time_without < 1.0:
-            pytest.skip("Baseline too fast for reliable overhead measurement")
-
-        _report_and_assert(
-            "delete", f"Bulk DELETE ({batch_size} transactions)",
-            overhead_pct, time_with, time_without,
-        )
+        _report(capsys, workload.label, *_paired_overhead(_sample))
