@@ -215,17 +215,17 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **X-av-3a** `8e832d8e` -- the switch: `salary.pay_entries`, migration `70680a4a7405` (one
         entry per profile, `annual_salary` dropped), the engine's walk (**R-SAL82**), the pay-change
         banners (**R-SAL84**, **R-SAL85**, **R-SAL89**), create and Fix (**R-SAL90**, **R-SAL93**).
-        On the production copy, 104 projected paychecks move by one cent, the first on 2029-07-12,
-        and no settled record moves; a rollback re-prices 130 projected paychecks a cent lower
-        (**R-SAL92**). Closed **N-237**, **N-391**'s app half, **SAL-572**, **D44**.
+        On the 2026-09-25 05:59 production copy, 104 projected paychecks move by one cent, the first
+        on 2029-07-12, and no settled record moves; a rollback prices 130 a cent below their
+        pre-release figure (**R-SAL92**). Closed **N-391**'s app half, **SAL-572**, **D44**.
   - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): Record
         (**R-SAL61**) refuses a payday past the next in its own words (**R-SAL90**, **R-SAL93**),
         one entry per payday; Remove never takes the only entry (**R-SAL68**). The raise doors
         refuse a raise no paycheck would get, in the ruled words, and the raises list marks one a
-        later entry holds "In your pay from <date>" (**R-SAL95**), the developer asked first how a
-        RECURRING raise with held early applications reads. The create form shows the count in force
-        on its default payday and the edit page none (**R-SAL97**); the "Next raise" chip styles a
-        `PAY -` event as a cut (**R-SAL85**). His pay history follows, an operator act.
+        later entry holds "In your pay from <date>" (**R-SAL95**), asking the developer first how a
+        held RECURRING raise reads. The create form shows the count in force on its default payday,
+        the edit page none (**R-SAL97**); the "Next raise" chip gives a `PAY -` event a cut's
+        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows.
   - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
         differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
         entry through `X-av-3b`'s Record door, one function both call. `$0.00` until used.
