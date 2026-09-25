@@ -82,7 +82,7 @@ from ._fence_rulings_cash_ledger import CASH_LEDGER_NON_PRODUCERS
 # deliberately un-scoped: its public functions ARE the seam entries every
 # consumer calls.
 #
-# ``_context`` is the ONE seam-private module whose ruling SURVIVES D3, because
+# ``_context`` is the seam-private module whose ruling SURVIVES D3, because
 # the engine rationale above does not reach it (D3's own adversarial review
 # measured the gap): ``BalanceContext`` is already re-exported on the seam's
 # public ``__init__``, so a new public METHOD on it reaches every route holder
@@ -90,9 +90,13 @@ from ._fence_rulings_cash_ledger import CASH_LEDGER_NON_PRODUCERS
 # memoized walk rated 10.00/10 with the ruling deleted.  W9910 sees imports,
 # never attribute access on an object a consumer legitimately holds, so W9909
 # is the only gate on this module's surface; a producer belongs in a private
-# seam MODULE, never on the context.
+# seam MODULE, never on the context.  Since ruling **R-BAL146** three of the
+# context's methods live in ``_recurrence_memos``, a mixin ``BalanceContext``
+# inherits: the same reach, from a SIBLING module that matches neither
+# ``_context``'s name nor its prefix, so it is scoped here beside it.
 _SEAM_PRIVATE_CONTEXT_MODULES = frozenset({
     "app.services.balance_at._context",
+    "app.services.balance_at._recurrence_memos",
 })
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
@@ -563,7 +567,7 @@ _FENCED_MODULE_RULINGS = {
         }),
     ),
     # The read pass's context (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`) -- the
-    # ONE seam-private ruling D3 keeps, because ``BalanceContext`` is publicly
+    # seam-private ruling D3 keeps, because ``BalanceContext`` is publicly
     # re-exported and W9910 cannot see a method on an object a consumer holds.
     # A new public method here MUST be classified, and the answer is always
     # "non-producer or move it into a private seam module".
@@ -604,32 +608,6 @@ _FENCED_MODULE_RULINGS = {
         # render.
         "calendar",
         "reported_periods",
-        # The read pass's RECURRENCE memo (plan step R16-b-2, ruling R-R67's
-        # one-walk consequence): what one rule MEANS against the owner's
-        # calendar, resolved once per pass.  A NON-producer on the ground
-        # ``calendar`` stands on -- a cadence, a first occurrence and an
-        # authored bound, DATES with no money anywhere in the value -- and
-        # ``recurrence.resolved_recurrence`` is a public leaf below this seam
-        # that answers the identical value -- less the books floor, since
-        # plan step pay_calendar:C18-a, which is one more DATE.
-        "resolved_recurrence_of",
-        # Its spec-and-definition form (plan step pay_calendar:C18-a, rulings
-        # R-PC85, R-PC89): the same resolution with the definition's BOOKS
-        # FLOOR -- the latest ``opened_on`` among the accounts it moves money
-        # in -- and its envelope flag attached, which ``resolved_recurrence_of``
-        # calls and the form preview's unsaved definition calls directly.  A
-        # NON-producer on the same ground: a cadence, a first occurrence, a
-        # bound, one more DATE and a flag, no money anywhere in the value.
-        "resolved_for",
-        # The read pass's OCCURRENCE-WALK memo (plan step recurrence:R7d-f-2,
-        # ledger row N-513's remedy): every occurrence a resolved recurrence
-        # names on the owner's calendar, walked once per pass and split by its
-        # books (plan step pay_calendar:C18-a, ruling R-PC94).  A NON-producer
-        # on the same ground -- occurrence DATES paired with pay periods, no
-        # money anywhere in the value -- and ``recurrence.occurrence_walk`` is
-        # a public leaf below this seam that answers the identical value for
-        # the same inputs.
-        "placements_of",
         # The read pass's AMOUNT-MODEL memo (plan step X-au-c2b).  A
         # NON-producer on the ground ``calendar`` stands on: it hands back an
         # ``AmountBasis``, which carries the two live DERIVATIONS a row's
@@ -658,6 +636,39 @@ _FENCED_MODULE_RULINGS = {
         # this adds is that the seam and its caller cannot end up pricing one
         # render's paychecks twice.
         "paychecks",
+    })),
+    # The context's RECURRENCE memos (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`),
+    # split out of ``_context`` as a mixin ``BalanceContext`` inherits (ruling
+    # R-BAL146).  A public method here is a public method OF THE CONTEXT, so it
+    # is classified by the entry above's rule; these three rulings moved here
+    # verbatim with their methods.
+    "app.services.balance_at._recurrence_memos": (frozenset(), frozenset({
+        # The read pass's RECURRENCE memo (plan step R16-b-2, ruling R-R67's
+        # one-walk consequence): what one rule MEANS against the owner's
+        # calendar, resolved once per pass.  A NON-producer on the ground
+        # ``calendar`` stands on -- a cadence, a first occurrence and an
+        # authored bound, DATES with no money anywhere in the value -- and
+        # ``recurrence.resolved_recurrence`` is a public leaf below this seam
+        # that answers the identical value -- less the books floor, since
+        # plan step pay_calendar:C18-a, which is one more DATE.
+        "resolved_recurrence_of",
+        # Its spec-and-definition form (plan step pay_calendar:C18-a, rulings
+        # R-PC85, R-PC89): the same resolution with the definition's BOOKS
+        # FLOOR -- the latest ``opened_on`` among the accounts it moves money
+        # in -- and its envelope flag attached, which ``resolved_recurrence_of``
+        # calls and the form preview's unsaved definition calls directly.  A
+        # NON-producer on the same ground: a cadence, a first occurrence, a
+        # bound, one more DATE and a flag, no money anywhere in the value.
+        "resolved_for",
+        # The read pass's OCCURRENCE-WALK memo (plan step recurrence:R7d-f-2,
+        # ledger row N-513's remedy): every occurrence a resolved recurrence
+        # names on the owner's calendar, walked once per pass and split by its
+        # books (plan step pay_calendar:C18-a, ruling R-PC94).  A NON-producer
+        # on the same ground -- occurrence DATES paired with pay periods, no
+        # money anywhere in the value -- and ``recurrence.occurrence_walk`` is
+        # a public leaf below this seam that answers the identical value for
+        # the same inputs.
+        "placements_of",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until

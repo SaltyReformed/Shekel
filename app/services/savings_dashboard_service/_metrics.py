@@ -57,14 +57,31 @@ class CurrentPay:
     :func:`_current_pay`) when there is no current period or no active
     profile -- absence of an income source is not a ``$0.00`` income (E-12).
 
+    **It carries the rhythm the paycheck was priced at** (ruling
+    **R-SAL70**, plan step salary:X-av-2), because both readers leave paycheck
+    space -- the debt-to-income denominator is a MONTH of gross, a goal stated
+    in months of income a month of net -- and the conversion must use the
+    count the figures were divided by.  They converted at ``cadence_for``,
+    the LATEST era's rhythm, which agreed with the engine only while the
+    engine divided every paycheck by that same count: once X-av-2 priced a
+    payday at its own era's count, an owner paid monthly today with a
+    biweekly rhythm recorded to start later would have read a ``$5,000.00``
+    paycheck as ``$10,833.33`` a month (made-up figures).
+
     Attributes:
         net_biweekly: The summed net pay for one paycheck, off the pass's
             pricer, each profile's own calibration applied.
         gross_biweekly: The summed gross for the same paycheck.
+        cadence: The rhythm that paycheck was priced at, off the priced
+            paychecks' own :attr:`~app.services.paycheck_calculator.PeriodInfo
+            .cadence` -- one value for every profile summed, because each is
+            priced by the pass's one pricer on the pass's one calendar for
+            the one payday.
     """
 
     net_biweekly: Decimal
     gross_biweekly: Decimal
+    cadence: PayCadence
 
 
 @dataclass(frozen=True)
@@ -169,12 +186,15 @@ def _current_pay(balance_ctx, current_period):
     renders on a two-job owner, and which C12-b's own control caught picking
     the SECOND of two.  A goal stated in months of salary and a debt-to-income
     ratio are about total income, as the grid counts both templates' rows for
-    two profiles on two templates.  Two edges, both inherited and both ruled
-    here: two active profiles naming ONE template (ledger row **N-294**) are
-    summed where the amount model prices that template by its last writer,
-    and a profile whose template is gone (``SET NULL`` on delete) has no grid
-    rows and is summed.  Ordered by id so the walk is deterministic; the sum
-    makes the order immaterial.  ``$0.00`` on the developer's data.
+    two profiles on two templates.  One edge, inherited and ruled here: a
+    profile whose template is gone (``SET NULL`` on delete) has no grid rows
+    and is summed.  A second edge, two active profiles on ONE template in one
+    scenario (ledger row **N-294**), summed here while the amount model priced
+    the template by one of them, is unstorable since plan step salary:X-av-1
+    (``uq_salary_profiles_scenario_template``, rulings **R-SAL63** and
+    **R-SAL69**); across scenarios it is this query's scenario-blindness,
+    below.  Ordered by id so the walk is deterministic; the sum makes the
+    order immaterial.  ``$0.00`` on the developer's data.
 
     **The query is scenario-blind, as the old door's was** (and as
     ``retirement_dashboard_service.load_gap_inputs`` is).  Reported rather
@@ -215,13 +235,21 @@ def _current_pay(balance_ctx, current_period):
         return None
 
     paychecks = balance_ctx.paychecks()
-    net = Decimal("0.00")
-    gross = Decimal("0.00")
-    for profile in profiles:
-        earnings = paychecks.for_profile(profile).at(current_period).earnings
-        net += earnings.net_pay
-        gross += earnings.gross_biweekly
-    return CurrentPay(net_biweekly=net, gross_biweekly=gross)
+    priced = [
+        paychecks.for_profile(profile).at(current_period)
+        for profile in profiles
+    ]
+    return CurrentPay(
+        net_biweekly=sum((p.earnings.net_pay for p in priced), Decimal("0.00")),
+        gross_biweekly=sum(
+            (p.earnings.gross_biweekly for p in priced), Decimal("0.00"),
+        ),
+        # The paycheck's own rhythm, read off what was priced rather than
+        # asked of the calendar again (ruling R-SAL70).  Every profile here is
+        # priced for the one payday on the pass's one calendar, so any
+        # element's cadence is every element's.
+        cadence=priced[0].period.cadence,
+    )
 
 
 def _checking_account_ids(accounts):
