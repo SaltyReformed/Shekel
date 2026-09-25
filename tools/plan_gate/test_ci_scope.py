@@ -480,8 +480,12 @@ class TestTheCommandLine:
 GUARD = "needs.scope.outputs.scope != 'registry-only'"
 
 #: Jobs that may run code without the guard: the classifier, the plan gate,
-#: the aggregate that judges them, and the polyglot linters (every scope).
-UNGUARDED_JOBS = {"scope", "plan-gate", "lint-and-test", "polyglot-lint"}
+#: the tax-law check (plan step salary:X-at-4), the aggregate that judges them,
+#: and the polyglot linters (every scope).
+UNGUARDED_JOBS = {"scope", "plan-gate", "tax-law", "lint-and-test", "polyglot-lint"}
+
+#: The tax-law job's one grading step (ruling salary:R-SAL74).
+TAX_LAW_STEP = "Is next year's tax law in? (refuses from December 1)"
 
 #: The steps inside an UNGUARDED job that may run code -- the old single job's
 #: step-level allowlist, carried to the jobs its steps now live in.
@@ -489,6 +493,8 @@ UNGUARDED_CODE_STEPS = {
     ("scope", "Classify the change set"),
     ("plan-gate", "Install dependencies"),
     ("plan-gate", "Plan gate (every scope)"),
+    ("tax-law", "Install dependencies"),
+    ("tax-law", TAX_LAW_STEP),
     ("lint-and-test", "Verdict"),
 }
 
@@ -499,9 +505,9 @@ STEP_CONDITIONS = {
     ("test", "Run audit-trigger benchmarks (serial)"): "strategy.job-index == 0",
 }
 
-#: The jobs whose every step grades: the four ``lint-and-test`` needs, and the
+#: The jobs whose every step grades: the five ``lint-and-test`` needs, and the
 #: aggregate itself.
-GRADED_JOBS = ("scope", "plan-gate", "lint", "test", "lint-and-test")
+GRADED_JOBS = ("scope", "plan-gate", "tax-law", "lint", "test", "lint-and-test")
 
 
 def _jobs() -> dict[str, dict]:
@@ -585,12 +591,12 @@ class TestTheWorkflowIsWiredToTheAnswer:
                 assert job.get("if") == GUARD, name
 
     def test_no_code_running_step_in_an_unguarded_job_escapes_the_allowlist(self):
-        """Inside the classifier, plan-gate and aggregate jobs, only the named steps run code.
+        """Inside the classifier, plan-gate, tax-law and aggregate jobs, only named steps run code.
 
         The single job held this per STEP; a grader added to an unguarded job
         would run on a registry pass and be judged by nobody's guard.
         """
-        for name in ("scope", "plan-gate", "lint-and-test"):
+        for name in ("scope", "plan-gate", "tax-law", "lint-and-test"):
             for step in _jobs()[name]["steps"]:
                 run = step.get("run", "")
                 if any(tool in run for tool in ("pytest", "pylint", "python ", "scripts/test.sh")):
@@ -617,6 +623,71 @@ class TestTheWorkflowIsWiredToTheAnswer:
             assert "continue-on-error" not in job, name
             for step in job["steps"]:
                 assert "continue-on-error" not in step, (name, step["name"])
+
+    def test_the_tax_law_check_runs_in_every_scope_at_the_refuse_stage(self):
+        """From December 1 every pull request waits for next year's tax law (R-SAL74).
+
+        Unguarded and waiting on nothing, like the plan gate, because the
+        ruling refuses EVERY release and a registry-only pull request is one;
+        and at the REFUSE stage, never the notice stage, which would start
+        refusing a month early.  The weekly watch is the NOTICE stage, on a
+        schedule.
+        """
+        job = _jobs()["tax-law"]
+        assert "if" not in job and "needs" not in job
+        assert _steps("tax-law")[TAX_LAW_STEP]["run"].strip() == (
+            "python scripts/check_tax_law.py refuse"
+        )
+        text = (registry.REPO / ".github/workflows/tax-law.yml").read_text(encoding="utf-8")
+        watch = yaml.safe_load(text)
+        # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1).
+        assert "schedule" in watch[True]
+        job = watch["jobs"]["watch"]
+        runs = [step.get("run", "") for step in job["steps"]]
+        assert "python scripts/check_tax_law.py notice" in runs
+        # A watch that may fail without failing emails nobody.
+        assert "continue-on-error" not in job and "if" not in job
+        for step in job["steps"]:
+            assert "continue-on-error" not in step and "if" not in step, step.get("name")
+
+    def test_the_release_image_waits_for_the_tax_law_check(self):
+        """No image is built from December 1 without next year (ruling salary:R-SAL88).
+
+        The pull-request check is judged when a PR is pushed, not when it
+        merges, and a tag skips PRs; the publish workflow's own check is judged
+        when the image is built.  It is a separate job holding read-only
+        permissions (its install runs third-party code, and the build job can
+        sign and push), the build NEEDS it, and nothing lets it skip or fail
+        green.
+        """
+        text = (registry.REPO / ".github/workflows/docker-publish.yml").read_text(
+            encoding="utf-8",
+        )
+        jobs = yaml.safe_load(text)["jobs"]
+        check = jobs["tax-law"]
+        assert check["permissions"] == {"contents": "read"}
+        assert "if" not in check and "needs" not in check and "continue-on-error" not in check
+        runs = [step.get("run", "") for step in check["steps"]]
+        assert "python scripts/check_tax_law.py refuse" in runs
+        for step in check["steps"]:
+            assert "continue-on-error" not in step and "if" not in step, step.get("name")
+        # EVERY other job waits for the check: a second publishing job added
+        # beside the build would otherwise escape it.
+        for name, job in jobs.items():
+            if name != "tax-law":
+                assert job.get("needs") == "tax-law", name
+                assert "if" not in job, f"an if: could run {name!r} after the check failed"
+        # A re-run of only the failed build reuses a check judged earlier, so
+        # the check hands over the instant its refusal starts and the build's
+        # FIRST step -- before any checkout or login -- refuses once it has.
+        assert check["outputs"] == {"refuse_from": "${{ steps.refuse_from.outputs.epoch }}"}
+        emit = next(step for step in check["steps"] if step.get("id") == "refuse_from")
+        assert "python scripts/check_tax_law.py refuse --starts-epoch" in emit["run"]
+        gate = jobs["build-and-push"]["steps"][0]
+        assert gate["env"] == {"REFUSE_FROM": "${{ needs.tax-law.outputs.refuse_from }}"}
+        assert '[ "${now}" -ge "${REFUSE_FROM}" ]' in gate["run"]
+        assert "exit 1" in gate["run"]
+        assert "if" not in gate and "continue-on-error" not in gate
 
     def test_the_plan_gate_no_longer_hides_inside_the_checker_step(self):
         """Step 5b used to carry ``pytest tools/plan_gate``; a guarded copy is a second run."""
