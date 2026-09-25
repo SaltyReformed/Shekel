@@ -8220,6 +8220,31 @@ def state_and_fica_law(rate=Decimal("0.0399"), tax_year=2026):
     ))
 
 
+def made_up_law(*years):
+    """Return a law of consecutive made-up years, each ``(tax_year, {state: rate})``.
+
+    The tax-law alarms' tests (plan step salary:X-at-4) vary WHICH years and
+    states the law lists, never the figures, so each year states
+    :func:`made_up_year`'s defaults (:func:`zero_federal` and
+    :func:`zero_fica`) and a made-up flat rate per state it lists (``{}`` for
+    a year that lists none).
+
+    Args:
+        *years: ``(tax_year, {state_code: rate_string})`` per year, oldest
+            first and consecutive (:class:`~app.tax_law.TaxLaw` refuses a
+            skipped year).
+
+    Returns:
+        TaxLaw: Those years.
+    """
+    return TaxLaw(years=tuple(
+        made_up_year(tax_year, states={
+            state: made_up_state(Decimal(rate)) for state, rate in states.items()
+        })
+        for tax_year, states in years
+    ))
+
+
 # ── Recurrence cadence payloads (plan step R7b-2) ─────────────────
 #
 # The two AXES a recurrence form authors, in one place.  Before R7b-2 a test

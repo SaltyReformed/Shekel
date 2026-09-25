@@ -161,8 +161,8 @@ shekel-deploy --dry-run        # resolve, verify, report the pre-flight, change 
    decodes every data block of it (a table-of-contents read passes a truncated archive).
    **No dump, no deploy** -- a dump failure aborts *before* the pin is touched.
 5. Rewrites `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` and `docker compose up -d app`.
-   Entrypoint step 3 runs the migrations, the reference and tax seeds, the three ledger hooks and
-   the audit-trigger check in ONE transaction: they commit together or not at all.
+   Entrypoint step 3 runs the migrations, the reference seed, the three ledger hooks and the
+   audit-trigger check in ONE transaction: they commit together or not at all.
 6. Polls the container healthcheck for up to 4 minutes; ntfy ping either way.
 7. **On failure**, stops the new container, re-reads the stamp, and either re-pins the previous
    digest or refuses (2.3).
@@ -246,12 +246,12 @@ within 4 minutes), `shekel-deploy` stops the new container, so its entrypoint ca
 more, then re-reads the database's Alembic stamp. That stamp, not the release, decides what happens:
 
 - **The previous image can resolve the stamp.** The release migrated nothing, or entrypoint step 3
-  failed and rolled back: since plan step `X-cv` the migrations, the reference and tax seeds, the
-  ledger hooks and the audit-trigger check are ONE transaction, so a failure there leaves the stamp
-  unmoved even for a migration-bearing release. The script saves the failed container's log beside
-  the dump (its name with `.failed-container.log` for `.dump`) and re-pins the previous digest.
-  After a health failure it then waits for that image to be healthy; after a compose failure it does
-  not wait. Nothing is restored. When the previous image does not come up either, see below.
+  failed and rolled back: since plan step `X-cv` the migrations, the reference seed, the ledger
+  hooks and the audit-trigger check are ONE transaction, so a failure there leaves the stamp unmoved
+  even for a migration-bearing release. The script saves the failed container's log beside the dump
+  (its name with `.failed-container.log` for `.dump`) and re-pins the previous digest. After a
+  health failure it then waits for that image to be healthy; after a compose failure it does not
+  wait. Nothing is restored. When the previous image does not come up either, see below.
 - **The previous image cannot resolve the stamp.** Step 3 COMMITTED and something later failed (the
   first-boot user seed, the static copy, or the app never became healthy). Re-pinning would give a
   second dead container -- reproduced as `CommandError: Can't locate revision identified by ...`
@@ -420,8 +420,9 @@ docker compose up -d
 docker compose ps
 # All three services (db, app, nginx) should show "healthy".
 
-# 6. Seed the first user (first run only).  The reference and tax seeds
-#    already ran inside entrypoint step 3, as they do on every start.
+# 6. Seed the first user (first run only).  The reference seed already ran
+#    inside entrypoint step 3, as it does on every start.  (No tax data is
+#    seeded: the tax law ships in the code, app/tax_law/.)
 docker exec shekel-prod-app python scripts/seed_user.py
 
 # 7. Verify the application.
