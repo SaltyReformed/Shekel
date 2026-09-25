@@ -271,11 +271,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         standard deduction (P.L. 119-21) and 2026's head-of-household 24%/32% boundary (Rev. Proc.
         2025-32). **MOVES MONEY** (the 2025 Taxes tab); whether 2025 withholding keeps the old
         deduction is a fork for the developer, with worked examples, first.
-  - [ ] **X-at-8 -- the 2027 tax law** (**R-SAL74**): `_year_2027.py` in `LAW`, each figure citing
-        its source (the 2027 IRS Revenue Procedure's brackets, standard deductions and child
-        credits, the SSA's 2027 wage base, NC's 2027 rate), once published (late October to November
-        2026); released before 2026-12-01, when `X-at-4`'s refusal begins, the banner showing from
-        2026-11-01 until it lands. **MOVES MONEY** (every projected 2027 paycheck).
+  - [ ] **X-at-8 -- the 2027 tax law** (**R-SAL74**, **R-SAL94**): `_year_2027.py` in `LAW`, each
+        figure citing its source (the 2027 IRS Revenue Procedure's brackets, standard deductions and
+        child credits, the SSA's 2027 wage base, NC's 2027 rate), once published (late October to
+        November 2026); released before 2026-12-01, when `X-at-4`'s refusal begins, the banner
+        showing from 2026-11-01 until it lands. **MOVES MONEY** (every projected 2027 paycheck).
 
 ## 5. Findings ledger
 
