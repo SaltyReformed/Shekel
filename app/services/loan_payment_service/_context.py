@@ -175,7 +175,7 @@ def load_loan_context(
 
     # Payment history from the transfers into the loan.
     raw_payments = (
-        get_payment_history(account_id, basis, loan_params.payment_day)
+        get_payment_history(account_id, basis, loan_params)
         if basis is not None else []
     )
 
@@ -239,7 +239,7 @@ def load_loan_context(
 
 
 def get_payment_history(
-    account_id: int, basis: AmountBasis, payment_day: int,
+    account_id: int, basis: AmountBasis, params: LoanParams,
 ) -> list[PaymentRecord]:
     """Price a debt account's payment installments into the engine's feed.
 
@@ -418,9 +418,10 @@ def get_payment_history(
             rows, so the feed and its figures cannot come from two scenarios --
             the pairing ``resolve_transaction_amount`` refuses a row for, made
             unconstructible here rather than checked.
-        payment_day: The loan's contractual day-of-month due day
-            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
-            to reconstruct the due date of a payment that stores none.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, handed
+            to :func:`app.services.loan_ledger.payment_installments`, which
+            reads its ``payment_day`` and ``origination_date`` to date each
+            payment (ruling **R-R107**).
 
     Returns:
         List of PaymentRecord instances sorted by payment date
@@ -462,7 +463,7 @@ def get_payment_history(
     # three dates; this function's whole remaining job is to price the rows it
     # hands back and pair each figure with its installment.
     installments = payment_installments(
-        account_id, basis.scenario_id, payment_day,
+        account_id, basis.scenario_id, params,
         # This function PRICES every payment it is handed, so it is this call
         # that states the eager sets (plan step balance:X-bl-2a).  The settled
         # half is valued from its RECORD and walks no relationship, so it

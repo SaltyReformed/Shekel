@@ -16,15 +16,19 @@ carries in ``journal_entries.entry_date``:
   the SAME date the checking outflow moves on, so the loan and checking move
   together (ruling R-A).  A payment that moved NO money -- a ``$0.00``
   close, whose leg carries no record -- is visible from the installment it
-  skips (ruling **R-BAL139**).
+  skips (ruling **R-BAL139**): its INTERVAL's installment (ruling
+  **R-R107**), the one the replay charges it against.
 
-  **There is no derivation and no fallback left here, and that is plan step
-  X-f1** (ruling R-EC).  It WAS the display-timezone civil date of the shadow's
-  ``paid_at``, falling back to its pay period's ``start_date`` when the instant
-  was NULL (the developer ruling of 2026-07-17); the day is a stored fact now,
+  **A payment that moved money has no derivation and no fallback left here,
+  and that is plan step X-f1** (ruling R-EC).  It WAS the display-timezone
+  civil date of the shadow's ``paid_at``, falling back to its pay period's
+  ``start_date`` when the instant was NULL (the developer ruling of
+  2026-07-17); the day is a stored fact now,
   and a settled payment whose record carries none is REFUSED rather than
-  dated by a fallback.  R-BAL139's due date is not a fallback for a missing
-  day: it is the day of a payment that has no movement to carry one.
+  dated by a fallback.  R-BAL139's installment is not a fallback for a
+  missing day: it is the day of a payment that has no movement to carry one
+  (and one due before the loan's first installment keeps its own due date,
+  having no installment to skip).
 
   **The zone moved from UTC to ``America/New_York`` at ruling R-DH (b)**
   (2026-07-31), together with the cash half, because a split zone is what pulls a
@@ -80,6 +84,7 @@ prefer, because claiming it before it was true is how
 
 from datetime import date
 
+from app.services.installment_calendar import installment_of
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import settled_day
@@ -110,7 +115,9 @@ def anchor_visible_on(anchor_date: date) -> date:
     return anchor_date
 
 
-def payment_visible_on(leg: TransferLeg, payment_day: int) -> date:
+def payment_visible_on(
+    leg: TransferLeg, origination_date: date, payment_day: int,
+) -> date:
     """Return the date a settled payment's principal becomes visible to a read.
 
     Its **settled date** (step C2, ruling R-A): the STORED ``settled_on`` of
@@ -127,12 +134,21 @@ def payment_visible_on(leg: TransferLeg, payment_day: int) -> date:
 
     **A leg with NO record is a ``$0.00`` close, and it is dated by the
     installment it skips** (ruling **R-BAL139**, extending **R-BAL90**: no
-    transfer stores a day): :func:`app.services.loan_loaders.loan_payment_due_date`,
-    the day the loan's interest / principal split already keys on.  Nothing
-    moved on any day, so this is the day the debt grows by the charge the
-    payment did not clear, and the ledger books that correction on it.  Until
+    transfer stores a day).  That installment is its INTERVAL's (ruling
+    **R-R107**, amending R-BAL139): the latest installment due on or before the
+    payment's own due date
+    (:func:`~app.services.installment_calendar.installment_of`), the same one
+    answer to "which installment does this payment pay" that its charge, its
+    cash price and the forward plan read (ruling **R-R104**).  Nothing moved on
+    any day, so this is the day the debt grows by the charge the payment did
+    not clear, and the ledger books that correction on it.  For a payment due
+    ON the contractual day the interval's installment IS its due date
+    (:func:`app.services.loan_loaders.loan_payment_due_date`); one due before
+    the loan's first installment skips none and keeps its own due date.  Until
     X-bi-6-4b it was the settle day stated on the close, read off the shadow
-    row that ``X-bi-6-4d`` deletes.
+    row that ``X-bi-6-4d`` deletes; from X-bi-6-4b until R-R107 it was the
+    payment's own due date, which parts from its interval's installment for a
+    payment due off the contractual day.
 
     **It DERIVED the day from ``paid_at`` until plan step X-f1** (ruling R-EC)
     -- a display-timezone conversion of the click instant with the pay period's
@@ -159,10 +175,13 @@ def payment_visible_on(leg: TransferLeg, payment_day: int) -> date:
             attaches it).  A record-less leg's ``due_date`` and ``pay_period``
             are read, so its parent's period must be loaded -- the producer
             loads it as its sort key.
+        origination_date: The loan's origination
+            (:attr:`app.models.loan_params.LoanParams.origination_date`), where
+            its installment grid starts; read only by R-BAL139's arm.
         payment_day: The loan's contractual day-of-month due day
-            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
-            by R-BAL139's arm, and there only for a transfer storing no
-            ``due_date``.
+            (:attr:`app.models.loan_params.LoanParams.payment_day`), read only
+            by R-BAL139's arm: the day the grid falls on, and the fallback for
+            a transfer storing no ``due_date``.
 
     Returns:
         The date from which a balance read counts this payment's principal.
@@ -174,5 +193,7 @@ def payment_visible_on(leg: TransferLeg, payment_day: int) -> date:
             X-bi-6-4b) until ``X-bi-6-4d`` re-parents the movement.
     """
     if leg.record is None:
-        return loan_payment_due_date(leg, payment_day)
+        due = loan_payment_due_date(leg, payment_day)
+        installment = installment_of(origination_date, payment_day, due)
+        return due if installment is None else installment
     return settled_day(leg.record.transaction_id, leg.record.settled_on)

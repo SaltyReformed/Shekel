@@ -62,6 +62,7 @@ def confirmed_shadows_through(
     loan_account_id: int,
     scenario_id: int,
     as_of: date,
+    origination_date: date,
     payment_day: int,
 ) -> list[TransferLeg]:
     """Return the settled payments whose CASH had moved by ``as_of``.
@@ -83,7 +84,8 @@ def confirmed_shadows_through(
 
     A payment's visible-on date is its SETTLED date (step C2, ruling R-A) --
     or, for a ``$0.00`` close that moved nothing, the installment it skips
-    (ruling **R-BAL139**) -- read through the SAME
+    (ruling **R-BAL139**), its interval's (ruling **R-R107**) -- read through
+    the SAME
     :func:`._visible.payment_visible_on` the fold uses, so the history rows and
     the fold cannot key a payment on two different days.  The SQL reader that
     must agree with this (:func:`app.services.loan_posting_service`) bounds the
@@ -95,9 +97,12 @@ def confirmed_shadows_through(
         scenario_id: The budget scenario to scope to.
         as_of: The display boundary; a payment whose settled date has not arrived
             by it is a forward projection, excluded.
-        payment_day: The loan's contractual day-of-month due day, for
-            R-BAL139's day of a payment storing no ``due_date`` (see
+        origination_date: The loan's origination, where its installment
+            grid starts, for R-BAL139's day (see
             :func:`._visible.payment_visible_on`).
+        payment_day: The loan's contractual day-of-month due day, the day
+            that grid falls on and the fallback for a payment storing no
+            ``due_date``.
 
     Returns:
         The settled payments' legs through ``as_of``, ascending by pay-period
@@ -113,7 +118,7 @@ def confirmed_shadows_through(
         for leg in loan_loaders.settled_income_shadows(
             loan_account_id, scenario_id, options=(),
         )
-        if payment_visible_on(leg, payment_day) <= as_of
+        if payment_visible_on(leg, origination_date, payment_day) <= as_of
     ]
 
 
@@ -186,10 +191,11 @@ def loan_event_stream(
             states rather than merely relies on.
         calendar: The loan's contract terms
             (:class:`~.._charges.LoanCalendar`): its due day is the fallback
-            coordinate for a payment whose transfer stores no ``due_date``
-            (for its contract date and, for a ``$0.00`` close, its visible-on
-            day, ruling **R-BAL139**), and each charge carries the rate period
-            and the escrow in force on its own installment date.
+            coordinate for a payment whose transfer stores no ``due_date``,
+            its origination and due day place a ``$0.00`` close's visible-on
+            day on its interval's installment (rulings **R-BAL139**,
+            **R-R107**), and each charge carries the rate period and the
+            escrow in force on its own installment date.
 
     Returns:
         The loan's :class:`~._replay.LoanEventStream` -- its RECORDED facts.
@@ -209,7 +215,9 @@ def loan_event_stream(
             # principal from (plan step recurrence:R16-c-1 moved the read
             # from ``dated_deltas`` onto the event, so the projections the
             # seam appends carry their own day under the same name).
-            visible_on=payment_visible_on(leg, calendar.payment_day),
+            visible_on=payment_visible_on(
+                leg, calendar.origination_date, calendar.payment_day,
+            ),
         )
         for leg in shadows
     ]

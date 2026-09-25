@@ -68,6 +68,7 @@ from app.models.user import User
 from app.services import (
     calendar_service,
     dashboard_service,
+    loan_loaders,
     loan_payment_service,
     loan_posting_service,
     retirement_projection,
@@ -444,18 +445,25 @@ def _dump_user(user_id):
         "retirement": _retirement(user_id),
         "loans": _loans(user_id, scenario_id, accounts),
         "transfer_settle": _transfer_settle(scenario_id),
+        # A LOAN's feed, dumped for loan accounts only since plan step
+        # recurrence:R16-c-2 (ruling R-R107), when it began taking the loan's
+        # params.  Before that it dumped EVERY account with a hard-coded due
+        # day of 1 -- wrong for a loan due the 22nd -- so a baseline taken
+        # before that step differs in its account set.
         "payment_history": {
             str(a.id): _guard(
                 f"payment_history:{a.id}",
-                lambda acc=a: [
+                lambda acc=a, params=params: [
                     [str(p.dates.period_start), str(p.dates.due_date),
                      _money(p.amount), p.dates.is_confirmed]
                     for p in loan_payment_service.get_payment_history(
-                        acc.id, derived_amount_basis(user_id, scenario_id), 1,
+                        acc.id, derived_amount_basis(user_id, scenario_id),
+                        params,
                     )
                 ],
             )
             for a in accounts
+            if (params := loan_loaders.load_loan_params(a.id)) is not None
         },
     }
 

@@ -312,7 +312,7 @@ class TestPaymentInstallments:
             produced = sorted(
                 installment.source.transfer.id
                 for installment in payment_installments(
-                    loan.id, scenario_id, _PAYMENT_DAY,
+                    loan.id, scenario_id, loan_params_for(db.session, loan.id),
                     options=(), leg_options=(),
                 )
             )
@@ -351,7 +351,7 @@ class TestPaymentInstallments:
             db.session.commit()
 
             installments = payment_installments(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             )
 
@@ -404,7 +404,7 @@ class TestPaymentInstallments:
             db.session.commit()
 
             installments = payment_installments(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             )
 
@@ -464,7 +464,7 @@ class TestPaymentInstallments:
             )
 
             installments = payment_installments(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             )
 
@@ -498,7 +498,7 @@ class TestPaymentInstallments:
             db.session.commit()
 
             installments = payment_installments(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             )
 
@@ -518,7 +518,7 @@ class TestPaymentInstallments:
             db.session.commit()
 
             assert payment_installments(
-                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                loan.id, seed_user["scenario"].id, loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             ) == []
 
@@ -563,7 +563,8 @@ class TestBothFeedsReachOneSlotAssignment:
 
             scenario_id = seed_user["scenario"].id
             installments = payment_installments(
-                loan.id, scenario_id, _PAYMENT_DAY, options=(), leg_options=(),
+                loan.id, scenario_id, loan_params_for(db.session, loan.id),
+                options=(), leg_options=(),
             )
             amount_free = slotted_dates(
                 [installment.dates for installment in installments],
@@ -706,9 +707,11 @@ class TestTheCallerStatesItsOwnEagerLoad:
             _seam_shadows(seed_user, loan, seed_periods)
             db.session.expire_all()
 
+            # Loaded before the window, so the reads counted are the feed's.
+            params = loan_params_for(db.session, loan.id)
             with _statements_issued() as statements:
                 installments = payment_installments(
-                    loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                    loan.id, seed_user["scenario"].id, params,
                     options=(), leg_options=(),
                 )
 
@@ -756,8 +759,10 @@ class TestTheCallerStatesItsOwnEagerLoad:
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
+            # Loaded before the window, so the reads counted are the feed's.
+            params = loan_params_for(db.session, loan.id)
             with _statements_issued() as statements:
-                payments = get_payment_history(loan.id, basis, _PAYMENT_DAY)
+                payments = get_payment_history(loan.id, basis, params)
 
             assert len(payments) == _SEAM_SHADOWS, "the priced feed came back short"
             reads = _reads_of(_PRICING_TABLE, statements)

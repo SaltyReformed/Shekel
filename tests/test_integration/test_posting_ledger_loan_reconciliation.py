@@ -608,7 +608,7 @@ def _resolver_balance(
     # ``leg_options=()`` because nothing here traverses a relationship on the
     # settled rows or on the projected legs' parents.
     installments = loan_ledger.payment_installments(
-        loan_account_id, scenario_id, params.payment_day,
+        loan_account_id, scenario_id, params,
         options=(), leg_options=(),
     )
     periods = loan_resolver.resolve_periods(

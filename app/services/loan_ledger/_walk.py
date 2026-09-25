@@ -281,9 +281,10 @@ def load_loan_stream(
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
     # The loan's ONE calendar (ruling R-R100), built before the payments load
-    # because the visibility bound reads its due day too: a ``$0.00`` close is
-    # visible from the installment it skips (ruling R-BAL139), and the stream
-    # keys every payment on the same day.
+    # because the visibility bound reads it too: a ``$0.00`` close is visible
+    # from the installment it skips (ruling R-BAL139), its interval's on this
+    # calendar (ruling R-R107) -- the installment the replay charges it
+    # against.
     calendar = LoanCalendar(
         origination_date=params.origination_date,
         payment_day=params.payment_day,
@@ -303,7 +304,8 @@ def load_loan_stream(
         )
         if visible_by is None
         else confirmed_shadows_through(
-            loan_account_id, scenario_id, visible_by, calendar.payment_day,
+            loan_account_id, scenario_id, visible_by,
+            calendar.origination_date, calendar.payment_day,
         )
     )
     return loan_event_stream(anchor_facts, shadows, calendar)

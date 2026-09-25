@@ -106,6 +106,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     create_transfer,
     figure_source_columns,
+    loan_params_for,
     make_investment_account,
     read_pass,
     settle_day_columns,
@@ -804,7 +805,8 @@ class TestAStatusDriftIsCountedOnce:
             db.session.expire_all()
 
             installments = payment_installments(
-                loan.id, seed_user["scenario"].id, 1,
+                loan.id, seed_user["scenario"].id,
+                loan_params_for(db.session, loan.id),
                 options=(), leg_options=(),
             )
 

@@ -34,6 +34,7 @@ from app.utils.balance_predicates import settled_status_ids
 from app.services.amortization_engine import PaymentDates, PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
+    loan_params_for,
     one_off_row_of,
     open_books_before_the_first_assertion,
     typed,
@@ -56,11 +57,6 @@ from app.services import account_service
 from app.services.installment_calendar import monthly_due_date
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import declare_derived
-
-# The ``payment_day`` of the mortgage ``_create_loan_account`` builds; the
-# loan's contractual due day, which ``get_payment_history`` needs to
-# reconstruct the due date of a shadow that stores none.
-_PAYMENT_DAY = 1
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -198,7 +194,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert result == []
 
@@ -218,7 +214,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -249,7 +245,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             # No transfer_id -> excluded.
             assert result == []
@@ -277,7 +273,7 @@ class TestGetPaymentHistory:
             )
             db.session.commit()
             assert len(get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )) == 1, "the payment must be in the feed for its deletion to grade"
 
             # Soft-delete the payment THROUGH THE DOOR, which deletes the
@@ -290,7 +286,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert result == []
 
@@ -311,7 +307,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert result == []
 
@@ -342,7 +338,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             # effective_amount returns actual when populated.
@@ -364,7 +360,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -385,7 +381,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].dates.is_confirmed is True
@@ -406,7 +402,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].dates.is_confirmed is False
@@ -423,7 +419,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].dates.period_start == seed_periods[2].start_date
@@ -451,7 +447,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].dates.settled_on == cash_day
@@ -476,7 +472,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].dates.settled_on is None
@@ -522,7 +518,7 @@ class TestGetPaymentHistory:
 
             with pytest.raises(UndatedSettleError):
                 get_payment_history(
-                    loan.id, _basis(seed_user), _PAYMENT_DAY,
+                    loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
                 )
 
     def test_ordered_by_pay_period_date(
@@ -541,7 +537,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 2
             assert result[0].dates.period_start < result[1].dates.period_start
@@ -582,13 +578,13 @@ class TestGetPaymentHistory:
             # The baseline basis DOES see the payment, so the emptiness below
             # is this scenario filter and not a fixture that built nothing.
             assert len(get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )) == 1
 
             result = get_payment_history(
                 loan.id,
                 derived_amount_basis(seed_user["user"].id, other_scenario.id),
-                _PAYMENT_DAY,
+                loan_params_for(db.session, loan.id),
             )
             assert result == []
 
@@ -612,7 +608,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert isinstance(result[0].amount, Decimal)
@@ -635,7 +631,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 3
 
@@ -694,7 +690,7 @@ class TestTheFeedPricesADerivedRow:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -1282,7 +1278,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             before = _resolve_loan_basis(loan.id)
             assert before is not None
             assert get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ), "the feed must be non-empty for emptying it to mean anything"
 
             db.session.query(Transaction).filter(
@@ -1293,7 +1289,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             ).delete(synchronize_session=False)
             db.session.commit()
             assert get_payment_history(
-                loan.id, _basis(seed_user), _PAYMENT_DAY,
+                loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ) == [], "the feed is not empty: one of its two relations survived"
 
             after = _resolve_loan_basis(loan.id)

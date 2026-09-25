@@ -696,8 +696,11 @@ def loan_payment_due_date(
     as a plain every-paycheck transfer would NOT -- a ``PERIOD``-unit rule has
     no day-of-month coordinate at all -- and would keep regenerating pay-period
     starts into a column the posting walk now reads.  Still unenforced, which
-    is what D27 records, and plan step R5 makes it structural by giving a
-    generated row its own ``due_on``.
+    is what D27 records.  Ruling **R-R96** keeps the installment on the loan's
+    own contract day -- the STORED
+    :attr:`~app.models.loan_params.LoanParams.payment_day`, from which plan
+    step R6's installment accessor derives it -- rather than on a day a
+    generated row stores, so R6, not R5, is what makes this structural.
 
     This value is a POSTING INPUT, not display metadata: the fold's event stream
     (``loan_ledger.loan_event_stream``) DATES every payment by it, the replay

@@ -67,6 +67,7 @@ its rows exactly as :func:`~app.services.loan_ledger.walk_loan_ledger` does.
 from dataclasses import dataclass
 from datetime import date
 
+from app.models.loan_params import LoanParams
 from app.services.amortization_engine import PaymentDates
 from app.services.loan_loaders import income_shadows, loan_payment_due_date
 from app.services.transfer_legs import TransferLeg
@@ -128,7 +129,7 @@ class PaymentInstallment:
 
 
 def payment_installments(
-    account_id: int, scenario_id: int, payment_day: int, *,
+    account_id: int, scenario_id: int, params: LoanParams, *,
     options: tuple, leg_options: tuple,
 ) -> list[PaymentInstallment]:
     """Return a loan's payments as their DATES alone, in payment order.
@@ -180,9 +181,15 @@ def payment_installments(
     Args:
         account_id: The loan account whose payments to read.
         scenario_id: The budget scenario to scope to.
-        payment_day: The loan's contractual day-of-month due day
-            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only to
-            reconstruct the due date of a payment that stores none.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, the
+            stored home of the two facts that place a payment on its
+            installment grid: ``payment_day`` reconstructs the due date of a
+            payment that stores none, and with ``origination_date`` it dates a
+            ``$0.00`` close by its interval's installment (rulings
+            **R-BAL139**, **R-R107**, :func:`._visible.payment_visible_on`).
+            Taken whole since R-R107 rather than as two values, so this
+            function's callers hand it one loan's row, never a due day and an
+            origination read from two places.
         options: The loader options for every relationship the CALLER will
             traverse on the SETTLED legs' parents, rooted at
             :class:`~app.models.transfer.Transfer`.  ``()`` for a caller that
@@ -220,7 +227,12 @@ def payment_installments(
     # Each half arrives in its own order; the merge key is the PARENT's id,
     # which every leg carries (see the docstring).
     dated: list[tuple[TransferLeg, date | None]] = [
-        (leg, payment_visible_on(leg, payment_day))
+        (
+            leg,
+            payment_visible_on(
+                leg, params.origination_date, params.payment_day,
+            ),
+        )
         for leg in payments.settled
     ]
     dated += [(leg, None) for leg in payments.projected]
@@ -232,7 +244,7 @@ def payment_installments(
             source=source,
             dates=PaymentDates(
                 period_start=source.pay_period.start_date,
-                due_date=loan_payment_due_date(source, payment_day),
+                due_date=loan_payment_due_date(source, params.payment_day),
                 settled_on=settled_on,
             ),
         )
