@@ -583,7 +583,10 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
       argument whole by moving the earliest era's phase down with the
       paydays it adds (ruling **R-PC105**, :func:`~._eras.earlier_paydays`),
       so the record's first payday stands for that era's first step for
-      every owner.
+      every owner a door has written; the one era the ``C17-a`` migration
+      backfilled may be phased up to a cadence below it
+      (``models/pay_era.py``), which leaves that record at or above the
+      era's first step, so the argument holds there too.
 
     Args:
         eras: The candidate sequence.

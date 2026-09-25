@@ -72,34 +72,6 @@
 </div>
 
 <div class="row g-3">
-  {# --- Add earlier paychecks (plan step pay_calendar:C18-b, ruling R-PC87) ---
-     Extend's twin at the schedule's other end, and the label is the
-     ruling's: it asks only how many, and records the paydays the earliest
-     pay rhythm projects just before the first one.  It states no date or
-     rhythm, so it cannot split a paycheck or leave a gap.  Default 1, the
-     ruling's own example.  Four actions share this row since this step, so
-     each column is half width until xl, where they sit four across. #}
-  <div class="col-md-6 col-xl-3">
-    <div class="card h-100">
-      <div class="card-body">
-        <h6 class="card-title">Add earlier paychecks</h6>
-        <p class="card-text text-muted small">
-          Add paychecks before your first one, on your earliest pay
-          rhythm.
-        </p>
-        <form method="POST" action="{{ url_for('pay_periods.add_earlier') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          {{ render_field("num_periods", "Paychecks to add", type="number",
-                          value="1", required=true,
-                          input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
-          <button type="submit" class="btn btn-primary btn-sm w-100">
-            <i class="bi bi-plus-circle"></i> Add earlier
-          </button>
-        </form>
-      </div>
-    </div>
-  </div>
-
   {# --- Extend --- #}
   <div class="col-md-6 col-xl-3">
     <div class="card h-100">
@@ -115,6 +87,37 @@
                           input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
           <button type="submit" class="btn btn-primary btn-sm w-100">
             <i class="bi bi-plus-circle"></i> Extend
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# --- Add earlier paychecks (plan step pay_calendar:C18-b, ruling R-PC87) ---
+     Extend's twin at the schedule's other end, and the label is the
+     ruling's: it asks only how many, and records the paydays the earliest
+     pay rhythm projects just before the first one.  It states no date or
+     rhythm, so it cannot split a paycheck or leave a gap.  Default 1, the
+     ruling's own example.  Four actions share this row since this step, so
+     each column is half width until xl, where they sit four across.  AFTER
+     Extend, not before it: the form macro gives every num_periods input the
+     same id (PC-518), a label binds to the FIRST, and Extend's label must
+     keep binding to Extend's own box. #}
+  <div class="col-md-6 col-xl-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title">Add earlier paychecks</h6>
+        <p class="card-text text-muted small">
+          Add paychecks before your first one, on your earliest pay
+          rhythm.
+        </p>
+        <form method="POST" action="{{ url_for('pay_periods.add_earlier') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ render_field("num_periods", "Paychecks to add", type="number",
+                          value="1", required=true,
+                          input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
+          <button type="submit" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-plus-circle"></i> Add earlier
           </button>
         </form>
       </div>

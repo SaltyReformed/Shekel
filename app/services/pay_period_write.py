@@ -12,7 +12,7 @@ step ``pay_calendar:C17-c-2b``); the third records the paydays that plan puts
 just BEFORE the record (plan step ``pay_calendar:C18-b``); the fourth
 removes.
 ``pay_period_service`` keeps only its readers; ``pay_period_admin`` keeps only
-its four doors, and the gates they consult live in ``pay_period_gates`` since
+its doors, and the gates they consult live in ``pay_period_gates`` since
 plan step ``pay_calendar:C14-f``.
 
 That split is C3-a's, one level up.  C3-a moved the read-only lock classifier
@@ -104,9 +104,9 @@ mints and retires nothing** (:func:`continue_paydays`, plan step
 so the eras are the plan's description before and after it.  **The EARLIER
 batch states no rhythm either, and moves the earliest era's phase down to
 its first payday** (:func:`prepend_paydays`, ruling **R-PC105**): the same
-rhythm on the same grid, retired and minted again, so the record's first
-payday stands for that era's first grid step, as it does for every other
-door.
+rhythm on the same grid, the row moved in place rather than minted again (a
+mint would re-judge a rhythm nobody stated), so the record's first payday
+stands for that era's first grid step, as it does for every other door.
 
 **Ledger row P28 -- "the horizon the app projects" disagreeing with "the end
 stored on the last row" -- has no subject at all since C4-c**: there is one
@@ -528,9 +528,12 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
     (ruling **R-PC105**, which narrows R-PC87's "moves nothing" to
     paychecks).  The producer hands that era back re-phased onto the
     earliest new payday -- the same rhythm on the same grid, so every payday
-    it plans is unchanged -- and :func:`_apply` retires the old row and
-    mints the new one in the same operation, as it does for any batch that
-    states an era.  Left below the phase, the record would let a regenerate
+    it plans is unchanged -- and :func:`_apply` moves the stored row's
+    phase in place in the same operation
+    (``pay_era_write.rephase_earliest_era``).  In place rather than retired
+    and minted again, because a mint re-judges the rhythm it writes and
+    this door states none (review 1 of this step; ledger rows **N-493**,
+    **N-494**).  Left below the phase, the record would let a regenerate
     that keeps only earlier paychecks restate a rhythm from the old phase
     (a second era on ``uq_pay_eras_user_effective_from``, an
     ``IntegrityError``) or from inside the next paycheck (an era
@@ -541,11 +544,12 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
     (:func:`~app.services.pay_period_batch.reject_backward_payday`) would
     refuse every day it records -- that refusal, worded as a split, was
     PC-499 -- and the ceiling reads the plan past the latest payday.  What
-    bounds it is below the record: the application's calendar
-    (:func:`~app.services.pay_period_batch.reject_payday_before_calendar`)
-    and the owner's stated history
+    bounds it is below the record: the owner's stated history
     (:func:`~app.services.pay_period_batch.reject_payday_before_history`,
-    ruling **R-PC104**), both asked before any statement.
+    ruling **R-PC104**) and the application's calendar
+    (:func:`~app.services.pay_period_batch.reject_payday_before_calendar`),
+    both asked before any statement, the history first so its ruled
+    message is the one a stated owner reads.
 
     Args:
         user_id: The owning user's id.
@@ -560,12 +564,9 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
 
     Raises:
         ValidationError: *num_periods* is outside the batch bound; the owner
-            holds no payday, so there is nothing to add before; the earliest
-            new payday falls before the application's calendar or before
-            the owner's stated history; or ``mint_era``, which re-asks the
-            re-phased era's bounds as the column's writer, refuses a stored
-            rhythm a later holiday-set change made illegal (ledger row
-            **N-493**) -- the route flashes each.
+            holds no payday, so there is nothing to add before; or the
+            earliest new payday falls before the owner's stated history or
+            before the application's calendar -- the route flashes each.
         PayCalendarError: The owner holds no ``budget.pay_schedule`` row or
             no era (:func:`~app.services.pay_calendar.schedule_for`), as at
             :func:`continue_paydays`.
@@ -581,20 +582,24 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
     era, recording = pay_calendar.earlier_paydays(
         facts.eras, current[0][1], num_periods,
     )
-    pay_period_batch.reject_payday_before_calendar(recording[0])
+    # The history first: a stated history is never below the calendar's
+    # floor (``ck_pay_schedule_history_opens_range``), so a payday under the
+    # floor is under the history too, and asked the other way round the
+    # calendar's message would hide the one ruling R-PC104 worded.
     pay_period_batch.reject_payday_before_history(
         recording[0], facts.history_opens_on,
     )
-    # Every era but the earliest stands; the earliest is retired and minted
-    # again at its new phase (ruling R-PC105).  ``_apply`` retires before it
-    # mints, so the two rows never meet on the era key.
+    pay_period_batch.reject_payday_before_calendar(recording[0])
+    # Every era stands and none is minted: the earliest one's phase moves in
+    # place (ruling R-PC105), its rhythm untouched, so no rhythm is judged.
     created = _apply(
         _PaydayChange(
             user_id=user_id,
             retiring=[],
             recording=list(recording),
-            era=era,
-            eras_standing=tuple(stood.effective_from for stood in facts.eras[1:]),
+            era=None,
+            eras_standing=tuple(stood.effective_from for stood in facts.eras),
+            earliest_phase=era.effective_from,
         ),
     )
     log_event(
@@ -604,7 +609,8 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
         count=len(created),
         retired=0,
         start_date=created[0].start_date.isoformat(),
-        era_minted_from=era.effective_from.isoformat(),
+        era_minted_from=None,
+        era_rephased_to=era.effective_from.isoformat(),
         cadence=era.rhythm.cadence.phrase,
         shift=era.rhythm.shift.value,
     )
@@ -729,9 +735,7 @@ class _PaydayChange:
             through a state neither means.  Its ``effective_from`` is the
             batch's own ``first_payday``, a point on the grid the batch is
             written on -- always STATED by a door since plan step
-            ``C17-c-2b``, where the continue path stopped computing one --
-            or, from :func:`prepend_paydays`, the earliest era's own grid
-            day under its first new payday (ruling **R-PC105**).
+            ``C17-c-2b``, where the continue path stopped computing one.
         eras_standing: The ``effective_from`` of every era the batch leaves
             standing -- those with a surviving payday, and the earliest
             whenever any payday survives
@@ -739,9 +743,13 @@ class _PaydayChange:
             other era is retired before the mint, all of them for an empty
             tuple (``reset``'s shape).  Derived by :func:`record_paydays`
             from the payday sets it computed, so no door can claim a wipe it
-            did not perform; :func:`continue_paydays` names every era and
-            :func:`prepend_paydays` every era but the earliest, which it
-            mints again.
+            did not perform; :func:`continue_paydays` and
+            :func:`prepend_paydays` name every era.
+        earliest_phase: The EARLIEST era's new ``effective_from`` when the
+            batch moves it, else ``None``: :func:`prepend_paydays` records
+            below the record and moves the phase down with it, in place and
+            with its rhythm untouched (ruling **R-PC105**,
+            ``pay_era_write.rephase_earliest_era``).
     """
 
     user_id: int
@@ -749,13 +757,15 @@ class _PaydayChange:
     recording: "list[date]"
     era: "pay_rhythm.Era | None"
     eras_standing: "tuple[date, ...]"
+    earliest_phase: "date | None" = None
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
-    """Carry out one payday change: delete, mint the era, insert.
+    """Carry out one payday change: delete, mint or move the era, insert.
 
     **Every refusal a route RENDERS has already happened**, in
-    :func:`record_paydays`, which is what lets truncate keep promising it
+    :func:`record_paydays` or :func:`prepend_paydays`, which is what lets
+    truncate keep promising it
     deletes nothing on a refusal and what makes the module docstring's "a
     refusal leaves nothing behind" true of this module rather than of its
     callers.  Nothing here refuses anything: the bounds are asked at the door
@@ -773,13 +783,16 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
     3. RETIRE every era the batch does not leave standing (the era rule)
        BEFORE the mint, so ``uq_pay_eras_user_effective_from`` cannot
        collide on a day being restated; then MINT the era, when the batch
-       states one.
+       states one; or MOVE the earliest era's phase in place, when the batch
+       records below the record (ruling **R-PC105**) -- a batch does one or
+       the other, never both.
     4. INSERT one row per recorded payday.
 
-    ``expire_all`` runs LAST, when a row was deleted or an era minted: the
-    bulk ``DELETE`` synchronises nothing and ``PaySchedule.eras`` is
-    view-only, so a row the wider request already loaded would otherwise name
-    a period that is gone or the eras it had BEFORE the mint.
+    ``expire_all`` runs LAST, when a row was deleted or an era minted or
+    moved: the bulk ``DELETE`` and ``UPDATE`` synchronise nothing and
+    ``PaySchedule.eras`` is view-only, so a row the wider request already
+    loaded would otherwise name a period that is gone or the eras it had
+    BEFORE the write.
 
     Args:
         change: The whole change (:class:`_PaydayChange`).
@@ -788,10 +801,11 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         The newly created rows, flushed, ``start_date`` ascending.
 
     Raises:
-        ValidationError: ``mint_era`` refuses the cadence or the pairing.
-            Unreachable from :func:`record_paydays`, which asks the same
-            bounds before any statement is issued; kept because ``mint_era``
-            is the column's one writer and owns the refusal.
+        ValidationError: ``mint_era`` refuses the cadence or the pairing, or
+            ``rephase_earliest_era`` a phase off its grid.  Unreachable from
+            both doors -- :func:`record_paydays` asks the same bounds before
+            any statement is issued, and :func:`prepend_paydays` hands a grid
+            day -- and kept because the era writer owns the refusals.
     """
     if change.retiring:
         db.session.query(PayPeriod).filter(
@@ -806,8 +820,15 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         )
         if change.era is not None:
             pay_era_write.mint_era(change.user_id, change.era)
+        if change.earliest_phase is not None:
+            pay_era_write.rephase_earliest_era(
+                change.user_id, change.earliest_phase,
+            )
     created = _create_periods(change.user_id, change.recording)
-    if change.retiring or retired_eras or change.era is not None:
+    if (
+        change.retiring or retired_eras or change.era is not None
+        or change.earliest_phase is not None
+    ):
         db.session.expire_all()
     return created
 

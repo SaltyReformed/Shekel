@@ -35,7 +35,9 @@ import pytest
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
 from app.extensions import db as _db
+from app import ref_cache
 from app.models.pay_era import PayEra
+from app.models.pay_period import PayPeriod
 from app.services import (
     pay_era_write,
     pay_period_admin,
@@ -73,8 +75,10 @@ NEXT = BusinessDayShiftEnum.NEXT
 #: moving a payday.  2030-12-12 is on a 14-day grid through 2030-11-28,
 #: Thanksgiving, so one step back is a closed day under both displacing
 #: conventions; the month cases opening on a 31st step back into a February
-#: that CLAMPS the day, which is the shape ``nominal_day`` exists to record,
-#: and the 15th cases step back onto a day nothing clamps.
+#: that CLAMPS the day, which is the shape ``nominal_day`` exists to record
+#: -- as does the 15th-and-31st pair from a 15th, whose step back is
+#: February's clamped upper day -- and the monthly 15th steps back onto a
+#: day nothing clamps.
 ERA_CASES = {
     "every 14 days, none": Era(date(2026, 1, 2), Rhythm(FixedDays(14), NONE)),
     "every 14 days, prior, back over Thanksgiving": Era(
@@ -622,3 +626,51 @@ class TestARegenerateKeepingOnlyEarlierPaychecks:
                 date(2026, 6, 5), new_start,
             ]
             assert_pay_period_invariants(db.session, user_id)
+
+
+class TestTheDoorJudgesNoRhythm:
+    """The phase moves IN PLACE, so a rhythm nobody stated is never re-judged.
+
+    Review 1 of this step: the first build retired the earliest era and
+    minted it again, and ``mint_era`` re-asks the cadence-convention
+    pairing -- so an owner whose STORED pairing a later holiday-set change
+    made illegal (ledger row **N-493**) was refused by a door that states
+    no rhythm, the principle ledger row **N-494** closed, and refused after
+    the retire's DELETE had run.  No door can write that owner, so the case
+    writes the rows itself: every 3 days under ``prior``, below the
+    collision floor ``reject_shift_on_short_cadence`` holds a displacing
+    convention to today.
+    """
+
+    def test_an_owner_on_a_since_illegal_pairing_still_adds_earlier_paychecks(
+        self, app, db, bare_user,
+    ):
+        """The paycheck is added and the stored rhythm is exactly as it was."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_schedule_service.ensure_schedule_row(user_id)
+            prior_id = ref_cache.business_day_shift_id(PRIOR)
+            _db.session.add(PayEra(
+                user_id=user_id, effective_from=date(2026, 1, 5),
+                shift_id=prior_id, cadence_days=3,
+            ))
+            _db.session.add_all([
+                PayPeriod(user_id=user_id, start_date=day)
+                for day in (date(2026, 1, 5), date(2026, 1, 8))
+            ])
+            _db.session.commit()
+            with pytest.raises(ValidationError, match="at least"):
+                pay_schedule_service.reject_shift_on_short_cadence(
+                    Rhythm(FixedDays(3), PRIOR),
+                )
+
+            pay_period_admin.add_earlier_pay_periods(user_id, 1)
+            _db.session.commit()
+            _db.session.remove()
+
+            assert _paydays(user_id)[0] == date(2026, 1, 2)
+            rows = PayEra.query.filter_by(user_id=user_id).all()
+            assert [
+                (row.effective_from, row.cadence_days, row.shift_id)
+                for row in rows
+            ] == [(date(2026, 1, 2), 3, prior_id)]

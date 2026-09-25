@@ -289,9 +289,10 @@ def reject_backward_payday(
     **It refuses TWO things, and until plan step ``pay_calendar:C18-b`` it
     described one** (ledger row **PC-499**; ruling **R-PC87**: "The date
     check stays for forms that state a start; its description is
-    corrected").  The floor is the day the owner's LATEST paycheck ends, so
-    everything below it is refused, and that span holds two states with
-    different reasons and, since ruling **R-PC103**, a message each:
+    corrected").  The floor is the day the owner's NEXT paycheck opens --
+    the day after their latest one ends -- so everything below it is
+    refused, and that span holds two states with different reasons and,
+    since ruling **R-PC103**, a message each:
 
     * **A payday INSIDE a paycheck the owner already has** -- from their
       first payday up to the floor -- splits it: **keeping plan step C6
@@ -582,8 +583,8 @@ def reject_payday_before_calendar(earliest: date) -> None:
     below the record rather than taking one from a form:
     ``app.schemas.validation.pay_periods.payday_field`` holds every STATED
     payday to :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
-    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, and every other persisted
-    date in the application is held to the same window, while
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, and so is a stated history
+    (``ck_pay_schedule_history_opens_range``), while
     ``budget.pay_periods.start_date`` carries no CHECK of its own.  A long
     cadence times a large count reaches past it -- 27 paychecks 365 days
     apart below a record opening 2026-01-02 reach 1999-01-09 -- so the door

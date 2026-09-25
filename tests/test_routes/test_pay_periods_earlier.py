@@ -20,6 +20,8 @@ from app.extensions import db as _db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.exceptions import ValidationError
+from app.routes import pay_periods as pay_periods_routes
 from app.services import pay_period_write, pay_schedule_service
 from tests._test_helpers import (
     all_periods,
@@ -112,7 +114,12 @@ class TestTheAddEarlierRoute:
     def test_a_payday_below_the_stated_history_flashes_the_ruling_and_adds_nothing(
         self, app, db, bare_auth_client, bare_user,
     ):
-        """R-PC104's sentence reaches the page; the rollback leaves no row."""
+        """R-PC104's sentence reaches the page; the refusal writes nothing.
+
+        The history is asked before any statement, so this is not the case
+        that grades the route's rollback --
+        :meth:`test_a_refusal_after_the_door_wrote_is_rolled_back` is.
+        """
         with app.app_context():
             user_id = bare_user["user"].id
             _record_schedule(db.session, user_id)
@@ -170,6 +177,44 @@ class TestTheAddEarlierRoute:
                 b"&gt; Pay Periods." in resp.data
             )
             assert _paydays(user_id) == before
+
+    def test_a_refusal_after_the_door_wrote_is_rolled_back(
+        self, app, db, bare_auth_client, bare_user, monkeypatch,
+    ):
+        """The route's rollback undoes what the door had already flushed.
+
+        The door's own refusals come before its first statement; the
+        populate step after it can refuse once the paycheck row and the
+        moved era phase are flushed.  Forced to refuse there, the route must
+        roll both back -- graded by committing and re-reading, because a
+        flushed row a rollback missed would be persisted by the next commit
+        on this session and ``session.dirty`` cannot tell the two apart.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record_schedule(db.session, user_id)
+            before = _paydays(user_id)
+
+            def refuse_after_the_write(*_args, **_kwargs):
+                raise ValidationError("populate refused after the write")
+
+            monkeypatch.setattr(
+                pay_periods_routes, "populate_new_periods", refuse_after_the_write,
+            )
+            resp = bare_auth_client.post(
+                "/pay-periods/earlier", data={"num_periods": "2"},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"populate refused after the write" in resp.data
+            db.session.commit()
+            db.session.remove()
+            assert _paydays(user_id) == before
+            assert [era.effective_from for era in pay_schedule_service.resolve_schedule(
+                user_id,
+            ).eras] == [date(2026, 1, 2)]
+
 
 
 def _monthly_bill_from(seed_user, starts_on):

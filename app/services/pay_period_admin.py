@@ -15,7 +15,7 @@ changes ``budget.pay_periods``.  That single home is why plan step
 ``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
 place: while they were stored, the rule that they equalled the derivation
 over the owner's paydays lived there and nowhere else.  What stays here is
-the orchestration -- the four doors, and which reconciles a wipe owes; the two
+the orchestration -- the doors, and which reconciles a wipe owes; the two
 gates they consult (which periods may go: the lock classifier and the discard
 count) moved to :mod:`app.services.pay_period_gates` at plan step
 ``pay_calendar:C14-f``.
@@ -38,7 +38,7 @@ lock badge.
 
 **The ROLLING TOP-UP left at plan step C4** for
 :mod:`app.services.pay_period_rolling`, and the seam is the one this docstring
-already drew: the four doors here are DESTRUCTIVE and user-initiated, while the
+already drew: the doors here are STRUCTURAL and user-initiated, while the
 top-up is an opportunistic appender ``/grid`` and ``/dashboard`` run on every
 render.  Finding **P31** is what forced it -- this module reached 991 of
 pylint's 1,000-line ceiling, so the next correction would have had to delete
@@ -48,8 +48,8 @@ prose to fit, which is that finding's own sentence.
 C4-c dropped -- and since C4's FIRST commit that is the WHOLE module rather than the
 narrow claim it was** (finding **P70**).  Every door decides on the owner's
 schedule read once through ``pay_calendar``, in
-:class:`~app.services.pay_calendar.DerivedPeriod` values.  Three of the four
-doors still RETURN ``list[PayPeriod]`` from ``pay_period_write`` to their own
+:class:`~app.services.pay_calendar.DerivedPeriod` values.  Every door but
+truncate RETURNS ``list[PayPeriod]`` from ``pay_period_write`` to its own
 caller, which populates them -- the writer's OUTPUT, not an input to any
 decision here.  What the doors hand the writer is the set of
 ``budget.pay_periods.id`` to retire.

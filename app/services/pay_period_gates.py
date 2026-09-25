@@ -11,7 +11,7 @@ C3-a moved the read-only lock classifier into
 :mod:`app.services.pay_period_locks` "because a read-predicate and four
 destructive writers are two concerns"; the same sentence separates *deciding*
 that a schedule may change from *orchestrating* the change.  What stays in
-``pay_period_admin`` is the four doors -- extend, truncate, regenerate, reset;
+``pay_period_admin`` is the doors -- extend, add-earlier, truncate, regenerate, reset;
 what lives here is every gate they consult before touching a row.
 
 **Why it happened when it did, stated rather than left to git blame.**

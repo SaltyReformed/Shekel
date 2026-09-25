@@ -5,8 +5,10 @@ Shekel Budget App -- Pay Era Writer
 ``pay_calendar:C17-a``, ruling **R-PC58**).  An era is one row per *how I have
 been paid since* -- the rhythm a span of paydays runs on, kept when the next
 span starts on a different one -- and every batch that records a payday
-reaches this table through :func:`mint_era` and :func:`retire_eras`, called
-from ``pay_period_write._apply`` and from nothing else.  The ERA RULE that
+reaches this table through :func:`mint_era`, :func:`retire_eras` and, for
+the batch that records below the record, :func:`rephase_earliest_era`
+(plan step ``pay_calendar:C18-b``), called from ``pay_period_write._apply``
+and from nothing else.  The ERA RULE that
 decides what a batch does here is stated in the same module, in two halves:
 :func:`eras_describing` says which eras a batch leaves standing, and
 :func:`era_to_mint` says whether it states a new one.
@@ -21,8 +23,8 @@ the terms ledger row **PC-498** records.  The two refusals both writers ask
 (the cadence bound, the cadence-convention pairing) stay in the service beside
 the column bounds they state, and this module imports them.
 
-**A caller holding a loaded ``PaySchedule`` must re-read it after either
-door**: ``PaySchedule.eras`` is view-only, so an insert reaches no loaded
+**A caller holding a loaded ``PaySchedule`` must re-read it after any of
+these doors**: ``PaySchedule.eras`` is view-only, so an insert reaches no loaded
 collection, the bulk delete synchronises nothing, and a joined load does not
 replace a collection the identity map already holds (measured 2026-09-11).
 ``pay_period_write._apply`` expires the session after it;
@@ -154,13 +156,15 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
     step zero, dispatched on the kind, so nothing here restates what a
     month grid passes through.
 
-    **Asked twice, and the storage cannot catch what the second ask
-    refuses.**  ``pay_period_write.record_paydays`` asks it in its
+    **Asked at every write, and the storage cannot catch what the write's
+    ask refuses.**  ``pay_period_write.record_paydays`` asks it in its
     precondition block, before ``pay_period_batch.requested_paydays`` spaces
     the batch from the stated day -- on an off-grid anchor that batch's
     first element would not be the day the owner stated.  :func:`mint_era`
     asks it again immediately before the write, as it asks the cadence
-    bound and the pairing, so no door can persist the state.  The CHECKs
+    bound and the pairing, so no door can persist the state -- and
+    :func:`rephase_earliest_era` asks it of the phase it moves, the one
+    bound a phase move can break.  The CHECKs
     see only half of it: a meant day ABOVE the anchor's would be written
     as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
     the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
@@ -201,12 +205,11 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     **R-PC58**).  Called by ``pay_period_write.record_paydays`` when a batch
     states a rhythm the era covering its first payday does not already hold
     -- a first schedule, a cadence or convention changed going forward, or a
-    phase off the covering grid -- and by ``pay_period_write.prepend_paydays``
-    to move the EARLIEST era's phase down onto the paydays it adds below the
-    record (plan step ``pay_calendar:C18-b``, ruling **R-PC105**; the same
-    rhythm, so nothing it plans moves).  Nothing else: a batch that continues
+    phase off the covering grid -- and by nothing else: a batch that continues
     an era mints nothing, which is what closed the read-path re-judging
-    ledger row **N-494** recorded.
+    ledger row **N-494** recorded, and the batch that records BELOW the
+    record moves the earliest era's phase in place
+    (:func:`rephase_earliest_era`) rather than minting it again.
 
     **The refusals live HERE, at the column's writer** (plan step X-ad-a's
     placement, carried over).  The cadence bound, the cadence-convention
@@ -246,11 +249,10 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             writer retired every era "taking effect on or after" the mint's
             day, which it never did; a rebuild from an existing era's day
             with a changed convention and every lower payday held reached
-            the key as an IntegrityError.*  The earlier door's re-phased era
-            falls below every stored era's day, and the one it replaces is
-            retired first.  **That floor argument needs the record to stand
-            on the earliest era's first grid step or above**, which is why
-            the earlier door moves the phase (**R-PC105**): with only earlier
+            the key as an IntegrityError.*  **That floor argument needs the
+            record to stand on the earliest era's first grid step or
+            above**, which is why the earlier door moves the phase
+            (:func:`rephase_earliest_era`, **R-PC105**): with only earlier
             paychecks kept below an unmoved phase, the floor IS that phase,
             and a rebuild from it with a new rhythm reached this key.
 
@@ -284,6 +286,59 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     db.session.add(row)
     db.session.flush()
     return row
+
+
+def rephase_earliest_era(user_id: int, phase: date) -> None:
+    """Move the owner's EARLIEST era's phase to *phase*, its rhythm untouched.
+
+    **The EARLIER door's era write** (plan step ``pay_calendar:C18-b``, ruling
+    **R-PC105**).  "Add earlier paychecks" records paydays below the record,
+    and the era that pays them is the earliest one (**R-PC66**), so its
+    phase moves down to the grid day of the earliest new payday
+    (``pay_calendar.earlier_paydays`` computes it) -- the same rhythm on the
+    same grid, so every payday it plans is unchanged, and the record's first
+    payday stands for the era's first grid step again.  Left below the
+    phase, a regenerate keeping only earlier paychecks could restate a
+    rhythm from the old phase (a second era on
+    ``uq_pay_eras_user_effective_from``) or from inside the next paycheck
+    (an era ``pay_calendar._derive.validate_eras`` refuses on every read).
+
+    **An UPDATE of one row rather than a retire and a mint, and review 1 of
+    C18-b is why.**  :func:`mint_era` re-asks the cadence bound and the
+    cadence-convention pairing, which judges a rhythm the door never
+    stated: an owner whose stored pairing a later holiday-set change made
+    illegal (ledger row **N-493**) was refused by a door that states no
+    rhythm -- the principle that closed **N-494** -- and refused after the
+    retire's DELETE had run.  A phase move changes the row's
+    ``effective_from`` and the parameter columns read against it (a clamped
+    month day's ``nominal_day``, which member of a semi-monthly pair the
+    anchor stands for) and nothing else, so the RHYTHM is read from the
+    stored row here rather than taken from a caller, and the only bound
+    asked is the phase's own place on its grid
+    (:func:`reject_phase_off_grid`).
+
+    Args:
+        user_id: The owning user's id.  They hold at least one era -- the
+            door that calls this has read their calendar.
+        phase: The earliest era's new ``effective_from``: a NOMINAL day on
+            its own grid, at or below its current one.
+
+    Raises:
+        ValidationError: *phase* is off the earliest era's grid
+            (:func:`reject_phase_off_grid`).  The earlier door hands a grid
+            day, so it cannot reach this; it is the column writer's own
+            precondition, asked as :func:`mint_era` asks it.
+    """
+    earliest = pay_schedule_service.resolve_schedule(user_id).eras[0]
+    cadence = earliest.rhythm.cadence
+    reject_phase_off_grid(phase, cadence)
+    db.session.query(PayEra).filter(
+        PayEra.user_id == user_id,
+        PayEra.effective_from == earliest.effective_from,
+    ).update(
+        {"effective_from": phase, **_COLUMNS_OF[type(cadence)](phase, cadence)},
+        synchronize_session=False,
+    )
 
 
 def eras_describing(

@@ -155,8 +155,8 @@ def _append_periods(num_periods):
 def _record_periods(door, num_periods, added):
     """Record *num_periods* paychecks through *door*, populate them, commit.
 
-    **The one body behind every door that ADDS paychecks without stating a
-    rhythm** -- the continue path (:func:`_append_periods`) and "Add earlier
+    **The one body behind every settings-page door that ADDS paychecks
+    without stating a rhythm** -- the continue path (:func:`_append_periods`) and "Add earlier
     paychecks" (plan step ``pay_calendar:C18-b``) -- so the order below and
     the rollback that guards it are written once rather than per door.
 
@@ -632,7 +632,7 @@ def history():
         )
     except ValidationError as exc:
         # Nothing is staged before the refusal -- the setter validates ahead of
-        # its one assignment -- so this needs no rollback, unlike the four
+        # its one assignment -- so this needs no rollback, unlike the
         # structural doors above it.
         flash(str(exc), "danger")
         return _pay_periods_redirect()
