@@ -305,16 +305,19 @@ def _bind_extensions(app):
     helpers beside it already are, so the factory reads as a list of what an
     application HAS rather than as the wiring of each.
 
-    **The boundary's position in this function decides nothing, and saying so
-    is the correction to what this paragraph used to claim.** It registered no
-    before-request hook at plan step balance:X-i3's correction: the request's
-    kind is decided by a ``request_started`` receiver, which Flask sends before
-    it runs ANY before-request hook, so no registration order here can put a
-    statement in front of it. The paragraph this replaces argued the opposite
-    -- that the position "decides only which hook opens the request's first
-    transaction" -- and that sentence is exactly what the correction refutes,
-    because that first transaction was the one running outside the render's own
-    snapshot.
+    **The boundary's position in this function decides ONE thing, and it is
+    not the request's kind.** The kind is decided by a ``request_started``
+    receiver, which Flask sends before it runs ANY before-request hook, so no
+    registration order here can put a statement in front of it (the paragraph
+    this once replaced argued the opposite, and plan step balance:X-i3's
+    correction refuted it). What the position DOES decide, since plan step
+    balance:X-bn, is that the boundary's one before-request hook -- the one
+    that takes a signed-in request's owner lock -- is registered after
+    ``csrf`` and ``limiter``'s, so Flask runs it after the form-token check and
+    the app-wide rate limit, and a request either one refuses never waits for
+    that lock or holds it (ruling R-CC122). Moving the call above
+    ``csrf.init_app`` would undo that silently;
+    ``tests/test_routes/test_xbn_sign_in_lock.py`` fails if it moves.
 
     ``setup_logging``'s hook still RESOLVES the acting user and hands it to
     :func:`app.db_transaction.bind_request_actor`, which tells the transaction

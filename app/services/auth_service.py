@@ -381,12 +381,39 @@ _DUMMY_PASSWORD_HASH = bcrypt.hashpw(
 ).decode("utf-8")
 
 
-def authenticate(email, password):
-    """Authenticate a user by email and password, enforcing account lockout.
+def find_sign_in_user(email):
+    """Return the user who signs in with *email*, or ``None``: sign-in's read before its lock.
+
+    The first half of sign-in, split from :func:`authenticate` at plan step
+    ``balance:X-bn`` (ruling **R-CC121**, "Lock, then check"): the route finds
+    the account here, takes that account's owner lock
+    (:func:`app.db_transaction.bind_sign_in_owner`), and only then calls
+    :func:`authenticate`, whose reads of the lockout columns and the password
+    hash happen under the lock.  One service call doing both could not put the
+    lock between them, and this layer takes no lock itself (the lock's home is
+    :mod:`app.db_transaction`).
+
+    Args:
+        email: The address typed at the login form.
+
+    Returns:
+        The matching :class:`~app.models.user.User`, or ``None`` when no
+        account has that address.
+    """
+    return db.session.query(User).filter_by(email=email).first()
+
+
+def authenticate(user, password):
+    """Check *password* for *user*, enforcing account lockout.
+
+    *user* is what :func:`find_sign_in_user` returned, and the caller has
+    taken its owner lock in between (ruling **R-CC121**), so the lockout
+    columns read below and the counter this writes cannot interleave with
+    another sign-in's or a signed-in door's write of the same row.
 
     Lockout flow (audit finding F-033 / commit C-11):
 
-      * If no user matches ``email`` -- run one throwaway bcrypt
+      * If *user* is ``None`` (no account has the address) -- run one throwaway bcrypt
         verification against ``_DUMMY_PASSWORD_HASH`` (timing
         equalization, deep-hunt #27) so this branch costs the same as a
         wrong-password attempt, then raise ``AuthError`` with the same
@@ -426,18 +453,17 @@ def authenticate(email, password):
     nothing.
 
     Args:
-        email:    The user's email address.
+        user:     The account :func:`find_sign_in_user` found, or ``None``.
         password: The plaintext password.
 
     Returns:
         The :class:`~app.models.user.User` object on successful auth.
 
     Raises:
-        AuthError: If the email is not found, the account is in an
+        AuthError: If no account was found, the account is in an
             active lockout window, the password is wrong, or the
             account is disabled.
     """
-    user = db.session.query(User).filter_by(email=email).first()
     if user is None:
         # Timing equalization (deep-hunt #27): pay the same bcrypt cost as
         # the wrong-password branch below so the no-user response is not
