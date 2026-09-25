@@ -55,6 +55,7 @@ from app.services.transfer_legs import key_order
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
+    DamagedTransfer,
     OutstandingGroup,
     ReconcileSubmission,
     OutstandingPurchase,
@@ -273,6 +274,7 @@ def _tally(
 
 def _summarise(
     groups: "tuple[OutstandingGroup, ...]",
+    damaged: "tuple[DamagedTransfer, ...]",
 ) -> OutstandingSet:
     """Reduce the assembled blocks into the set the boundary publishes.
 
@@ -291,6 +293,8 @@ def _summarise(
     Args:
         groups: The blocks, ordered and sectioned -- the value the set will
             publish, so nothing here can tally a set the caller does not ship.
+        damaged: The transfers the transfer arm could not offer (ruling
+            **R-BAL148**), published beside the tallies and counted in none.
 
     Returns:
         The :class:`~app.services.reconcile_service.OutstandingSet`.
@@ -315,6 +319,7 @@ def _summarise(
         payment_total=payment_total,
         deposit_count=deposit_count,
         deposit_total=deposit_total,
+        damaged=damaged,
     )
 
 
@@ -449,10 +454,14 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
         for row_id in parents
     ]
     # The transfer arm's blocks are whole already -- childless, headed by
-    # their own leg -- and keyed by a pair no row id can equal.
-    groups.extend(_transfers.outstanding_transfers(statement, basis))
+    # their own leg -- and keyed by a pair no row id can equal.  What it
+    # could not offer comes back beside them (ruling R-BAL148).
+    transfer_blocks, damaged = _transfers.outstanding_transfers(
+        statement, basis,
+    )
+    groups.extend(transfer_blocks)
     groups.sort(key=_block_order)
-    return _summarise(_sectioned(groups))
+    return _summarise(_sectioned(groups), tuple(damaged))
 
 
 def record_reconciliation(submission: ReconcileSubmission) -> int:

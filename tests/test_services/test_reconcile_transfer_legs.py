@@ -14,7 +14,8 @@ changed and what it declared:
   overwriting it;
 * the loader's scope, and its two drift directions (the PARENT decides);
 * the transfer block's heading is the leg's label from the endpoints' current
-  names (declared), and a corrupt shadow pair refuses the panel (declared);
+  names (declared), and a transfer whose shadow pair is broken is named in a
+  warning and not offered while the rest is listed (ruling **R-BAL148**);
 * the records predicate kept its body, dead shadows included;
 * a carry-forward transfer plan is labelled by its FROM side, in transfer-id
   order (finding **BAL-546**, declared).
@@ -401,30 +402,84 @@ class TestTheBlockReadsTheLeg:
                 "Transfer to Savings"
             ), "the control: the shadow's stored copy did not follow"
 
-    def test_a_corrupt_pair_refuses_the_panel_rather_than_hiding_the_transfer(
+    def test_a_damaged_transfer_is_named_not_offered_and_the_rest_is_listed(
         self, app, db, seed_user, seed_periods,
     ):
-        """DECLARED: a transfer missing a live shadow cannot be priced.
+        """Ruling R-BAL148: a broken shadow pair is WARNED about, never offered.
 
         Transfer Invariant 1 broken around the service (no door writes it;
-        integrity check DC-12 reports it).  The shadow scope this replaced
-        skipped a transfer whose shadow HERE was deleted and offered one whose
-        OTHER shadow was, refusing only at the tick; the leg is offered off the
-        parent, and pricing it asks the transfer service's verified pair,
-        which refuses -- the same refusal the settle raises.
+        integrity check DC-12 reports it).  The leg price asks the verified
+        pair and refuses; the panel catches that one refusal, lists the bill
+        beside it as normal, and names the transfer by label, figure and day.
+        As first built the refusal propagated -- a server error on the account
+        page that builds this panel inline.  A tick of it still refuses at the
+        settle, which the route renders as the panel's designed refusal.
         """
         with app.app_context():
+            bill = _bill(seed_user, seed_periods[0])
             savings = _savings(seed_user)
             transfer = create_transfer(
                 seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0],
+                seed_periods[0], amount=Decimal("500.00"),
             )
             db.session.commit()
             _shadow_on(transfer, savings).is_deleted = True
             db.session.commit()
 
-            with pytest.raises(ValidationError, match=str(transfer.id)):
-                reconcile_service.outstanding_set(_reconciled(seed_user))
+            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+
+            assert {group.key for group in offered.groups} == {bill.id}
+            (damaged,) = offered.damaged
+            assert damaged.label == "Transfer to Savings"
+            assert damaged.amount == Decimal("500.00")
+            assert damaged.attributed_on == seed_periods[0].start_date
+            assert offered.payment_count == 1, "the damaged transfer is counted"
+            with pytest.raises(ValidationError):
+                _settle(seed_user, transfer_ids=[transfer.id])
+
+    def test_the_panel_prints_the_warning_and_no_tick_for_it(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Both doors that build the panel answer 200 and print the warning.
+
+        The true-up (whose response builds the prompt after its write), the
+        cash detail page (which builds the panel inline), and the panel's own
+        fragment.  Each was a server error while the pair's refusal
+        propagated.
+        """
+        with app.app_context():
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("500.00"),
+            )
+            db.session.commit()
+            _shadow_on(transfer, savings).is_deleted = True
+            db.session.commit()
+            account_id = seed_user["account"].id
+            transfer_id = transfer.id
+
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up",
+            data={
+                "anchor_balance": "4537.66",
+                "observed_on": _OBSERVED_ON.isoformat(),
+            },
+        )
+        assert response.status_code == 200, response.data
+        warning = (
+            "Transfer to Savings, $500.00, Jan 2 is damaged and can't be "
+            "reconciled here."
+        )
+        page = auth_client.get(f"/accounts/{account_id}/details")
+        assert page.status_code == 200, page.data
+        assert warning in page.data.decode()
+        response = auth_client.get(f"/accounts/{account_id}/reconcile")
+        assert response.status_code == 200, response.data
+        body = response.data.decode()
+        assert warning in body, body
+        assert f'name="transfer_ids" value="{transfer_id}"' not in body
+        assert "has been matched to your bank" not in body
 
 
 class TestTheRecordsPredicateKeptItsBody:
