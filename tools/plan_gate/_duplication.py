@@ -42,7 +42,8 @@ Scanning notes, each carrying a false positive it prevents:
    statements, not a chain.
 3. **Double-quoted spans are blanked.**  ``conventions.md`` must quote the
    wording it grades -- rule 3 cites "112 steps, 96 open" as the stale text it
-   caught -- and a rule quoting a defect is not committing it.
+   caught -- and a rule quoting a defect is not committing it.  A span never
+   leaves its table row; :data:`_ROW_QUOTED_RX` says why.
 4. **A chain may not cross a sentence boundary.**  Two steps named in
    consecutive sentences are two claims; the ordering ones observed all sit in
    one sentence, however long the parentheticals get.
@@ -50,6 +51,7 @@ Scanning notes, each carrying a false positive it prevents:
 from __future__ import annotations
 
 import re
+from itertools import groupby
 from pathlib import Path
 
 import _registry as registry
@@ -91,18 +93,34 @@ _CONNECTIVE_RX = re.compile(r"(?:\bthen\b|->|→|\bfollowed by\b)", re.IGNORECAS
 #: prose, so it is deliberately conservative.
 _SENTENCE_BREAK_RX = re.compile(r"[.!?]\s+(?=[A-Z*`])")
 
-#: A double-quoted span, blanked before scanning.  Straight and curly quotes
-#: both appear in the corpus.
+#: A double-quoted span in PROSE, blanked before scanning.  Straight and curly
+#: quotes both appear in the corpus.
 #:
-#: **It spans NEWLINES, and that is a fix rather than a convenience.**  These
-#: documents are hard-wrapped at 100 columns, so the wrap point falls wherever
-#: the prose puts it: ``rumdl fmt`` moved one live citation to read ``read "The
-#: \\n ledger stands at 166 rows"``, the quotes stopped pairing on one line, and
-#: the count arm reported the rules file for a count it was CITING.  A
-#: line-bounded span makes the exemption depend on where a formatter wrapped.
-#: The length bound keeps one unmatched quote from swallowing the rest of a
-#: document and blanking real claims with it.
+#: **It spans NEWLINES, and that is a fix rather than a convenience.**  Most of
+#: these documents are hard-wrapped at 100 columns, so the wrap point falls
+#: wherever the prose puts it: ``rumdl fmt`` moved one live citation to read
+#: ``read "The \\n ledger stands at 166 rows"``, the quotes stopped pairing on
+#: one line, and the count arm reported the rules file for a count it was
+#: CITING.  A line-bounded span makes the exemption depend on where a
+#: formatter wrapped.  The length bound keeps one unmatched quote from
+#: swallowing the rest of a document and blanking real claims with it.
 _QUOTED_RX = re.compile(r"\"[^\"]{0,400}\"|“[^”]{0,400}”")
+
+#: A double-quoted span in a TABLE ROW, which :func:`_scannable` blanks on its
+#: own: **a span NEVER crosses a table-row boundary.**  A markdown row is one
+#: line however long, so a pair on it needs no length bound and may not cross
+#: a newline, and a mark that pairs with nothing on its row blanks nothing.
+#: Since ``balance:R-BAL136`` a ruling row quotes the developer's question and
+#: answer verbatim, often past the prose bound, and one pass of
+#: :data:`_QUOTED_RX` over the whole document paired such a quote's CLOSING
+#: mark with the next quote along, in its own row or the next: measured on
+#: 2026-09-25 at ``ee76c0b9``, 48 rows of ``rulings.md`` had lost their
+#: leading pipe and were read as prose, up to 21 in a row folded into one
+#: paragraph, with the quoted words left for the arms to read.  The row is
+#: isolated rather than guarded by a lookahead that refuses to ENTER one,
+#: because that still let an unmatched quote in a table's LAST row run out
+#: into the prose below and hide a claim there.
+_ROW_QUOTED_RX = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”")
 
 #: The registry self-count shapes rule 3 grades, as they would read in a
 #: document that does NOT own them.  Each was observed in the live corpus or is
@@ -175,28 +193,68 @@ def _name(path: Path) -> str:
         return path.name
 
 
-def _scannable(text: str) -> str:
-    """Return *text* with fences and quoted spans blanked, lengths preserved.
+def _is_table_row(line: str) -> bool:
+    """Return whether *line* is a markdown table row.
 
-    Blanking rather than deleting keeps every offset valid, so a match's
-    position still points into the original document.
+    One predicate for :func:`_scannable` and :func:`_units`, so a line the
+    blanker isolated as a row is a line the splitter cuts into cells: a row
+    blanked as prose could lose its pipes to a quote from the next line, and
+    :func:`_units` would then fold it into a paragraph.  The two apply it on
+    either side of the blanking, which only turns characters into spaces, so
+    a row it isolated still opens with its pipe when :func:`_units` reads it.
 
-    **NEWLINES inside a blanked span survive.**  A quoted citation may now span
-    a wrapped line, and replacing its newline with a space would weld two
+    Args:
+        line: One line of a document.
+
+    Returns:
+        ``True`` when the line opens with a pipe, leading whitespace aside.
+    """
+    return line.lstrip().startswith("|")
+
+
+def _blank_span(match: re.Match[str]) -> str:
+    """Return *match*'s text with every character but a newline made a space.
+
+    **NEWLINES inside a blanked span survive.**  A quoted citation may span a
+    wrapped line, and replacing its newline with a space would weld two
     paragraphs into one -- which is what :func:`_units` splits on, so the arms
     would then chain step ids across a paragraph break that a reader can see.
+
+    Args:
+        match: One quoted span.
+
+    Returns:
+        A string of the same length and line structure, holding no text.
+    """
+    return "".join("\n" if c == "\n" else " " for c in match.group(0))
+
+
+def _scannable(text: str) -> str:
+    """Return *text* with fenced lines emptied and quoted spans blanked.
+
+    Blanking a quoted span rather than deleting it keeps every other word on
+    its own line and at its own column.
+
+    **Each table row is blanked ALONE, by :data:`_ROW_QUOTED_RX`, and each run
+    of prose lines between rows as one block, by :data:`_QUOTED_RX`**, so no
+    quoted span can begin in one and end in another; the row pattern's comment
+    says why that has to be structural.
 
     Args:
         text: The whole document.
 
     Returns:
-        The document with fenced and quoted regions replaced by spaces,
-        line structure intact.
+        One line per line of ``text.splitlines()``: a fenced line emptied, and
+        a quoted span replaced by spaces of its own length.
     """
-    fenced = _blank_fenced_regions(text)
-    return _QUOTED_RX.sub(
-        lambda m: "".join("\n" if c == "\n" else " " for c in m.group(0)), fenced,
-    )
+    blocks: list[str] = []
+    lines = _blank_fenced_regions(text).split("\n")
+    for is_row, run in groupby(lines, key=_is_table_row):
+        if is_row:
+            blocks.extend(_ROW_QUOTED_RX.sub(_blank_span, row) for row in run)
+        else:
+            blocks.append(_QUOTED_RX.sub(_blank_span, "\n".join(run)))
+    return "\n".join(blocks)
 
 
 def _units(text: str) -> list[str]:
@@ -216,7 +274,7 @@ def _units(text: str) -> list[str]:
     units: list[str] = []
     paragraph: list[str] = []
     for line in text.splitlines():
-        if line.lstrip().startswith("|"):
+        if _is_table_row(line):
             if paragraph:
                 units.append(" ".join(paragraph))
                 paragraph = []
