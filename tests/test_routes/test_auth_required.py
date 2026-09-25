@@ -438,11 +438,21 @@ class TestWhereTheGateSitsInTheRequest:
         only for an authenticated session) and is pinned so the order is one
         thing rather than two.
 
+        **The owner's write lock sits between the limiter and the gate**
+        (plan step ``balance:X-bn``, ruling **R-CC122**: after the form-token
+        check and the app-wide rate limit, so a request either one refuses never
+        waits for the lock or holds it).  Its place before the gate is not
+        immaterial, and the developer approved this list knowing it (rule 5,
+        2026-09-25): taking the lock expires the signed-in user's row, so the
+        gate's ``is_authenticated`` -- Flask-Login's ``is_active`` -- is read
+        again AFTER the wait, and a companion deactivated while their save
+        waited is turned away rather than saving.
+
         **Built with the limiter ENABLED at construction**, because Flask-
         Limiter registers its hook only then and ``TestConfig`` switches it
         off -- so the fixture app carries no limiter hook to order against,
-        and a test over it would pin three of the four positions while
-        reading as if it pinned all four.  Enabling it on the config class
+        and a test over it would pin all but the limiter's position while
+        reading as if it pinned every one.  Enabling it on the config class
         before ``create_app`` is what production does; enabling it afterwards
         with a second ``init_app`` (the rate-limiter tests' pattern) appends
         the hook AFTER the gate and would pin the wrong order.  Torn down the
@@ -459,6 +469,7 @@ class TestWhereTheGateSitsInTheRequest:
                 "_attach_request_id",
                 "csrf_protect",
                 "_check_request_limit",
+                "_take_the_request_owner_s_lock",
                 "_require_login",
                 "_refresh_last_activity",
             ], names

@@ -449,7 +449,7 @@ def _open_this_request_s_own_transaction(sender: Flask, **extra) -> None:
 
 
 def register_transaction_boundary(app: Flask) -> None:
-    """Give every query request a transaction of its OWN, opened AND closed.
+    """Give every query request a transaction of its OWN, and end every dispatched request's.
 
     See the module docstring for why this exists and what it measured.  Two
     halves rather than one, and the closing half is not symmetry for its own
@@ -458,9 +458,11 @@ def register_transaction_boundary(app: Flask) -> None:
     suite ran without it -- 7,009 errors, every one of them
     ``ReadOnlySqlTransaction`` raised in a test body that had merely issued a
     request earlier and then tried to write.  Under the test client the app
-    context is shared, so the session survives the request; releasing the
-    snapshot where the request ends is what makes the boundary a boundary
-    rather than a starting gun.
+    context is shared, so the session survives the request; ending the
+    transaction where the request ends is what makes the boundary a boundary
+    rather than a starting gun.  Since ruling **R-CC123** the closing half
+    ends a COMMAND's transaction too, because the owner's write lock rides it
+    (the teardown below carries the measurement).
 
     In production the opening half is a no-op on every request -- nothing is
     open when ``request_started`` fires, so it returns before issuing a
@@ -487,15 +489,38 @@ def register_transaction_boundary(app: Flask) -> None:
 
     @app.teardown_request
     def _close_this_request_s_own_transaction(exc) -> None:
-        """Release the query's snapshot and retire the request's mode.
+        """End the request's transaction and retire the request's mode.
 
-        Rolls back rather than commits, and there is nothing to choose between
-        them: the transaction is ``READ ONLY``, so it holds no work either way.
+        **Both kinds of request, for two different reasons** (ruling
+        **R-CC123**).  A QUERY's transaction is ``READ ONLY``, so it holds no
+        work and the rollback only releases its snapshot.  A COMMAND's route
+        has committed its work or not by the time this runs, so the rollback
+        discards only what the route left uncommitted -- which is exactly what
+        Flask-SQLAlchemy's app-context teardown (``session.remove()``)
+        discards a moment later in production.  So neither arm changes
+        anything in production; the command arm exists only for test fidelity.
+        Under the test client the app context is shared and outlives the
+        request, and without that arm a command's open transaction outlived it
+        too -- holding the owner's write lock (plan step ``balance:X-bn``): a
+        correct-password sign-in commits nothing, so the next save a test made
+        for that owner on a second session waited on a lock nothing would
+        release (486 tests in the full suite, measured 2026-09-25: 481 timed
+        out on the lock and 5 two-thread race tests hung behind it).  Two more
+        things follow under the test client: a save route that forgets to
+        commit now fails a test that checks the saved row, as production would
+        lose the save; and a save request that saves nothing drops the test
+        body's own uncommitted setup with it (no test relied on that when this
+        was written).  *Until R-CC123 this said a command's transaction
+        belonged to its route and that ending it here "would decide a
+        mutation's outcome from a lifecycle hook"; by teardown the route has
+        already decided.*
 
-        Only a QUERY's transaction is ended here.  A command's belongs to its
-        route -- which commits it, or does not and lets the app-context
-        teardown roll it back -- and reaching into that from here would decide
-        a mutation's outcome from a lifecycle hook.
+        **A request refused on ``request_started`` is left alone**: it never
+        got a mode, so nothing is ended, and the uncommitted writes the refusal
+        declined to discard are still there when the caller looks.  **Planned
+        step ``balance:X-cr`` deletes the command arm** (R-CC123 added that to
+        its scope): once each test request runs in an app context of its own,
+        that context's teardown ends the transaction, as in production.
 
         **The mode is retired either way, and the ACTOR and the OWNER with
         it**, and under the test client that is the load-bearing half: ``flask.g`` lives on the
@@ -515,12 +540,18 @@ def register_transaction_boundary(app: Flask) -> None:
                 Unused: the disposition is the same either way.
         """
         # Pylint: ``unused-argument`` -- ``exc`` is Flask's ``teardown_request``
-        # signature; a read-only transaction is released identically whether
-        # the request succeeded or raised.
+        # signature; the transaction is ended identically whether the request
+        # succeeded or raised, as production's app-context teardown ends it.
         # pylint: disable=unused-argument
-        if _is_query_request():
-            db.session.rollback()
-        if has_app_context():
+        if not has_app_context():
+            return
+        try:
+            if getattr(g, _MODE_KEY, None) is not None:
+                db.session.rollback()
+        finally:
+            # Retired even when the rollback raises (a dropped connection):
+            # under the shared test ``g`` a mode, actor or owner left behind
+            # would govern every later transaction of the test body.
             g.pop(_MODE_KEY, None)
             g.pop(_ACTOR_KEY, None)
             g.pop(_PENDING_OWNER_KEY, None)
@@ -736,7 +767,7 @@ def write_transaction() -> Iterator[None]:
         # The mode is restored BEFORE the rollback, not after: a rollback can
         # itself raise (a dropped connection, a failover), and a mode left on
         # COMMAND would leave the rest of the render writable and
-        # un-snapshotted, with the teardown declining to end its transaction.
+        # un-snapshotted.
         setattr(g, _MODE_KEY, _QUERY)
         if not committed:
             session.rollback()
