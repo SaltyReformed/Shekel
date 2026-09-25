@@ -331,7 +331,10 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     into the :class:`~app.services.reconcile_service.OutstandingSet` the
     boundary publishes.  THREE arms answer: purchases, the source rows
     themselves (plan step X-f2-c2) and transfer legs (plan step X-f2-c3,
-    offered as LEGS since leaf ``balance:X-bi-6-4c-2``).
+    offered as LEGS since leaf ``balance:X-bi-6-4c-2``).  The source-row arm
+    answers for TWO scopes since plan step ``credit_card:CC-5-4b``: the rows
+    on this account, and the rows planned on another whose kept payment is on
+    this one (the "Paid from this account" section, ruling **R-CC44**).
 
     **The two ROW arms are unioned on the PARENT's id**, which is why each
     keys its offers on it: an envelope with outstanding purchases AND an
@@ -460,6 +463,12 @@ def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
         statement, basis,
     )
     groups.extend(transfer_blocks)
+    # The "Paid from this account" blocks are whole too -- childless, headed
+    # by their own label (plan step credit_card:CC-5-4b).  Their keys are row
+    # ids, and none can equal a parent above: this scope takes rows planned
+    # on ANOTHER account and holding no purchase, and every parent above is a
+    # row ON this account or holds a purchase on it.
+    groups.extend(_transactions.outstanding_settlements(statement, basis))
     groups.sort(key=_block_order)
     return _summarise(_sectioned(groups), tuple(damaged))
 
@@ -507,14 +516,20 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     arbitrary part: the order is written down here so a reader learns which
     half is which.
 
-    **Each settle arm is handed its OWN form field's ids** (ruling
+    **Each settle arm is handed its OWN TABLE's form field** (ruling
     **R-BAL145**, leaf ``balance:X-bi-6-4c-2``): the rows' ``transaction_ids``
     and the transfers' ``transfer_ids``, with their amount boxes, and each arm
     re-scopes what it is handed.  They shared ONE ``transaction_ids`` set until
     that leaf, when a transfer's tick carried its shadow's row id and the two
     scopes partitioned ``budget.transactions``; a transfer's tick carries the
     TRANSFER's id now, which can equal a row's, so one field could not say
-    which a posted number meant.
+    which a posted number meant.  **The rows' two scopes both read
+    ``transaction_ids``** (ruling **R-CC116**, plan step
+    ``credit_card:CC-5-4b``): the number names a row in both, and they
+    partition on the row's account, so each posted id loads in at most one
+    of them -- and the one that settles it first leaves it Projected in
+    neither.  The second runs directly after the first because they read one
+    field; nothing else about its position matters.
 
     **All three run in the caller's transaction and NONE commits.**  A
     statement is one act: four purchases, their envelope's close and the
@@ -551,6 +566,10 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         for arm, tick_ids, corrections in (
             (
                 _transactions.ARM,
+                submission.transaction_ids, submission.corrections,
+            ),
+            (
+                _transactions.SETTLEMENT_ARM,
                 submission.transaction_ids, submission.corrections,
             ),
             (
