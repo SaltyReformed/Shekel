@@ -434,6 +434,86 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
             ]
             assert _stored_eras(user_id) == [(date(2025, 12, 5), None, None)]
 
+    @pytest.mark.parametrize(
+        ("shift", "recorded"),
+        [(PRIOR, date(2030, 11, 27)), (NEXT, date(2030, 11, 29))],
+    )
+    def test_the_phase_moves_to_the_NOMINAL_day_of_a_displaced_payday(
+        self, app, db, bare_user, shift, recorded,
+    ):
+        """Across Thanksgiving the phase is 11-28, never the cash day recorded.
+
+        One fortnight below 2030-12-12 is 2030-11-28, Thanksgiving, so the
+        paycheck is RECORDED on the displaced day while the era's phase moves
+        to the grid day it was paid for.  Phased on the cash day instead, the
+        grid would shift a day and every planned payday with it -- the
+        mutation review 3 of C18-b ran survived every test until this one.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2030, 12, 12), 4, Rhythm(FixedDays(14), shift))
+            latest = _paydays(user_id)[-1]
+            plan_before = list(zip(range(30), planned_paydays_after(
+                schedule_for(user_id).eras, latest,
+            )))
+
+            pay_period_admin.add_earlier_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert _paydays(user_id)[0] == recorded
+            assert _stored_eras(user_id) == [(date(2030, 11, 28), None, None)]
+            assert list(zip(range(30), planned_paydays_after(
+                schedule_for(user_id).eras, latest,
+            ))) == plan_before
+
+    @pytest.mark.parametrize(
+        ("count", "first", "phase"),
+        [
+            (1, date(2026, 11, 12), date(2026, 11, 12)),
+            (2, date(2026, 10, 29), date(2026, 10, 29)),
+            (3, date(2026, 10, 15), date(2026, 10, 15)),
+        ],
+    )
+    def test_the_backfilled_era_a_cadence_below_the_record(
+        self, app, db, bare_user, count, first, phase,
+    ):
+        """The one era phased BELOW the record: adding 1 keeps its phase.
+
+        The C17-a migration phased an owner's one era up to a cadence below
+        their opening payday.  Here: every 14 days under ``prior`` from
+        2026-11-12, with the record opening 11-25 (11-26, Thanksgiving,
+        paid the day before) and 12-10.  Adding 1 records 11-12 and the
+        phase stays where it is -- the "equal" edge of "at or below";
+        adding more moves it down.  No door writes this shape, so the case
+        writes the rows itself.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_schedule_service.ensure_schedule_row(user_id)
+            prior_id = ref_cache.business_day_shift_id(PRIOR)
+            _db.session.add(PayEra(
+                user_id=user_id, effective_from=date(2026, 11, 12),
+                shift_id=prior_id, cadence_days=14,
+            ))
+            _db.session.add_all([
+                PayPeriod(user_id=user_id, start_date=day)
+                for day in (date(2026, 11, 25), date(2026, 12, 10))
+            ])
+            _db.session.commit()
+            plan_before = list(zip(range(30), planned_paydays_after(
+                schedule_for(user_id).eras, date(2026, 12, 10),
+            )))
+
+            pay_period_admin.add_earlier_pay_periods(user_id, count)
+            db.session.commit()
+
+            assert _paydays(user_id)[0] == first
+            assert _stored_eras(user_id) == [(phase, None, None)]
+            assert list(zip(range(30), planned_paydays_after(
+                schedule_for(user_id).eras, date(2026, 12, 10),
+            ))) == plan_before
+            calendar_for(user_id)
+
     def test_a_schedule_loaded_before_the_door_reads_the_moved_phase(
         self, app, db, bare_user,
     ):
@@ -457,14 +537,34 @@ class TestTheDoorRecordsBelowAndMovesThePhase:
 
 
 class TestThePhaseMovesDownOnly:
-    """``pay_era_write.rephase_earliest_era`` refuses any move but down.
+    """``pay_era_write.rephase_earliest_era`` moves the phase DOWN its own grid.
 
-    Down is what makes the grid the one bound it asks: the earliest era
-    moved down cannot reach a later era's day, pass it, or be left paying
-    nothing.  A move UP could do all three, and the writer asks none of
-    them, so it refuses the move rather than claiming a bound it does not
-    hold (review 2 of C18-b).
+    Down: the earliest era moved down cannot reach a later era's day, pass
+    it, or be left paying nothing; a move UP could do all three, and the
+    writer asks none of them (review 2 of C18-b).  Its own grid: a phase off
+    it moves every planned payday, and for a fixed-days era only this
+    refusal can see that (review 3 of C18-b).
     """
+
+    def test_a_phase_off_the_eras_grid_is_refused_and_writes_nothing(
+        self, app, db, bare_user,
+    ):
+        """Four days below 2026-01-02 on a fortnight: below, but off the grid."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+            earliest = schedule_for(user_id).eras[0]
+
+            with pytest.raises(ValidationError, match="not on the era's grid"):
+                pay_era_write.rephase_earliest_era(
+                    user_id,
+                    pay_era_write.EarliestRephase(
+                        earliest=earliest, phase=date(2025, 12, 29),
+                    ),
+                )
+
+            _unchanged(user_id, paydays, eras)
 
     def test_a_move_up_is_refused_and_writes_nothing(self, app, db, bare_user):
         """One step up, still on the grid: refused before the UPDATE."""

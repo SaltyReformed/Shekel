@@ -164,9 +164,10 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
     first element would not be the day the owner stated.  :func:`mint_era`
     asks it again immediately before the write, as it asks the cadence
     bound and the pairing, so no door can persist the state -- and
-    :func:`rephase_earliest_era` asks it of the phase it moves, the one
-    bound a move DOWN can break, which is the only move that function
-    makes.  The CHECKs
+    :func:`rephase_earliest_era` asks it of the phase it moves, after
+    refusing any phase that is not a day of the earliest era's own grid at
+    or below its current one (a check this function cannot make: a
+    fixed-days grid anchored at ANY day passes through it).  The CHECKs
     see only half of it: a meant day ABOVE the anchor's would be written
     as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
     the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
@@ -198,6 +199,34 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
             f"  Enter one of those, or state the rhythm that pays on "
             f"{effective_from.isoformat()}."
         )
+
+
+def _on_grid(era: Era, day: date) -> bool:
+    """Return whether *day* is a NOMINAL day on *era*'s own grid.
+
+    The grid's own round trip: the grid day
+    :func:`~app.services.pay_calendar.cadence_steps_to` names for *day* is
+    *day* itself.  ONE spelling for the two questions this module asks of an
+    era's grid -- whether a batch's first payday continues the era covering
+    it (:func:`era_to_mint`, whose docstring carries why the test is the
+    round trip rather than a modulo) and whether a phase move keeps the
+    earliest era on the grid it had (:func:`rephase_earliest_era`).
+    :func:`reject_phase_off_grid` is a different question -- whether a grid
+    anchored AT a day passes through it, which a fixed-days grid does for
+    every day -- and cannot stand in for this one.
+
+    Args:
+        era: The era whose grid is asked.
+        day: A nominal day.
+
+    Returns:
+        ``True`` when *era*'s grid passes through *day*.
+    """
+    cadence = era.rhythm.cadence
+    return day == nominal_payday(
+        era.effective_from, cadence,
+        cadence_steps_to(era.effective_from, cadence, day),
+    )
 
 
 def mint_era(user_id: int, era: Era) -> PayEra:
@@ -343,13 +372,20 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     written from is the stored one the door read (``rephase.earliest``), so
     ``cadence_days`` is written back with the value the row already holds.
 
-    **It moves the phase DOWN only, and refuses anything else, because that
-    is what makes the grid the one bound to ask** (review 2 of C18-b).  The
-    earliest era moved down cannot reach a later era's day
+    **It moves the phase DOWN to another day of the SAME grid, and refuses
+    anything else** (reviews 2 and 3 of C18-b).  DOWN: the earliest era
+    moved down cannot reach a later era's day
     (``uq_pay_eras_user_effective_from``), cannot pass it (the order every
     reader walks), and only gains grid steps before that era's first payday,
-    so it cannot be left paying nothing (ruling **R-PC75**).  A move UP could
-    break all three, and this function asks none of them.
+    so it cannot be left paying nothing (ruling **R-PC75**); a move UP could
+    break all three, and this function asks none of them.  SAME GRID:
+    R-PC105's "every payday it plans is unchanged" holds only for a phase the
+    era's grid already passes through (:func:`_on_grid`).  A phase off it --
+    the earliest new payday's DISPLACED cash day under ``prior`` or ``next``
+    rather than its nominal day -- re-phases the grid and moves every planned
+    payday for good, and :func:`reject_phase_off_grid` cannot see that for a
+    fixed-days era.  The column writer holds both, so neither rests on the
+    caller.
 
     Args:
         user_id: The owning user's id.  They hold at least one era -- the
@@ -358,11 +394,14 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
             (:class:`EarliestRephase`).
 
     Raises:
-        ValidationError: The phase lies ABOVE the era's current one, or off
-            its grid (:func:`reject_phase_off_grid`).  The earlier door hands
-            a grid day at or below the current phase, so it cannot reach
-            either; they are the column writer's own preconditions, asked
-            as :func:`mint_era` asks its own.
+        ValidationError: The phase lies ABOVE the era's current one, is not
+            a day of the era's own grid (:func:`_on_grid`), or is one its
+            columns cannot store as that grid
+            (:func:`reject_phase_off_grid`).  The earlier door hands the
+            nominal grid day of the earliest new payday, at or below the
+            current phase, so it cannot reach any of them; they are the
+            column writer's own preconditions, asked as :func:`mint_era`
+            asks its own.
     """
     earliest, phase = rephase.earliest, rephase.phase
     cadence = earliest.rhythm.cadence
@@ -373,6 +412,13 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
             f"This writer moves the phase down with paydays recorded below "
             f"the record; a move up can collide with a later era, pass it or "
             f"leave it paying nothing, and none of those is asked here."
+        )
+    if not _on_grid(earliest, phase):
+        raise ValidationError(
+            f"user {user_id}'s earliest pay era cannot move from "
+            f"{earliest.effective_from.isoformat()} to {phase.isoformat()}: "
+            f"that day is not on the era's grid, so every payday it plans "
+            f"would move with it."
         )
     reject_phase_off_grid(phase, cadence)
     db.session.query(PayEra).filter(
@@ -508,12 +554,7 @@ def era_to_mint(
     if not eras:
         return Era(effective_from=first_payday, rhythm=rhythm)
     covering = era_covering(eras, first_payday)
-    on_grid = first_payday == nominal_payday(
-        covering.effective_from, covering.rhythm.cadence,
-        cadence_steps_to(
-            covering.effective_from, covering.rhythm.cadence, first_payday,
-        ),
-    )
+    on_grid = _on_grid(covering, first_payday)
     if covering.rhythm == rhythm and on_grid:
         return None
     return Era(effective_from=first_payday, rhythm=rhythm)

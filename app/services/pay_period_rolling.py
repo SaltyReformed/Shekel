@@ -124,8 +124,10 @@ def top_up_rolling_window(user_id, as_of=None):
     # and creates nothing.
     user_write_lock.lock_user_writes(user_id)
     # The schedule is RE-READ under the lock for the same reason the count is
-    # re-taken: it was loaded before the lock, every writer of an era
-    # takes this lock, and the count derives the LAST period's end from the
+    # re-taken: it was loaded before the lock, every writer of an era takes
+    # this lock but the two ledger row P71 records (the first-schedule
+    # generate route and registration, which mint without it), and the
+    # count derives the LAST period's end from the
     # latest era's cadence -- so a stale one moves a period in or out of the
     # answer.  ``reread_schedule`` rather than ``get_schedule``
     # because the identity map would otherwise return the original values;

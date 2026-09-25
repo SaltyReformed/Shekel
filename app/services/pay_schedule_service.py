@@ -30,8 +30,11 @@ writes the schedule row; :mod:`app.services.pay_era_write` writes the eras**
 -- the reader / writer split ``pay_period_service`` / ``pay_period_write``
 already draws for the paydays (plan step C3-b), made for the same reason: an
 era is minted by ``mint_era`` when a batch states a rhythm the era covering
-its first payday does not hold, retired by ``retire_eras`` when a later batch
-supersedes it, and the two refusals both writers ask live HERE, beside the
+its first payday does not hold, has its phase moved down in place by
+``rephase_earliest_era`` when a batch records below the record (plan step
+``pay_calendar:C18-b``), and is retired by ``retire_eras`` when a later batch
+supersedes it.  The two refusals every door that STATES a rhythm asks (the
+cadence bound and the cadence-convention pairing) live HERE, beside the
 column bounds they state.
 
 **:class:`~app.services.pay_rhythm.Rhythm` and :class:`~app.services.pay_rhythm.Era`

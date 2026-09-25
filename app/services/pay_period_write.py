@@ -103,7 +103,7 @@ mints and retires nothing** (:func:`continue_paydays`, plan step
 ``C17-c-2b``): it records the paydays the owner's stored eras already plan,
 so the eras are the plan's description before and after it.  **The EARLIER
 batch states no rhythm either, and moves the earliest era's phase down to
-its first payday** (:func:`prepend_paydays`, ruling **R-PC105**): the same
+its first payday's grid day** (:func:`prepend_paydays`, ruling **R-PC105**): the same
 rhythm on the same grid, the row moved in place rather than minted again (a
 mint would re-judge a rhythm nobody stated), so the record's first payday
 stands for that era's first grid step, as it does for every other door.
@@ -526,8 +526,8 @@ def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
 
     **What it writes beside the paydays is the earliest era's PHASE**
     (ruling **R-PC105**, which narrows R-PC87's "moves nothing" to
-    paychecks).  The producer hands that era back re-phased onto the
-    earliest new payday -- the same rhythm on the same grid, so every payday
+    paychecks).  The producer hands that era back re-phased onto the grid
+    day of the earliest new payday -- the same rhythm on the same grid, so every payday
     it plans is unchanged -- and :func:`_apply` moves the stored row's
     phase in place in the same operation
     (``pay_era_write.rephase_earliest_era``).  In place rather than retired

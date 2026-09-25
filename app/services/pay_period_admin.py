@@ -182,9 +182,10 @@ def add_earlier_pay_periods(user_id, num_periods):
     schedule, and the same shape -- the lock, then one call to the writer's
     door, :func:`~app.services.pay_period_write.prepend_paydays`, which
     records the paydays the owner's earliest rhythm projects just before
-    their first and moves that rhythm's phase down to the earliest of them
-    (ruling **R-PC105**).  It states nothing and retires nothing, so neither
-    gate this module holds for the destructive doors is asked; the new
+    their first and moves that rhythm's phase down to the grid day of the
+    earliest of them (ruling **R-PC105**).  It states nothing and retires
+    nothing, so neither gate the destructive doors consult
+    (:mod:`app.services.pay_period_gates`) is asked; the new
     periods come back EMPTY and the caller populates them (ruling
     **R-R38**), where the books bound (``pay_calendar:C18-a``) generates no
     item into a period that falls before the books of an account the item
