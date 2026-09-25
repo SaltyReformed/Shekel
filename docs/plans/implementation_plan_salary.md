@@ -8,10 +8,9 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-at-1` (`42bb425d`, 2026-09-24) gave the tax law ONE home, in the code** (**R-SAL74**): no app
-door writes it and a release adds each year; `$0.00` and byte-identical on a production clone, it
-closed **N-236** and **SAL-574**. `X-at-4`'s alarms are due before 2026-11-01; `X-av`'s leaves date
-the pay and `S11-c-2` MOVES MONEY. Each archived span's record is a `historical/salary_*` file.
+**`X-at-1` (`42bb425d`, 2026-09-24) gave the tax law ONE home, in the code** (**R-SAL74**), `$0.00`,
+closing **N-236** and **SAL-574**; `X-at-4`'s alarms are due before 2026-11-01 and `S11-c-2` MOVES
+MONEY. Each archived span's record is a `historical/salary_*` file.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -59,7 +58,7 @@ it (**N-395**), and the earnings side has no lines at all, so an employer allowa
 becomes a separate income template that misfiles (**D59**). Two profiles on one template in one
 scenario were priced by whichever `ORDER BY id` returned, until `X-av-1` made that state unstorable
 (**N-294**, closed). A substituted tax year is never shown (**N-235**); a new year's brackets had no
-door until `X-at-1` (**N-236**, closed).
+door in the app; since `X-at-1` a release adds each year (**N-236**, closed).
 
 **The answer.** `project_salary` is run by three readers over the same calendar --
 `income_service.SalaryPricing._net_by_period`, `routes/salary/views.py` and
@@ -248,8 +247,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       (`_metrics._compute_avg_monthly_expenses`) averages at the rhythm it was paid at
       (`pay_calendar.cadence_on`). `$0.00` on production.
 - [ ] **X-at -- the tax law has ONE home, and a year the app lacks is loud** (**R-SAL74**): the
-      DECOMPOSED parent of seven leaves, six cut 2026-09-24 by its design loop and the seventh at
-      `X-at-1`'s tick, ticking with its last. Publishing a new year's law waits on none of them.
+      DECOMPOSED parent of seven leaves, ticking with its last; a new year's law waits on none.
   - [x] **X-at-1** `42bb425d` -- the law's one home, `app/tax_law/`, each year citing its sources,
         read with no query and written by no app door (**R-SAL74**; the tests' law, **R-SAL80**).
         `$0.00`, byte-identical on a production clone; closed **N-236**, **SAL-574**.
@@ -261,11 +259,13 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         state as an explicit `$0.00` entry checked against a primary source (the developer names
         which); the profile form offers only those and refuses another, and the engine refuses a
         state the law lacks or a flat state with no rate. Closes **SAL-575**.
-  - [ ] **X-at-4 -- the three alarms** (**R-SAL74**), which MUST ship before 2026-11-01: ONE pure
-        check (next year complete: federal for every filing status, FICA, every supported state)
-        drives a notice from Nov 1 on the dashboard, the salary cockpit and the Taxes tab, a weekly
-        scheduled workflow failing from Nov 1 on the real clock, and a step in `ci.yml`'s required
-        job failing from Dec 1 that also runs on a registry-only PR.
+  - [ ] **X-at-4 -- the alarms** (**R-SAL74**, **R-SAL86**-**R-SAL88**), which MUST ship before
+        2026-11-01. ONE pure check (NOTICE from Nov 1, REFUSE from Dec 1) counts next year in when
+        it lists every state an earlier year lists, a missing year also naming a state priced on an
+        older one; the law refuses a skipped year. From Nov 1 (display timezone) a banner with no
+        close on every owner page, in the layout, and a failing weekly workflow on the real clock;
+        from Dec 1 the refusal: `ci.yml`'s own `tax-law` job, in every scope and `lint-and-test`'s
+        needs (rule 5), and a `tax-law` job in `docker-publish.yml` its image build needs.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
