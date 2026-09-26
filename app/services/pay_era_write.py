@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app import ref_cache
-from app.exceptions import ValidationError
+from app.exceptions import PayPeriodRemovalRefused, ValidationError
 from app.extensions import db
 from app.models.pay_era import PayEra
 from app.services import pay_schedule_service
@@ -654,7 +654,7 @@ def era_to_move(
         eras as read.
 
     Raises:
-        ValidationError: A later era pays *opening*.
+        PayPeriodRemovalRefused: A later era pays *opening*.
     """
     moved = opening_rephase(eras, opening)
     if moved is None:
@@ -664,7 +664,7 @@ def era_to_move(
             payday for payday in paydays
             if opening_rephase(eras, payday) is not None
         ]
-        raise ValidationError(
+        raise PayPeriodRemovalRefused(
             f"Keep at least {earliest_pays[-1].isoformat()}, your last "
             f"paycheck paid {eras[0].rhythm.cadence.phrase}. Removing it "
             f"would erase that pay rhythm."

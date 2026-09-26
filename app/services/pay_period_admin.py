@@ -84,9 +84,12 @@ render paths, and one clock and one map is the trade.
 """
 
 import logging
-from decimal import Decimal
 
-from app.exceptions import PayPeriodResetBlocked, PayPeriodUnresolved
+from app.exceptions import (
+    PayPeriodRemovalRefused,
+    PayPeriodResetBlocked,
+    PayPeriodUnresolved,
+)
 from app.extensions import db
 from app.services import (
     account_posting_service,
@@ -249,18 +252,21 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
       two re-syncs (:func:`_refile_ledger`) and compares the owner's posted
       totals (``pay_period_locks.posted_totals``): what the re-syncs rebuild
       lands on the kept paychecks, and a total that still moved is refused
-      (``pay_period_gates.reject_moved_ledger``).  The totals it compares
-      against are the ledger AS A RE-SYNC WOULD LEAVE IT before the removal
-      (:func:`_posted_totals_in_step`), so a ledger already out of step does
-      not read as the removal's doing.
+      (``pay_period_gates.reject_moved_ledger``), the ruling's words exactly:
+      refused iff a posted total would change.  *Checkpoint 2 compared
+      against a re-sync's counterfactual "before", run in a rolled-back
+      savepoint; review 2 measured it refusing falsely wherever that re-sync
+      minted a chart row (the key's id moved) and committing a drift repair
+      unrefused, and the ruling covers neither.*
 
     Nothing is populated: a removal records no payday.  Deletion is the
     writer's one bulk ``DELETE``, whose cascade takes the template rows the
     gate let go (with both shadows of a transfer) and the head's journal
     entries.  **R-PC114's refusal arrives after statements** -- the delete
-    and the re-sync it exists to judge -- so it relies on the caller's
-    rollback, which the route performs; every other refusal here is asked
-    before the first one.
+    and the re-sync it exists to judge -- so they run in a SAVEPOINT this
+    door rolls back before it re-raises: the refusal leaves nothing behind
+    whoever called, not only when a route rolls back.  The gate's refusals
+    and R-PC110's are asked before any statement.
 
     Args:
         user_id: The owning user's id.
@@ -275,10 +281,10 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
     Raises:
         PayPeriodUnresolved: The id names no pay period of *user_id*'s --
             "no such period" and "not yours" alike, as at truncate.
-        ValidationError: A paycheck before it holds money or money is dated
-            inside them (**R-PC109**); it is a later era's paycheck
+        PayPeriodRemovalRefused: A paycheck before it holds money or money
+            is dated inside them (**R-PC109**); it is a later era's paycheck
             (**R-PC110**); or removing them changes a posted total the
-            re-syncs do not rebuild (**R-PC114**).  The caller rolls back.
+            re-syncs do not rebuild (**R-PC114**).  Nothing is left behind.
     """
     # The same serialisation as add-earlier: the calendar is read under the
     # lock, so a concurrent add, truncate or reset cannot move the head this
@@ -296,42 +302,21 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
     )
     if not doomed:
         return 0
-    before = _posted_totals_in_step(user_id)
-    removed = pay_period_write.retire_paydays(
-        user_id, {period.period_id for period in doomed},
-    )
-    _refile_ledger(user_id)
-    pay_period_gates.reject_moved_ledger(
-        before, pay_period_locks.posted_totals(user_id),
-    )
-    return removed
-
-
-def _posted_totals_in_step(user_id: int) -> "dict[tuple[int, int], Decimal]":
-    """Return the owner's posted totals as a ledger re-sync would leave them, writing nothing.
-
-    The "before" of **R-PC114**'s comparison.  Read raw, the totals would
-    count against the removal any drift the post-removal re-sync repairs; so
-    the re-sync runs first, inside a SAVEPOINT that is always rolled back.
-    Rolled back rather than kept, and that is measured rather than tidy: a
-    kept re-sync files an old opening in the EARLIEST paycheck -- one about
-    to be deleted -- and the delete then leaves that entry's deferred
-    balanced-journal check (``budget.assert_journal_entry_balanced``) a
-    journal entry with no postings to refuse at COMMIT.
-
-    Args:
-        user_id: The owning user's id.
-
-    Returns:
-        :func:`~app.services.pay_period_locks.posted_totals` over the
-        re-synced ledger.
-    """
+    before = pay_period_locks.posted_totals(user_id)
     savepoint = db.session.begin_nested()
     try:
+        removed = pay_period_write.retire_paydays(
+            user_id, {period.period_id for period in doomed},
+        )
         _refile_ledger(user_id)
-        return pay_period_locks.posted_totals(user_id)
-    finally:
+        pay_period_gates.reject_moved_ledger(
+            before, pay_period_locks.posted_totals(user_id),
+        )
+    except PayPeriodRemovalRefused:
         savepoint.rollback()
+        raise
+    savepoint.commit()
+    return removed
 
 
 def _refile_ledger(user_id: int) -> None:
@@ -342,7 +327,11 @@ def _refile_ledger(user_id: int) -> None:
     true-up entries, then every account's opening and anchor corrections,
     each re-derived from the records they come from (``LoanParams`` and the
     loan's statements, the account's assertions) and filed through
-    ``PayCalendar.filing_period`` on the schedule as it now stands.  Reset
+    ``PayCalendar.filing_period`` on the schedule as it now stands.  The
+    loan half does more than its name says: it also reconciles a loan
+    payment's split corrections and re-dates a settled payment's cash
+    entries (``sync_transfer_postings``, which reaches the paying
+    account's ledger too).  Reset
     needs it because its wipe took them; "Remove earlier paychecks"
     (**R-PC114**) because its delete took the ones the ledger had filed in
     the removed paychecks.

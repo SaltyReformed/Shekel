@@ -64,6 +64,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     account_posting_service,
+    anchor_service,
     loan_posting_service,
     pay_period_admin,
     pay_period_locks,
@@ -639,6 +640,15 @@ def _entries_in(period_ids):
     ).all()
 
 
+def _ledger_ids_of(account):
+    """Return *account*'s ledger accounts, ascending (its own row first)."""
+    return [
+        row[0] for row in _db.session.query(LedgerAccount.id)
+        .filter(LedgerAccount.account_id == account.id)
+        .order_by(LedgerAccount.id)
+    ]
+
+
 def _two_ledger_ids(seed_user):
     """Return two ledger accounts the seeded owner's Checking is paired with.
 
@@ -903,10 +913,9 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             ) == 2
             db.session.commit()
 
+            # The totals carry the case: the opening's re-post is dropped with
+            # the head, and only the re-sync puts its money back.
             assert pay_period_locks.posted_totals(user_id) == totals
-            assert opening in {
-                kind for _id, kind in _entries_in({seed_periods[0].id})
-            }
 
     def test_a_loans_opening_filed_in_an_added_paycheck_goes_back(
         self, app, db, seed_user, seed_periods,
@@ -979,8 +988,10 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
             totals = pay_period_locks.posted_totals(user_id)
 
+            # No rollback here: the door rolls back its own savepoint, and
+            # ``_unchanged`` COMMITS what is left, so a staged delete would
+            # show.
             message = _held(user_id, seed_periods[0])
-            db.session.rollback()
 
             assert message == (
                 f"Removing these paychecks would change the balance the app has "
@@ -989,6 +1000,44 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             )
             _unchanged(user_id, paydays, eras)
             assert pay_period_locks.posted_totals(user_id) == totals
+
+
+    def test_a_legacy_entry_between_two_accounts_is_refused_naming_both(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Review 2's realistic firing case: Checking to Savings, both trued up later.
+
+        Each later true-up's correction absorbs the entry's effect on its
+        account, so removing the entry moves each correction's counter leg:
+        both accounts' booked balances would change, and both are named.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            db.session.commit()
+            head = _added_head(user_id, 2)
+            make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=_ledger_ids_of(seed_user["account"])[0],
+                to_ledger_id=_ledger_ids_of(savings)[0],
+                period_id=head[1].id,
+            )
+            anchor_service.apply_anchor_true_up(
+                account=seed_user["account"], new_balance=Decimal("900.00"),
+            )
+            anchor_service.apply_anchor_true_up(
+                account=savings, new_balance=Decimal("600.00"),
+            )
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+
+            assert _held(user_id, seed_periods[0]) == (
+                f"Removing these paychecks would change the balance the app has "
+                f"booked for {seed_user['account'].name}, Savings, so nothing "
+                f"was removed. Start from an earlier paycheck."
+            )
+            _unchanged(user_id, paydays, eras)
 
 
 class TestMoneyDatedInsideTheHead:

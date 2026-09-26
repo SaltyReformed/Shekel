@@ -20,6 +20,7 @@ from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
+    PayPeriodRemovalRefused,
     PayPeriodResetBlocked,
     PayPeriodUnresolved,
     ValidationError,
@@ -428,17 +429,19 @@ def remove_earlier():
     (:func:`~app.services.pay_period_admin.remove_earlier_pay_periods`).
     Nothing is populated, since nothing is recorded.
 
-    **Every refusal is a flash, and the rollback leaves nothing staged**: an
+    **Every refusal is a flash, and nothing is left staged**: an
     id that is not the owner's (``PayPeriodUnresolved``, one message for "no
     such" and "not yours", as at truncate), a paycheck holding money or money
     dated inside the removed ones (**R-PC109**), a removal taking every
     payday of the earliest pay rhythm (**R-PC110**), and one that would
     change a posted total the ledger's re-syncs do not rebuild (**R-PC114**)
-    -- the last three the service's ``ValidationError``.  R-PC114's arrives
-    AFTER the delete and the re-syncs it judges, so the rollback is what
-    undoes them; for the others it is for the page this redirects to, which
-    reads the owner's schedule back.  There is no discard-confirm panel: the
-    ruling refused one.
+    -- the last three ``PayPeriodRemovalRefused``, which the door raises
+    after rolling back its own savepoint.  The catch is that class and not
+    the generic ``ValidationError``, because both ledger re-syncs run below
+    it: a refusal of theirs is a defect to surface, not advice to flash.
+    The rollback here is for the page this redirects to, which reads the
+    owner's schedule back.  There is no discard-confirm panel: the ruling
+    refused one.
     """
     errors = _remove_earlier_schema.validate(request.form)
     if errors:
@@ -450,7 +453,7 @@ def remove_earlier():
         removed = pay_period_admin.remove_earlier_pay_periods(
             current_user.id, data["start_from_period_id"],
         )
-    except (PayPeriodUnresolved, ValidationError) as exc:
+    except (PayPeriodUnresolved, PayPeriodRemovalRefused) as exc:
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()

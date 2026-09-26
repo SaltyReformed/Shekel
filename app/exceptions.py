@@ -364,7 +364,7 @@ class PayPeriodUnresolved(ShekelError):
     """
 
     def __init__(self, period_id, choice):
-        """Name the id and the choice to make again from the list."""
+        """Keep the id for the log and name the choice to make again."""
         self.period_id = period_id
         # The id stays on the exception and in the ACCESS log, never in the
         # sentence: app text shows a person no system id (the developer,
@@ -374,6 +374,27 @@ class PayPeriodUnresolved(ShekelError):
             f"Reload the pay-periods settings page and choose {choice} from "
             f"the current list."
         )
+
+
+class PayPeriodRemovalRefused(ValidationError):
+    """ "Remove earlier paychecks" was refused: a ruled reason, and its sentence.
+
+    Plan step ``pay_calendar:C21``.  Raised by the door's gate
+    (``pay_period_gates.gate_removable_head``: a row the owner made, a pay
+    stub, money dated inside the removed paychecks -- ruling **R-PC109**),
+    by the era rule (``pay_era_write.era_to_move``, **R-PC110**) and by the
+    ledger post-condition (``pay_period_gates.reject_moved_ledger``,
+    **R-PC114**).  The operation leaves nothing behind: the door rolls back
+    its own savepoint before it re-raises.
+
+    **Its own class, for the reason** :class:`PayPeriodUnresolved` **gives**:
+    the route must catch the door's refusals and nothing else.  The door
+    runs both ledger re-syncs below that catch, and a catch on the generic
+    :class:`ValidationError` would flash any refusal they raise as advice
+    about paychecks instead of surfacing it (review 2 of C21).  A subclass
+    of :class:`ValidationError`, so a caller asking the broader question
+    still hears it.
+    """
 
 
 class PayPeriodResetBlocked(ShekelError):

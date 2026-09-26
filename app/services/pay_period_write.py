@@ -714,9 +714,9 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
         of the argument.
 
     Raises:
-        ValidationError: *doomed_ids* takes the record's first payday and
-            every payday the earliest era pays, while leaving a later era's
-            (ruling **R-PC110**).  Nothing is written.
+        PayPeriodRemovalRefused: *doomed_ids* takes the record's first
+            payday and every payday the earliest era pays, while leaving a
+            later era's (ruling **R-PC110**).  Nothing is written.
     """
     current = _owner_paydays(user_id)
     retiring = [

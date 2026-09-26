@@ -53,7 +53,7 @@ from sqlalchemy.orm import selectinload
 from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
-    ValidationError,
+    PayPeriodRemovalRefused,
 )
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
@@ -294,10 +294,11 @@ def gate_removable_head(
 
     **What the posted ledger booked in the head is NOT asked here** (ruling
     **R-PC114**, amending R-PC109's "a balance entry the app booked").  The
-    ledger files every entry dated before the first paycheck in the EARLIEST
-    one (``PayCalendar.filing_period``, **R-PC53**), and every re-sync
-    re-files there -- so after "Add earlier paychecks" a loan's opening
-    dated years back sits in an added paycheck, and refusing on it made the
+    ledger files every CORRECTION dated before the first paycheck in the
+    EARLIEST one (``PayCalendar.filing_period``, **R-PC53**; a cash movement
+    is filed in its row's own period), and every re-sync re-files there --
+    so after "Add earlier paychecks" a loan's opening dated years back sits
+    in an added paycheck, and refusing on it made the
     undo die at the first loan payment (review 1 of C21, measured on the
     developer's data).  The door re-files those entries through Reset's two
     re-syncs instead and asks :func:`reject_moved_ledger` of the result: the
@@ -310,7 +311,7 @@ def gate_removable_head(
     no HISTORICAL test: every paycheck this door exists to remove is past.
 
     Args:
-        user_id: The owning user's id -- the dated money of (4) is the
+        user_id: The owning user's id -- the dated money of (3) is the
             owner's anywhere, not only in the head.
         periods: The owner's saved periods as one window, read under the
             caller's advisory lock.
@@ -323,8 +324,9 @@ def gate_removable_head(
         already the first.
 
     Raises:
-        ValidationError: A period in the head holds a row the owner made or a
-            pay stub, or money is dated inside the head.  Nothing is written.
+        PayPeriodRemovalRefused: A period in the head holds a row the owner
+            made or a pay stub, or money is dated inside the head.  Nothing
+            is written.
     """
     head = [period for period in periods if period.start_date < first_kept.start_date]
     if not head:
@@ -385,8 +387,8 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
         head: The periods the removal would take.
 
     Raises:
-        ValidationError: A row or transfer in *head* is one the owner
-            entered or changed.
+        PayPeriodRemovalRefused: A row or transfer in *head* is one the
+            owner entered or changed.
     """
     period_ids = [period.period_id for period in head]
     transactions = _live_rows_of(
@@ -416,7 +418,7 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     sentences.append(
         "Delete or move it first." if one else "Delete or move them first.",
     )
-    raise ValidationError(" ".join(sentences))
+    raise PayPeriodRemovalRefused(" ".join(sentences))
 
 
 def reject_moved_ledger(
@@ -430,20 +432,23 @@ def reject_moved_ledger(
     reads :func:`~app.services.pay_period_locks.posted_totals`, retires the
     head (whose entries the ``CASCADE`` takes), re-syncs again so every
     entry rebuilt from a surviving record is re-filed onto the kept
-    paychecks, and reads the totals again.  Equal totals mean the head held
-    no booked money; a total that moved is an entry no re-sync rebuilds,
-    and the door refuses.  It is asked after the write because only the
+    paychecks, and reads the totals again.  Equal totals mean the removal
+    lost nothing booked: whatever the head held was rebuilt onto the kept
+    paychecks (an opening, a true-up correction) or netted to zero with it
+    (a paid-then-unpaid pair); a total that moved is an entry no re-sync
+    rebuilds, and the door refuses.  It is asked after the write because only the
     re-syncs can say what they rebuild -- a list of rebuildable entry kinds
     here would be a second statement of the posting modules' own rules --
-    and the refusal leaves nothing behind because the route rolls back.
+    and the refusal leaves nothing behind because the door rolls back the
+    savepoint it made the write in.
 
     Args:
         before: The totals before the removal, after a re-sync.
         after: The totals after the removal and its re-sync.
 
     Raises:
-        ValidationError: A total differs; the message is the ruled one,
-            naming the account(s) whose booked balance moved.
+        PayPeriodRemovalRefused: A total differs; the message is the ruled
+            one, naming the account(s) whose booked balance moved.
     """
     moved = {
         key[1] for key in set(before) | set(after)
@@ -451,7 +456,7 @@ def reject_moved_ledger(
     }
     if not moved:
         return
-    raise ValidationError(
+    raise PayPeriodRemovalRefused(
         f"Removing these paychecks would change the balance the app has "
         f"booked for {', '.join(pay_period_locks.ledger_account_names(moved))}, "
         f"so nothing was removed. Start from an earlier paycheck."
@@ -469,7 +474,7 @@ def _reject_stubs(user_id: int, head: "list[DerivedPeriod]") -> None:
         head: The periods the removal would take.
 
     Raises:
-        ValidationError: A pay stub is dated on a payday in *head*.
+        PayPeriodRemovalRefused: A pay stub is dated on a payday in *head*.
     """
     stubbed = sorted(
         row[0]
@@ -488,7 +493,7 @@ def _reject_stubs(user_id: int, head: "list[DerivedPeriod]") -> None:
     saved, pronoun = (
         ("A pay stub is", "it") if len(stubbed) == 1 else ("Pay stubs are", "them")
     )
-    raise ValidationError(
+    raise PayPeriodRemovalRefused(
         f"{saved} saved for {days}. Delete {pronoun} first, or start from "
         f"{stubbed[0].isoformat()} or earlier."
     )
@@ -516,7 +521,8 @@ def _reject_dated_money(
         as_of: The owner's civil day.
 
     Raises:
-        ValidationError: A settle day or a recorded balance falls in the span.
+        PayPeriodRemovalRefused: A settle day or a recorded balance falls in
+            the span.
     """
     low = pay_period_service.recordable_floor(head[0].start_date, as_of)
     high = pay_period_service.recordable_floor(first_kept.start_date, as_of)
@@ -532,7 +538,7 @@ def _reject_dated_money(
     # turns on how two descriptions happen to sort.
     day, what = min(dated, key=lambda found: found[0])
     period = next(p for p in head if p.covers(day))
-    raise ValidationError(
+    raise PayPeriodRemovalRefused(
         f"{what} {day.isoformat()}, inside the paychecks you would remove, and "
         f"money can't be dated before your schedule starts. Start from "
         f"{period.start_date.isoformat()} or earlier."
