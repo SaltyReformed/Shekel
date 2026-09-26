@@ -52,9 +52,9 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.exceptions import PayPeriodUnresolved, ValidationError
+from app.exceptions import PayPeriodRemovalRefused, PayPeriodUnresolved
 from app.extensions import db as _db
-from app.models.journal_entry import JournalEntry
+from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_era import PayEra
 from app.models.pay_stub import PayStub
@@ -384,7 +384,7 @@ class TestTheEarliestRhythmKeepsAPaycheck:
             self._two_eras(user_id)
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
 
-            with pytest.raises(ValidationError) as refused:
+            with pytest.raises(PayPeriodRemovalRefused) as refused:
                 pay_period_admin.remove_earlier_pay_periods(
                     user_id, _period_on(user_id, date(2026, 3, 12)).id,
                 )
@@ -403,7 +403,7 @@ class TestTheEarliestRhythmKeepsAPaycheck:
             user_id = bare_user["user"].id
             self._two_eras(user_id)
 
-            with pytest.raises(ValidationError, match="Keep at least 2026-02-19,"):
+            with pytest.raises(PayPeriodRemovalRefused, match="Keep at least 2026-02-19,"):
                 pay_period_admin.remove_earlier_pay_periods(
                     user_id, _period_on(user_id, date(2026, 3, 19)).id,
                 )
@@ -649,6 +649,28 @@ def _ledger_ids_of(account):
     ]
 
 
+def _source_nets_by_period(account, source):
+    """Return ``{period_id: net}`` of *source*'s entries on *account*'s own ledger row.
+
+    Nets that are zero are left out: a re-sync that re-files an entry leaves
+    the old one and its reversal in the paycheck they were filed in.
+    """
+    own = _ledger_ids_of(account)[0]
+    return {
+        period_id: net
+        for period_id, net in _db.session.query(
+            JournalEntry.pay_period_id, _db.func.sum(Posting.amount),
+        )
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == own,
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(source),
+        )
+        .group_by(JournalEntry.pay_period_id)
+        if net != 0
+    }
+
+
 def _two_ledger_ids(seed_user):
     """Return two ledger accounts the seeded owner's Checking is paired with.
 
@@ -666,7 +688,7 @@ def _two_ledger_ids(seed_user):
 
 def _held(user_id, first_kept):
     """Try the removal from *first_kept* and return the refusal's message."""
-    with pytest.raises(ValidationError) as refused:
+    with pytest.raises(PayPeriodRemovalRefused) as refused:
         pay_period_admin.remove_earlier_pay_periods(user_id, first_kept.id)
     return str(refused.value)
 
@@ -906,6 +928,11 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             db.session.commit()
             opening = ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING)
             assert opening in {kind for _id, kind in _entries_in({head[0].id})}
+            nets = _source_nets_by_period(
+                seed_user["account"], PostingSourceEnum.ACCOUNT_OPENING,
+            )
+            added_first = head[0].id
+            assert set(nets) == {added_first}, "the opening's money sits in the head"
             totals = pay_period_locks.posted_totals(user_id)
 
             assert pay_period_admin.remove_earlier_pay_periods(
@@ -913,8 +940,11 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             ) == 2
             db.session.commit()
 
-            # The totals carry the case: the opening's re-post is dropped with
-            # the head, and only the re-sync puts its money back.
+            # Re-filed INTO THE NEW FIRST PAYCHECK (R-PC114's words), and
+            # nowhere else, with every total as it was.
+            assert _source_nets_by_period(
+                seed_user["account"], PostingSourceEnum.ACCOUNT_OPENING,
+            ) == {seed_periods[0].id: nets[added_first]}
             assert pay_period_locks.posted_totals(user_id) == totals
 
     def test_a_loans_opening_filed_in_an_added_paycheck_goes_back(
@@ -923,7 +953,7 @@ class TestTheLedgerIsReFiledAndLosesNothing:
         """Review 1's second probe: a loan from 2020, the loan re-sync after the add."""
         with app.app_context():
             user_id = seed_user["user"].id
-            create_loan_account(
+            loan = create_loan_account(
                 seed_user, db.session, name="Car Loan",
                 principal=Decimal("20000.00"), rate=Decimal("0.05"),
                 origination_date=date(2020, 1, 1),
@@ -934,6 +964,9 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             db.session.commit()
             loan_opening = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
             assert loan_opening in {kind for _id, kind in _entries_in({head[0].id})}
+            nets = _source_nets_by_period(loan, PostingSourceEnum.LOAN_OPENING)
+            added_first = head[0].id
+            assert set(nets) == {added_first}, "the loan opening's money sits in the head"
             totals = pay_period_locks.posted_totals(user_id)
 
             assert pay_period_admin.remove_earlier_pay_periods(
@@ -941,6 +974,9 @@ class TestTheLedgerIsReFiledAndLosesNothing:
             ) == 2
             db.session.commit()
 
+            assert _source_nets_by_period(loan, PostingSourceEnum.LOAN_OPENING) == {
+                seed_periods[0].id: nets[added_first],
+            }
             assert pay_period_locks.posted_totals(user_id) == totals
 
     def test_a_self_cancelling_pair_goes_with_its_paycheck(
@@ -1005,7 +1041,7 @@ class TestTheLedgerIsReFiledAndLosesNothing:
     def test_a_legacy_entry_between_two_accounts_is_refused_naming_both(
         self, app, db, seed_user, seed_periods,
     ):
-        """Review 2's realistic firing case: Checking to Savings, both trued up later.
+        """Review 2's firing case: a sourceless Checking to Savings entry, both trued up later.
 
         Each later true-up's correction absorbs the entry's effect on its
         account, so removing the entry moves each correction's counter leg:
@@ -1031,6 +1067,13 @@ class TestTheLedgerIsReFiledAndLosesNothing:
                 account=savings, new_balance=Decimal("600.00"),
             )
             paydays, eras = _paydays(user_id), _stored_eras(user_id)
+            totals = pay_period_locks.posted_totals(user_id)
+            scenario = seed_user["scenario"].id
+            # The true-ups absorbed the entry: each account's own row books
+            # exactly what its owner asserted, so what moves on removal is
+            # the corrections' counter legs.
+            assert totals[(scenario, _ledger_ids_of(seed_user["account"])[0])] == Decimal("900.00")
+            assert totals[(scenario, _ledger_ids_of(savings)[0])] == Decimal("600.00")
 
             assert _held(user_id, seed_periods[0]) == (
                 f"Removing these paychecks would change the balance the app has "
@@ -1038,6 +1081,7 @@ class TestTheLedgerIsReFiledAndLosesNothing:
                 f"was removed. Start from an earlier paycheck."
             )
             _unchanged(user_id, paydays, eras)
+            assert pay_period_locks.posted_totals(user_id) == totals
 
 
 class TestMoneyDatedInsideTheHead:

@@ -13,9 +13,14 @@ from __future__ import annotations
 import html
 import re
 from datetime import date
+from decimal import Decimal
 
+import pytest
+
+from app.exceptions import ValidationError
+from app.models.pay_stub import PayStub
 from app.services import pay_period_admin, pay_period_write, pay_schedule_service
-from tests._test_helpers import add_txn, all_periods, rhythm_of
+from tests._test_helpers import add_txn, all_periods, make_salary_profile, rhythm_of
 
 
 def _record_schedule(db_session, user_id, first_payday=date(2026, 1, 2), count=5):
@@ -200,6 +205,66 @@ class TestTheRemoveEarlierRoute:
 
             assert b"correct the form" in resp.data
             assert _paydays(user_id) == before
+
+
+class TestTheRouteCatchesTheDoorsRefusalsOnly:
+    """The route flashes ``PayPeriodRemovalRefused`` and nothing broader (review 3)."""
+
+    def test_a_pay_stub_refusal_is_flashed(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """A ruled refusal raised before any write reaches the owner as a flash."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_admin.add_earlier_pay_periods(user_id, 1)
+            profile = make_salary_profile(seed_user, db.session)
+            db.session.flush()
+            db.session.add(PayStub(
+                salary_profile_id=profile.id, payday=created[0].start_date,
+                base_pay=Decimal("2884.62"),
+            ))
+            db.session.commit()
+            before = _paydays(user_id)
+
+            resp = auth_client.post(
+                "/pay-periods/remove-earlier",
+                data={"start_from_period_id": str(seed_periods[0].id)},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"A pay stub is saved for 2025-12-19." in resp.data
+            assert _paydays(user_id) == before
+
+    def test_a_re_syncs_own_refusal_is_not_flashed_as_advice(
+        self, app, db, bare_auth_client, bare_user, monkeypatch,
+    ):
+        """A ValidationError from below the door is a defect: it surfaces, unflashed.
+
+        The ledger re-syncs run inside the door; the route's catch is the
+        door's class, so a refusal of theirs propagates (the test client
+        re-raises it; production answers 500 and rolls back).
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            _record_schedule(db.session, user_id, count=3)
+            pay_period_admin.add_earlier_pay_periods(user_id, 1)
+            db.session.commit()
+
+            def _refusing(_user_id):
+                raise ValidationError("a re-sync refused")
+
+            monkeypatch.setattr(pay_period_admin, "_refile_ledger", _refusing)
+            first = next(
+                period for period in all_periods(user_id)
+                if period.start_date == date(2026, 1, 2)
+            )
+
+            with pytest.raises(ValidationError, match="a re-sync refused"):
+                bare_auth_client.post(
+                    "/pay-periods/remove-earlier",
+                    data={"start_from_period_id": str(first.id)},
+                )
 
 
 class TestOwnerOnly:

@@ -266,7 +266,8 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
     and the re-sync it exists to judge -- so they run in a SAVEPOINT this
     door rolls back before it re-raises: the refusal leaves nothing behind
     whoever called, not only when a route rolls back.  The gate's refusals
-    and R-PC110's are asked before any statement.
+    are asked before any write, R-PC110's inside the savepoint before the
+    delete.
 
     Args:
         user_id: The owning user's id.

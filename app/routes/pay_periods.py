@@ -435,8 +435,9 @@ def remove_earlier():
     dated inside the removed ones (**R-PC109**), a removal taking every
     payday of the earliest pay rhythm (**R-PC110**), and one that would
     change a posted total the ledger's re-syncs do not rebuild (**R-PC114**)
-    -- the last three ``PayPeriodRemovalRefused``, which the door raises
-    after rolling back its own savepoint.  The catch is that class and not
+    -- the last three ``PayPeriodRemovalRefused``: R-PC109's before the door
+    writes, R-PC110's and R-PC114's after it rolls back its own savepoint.
+    The catch is that class and not
     the generic ``ValidationError``, because both ledger re-syncs run below
     it: a refusal of theirs is a defect to surface, not advice to flash.
     The rollback here is for the page this redirects to, which reads the

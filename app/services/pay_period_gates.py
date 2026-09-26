@@ -428,11 +428,13 @@ def reject_moved_ledger(
     """Refuse a removal that changed any posted total (ruling **R-PC114**).
 
     "Remove earlier paychecks"' ledger half, asked AFTER its write:
-    ``pay_period_admin.remove_earlier_pay_periods`` re-syncs the ledger,
-    reads :func:`~app.services.pay_period_locks.posted_totals`, retires the
-    head (whose entries the ``CASCADE`` takes), re-syncs again so every
-    entry rebuilt from a surviving record is re-filed onto the kept
-    paychecks, and reads the totals again.  Equal totals mean the removal
+    ``pay_period_admin.remove_earlier_pay_periods`` reads
+    :func:`~app.services.pay_period_locks.posted_totals` as they stand,
+    retires the head (whose entries the ``CASCADE`` takes), re-syncs so
+    every entry rebuilt from a surviving record is re-filed onto the kept
+    paychecks, and reads the totals again -- the ruling's words, "refused
+    iff a posted total would change", with no re-synced counterfactual in
+    front (review 2 of C21 measured that one refusing falsely).  Equal totals mean the removal
     lost nothing booked: whatever the head held was rebuilt onto the kept
     paychecks (an opening, a true-up correction) or netted to zero with it
     (a paid-then-unpaid pair); a total that moved is an entry no re-sync
@@ -443,7 +445,7 @@ def reject_moved_ledger(
     savepoint it made the write in.
 
     Args:
-        before: The totals before the removal, after a re-sync.
+        before: The totals before the removal, as they stood.
         after: The totals after the removal and its re-sync.
 
     Raises:

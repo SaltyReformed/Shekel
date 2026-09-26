@@ -384,8 +384,9 @@ class PayPeriodRemovalRefused(ValidationError):
     stub, money dated inside the removed paychecks -- ruling **R-PC109**),
     by the era rule (``pay_era_write.era_to_move``, **R-PC110**) and by the
     ledger post-condition (``pay_period_gates.reject_moved_ledger``,
-    **R-PC114**).  The operation leaves nothing behind: the door rolls back
-    its own savepoint before it re-raises.
+    **R-PC114**).  The operation leaves nothing behind: the gate's refusals
+    come before the door writes anything, and R-PC110's and R-PC114's
+    inside a savepoint the door rolls back before it re-raises.
 
     **Its own class, for the reason** :class:`PayPeriodUnresolved` **gives**:
     the route must catch the door's refusals and nothing else.  The door
