@@ -576,20 +576,25 @@ def resync_user_loan_postings(user_id: int) -> list[int]:
     go-forward one by construction -- there is no second implementation that could
     drift.
 
-    The caller is ``pay_period_admin.reset_pay_periods``: a full reset wipes the
-    user's pay periods, and ``journal_entries.pay_period_id`` is ON DELETE
-    CASCADE, so the wipe disposes this user's loan opening / true-up genesis
-    entries (which exist independently of any settled transaction, so the reset's
-    zero-settled gate does NOT keep them safe).  The loan's SOURCE facts survive
-    the wipe -- :class:`~app.models.loan_params.LoanParams` and its true-up
-    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry no
-    ``pay_period_id`` -- so this re-derives and re-posts the genesis corrections
-    onto the rebuilt schedule, attributed to the new periods.  Scoped to the one
-    user because a reset is a single-user operation: unlike the deploy backfill it
-    must not reconcile other owners' loans inside the reset transaction.
+    Two callers, both through ``pay_period_admin._refile_ledger``.
+    ``reset_pay_periods``: a full reset wipes the user's pay periods, and
+    ``journal_entries.pay_period_id`` is ON DELETE CASCADE, so the wipe
+    disposes this user's loan opening / true-up genesis entries (which exist
+    independently of any settled transaction, so the reset's zero-settled gate
+    does NOT keep them safe).  ``remove_earlier_pay_periods`` (plan step
+    ``pay_calendar:C21``, ruling **R-PC114**): its delete disposes the genesis
+    entries the ledger had filed in the removed paychecks -- an entry dated
+    before the first paycheck files in the earliest one.  The loan's SOURCE
+    facts survive either -- :class:`~app.models.loan_params.LoanParams` and its
+    true-up :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry
+    no ``pay_period_id`` -- so this re-derives and re-posts the genesis
+    corrections onto the schedule that stands, attributed to its periods.
+    Scoped to the one user because both are single-user operations: unlike
+    the deploy backfill neither may reconcile other owners' loans inside its
+    transaction.
 
     Idempotent and self-healing via reconcile-to-target.  Flushes but does NOT
-    commit -- the caller owns the transaction boundary (the reset's route commit).
+    commit -- the caller owns the transaction boundary (the route's commit).
 
     Args:
         user_id: The owning user whose loans to reconcile.
