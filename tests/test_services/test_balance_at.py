@@ -658,9 +658,7 @@ class TestBalanceMapLoan:
             )
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], bctx,
-            )[mortgage.id]
+            state = resolved_loan(mortgage, bctx).state
 
             seam = balance_at.balance_map(mortgage, bctx)
 
@@ -668,7 +666,7 @@ class TestBalanceMapLoan:
 
             anchor_date = date.today()
             first_payment = min(
-                row.payment_date for row in schedule.schedule
+                row.payment_date for row in state.schedule
             )
 
             # A period still open when the balance was asserted, and before the
@@ -727,15 +725,13 @@ class TestBalanceMapLoan:
             insert_trueup_event(params, Decimal("0.00"))
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], bctx,
-            )[loan.id]
+            state = resolved_loan(loan, bctx).state
 
             seam = balance_at.balance_map(loan, bctx)
 
             assert seam is not None
             # Paid off -> empty schedule -> $0 current balance everywhere.
-            assert schedule.schedule == []
+            assert state.schedule == []
             assert _owed_today(loan, bctx) == Decimal("0.00")
             assert seam[periods[0].id] == Decimal("0.00")
             assert seam[periods[-1].id] == Decimal("0.00")
@@ -773,13 +769,11 @@ class TestBalanceMapLoan:
             )
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], bctx,
-            )[loan.id]
+            state = resolved_loan(loan, bctx).state
             seam = balance_at.balance_map(loan, bctx)
 
             first_payment = min(
-                row.payment_date for row in schedule.schedule
+                row.payment_date for row in state.schedule
                 if not row.is_confirmed
             )
             future = [
@@ -791,7 +785,7 @@ class TestBalanceMapLoan:
             # The last unconfirmed installment due by the period's end -- what the
             # forward walk reduces the balance to -- recomputed independently.
             due_by_end = [
-                row for row in schedule.schedule
+                row for row in state.schedule
                 if not row.is_confirmed and row.payment_date <= last_covered_day(fp)
             ]
             assert due_by_end, "expected an installment due by the future period"
@@ -818,11 +812,13 @@ class TestTheLoanGateIsOneQuestion:
 
     **What these cases lock, stated so the class is not over-trusted.**  The
     SHIPPED side calls the production predicate, so a mutation of it fires here.
-    The RETIRED side is rebuilt from ``generate_debt_schedules``, which is still
-    live for its other callers -- so the pair also fires if that producer ever
-    gains a filter the resolver lacks (dropping a loan with no schedule rows,
-    say), which is the drift that would otherwise surface only as a moved
-    balance on a screen.  What they do NOT lock is that the map and the band
+    The RETIRED side is rebuilt as the expression it stood for: membership in
+    ``generate_debt_schedules``' map, which held exactly the loans
+    ``resolved_loan`` resolves.  It was rebuilt FROM that producer, which also
+    made the pair fire if the producer gained a filter the resolver lacks, until
+    plan step recurrence:R16-c-2 deleted the producer with its last caller
+    (ruling R-R112); the retired side reads the resolution directly since, and
+    that second purpose went with the producer.  What they do NOT lock is that the map and the band
     still CALL the predicate: that is
     ``TestBalanceMapLoan`` / ``TestBrokenLoanFailsLoud``'s job, by value.
     """
@@ -833,7 +829,9 @@ class TestTheLoanGateIsOneQuestion:
 
         The retired spelling is rebuilt exactly as it stood -- the kind test AND
         membership in the schedule map, over the AMORTIZING-filtered subset the
-        assembly passed -- because dropping the kind conjunct would compare a
+        assembly passed; the map held a loan iff ``resolved_loan`` resolved it,
+        which is how it reads since that map's producer was deleted (plan step
+        recurrence:R16-c-2) -- because dropping the kind conjunct would compare a
         LOOSER rule and report a false divergence for a ``LoanParams`` row on a
         non-amortizing account, which is a data defect both surfaces are
         supposed to degrade identically.
@@ -844,9 +842,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         retired = (
             classify_account(account) is AccountProjectionKind.AMORTIZING
-            and account.id in net_worth_kernel.generate_debt_schedules(
-                [account], ctx,
-            )
+            and resolved_loan(account, ctx) is not None
         )
         return retired, configured_loan(account, ctx) is not None
 
@@ -989,7 +985,7 @@ class TestTheLoanGateIsOneQuestion:
 
         Every case above asserts the pair AGREES, and a pair of expressions that
         could never disagree would pass all four vacuously.  This one PATCHES
-        the retired spelling's producer to drop a loan whose schedule is empty
+        the retired spelling's resolution to drop a loan whose schedule is empty
         -- the exact filter a careless reimplementation would add -- and asserts
         ``_both_spellings`` then reports a DISAGREEMENT on the same fixture the
         case above found agreement on.  So the helper can return an unequal
@@ -1010,20 +1006,19 @@ class TestTheLoanGateIsOneQuestion:
             # patched result below is a change and not a fresh observation).
             assert self._both_spellings(loan, bctx) == (True, True)
 
-            real = net_worth_kernel.generate_debt_schedules
+            real = resolved_loan
 
-            def _schedule_rows_only(accounts, ctx):
+            def _schedule_rows_only(account, ctx):
                 """The careless filter: a loan with no rows is dropped."""
-                return {
-                    account_id: schedule
-                    for account_id, schedule in real(accounts, ctx).items()
-                    if schedule.schedule
-                }
+                resolved = real(account, ctx)
+                return resolved if resolved and resolved.state.schedule else None
 
-            monkeypatch.setattr(
-                net_worth_kernel, "generate_debt_schedules",
-                _schedule_rows_only,
-            )
+            # The retired spelling reads this MODULE's ``resolved_loan`` name;
+            # ``configured_loan`` resolves through its own module's, so only
+            # the retired side sees the filter.  It patched the retired side's
+            # producer, ``generate_debt_schedules``, until plan step
+            # recurrence:R16-c-2 deleted it.
+            monkeypatch.setitem(globals(), "resolved_loan", _schedule_rows_only)
 
             # The retired spelling now says "not a loan" while the shipped one
             # still says "loan" -- the divergence the agreement cases exist to
@@ -1668,9 +1663,7 @@ class TestBalanceAt:
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], bctx,
-            )[mortgage.id]
+            state = resolved_loan(mortgage, bctx).state
             as_of = last_covered_day(periods[7])  # future under seed_periods_today
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
@@ -1678,7 +1671,7 @@ class TestBalanceAt:
             # Independent oracle: the retired forward walk credited EVERY
             # unconfirmed installment due by as_of, overdue ones included.
             forward_rows = sorted(
-                (r for r in schedule.schedule if not r.is_confirmed),
+                (r for r in state.schedule if not r.is_confirmed),
                 key=lambda r: r.payment_date,
             )
             due_by = [r for r in forward_rows if r.payment_date <= as_of]
@@ -1957,9 +1950,10 @@ class TestMultiLoanIsolation:
                 seam_maps[loan_b.id][earlier],
             ) == Decimal("180000.00")
 
-            # The FUTURE tail -- the only region that consumes the per-loan
-            # DebtSchedule bundle, and so the only one where a positional/shared
-            # mix-up can surface.  Each loan must still amortize down from its OWN
+            # The FUTURE tail -- the region that read the per-loan DebtSchedule
+            # bundle's seed until plan step recurrence:R16-c-1 (the bundle went
+            # at R16-c-2), and so the one where a positional/shared mix-up
+            # could surface.  Each loan must still amortize down from its OWN
             # trued-up balance, so A stays far above B and neither drifts toward the
             # other's schedule.
             future = [p for p in periods if p.start_date > anchor_date]
@@ -4812,11 +4806,9 @@ class TestLiabilityOwedAtDates:
             # the sign of the caller's figure.
             assert owed[acct.id][0] == Decimal("200000.00")
 
-            debt = net_worth_kernel.generate_debt_schedules(
-                [acct], bctx,
-            )[acct.id]
+            state = resolved_loan(acct, bctx).state
             forward_rows = sorted(
-                (row for row in debt.schedule if not row.is_confirmed),
+                (row for row in state.schedule if not row.is_confirmed),
                 key=lambda row: row.payment_date,
             )
             # The fixture really is in the hazardous state: a year of overdue
@@ -4866,11 +4858,9 @@ class TestLiabilityOwedAtDates:
             today = date.today()
             confirmed = Decimal("200000.00")
 
-            debt = net_worth_kernel.generate_debt_schedules(
-                [acct], bctx,
-            )[acct.id]
+            state = resolved_loan(acct, bctx).state
             forward_rows = sorted(
-                (row for row in debt.schedule if not row.is_confirmed),
+                (row for row in state.schedule if not row.is_confirmed),
                 key=lambda row: row.payment_date,
             )
             overdue = [row for row in forward_rows if row.payment_date <= today]
@@ -5869,12 +5859,13 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
             periods = seed_periods
             loan = _paid_then_trued_loan(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
-            # ``debt_schedule_rows`` is the fence-clean accessor for an
-            # out-of-cluster reader: rows, carrying no balance.  Every balance
-            # below comes from the seam, which is the architecture this suite
-            # exists to defend.
+            # The loan's schedule rows, off the read pass's one resolution: rows
+            # carry no balance.  Every balance below comes from the seam, which
+            # is the architecture this suite exists to defend.  (They were read
+            # through the ``debt_schedule_rows`` accessor until plan step
+            # recurrence:R16-c-2 deleted it with its last caller.)
             rows = sorted(
-                net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id],
+                resolved_loan(loan, bctx).state.schedule,
                 key=lambda row: row.payment_date,
             )
             confirmed = [row for row in rows if row.is_confirmed]

@@ -128,7 +128,13 @@ def _figures(account: Account, day: date) -> dict:
     # ``loan_installments`` / ``loan_payoff_date``, the way the loan page does.
     installments = balance_at.loan_installments(account, ctx)
     payoff = balance_at.loan_payoff_date(account, ctx)
-    schedule = balance_at.debt_schedule_rows([account], ctx)[account.id]
+    # The resolver's schedule, composed as ``loan_resolver.resolve_loan``
+    # composes it from the same scenarios (the confirmed history plus the
+    # contract's forward).  It was read through ``balance_at.debt_schedule_rows``
+    # until plan step recurrence:R16-c-2 deleted that accessor with its last
+    # caller; the scenarios above are built from the same inputs, so the
+    # figures it feeds are unchanged.
+    schedule = list(scenarios.history_rows) + list(scenarios.original_forward)
     return {
         "seam": {d.isoformat(): str(sampled[d]) for d in horizon},
         "history_rows": len(scenarios.history_rows),

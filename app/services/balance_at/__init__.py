@@ -174,10 +174,12 @@ caller was this seam, and step E1d makes its confirmed seed a FOLD, so the
 composer that consumes a balance-at-T now sits on the same side of the boundary
 as the producer of one.  It is re-exported NOWHERE -- W9910 alone protects it,
 in every import spelling -- which is what lets its hand-written W9909
-completeness scope DELETE rather than shrink or travel.  ``_kernel``'s ``debt_schedule_rows`` and
-``interest_by_period_for_account`` are re-exported below as the two non-balance
-seam entries the out-of-cluster consumers (the account-detail route, the savings
-orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` import
+completeness scope DELETE rather than shrink or travel.  ``_kernel``'s
+``interest_by_period_for_account`` is re-exported below as the non-balance seam
+entry an out-of-cluster consumer (the account-detail route) reads; its sibling
+``debt_schedule_rows``, the savings orchestrator's, went with its last caller at
+plan step recurrence:R16-c-2 (ruling R-R112).  ``property_equity_chart`` and
+``home_equity_service`` import
 FROM here, not the other way round.  Inside the package the direction is
 ``_grid -> {_asset_fold, _cash_fold, _cash_periods, _inputs}``,
 ``{_cash_flow, _kind_correct, _cash_periods} -> _cash_fold -> _fold``,
@@ -275,7 +277,6 @@ from ._inputs import (
     _contribution_inputs_for_account,
 )
 from ._kernel import (
-    debt_schedule_rows,
     interest_by_period_for_account,
     interest_projection_for_account,
 )
@@ -384,7 +385,6 @@ __all__ = [
     "cash_daily_facts_series",
     "cash_outstanding_difference",
     "confirmed_view",
-    "debt_schedule_rows",
     "definition_books",
     "definition_money_accounts",
     "empty_grid_view",

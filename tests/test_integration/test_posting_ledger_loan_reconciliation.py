@@ -154,7 +154,6 @@ from app.services import balance_at, loan_anchor_service, loan_ledger, loan_load
 from app.services import amortization_engine
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
-from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.installment_calendar import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
@@ -3313,9 +3312,7 @@ class TestTrueUpAfterLastPaymentIsRead:
             )
             scalar = balance_at.balance_at(loan, bctx, _AS_OF)
             reader = _posted_balance(loan.id, scenario_id)
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], bctx,
-            )[loan.id]
+            state = resolved_loan(loan, bctx).state
 
             # The true-up IS the balance; the reader and scalar both report it
             # (the scalar HELD, so it is read through ``owed()``).
@@ -3327,7 +3324,7 @@ class TestTrueUpAfterLastPaymentIsRead:
             # pre-true-up balance, so a walk over it would have read HIGHER --
             # the exact stale read this test exists to forbid.
             confirmed_rows = [
-                row for row in schedule.schedule if row.is_confirmed
+                row for row in state.schedule if row.is_confirmed
             ]
             assert confirmed_rows
             assert confirmed_rows[-1].remaining_balance != ledger
