@@ -259,7 +259,9 @@ class TestSeedFullUserData:
         )
         assert isinstance(data["savings_goal"].target_amount, Decimal)
         assert isinstance(data["transfer_template"].default_amount, Decimal)
-        assert isinstance(data["salary_profile"].annual_salary, Decimal)
+        # The salary's stored figure is its pay entry's amount since plan
+        # step salary:X-av-3a (``annual_salary`` was dropped).
+        assert isinstance(data["salary_profile"].pay_entries[0].amount, Decimal)
         assert isinstance(
             cash_ledger.resolve_anchor(data["account"]).balance, Decimal,
         )

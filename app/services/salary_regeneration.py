@@ -40,7 +40,8 @@ declined to touch.  This takes the pass the route already opened
 .BalanceContext` and drops ``user_id``; only a route builds one) and RETURNS
 those row ids, so each route reports them in its own voice --
 ``flash_retained_notice`` for both today.  The amount goes through the same
-write door, and the regeneration reads the same day.  The one reordering:
+write door, and every day it reads is the pass's pinned ``as_of`` (ledger row
+**SAL-572**, plan step salary:X-av-3a).  The one reordering:
 the adapter builds the pass BEFORE the template guard below runs, where the
 route-tier original guarded first -- one scenario query for a profile without
 a template, a state ``create_profile`` never produces.
@@ -71,7 +72,6 @@ with the write that caused it.
 """
 
 import logging
-from datetime import date
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -80,7 +80,6 @@ from app.models.salary_profile import SalaryProfile
 from app.services import recurrence_engine, template_amount_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +126,14 @@ def regenerate_salary_transactions(
     schedule = GenerationSchedule.for_pass(ctx)
     calendar = ctx.calendar()
 
-    # Update the template's default_amount to the current net pay
-    current_period = calendar.period_containing(date.today())
+    # Update the template's default_amount to the current net pay.  Every
+    # "today" below is the PASS's pinned day, read once (ledger row SAL-572,
+    # plan step salary:X-av-3a): the period was looked up at the process
+    # clock (``date.today()``) while the amount was dated ``display_today()``
+    # and the regeneration ran from ``date.today()`` again, so wherever the
+    # two clocks name different days (CI's UTC, a bare ``flask run``) the
+    # save priced one day's paycheck and dated it another.
+    current_period = calendar.period_containing(ctx.as_of)
     if current_period:
         # The pass's pricer (plan step salary:C12): the tax configs resolve
         # for the PERIOD's own year and the profile's calibration applies,
@@ -140,14 +145,14 @@ def regenerate_salary_transactions(
         # anybody stated.
         template_amount_service.set_amount(
             profile.template, pay_breakdown.earnings.net_pay,
-            effective_on=display_today(),
+            effective_on=ctx.as_of,
         )
 
     # Regenerate transactions
     try:
         recurrence_engine.regenerate_for_template(
             profile.template, schedule, ctx.scenario_id,
-            effective_from=date.today(),
+            effective_from=ctx.as_of,
         )
     except RecurrenceConflict as e:
         logger.warning("Recurrence conflict during salary regeneration: %s", e)

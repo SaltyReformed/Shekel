@@ -146,8 +146,11 @@ the row's own account for a first settle, where it is EXPECTED to be paid
 from).  A named tender re-points a kept movement (``_re_point``: both
 clearing links released, the day re-graded against the new account's
 opening); the row's clearing link reaches only a movement on the row's
-account (``_links_the_row``); and a settled row is worth its covering
-movement's cash ON THE ACCOUNT ASKED ABOUT (:func:`covered_cash_leg`,
+account (``_links_the_row``), and a statement's link reaches each fact on
+that statement's own account (:func:`record_clearing`, plan step
+``credit_card:CC-5-4b``: a card's statement links the card payment of a
+bill planned on checking, and not the bill); and a settled row is worth its
+covering movement's cash ON THE ACCOUNT ASKED ABOUT (:func:`covered_cash_leg`,
 ruling **R-CC40**).
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
@@ -179,6 +182,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app import ref_cache
 from app.enums import SettledDayBasisEnum
 from app.extensions import db
+from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
@@ -331,10 +335,11 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
     **The row's link reaches only a movement on the ROW's account** (plan
     step ``credit_card:CC-5-3``, ruling **R-CC15**; :func:`_links_the_row`).
     A movement on another account -- the card, for a bill charged to it --
-    carries its OWN clearing link, written by that account's reconcile panel
-    when it is ticked there (leaf ``credit_card:CC-5-4b``; the statement
-    matcher offers it since ``CC-5-4a-1`` and writes no link, ruling
-    **R-FV**), and the row's link stays the
+    carries its OWN clearing link, written by :func:`record_clearing` when
+    that account's reconcile panel ticks the row from its "Paid from this
+    account" list (plan step ``credit_card:CC-5-4b``; the statement matcher
+    offers it since ``CC-5-4a-1`` and writes no link, ruling **R-FV**), and
+    the row's link stays the
     row's: the checking statement the row's link names never showed money
     that moved on the card, and ``fk_transaction_entries_reconciled_by``
     holds the movement's link to the movement's account, so the copy would
@@ -343,7 +348,7 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
     a named day), and only the COPY is gated: without that the revert of a
     card-cleared bill would un-date the movement with its link standing,
     which ``ck_transaction_entries_cleared_needs_settle_day`` refuses at the
-    flush (the review of this leaf; the writer of that link is CC-5-4b's).
+    flush (the review of plan step ``CC-5-3``).
     """
     if movement.settled_on != row.settled_on:
         # A covering movement's purchase day IS its settle day (ruling
@@ -370,13 +375,16 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
 def _links_the_row(row: Transaction, movement: TransactionEntry) -> bool:
     """Return whether the row's clearing link describes *movement* too.
 
-    ONE predicate for the two writers that copy ``reconciled_by_id`` off the
-    row (:func:`_mirror_assertion`, :func:`record_clearing`): a statement
-    that showed the ROW's money on the row's account showed this movement
-    exactly when the movement is on that account.  The composite key
-    ``fk_transaction_entries_reconciled_by`` says the same in the storage
-    tier; this is the seam's spelling, so the false state is refused before
-    the flush rather than by it.
+    The predicate :func:`_mirror_assertion` copies ``reconciled_by_id`` off
+    the row by: a statement that showed the ROW's money on the row's account
+    showed this movement exactly when the movement is on that account.  The
+    composite key ``fk_transaction_entries_reconciled_by`` says the same in
+    the storage tier; this is the seam's spelling, so the false state is
+    refused before the flush rather than by it.  :func:`record_clearing`
+    asked it too until plan step ``credit_card:CC-5-4b``, when it stopped
+    COPYING the row's link and started linking each fact on the statement's
+    own account -- the same rule said of the statement rather than of the
+    row, which is what lets it link a payment whose row is elsewhere.
 
     Args:
         row: The settled transaction.
@@ -681,7 +689,7 @@ def _follow_assertion(row: Transaction) -> None:
 
 
 def record_clearing(row: Transaction, anchor_id: int) -> None:
-    """Record WHICH statement showed *row*'s money, on the row and its mirror.
+    """Record WHICH statement showed *row*'s money, on each fact of it that statement covers.
 
     The ONE writer of a transaction's ``reconciled_by_id`` outside the seam's
     own release arms (plan step **X-bi-3a**, ruling **R-FL**), for a plain
@@ -699,13 +707,45 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
     rule inert for every bill it ticks (found by ``test_cash_walk``'s
     governing-assertion case, 2026-09-16).
 
-    **The mirror takes the link only on the ROW's account** (plan step
-    ``credit_card:CC-5-3``, :func:`_links_the_row`): the panel's tick settles
-    the row with the statement's account as its tender, so the movement it
-    just wrote IS on the row's account and takes the link; a movement on
-    another account -- a kept card tender the tick did not re-point, which
-    cannot happen through the tick (it names the tender) but can through a
-    caller of the bare seam -- would carry a link its own key refuses.
+    **ONE rule: a statement of account X links every fact on X** -- the row
+    when the row is on X, and each covering movement when it is on X (plan
+    step ``credit_card:CC-5-4b``, ruling **R-CC44**: "the PAYMENT takes the
+    statement's link and the bill does not, so ``record_clearing`` learns
+    which account's statement it records").  A link records that a named
+    statement of a named account showed this money, and
+    ``fk_transactions_reconciled_by`` / ``fk_transaction_entries_reconciled_by``
+    hold each link to its fact's own account, so the rule is also what the
+    storage tier would refuse to be told otherwise -- refused here, before
+    the flush.  Its two shapes:
+
+    * the row is on the statement's account -- a bill on the account's own
+      list, or a transfer's leg: the row takes the link, and so does each
+      covering movement on that account (a bill's tick names the account as
+      its tender; a leg's movement is on its shadow's account).  Every caller
+      before ``CC-5-4b`` passed this shape, and for it the rule writes what
+      the old body wrote (the row unconditionally, a movement on the row's
+      account);
+    * the row is planned on ANOTHER account and its payment is on the
+      statement's -- a bill planned on Checking, paid from the card and
+      reopened, ticked on the card's "Paid from this account" list: the
+      payment takes the link and the row does not, since Checking's
+      statements never showed that money.  This is the shape the old body
+      wrote wrongly (the row's link unconditionally, and the card payment's
+      never), which the storage key would have refused at the flush.
+
+    **A tick can leave NOTHING on the statement's account, and then nothing
+    is linked.**  A typed ``$0.00`` on that list settles the row with no
+    covering movement at all (``_cover`` withdraws the kept payment: a
+    movement of nothing is not one), so no fact of the row is money this
+    statement showed.  The old body linked the row regardless, which that
+    same key refuses.
+
+    **The account is read OFF THE ASSERTION the link names**, never passed
+    beside it: a caller handing both an anchor and an account could pair one
+    account's assertion with another account, which is a second statement of
+    one fact (``CLAUDE.md`` rule 14).  One primary-key read
+    (``Session.get``, answered from the identity map when the assertion is
+    already loaded).
 
     Args:
         row: The settled transaction the statement showed -- a plain row, or
@@ -714,9 +754,13 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
             why the sibling takes none).
         anchor_id: The ``account_anchor_history`` row that was being read.
     """
-    row.reconciled_by_id = anchor_id
+    statement_account_id = db.session.get(
+        AccountAnchorHistory, anchor_id,
+    ).account_id
+    if row.account_id == statement_account_id:
+        row.reconciled_by_id = anchor_id
     for movement in row.covering_movements:
-        if _links_the_row(row, movement):
+        if movement.account_id == statement_account_id:
             movement.reconciled_by_id = anchor_id
 
 

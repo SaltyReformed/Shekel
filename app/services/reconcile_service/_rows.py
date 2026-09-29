@@ -2,11 +2,12 @@
 Shekel Budget App -- The shape a SETTLE arm of the outstanding set has
 
 What the two arms whose tick SETTLES something share: the transaction arm (an
-envelope's own close, and a bill) and the transfer arm (a transfer's leg on
-this account).  Both ask *which of these on this account had the bank not yet
-taken by the statement's day*, bound it by the same landing day, and settle
-what was ticked through a per-item service verb -- and differ in WHICH items
-are theirs, how they are loaded, and what a tick MEANS for one.
+envelope's own close, and a bill -- on this account, or planned on another with
+its payment here) and the transfer arm (a transfer's leg on this account).
+Both ask *which of these had the bank not yet taken from this account by the
+statement's day*, bound it by the same landing day, and settle what was ticked
+through a per-item service verb -- and differ in WHICH items are theirs, how
+they are loaded, and what a tick MEANS for one.
 
 **This is finding N-225 fixed rather than paid.**  That row was opened by
 X-f2-c2's own adversarial design review, which measured the package's stated
@@ -45,7 +46,9 @@ the day bound (:func:`attributed_on` / :func:`lands_on_or_before`, over the
 row a leg is filed by -- its transfer), the writer, and the value naming the
 statement.  The ROW scope and loader (:func:`outstanding_scope`,
 :func:`outstanding_rows`, :func:`wholly_spent_by`) stay here beside them as
-the transaction arm's.
+the transaction arm's, which since plan step ``credit_card:CC-5-4b`` asks them
+for TWO scopes: the rows on this account, and the rows planned on another
+whose kept payment is on this one (the panel's "Paid from this account").
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, ORM rows out.
@@ -334,7 +337,7 @@ class Arm:
     event: str
 
 
-def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
+def outstanding_scope(statement: Statement, scope_clauses: tuple) -> list:
     """Return the SQL half of "this row is still waiting on the bank".
 
     A SUPERSET, by construction: the day bound below is on the pay period's
@@ -355,16 +358,13 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
     hand-written filters that agree today.
 
     **It is the TRANSACTION arm's scope since leaf ``balance:X-bi-6-4c-2``**,
-    where the transfer arm stopped reading this table (the module docstring);
-    *kind_clauses* is that arm's ``transfer_id IS NULL``, which keeps a transfer
-    shadow out because a transfer is offered as its LEG.
+    where the transfer arm stopped reading this table (the module docstring).
+    Each of that arm's two scopes passes ``transfer_id IS NULL`` among its
+    *scope_clauses*, which keeps a transfer shadow out because a transfer is
+    offered as its LEG.
 
-    Four clauses, each load-bearing, plus the arm's own:
+    Three clauses, each load-bearing, plus the scope's own:
 
-    * the row is on THIS account -- a balance assertion declares the real
-      balance of one account, and a user may hold more than one checking
-      account.  Settling across accounts would book money against a statement
-      that never showed it.
     * PROJECTED -- a settled row has already been recorded, and a Credit or
       Cancelled row is not money this account owes.
     * contributing and not soft-deleted -- the shared gate above.
@@ -375,7 +375,21 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
       the calendar now, which is what makes :func:`attributed_on`'s span
       lookup total rather than merely unlikely to refuse.  That property, and
       the reachable state it closes, are on :attr:`Statement.owned_period_ids`.
-    * *kind_clauses* -- which rows are the transaction arm's.
+    * *scope_clauses* -- which rows are this scope's, and the ACCOUNT clause
+      among them.
+
+    **The account clause is each scope's own since plan step
+    ``credit_card:CC-5-4b``** (ruling **R-CC44**), where it was the first
+    clause here, "the row is on THIS account".  What it protects is
+    unchanged: a balance assertion declares the real balance of one account,
+    and a user may hold more than one checking account, so a tick must book
+    only money this account's statement could show.  The two scopes tie that
+    money to this account two ways -- the row's own account for a row on it
+    (the tick books its payment here, the statement's account being the
+    tender), the kept PAYMENT's account for a row planned on another (a bill
+    paid from this card and reopened) -- and one clause here could state only
+    the first.  They partition on the row's account (``=`` against ``<>``),
+    which is what lets both read one form field (ruling **R-CC116**).
 
     Not scoped by ``scenario_id``, for the same reason
     :func:`app.services.reconcile_service._purchases._outstanding_scope` is
@@ -387,15 +401,15 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
 
     Args:
         statement: The statement being reconciled.
-        kind_clauses: The transaction arm's membership clauses.
+        scope_clauses: The scope's membership clauses, its account clause
+            among them.
 
     Returns:
         A list of SQLAlchemy filter clauses to apply to a
         :class:`~app.models.transaction.Transaction` query.
     """
     return [
-        Transaction.account_id == statement.account_id,
-        *kind_clauses,
+        *scope_clauses,
         is_projected_clause(Transaction),
         balance_contributing_clause(),
         Transaction.pay_period_id.in_(statement.offerable_period_ids),
@@ -605,19 +619,21 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
 def outstanding_rows(
     statement: Statement,
     *,
-    kind_clauses: tuple,
+    scope_clauses: tuple,
     load_options: tuple = (),
     transaction_ids: "set[int] | None" = None,
 ) -> "list[Transaction]":
-    """Return the ROWS the transaction arm offers, both halves of its scope applied.
+    """Return the ROWS one transaction-arm scope offers, both halves applied.
 
-    **The ONE place that arm's scope is expressed**, so its reader and its
-    writer cannot come to disagree about what "outstanding" means -- the
-    property the purchase arm gets by sharing a clause list, expressed as a
+    **The ONE place that arm's scopes are expressed**, so each scope's reader
+    and its writer cannot come to disagree about what "outstanding" means --
+    the property the purchase arm gets by sharing a clause list, expressed as a
     shared loader here because the arm's writer needs the ROWS (its settle is a
-    per-row service verb, not a bulk ``UPDATE``).  The arm reaches it through
-    its :attr:`Arm.load`.  **Both source-row arms read it until leaf
-    ``balance:X-bi-6-4c-2``**, where the transfer arm moved onto its leg
+    per-row service verb, not a bulk ``UPDATE``).  Each scope reaches it
+    through its :attr:`Arm.load` with its own *scope_clauses* -- the rows on
+    this account, or (plan step ``credit_card:CC-5-4b``) the rows planned on
+    another whose kept payment is here.  **Both source-row arms read it until
+    leaf ``balance:X-bi-6-4c-2``**, where the transfer arm moved onto its leg
     loader (the module docstring).
 
     Two eager loads are ALWAYS applied.  ``entries`` feeds
@@ -654,7 +670,8 @@ def outstanding_rows(
 
     Args:
         statement: The statement being reconciled.
-        kind_clauses: The arm's membership clauses (:func:`outstanding_scope`).
+        scope_clauses: The scope's membership clauses, its account clause
+            among them (:func:`outstanding_scope`).
         load_options: Eager loads beyond the two above -- the transaction arm
             loads ``template`` because it reads ``tracks_purchases``, which
             lazy-loads a template per row otherwise.
@@ -674,7 +691,7 @@ def outstanding_rows(
             selectinload(Transaction.entries),
             *load_options,
         )
-        .filter(*outstanding_scope(statement, kind_clauses))
+        .filter(*outstanding_scope(statement, scope_clauses))
     )
     if transaction_ids is not None:
         query = query.filter(Transaction.id.in_(transaction_ids))
@@ -718,16 +735,23 @@ def record_settled(
     reading of it was not.
 
     **The ids are re-derived through the arm's own loader rather than
-    trusted.**  An id belonging to another user, another account, a settled
-    item or one this arm does not own simply does not come back from
+    trusted.**  An id belonging to another user, outside the arm's scope (on
+    another account, for the scopes that offer this account's own rows), a
+    settled item or one this arm does not own simply does not come back from
     :attr:`Arm.load` and is silently skipped -- the set-operation form of the
     project's "404 for both not-found and not-yours" rule.  **Each arm is
-    handed its OWN form field's ids** since leaf ``balance:X-bi-6-4c-2``
+    handed its OWN TABLE's form field** since leaf ``balance:X-bi-6-4c-2``
     (ruling **R-BAL145**): a row's tick posts ``transaction_ids`` and a
-    transfer's ``transfer_ids``, because a transfer id can equal a row id.
-    Until then both arms took the one ``transaction_ids`` set and their
+    transfer's ``transfer_ids``, because a transfer id can equal a row id --
+    one number naming two tables is what one field could not carry.  Until
+    then both arms took the one ``transaction_ids`` set and their
     complementary scopes kept an id from settling twice; the two fields keep it
-    so by construction.
+    so by construction.  **The transaction arm's two scopes share the ROW
+    field** (ruling **R-CC116**, plan step ``credit_card:CC-5-4b``), because
+    there the number names one table in both: they partition on the row's
+    account, so an id loads in at most one, and a row the first settles has
+    left every settle scope (they admit only Projected rows) before the
+    second loads.
 
     **The count is the VERB's answer, not the column's** (finding **N-231**).
     Reading ``actual_amount`` before and after counted every envelope close as
@@ -743,7 +767,11 @@ def record_settled(
         arm: What the caller loads, and what a tick does to one.
         statement: The statement being reconciled.
         tick_ids: The ids the user ticked under the arm's form field.  An
-            empty set is a no-op that issues no query.
+            empty set is a no-op that issues no query.  The transaction arm's
+            two scopes are each handed the ROW field's whole set (ruling
+            **R-CC116**), so for them this is every row tick, not only the
+            scope's own -- which is what the logged ``requested_count`` below
+            then counts.
         corrections: ``{tick id: amount}`` from the arm's amount boxes.  An id
             with no entry settles at the item's own figure.
 
@@ -784,6 +812,11 @@ def record_settled(
             account_id=statement.account_id,
             observed_on=statement.observed_on.isoformat(),
             settled_count=len(items),
+            # The ids posted under the arm's FORM FIELD.  The two row scopes
+            # share one field (ruling R-CC116), so each that settles anything
+            # logs every row tick, and a scope's settled below requested is not
+            # by itself a tick that failed to land -- the route compares the
+            # whole submission with what landed and says so to the owner.
             requested_count=len(tick_ids),
             corrected_count=corrected,
         )

@@ -52,7 +52,9 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services import income_service, status_seam, template_amount_service
+from app.services import (
+    income_service, pay_list_service, status_seam, template_amount_service,
+)
 from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services.cash_ledger import (
     AmountRule,
@@ -949,6 +951,12 @@ class TestWhatEachRuleAnswers:
         a column-reading resolver answers ``None``, and re-pricing the PROFILE
         moves the answer.  The arithmetic is the paycheck engine's and is
         graded by its own suites.
+
+        **The profile is re-priced through its PAY ENTRY since plan step
+        salary:X-av-3a**, which dropped ``annual_salary`` for
+        ``salary.pay_entries``: the Fix door doubles the one paycheck the
+        profile stores, where the test doubled the yearly salary the engine
+        divided by 26.
         """
         tax_law(EMPTY_TAX_LAW)
         template, profile = _salary_template(seed_user)
@@ -963,14 +971,23 @@ class TestWhatEachRuleAnswers:
         # to the divisor or the rounding would pass.
         assert before == Decimal("2884.62"), "75000 / 26, no tax configs seeded"
 
-        profile.annual_salary = profile.annual_salary * 2
+        # Doubled through the Fix door, the route's own call; the payday is
+        # unchanged, so the door checks no day.
+        entry = profile.pay_entries[0]
+        ctx = BalanceContext.build(seed_user["user"].id)
+        pay_list_service.fix_entry(
+            entry, ctx, entry.amount * 2, entry.payday, ctx.as_of,
+        )
         db.session.flush()
         # A FRESH basis: the projection is memoized for the life of one, which
         # is the sharing ``SalaryPricing`` exists for, so re-asking the old one
         # would assert the memo rather than the rule.
         after = _resolve(seed_user, txn)
 
-        assert after == Decimal("5769.23"), "150000 / 26"
+        # 2 x $2,884.62 = $5,769.24, the doubled paycheck with no tax.  It was
+        # $5,769.23 while the engine divided a doubled YEAR: 150,000 / 26 =
+        # 5,769.2308 -> 5,769.23 (ruling R-SAL59 stores the paycheck).
+        assert after == Decimal("5769.24"), "2 x 2884.62"
         assert after > before, (
             "doubling the salary must move the paycheck this rule answers; a "
             f"rule reading anything else would still answer {before}"

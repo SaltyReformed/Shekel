@@ -2735,14 +2735,21 @@ class TestTheSectionsAndTheOrder:
         kinds = list(reconcile_service.OfferKind)
         assert sorted(kind.rank for kind in kinds) == list(range(len(kinds)))
         assert all(kind.section_label for kind in kinds)
-        # And exactly one carries a NOTE.  Asserted as a set rather than as a
-        # count so a note appearing on the wrong section fails here rather than
-        # on the screen: the sentence is about what a TICK does, and printing
-        # "settles both sides" over the Bills section would be a false promise
-        # about somebody's money.
+        # And exactly these two carry a NOTE: Transfers, because a tick there
+        # settles a second account too, and Paid from this account (ruling
+        # R-CC111, plan step credit_card:CC-5-4b), because its rows were
+        # recorded here and reopened and a tick records one here on the
+        # statement's day.  Asserted as a set rather than as a count so a note
+        # appearing on the wrong section fails here rather than on the screen:
+        # each sentence is about what a TICK does, and printing "settles both
+        # sides" over the Bills section would be a false promise about
+        # somebody's money.
         assert {
             kind for kind in kinds if kind.section_note
-        } == {reconcile_service.OfferKind.TRANSFER}
+        } == {
+            reconcile_service.OfferKind.TRANSFER,
+            reconcile_service.OfferKind.SETTLEMENT,
+        }
 
 
 class TestThePanelHoldsONEAmountBasis:

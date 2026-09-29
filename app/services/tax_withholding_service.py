@@ -287,9 +287,9 @@ def compute_withholding_to_date(
             *calendar* through :func:`year_paydays`, rather than passed in
             beside it -- see that function for what the third argument cost.
         calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar` -- the paycheck
-            count the engine divides the annual salary by and the payday set
-            its year-cumulative state is counted over.  It was a bare
+            :class:`~app.services.pay_calendar.PayCalendar` -- the rhythms
+            the engine prices each payday at and the payday set its
+            year-cumulative state is counted over.  It was a bare
             :class:`~app.services.pay_calendar.PayCadence` until plan step
             **balance:X-bh-1**, taken beside the profile so this function
             could decide whether a projection was needed BEFORE anything

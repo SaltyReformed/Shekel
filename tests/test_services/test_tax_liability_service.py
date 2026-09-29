@@ -22,7 +22,7 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services.exceptions import InvalidFilingStatusError
 from app.services.tax_liability_service import AnnualLiability, compute_annual_liability
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import EMPTY_TAX_LAW, start_test_pay_list
 
 
 def _make_profile(
@@ -51,7 +51,6 @@ def _make_profile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name=name,
-        annual_salary=Decimal("110000.00"),
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,
@@ -61,6 +60,7 @@ def _make_profile(
         other_dependents=other_dependents,
     )
     _db.session.add(profile)
+    start_test_pay_list(profile, Decimal("4230.77"))  # $110,000.00 a year / 26
     _db.session.flush()
     return profile
 

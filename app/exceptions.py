@@ -332,11 +332,12 @@ class PayPeriodDiscardRequired(ShekelError):
 class PayPeriodUnresolved(ShekelError):
     """A submitted pay-period id names no period the requesting owner has.
 
-    Raised by ``pay_period_admin.truncate_pay_periods`` when the id the
-    truncate form posted resolves to none of the caller's own periods -- it
-    was never theirs, it never existed, or a concurrent truncate deleted it
-    between the discard-confirm 422 and the confirmation post.  The operation
-    deletes nothing.
+    Raised by ``pay_period_admin.truncate_pay_periods`` and
+    ``remove_earlier_pay_periods`` (plan step ``pay_calendar:C21``) when the
+    id the form posted resolves to none of the caller's own periods -- it
+    was never theirs, it never existed, or a concurrent removal deleted it
+    after the page rendered (for truncate, also between the discard-confirm
+    422 and the confirmation post).  The operation deletes nothing.
 
     **One class for all three cases, and that is the security property**
     (plan step C3-a, finding **P13**).  The house rule is that "not found" and
@@ -344,7 +345,7 @@ class PayPeriodUnresolved(ShekelError):
     oracle; here that is structural rather than remembered, because there is
     only one exception to raise and one message on it.  Which case it was IS
     distinguished -- in the ACCESS log, where an analyst can see it and a
-    prober cannot (``pay_period_admin._log_unresolved_period``).
+    prober cannot (``pay_period_gates.log_unresolved_period``).
 
     Its own class rather than a bare
     :class:`ValidationError`, because the truncate route has to catch it: a
@@ -352,17 +353,49 @@ class PayPeriodUnresolved(ShekelError):
     the period again" for any future business-rule refusal raised anywhere
     below it, turning a real defect into advice about a dropdown.
 
+    Args:
+        period_id: The submitted id that resolved to nothing.
+        choice: What the owner picks again, in the words of the form that
+            posted it -- "the period to keep through" for truncate, "the
+            paycheck to start from" for remove-earlier.
+
     Attributes:
         period_id: The submitted id that resolved to nothing.
     """
 
-    def __init__(self, period_id):
+    def __init__(self, period_id, choice):
+        """Keep the id for the log and name the choice to make again."""
         self.period_id = period_id
+        # The id stays on the exception and in the ACCESS log, never in the
+        # sentence: app text shows a person no system id (the developer,
+        # 2026-09-23), and a stale page's owner could not act on one anyway.
         super().__init__(
-            f"Pay period {period_id} is not one of yours, or no longer "
-            f"exists. Reload the pay-periods settings page and choose the "
-            f"period to keep through from the current list."
+            f"That pay period is not one of yours, or no longer exists. "
+            f"Reload the pay-periods settings page and choose {choice} from "
+            f"the current list."
         )
+
+
+class PayPeriodRemovalRefused(ValidationError):
+    """ "Remove earlier paychecks" was refused: a ruled reason, and its sentence.
+
+    Plan step ``pay_calendar:C21``.  Raised by the door's gate
+    (``pay_period_gates.gate_removable_head``: a row the owner made, a pay
+    stub, money dated inside the removed paychecks -- ruling **R-PC109**),
+    by the era rule (``pay_era_write.era_to_move``, **R-PC110**) and by the
+    ledger post-condition (``pay_period_gates.reject_moved_ledger``,
+    **R-PC114**).  The operation leaves nothing behind: the gate's refusals
+    come before the door writes anything, and R-PC110's and R-PC114's
+    inside a savepoint the door rolls back before it re-raises.
+
+    **Its own class, for the reason** :class:`PayPeriodUnresolved` **gives**:
+    the route must catch the door's refusals and nothing else.  The door
+    runs both ledger re-syncs below that catch, and a catch on the generic
+    :class:`ValidationError` would flash any refusal they raise as advice
+    about paychecks instead of surfacing it (review 2 of C21).  A subclass
+    of :class:`ValidationError`, so a caller asking the broader question
+    still hears it.
+    """
 
 
 class PayPeriodResetBlocked(ShekelError):

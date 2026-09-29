@@ -57,6 +57,7 @@ from app.services import paycheck_calculator
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
+from tests._test_helpers import start_test_pay_list
 
 from app.services.tax_withholding_service import (
     CheckpointFigures,
@@ -71,7 +72,8 @@ ZERO = Decimal("0")
 
 
 def _make_profile(
-    seed_user, name="Withholding Test Profile", annual_salary="130000.00",
+    seed_user, name="Withholding Test Profile",
+    pay="5000.00",  # $130,000.00 a year / 26
 ):
     """Build and flush an active single/NC SalaryProfile.
 
@@ -86,12 +88,16 @@ def _make_profile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name=name,
-        annual_salary=Decimal(annual_salary),
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
     )
     _db.session.add(profile)
+    # From the 2026 calendar's first payday (P0 above): saved under
+    # ``seed_periods``, and a PROJECTED payday off the seed owner's 2024
+    # bootstrap (52 x 14 days on) where a case builds its periods after the
+    # profile or builds none.
+    start_test_pay_list(profile, Decimal(pay), date(2026, 1, 2))
     _db.session.flush()
     return profile
 
@@ -693,7 +699,7 @@ class TestFullYearCapContext:
         profile = _committed_profile(
             seed_user,
             name="High Earner",
-            annual_salary="260000.00",
+            pay="10000.00",  # $260,000.00 a year / 26
         )
         _make_full_year_periods(seed_user["user"])
         periods = _derived(seed_user["user"].id)

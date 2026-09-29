@@ -27,7 +27,6 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services.balance_at import BalanceContext
 from app.services import salary_cockpit_service
-from app.services.salary_raises import get_raise_event
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import _get_owned_profile_and_period
 
@@ -137,7 +136,7 @@ def _select_period(calendar, current_period):
     return period
 
 
-def _anatomy_context(profile, period, periods, breakdown, calibration_active):
+def _anatomy_context(profile, period, periods, paychecks, calibration_active):
     """Build the shared context the ``_anatomy.html`` partial renders.
 
     Shared by the cockpit's initial render and the :func:`anatomy`
@@ -151,7 +150,10 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
             :class:`~app.services.pay_calendar.DerivedPeriod`.
         periods: The owner's saved schedule as a
             :class:`~app.services.pay_calendar.PeriodWindow`.
-        breakdown: The focused period's paycheck breakdown.
+        paychecks: The pass's
+            :class:`~app.services.income_service.ProfilePaychecks` of
+            *profile*: the focused period's breakdown and its predecessor's
+            banner are both read from it.
         calibration_active: Whether the profile's calibration is active.
 
     Returns:
@@ -167,12 +169,17 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
     pos = period_ids.index(period.period_id)
     prev_id = period_ids[pos - 1] if pos > 0 else None
     next_id = period_ids[pos + 1] if pos < len(period_ids) - 1 else None
+    breakdown = paychecks.at(period)
     # Collapse the raise banner to the run's first paycheck: the calculator
     # badges ``raise_event`` on EVERY period of a raise month, so compare the
-    # focused period against its predecessor's event (computed directly, no
-    # full projection) and show the banner only on the run start.
+    # focused period against its predecessor's event and show the banner only
+    # on the run start.  The predecessor's banner is the ENGINE's, off the
+    # same pricer (plan step salary:X-av-3a, ruling R-SAL84): it was
+    # ``get_raise_event`` over the profile's rows here, a second walk that
+    # could not see a pay entry replacing a forecast raise.  A memo hit on
+    # the cockpit, which priced the saved schedule already.
     prev_raise_event = (
-        get_raise_event(profile.raises, periods[pos - 1])
+        paychecks.at(periods[pos - 1]).period.raise_event
         if pos > 0 else None
     )
     show_raise = salary_cockpit_service.raise_run_starts(
@@ -316,8 +323,10 @@ def cockpit():
     salary_path = salary_cockpit_service.build_salary_path(pairs, today)
 
     context = _base_cockpit_context()
+    # The pass memoizes a profile's pricer, so this is the one that priced
+    # ``breakdowns`` above.
     context.update(_anatomy_context(
-        profile, focused_period, periods, focused_breakdown,
+        profile, focused_period, periods, ctx.paychecks().for_profile(profile),
         _calibration_active(profile),
     ))
     context.update({
@@ -358,9 +367,9 @@ def anatomy(profile_id, period_id):
     )
 
     periods = calendar.saved()
-    breakdown = ctx.paychecks().for_profile(profile).at(period)
     context = _anatomy_context(
-        profile, period, periods, breakdown, _calibration_active(profile),
+        profile, period, periods, ctx.paychecks().for_profile(profile),
+        _calibration_active(profile),
     )
     # ``oob=True`` marks the deductions card as an out-of-band swap so
     # stepping updates it alongside the composition card (the primary

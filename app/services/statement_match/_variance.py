@@ -56,10 +56,13 @@ false** (corrected at plan step ``bank_import:X-gj-3a``).  `N-239` called the
 calculator's residue-apportionment and the bank-side gap ONE mechanism, and
 `N-391` records that as MEASURED FALSE -- `X-aw` shipped and the gap did not
 move, because the residue rule's whole range was `{$3,525.96, $3,525.97}`.
-What `N-391` says instead is that ``salary_profiles.annual_salary`` divides to
+What `N-391` says instead is that ``salary_profiles.annual_salary`` divided to
 a per-paycheck gross four cents under the stub the employer issues, and its
-owner is ``salary:X-av``.  A cause sentence nobody re-checks is exactly the
-shape that decays.
+owner was ``salary:X-av``.  Plan step ``salary:X-av-3a`` removed the division:
+the salary is now what one paycheck pays, so the owner can hold the stub's
+figure -- though its migration wrote the divided one, and the gap stays until
+the owner fixes it.  A cause sentence nobody re-checks is exactly the shape
+that decays.
 
 **Nothing PROPOSES a residual and nothing may.**  R-GD's own measurement is
 why: ``n choose k`` puts 20 leftover lines within 1% of some same-day row set,

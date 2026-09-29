@@ -576,9 +576,22 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
       past the covering era's second payday whenever the record holds that
       era's first (ruling 2026-09-11, after an adversarial review of
       ``C17-b-2`` drove a legal sequence past a floor that saw only the
-      batch's NEW paydays); a record BELOW the earliest era's phase is
-      ``C18``'s to admit, and this check is what its door must keep a
-      minting batch clear of.
+      batch's NEW paydays).  A record BELOW the earliest era's first step
+      would void that argument: its floor is that era's first payday, and a
+      rebuild from there leaves the era paying nothing past it.
+      ``C18-b``'s door is the one that records below, and it keeps the
+      argument whole by moving the earliest era's phase down with the
+      paydays it adds (ruling **R-PC105**, :func:`~._eras.earlier_paydays`).
+      ``C21``'s door, which retires the first paydays, cannot void it -- it
+      leaves the record ABOVE the phase, the migrated shape below -- and it
+      moves the phase up to the payday left first anyway (ruling
+      **R-PC110**, :func:`~._eras.opening_rephase`), refusing a removal that
+      would leave the earliest era none of its paydays.  So the record's
+      first payday stands for that era's first step for every owner a door
+      has written; the one era the ``C17-a`` migration
+      backfilled may be phased up to a cadence below it
+      (``models/pay_era.py``), which leaves that record at or above the
+      era's first step, so the argument holds there too.
 
     Args:
         eras: The candidate sequence.

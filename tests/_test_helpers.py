@@ -3947,23 +3947,69 @@ def set_default_grid_account(db_session, user_id, account_id):
     return settings
 
 
+def start_test_pay_list(profile, pay, payday=None):
+    """Give a test salary profile its FIRST pay entry, through the create door's writer.
+
+    A profile holds at least one pay entry from plan step salary:X-av-3a on
+    (ruling **R-SAL68**), and the create door writes it through
+    :func:`~app.services.pay_list_service.start_pay_list` -- so a fixture
+    writes it there too, payday check included, rather than constructing the
+    row around the door.
+
+    Args:
+        profile: The profile, added to the session; flushed here so the
+            entry can reference it.
+        pay: What one paycheck pays (``Decimal``).
+        payday: The payday it pays from.  Defaults to the owner's first
+            SAVED payday, which is where migration ``70680a4a7405`` put every
+            existing profile's one entry.
+
+    Returns:
+        The flushed :class:`~app.models.salary_pay_entry.SalaryPayEntry`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.extensions import db
+    from app.services import pay_list_service
+    from app.services.balance_at import BalanceContext
+    from app.utils.dates import display_today
+
+    db.session.flush()
+    ctx = BalanceContext.build(profile.user_id)
+    if payday is None:
+        payday = ctx.calendar().saved()[0].start_date
+    return pay_list_service.start_pay_list(
+        profile, ctx, pay, payday, display_today(),
+    )
+
+
+#: The pay :func:`make_salary_profile` gives a profile when a test names
+#: none: ``$75,000.00`` a year at 26 paychecks, rounded to the cent -- the
+#: figure migration ``70680a4a7405`` writes for the yearly salary this
+#: builder defaulted to until plan step salary:X-av-3a.
+DEFAULT_TEST_PAY = Decimal("2884.62")
+
+
 def make_salary_profile(
     seed_user, db_session, name="Test Salary",
-    annual_salary=None, state_code="NC",
+    pay=None, state_code="NC", pay_from=None,
 ):
-    """Build and add an active SalaryProfile for the seed user (uncommitted).
+    """Build and add an active SalaryProfile for the seed user, with its pay list (uncommitted).
 
     The shared salary-profile builder so the stereotyped
     ``FilingStatus`` lookup + ``SalaryProfile`` construction block is not
-    copied per suite (a duplicate-code finding).  The caller commits.
+    copied per suite (a duplicate-code finding).  Flushes, because the first
+    pay entry references the profile; the caller commits.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
         name: The profile name.
-        annual_salary: The annual salary (Decimal); defaults to
-            ``Decimal("75000.00")``.
+        pay: What one paycheck pays (``Decimal``); defaults to
+            :data:`DEFAULT_TEST_PAY`.
         state_code: The state code (default ``"NC"``).
+        pay_from: The payday the pay is paid from; defaults to the owner's
+            first saved payday (:func:`start_test_pay_list`).
 
     Returns:
         The added :class:`~app.models.salary_profile.SalaryProfile`.
@@ -3973,18 +4019,18 @@ def make_salary_profile(
     from app.models.ref import FilingStatus
     from app.models.salary_profile import SalaryProfile
 
-    if annual_salary is None:
-        annual_salary = Decimal("75000.00")
     filing = db_session.query(FilingStatus).first()
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         filing_status_id=filing.id,
         name=name,
-        annual_salary=annual_salary,
         state_code=state_code,
     )
     db_session.add(profile)
+    start_test_pay_list(
+        profile, DEFAULT_TEST_PAY if pay is None else pay, pay_from,
+    )
     return profile
 
 

@@ -37,7 +37,7 @@ from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
-from tests._test_helpers import biweekly_window
+from tests._test_helpers import biweekly_window, start_test_pay_list
 
 #: 14 days between paydays, 26 a year -- the cadence the seeded scenarios
 #: build and every hand-computed figure here assumes.
@@ -295,11 +295,11 @@ def _seed_scenario(db, seed_user, *, balance, annual_return,
         scenario_id=scenario.id,
         filing_status_id=filing.id,
         name="Day Job",
-        annual_salary=Decimal("80000.00"),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db.session.flush()
 
     settings = (

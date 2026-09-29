@@ -747,7 +747,7 @@ class TestDashboardTracks:
         # pylint: disable=import-outside-toplevel
         from app.models.ref import FilingStatus
         from app.models.salary_profile import SalaryProfile
-        from tests._test_helpers import create_loan_account
+        from tests._test_helpers import create_loan_account, start_test_pay_list
 
         with app.app_context():
             create_loan_account(
@@ -755,14 +755,15 @@ class TestDashboardTracks:
                 principal=Decimal("1000.00"), rate=Decimal("0.05000"),
                 term=24,
             )
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=db.session.query(FilingStatus).first().id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             db.session.commit()
 
             resp = auth_client.get("/dashboard")

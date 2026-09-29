@@ -3199,7 +3199,7 @@ class TestTheContributionRowOnARealFeed:
             seed_user, db.session, periods[2], Decimal("10000.00"), **params,
         )
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=self._ANNUAL_SALARY,
+            seed_user, db.session, pay=Decimal("4000.00"),  # $104,000.00 a year / 26
         )
         db.session.flush()
         _add_flat_deduction(db, profile, account, self._EMPLOYEE)

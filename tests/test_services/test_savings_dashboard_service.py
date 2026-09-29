@@ -50,6 +50,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     fica_only_law,
     settle_day_columns,
+    start_test_pay_list,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -519,10 +520,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -623,10 +624,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -1602,14 +1603,15 @@ class TestDebtSummary:
         """
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Equivalence Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2380,10 +2382,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2419,10 +2421,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
                 TransferSpec(
@@ -2563,17 +2565,17 @@ class TestDTIRaiseAware:
         """C26-1: With an applicable raise the DTI denominator is the
         post-raise engine gross.
 
-        Salary $104,000.00 + a one-time 3% raise effective month 1 of
-        the current period's year.  ``apply_raises`` applies the raise
-        once for the current period, so the engine's per-period gross
-        reflects the post-raise salary; the period-to-monthly factor
-        (26/12) is the structural biweekly-pay-schedule normalization
-        and is preserved.
+        Salary $4,000.00 a paycheck ($104,000.00 / 26, from the first
+        payday, 2026-01-02) + a one-time 3% raise effective month 2 of the
+        current period's year.  The raise lands on 2026-02-01, after the pay
+        entry (an entry holds every raise landing on or before its payday,
+        ruling R-SAL59, so a January raise would be inside it) and before the
+        current period's payday, so the engine's per-period gross reflects
+        the post-raise pay; the period-to-monthly factor (26/12) is the
+        structural biweekly-pay-schedule normalization and is preserved.
 
         Hand-computed engine output (MED-06 / F-032):
-            annual_after_raise = 104000.00 * 1.03 = 107120.00
-            gross_biweekly     = 107120.00 / 26   = 4120.0000 -> $4,120.00
-                                 (ROUND_HALF_UP via paycheck_calculator)
+            gross_biweekly     = 4000.00 * 1.03 = 4120.00
             gross_monthly      = 4120.00 * 26 / 12 = 8926.6666...
                                                    -> $8,926.67 ROUND_HALF_UP
 
@@ -2584,7 +2586,12 @@ class TestDTIRaiseAware:
 
         DTI ratio uses the engine-derived ``total_monthly_payments``
         (verified by sibling debt-summary tests) over the new
-        denominator, quantized to one decimal place.
+        denominator, quantized to one decimal place.  **The loan is
+        $10,000.00, not the helper's $1,000.00**, because a one-decimal
+        ratio cannot see the $260.00 over the small loan's $43.87 payment
+        (both denominators give 0.5%).  At $10,000.00, 5%, 24 months the
+        payment is $438.71: 438.71 / 8,926.67 = 4.91% -> 4.9, where the
+        dropped raise's 438.71 / 8,666.67 = 5.06% -> 5.1.
         """
         from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
         from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
@@ -2596,10 +2603,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Raise Salary",
-                annual_salary=Decimal("104000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -2617,11 +2624,13 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))
-            _create_small_loan(seed_user, db.session)
+            _create_small_loan(
+                seed_user, db.session, principal=Decimal("10000.00"),
+            )
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -2636,7 +2645,7 @@ class TestDTIRaiseAware:
             # which no longer stores it (plan step X-s3) -- and the identity is
             # the stronger pin, since the off-engine $8,666.67 would fail it.
             # total_monthly_payments is the engine-derived monthly P&I
-            # from _create_small_loan ($1,000 @ 5% for 24mo); we
+            # from _create_small_loan ($10,000 @ 5% for 24mo); we
             # consume it as an input here so the test pins behaviour
             # without re-deriving the amortization engine's output.
             expected_dti = (
@@ -2670,10 +2679,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI No-Raise Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2823,10 +2832,12 @@ class TestDTIRaiseAware:
             36-43% -> moderate
             > 43%  -> high
 
-        Salary $50,000 + a one-time 3% raise effective month 1 of the
-        current year (applies once in the current period):
-            annual_after_raise = 50000.00 * 1.03 = 51500.00
-            gross_biweekly     = 51500.00 / 26   = 1980.7692... -> $1,980.77
+        Salary $1,923.08 a paycheck ($50,000 / 26, from the first payday,
+        2026-01-02) + a one-time 3% raise effective month 2 of the current
+        year -- landing 2026-02-01, after the pay entry, so it applies once
+        in the current period (a January raise would be inside the entry,
+        ruling R-SAL59):
+            gross_biweekly     = 1923.08 * 1.03 = 1980.7724 -> $1,980.77
             gross_monthly      = 1980.77 * 26 / 12 = 4291.6683...
                                                    -> $4,291.67 ROUND_HALF_UP
             36% band floor (engine)  = 4291.67 * 0.36 = $1,545.00
@@ -2858,10 +2869,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Band Raise Salary",
-                annual_salary=Decimal("50000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -2876,7 +2887,7 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))
@@ -7154,7 +7165,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
                     multiplier=Decimal("3.00")):
         """The owner above, with the calibration row and the second profile as asked."""
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 a year / 26
         )
         db.session.flush()
         if calibrated:
@@ -7175,7 +7186,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         if second_profile:
             make_salary_profile(
                 seed_user, db.session, name="Second Job",
-                annual_salary=Decimal("26000.00"),
+                pay=Decimal("1000.00"),  # $26,000.00 a year / 26
             )
         db.session.add(SavingsGoal(
             user_id=seed_user["user"].id,

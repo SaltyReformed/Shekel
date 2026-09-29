@@ -318,6 +318,9 @@ def outstanding_transfers(
             is_correctable=True,
             is_income=leg.is_income,
             kind=OfferKind.TRANSFER,
+            # A leg is never purchase-tracked, so no tick of one closes an
+            # envelope.
+            closes_envelope=False,
         )
         groups.append(OutstandingGroup(
             key=leg.cell_key,

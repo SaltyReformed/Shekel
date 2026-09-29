@@ -2,7 +2,8 @@
 Shekel Budget App -- Pay Period Routes
 
 Generates the biweekly schedule and manages its lifecycle: extend the
-schedule forward, truncate the tail, and regenerate a wrong future tail.
+schedule forward, add paychecks before the first or remove the ones before a
+chosen paycheck, truncate the tail, and regenerate a wrong future tail.
 All management actions are full-page POST + redirect (or a 422 re-render
 of the settings dashboard when a discard needs confirming); they live on
 the settings "pay-periods" section.
@@ -19,6 +20,7 @@ from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
+    PayPeriodRemovalRefused,
     PayPeriodResetBlocked,
     PayPeriodUnresolved,
     ValidationError,
@@ -30,6 +32,7 @@ from app.schemas.validation import (
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
+    PayPeriodRemoveEarlierSchema,
     PayPeriodResetSchema,
     PayPeriodTruncateSchema,
     PayScheduleSchema,
@@ -49,6 +52,7 @@ pay_periods_bp = Blueprint("pay_periods", __name__)
 _generate_schema = PayPeriodGenerateSchema()
 _extend_schema = PayPeriodExtendSchema()
 _truncate_schema = PayPeriodTruncateSchema()
+_remove_earlier_schema = PayPeriodRemoveEarlierSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
 _reset_schema = PayPeriodResetSchema()
 _schedule_schema = PayScheduleSchema()
@@ -138,6 +142,27 @@ def _append_periods(num_periods):
     is one call to :func:`~app.services.pay_period_admin.extend_pay_periods`,
     so the two doors cannot drift into two spellings of appending a paycheck.
 
+    Args:
+        num_periods: How many paychecks to append.
+
+    Returns:
+        A redirect to the settings pay-periods section, flashing either the
+        count appended or the refusal.
+    """
+    return _record_periods(
+        pay_period_admin.extend_pay_periods, num_periods,
+        "Added {count} pay periods.",
+    )
+
+
+def _record_periods(door, num_periods, added):
+    """Record *num_periods* paychecks through *door*, populate them, commit.
+
+    **The one body behind every settings-page door that ADDS paychecks
+    without stating a rhythm** -- the continue path (:func:`_append_periods`) and "Add earlier
+    paychecks" (plan step ``pay_calendar:C18-b``) -- so the order below and
+    the rollback that guards it are written once rather than per door.
+
     RECORD, then POPULATE, and the order is the whole of ruling **R-R38**:
     the read pass the recurrence resolves in is opened by
     :func:`~app.routes._period_population.populate_new_periods` AFTER the
@@ -147,30 +172,31 @@ def _append_periods(num_periods):
     with no rent, no paycheck and no recurring transfer in them.
 
     Args:
-        num_periods: How many paychecks to append.
+        door: The ``pay_period_admin`` door, called as ``door(user_id,
+            num_periods)`` and returning the new periods, flushed and empty.
+        num_periods: How many paychecks to add.
+        added: The success message, with ``{count}`` for how many were.
 
     Returns:
         A redirect to the settings pay-periods section, flashing either the
-        count appended or the refusal.
+        count added or the refusal.
     """
     try:
-        new_periods = pay_period_admin.extend_pay_periods(
-            current_user.id, num_periods,
-        )
+        new_periods = door(current_user.id, num_periods)
         populate_new_periods(current_user.id, new_periods)
     except ValidationError as exc:
-        # Rolled back before the redirect: ``extend_pay_periods`` takes the
-        # per-user advisory lock, and whichever of the two calls above ran
-        # before the refusal may have flushed -- the door's own refusals run
-        # before its first durable statement, the repopulation's do not. The
-        # page this redirects to reads the owner's schedule back, so it reads
-        # committed state either way.
+        # Rolled back before the redirect: each door takes the per-user
+        # advisory lock, and whichever of the two calls above ran before the
+        # refusal may have flushed -- the door's own refusals run before its
+        # first durable statement, the repopulation's do not. The page this
+        # redirects to reads the owner's schedule back, so it reads committed
+        # state either way.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
 
     db.session.commit()
-    flash(f"Added {len(new_periods)} pay periods.", "success")
+    flash(added.format(count=len(new_periods)), "success")
     return _pay_periods_redirect()
 
 
@@ -363,6 +389,79 @@ def extend():
     # so this door and the generate door share ONE continue path rather than
     # two spellings of it.  Nothing about this door's behaviour changed.
     return _append_periods(data["num_periods"])
+
+
+@pay_periods_bp.route("/pay-periods/earlier", methods=["POST"])
+@require_owner
+def add_earlier():
+    """Add paychecks before the first one ("Add earlier paychecks").
+
+    Plan step ``pay_calendar:C18-b`` (ruling **R-PC87**): Extend's twin at
+    the schedule's other end, asking only how many -- the same one field, so
+    the same schema -- and recording the paydays the owner's earliest rhythm
+    projects just before their first
+    (:func:`~app.services.pay_period_admin.add_earlier_pay_periods`).  Its
+    refusals -- a payday before the owner's stated history (ruling
+    **R-PC104**) or before the application's calendar -- come back as a
+    flash, like every sibling action on this settings section.
+    """
+    errors = _extend_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _extend_schema.load(request.form)
+    return _record_periods(
+        pay_period_admin.add_earlier_pay_periods, data["num_periods"],
+        "Added {count} earlier paycheck(s).",
+    )
+
+
+@pay_periods_bp.route("/pay-periods/remove-earlier", methods=["POST"])
+@require_owner
+def remove_earlier():
+    """Remove the paychecks before a chosen one ("Remove earlier paychecks").
+
+    Plan step ``pay_calendar:C21`` (rulings **R-PC108** to **R-PC111**): the
+    undo of :func:`add_earlier`, shaped as :func:`truncate` is at the other
+    end -- the form posts the paycheck to START FROM by id, and every
+    paycheck before it goes
+    (:func:`~app.services.pay_period_admin.remove_earlier_pay_periods`).
+    Nothing is populated, since nothing is recorded.
+
+    **Every refusal is a flash, and nothing is left staged**: an
+    id that is not the owner's (``PayPeriodUnresolved``, one message for "no
+    such" and "not yours", as at truncate), a paycheck holding money or money
+    dated inside the removed ones (**R-PC109**), a removal taking every
+    payday of the earliest pay rhythm (**R-PC110**), and one that would
+    change a posted total the ledger's re-syncs do not rebuild (**R-PC114**)
+    -- the last three ``PayPeriodRemovalRefused``: R-PC109's before the door
+    writes, R-PC110's and R-PC114's after it rolls back its own savepoint.
+    The catch is that class and not
+    the generic ``ValidationError``, because both ledger re-syncs run below
+    it: a refusal of theirs is a defect to surface, not advice to flash.
+    The rollback here is for the page this redirects to, which reads the
+    owner's schedule back.  There is no discard-confirm panel: the ruling
+    refused one.
+    """
+    errors = _remove_earlier_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _remove_earlier_schema.load(request.form)
+    try:
+        removed = pay_period_admin.remove_earlier_pay_periods(
+            current_user.id, data["start_from_period_id"],
+        )
+    except (PayPeriodUnresolved, PayPeriodRemovalRefused) as exc:
+        db.session.rollback()
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash(f"Removed {removed} earlier paycheck(s).", "success")
+    return _pay_periods_redirect()
 
 
 @pay_periods_bp.route("/pay-periods/truncate", methods=["POST"])
@@ -583,7 +682,7 @@ def history():
         )
     except ValidationError as exc:
         # Nothing is staged before the refusal -- the setter validates ahead of
-        # its one assignment -- so this needs no rollback, unlike the four
+        # its one assignment -- so this needs no rollback, unlike the
         # structural doors above it.
         flash(str(exc), "danger")
         return _pay_periods_redirect()

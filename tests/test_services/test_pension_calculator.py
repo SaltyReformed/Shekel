@@ -5,6 +5,7 @@ Tests the pension benefit calculation including years of service,
 high-salary average computation, and salary projection integration.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -13,11 +14,12 @@ import pytest
 from app.services.pension_calculator import (
     PensionBenefit,
     calculate_benefit,
-    project_salaries_by_year,
+    project_profile_salaries,
     _calculate_years_of_service,
     _compute_high_salary_average,
     ZERO,
 )
+from tests._test_helpers import biweekly_window, payroll_basis
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -26,7 +28,7 @@ from app.services.pension_calculator import (
 class FakeRaise:
     """A raise-shaped value carrying exactly what the walk reads.
 
-    **It has no raise TYPE, and the absence is the point** (plan step
+    **It has no raise type ID, and the absence is the point** (plan step
     salary:S3-c, ruling R-SAL11).  It carried a ``raise_type_id`` resolved
     through the ref cache while the projection discriminated cola-type
     raises from merit and custom ones to decide which the merit horizon
@@ -34,6 +36,12 @@ class FakeRaise:
     stored ``terminal_year`` -- so a type on this double would assert a
     distinction the producer can no longer make, which is how a test starts
     describing a rule that is not there.
+
+    *It carries a type's display NAME since plan step salary:X-av-3a*, which
+    projects the salary path through the paycheck engine's walk: that walk
+    reads a raise set as :class:`~app.services.salary_raises.RaiseTerms`
+    values, and ``RaiseTerms.of`` copies ``raise_type_name`` for the pay
+    banner's label.  Nothing on the salary path reads it.
     """
 
     def __init__(self, percentage=None, flat_amount=None,
@@ -47,6 +55,57 @@ class FakeRaise:
         #: The last year this raise is believed to happen, ``None`` for
         #: indefinitely.  Read directly by ``salary_raises._applications``.
         self.terminal_year = terminal_year
+        #: Display only: the banner's label (see the class docstring).
+        self.raise_type_name = "merit"
+
+
+#: The payday every fake pay list below is recorded from: one biweekly
+#: paycheck before 2026-01-02, so it precedes the first landing of every raise
+#: in this module (a raise lands on the 1st of its effective month, the
+#: earliest here 2026-01-01).  An entry REPLACES every forecast raise landing
+#: on or before its payday (ruling R-SAL59), so an entry dated after a raise's
+#: landing would hold that raise rather than exercise it.
+_ENTRY_PAYDAY = date(2025, 12, 19)
+
+
+@dataclass(frozen=True)
+class FakePayEntry:
+    """A pay entry carrying exactly what the walk reads: its payday and its pay."""
+
+    payday: date
+    amount: Decimal
+
+
+class FakeProfile:
+    """A salary profile carrying exactly what the pension's salary path reads.
+
+    Plan step salary:X-av-3a replaced the yearly salary with a PAY LIST, and
+    :func:`project_profile_salaries` walks it through
+    :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`: ONE entry
+    paying *pay* (one paycheck's gross) from :data:`_ENTRY_PAYDAY`, raised by
+    *raises*.
+    """
+
+    def __init__(self, pay, raises):
+        self.pay_entries = [FakePayEntry(_ENTRY_PAYDAY, Decimal(pay))]
+        self.raises = raises
+
+
+def _salary_path(pay, raises, start_year, end_year):
+    """The pension's salary path for a biweekly profile paid *pay* from :data:`_ENTRY_PAYDAY`.
+
+    Each year's figure is the walk's pay on December 1 times 26 paychecks
+    (ruling R-SAL59: the yearly figure is pay x paychecks a year, never
+    divided back out), with each raise step rounded to the cent as a stub
+    prints it (ruling R-SAL60).
+    """
+    return project_profile_salaries(
+        payroll_basis(
+            FakeProfile(pay, raises), biweekly_window(_ENTRY_PAYDAY, 1),
+        ),
+        start_year,
+        end_year,
+    )
 
 
 # ── Tests ────────────────────────────────────────────────────────
@@ -200,56 +259,72 @@ class TestHighSalaryAverage:
         assert len(window) == 2
 
 
+
+
 class TestProjectSalariesByYear:
+    """The pension's salary path, re-stated on the pay list's walk (plan step salary:X-av-3a).
+
+    ``project_salaries_by_year(annual_salary, raises, ...)`` compounded a
+    stored yearly salary and was deleted with it; the path is
+    :func:`project_profile_salaries` now, the walk's pay on each December 1
+    times the paychecks a year.  Each case keeps its rule and its raises; the
+    salary is the one paycheck the migration writes for it,
+    round-half-up(yearly / 26), so the yearly figures move by the
+    pay-times-count product (ruling R-SAL59) and by each raise step's cent
+    rounding (ruling R-SAL60).
+    """
+
     def test_no_raises(self):
-        result = project_salaries_by_year(Decimal("80000"), [], 2026, 2028)
+        """No raise: every year is the entry's pay times 26.
+
+        $80,000 a year is 3,076.92 a paycheck (80,000 / 26 = 3,076.923...);
+        3,076.92 x 26 = 79,999.92.
+        """
+        result = _salary_path("3076.92", [], 2026, 2028)
         assert len(result) == 3
-        for year, salary in result:
-            assert salary == Decimal("80000.00")
+        for _year, salary in result:
+            assert salary == Decimal("79999.92")
 
     def test_with_recurring_raise(self):
         """Recurring 3% raise with no end year compounds each year.
 
-        Each year is evaluated at December 1, so month >= effective_month=3
-        always applies.
-        2026: 1 application  -> 80000 * 1.03   = 82400.00
-        2027: 2 applications -> 80000 * 1.03^2 = 84872.00
-        2028: 3 applications -> 80000 * 1.03^3 = 87418.16
+        Each year is evaluated at December 1, so the March application
+        always applies.  From 3,076.92 a paycheck, one cent-rounded step per
+        year:
+        2026: 3,076.92 x 1.03 = 3,169.2276 -> 3,169.23; x 26 = 82,399.98
+        2027: 3,169.23 x 1.03 = 3,264.3069 -> 3,264.31; x 26 = 84,872.06
+        2028: 3,264.31 x 1.03 = 3,362.2393 -> 3,362.24; x 26 = 87,418.24
         """
         raises = [
             FakeRaise(percentage="0.03", effective_month=3,
                       effective_year=2026, is_recurring=True),
         ]
-        result = project_salaries_by_year(
-            Decimal("80000"), raises, 2026, 2028,
+        result = _salary_path("3076.92", raises, 2026, 2028)
+        # 3,169.23 x 26
+        assert result[0][1] == Decimal("82399.98"), (
+            f"2026 salary: expected 82399.98, got {result[0][1]}"
         )
-        # 80000 * 1.03 = 82400.00
-        assert result[0][1] == Decimal("82400.00"), (
-            f"2026 salary: expected 82400.00, got {result[0][1]}"
+        # 3,264.31 x 26
+        assert result[1][1] == Decimal("84872.06"), (
+            f"2027 salary: expected 84872.06, got {result[1][1]}"
         )
-        # 80000 * 1.03^2 = 84872.00
-        assert result[1][1] == Decimal("84872.00"), (
-            f"2027 salary: expected 84872.00, got {result[1][1]}"
-        )
-        # 80000 * 1.03^3 = 87418.16
-        assert result[2][1] == Decimal("87418.16"), (
-            f"2028 salary: expected 87418.16, got {result[2][1]}"
+        # 3,362.24 x 26
+        assert result[2][1] == Decimal("87418.24"), (
+            f"2028 salary: expected 87418.24, got {result[2][1]}"
         )
 
     def test_recurring_raise_highest_years_near_retirement(self):
         """A raise with no end year extrapolates to retirement.
 
-        A 2.5% recurring raise believed indefinitely from 2026 to 2046
-        makes the last 4 years the highest, which is what the high-salary
-        window must then select.
+        A 2.5% recurring raise believed indefinitely from 2026 to 2046, on
+        3,461.54 a paycheck ($90,000 / 26), makes the last 4 years the
+        highest, which is what the high-salary window must then select.
         """
         raises = [
             FakeRaise(percentage="0.025", effective_month=1,
                       effective_year=2026, is_recurring=True),
         ]
-        salary_by_year = project_salaries_by_year(
-            Decimal("90000"), raises, 2026, 2046,
-        )
+        salary_by_year = _salary_path("3461.54", raises, 2026, 2046)
         result = calculate_benefit(
             benefit_multiplier=Decimal("0.0185"),
             consecutive_high_years=4,
@@ -267,15 +342,14 @@ class TestProjectSalariesByYear:
 class TestTheEndYearOnEachRaise:
     """How long each raise is believed, read off the raise (**R-SAL11**).
 
-    **Translated from ``TestMeritHorizon`` at plan step salary:S3-c, and
-    every figure below is the one that class asserted.**  That is the
-    evidence rather than a convenience: ``pension_calculator
-    ._terminate_after_horizon`` did nothing but ASSIGN a terminal year --
-    ``None`` for a recurring cola, ``start_year + N`` for everything else --
-    so stating the same terminal year on the raise itself has to reproduce
-    the same walk to the cent.  Where a case's answer genuinely MOVES, it is
-    the one about a one-time raise, and that test states its own before and
-    after.
+    **Translated from ``TestMeritHorizon`` at plan step salary:S3-c**, which
+    reproduced that class's walk to the cent; **re-stated on the pay list's
+    walk at plan step salary:X-av-3a**, where the stored fact became one
+    paycheck (3,846.15 for $100,000 / 26) and each raise step rounds to the
+    cent (ruling R-SAL60), so every figure below is the walk's per-paycheck
+    pay on December 1 times 26 and each case lists its steps.  The rules are
+    unchanged: an end year stops a raise, no end year compounds, a raise is
+    never pulled before its start, applications walk in date order.
 
     Each raise evaluates at December 1, so the effective month never gates
     the December-of-year application.
@@ -284,17 +358,17 @@ class TestTheEndYearOnEachRaise:
     def test_a_raise_with_an_end_year_stops_while_one_without_continues(self):
         """Two 10% raises, one ending 2028 and one believed indefinitely.
 
-        base 100,000; both recurring from 2026, one effective January and
-        ending 2028, the other effective July with no end year.  Through
-        2028 both apply once per year, so by year Y the salary is
-        100000 * 1.10^(2*(Y-2025)):
-          2026: 100000 * 1.10^2 = 121,000.00
-          2028 (the end year): 100000 * 1.10^6 = 177,156.10
-        After it the ended raise contributes nothing further and only the
-        other compounds from the 2028 salary:
-          2029: 177,156.10 * 1.10   = 194,871.71  (NOT 100000*1.10^8 =
-                                       214,358.88, which is both-continue)
-          2031: 177,156.10 * 1.10^3 = 235,794.77
+        3,846.15 a paycheck; both recurring from 2026, one effective January
+        and ending 2028, the other effective July with no end year.  Each
+        step x 1.10, rounded to the cent:
+          2026-01 4,230.77   2026-07 4,653.85  -> 2026: x 26 = 121,000.10
+          2027-01 5,119.24   2027-07 5,631.16
+          2028-01 6,194.28   2028-07 6,813.71  -> 2028: x 26 = 177,156.46
+        After 2028 the ended raise contributes nothing further and only the
+        July one compounds:
+          2029-07 7,495.08  -> 2029: x 26 = 194,872.08  (NOT 8,244.59 x 26 =
+                               214,359.34, which is both-continue)
+          2030-07 8,244.59   2031-07 9,069.05 -> 2031: x 26 = 235,795.30
         """
         raises = [
             FakeRaise(percentage="0.10", effective_month=1,
@@ -303,76 +377,73 @@ class TestTheEndYearOnEachRaise:
             FakeRaise(percentage="0.10", effective_month=7,
                       effective_year=2026, is_recurring=True),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2031,
-        ))
-        # 100000 * 1.10 * 1.10 = 121000.00
-        assert result[2026] == Decimal("121000.00")
-        # 100000 * 1.10^6 = 177156.10 (both raises still applying)
-        assert result[2028] == Decimal("177156.10")
-        # 177156.10 * 1.10 = 194871.71 (the ended raise contributes nothing)
-        assert result[2029] == Decimal("194871.71")
-        # 177156.10 * 1.10^3 = 235794.77
-        assert result[2031] == Decimal("235794.77")
+        result = dict(_salary_path("3846.15", raises, 2026, 2031))
+        # 4,653.85 x 26 (both raises applied once)
+        assert result[2026] == Decimal("121000.10")
+        # 6,813.71 x 26 (both raises still applying)
+        assert result[2028] == Decimal("177156.46")
+        # 7,495.08 x 26 (the ended raise contributes nothing)
+        assert result[2029] == Decimal("194872.08")
+        # 9,069.05 x 26
+        assert result[2031] == Decimal("235795.30")
 
     def test_a_raise_with_no_end_year_compounds_uninterrupted(self):
         """A raise believed indefinitely drops and repeats no occurrence.
 
-        base 100,000; 10% (July) recurring from 2026 with no end year:
-          2026: 100000 * 1.10   = 110,000.00
-          2028: 100000 * 1.10^3 = 133,100.00
-          2029: 100000 * 1.10^4 = 146,410.00
-          2030: 100000 * 1.10^5 = 161,051.00
+        3,846.15 a paycheck; 10% (July) recurring from 2026 with no end
+        year, one step a year:
+          2026: 4,230.77 x 26 = 110,000.02
+          2027: 4,653.85
+          2028: 5,119.24 x 26 = 133,100.24
+          2029: 5,631.16 x 26 = 146,410.16
+          2030: 6,194.28 x 26 = 161,051.28
         """
         raises = [
             FakeRaise(percentage="0.10", effective_month=7,
                       effective_year=2026, is_recurring=True),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2030,
-        ))
-        assert result[2026] == Decimal("110000.00")   # 100000 * 1.10
-        assert result[2028] == Decimal("133100.00")   # 100000 * 1.10^3
-        assert result[2029] == Decimal("146410.00")   # 100000 * 1.10^4
-        assert result[2030] == Decimal("161051.00")   # 100000 * 1.10^5
+        result = dict(_salary_path("3846.15", raises, 2026, 2030))
+        assert result[2026] == Decimal("110000.02")   # 4,230.77 x 26
+        assert result[2028] == Decimal("133100.24")   # 5,119.24 x 26
+        assert result[2029] == Decimal("146410.16")   # 5,631.16 x 26
+        assert result[2030] == Decimal("161051.28")   # 6,194.28 x 26
 
     def test_the_salary_plateaus_after_the_only_raises_end_year(self):
         """One 10% raise ending 2028, and nothing else moves the salary.
 
-        base 100,000; recurring from 2026, ending 2028:
-          2026: 100000 * 1.10   = 110,000.00
-          2028: 100000 * 1.10^3 = 133,100.00
-          2029: 133,100.00 (nothing applies)
-          2030: 133,100.00 (nothing applies)
+        3,846.15 a paycheck; recurring from 2026, ending 2028:
+          2026: 4,230.77 x 26 = 110,000.02
+          2027: 4,653.85
+          2028: 5,119.24 x 26 = 133,100.24
+          2029: 133,100.24 (nothing applies)
+          2030: 133,100.24 (nothing applies)
         """
         raises = [
             FakeRaise(percentage="0.10", effective_month=1,
                       effective_year=2026, is_recurring=True,
                       terminal_year=2028),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2030,
-        ))
-        assert result[2026] == Decimal("110000.00")   # 100000 * 1.10
-        assert result[2028] == Decimal("133100.00")   # 100000 * 1.10^3
-        assert result[2029] == Decimal("133100.00")   # plateau
-        assert result[2030] == Decimal("133100.00")   # plateau
+        result = dict(_salary_path("3846.15", raises, 2026, 2030))
+        assert result[2026] == Decimal("110000.02")   # 4,230.77 x 26
+        assert result[2028] == Decimal("133100.24")   # 5,119.24 x 26
+        assert result[2029] == Decimal("133100.24")   # plateau
+        assert result[2030] == Decimal("133100.24")   # plateau
 
     def test_a_future_scheduled_raise_is_not_pulled_before_its_start(self):
         """A raise effective 2031 first applies in ITS year, never earlier (H1).
 
-        base 100,000; a 10% recurring raise effective 2031, no end year:
-          2026-2030: 100,000.00  (it does not exist yet)
-          2031: 100,000 * 1.10   = 110,000.00  (first application)
-          2032: 100,000 * 1.10^2 = 121,000.00
+        3,846.15 a paycheck; a 10% recurring raise effective 2031, no end
+        year:
+          2026-2030: 3,846.15 x 26 = 99,999.90  (it does not exist yet)
+          2031: 4,230.77 x 26 = 110,000.02  (first application)
+          2032: 4,653.85 x 26 = 121,000.10
 
-        H1 was the defect this guards: the merit horizon this step deleted
-        expressed itself by RE-ANCHORING a raise's effective year past a
-        cutoff so a second compounding pass counted only the occurrences
-        beyond it, and a plain reset pulled this 2031 raise back to 2029 --
-        110,000.00 in 2029 and 146,410.00 by 2032.  It needed a
-        ``max(own, anchor)`` floor to stop that.  Nothing has moved an
-        effective year since plan step salary:S3-a, so the floor has no
+        H1 was the defect this guards: the merit horizon plan step S3-c
+        deleted expressed itself by RE-ANCHORING a raise's effective year past
+        a cutoff so a second compounding pass counted only the occurrences
+        beyond it, and a plain reset pulled this 2031 raise back to 2029.  It
+        needed a ``max(own, anchor)`` floor to stop that.  Nothing has moved
+        an effective year since plan step salary:S3-a, so the floor has no
         subject; the case is kept because a future implementation could
         reintroduce one.
         """
@@ -380,31 +451,32 @@ class TestTheEndYearOnEachRaise:
             FakeRaise(percentage="0.10", effective_month=7,
                       effective_year=2031, is_recurring=True),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2032,
-        ))
-        assert result[2028] == Decimal("100000.00")  # not live yet
-        assert result[2029] == Decimal("100000.00")  # NOT 110,000 (H1 bug)
-        assert result[2030] == Decimal("100000.00")
-        assert result[2031] == Decimal("110000.00")  # 100000 * 1.10
-        assert result[2032] == Decimal("121000.00")  # 100000 * 1.10^2
+        result = dict(_salary_path("3846.15", raises, 2026, 2032))
+        assert result[2028] == Decimal("99999.90")   # not live yet
+        assert result[2029] == Decimal("99999.90")   # NOT pulled to 2029 (H1)
+        assert result[2030] == Decimal("99999.90")
+        assert result[2031] == Decimal("110000.02")  # 4,230.77 x 26
+        assert result[2032] == Decimal("121000.10")  # 4,653.85 x 26
 
     def test_mixed_flat_and_percentage_raises_walk_chronologically(self):
         """Flat and percentage raises compound in the order the money arrives.
 
-        base 100,000; a flat $1,000 recurring raise + a 10% recurring one,
-        both effective 2026 and neither ending.  ``apply_raises`` applies
-        each APPLICATION on the date it lands, flat before percentage
-        within a date (M-01):
+        3,846.15 a paycheck; a flat $1,000-a-year recurring raise (1,000 / 26
+        = 38.4615... a paycheck, ruling R-SAL65) + a 10% recurring one, both
+        effective January 2026 and neither ending.  The walk applies each
+        APPLICATION on the date it lands, flat before percentage within a
+        date (M-01), each step rounded to the cent:
 
-          2026: (100,000 + 1,000) * 1.10 = 111,100.00
-          2027: (111,100 + 1,000) * 1.10 = 123,310.00
-          2028: (123,310 + 1,000) * 1.10 = 136,741.00
-          2029: (136,741 + 1,000) * 1.10 = 151,515.10
-          2030: (151,515.10 + 1,000) * 1.10 = 167,766.61
+          2026: 3,884.61, then x 1.10 = 4,273.07 -> x 26 = 111,099.82
+          2027: 4,311.53, then x 1.10 = 4,742.68 -> x 26 = 123,309.68
+          2028: 4,781.14, then x 1.10 = 5,259.25 -> x 26 = 136,740.50
+          2029: 5,297.71, then x 1.10 = 5,827.48 -> x 26 = 151,514.48
+          2030: 5,865.94, then x 1.10 = 6,452.53 -> x 26 = 167,765.78
 
-        The two VALUE pins are what this grades: revert the chronological
-        walk and they fail -- by 352.00 at 2028 and 1,336.94 at 2030.
+        The two VALUE pins are what this grades: a walk grouping each raise's
+        run (every flat step before every percentage one) answers 5,272.80
+        (137,092.80) at 2028 and 6,503.97 (169,103.22) at 2030, computed by
+        hand -- off by 352.30 and 1,337.44.
 
         **It used to assert an INVARIANCE as well**, running the same
         raises at ``merit_horizon_years`` 10 and 2 and asserting the two
@@ -424,38 +496,39 @@ class TestTheEndYearOnEachRaise:
             FakeRaise(percentage="0.10", effective_month=1,
                       effective_year=2026, is_recurring=True),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2030,
-        ))
-        # Third year of the walk above.
-        assert result[2028] == Decimal("136741.00")
-        # Fifth year of the walk above.
-        assert result[2030] == Decimal("167766.61")
+        result = dict(_salary_path("3846.15", raises, 2026, 2030))
+        # Third year of the walk above: 5,259.25 x 26.
+        assert result[2028] == Decimal("136740.50")
+        # Fifth year of the walk above: 6,452.53 x 26.
+        assert result[2030] == Decimal("167765.78")
 
     def test_a_one_time_raise_dated_late_now_actually_happens(self):
-        """The behaviour change: a late one-time raise is no longer dropped.
+        """A late one-time raise is not dropped.
 
-        **This is the one figure in this class that MOVES**, and it moves
-        because measurement 3 of ruling **R-SAL11** is the defect it names.
-        Under the deleted merit horizon every one-time raise was handed the
-        global cutoff as its terminal year, so a promotion the owner had
-        recorded for a year past it applied ZERO times and the projection
-        silently never showed it.  A one-time raise carries no end year at
-        all now (``ck_salary_raises_terminal_year_only_on_a_recurring_
-        raise``), so a recorded raise happens.
+        **Plan step salary:S3-c's behaviour change**, and measurement 3 of
+        ruling **R-SAL11** is the defect it names.  Under the deleted merit
+        horizon every one-time raise was handed the global cutoff as its
+        terminal year, so a promotion the owner had recorded for a year past
+        it applied ZERO times and the projection silently never showed it.
+        A one-time raise carries no end year at all
+        (``ck_salary_raises_terminal_year_only_on_a_recurring_raise``), so a
+        recorded raise happens.
 
-        Three runs against the same 3% January recurring raise, base
-        100,000, asked at 2035:
+        Three runs against the same 3% January recurring raise on 3,846.15 a
+        paycheck, asked at 2035; the one-time raises are $2,000 a year, which
+        is 2,000 / 26 = 76.923... a paycheck:
 
-          the recurring raise alone            -> 134,391.64
-          + one-time $2,000 in 2028            -> 136,851.39   (unchanged)
-          + one-time $2,000 in 2035            -> 136,391.64   (WAS
-                                                  134,391.64: dropped)
+          the recurring raise alone      -> 5,168.91 x 26 = 134,391.66
+          + one-time $2,000 in May 2028  -> 5,263.51 x 26 = 136,851.26
+                                            (4,202.79 + 76.92... = 4,279.71
+                                            in May 2028, then seven more 3%)
+          + one-time $2,000 in May 2035  -> 5,245.83 x 26 = 136,391.58
+                                            (5,168.91 + 76.92... = 5,245.83,
+                                            after that year's January step)
 
-        The 2028 one is unchanged because it always fell inside the old
-        cutoff of 2031, and it is kept here as the control: a build that
-        dropped every one-time raise, or one that applied the late one
-        twice, fails one of the three.
+        The 2028 one fell inside the old cutoff of 2031, and it is kept here
+        as the control: a build that dropped every one-time raise, or one that
+        applied the late one twice, fails one of the three.
         """
         recurring = FakeRaise(percentage="0.03", effective_month=1,
                               effective_year=2026, is_recurring=True)
@@ -463,78 +536,76 @@ class TestTheEndYearOnEachRaise:
                            effective_year=2028, is_recurring=False)
         late = FakeRaise(flat_amount="2000", effective_month=5,
                          effective_year=2035, is_recurring=False)
-        base = Decimal("100000")
-        alone = dict(project_salaries_by_year(base, [recurring], 2026, 2035))
-        with_within = dict(project_salaries_by_year(
-            base, [recurring, within], 2026, 2035))
-        with_late = dict(project_salaries_by_year(
-            base, [recurring, late], 2026, 2035))
+        pay = "3846.15"
+        alone = dict(_salary_path(pay, [recurring], 2026, 2035))
+        with_within = dict(_salary_path(pay, [recurring, within], 2026, 2035))
+        with_late = dict(_salary_path(pay, [recurring, late], 2026, 2035))
 
-        # 100000 * 1.03^10
-        assert alone[2035] == Decimal("134391.64")
+        # Ten cent-rounded 3% steps from 3,846.15: 5,168.91 x 26.
+        assert alone[2035] == Decimal("134391.66")
         # It lands in May 2035, after that year's January application, and
-        # nothing follows it: 134,391.6379... + 2,000.
-        assert with_late[2035] == Decimal("136391.64")
+        # nothing follows it: 5,245.83 x 26.
+        assert with_late[2035] == Decimal("136391.58")
         assert with_late[2035] > alone[2035]
-        # ((100000 * 1.03^3) + 2000) * 1.03^7 -- seven later applications
-        # compound it, which is why it answers more than the late one.
-        assert with_within[2035] == Decimal("136851.39")
+        # Seven later 3% applications compound it, which is why it answers
+        # more than the late one: 5,263.51 x 26.
+        assert with_within[2035] == Decimal("136851.26")
         assert with_within[2035] > with_late[2035]
 
     def test_an_ended_raise_does_not_compound_later_flat_dollars(self):
         """A raise that stopped in 2031 must not grow 2040's flat money.
 
         The regression that parked the first attempt at plan step S4.  A
-        recurring flat $1,500 raise with no end year and a recurring 4% one
-        ending 2031, base 100,000.  Once the 4% raise ends, each later year
-        may only add $1,500 -- its multiplier has no claim on money that
-        arrives after it stopped:
+        recurring flat $1,500-a-year raise (1,500 / 26 = 57.6923... a
+        paycheck, which rounds each step to +57.69) with no end year and a
+        recurring 4% one ending 2031, on 3,846.15 a paycheck.  Each January
+        through 2031 adds the flat step then the 4% one (flat first on one
+        date, M-01), reaching 5,264.56 in 2031.  Once the 4% raise ends,
+        each later year may only add the flat step -- its multiplier has no
+        claim on money that arrives after it stopped:
 
-          2031: 136,879.34
-          2032: 138,379.34   (+1,500.00)
-          2033: 139,879.34   (+1,500.00)
-          2040: 150,379.34   (+1,500.00 a year, seven more times)
+          2031: 5,264.56 x 26 = 136,878.56
+          2032: 5,322.25 x 26 = 138,378.50   (+57.69 a paycheck, 1,499.94)
+          2033: 5,379.94 x 26 = 139,878.44   (+57.69 a paycheck, 1,499.94)
+          2040: 5,783.77 x 26 = 150,378.02   (+57.69 seven more times)
 
-        Applying the ended raise to those additions instead gives
-        ``1,500 * 1.04^6 = 1,897.98`` a year, which is what that attempt
-        produced, because it removed the two-phase split while the walk
-        still grouped applications by raise.  It answered ``155,001.58`` at
-        2040 against the ``150,379.34`` asserted here -- **+4,622.24** --
-        and 1,040.43 of the gap is already present at 2031 itself
-        (137,919.77 against 136,879.34), so the divergence was never purely
-        post-cutoff.  It reads correctly here only because the walk orders
-        by date, so this case pins BOTH rules at once.
+        The attempt applied the ended raise to those additions, because it
+        removed the two-phase split while the walk still grouped applications
+        by raise.  On the yearly engine it answered ``155,001.58`` at 2040
+        against the ``150,379.34`` then asserted -- **+4,622.24** -- and
+        1,040.43 of the gap was already present at 2031, so the divergence
+        was never purely post-cutoff.  It reads correctly here only because
+        the walk orders by date, so this case pins BOTH rules at once.
         """
         flat = FakeRaise(flat_amount="1500", effective_month=1,
                          effective_year=2026, is_recurring=True)
         ending = FakeRaise(percentage="0.04", effective_month=1,
                            effective_year=2026, is_recurring=True,
                            terminal_year=2031)
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), [flat, ending], 2026, 2040,
-        ))
-        assert result[2031] == Decimal("136879.34")
-        assert result[2032] == Decimal("138379.34")
-        assert result[2033] == Decimal("139879.34")
-        assert result[2040] == Decimal("150379.34")
-        # Stated as the increment, because that is the defect's shape.
-        assert result[2032] - result[2031] == Decimal("1500.00")
-        assert result[2033] - result[2032] == Decimal("1500.00")
+        result = dict(_salary_path("3846.15", [flat, ending], 2026, 2040))
+        assert result[2031] == Decimal("136878.56")
+        assert result[2032] == Decimal("138378.50")
+        assert result[2033] == Decimal("139878.44")
+        assert result[2040] == Decimal("150378.02")
+        # Stated as the increment, because that is the defect's shape:
+        # the flat step alone, 57.69 x 26.
+        assert result[2032] - result[2031] == Decimal("1499.94")
+        assert result[2033] - result[2032] == Decimal("1499.94")
 
     def test_real_shaped_pair_one_ending_and_one_not(self):
         """3% July raise with no end year + 2.5% January one ending 2031.
 
-        base 100,000; both recurring from 2026; projected 2026..2035.  The
-        2.5% raise applies six times (2026..2031); the 3% one is never
-        believed to stop and applies once per year.  Every expected value
-        is therefore ``100,000 * 1.025^6 * 1.03^k`` with k the count of 3%
-        applications, computed independently of the producer:
+        3,846.15 a paycheck; both recurring from 2026; projected
+        2026..2035.  The 2.5% raise applies six times (each January
+        2026..2031); the 3% one is never believed to stop and applies each
+        July.  Each step rounded to the cent, independently of the producer:
 
-          2026: 1.025^1 * 1.03^1  -> 105,575.00
-          2031: 1.025^6 * 1.03^6  -> 138,473.46   (its last year)
-          2032: 1.025^6 * 1.03^7  -> 142,627.66
-          2033: 1.025^6 * 1.03^8  -> 146,906.49
-          2035: 1.025^6 * 1.03^10 -> 155,853.10
+          2026: 3,942.30 (Jan), 4,060.57 (Jul) -> x 26 = 105,574.82
+          2031: 5,170.76 (Jan), 5,325.88 (Jul) -> x 26 = 138,472.88
+                (its last year)
+          2032: 5,485.66 (Jul only)           -> x 26 = 142,627.16
+          2033: 5,650.23                      -> x 26 = 146,905.98
+          2035: 5,994.33                      -> x 26 = 155,852.58
 
         **The oracle is absolute, not relative.**  This test used to assert
         ``result[2032] == round_money(result[2031] * 1.03)`` -- it read a
@@ -549,17 +620,16 @@ class TestTheEndYearOnEachRaise:
                       effective_year=2026, is_recurring=True,
                       terminal_year=2031),
         ]
-        result = dict(project_salaries_by_year(
-            Decimal("100000"), raises, 2026, 2035,
-        ))
-        # 100000 * 1.025 * 1.03 = 105575.00 (both apply)
-        assert result[2026] == Decimal("105575.00")
-        # Its last believed year: six of each.
-        assert result[2031] == Decimal("138473.46")
-        # Past it the 2.5% exponent STAYS at 6 while the 3%'s climbs.
-        assert result[2032] == Decimal("142627.66")
-        assert result[2033] == Decimal("146906.49")
-        assert result[2035] == Decimal("155853.10")
-        # And it is genuinely stopped: had it kept applying, 2032 would be
-        # 1.025^7 * 1.03^7 = 146,193.35, which is strictly more.
-        assert result[2032] < Decimal("146193.35")
+        result = dict(_salary_path("3846.15", raises, 2026, 2035))
+        # 4,060.57 x 26 (both apply)
+        assert result[2026] == Decimal("105574.82")
+        # Its last believed year: six of each.  5,325.88 x 26.
+        assert result[2031] == Decimal("138472.88")
+        # Past it the 2.5% raise STOPS while the 3% one continues.
+        assert result[2032] == Decimal("142627.16")
+        assert result[2033] == Decimal("146905.98")
+        assert result[2035] == Decimal("155852.58")
+        # And it is genuinely stopped: had it kept applying, 2032 would walk
+        # 5,325.88 x 1.025 = 5,459.03 (Jan), then x 1.03 = 5,622.80 (Jul),
+        # and 5,622.80 x 26 = 146,192.80, which is strictly more.
+        assert result[2032] < Decimal("146192.80")

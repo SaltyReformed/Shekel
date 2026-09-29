@@ -189,14 +189,18 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
       purchase delete, Undo CC, the popover's Status leaving Credit, the account and
       recurring-transfer permanent deletes) are **CC-367**, and whether `R-CC76` reaches them,
-      widening this step, is the developer's question. After 4a-4 (`R-CC76`). Closes **CC-364**.
-- [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
-      of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
-      another, listed under the bill's name in its paycheck block, ticked through the bill's own
-      door (settle on the asserted day, tender = this account); the PAYMENT takes the statement's
-      link and the bill does not, so `status_seam.record_clearing` learns which account's statement
-      it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
-      package, announce-first.
+      widening this step, is the developer's question. A row's own account's list, ticking a
+      reopened bill whose kept payment is on another account (a card, or Checking under `R-CC117`),
+      re-points that payment (`status_seam._covering._re_point`) and withdraws any match naming it
+      through `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its
+      builder asks the developer whether that list captions such a row (`paid from <account>`) or
+      omits it. After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-378**.
+- [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
+      scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
+      `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
+      card" is `account_projection.is_revolving`, the type's `has_revolving_credit` flag and the one
+      card predicate, where an id compare would be a second (`R-CC117`, rule 14). The row's own list
+      still offers it, by analogy to `R-CC43`'s matcher and never ruled for the panel (**CC-378**).
 - [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
       balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
       parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given

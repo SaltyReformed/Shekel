@@ -806,7 +806,8 @@ class TestSalaryProfileWriter:
 
         resp = auth_client.post("/salary", data={
             "name": "Day Job",
-            "annual_salary": "104000.00",
+            "pay_amount": "4000.00",  # $104,000.00 a year / 26
+            "pay_payday": seed_periods[0].start_date.isoformat(),
             "filing_status_id": str(filing_status.id),
             "state_code": "PA",
         })

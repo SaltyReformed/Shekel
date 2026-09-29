@@ -45,6 +45,7 @@ from tests._test_helpers import (
     set_default_grid_account,
     settle_day_columns,
     cover_bare_settled_row,
+    start_test_pay_list,
     state_template_price,
 )
 from tests._test_helpers import default_settle_day, make_cadence_rule
@@ -1563,10 +1564,13 @@ class TestThirdPaycheckDetection:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=1,
                 name="Third-paycheck agreement",
-                annual_salary=Decimal("60000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(
+                profile, Decimal("2307.69"),  # $60,000.00 a year / 26
+                date(2026, 1, 2),
+            )
             db.session.flush()
 
             configs = load_tax_configs_for_year(profile, 2026)

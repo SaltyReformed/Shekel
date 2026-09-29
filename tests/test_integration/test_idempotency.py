@@ -32,6 +32,7 @@ from tests._test_helpers import (
     one_off_row_of,
     resolved_amount,
     rhythm_of,
+    start_test_pay_list,
 )
 from app.services.balance_at import BalanceContext
 from app.services.row_valuation import settled_figure
@@ -73,11 +74,11 @@ def _create_profile(seed_user):
         scenario_id=seed_user["scenario"].id,
         template_id=template.id,
         name="Day Job",
-        annual_salary=Decimal("75000.00"),
         filing_status_id=filing_status.id,
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
     db.session.commit()
     return profile
 

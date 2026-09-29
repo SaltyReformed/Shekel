@@ -178,6 +178,12 @@ class PayPeriodExtendSchema(BaseSchema):
     asked for.  ``BaseSchema``'s ``unknown = EXCLUDE`` means an old client that
     still posts one is not refused -- the value is simply ignored, which is now
     what it means.
+
+    **"Add earlier paychecks" validates with it too** (plan step
+    ``pay_calendar:C18-b``, ruling **R-PC87**: "asking only how many
+    paychecks to add before your first"), for the same reason in the other
+    direction: that door states no date and no rhythm either, so this one
+    field is its whole question.
     """
 
     num_periods = num_periods_field(required=True)
@@ -208,6 +214,21 @@ class PayPeriodTruncateSchema(BaseSchema):
 
     keep_through_period_id = RowId(required=True)
     confirm_discard = fields.Boolean(load_default=False)
+
+
+class PayPeriodRemoveEarlierSchema(BaseSchema):
+    """Validates POST data for removing the paychecks before a chosen one.
+
+    Plan step ``pay_calendar:C21``, ruling **R-PC111**: "Remove earlier
+    paychecks" names the paycheck to START FROM, by ``id``, for
+    :class:`PayPeriodTruncateSchema`'s reason (finding **P13**) -- the field
+    selects which periods a CASCADE takes, so it names the row the owner
+    picked rather than a count or a position.  No ``confirm_discard``: the
+    door refuses a paycheck holding anything the owner entered rather than
+    asking to discard it (ruling **R-PC109**).
+    """
+
+    start_from_period_id = RowId(required=True)
 
 
 class PayPeriodRegenerateSchema(RequiredRhythmFields, BaseSchema):

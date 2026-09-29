@@ -378,6 +378,12 @@
   background: color-mix(in srgb, var(--shekel-done) 7%, transparent);
 }
 
+/* A recorded pay CUT (R-SAL85): the raise row's shape on the caution
+   token, so the direction reads from the colour as well as the minus. */
+.sal-ledger tbody tr.sal-row-cut td {
+  background: color-mix(in srgb, var(--shekel-warning) 7%, transparent);
+}
+
 /* Third-paycheck periods are informational event markers, not cautions
    (D11): accent, matching the staircase chart's accent third-paycheck
    dots and the anatomy card's accent info banner (S7 ruling on the S1
@@ -386,7 +392,8 @@
   background: color-mix(in srgb, var(--shekel-accent) 7%, transparent);
 }
 
-.sal-badge-raise {
+.sal-badge-raise,
+.sal-badge-cut {
   display: inline-block;
   font-size: 0.6875rem;
   font-weight: 600;
@@ -396,6 +403,11 @@
   color: var(--shekel-done);
   padding: 0.0625rem 0.5rem;
   white-space: nowrap;
+}
+
+.sal-badge-cut {
+  border-color: var(--shekel-warning);
+  color: var(--shekel-warning);
 }
 
 .sal-third-flag {

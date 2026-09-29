@@ -101,6 +101,7 @@ from tests._test_helpers import (
     made_up_fica,
     made_up_state,
     made_up_year,
+    start_test_pay_list,
     state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
@@ -603,10 +604,10 @@ class TestThePaycheckSeesTheWholeSchedule:
             filing_status_id=db.session.query(FilingStatus)
             .filter_by(name="single").one().id,
             name="Day Job",
-            annual_salary=Decimal("104000.00"),
             state_code="NC",
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
         db.session.flush()
 
         deduction = PaycheckLine(

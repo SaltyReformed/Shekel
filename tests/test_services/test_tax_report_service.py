@@ -50,6 +50,7 @@ from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    start_test_pay_list,
 )
 
 ZERO = Decimal("0")
@@ -64,7 +65,7 @@ def _make_profile(
     name="Tax Report Profile",
     filing_status_name="single",
     state_code="NC",
-    annual_salary="130000.00",
+    pay="5000.00",  # $130,000.00 a year / 26
     additional_income="0.00",
     qualifying_children=0,
     other_dependents=0,
@@ -84,7 +85,6 @@ def _make_profile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name=name,
-        annual_salary=Decimal(annual_salary),
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,
@@ -95,6 +95,10 @@ def _make_profile(
         sort_order=sort_order,
     )
     _db.session.add(profile)
+    # From the 2026 calendar's first payday: every caller builds its profile
+    # BEFORE ``_make_full_year_periods``, when that day is still a PROJECTED
+    # payday off the seed owner's 2024 bootstrap (52 x 14 days on).
+    start_test_pay_list(profile, Decimal(pay), date(2026, 1, 2))
     _db.session.flush()
     return profile
 
@@ -312,7 +316,7 @@ class TestActcDrivesFederalRefund:
         """
         _committed_profile(
             seed_user, filing_status_name="married_jointly",
-            annual_salary="78000.00", qualifying_children=4,
+            pay="3000.00", qualifying_children=4,  # $78,000.00 a year / 26
         )
         _make_full_year_periods(seed_user["user"])
         db.session.commit()
@@ -465,13 +469,13 @@ class TestSocialSecurityWageCap:
     def test_box3_capped_above_wage_base(self, app, db, seed_user):
         """260,000 salary (> 184,500 base) -> box 3 = 184,500; box 5 raw.
 
-        gross = 260,000 / 26 = 10,000.00 * 26 = 260,000.00.
+        gross = 10,000.00 a paycheck (260,000 / 26) * 26 = 260,000.00.
         Box 3 (SS wages) = min(260,000, 184,500) = 184,500.
         Box 5 (Medicare wages) = 260,000 (raw gross, uncapped).
         Box 1 = 260,000 (no pre-tax).
         """
         profile = _committed_profile(
-            seed_user, name="High Earner", annual_salary="260000.00",
+            seed_user, name="High Earner", pay="10000.00",  # $260,000.00 a year / 26
         )
         _make_full_year_periods(seed_user["user"])
         db.session.commit()
@@ -484,7 +488,11 @@ class TestSocialSecurityWageCap:
         assert report.w2_preview.wages.box3_ss_wages == Decimal("184500")
         assert report.w2_preview.wages.box5_medicare_wages == Decimal("260000.00")
         assert report.w2_preview.wages.box1_wages == Decimal("260000.00")
-        assert profile.annual_salary == Decimal("260000.00")
+        # The salary the gross is 26 paychecks of: the profile's one pay
+        # entry (plan step salary:X-av-3a replaced the yearly column).
+        assert [entry.amount for entry in profile.pay_entries] == [
+            Decimal("10000.00"),
+        ]
 
 
 # ── Degrade cases ─────────────────────────────────────────────────
@@ -567,12 +575,12 @@ class TestMultiProfileSum:
         """
         primary = _make_profile(
             seed_user, name="Primary Job", filing_status_name="single",
-            annual_salary="130000.00", qualifying_children=2, sort_order=0,
+            pay="5000.00", qualifying_children=2, sort_order=0,  # $130,000.00 a year / 26
         )
         _make_profile(
             seed_user, name="Second Job",
             filing_status_name="married_jointly",
-            annual_salary="100000.00", sort_order=1,
+            pay="3846.15", sort_order=1,  # $100,000.00 a year / 26
         )
         _make_full_year_periods(seed_user["user"])
         db.session.commit()
