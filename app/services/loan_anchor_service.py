@@ -19,9 +19,10 @@ the origination stager the account factory shares) is one subject, and what a
 LOAN assertion decides (a per-source governing compare, a genesis re-sync in
 every scenario) is another.  Nothing here changed in the move; the shared
 contract both halves hold -- append-only rows, ruling **R-EQ**'s
-"refused only when it changes nothing", the per-owner write lock taken before
-the first read -- is stated once, in :mod:`app.services.anchor_service`'s
-docstring, and holds here unchanged.
+"refused only when it changes nothing", the per-owner write lock held before
+the first read (since plan step ``balance:X-bn`` the signed-in request's
+transaction's, not either door's) -- is stated once, in
+:mod:`app.services.anchor_service`'s docstring, and holds here unchanged.
 
 A loan trueup never mutates ``LoanParams``: the balance seam reads the latest
 event to derive the displayed current balance, monthly payment, schedule and
@@ -147,8 +148,8 @@ def _append_loan_anchor_and_sync(
 
     **Whether there is anything to append is decided in the staging core, by
     ruling R-EQ**, and the decision is the checking door's rule on this table:
-    take the owner's write lock, read the event that currently GOVERNS, append
-    only when the submission differs.  It replaced
+    under the owner's write lock the transaction already holds, read the event
+    that currently GOVERNS, append only when the submission differs.  It replaced
     ``loan_posting_service.sync_all_scenarios_or_duplicate`` on this path (that
     helper survives for the ARM rate change, whose table is EDITABLE and whose
     unique key is therefore a real business rule rather than an idempotency
@@ -219,9 +220,10 @@ def _stage_loan_anchor(
     """Stage one :class:`LoanAnchorEvent` of ``source`` unless it already stands.
 
     The ONE place a loan anchor row is constructed, and the ONE place ruling
-    R-EQ's duplicate rule is applied: take the owner's write lock, read the
-    event that currently GOVERNS ``anchor_date`` for this source, and add the
-    row only when the submission differs.  It neither re-syncs the posted
+    R-EQ's duplicate rule is applied: under the owner's write lock the
+    transaction already holds, read the event that currently GOVERNS
+    ``anchor_date`` for this source, and add the row only when the submission
+    differs.  It neither re-syncs the posted
     ledger nor commits, because the transaction is its CALLER's:
 
     * :func:`_append_loan_anchor_and_sync` (the true-up and tracking-start
@@ -255,8 +257,9 @@ def _stage_loan_anchor(
         ``(anchor_date, anchor_balance)``, in which case nothing was staged.
     """
     # Ruling R-EQ: the owner's write lock precedes the read the decision is
-    # made from -- held since this transaction began, for every door including
-    # the setup door's params INSERT (plan step ``balance:X-bn``,
+    # made from -- every door here is a signed-in request's, whose transaction
+    # took the lock before reading any of the owner's data, so it precedes the
+    # setup door's params INSERT too (plan step ``balance:X-bn``,
     # :mod:`app.db_transaction`; the acquisition that stood here and the
     # sync's are deleted, ruling R-CC115).
     source_id = ref_cache.loan_anchor_source_id(source)
@@ -318,8 +321,10 @@ def apply_loan_anchor_true_up(
     ledger, and a re-sync is a read-modify-write with no unique index behind
     it; nothing serialised this one between Commit 16 and X-f1c3c.  It is
     serialised now by the per-owner write lock
-    (:mod:`app.services.user_write_lock`), held since plan step
-    ``balance:X-bn`` from the start of every writing transaction.
+    (:mod:`app.services.user_write_lock`), which since plan step
+    ``balance:X-bn`` every command transaction a signed-in request opens takes
+    before reading any of the owner's data (:mod:`app.db_transaction`) -- and
+    every door into this module is one.
 
     The ``UNCHANGED`` outcome mirrors the checking-anchor semantics: when a
     request submits the ``(anchor_date, anchor_balance)`` the governing

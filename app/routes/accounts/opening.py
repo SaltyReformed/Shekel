@@ -7,8 +7,8 @@ that appends the restatement.
 
 **Why it is not in :mod:`app.routes.accounts.crud`.**  That module owns account
 CRUD -- a name, a type, a sort order, an active flag, all plain columns on one
-row -- and this writes an append-only MONEY fact through a service that takes
-the owner's write lock and re-bases the posted ledger.  It is a third subject
+row -- and this writes an append-only MONEY fact through a service that
+re-bases the posted ledger under the owner's write lock.  It is a third subject
 beside it exactly as :mod:`app.routes.accounts.history` is a third subject
 beside ``detail``'s page and ``anchor``'s write door, and it is split for the
 same reason: a door with its own service, its own schema and its own refusals
@@ -404,10 +404,11 @@ def restate_opening(account_id):
     """Restate what an account's books opened with.
 
     Appends one ``budget.account_openings`` row through
-    :func:`app.services.opening_service.apply_opening_restatement`, which takes
-    the owner's write lock, declines a submission that changes nothing (ruling
-    **R-EQ**), re-bases the account's posted anchor corrections onto the new
-    day and figure, and commits.
+    :func:`app.services.opening_service.apply_opening_restatement`, which --
+    under the owner's write lock this POST's transaction took before the route
+    ran (:mod:`app.db_transaction`, plan step ``balance:X-bn``) -- declines a
+    submission that changes nothing (ruling **R-EQ**), re-bases the account's
+    posted anchor corrections onto the new day and figure, and commits.
 
     **Every money and date refusal belongs to the service, and this route adds
     none of its own.**  The day is bounded there by all FIVE rules

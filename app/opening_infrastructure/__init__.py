@@ -18,11 +18,13 @@ a reader to assume more:
 * Under READ COMMITTED two CONCURRENT transactions -- one recording a movement,
   one restating the books past it -- each see a snapshot without the other's
   uncommitted row, so both predicates pass.  **Neither trigger takes a lock,
-  and what closes the window instead is that both DOORS hold the owner's**
-  write lock (:mod:`app.services.user_write_lock`), which every writing
-  transaction takes where it begins since plan step ``balance:X-bn`` -- the
-  movement side and :func:`app.services.opening_service.stage_account_opening`
-  alike, where each used to take it for itself.
+  and what closes the window instead is that both DOORS run under the
+  owner's** write lock (:mod:`app.services.user_write_lock`), which since plan
+  step ``balance:X-bn`` every command transaction a signed-in request opens
+  takes before reading any of the owner's data -- the movement side and
+  :func:`app.services.opening_service.stage_account_opening` alike, where each
+  used to take it for itself.  An origination at registration runs under
+  none, and needs none: its account is uncommitted, so nothing can race it.
   The loser blocks until the winner's transaction ENDS, and a deferred
   constraint trigger runs at COMMIT -- after that block, on a fresh READ
   COMMITTED snapshot -- so it sees the winner's committed row and refuses.

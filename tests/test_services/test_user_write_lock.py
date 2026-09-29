@@ -1,8 +1,9 @@
 """
-Shekel Budget App -- The per-user write lock (plan step X-f1c3c)
+Shekel Budget App -- The per-user write lock, graded where it is taken (plan steps X-f1c3c, balance:X-bn)
 
-Grades the lock that serialises every posting-ledger reconcile and every
-structural pay-period mutation for one user.
+Grades the lock that serialises every posting-ledger reconcile, every anchor
+and opening compare-then-append, and every structural pay-period mutation for
+one owner (:mod:`app.services.user_write_lock`).
 
 **What broke without it, measured.**  A reconcile is a read-modify-write:
 read what the ledger has posted, subtract it from what the account's facts
@@ -12,25 +13,42 @@ answered 200 and left the account's linked ledger at ``$1,000.00`` while its
 resolved assertion read ``$2,000.00``.  Both sides wrong; the trial balance
 still ``$0.00``, because the anchor-equity leg mirrors the error exactly, so
 nothing failed loudly.  That forced-interleave probe cannot be kept as a test:
-once the lock exists the second thread blocks at it, so the probe's own
+once the lock exists the second request blocks at it, so the probe's own
 mechanism is what the fix removes.  These tests grade the lock instead.
 
-Three properties, because each can hold while another fails:
+**Where it is graded moved with where it is taken** (plan step
+``balance:X-bn``, rulings **R-CC106**, **R-CC114**, **R-CC115**).  Until then
+each reconcile and anchor door took the lock for itself, and this module
+called those services directly and graded each one's acquisition.  Now no
+service takes it: every command transaction a signed-in request opens takes
+it where it begins (:mod:`app.db_transaction`), and a service called outside a
+request takes none -- which ``tests/test_arch/test_the_owner_lock_has_one_home.py``
+enforces.  So every property below is graded on a REAL REQUEST through the
+door production uses, and the same five properties survive the move:
 
-1. **The lock is taken, and taken BEFORE the reconcile reads.**  A lock
-   acquired after the read serialises nothing -- the loser has already read
-   the same pre-state.  Presence alone would pass such a build.
-2. **It really serialises.**  A second transaction holding the same key blocks
-   the reconcile, and releasing it lets the reconcile through.  This is the
-   only property that grades PostgreSQL's behaviour rather than our SQL.
-3. **It is keyed on the OWNER**, so a transaction takes one advisory key and
-   never two, and no pair of advisory acquisitions can be ordered differently
-   by two transactions (:mod:`app.services.user_write_lock`).  **That is NOT
-   "deadlock is structurally impossible on every request path", which this
-   docstring claimed until plan step X-f1e2**: the advisory lock is not always a
-   transaction's FIRST lock, so an advisory-versus-ROW-lock cycle remains
-   reachable -- finding **N-193**, reproduced against a real PostgreSQL, and
-   the module's own docstring retracts the stronger claim in the same words.
+1. **The lock is taken, and taken BEFORE the owner's data is read.**  A lock
+   acquired after the read serialises nothing -- the loser has already read the
+   same pre-state.  Graded as strongly as the design allows: every statement
+   the request issues before the lock reads the signed-in user's own row and
+   nothing else, and the door's own reads (the ledger, the governing
+   assertion, the opening, the movements) are asserted to happen at all, so
+   the ordering cannot pass over a run that read nothing.
+2. **The signed-in user's row is read AGAIN under the lock**, because it was
+   the one row read before it (:func:`app.db_transaction._lock_the_open_transaction`).
+3. **A render takes no lock; its write block does** (ruling **R-CC114**).  A
+   plain page load runs ``READ ONLY`` and takes nothing; ``/grid``'s rolling
+   top-up runs in a ``write_transaction`` block, a command transaction, which
+   takes the owner's key once.
+4. **It really serialises.**  A second transaction holding the same key blocks
+   a save, and the same save completes when the key is free.  The only
+   property that grades PostgreSQL's behaviour rather than our SQL.
+5. **It is keyed on the OWNER**: one distinct key per request however much it
+   writes, a companion's request takes its linked owner's key, and the
+   deploy's every-owner form acquires ascending.  **That is NOT "deadlock is
+   structurally impossible on every path"**: the deploy transaction takes the
+   owners' keys after its migrations' table locks, which is safe only because
+   the entrypoint runs it before gunicorn serves (the module docstring of
+   :mod:`app.services.user_write_lock`).
 """
 
 from __future__ import annotations
@@ -43,49 +61,106 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.extensions import db
-from app.models.ref import AccountType
 from app.models.account import Account, AccountAnchorHistory
-from app.services import (
-    account_posting_service,
-    account_service,
-    anchor_service,
-    cash_ledger,
-    loan_anchor_service,
-    loan_posting_service,
-    opening_service,
+from app.models.ref import AccountType
+from app.services import account_service, cash_ledger
+from app.services.user_write_lock import (
+    lock_every_user_writes,
+    take_owner_write_lock,
 )
 from app.utils.dates import display_today
-from app.services.user_write_lock import (
-    _USER_WRITE_LOCK_NAMESPACE,
-    lock_every_user_writes,
-    lock_user_writes,
-)
 from tests._test_helpers import (
+    HeldOwnerKey,
     advisory_lock_keys,
-    advisory_lock_precedes,
+    assert_timed_out_on_owner_key,
+    bound_lock_waits,
     capture_sql_statements,
     create_loan_account,
+    generate_row_of,
+    make_expense_template,
+    owner_lock_key,
     took_advisory_lock,
 )
 
-# Short enough that a genuinely-blocked statement fails the test in under a
-# second, long enough that an unloaded but slow acquisition is not called a
-# block.  Only ever applied to a statement the test EXPECTS to be blocked.
-_BLOCK_TIMEOUT_MS = 750
+#: What a statement issued BEFORE the owner's lock may touch: the signed-in
+#: user's row (and the role row joined to it), read to sign the request in.
+#: Anything else before the lock is a read the lock does not cover.
+_READABLE_BEFORE_THE_LOCK = ("auth.users", "ref.user_roles")
+
+#: The application's schemas: a ``schema.table`` word in a statement names a
+#: table only when its first part is one of these.
+_SCHEMAS = ("auth", "budget", "salary", "ref", "system")
 
 
-def _checking_account(seed_user):
-    """Create a second Checking account carrying one balance assertion.
+def _lock_index(statements):
+    """Return the index of the first owner-lock acquisition, or ``None``."""
+    return next(
+        (
+            i for i, (sql, _params) in enumerate(statements)
+            if "pg_advisory_xact_lock" in sql
+        ),
+        None,
+    )
+
+
+def _reads_before_the_lock(statements):
+    """Return every statement before the first lock that names a table other than the user's.
+
+    A statement that names no schema-qualified table at all (a ``SET``, the
+    audit actor's ``set_config``) reads no row and is not returned.
+
+    Args:
+        statements: The ``(statement, parameters)`` list from
+            :func:`tests._test_helpers.capture_sql_statements`.
+
+    Returns:
+        The offending statements' text, empty when the lock precedes every
+        read of the owner's data.
+    """
+    lock_at = _lock_index(statements)
+    assert lock_at is not None, "the request took no lock at all"
+    offending = []
+    for sql, _params in statements[:lock_at]:
+        tables = {
+            ".".join(word.strip('"(),').split(".")[:2])
+            for word in sql.split()
+            if word.strip('"(').split(".", 1)[0] in _SCHEMAS
+        }
+        if tables - set(_READABLE_BEFORE_THE_LOCK):
+            offending.append(sql)
+    return offending
+
+
+def _read_after_the_lock(statements, table):
+    """Return whether *table* is read at all, and only after the first lock.
+
+    The non-vacuity half: an ordering assertion passes over a run that never
+    read the table, so the read is asserted to exist.
+    """
+    lock_at = _lock_index(statements)
+    reads = [
+        i for i, (sql, _params) in enumerate(statements) if table in sql
+    ]
+    return bool(reads) and lock_at is not None and reads[0] > lock_at
+
+
+def _checking_account(seed_user, name="Lock Probe Checking", balance="1500.00"):
+    """Create and COMMIT a Checking account carrying one balance assertion.
 
     A fresh account with a non-zero anchor is the smallest thing whose
-    reconcile writes: its opening correction is non-zero, so the sync under
+    reconcile writes: its opening correction is non-zero, so the save under
     test does real read-modify-write work rather than short-circuiting.
+    Built through the service, outside any request, so it takes no lock --
+    which is the design: only a request's command transaction takes it.
 
     Args:
         seed_user: The seeded-user fixture dict.
+        name: The account's name.
+        balance: The anchor balance, as a string.
 
     Returns:
-        The created :class:`~app.models.account.Account`, flushed.
+        The created :class:`~app.models.account.Account`, committed so a
+        request reads it.
     """
     checking_type = db.session.query(AccountType).filter_by(
         name="Checking",
@@ -94,262 +169,417 @@ def _checking_account(seed_user):
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
             account_type_id=checking_type.id,
-            name="Lock Probe Checking",
-            anchor_balance=Decimal("1500.00"),
+            name=name,
+            anchor_balance=Decimal(balance),
         ),
     )
-    db.session.flush()
+    db.session.commit()
     return account
 
 
-class TestTheReconcileTakesTheLockBeforeItReads:
-    """The cash and loan reconciles lock the owner ahead of their first read."""
+def _true_up(client, account_id, balance="1750.00"):
+    """PATCH a cash true-up as the grid's balance form does."""
+    return client.patch(
+        f"/accounts/{account_id}/true-up", data={"anchor_balance": balance},
+    )
 
-    def test_account_sync_locks_before_reading_the_ledger(
-        self, app, db, seed_user, seed_periods_today,
+
+class TestASaveLocksBeforeItReadsTheOwnersData:
+    """Property 1 on every door this module used to grade one service at a time."""
+
+    def test_a_cash_true_up_reads_nothing_of_the_owners_before_the_lock(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``sync_account_anchor_postings`` locks before touching the ledger.
+        """The cash true-up: the governing assertion and the ledger, both after the lock.
 
-        Both halves are graded: the lock statement is emitted, AND the first
-        statement naming ``budget.journal_entries`` or
-        ``budget.account_postings`` comes after it.  Ordering is the half that
-        matters -- a lock taken after the posted legs are read leaves the
-        racing loser holding the same pre-state it would have read anyway.
+        The door's compare-then-append (ruling R-EQ) and the reconcile it
+        reaches (the account anchor sync) are both read-modify-writes, so both
+        of their reads are named, and every statement before the lock is
+        checked to read only the signed-in user's own row.
         """
         assert seed_periods_today
         with app.app_context():
-            account = _checking_account(seed_user)
-            scenario_id = seed_user["scenario"].id
+            account_id = _checking_account(seed_user).id
 
-            _result, statements = capture_sql_statements(
-                lambda: account_posting_service.sync_account_anchor_postings(
-                    account.id, scenario_id,
-                ),
+            response, statements = capture_sql_statements(
+                lambda: _true_up(auth_client, account_id),
             )
 
-            assert took_advisory_lock(statements), (
-                "the account anchor reconcile emitted no advisory lock; "
-                "two concurrent reconciles would both compute their delta "
-                "against the same posted state"
+            assert response.status_code == 200, response.status_code
+            assert _reads_before_the_lock(statements) == []
+            assert set(advisory_lock_keys(statements)) == {
+                owner_lock_key(seed_user["user"].id),
+            }
+            assert _read_after_the_lock(statements, "account_anchor_history"), (
+                "the door read the governing assertion before the lock, or "
+                "not at all"
             )
-            assert any(
-                "journal_entries" in text or "account_postings" in text
-                for text, _params in statements
-            ), "the reconcile read no ledger table -- the test graded nothing"
-            assert advisory_lock_precedes(
-                statements, "journal_entries", "account_postings",
-            ), (
-                "the reconcile read the ledger BEFORE taking the lock; "
-                "serialising after the read serialises nothing"
+            assert _read_after_the_lock(statements, "journal_entries"), (
+                "the reconcile read the ledger before the lock, or not at all"
             )
 
-    def test_loan_sync_locks_before_reading_the_ledger(
-        self, app, db, seed_user, seed_periods_today,
+    def test_the_signed_in_user_is_read_again_under_the_lock(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``sync_loan_postings`` locks before it walks, on the same key.
+        """Property 2: the one row read before the lock is re-read after it.
 
-        The loan half carries the identical read-modify-write and has never
-        had even the accidental serialisation the cash half lost at ruling
-        R-EN: a loan true-up appends a
-        :class:`~app.models.loan_anchor_event.LoanAnchorEvent` and UPDATEs no
-        row, so nothing serialised it between Commit 16 and plan step X-f1c3c.
-        R-EN cited that append-only contract as its precedent, which is how a
-        defect became a rationale -- so the loan side is pinned here rather
-        than left to the argument.
+        The password, MFA and settings doors write the signed-in user's row,
+        so a copy read before the lock is stale by the time a write decides on
+        it; taking the lock expires it, and the next look at the signed-in
+        user reloads it -- before the save reads anything of the owner's.
+        Graded by ORDER, because the save reads the user row again later for
+        its own reasons, and a check that the row is read "at some point after
+        the lock" passed with the expire deleted (measured 2026-09-29).  The
+        behavioural half -- a change committed during the wait is SEEN -- is
+        ``tests/test_routes/test_xbn_sign_in_lock.py``'s deactivated-companion
+        arm.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account_id = _checking_account(seed_user).id
+
+            response, statements = capture_sql_statements(
+                lambda: _true_up(auth_client, account_id),
+            )
+
+            assert response.status_code == 200, response.status_code
+            lock_at = _lock_index(statements)
+            assert lock_at is not None
+            after = [sql for sql, _params in statements[lock_at + 1:]]
+            reread_at = next(
+                (i for i, sql in enumerate(after) if "FROM auth.users" in sql),
+                None,
+            )
+            first_budget_read_at = next(
+                (i for i, sql in enumerate(after) if "budget." in sql), None,
+            )
+            assert None not in (reread_at, first_budget_read_at)
+            assert reread_at < first_budget_read_at, (
+                "the signed-in user's row was not read again under the lock "
+                "before the save read the owner's data"
+            )
+
+    def test_a_loan_true_up_reads_the_governing_event_after_the_lock(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The loan true-up's compare-then-append, and its reconcile.
+
+        The loan reconcile never had even the accidental serialisation the
+        cash side lost at ruling R-EN: a loan true-up appends an event and
+        UPDATEs no row, so nothing serialised it between Commit 16 and plan
+        step X-f1c3c.
         """
         assert seed_periods_today
         with app.app_context():
             loan = create_loan_account(
                 seed_user, db.session, name="Lock Probe Loan",
-                principal=Decimal("10000.00"), rate=Decimal("0.05000"),
+                principal=Decimal("15000.00"), rate=Decimal("0.05000"),
             )
-            db.session.flush()
+            db.session.commit()
+            loan_id = loan.id
 
-            _result, statements = capture_sql_statements(
-                lambda: loan_posting_service.sync_loan_postings(
-                    loan.id, seed_user["scenario"].id,
+            response, statements = capture_sql_statements(
+                lambda: auth_client.post(
+                    f"/accounts/{loan_id}/loan/trueup",
+                    data={
+                        "anchor_balance": "12345.67",
+                        "anchor_date": display_today().isoformat(),
+                    },
                 ),
             )
 
-            assert took_advisory_lock(statements), (
-                "the loan reconcile emitted no advisory lock"
-            )
-            assert any(
-                "journal_entries" in text or "account_postings" in text
-                for text, _params in statements
-            ), "the reconcile read no ledger table -- the test graded nothing"
-            assert advisory_lock_precedes(
-                statements, "journal_entries", "account_postings",
-            ), (
-                "the loan reconcile read the ledger BEFORE taking the lock"
-            )
+            assert response.status_code == 302, response.status_code
+            assert _reads_before_the_lock(statements) == []
+            assert set(advisory_lock_keys(statements)) == {
+                owner_lock_key(seed_user["user"].id),
+            }
+            assert _read_after_the_lock(statements, "loan_anchor_events")
+            assert _read_after_the_lock(statements, "journal_entries")
 
-    def test_all_scenarios_sync_locks_before_reading_the_scenario_set(
-        self, app, db, seed_user, seed_periods_today,
+    def test_an_opening_restatement_reads_the_opening_and_the_movements_after_the_lock(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``..._all_scenarios`` locks before it reads which scenarios are live.
+        """The opening door's two reads, each graded, and the key it takes.
 
-        The scenario set is itself a read this function then acts on, so the
-        lock has to precede it: a scenario that became live in the window
-        between that read and the loop would otherwise never be reconciled.
+        The books-boundary triggers take no lock (``app.opening_infrastructure``),
+        so what closes the two-transaction race is the request's lock.  The day
+        bound reads ``budget.transaction_entries``, which a concurrent settle
+        WRITES -- a read ahead of the lock lets the restatement pass its own
+        predicate and then abort at COMMIT on the deferred trigger (found by
+        adversarial review 2026-08-31, when the lock sat below that read).
+        Two reads, two statements: a lock between them satisfies one and not
+        the other, so both are named.
         """
         assert seed_periods_today
         with app.app_context():
-            account = _checking_account(seed_user)
+            account_id = _checking_account(seed_user).id
+            standing = cash_ledger.account_opening_fact(account_id)
+            db.session.commit()
 
-            _result, statements = capture_sql_statements(
-                lambda: (
-                    account_posting_service
-                    .sync_account_anchor_postings_all_scenarios(account.id)
+            response, statements = capture_sql_statements(
+                lambda: auth_client.post(
+                    f"/accounts/{account_id}/opening",
+                    data={
+                        "opened_on": (
+                            standing.opened_on - timedelta(days=1)
+                        ).isoformat(),
+                        "opening_equity": "1234.00",
+                    },
                 ),
             )
 
-            assert took_advisory_lock(statements)
-            # The non-vacuity guard its two siblings carry, and which this test
-            # was missing: ``advisory_lock_precedes`` returns True for a table
-            # that is never read at all, so without this the ordering assertion
-            # could pass over a run that touched no ledger.
-            assert any(
-                "journal_entries" in text or "account_postings" in text
-                for text, _params in statements
-            ), "the reconcile read no ledger table -- the test graded nothing"
-            # The SCENARIO SET is the read this function's docstring is about,
-            # so it is named explicitly rather than left to the ledger tables
-            # that happen to appear in the same query.
-            assert advisory_lock_precedes(
-                statements, "journal_entries", "account_postings", "scenario_id",
-            )
+            assert response.status_code == 302, response.status_code
+            assert _reads_before_the_lock(statements) == []
+            assert set(advisory_lock_keys(statements)) == {
+                owner_lock_key(seed_user["user"].id),
+            }
+            assert _read_after_the_lock(statements, "account_openings")
+            assert _read_after_the_lock(statements, "transaction_entries")
+
+    def test_an_account_edit_locks_before_it_touches_the_accounts_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A type-only edit, the branch that changes NO anchor, locks before its UPDATE.
+
+        **A DEADLOCK control rather than a race control.**  Before plan step
+        X-f1e2 the anchor branch reached the lock before the ``setattr`` loop's
+        ``UPDATE budget.accounts`` flushed, while a type-only edit flushed that
+        UPDATE first -- two tabs, one of each, and PostgreSQL aborted one with
+        an unhandled 500 on a money route, reproduced against a real database.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account = db.session.get(Account, seed_user["account"].id)
+            savings_type_id = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one().id
+            form = {
+                "name": account.name,
+                "account_type_id": str(savings_type_id),
+                "anchor_balance": str(cash_ledger.resolve_anchor(account).balance),
+                "version_id": str(account.version_id),
+                "is_active": "true",
+            }
+            account_id = account.id
+
+        _response, statements = capture_sql_statements(
+            lambda: auth_client.post(f"/accounts/{account_id}", data=form),
+        )
+
+        assert any(
+            sql.strip().upper().startswith("UPDATE BUDGET.ACCOUNTS")
+            for sql, _params in statements
+        ), "the edit wrote no accounts row -- the test graded nothing"
+        assert _reads_before_the_lock(statements) == []
+        assert set(advisory_lock_keys(statements)) == {
+            owner_lock_key(seed_user["user"].id),
+        }
+
+    def test_an_account_creation_locks_before_it_writes_the_origination(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The new account's opening and origination assertion, both after the lock.
+
+        The control for plan step X-f1e2 / ruling R-ES: the app's first
+        assertion about an account was once written with no lock at all, and
+        the books opening (plan step X-f3c-2b-2a) is the same claim one table
+        over.  The INSERTs are named, not the tables, because the stager reads
+        the table before it appends: a build that read and appended nothing
+        would satisfy a bare "touched the table" check.
+        """
+        assert seed_periods_today
+        owner_id = seed_user["user"].id
+        with app.app_context():
+            checking_type_id = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one().id
+
+        response, statements = capture_sql_statements(
+            lambda: auth_client.post(
+                "/accounts",
+                data={
+                    "name": "R-ES Origination Probe",
+                    "account_type_id": str(checking_type_id),
+                    "anchor_balance": "2500.00",
+                },
+            ),
+        )
+
+        assert response.status_code == 302, response.status_code
+        assert _reads_before_the_lock(statements) == []
+        assert set(advisory_lock_keys(statements)) == {owner_lock_key(owner_id)}
+        lock_at = _lock_index(statements)
+        for table in ("ACCOUNT_OPENINGS", "ACCOUNT_ANCHOR_HISTORY"):
+            inserts = [
+                i for i, (sql, _params) in enumerate(statements)
+                if sql.strip().upper().startswith(f"INSERT INTO BUDGET.{table}")
+            ]
+            assert inserts and inserts[0] > lock_at, table
+        # And the row the whole path exists to produce: ordering is not
+        # correctness on its own.
+        with app.app_context():
+            account = db.session.query(Account).filter_by(
+                user_id=owner_id, name="R-ES Origination Probe",
+            ).one()
+            written = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account.id,
+            ).all()
+            assert [(row.anchor_balance, row.observed_on) for row in written] == [
+                (Decimal("2500.00"), display_today()),
+            ]
+
+
+class TestARenderTakesNoLockAndItsWriteBlockDoes:
+    """Property 3: the query arm, the ``write_transaction`` arm, and OPTIONS."""
+
+    def test_a_page_load_that_writes_nothing_takes_no_lock(
+        self, auth_client, seed_user, seed_periods_today,
+    ):
+        """``GET /accounts/<id>/edit`` reads the owner's account and takes nothing.
+
+        Its transaction is ``READ ONLY`` and the listener returns before the
+        command arm; a lock here would make every page load wait behind every
+        save.  The render is asserted to read the owner's data, so "no lock"
+        cannot be a request that never reached the database.
+        """
+        assert seed_periods_today
+        account_id = seed_user["account"].id
+        response, statements = capture_sql_statements(
+            lambda: auth_client.get(f"/accounts/{account_id}/edit"),
+        )
+
+        assert response.status_code == 200
+        assert any("budget.accounts" in sql for sql, _params in statements)
+        assert not took_advisory_lock(statements), advisory_lock_keys(statements)
+
+    def test_a_render_s_write_block_takes_the_owner_s_key_once(
+        self, auth_client, seed_user, seed_periods_today,
+    ):
+        """``GET /grid``'s rolling top-up block is a command, and takes the key.
+
+        Ruling R-CC114: a page load's write takes the owner's lock like any
+        save.  Exactly ONE acquisition: the block's transaction takes it, and
+        the render's read pass after the block is a query again and takes
+        none.  It takes it whether or not the top-up then finds anything to
+        do, because the block's first statement is what begins the command
+        transaction.
+        """
+        assert seed_periods_today
+        response, statements = capture_sql_statements(
+            lambda: auth_client.get("/grid"),
+        )
+
+        assert response.status_code == 200
+        assert advisory_lock_keys(statements) == [
+            owner_lock_key(seed_user["user"].id),
+        ]
+        read_only = [
+            i for i, (sql, _params) in enumerate(statements)
+            if "READ ONLY" in sql
+        ]
+        lock_at = _lock_index(statements)
+        assert read_only and read_only[0] < lock_at < read_only[-1], (
+            "the lock was not taken between the render's snapshots, i.e. "
+            "inside the write block"
+        )
+
+    def test_an_authenticated_options_takes_the_owner_s_key(
+        self, auth_client, seed_user,
+    ):
+        """``OPTIONS`` is not a query method, so a signed-in one is a command.
+
+        ``app.db_transaction``'s ``_QUERY_METHODS`` comment says so; graded
+        here so the comment cannot drift from the code.
+        """
+        response, statements = capture_sql_statements(
+            lambda: auth_client.options("/accounts"),
+        )
+
+        assert response.status_code == 200
+        assert advisory_lock_keys(statements) == [
+            owner_lock_key(seed_user["user"].id),
+        ]
 
 
 class TestTheLockActuallySerialises:
-    """PostgreSQL's own behaviour, not just the SQL we emit."""
+    """Property 4: PostgreSQL's own behaviour, not just the SQL we emit."""
 
-    def test_a_held_key_blocks_the_reconcile(
-        self, app, db, seed_user, seed_periods_today,
+    def test_a_held_key_blocks_a_save(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A second connection holding the user's key blocks the reconcile.
+        """A second connection holding the owner's key makes a true-up wait.
 
-        Takes the SAME ``(namespace, user_id)`` key on an independent
-        connection inside its own transaction, then runs the reconcile with a
-        short ``lock_timeout``.  PostgreSQL cancels the blocked acquisition,
-        which is the proof that the reconcile really waits for the holder
-        rather than proceeding beside it.
-
-        Non-vacuity is graded by the sibling test below: the SAME call with
-        the SAME timeout completes when nothing holds the key, so a failure
-        here cannot be a slow-database artifact.
+        The request's acquisition inherits a short ``lock_timeout``, so
+        PostgreSQL cancels the blocked statement -- the proof that the save
+        waits for the holder rather than proceeding beside it -- and the
+        statement that timed out is checked to be the owner's lock, not some
+        other.
         """
         assert seed_periods_today
+        owner_id = seed_user["user"].id
         with app.app_context():
             account = _checking_account(seed_user)
-            db.session.commit()
-            user_id = seed_user["user"].id
 
-            holder = db.engine.connect()
-            try:
-                holder.execute(
-                    text("SELECT pg_advisory_xact_lock(:ns, :uid)"),
-                    {"ns": _USER_WRITE_LOCK_NAMESPACE, "uid": user_id},
-                )
-                db.session.execute(
-                    text(f"SET LOCAL lock_timeout = '{_BLOCK_TIMEOUT_MS}ms'"),
-                )
+            with HeldOwnerKey(owner_id):
+                bound_lock_waits()
                 with pytest.raises(OperationalError) as excinfo:
-                    account_posting_service \
-                        .sync_account_anchor_postings_all_scenarios(account.id)
-                assert "lock timeout" in str(excinfo.value).lower(), (
-                    f"blocked for a reason other than the lock: {excinfo.value}"
-                )
-            finally:
-                # Roll the holder's transaction back before closing, so the
-                # advisory lock is released even if the assertion failed.
-                holder.rollback()
-                holder.close()
-                db.session.rollback()
+                    _true_up(auth_client, account.id)
+            assert_timed_out_on_owner_key(excinfo.value, owner_id)
 
-    def test_the_same_call_completes_when_the_key_is_free(
-        self, app, db, seed_user, seed_periods_today,
+    def test_the_same_save_completes_when_the_key_is_free(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The non-vacuity control for the blocking test above.
+        """The control: the same save under the same bound, nothing held.
 
-        Same account, same call, same ``lock_timeout`` -- and nothing holding
-        the key.  It completes, so the timeout in the sibling test is the held
-        lock and not the statement being slow.
+        So the timeout above is the held key and not the statement being
+        slow.
         """
         assert seed_periods_today
         with app.app_context():
             account = _checking_account(seed_user)
-            db.session.commit()
+            bound_lock_waits()
 
-            db.session.execute(
-                text(f"SET LOCAL lock_timeout = '{_BLOCK_TIMEOUT_MS}ms'"),
-            )
-            account_posting_service.sync_account_anchor_postings_all_scenarios(
-                account.id,
-            )
-            db.session.rollback()
+            response = _true_up(auth_client, account.id)
+
+            assert response.status_code == 200, response.status_code
 
 
 class TestTheKeyIsTheOwner:
-    """One key per user -- the property that makes deadlock impossible."""
+    """Property 5: one key per owner, whoever is acting."""
 
-    def test_two_accounts_of_one_user_share_the_key(
-        self, app, db, seed_user, seed_periods_today,
+    def test_a_companion_s_save_takes_its_owner_s_key(
+        self, companion_client, seed_user, seed_companion, seed_periods_today,
     ):
-        """Reconciling two of one user's accounts takes ONE distinct key.
+        """A companion writes its linked owner's data, so it takes the owner's key.
 
-        This is the whole deadlock argument, graded: a transaction that can
-        only ever hold one key cannot hold two in the wrong order.  A
-        per-ACCOUNT lock would emit two distinct keys here and would need every
-        multi-account caller to acquire in a global order.
+        Keyed on the ACTOR instead, a companion's save and the owner's would
+        take two keys and serialise against nothing.  The companion's id is
+        asserted to differ from the owner's, or the case could not tell them
+        apart.
         """
-        assert seed_periods_today
-        with app.app_context():
-            first = _checking_account(seed_user)
-            second = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=first.account_type_id,
-                    name="Lock Probe Checking Two",
-                    anchor_balance=Decimal("2500.00"),
-                ),
-            )
-            db.session.flush()
+        owner_id = seed_user["user"].id
+        assert seed_companion["user"].id != owner_id
+        template = make_expense_template(
+            db.session, seed_user, amount="120.00", name="Hotel",
+            category_key="Rent", companion_visible=True,
+        )
+        row = generate_row_of(template, seed_periods_today[4])
+        db.session.commit()
 
-            _result, statements = capture_sql_statements(
-                lambda: [
-                    account_posting_service
-                    .sync_account_anchor_postings_all_scenarios(acct.id)
-                    for acct in (first, second)
-                ],
-            )
+        response, statements = capture_sql_statements(
+            lambda: companion_client.post(f"/transactions/{row.id}/mark-done"),
+        )
 
-            # Asserted on the emitted BIND PARAMETERS, never on statement text.
-            # SQLAlchemy binds both arguments of
-            # ``pg_advisory_xact_lock(namespace, key)``, so every acquisition
-            # emits byte-identical SQL whatever it locks -- a first version of
-            # this test compared `len(set(statement_text)) == 1` and passed
-            # unchanged when the key was mutated to ``account.id``, which is
-            # precisely the design it claims to grade.  Two adversarial reviews
-            # found that independently.
-            keys = advisory_lock_keys(statements)
-            assert keys, "no lock was taken at all"
-            owner = seed_user["user"].id
-            assert first.user_id == owner and second.user_id == owner
-            assert set(keys) == {(_USER_WRITE_LOCK_NAMESPACE, owner)}, (
-                f"reconciling two accounts of one owner must take exactly ONE "
-                f"key, the owner's; got {sorted(set(keys))}.  A per-account or "
-                f"per-scenario key would show as two, and would reintroduce "
-                f"the acquisition-order problem the single key removes"
-            )
+        assert response.status_code == 200, response.status_code
+        assert set(advisory_lock_keys(statements)) == {owner_lock_key(owner_id)}
 
-    def test_lock_every_user_returns_ascending_ids(self, app, db, seed_user):
-        """The all-owners form acquires ascending by user id.
+    def test_lock_every_user_acquires_ascending(self, app, seed_user):
+        """The deploy reconciles' every-owner form acquires ascending by user id.
 
-        The deploy-wide backfills are the only transactions that reconcile more
-        than one owner, so they are the only ones that hold more than one key.
-        They pre-take them in this order, which is what keeps two concurrent
-        sweeps from taking the same two keys in opposite orders.
+        They are the only transactions that reconcile more than one owner, so
+        the only ones that hold more than one key; taking them in one global
+        order is what keeps two concurrent sweeps from taking the same two keys
+        in opposite orders.
         """
         assert seed_user
         with app.app_context():
@@ -369,389 +599,26 @@ class TestTheKeyIsTheOwner:
             assert seed_user["user"].id in acquired
             db.session.rollback()
 
-    def test_lock_is_reentrant_within_one_transaction(self, app, db, seed_user):
+    def test_the_lock_is_re_entrant_within_one_transaction(self, app, seed_user):
         """Taking the same key twice in one transaction is harmless.
 
-        Nested callers rely on this: the all-scenarios sync locks and then
-        loops the per-scenario sync, which locks again, and a pay-period reset
-        locks and then resyncs every account.  A non-re-entrant lock would
-        self-deadlock on the second acquisition.
+        ``scripts/init_database.py`` relies on it: it runs the three deploy
+        reconciles in ONE transaction, and each takes every owner's key again.
+        A non-re-entrant lock would self-deadlock on the second acquisition,
+        which the short bound turns into a failure here.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.execute(
-                text(f"SET LOCAL lock_timeout = '{_BLOCK_TIMEOUT_MS}ms'"),
-            )
+            db.session.execute(text("SELECT 1"))
+            bound_lock_waits()
+            connection = db.session.connection()
             _result, statements = capture_sql_statements(
-                lambda: [lock_user_writes(user_id), lock_user_writes(user_id)],
+                lambda: [
+                    take_owner_write_lock(connection, user_id),
+                    take_owner_write_lock(connection, user_id),
+                ],
             )
-            keys = advisory_lock_keys(statements)
-            assert keys == [
-                (_USER_WRITE_LOCK_NAMESPACE, user_id),
-                (_USER_WRITE_LOCK_NAMESPACE, user_id),
-            ], (
-                f"expected two acquisitions of the one key; got {keys}"
-            )
+            assert advisory_lock_keys(statements) == [
+                owner_lock_key(user_id), owner_lock_key(user_id),
+            ]
             db.session.rollback()
-
-
-class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
-    """Ruling R-EQ's compare-then-append is locked, on every anchor door.
-
-    **Every one of these was a surviving mutant.**  A neutral concurrency review
-    of plan step X-f1c4b applied four mutations to ``anchor_service`` -- delete
-    the cash lock, move it after the cash read, delete the loan lock, move it
-    after the loan read -- and the FULL 7,813-test suite passed under all four.
-    The rule the step exists for was entirely ungraded: `test_anchor_service.py`
-    contained no lock assertion at all, and this module's ordering class graded
-    only the reconciles, which the doors reach several statements later.
-
-    A compare-then-append is a read-modify-write.  Locking after the read
-    serialises nothing -- the loser re-reads the same pre-state it would have
-    read anyway and appends its duplicate -- so PRESENCE and ORDERING are graded
-    separately, exactly as :class:`TestTheReconcileTakesTheLockBeforeItReads`
-    does one layer down.
-    """
-
-    def test_cash_true_up_locks_before_reading_the_governing_assertion(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """``apply_anchor_true_up`` locks before it reads anchor history."""
-        assert seed_periods_today
-        with app.app_context():
-            account = _checking_account(seed_user)
-            db.session.commit()
-
-            _result, statements = capture_sql_statements(
-                lambda: anchor_service.apply_anchor_true_up(
-                    account=account, new_balance=Decimal("1750.00"),
-                ),
-            )
-
-            assert took_advisory_lock(statements), (
-                "the cash true-up emitted no advisory lock; two concurrent "
-                "submissions would both read the pre-state and both append"
-            )
-            assert any(
-                "account_anchor_history" in text for text, _params in statements
-            ), "the door read no anchor history -- the test graded nothing"
-            assert advisory_lock_precedes(statements, "account_anchor_history"), (
-                "the door read the governing assertion BEFORE taking the lock; "
-                "serialising after the read serialises nothing"
-            )
-
-    def test_the_opening_door_locks_before_reading_the_governing_opening(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """``apply_opening_restatement`` locks before it reads the opening.
-
-        The THIRD compare-then-append on this family (plan step
-        **X-f3c-2b-2a**), and the one whose lock is now load-bearing in
-        writing: ``app.opening_infrastructure`` says the books-boundary
-        triggers take no lock and that what closes the two-transaction race
-        instead is that both DOORS take the owner's.  A mechanism named in a
-        module docstring and enforced by nothing is the shape this whole class
-        was built after.
-        """
-        assert seed_periods_today
-        with app.app_context():
-            account = _checking_account(seed_user)
-            db.session.commit()
-            standing = cash_ledger.account_opening_fact(account.id)
-
-            _result, statements = capture_sql_statements(
-                lambda: opening_service.apply_opening_restatement(
-                    account=account,
-                    opening=opening_service.BooksOpening(
-                        standing.opened_on - timedelta(days=1),
-                        Decimal("1234.00"),
-                    ),
-                ),
-            )
-
-            assert took_advisory_lock(statements), (
-                "the restatement door emitted no advisory lock; two concurrent "
-                "submissions would both read the pre-state and both append, "
-                "and the books-boundary triggers take no lock of their own"
-            )
-            assert any(
-                "account_openings" in text for text, _params in statements
-            ), "the door read no opening row -- the test graded nothing"
-            assert advisory_lock_precedes(statements, "account_openings"), (
-                "the door read the governing opening BEFORE taking the lock; "
-                "serialising after the read serialises nothing"
-            )
-
-    def test_the_opening_door_locks_before_reading_the_MOVEMENTS(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """The other read the lock protects, and the one it did not at first.
-
-        The day bound reads ``budget.transactions`` and
-        ``budget.transaction_entries``, which a concurrent settle is WRITING --
-        so an unlocked read lets the restatement pass its own predicate and
-        then abort at COMMIT on the deferred trigger, which is a raw
-        ``psycopg2`` 500 where ``cash_ledger._books`` exists to give a
-        sentence.  Found by adversarial review 2026-08-31, when the lock sat
-        below the bound rather than above it.
-
-        Graded separately from the case above because the two reads are two
-        statements and a lock between them satisfies one and not the other.
-        """
-        assert seed_periods_today
-        with app.app_context():
-            account = _checking_account(seed_user)
-            db.session.commit()
-            standing = cash_ledger.account_opening_fact(account.id)
-
-            _result, statements = capture_sql_statements(
-                lambda: opening_service.apply_opening_restatement(
-                    account=account,
-                    opening=opening_service.BooksOpening(
-                        standing.opened_on - timedelta(days=1),
-                        Decimal("4321.00"),
-                    ),
-                ),
-            )
-
-            assert any(
-                "transaction_entries" in text for text, _params in statements
-            ), "the door read no movement table -- the test graded nothing"
-            assert advisory_lock_precedes(statements, "transaction_entries"), (
-                "the door read the account's movements BEFORE taking the lock; "
-                "a settle committing in that window makes the restatement abort "
-                "at COMMIT instead of being refused with a sentence"
-            )
-
-    def test_the_opening_door_locks_the_OWNER_and_nothing_else(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """The key is the owner, so it contends with every other door of theirs.
-
-        Presence and ordering are both satisfied by a lock on the wrong key --
-        ``pg_advisory_xact_lock`` binds both arguments, so every acquisition
-        emits byte-identical SQL and only the parameters say what was locked.
-        A restatement locking the ACCOUNT would serialise against nothing the
-        settle path takes.
-        """
-        assert seed_periods_today
-        with app.app_context():
-            account = _checking_account(seed_user)
-            db.session.commit()
-            standing = cash_ledger.account_opening_fact(account.id)
-
-            _result, statements = capture_sql_statements(
-                lambda: opening_service.apply_opening_restatement(
-                    account=account,
-                    opening=opening_service.BooksOpening(
-                        standing.opened_on - timedelta(days=1),
-                        Decimal("999.00"),
-                    ),
-                ),
-            )
-
-            assert set(advisory_lock_keys(statements)) == {
-                (_USER_WRITE_LOCK_NAMESPACE, seed_user["user"].id),
-            }, (
-                "the restatement locked something other than the owner: "
-                f"{advisory_lock_keys(statements)}"
-            )
-
-    def test_loan_true_up_locks_before_reading_the_governing_event(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """``apply_loan_anchor_true_up`` locks before it reads anchor events."""
-        assert seed_periods_today
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, name="Anchor Door Probe Loan",
-                principal=Decimal("15000.00"), rate=Decimal("0.05000"),
-            )
-            db.session.commit()
-
-            _result, statements = capture_sql_statements(
-                lambda: loan_anchor_service.apply_loan_anchor_true_up(
-                    account=loan,
-                    anchor_balance=Decimal("12345.67"),
-                    anchor_date=display_today(),
-                ),
-            )
-
-            assert took_advisory_lock(statements), (
-                "the loan true-up emitted no advisory lock; the loan reconcile "
-                "has carried this race since Commit 16"
-            )
-            assert any(
-                "loan_anchor_events" in text for text, _params in statements
-            ), "the door read no anchor events -- the test graded nothing"
-            assert advisory_lock_precedes(statements, "loan_anchor_events"), (
-                "the door read the governing event BEFORE taking the lock"
-            )
-
-    def test_account_edit_locks_before_it_touches_the_accounts_row(
-        self, app, auth_client, db, seed_user, seed_periods_today,
-    ):
-        """``update_account`` locks first on the branch that changes NO anchor.
-
-        **This is the one that failed before the fix, and it is a DEADLOCK
-        control rather than a race control.**  The anchor branch reaches the
-        advisory lock inside ``stage_anchor_true_up`` before the ``setattr``
-        loop's ``UPDATE budget.accounts`` flushes, while a type-only edit
-        flushes that UPDATE first and does not reach the lock until the posting
-        re-sync.  Two tabs, same account, one of each: PostgreSQL detects the
-        cycle and aborts one with an unhandled 500 on a money route -- which a
-        neutral review reproduced against a real database.
-
-        Graded through the ROUTE rather than the service because the hazard is
-        the route's statement ORDER, which is what a future refactor would
-        silently invert.
-        """
-        assert seed_periods_today
-        with app.app_context():
-            account = db.session.get(Account, seed_user["account"].id)
-            savings_type_id = db.session.query(AccountType).filter_by(
-                name="Savings",
-            ).one().id
-            unchanged_balance = cash_ledger.resolve_anchor(account).balance
-            form = {
-                "name": account.name,
-                "account_type_id": str(savings_type_id),
-                "anchor_balance": str(unchanged_balance),
-                "version_id": str(account.version_id),
-                "is_active": "true",
-            }
-
-        _response, statements = capture_sql_statements(
-            lambda: auth_client.post(
-                f"/accounts/{seed_user['account'].id}", data=form,
-            ),
-        )
-
-        assert took_advisory_lock(statements), (
-            "the account-edit route emitted no advisory lock on its "
-            "type-change branch"
-        )
-        assert any(
-            text.strip().upper().startswith("UPDATE BUDGET.ACCOUNTS")
-            for text, _params in statements
-        ), "the edit wrote no accounts row -- the test graded nothing"
-        assert advisory_lock_precedes(statements, "UPDATE budget.accounts"), (
-            "the route took the accounts ROW lock before the advisory lock on "
-            "this branch, while its anchor branch takes them the other way "
-            "round -- two tabs, one of each, deadlock"
-        )
-
-    def test_account_creation_locks_before_it_writes_the_origination(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """``create_account`` locks the owner before the assertion INSERT.
-
-        **The control for plan step X-f1e2 / ruling R-ES, and it FAILS on the
-        revert.**  The factory used to construct the origination
-        ``AccountAnchorHistory`` row itself, so the app's first assertion about
-        an account was the one assertion written with no advisory lock at all --
-        the lock did not appear until two lines later, inside
-        ``sync_account_anchor_postings_all_scenarios``, by which time the row
-        was already in.  Routing the write through
-        ``anchor_service.stage_anchor_true_up`` moves the lock in front of it.
-
-        Graded on ORDER rather than presence, because presence was already true
-        before the change and would have passed either build.
-        """
-        assert seed_periods_today
-        with app.app_context():
-            checking_type_id = db.session.query(AccountType).filter_by(
-                name="Checking",
-            ).one().id
-
-            _account, statements = capture_sql_statements(
-                lambda: account_service.create_account(
-                    account_service.AccountSpec(
-                        user_id=seed_user["user"].id,
-                        account_type_id=checking_type_id,
-                        name="R-ES Origination Probe",
-                        anchor_balance=Decimal("2500.00"),
-                    ),
-                ),
-            )
-
-            assert took_advisory_lock(statements), (
-                "account creation emitted no advisory lock at all"
-            )
-            # The KEY, not merely the presence.  ``pg_advisory_xact_lock`` binds
-            # both arguments, so every acquisition emits identical SQL and only
-            # the parameters say WHAT was locked -- an adversarial review
-            # mutated this call to ``lock_user_writes(account.id)`` and the
-            # whole 693-test control set still passed.  Two different keys in
-            # one transaction is the unordered-acquisition hazard the single
-            # per-owner key exists to remove.
-            owner_id = seed_user["user"].id
-            assert _account.id != owner_id, (
-                "this control cannot tell an owner key from an ACCOUNT key "
-                f"while both are {owner_id} -- the fixture must not make them "
-                "equal, or the mutation it exists to catch passes"
-            )
-            assert set(advisory_lock_keys(statements)) == {
-                (_USER_WRITE_LOCK_NAMESPACE, owner_id),
-            }, (
-                "every advisory lock on the create path must be keyed on the "
-                f"OWNER ({owner_id}); the run took "
-                f"{advisory_lock_keys(statements)}.  More than one DISTINCT "
-                "key in one transaction is the unordered-acquisition hazard "
-                "the single per-owner key exists to remove (the repeats are "
-                "the same re-entrant key and are harmless)"
-            )
-            # The INSERT specifically.  ``governing_anchor``'s SELECT names
-            # the same table and comes first, so a build whose stager read the
-            # table and returned without appending would satisfy a bare
-            # "touched the table" check while writing nothing.
-            assert any(
-                text.strip().upper().startswith(
-                    "INSERT INTO BUDGET.ACCOUNT_ANCHOR_HISTORY",
-                )
-                for text, _params in statements
-            ), (
-                "the factory INSERTed no anchor history -- the test graded "
-                "nothing, and the E-19 invariant is broken besides"
-            )
-            # **The OPENING is the same claim one table over** (plan step
-            # X-f3c-2b-2a).  The factory routes its books opening through
-            # ``opening_service.stage_account_opening``, whose own
-            # ``lock_user_writes`` is the FIRST acquisition on this path -- and
-            # it is the only control that can see it, because
-            # ``apply_opening_restatement`` (the other caller) takes a lock of
-            # its own, so deleting the stager's leaves the restatement door's
-            # three cases green.  Measured: with the stager's lock removed this
-            # assertion is the one that fails.
-            assert any(
-                text.strip().upper().startswith(
-                    "INSERT INTO BUDGET.ACCOUNT_OPENINGS",
-                )
-                for text, _params in statements
-            ), (
-                "the factory INSERTed no opening row -- the test graded "
-                "nothing, and the fold has no level to start from besides"
-            )
-            assert advisory_lock_precedes(statements, "account_openings"), (
-                "the books opening was read BEFORE the owner's write lock was "
-                "taken; the writer's own lock is what makes the compare safe "
-                "for every caller rather than for the one door that happens "
-                "to lock above it"
-            )
-            assert advisory_lock_precedes(
-                statements, "account_anchor_history",
-            ), (
-                "the origination assertion was written BEFORE the owner's "
-                "write lock was taken, which is the second-writer shape "
-                "ruling R-ES deleted"
-            )
-
-            # And the row the whole path exists to produce.  Ordering is not
-            # correctness on its own: a build that locked correctly and wrote
-            # the wrong day or balance passes every assertion above.
-            written = db.session.query(AccountAnchorHistory).filter_by(
-                account_id=_account.id,
-            ).all()
-            assert len(written) == 1
-            assert written[0].anchor_balance == Decimal("2500.00")
-            assert written[0].observed_on == display_today()

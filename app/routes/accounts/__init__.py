@@ -49,8 +49,8 @@ Module map:
   renders and the POST that appends a restatement.  A write door for an
   append-only MONEY fact, split from ``crud`` for the reason ``history`` was
   split from ``detail`` -- ``crud`` writes plain columns on one row and this
-  goes through a service that takes the owner's write lock and re-bases the
-  posted ledger.  The balance-history card LINKS here rather than editing in
+  goes through a service that re-bases the posted ledger under the owner's
+  write lock.  The balance-history card LINKS here rather than editing in
   place: one door, two entrances, and the second is the only surface every
   account kind reaches.
 * :mod:`app.routes.accounts.statements` -- What the BANK said (plan step

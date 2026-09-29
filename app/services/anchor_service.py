@@ -66,15 +66,22 @@ had been serialised by accident (the deleted ``version_id`` UPDATE autoflushed
 and took a row lock before the walk) and the loan side never was at all.  Plan
 step X-f1c3c made the reconcile take a per-owner advisory lock for itself
 (:mod:`app.services.user_write_lock`); **since plan step ``balance:X-bn`` that
-lock is held from the START of every writing transaction**
-(:mod:`app.db_transaction`, ruling **R-CC115**), so the reconcile's read is
-serialised before it runs and takes no lock of its own.
+lock is taken by every COMMAND transaction a signed-in request opens, before
+it reads any of the owner's data** (:mod:`app.db_transaction`, ruling
+**R-CC115**), so the reconcile's read is serialised before it runs and takes
+no lock of its own.  That is not every transaction that reaches this module:
+registration takes none (``account_service.create_account`` stages the
+origination for a user who is not committed yet, so no other transaction can
+see it), and a script that writes an existing owner's data must take that
+owner's lock at its own start, as the deploy reconciles do
+(:func:`app.services.user_write_lock.lock_every_user_writes`).
 
 **An assertion is refused only when it CHANGES NOTHING, and that rule is this
 module's** (ruling **R-EQ**, plan step X-f1c4b).  Both doors, under the owner's
-write lock their transaction holds from its start, read the assertion that
-currently GOVERNS what the submission would govern, and append only when the
-submission differs from it.  An identical submission writes nothing and reports
+write lock their signed-in request's transaction already holds (above), read
+the assertion that currently GOVERNS what the submission would govern, and
+append only when the submission differs from it.  An identical submission
+writes nothing and reports
 ``UNCHANGED``, which the routes render as success -- so a double-click, a
 network retry and a back-and-resubmit are absorbed, while a correction never
 is.
@@ -98,29 +105,34 @@ Two consequences worth stating, both measured before the indexes were dropped:
   * **The remaining exposure is a surplus audit row, not money.**  Two truly
     concurrent identical submissions could each pass the compare -- except they
     cannot, because the compare runs under the per-owner write lock
-    (:mod:`app.services.user_write_lock`), held since the transaction began
-    (plan step ``balance:X-bn``), so the waiter reads the winner's row.  Even without
+    (:mod:`app.services.user_write_lock`), which the submitting request's
+    transaction took before reading any of the owner's data (plan step
+    ``balance:X-bn``), so the waiter reads the winner's row.  Even without
     it the cost was
     ``$0.00``: a duplicate assertion's correction delta is zero, a zero delta
     emits no legs (``account_posting_service._anchors``), and same-day
     corrections merge on one key.
   * *History, superseded by plan step ``balance:X-bn``, which takes the lock
-    where each writing transaction begins and deleted every call below:*
+    where each signed-in request's command transaction begins and deleted
+    every call below:*
     **The lock moved EARLIER, not merely inward, and the "first lock" property
     belonged to the CALLER.**  It was taken inside the reconcile, several
-    statements in; both doors now take it before their first read.  That is only
-    the invariant :mod:`app.services.user_write_lock` states ("this lock must be
-    the FIRST lock a transaction takes") when nothing the caller did earlier has
-    already taken a row lock -- and ``lock_user_writes`` runs through
-    ``db.session.execute``, which AUTOFLUSHES, so a caller that assigns to an ORM
-    row before calling here emits that ``UPDATE`` first and inverts the order
-    silently.  The three HTMX/loan doors do only reads beforehand.
+    statements in; plan step X-f1c4b had both doors take it before their first
+    read.  That was only the invariant :mod:`app.services.user_write_lock`
+    states ("this lock must be the FIRST lock a transaction takes") when
+    nothing the caller did earlier had already taken a row lock -- and
+    ``lock_user_writes`` ran through ``db.session.execute``, which AUTOFLUSHES,
+    so a caller that assigned to an ORM row before calling here emitted that
+    ``UPDATE`` first and inverted the order silently.  The three HTMX/loan
+    doors did only reads beforehand.
     ``routes/accounts/crud.update_account`` took the lock at its own top for the
     same reason, against a deadlock between two of its OWN branches reproduced
     against a real database; **plan step X-f1e deleted the branch that raced**,
-    so that route no longer reaches this module at all and keeps the lock purely
-    to hold the invariant on its type-change path.  **None of that closes
-    finding N-193**, whose cycle is settle-versus-truncate and is untouched.
+    so that route stopped reaching this module at all and kept the lock purely
+    to hold the invariant on its type-change path.  None of that closed
+    finding **N-193**, whose cycle is settle-versus-truncate: plan step
+    ``balance:X-bn`` owns it, and closes it by taking the lock where every
+    signed-in request's command transaction begins.
 
 Pre-Commit-16 this consolidation eliminates two byte-identical
 ``try/except`` blocks in ``app/routes/accounts.py``; the loan
@@ -314,7 +326,10 @@ class AnchorStageReport:
             decides what a decline means for ITS transaction.
         latest: The account's latest owner-declared assertion
             (:func:`app.services.cash_ledger.governing_anchor`), read under the
-            owner's lock and BEFORE this assertion was staged, so it is what
+            owner's lock where the transaction holds one (a signed-in
+            request's does; registration's takes none, and its new account
+            carries no assertion to read) and BEFORE this assertion was
+            staged, so it is what
             governed today before this write (both write doors refuse a future
             day).
             ``None`` for an account carrying no assertion at all, which is the
@@ -496,6 +511,9 @@ def stage_anchor_true_up(
     owner's write lock, without ruling R-EQ's did-this-change compare and
     without the shared log line; routing it here is what makes those rules
     properties of the TABLE rather than of whichever function did the INSERT.
+    *The lock is no longer one of them: since plan step ``balance:X-bn`` it is
+    the signed-in request's transaction's, not this function's, and an
+    origination at registration is written with none.*
 
     *The history is worth one sentence because it inverts twice.*  The split
     existed to be SHARED with ``routes/accounts/crud.update_account``; plan step
@@ -508,8 +526,9 @@ def stage_anchor_true_up(
     sharing a definition, but two EVENTS sharing a write door.
 
     **It decides whether there is anything to append, and that decision is
-    ruling R-EQ.**  Under the owner's write lock its transaction holds from its
-    start (plan step ``balance:X-bn``), it reads which assertion governs the
+    ruling R-EQ.**  Under the owner's write lock (on a signed-in request, held
+    since before its transaction read any of the owner's data, plan step
+    ``balance:X-bn``), it reads which assertion governs the
     submitted day, and appends only when the submission differs
     from it.  Three properties are load-bearing and each is here rather than in
     a caller:
@@ -517,23 +536,28 @@ def stage_anchor_true_up(
     * **The lock precedes the read.**  A compare-then-append is a
       read-modify-write, so an unserialised one lets two concurrent submissions
       each read the pre-state and both append.  *Since plan step
-      ``balance:X-bn`` (ruling **R-CC115**) the lock is taken where the
-      transaction begins, before ANY read, for both callers, and this function
-      takes none; the rest of this bullet is the history of the acquisition it
-      deleted.*  **Since ruling R-CC85 it is
+      ``balance:X-bn`` (ruling **R-CC115**) this function takes no lock.  On
+      every signed-in path to it -- the true-up door, and the account factory
+      reached from ``routes/accounts/crud.create_account`` -- the request's
+      command transaction took the lock before reading any of the owner's
+      data (:mod:`app.db_transaction`).  Registration reaches it through the
+      account factory with no lock and needs none: the account is
+      uncommitted, so no other transaction can submit against it.  The rest
+      of this bullet is the history of the acquisition that step deleted.*
+      **From ruling R-CC85 it was
       the cash door's only acquisition above that read**: the door
-      (:func:`apply_anchor_true_up`) took its own a few statements earlier
-      (ruling **R-CC79**) to guard a read of the latest assertion that this
-      function now makes and hands back, so the door no longer takes it.  The
-      lock is transaction-scoped, so it still covers the door's after-read,
-      which precedes the commit that releases it.  It is NOT a
-      guarantee that the advisory lock is the transaction's FIRST lock:
-      ``lock_user_writes`` executes a statement and therefore AUTOFLUSHES, so
-      a caller holding a dirty ORM row emits that ``UPDATE`` -- and takes its
-      row lock -- before this line.  That ordering is the CALLER's to keep (finding **N-193**), and
-      it is why ``routes/accounts/crud.update_account`` still takes the same
-      re-entrant lock at its own top even though plan step X-f1e stopped it
-      reaching this function at all.
+      (:func:`apply_anchor_true_up`) had taken its own a few statements
+      earlier (ruling **R-CC79**) to guard a read of the latest assertion that
+      this function now makes and hands back.  The
+      lock is transaction-scoped, so it covers the door's after-read too,
+      which precedes the commit that releases it.  It was NOT a
+      guarantee that the advisory lock was the transaction's FIRST lock:
+      ``lock_user_writes`` executed a statement and therefore AUTOFLUSHED, so
+      a caller holding a dirty ORM row emitted that ``UPDATE`` -- and took its
+      row lock -- before it.  That ordering was the CALLER's to keep (finding
+      **N-193**), and it is why ``routes/accounts/crud.update_account`` took
+      the same re-entrant lock at its own top even after plan step X-f1e
+      stopped it reaching this function at all.
     * **The governing assertion is asked for, never re-derived, and asked
       ONCE when once answers it** (ruling **R-CC85**).  The first read is
       :func:`app.services.cash_ledger.governing_anchor`, the account's latest
@@ -558,9 +582,13 @@ def stage_anchor_true_up(
       S_D, and then the day's record is a different row, read for itself.  The
       proof needs nothing of the order but that both reads share it, and
       nothing of the horizon but that it is membership by ``observed_on <=
-      D``.  Both would run under the owner's lock, which the one writer of an
-      owner-declared assertion (this function, ruling R-ES) takes, and before
-      this assertion is staged, so they would see one S.  Reads per call: ONE
+      D``.  Both would run in one transaction, before this assertion is
+      staged, and no other can append to S between them: this function is
+      the one writer of an owner-declared assertion (ruling R-ES), and every
+      transaction that reaches it either holds the owner's lock (a signed-in
+      request's, plan step ``balance:X-bn``) or writes an account no other
+      transaction can see (registration's).  So they would see one S.  Reads
+      per call: ONE
       when the day is on or after the latest assertion's (a save for today, an
       origination), TWO for a back-dated day.
     * **The comparison is against the row governing the SUBMITTED DAY, not the
@@ -586,10 +614,13 @@ def stage_anchor_true_up(
     writer declining to trust its caller and was really the clock being read
     twice: the floor is time-dependent, so a midnight roll -- or a schedule
     rebuild committing -- between a caller's resolve and this one refuses the day
-    the caller just produced.  Both doors resolve exactly once now, each BEFORE
-    the lock, because a refused submission must not take the owner's write lock
-    and the resolver takes none of its own (one aggregate SELECT over pay
-    periods).
+    the caller just produced.  Both doors resolve exactly once now, before
+    anything is staged, and the resolver takes no lock of its own (one
+    aggregate SELECT over pay periods).  *Until plan step ``balance:X-bn`` each
+    resolved BEFORE the lock, so that a refused submission never took the
+    owner's write lock; that step takes the lock where a signed-in request's
+    command transaction begins, above both doors, so a refused submission on
+    that path holds it until its transaction ends.*
 
     **What it stages shrank twice, and both shrinks are the same ruling
     applied one table apart.**  It used to re-point ``current_anchor_period_id``
@@ -641,8 +672,9 @@ def stage_anchor_true_up(
     """
     day = observed_on.civil_day
     # Ruling R-EQ: the owner's write lock precedes the READS the decision
-    # below is made from -- held since this transaction began (plan step
-    # ``balance:X-bn``, :mod:`app.db_transaction`).
+    # below is made from -- on a signed-in request, held since before its
+    # transaction read any of the owner's data (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`); registration's uncommitted account needs none.
     # Ruling R-CC85: the latest assertion, read ONCE and handed back.  Dated on
     # or before the submitted day, it IS the one governing that day (the proof
     # is in the docstring), so a second read would return the same row.  Dated
@@ -692,10 +724,12 @@ def apply_anchor_true_up(
     after, which let two tabs saving at once show the wrong acknowledgement:
     the "before" figure it compared against could be one a concurrent save had
     already replaced.  **The before is the stager's read** (ruling **R-CC85**):
-    :func:`stage_anchor_true_up` takes the lock, reads the latest assertion
-    once for its own compare and hands it back, so this door reads nothing
-    before the write.  The after-read precedes the commit that releases the
-    lock.  Reads of the governing assertion per call: TWO for a save dated on
+    :func:`stage_anchor_true_up` reads the latest assertion once for its own
+    compare, under the lock the request's transaction already holds, and
+    hands it back, so this door reads nothing before the write (the stager
+    took the lock itself until plan step ``balance:X-bn``).  The after-read
+    precedes the commit that releases the lock.  Reads of the governing
+    assertion per call: TWO for a save dated on
     or after the latest assertion's day, as a save for today always is (the
     stager's latest, which is then also the record governing the submitted
     day, and the after); THREE for one dated before that day (the stager
@@ -738,10 +772,13 @@ def apply_anchor_true_up(
     with the trial balance still ``$0.00`` because the anchor-equity leg
     mirrors the error.  The serialisation was made EXPLICIT at plan step
     X-f1c3c, a per-owner advisory lock taken inside the sync; **since plan step
-    ``balance:X-bn`` it is held from the start of every writing transaction**
+    ``balance:X-bn`` it is taken by every command transaction a signed-in
+    request opens, before it reads any of the owner's data**
     (:mod:`app.db_transaction`), so every door into that same window (the
-    settle self-heal, the direct anchor edit, the pay-period resync) is covered
-    before its first read and the sync takes none of its own.
+    settle self-heal, the pay-period resync) is covered before its first read
+    and the sync takes none of its own.  *This list also named "the direct
+    anchor edit", the full account form's balance field, which plan step X-f1e
+    deleted.*
     The waiting transaction re-reads under READ COMMITTED, which ruling `balance:R-GU`
     guarantees for a WRITER (its override is also ``READ ONLY``), so it sees
     the winner's postings and reconciles to the true merged target.
@@ -751,13 +788,13 @@ def apply_anchor_true_up(
     compare-then-append is itself a read-modify-write.  Ruling R-CC79 took it
     once more, HERE, above a read of what governs today that this door then
     made; ruling R-CC85 moved that read into the stager, below the stager's own
-    acquisition, and this door's acquisition went with it.  It is re-entrant and
-    transaction-scoped, so the reconcile's repeat costs nothing and the
-    after-read below still holds it.  On THIS path it is also the transaction's
-    first lock -- the route does only reads before calling (measured, statement
-    by statement, by a neutral concurrency review) -- but that is a property of
-    the route, not of the lock, and finding **N-193** stays open for the settle
-    paths regardless.
+    acquisition, and this door's acquisition went with it.  It was re-entrant
+    and transaction-scoped, so the reconcile's repeat cost nothing and the
+    after-read below still held it.  On THIS path it was also the transaction's
+    first lock -- the route did only reads before calling (measured, statement
+    by statement, by a neutral concurrency review) -- but that was a property
+    of the route, not of the lock, and finding **N-193** stayed open for the
+    settle paths regardless.
 
     **It touches no entry, and that is ruling R-DH (d).**  It used to bulk-flip
     ``is_cleared`` on every entry dated on or before the server's today, which
@@ -805,9 +842,10 @@ def apply_anchor_true_up(
     Raises:
         ValidationError: When *observed_on* is in the future or precedes the
             owner's recorded history (:func:`resolve_observation_day`).  Raised
-            before anything is staged and before the owner's write lock is
-            taken, so the session is clean; the route renders it as a designed
-            400 fragment.
+            before anything is staged, so the session is clean; the owner's
+            write lock the request's transaction already holds (plan step
+            ``balance:X-bn``) is released when the request ends that
+            transaction.  The route renders it as a designed 400 fragment.
         AmortizingAccountAnchorError: When ``account`` is an amortizing
             loan (``account_type.has_amortization``).  A loan's balance
             is ledger-derived and asserted through
@@ -831,15 +869,17 @@ def apply_anchor_true_up(
             "cash anchor"
         )
 
-    # Bounded ONCE, here, above the lock (plan step X-f1e2).  The kind gate runs
-    # first so an amortizing account is refused for what it IS before its day is
-    # judged.
+    # Bounded ONCE, here, before anything is staged (plan step X-f1e2); it was
+    # above the lock too until plan step ``balance:X-bn``, which takes the lock
+    # before the route runs.  The kind gate runs first so an
+    # amortizing account is refused for what it IS before its day is judged.
     day = resolve_observation_day(account.user_id, observed_on)
 
-    # Ruling R-CC85: the stager takes the owner's lock, reads the latest
-    # assertion once under it, and hands it back -- what governed today, read
-    # inside the same serialisation as the write, so a concurrent save cannot
-    # land between it and the after-read below.  This door reads nothing first.
+    # Ruling R-CC85: the stager reads the latest assertion once, under the
+    # owner's lock the request's transaction already holds, and hands it back
+    # -- what governed today, read inside the same serialisation as the write,
+    # so a concurrent save cannot land between it and the after-read below.
+    # This door reads nothing first.
     staging = stage_anchor_true_up(
         account=account, new_balance=new_balance, observed_on=day,
     )
@@ -848,9 +888,10 @@ def apply_anchor_true_up(
     if not staging.staged:
         # Ruling R-EQ: the submission IS the governing assertion, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back
-        # rather than returning on an open transaction -- the stager took the
-        # owner's write lock to make its read safe, and only a commit or a
-        # rollback releases it.
+        # rather than returning on an open transaction -- the transaction holds
+        # the owner's write lock (taken before it read any of the owner's data,
+        # plan step ``balance:X-bn``), and only a commit or a rollback
+        # releases it.
         # Read the id BEFORE the rollback: afterwards the instance is expired
         # and touching an attribute opens a fresh transaction purely to recover
         # a value already in hand.

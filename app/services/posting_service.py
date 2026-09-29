@@ -788,9 +788,12 @@ def resync_all_cash_postings() -> tuple[int, int]:
     owner's settled rows in ID order, and each one reached the anchor
     self-heal and so, until plan step ``balance:X-bn`` deleted the per-service
     acquisitions, that owner's lock -- an unordered multi-key acquisition,
-    which is exactly what two concurrent sweeps deadlock on.  Taking every
-    owner's lock ascending at the start is also what now covers every write
-    this transaction makes, since no service below takes one.  A
+    which is exactly what two concurrent sweeps deadlock on.  "Up front" is
+    this FUNCTION's start, not the transaction's: the deploy runs the release's
+    migrations and reference seed earlier in the same transaction
+    (``scripts/init_database.py``), before any owner's lock is held.  Taking
+    every owner's lock ascending here is what now covers every write this
+    reconcile makes, since no service below takes one.  A
     first version of the lock's docstring called the two backfill functions
     "the only multi-owner transactions" and missed this one, which is the FIRST
     of the three deploy hooks to run.

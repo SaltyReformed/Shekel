@@ -48,17 +48,16 @@ from app.models.user import MfaConfig, User
 from app.services import mfa_service
 from app.services.user_write_lock import _USER_WRITE_LOCK_NAMESPACE
 from tests._test_helpers import (
+    HeldOwnerKey,
     advisory_lock_keys,
+    assert_timed_out_on_owner_key,
+    bound_lock_waits,
     capture_sql_statements,
     generate_row_of,
     make_expense_template,
+    owner_lock_key,
 )
 from tests.conftest import SEED_USER_EMAIL, SEED_USER_PASSWORD
-
-#: How long a blocked acquisition waits before PostgreSQL cancels it -- the
-#: value ``tests/test_services/test_user_write_lock.py`` settled on, long
-#: enough that the free-key controls never trip it on a loaded host.
-_BLOCK_TIMEOUT_MS = 750
 
 #: How long a thread is given to reach the lock and wait on it, and to finish
 #: once the holder lets go.  Generous: the arm polls and moves on the moment
@@ -67,18 +66,6 @@ _THREAD_DEADLINE_S = 20.0
 
 #: The backup codes the MFA arms enable; any one of them signs in once.
 _BACKUP_CODES = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
-
-
-def _owner_key(owner_id):
-    """The ``(namespace, key)`` pair the owner's write lock is taken on.
-
-    Args:
-        owner_id: The owning user's id.
-
-    Returns:
-        The pair :func:`tests._test_helpers.advisory_lock_keys` reports.
-    """
-    return (_USER_WRITE_LOCK_NAMESPACE, owner_id)
 
 
 def _first_index(statements, predicate, start=0):
@@ -136,68 +123,6 @@ def _post_login(client, password=SEED_USER_PASSWORD, email=SEED_USER_EMAIL):
     return client.post("/login", data={"email": email, "password": password})
 
 
-class _HeldKey:
-    """A second connection holding one owner's write lock until released.
-
-    The ``tests/test_services/test_user_write_lock.py`` pattern, as a context
-    manager so the holder's transaction is rolled back -- and the key released
-    -- even when an assertion fails inside the block.
-    """
-
-    def __init__(self, owner_id):
-        """Remember whose key to hold.
-
-        Args:
-            owner_id: The owner whose write lock the connection takes.
-        """
-        self.owner_id = owner_id
-        self.connection = None
-
-    def __enter__(self):
-        """Open the connection and take the key inside its transaction."""
-        self.connection = db.engine.connect()
-        self.connection.execute(
-            text("SELECT pg_advisory_xact_lock(:ns, :owner)"),
-            {"ns": _USER_WRITE_LOCK_NAMESPACE, "owner": self.owner_id},
-        )
-        return self
-
-    def __exit__(self, *exc_info):
-        """Release the key by ending the holder's transaction, then close."""
-        self.connection.rollback()
-        self.connection.close()
-
-
-def _set_lock_timeout():
-    """Bound this transaction's lock waits to :data:`_BLOCK_TIMEOUT_MS`.
-
-    Issued on the test's session, whose transaction a POST under the test
-    client runs in (the app context is shared and a COMMAND keeps what is
-    open), so the request's own acquisition inherits the bound.  It only
-    shortens the wait: the test cluster bounds every wait anyway, so the arms
-    that use this also assert WHICH lock timed out
-    (:func:`_assert_timed_out_on_the_owner_s_key`).
-    """
-    db.session.execute(text(f"SET LOCAL lock_timeout = '{_BLOCK_TIMEOUT_MS}ms'"))
-
-
-def _assert_timed_out_on_the_owner_s_key(error, owner_id):
-    """Assert *error* is a lock timeout on *owner_id*'s write lock, not another.
-
-    A timeout on any other lock -- a row the test holds, or the holder's own
-    acquisition -- would read the same in its message, so the statement that
-    timed out and its bound key are what is graded.
-
-    Args:
-        error: The :class:`~sqlalchemy.exc.OperationalError` raised.
-        owner_id: The owner whose key was held.
-    """
-    assert "lock timeout" in str(error).lower(), error
-    assert advisory_lock_keys([(error.statement, error.params)]) == [
-        _owner_key(owner_id),
-    ], error.statement
-
-
 class TestSignInLocksBeforeItChecks:
     """R-CC121: the account is found, the owner's lock is taken, then it is checked."""
 
@@ -228,7 +153,7 @@ class TestSignInLocksBeforeItChecks:
         )
         assert None not in (lookup_at, lock_at, count_at), (lookup_at, lock_at, count_at)
         assert lookup_at < lock_at < count_at
-        assert advisory_lock_keys(statements)[0] == _owner_key(user_id)
+        assert advisory_lock_keys(statements)[0] == owner_lock_key(user_id)
         # The check itself runs on a row read AGAIN under the lock: the lookup's
         # copy was taken before it, and counting on that copy is the race the
         # ruling closed (two wrong passwords counted once).
@@ -265,7 +190,7 @@ class TestSignInLocksBeforeItChecks:
         codes_at = _first_index(statements, lambda sql: "mfa_configs" in sql)
         assert None not in (lock_at, codes_at), (lock_at, codes_at)
         assert lock_at < codes_at
-        assert advisory_lock_keys(statements)[0] == _owner_key(user_id)
+        assert advisory_lock_keys(statements)[0] == owner_lock_key(user_id)
 
     def test_a_companion_s_sign_in_locks_its_owner_s_key(
         self, client, seed_user, seed_companion,
@@ -282,7 +207,7 @@ class TestSignInLocksBeforeItChecks:
         )
 
         assert response.status_code == 302
-        assert advisory_lock_keys(statements)[0] == _owner_key(owner_id)
+        assert advisory_lock_keys(statements)[0] == owner_lock_key(owner_id)
 
 
 class TestAHeldKeyMakesSignInWait:
@@ -290,16 +215,16 @@ class TestAHeldKeyMakesSignInWait:
 
     def test_the_password_step_waits_on_a_held_key(self, client, seed_user):
         """Another transaction holding the owner's key blocks the sign-in."""
-        with _HeldKey(seed_user["user"].id):
-            _set_lock_timeout()
+        with HeldOwnerKey(seed_user["user"].id):
+            bound_lock_waits()
             with pytest.raises(OperationalError) as excinfo:
                 _post_login(client)
-        _assert_timed_out_on_the_owner_s_key(excinfo.value, seed_user["user"].id)
+        assert_timed_out_on_owner_key(excinfo.value, seed_user["user"].id)
 
     @pytest.mark.usefixtures("seed_user")
     def test_the_password_step_completes_when_the_key_is_free(self, client):
         """The control: the same sign-in under the same bound, nothing held."""
-        _set_lock_timeout()
+        bound_lock_waits()
         response = _post_login(client)
         assert response.status_code == 302
 
@@ -308,17 +233,17 @@ class TestAHeldKeyMakesSignInWait:
         user_id = seed_user["user"].id
         _enable_mfa(user_id)
         _post_login(client)
-        with _HeldKey(user_id):
-            _set_lock_timeout()
+        with HeldOwnerKey(user_id):
+            bound_lock_waits()
             with pytest.raises(OperationalError) as excinfo:
                 client.post("/mfa/verify", data={"backup_code": _BACKUP_CODES[0]})
-        _assert_timed_out_on_the_owner_s_key(excinfo.value, user_id)
+        assert_timed_out_on_owner_key(excinfo.value, user_id)
 
     def test_the_code_step_completes_when_the_key_is_free(self, client, seed_user):
         """The control for the code step."""
         _enable_mfa(seed_user["user"].id)
         _post_login(client)
-        _set_lock_timeout()
+        bound_lock_waits()
         response = client.post(
             "/mfa/verify", data={"backup_code": _BACKUP_CODES[0]},
         )
@@ -362,7 +287,7 @@ class TestARefusedRequestTakesNoLock:
         )
 
         assert response.status_code == 302
-        assert advisory_lock_keys(statements)[0] == _owner_key(
+        assert advisory_lock_keys(statements)[0] == owner_lock_key(
             seed_user["user"].id,
         )
 
@@ -385,7 +310,7 @@ class TestTheLockEndsWithItsRequest:
             lambda: _post_login(client),
         )
         assert response.status_code == 302
-        assert _owner_key(user_id) in advisory_lock_keys(statements)
+        assert owner_lock_key(user_id) in advisory_lock_keys(statements)
 
         probe = db.engine.connect()
         try:
@@ -458,7 +383,7 @@ def _run_behind(held, app, request):
     it only if something makes it read again.
 
     Args:
-        held: The :class:`_HeldKey` holding the owner's key.
+        held: The :class:`~tests._test_helpers.HeldOwnerKey` holding the owner's key.
         app: The application.
         request: A zero-argument callable issuing the request.
 
@@ -496,7 +421,7 @@ class TestTheCheckReadsWhatTheLockProtects:
         wrong passwords counted once" race the ruling closed.
         """
         user_id = seed_user["user"].id
-        with _HeldKey(user_id) as held:
+        with HeldOwnerKey(user_id) as held:
             held.connection.execute(
                 text("UPDATE auth.users SET failed_login_count = 3 WHERE id = :id"),
                 {"id": user_id},
@@ -537,7 +462,7 @@ class TestADeactivatedCompanionIsTurnedAwayAfterTheWait:
         )
         assert before == ref_cache.status_id(StatusEnum.PROJECTED)
 
-        with _HeldKey(seed_user["user"].id) as held:
+        with HeldOwnerKey(seed_user["user"].id) as held:
             held.connection.execute(
                 text("UPDATE auth.users SET is_active = false WHERE id = :id"),
                 {"id": seed_companion["user"].id},
@@ -565,7 +490,7 @@ class TestADeactivatedCompanionIsTurnedAwayAfterTheWait:
             seed_user, seed_periods_today[4],
         )
 
-        with _HeldKey(seed_user["user"].id) as held:
+        with HeldOwnerKey(seed_user["user"].id) as held:
             response = _run_behind(
                 held, app,
                 lambda: companion_client.post(f"/transactions/{txn_id}/mark-done"),

@@ -115,8 +115,10 @@ _OPENINGS_TABLE = "budget.account_openings"
 #: owner is told "Books restated" and nothing moved.
 #:
 #: ``id`` is a sequence value allocated when the INSERT executes, and the write
-#: door holds the owner's write lock across its compare-and-append (taken where
-#: its transaction begins, plan step ``balance:X-bn``), so within an
+#: door's compare-and-append runs under the owner's write lock, which a
+#: signed-in request's transaction takes before reading any of the owner's
+#: data (plan step ``balance:X-bn``); an origination at registration runs
+#: under none, on an account no other transaction can see yet.  So within an
 #: account the id order IS the order the owner made the statements.  The
 #: migration writes every row in one transaction and at most one per account,
 #: so it is unaffected either way.

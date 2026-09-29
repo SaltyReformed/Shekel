@@ -14,8 +14,9 @@ and the two differed in every rule that is not the row's columns: the stager
 took the owner's write lock, applied ruling **R-EQ**'s did-this-change compare
 and logged the resolved day; the factory did none of it.  Routing both events
 through one door is what makes those rules properties of the TABLE rather than
-of whichever function happened to do the INSERT.  This module is that door for
-the third member of the append-only account family.
+of whichever function happened to do the INSERT (the lock was one of them until
+plan step ``balance:X-bn`` made it the transaction's).  This module is that
+door for the third member of the append-only account family.
 
 **What the owner is stating, in one sentence.**  An account's opening equity is
 the capital its books opened with -- the level every balance the app has ever
@@ -382,8 +383,9 @@ def stage_account_opening(
     :func:`app.services.account_service.create_account` (the origination), so
     ruling **R-EQ**'s did-this-change compare and the audit line are properties
     of the TABLE rather than of one of the two events (the owner's write lock
-    is the transaction's, plan step ``balance:X-bn``).  Adds to the current
-    session; the caller commits.
+    is the transaction's where it holds one, plan step ``balance:X-bn``; see
+    the lock paragraph below).  Adds to the current session; the caller
+    commits.
 
     **It decides whether there is anything to append, and that decision is
     ruling R-EQ** -- the same rule
@@ -405,11 +407,17 @@ def stage_account_opening(
 
     **The lock precedes the read**, exactly as it does one table over: a
     compare-then-append is a read-modify-write, and an unserialised one lets
-    two concurrent submissions each read the pre-state and both append.  The
-    owner's write lock is held from the transaction's start (plan step
-    ``balance:X-bn``, :mod:`app.db_transaction`), before this or any read;
-    *until that step it was taken HERE, with the read it protects, and ruling
-    R-CC115 deleted the acquisition.*
+    two concurrent submissions each read the pre-state and both append.  On a
+    signed-in request the owner's write lock is already held when this runs:
+    every command transaction such a request opens takes it before reading
+    any of the owner's data (plan step ``balance:X-bn``,
+    :mod:`app.db_transaction`), so before this read.  **Registration takes
+    none** -- ``registration_service.register_user`` reaches this function
+    through the account factory for a user who is not committed yet, so no
+    other transaction can see the account -- and a script that writes an
+    existing owner's books must take that owner's lock at its own start.
+    *Until that step the lock was taken HERE, with the read it protects, and
+    ruling R-CC115 deleted the acquisition.*
 
     **It does NOT bound the day, and the caller must have done so.**  See the
     module docstring: the two events bound it differently, and a second
@@ -541,7 +549,8 @@ def apply_opening_restatement(
             "row while the loan is configured"
         )
 
-    # The owner's write lock is held from this transaction's start (plan step
+    # The owner's write lock is already held: the signed-in request's
+    # transaction took it before reading any of the owner's data (plan step
     # ``balance:X-bn``, :mod:`app.db_transaction`), so the day rule below
     # reads ``budget.transactions`` / ``budget.transaction_entries`` after any
     # concurrent settle of this owner has committed: the loser sees the
@@ -561,11 +570,11 @@ def apply_opening_restatement(
         # Ruling R-EQ: the submission IS the governing opening, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back
         # rather than returning on an open transaction -- the transaction holds
-        # the owner's write lock (taken where it began, plan step
-        # ``balance:X-bn``), and only a commit or a rollback releases it.  Read
-        # the id BEFORE the rollback: afterwards the instance is expired and
-        # touching an attribute opens a fresh transaction purely to recover a
-        # value already in hand.
+        # the owner's write lock (taken before it read any of the owner's data,
+        # plan step ``balance:X-bn``), and only a commit or a rollback releases
+        # it.  Read the id BEFORE the rollback: afterwards the instance is
+        # expired and touching an attribute opens a fresh transaction purely to
+        # recover a value already in hand.
         account_id = account.id
         db.session.rollback()
         logger.info(

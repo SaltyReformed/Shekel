@@ -18,9 +18,12 @@ Because a pay period is the spine of every financial number, the
 deficit-path tests assert all four disciplines: structural invariants
 (Discipline 1, ``assert_pay_period_invariants``), hand-computed as-of
 balances continuing into the new window (Discipline 2), and the
-production integrity checker passing (Discipline 3).  The advisory-lock
-behaviour (taken only on a real deficit, never on the disabled / full
-fast paths) is asserted by capturing the emitted SQL.  Concurrency /
+production integrity checker passing (Discipline 3).  The advisory lock is
+asserted by capturing the emitted SQL: since plan step ``balance:X-bn`` the
+top-up takes none of its own on any path, and ``/grid``'s ``write_transaction``
+block takes the owner's at its first statement, rolling or not (rulings
+**R-CC114**, **R-CC115**).  *Until that step the top-up took it on a real
+deficit and never on the disabled / full fast paths.*  Concurrency /
 idempotency under true parallel requests lives in
 ``tests/test_concurrent/test_race_conditions.py``.  See
 ``docs/plans/implementation_plan_pay_period_crud.md``.
@@ -53,8 +56,10 @@ from tests._test_helpers import (
     rhythm_of,
     all_periods,
     assert_pay_period_invariants,
+    advisory_lock_keys,
     capture_sql_statements,
     freeze_today,
+    owner_lock_key,
     make_expense_template,
     populate_in_a_fresh_pass,
     resolved_amount,
@@ -156,10 +161,22 @@ def _top_up_and_populate(user_id):
 
 
 class TestTopUpFastPaths:
-    """The cheap paths: no write work and -- crucially -- no lock taken."""
+    """The cheap paths: no write work, and the service takes no lock.
+
+    **What "no lock" means changed at plan step ``balance:X-bn``.**  The
+    service takes no lock on ANY path now (ruling **R-CC115**), so each "no
+    lock" below is a regression pin for an acquisition re-added inside it
+    (measured 2026-09-29: one re-added at the top-up's top turns all three
+    red).  It is NOT a claim about the page: ``/grid``'s and ``/dashboard``'s
+    ``write_transaction`` block is a command transaction and takes the
+    owner's write lock at its first statement whether or not rolling is on
+    (ruling **R-CC114**), which plan step ``balance:X-cz`` (a page load never
+    writes) removes.  *Until that step these grades said the page's fast
+    paths took no lock.*
+    """
 
     def test_no_schedule_row_returns_zero_no_lock(self, app, db, seed_user):
-        """A user with no schedule row is a no-op and takes no lock."""
+        """A user with no schedule row is a no-op, and the service takes no lock."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
             before = _count_periods(db.session, seed_user["user"].id)
@@ -173,7 +190,7 @@ class TestTopUpFastPaths:
             assert _count_periods(db.session, seed_user["user"].id) == before
 
     def test_disabled_returns_zero_no_lock(self, app, db, seed_user):
-        """Rolling disabled -> 0, no write, no advisory lock taken."""
+        """Rolling disabled -> 0, no write, and the service takes no lock."""
         user_id = seed_user["user"].id
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
@@ -189,7 +206,7 @@ class TestTopUpFastPaths:
             assert _count_periods(db.session, user_id) == before
 
     def test_full_window_returns_zero_no_lock(self, app, db, seed_user):
-        """future_count >= target returns 0 before the lock; nothing created."""
+        """future_count >= target returns 0; nothing created, no lock taken here."""
         user_id = seed_user["user"].id
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)  # 3 future
@@ -227,10 +244,19 @@ class TestTopUpFastPaths:
 class TestTopUpDeficitPath:
     """The deficit path creates exactly the shortfall, idempotently."""
 
-    def test_deficit_creates_exactly_deficit_and_locks(
+    def test_deficit_creates_exactly_deficit_and_takes_no_lock_itself(
         self, app, db, seed_user,
     ):
-        """A deficit of D creates exactly D periods and takes the lock."""
+        """A deficit of D creates exactly D periods, and the service takes no lock.
+
+        Since plan step ``balance:X-bn`` (ruling **R-CC115**) the lock is the
+        REQUEST's: ``/grid``'s ``write_transaction`` block takes it where its
+        command transaction begins, graded below.  Called directly, outside a
+        request, the top-up takes none, which is the regression pin for an
+        acquisition re-added inside it (measured 2026-09-29: one re-added at
+        its top turns this red).  *Until that step this asserted the service
+        took the lock on a deficit.*
+        """
         user_id = seed_user["user"].id
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)  # idx 1..3 future
@@ -242,13 +268,57 @@ class TestTopUpDeficitPath:
 
             # 5 target - (3 future + the absorbed bootstrap, now current).
             assert len(result) == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
-            assert took_advisory_lock(statements)
+            assert not took_advisory_lock(statements)
             # The window now holds exactly the target.
             assert _future_count(user_id) == 5
             # Disciplines 1 + 3.
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
+
+    def test_a_grid_deficit_is_counted_and_appended_under_the_owner_s_lock(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Through ``GET /grid``: the block's lock precedes the count and the append.
+
+        The top-up counts the owner's paychecks and appends against that
+        count, so a count read before the lock lets two tabs both append.
+        The block's command transaction takes the owner's key at its first
+        statement, so every read and INSERT of the top-up follows it; the
+        deficit is asserted to have been appended, so the order cannot pass
+        over a render that appended nothing.
+        """
+        user_id = seed_user["user"].id
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            _enable_rolling(db.session, user_id, target=5)
+
+        response, statements = capture_sql_statements(
+            lambda: auth_client.get("/grid"),
+        )
+
+        assert response.status_code == 200
+        keys = advisory_lock_keys(statements)
+        assert keys == [owner_lock_key(user_id)], keys
+        lock_at = next(
+            i for i, (sql, _params) in enumerate(statements)
+            if "pg_advisory_xact_lock" in sql
+        )
+        inserts = [
+            i for i, (sql, _params) in enumerate(statements)
+            if sql.lstrip().upper().startswith("INSERT INTO BUDGET.PAY_PERIODS")
+        ]
+        assert len(inserts) == 5 - (3 + _BOOTSTRAP_IN_WINDOW), inserts
+        assert lock_at < inserts[0]
+        schedule_reads = [
+            i for i, (sql, _params) in enumerate(statements)
+            if "budget.pay_schedule " in sql and i > lock_at
+        ]
+        assert schedule_reads and schedule_reads[0] < inserts[0], (
+            "the top-up read no schedule under the lock before appending"
+        )
+        with app.app_context():
+            assert _future_count(user_id) == 5
 
     def test_second_call_is_idempotent_noop(self, app, db, seed_user):
         """Once the window is full, a second top-up creates nothing."""

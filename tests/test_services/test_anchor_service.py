@@ -965,13 +965,19 @@ class TestBackDatedCashTrueUp:
     def test_a_refused_day_stages_nothing_and_holds_no_lock(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A refusal happens before the lock and before anything is staged.
+        """A refusal stages nothing, and the door takes no lock of its own.
 
-        Two properties in one case because they share ONE cause -- the day is
-        resolved at the TOP of ``stage_anchor_true_up``, above
-        ``lock_user_writes``.  A refusal that had already appended, or that held
-        the owner's write lock until teardown, would be a rejected request with
-        side effects.
+        The day is resolved at the TOP of :func:`apply_anchor_true_up`, before
+        anything is staged, so a refusal has appended nothing.  And since plan
+        step ``balance:X-bn`` no service takes the owner's write lock -- a
+        signed-in request's transaction takes it where it begins
+        (:mod:`app.db_transaction`) and holds it until the request ends,
+        refused or not -- so a direct call that is refused holds none.  The
+        refusal leaves the transaction open, so the no-lock assertion below is
+        a regression pin for a service acquisition re-added ABOVE the refusal
+        (measured 2026-09-29: one re-added at the door's top turns it red).
+        *Until that step the day was resolved above the service's own
+        ``lock_user_writes``, so a refusal never took the lock.*
         """
         with app.app_context():
             opening, _, _ = self._fixture_days(seed_user)
@@ -996,8 +1002,9 @@ class TestBackDatedCashTrueUp:
             # Nothing pending, so no rollback was needed to leave a clean
             # session -- the refusal never reached the staging line.
             assert not db.session.new
-            # The advisory lock is transaction-scoped; the refusal returned
-            # before taking it, so this session holds none.
+            # No service takes the owner's lock (plan step ``balance:X-bn``),
+            # and nothing ended this transaction, so one taken above the
+            # refusal would still show here.
             assert db.session.execute(
                 sa.text("SELECT count(*) FROM pg_locks WHERE locktype = "
                         "'advisory' AND pid = pg_backend_pid()")
@@ -1163,9 +1170,13 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
         dated on the submitted day and so IS the record governing it (ruling
         R-CC85).  It was two until then, the door reading today's before
         itself.  A second read now would be the day's record re-asked for, or
-        an after the door re-read after writing nothing.  And the rollback
-        UNCHANGED answers with is what releases the owner's lock the stager
-        took, so this session holds none once the call returns.
+        an after the door re-read after writing nothing.  And this session
+        holds no owner's lock once the call returns -- which, since plan step
+        ``balance:X-bn`` took the lock out of every service, CANNOT go red:
+        UNCHANGED answers with a rollback, which would release a lock the call
+        had taken too (measured 2026-09-29 with one re-added at the door's
+        top).  It is on the rule-5 list for the developer.  *Until that step
+        this said the rollback is what releases the lock the stager took.*
         """
         with app.app_context():
             (opened,) = self._days_back(seed_user, 10)
@@ -1198,8 +1209,7 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
                 account_id=account.id,
             ).count() == rows
             assert not _holds_owner_lock(user_id), (
-                "the owner's write lock outlived an UNCHANGED save: its "
-                "rollback must release the lock the stager took"
+                "the owner's write lock outlived an UNCHANGED save"
             )
 
     def test_a_back_dated_save_writes_but_leaves_today_as_it_was(
@@ -1240,33 +1250,42 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
             ).one().anchor_balance == Decimal("250.00")
 
     def test_every_read_the_door_makes_holds_the_owners_lock(
-        self, app, db, monkeypatch, seed_user, seed_periods_today,
+        self, app, auth_client, db, monkeypatch, seed_user, seed_periods_today,
     ):
         """The stager's read follows the lock; the after-read precedes the commit.
 
         Asked of PostgreSQL at the instant of each read, by a probe run inside
-        the reader: does this session hold the owner's advisory key?  The
-        stager's read of the latest assertion -- the report's before since
-        ruling R-CC85 -- holding it proves the lock was taken first, and the
-        door no longer takes one of its own, so it is the STAGER's acquisition
-        this grades.  The after-read holding it proves it came before the
-        commit, which releases the key.  The probe answers ``False`` on either
-        side of the call, so it can.
+        the reader: does this session hold the owner's advisory key?  Since
+        plan step ``balance:X-bn`` neither the door nor the stager takes it
+        -- the signed-in request's command transaction takes it where it
+        begins (:mod:`app.db_transaction`) -- so the save is driven through
+        its route, ``PATCH /accounts/<id>/true-up``, and it is the REQUEST's
+        acquisition this grades.  The stager's read of the latest assertion --
+        the report's before since ruling R-CC85 -- holding it proves the lock
+        came first; the after-read holding it proves it came before the
+        commit, which releases the key.  The probe answers ``False`` before
+        the request and after it, so it can.  *Until that step this called
+        :func:`apply_anchor_true_up` directly and graded the stager's own
+        acquisition.*
         """
         with app.app_context():
-            account = db.session.get(Account, seed_user["account"].id)
-            user_id = account.user_id
+            account_id = seed_user["account"].id
+            user_id = seed_user["user"].id
             assert not _holds_owner_lock(user_id)
             reads = _spy_governing_reads(
                 monkeypatch, probe=lambda: _holds_owner_lock(user_id),
             )
 
-            report = apply_anchor_true_up(
-                account=account, new_balance=Decimal("1750.00"),
+            response = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1750.00"},
             )
 
-            assert report.outcome is AnchorTrueUpOutcome.COMMITTED
-            assert reads == [
+            assert response.status_code == 200, response.status_code
+            assert [
+                read for read in reads
+                if read[0] in ("stage_anchor_true_up", "apply_anchor_true_up")
+            ] == [
                 ("stage_anchor_true_up", None, True),
                 ("apply_anchor_true_up", None, True),
             ]
@@ -1306,8 +1325,13 @@ class TestTheStagerReadsTheDaysRecordOnlyBeforeTheLatest:
           duplicate (the defect ``TestBackDatedCashTrueUp`` grades through
           the door).
 
-        Each call is rolled back, which releases the lock it took, so nothing
-        is written and the second arm reads what the first did.
+        Each call is rolled back, so nothing is written and the second arm
+        reads what the first did.  The closing no-lock assertion CANNOT go red
+        since plan step ``balance:X-bn`` took the lock out of every service:
+        the rollbacks would release a lock the stager had taken too (measured
+        2026-09-29 with one re-added at the stager's top).  It is on the rule-5
+        list for the developer.  *Until that step this said each rollback
+        releases the lock the stager took.*
         """
         with app.app_context():
             user_id = seed_user["user"].id

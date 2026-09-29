@@ -16,6 +16,7 @@ condition bug, it is documented with a comment and marked xfail.
 """
 
 import threading
+from urllib.parse import urlsplit
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -30,12 +31,11 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import (
     account_service,
-    pay_period_admin,
-    pay_period_rolling,
     pay_schedule_service,
 )
 from tests._test_helpers import (
     assert_pay_period_invariants,
+    capture_sql_statements,
     last_covered_day,
     linked_ledger_total,
     mint_fixture_era,
@@ -551,16 +551,26 @@ class TestConcurrentAnchorUpdate:
 
 
 class TestConcurrentRollingTopUp:
-    """Verify concurrent rolling top-ups never land a duplicate period_index.
+    """Verify concurrent rolling top-ups never land a duplicate payday.
 
     The continuous rolling window is refilled on every grid / dashboard
     load, so two requests can hit ``top_up_rolling_window`` for the same
-    user at the same instant.  ``UNIQUE(user_id, period_index)`` is the
-    hard guard against a duplicate index; the per-user advisory lock is
-    the UX layer that turns the racing loser's would-be IntegrityError
-    into a clean re-read-and-no-op.  These tests assert the combined
-    contract: no 500, no duplicate index, the window filled exactly to
-    target, and the structure invariants intact.
+    user at the same instant.  ``uq_pay_periods_user_start`` is the hard
+    guard against a duplicate payday; the per-user advisory lock is the UX
+    layer that turns the racing loser's would-be IntegrityError into a clean
+    re-read-and-no-op.  These tests assert the combined contract: no 500, no
+    duplicate payday, the window filled exactly to target, and the structure
+    invariants intact.
+
+    **Driven through the production doors** -- ``GET /grid`` and ``POST
+    /pay-periods/extend`` -- because since plan step ``balance:X-bn`` the
+    lock is the REQUEST's: ``/grid``'s ``write_transaction`` block and the
+    extend route's command transaction each take the owner's lock where they
+    begin (:mod:`app.db_transaction`), and neither service takes one.  Two
+    threads calling the services directly race with no lock at all, which
+    production never does.  *Until that step these threads called
+    ``top_up_rolling_window`` and ``extend_pay_periods`` directly and the
+    services locked for themselves.*
     """
 
     @staticmethod
@@ -572,30 +582,66 @@ class TestConcurrentRollingTopUp:
         )
         db_session.commit()
 
-    def test_concurrent_topups_one_fills_one_noops(self, app, db):
-        """Two simultaneous top-ups: one fills the deficit, the other no-ops.
+    @staticmethod
+    def _two_signed_in_clients(app):
+        """Two clients, each signed in under an app context of its own.
 
-        With one current period and a target of 5 (deficit 4), exactly
-        one thread creates the 4 periods and the other -- serialised
-        behind the advisory lock -- re-reads a full window and creates 0.
-        No IntegrityError, no duplicate index, exactly 5 current-and-
-        future periods afterward.
+        :func:`_make_auth_client` signs in on the test's shared app context,
+        where Flask-Login keeps the first sign-in's user on ``g``: the second
+        client's sign-in then finds a signed-in user and redirects without
+        signing it in, and that client is turned away at the login gate once
+        a thread gives it a context of its own (finding **BAL-521** / N-550,
+        owner plan step ``balance:X-cr``; measured here 2026-09-29).  A fresh
+        app context per sign-in gives each its own ``g``, as production gives
+        each request.
+
+        Returns:
+            ``(client_a, client_b)``, both signed in as the concurrent user.
+        """
+        clients = []
+        for _ in range(2):
+            with app.app_context():
+                clients.append(_make_auth_client(
+                    app, "concurrent@shekel.local", "concurrent12",
+                ))
+        return clients[0], clients[1]
+
+    def test_concurrent_topups_one_fills_one_noops(self, app, db):
+        """Two simultaneous grid loads: one fills the deficit, the other no-ops.
+
+        With one current period and a target of 5 (deficit 4), exactly one
+        of the two requests appends: one fills the deficit and the other --
+        serialised behind the owner's lock -- re-reads a full window and
+        appends nothing.  Counted over both threads' statements, because
+        which request won is not observable from its page.  No
+        IntegrityError, no duplicate payday, exactly 5 current-and-future
+        periods afterward.
         """
         data = _create_user_with_data(db.session)
         user_id = data["user"].id
         self._enable_rolling(db.session, user_id, target=5)
+        client_a, client_b = self._two_signed_in_clients(app)
 
-        def _topup():
-            created = pay_period_rolling.top_up_rolling_window(user_id)
-            db.session.commit()
-            return len(created)
+        (resp_a, resp_b), statements = capture_sql_statements(
+            lambda: _run_concurrent(
+                app,
+                lambda: client_a.get("/grid"),
+                lambda: client_b.get("/grid"),
+            ),
+        )
 
-        created_a, created_b = _run_concurrent(app, _topup, _topup)
-
-        # Exactly one thread filled the 4-period deficit; the other 0.
-        assert sorted([created_a, created_b]) == [0, 4], (
-            f"expected one thread to create 4 and one 0, "
-            f"got {created_a} and {created_b}"
+        assert (resp_a.status_code, resp_b.status_code) == (200, 200)
+        inserts = [
+            sql for sql, _params in statements
+            if sql.lstrip().upper().startswith("INSERT INTO BUDGET.PAY_PERIODS")
+        ]
+        # ONE append statement across both loads (SQLAlchemy sends the four
+        # paydays as one multi-row INSERT): one load filled the deficit and
+        # the other appended nothing.  That it was all four, and no more, is
+        # the exactly-five window below.
+        assert len(inserts) == 1, (
+            f"expected one load to append the deficit and the other nothing, "
+            f"got {len(inserts)} append statements"
         )
 
         db.session.expire_all()
@@ -636,27 +682,32 @@ class TestConcurrentRollingTopUp:
         assert_pay_period_invariants(db.session, user_id)
 
     def test_topup_racing_manual_extend_no_duplicate(self, app, db):
-        """A top-up racing a manual extend never lands a duplicate index.
+        """A grid load racing a manual extend never lands a duplicate payday.
 
         The rolling top-up and the manual extend are both append paths;
-        they serialise on the per-user advisory lock, so neither hits the
-        unique constraint as a 500.  Regardless of which ran first, every
-        index is unique, the window is at least the rolling target, and
-        the structure invariants hold.
+        they serialise on the owner's lock, so neither hits the unique
+        constraint as a 500.  Regardless of which ran first, every payday is
+        unique, the window is at least the rolling target, and the structure
+        invariants hold.
         """
         data = _create_user_with_data(db.session)
         user_id = data["user"].id
         self._enable_rolling(db.session, user_id, target=5)
+        client_a, client_b = self._two_signed_in_clients(app)
 
-        def _topup():
-            pay_period_rolling.top_up_rolling_window(user_id)
-            db.session.commit()
+        resp_a, resp_b = _run_concurrent(
+            app,
+            lambda: client_a.get("/grid"),
+            lambda: client_b.post(
+                "/pay-periods/extend", data={"num_periods": "3"},
+            ),
+        )
 
-        def _extend():
-            pay_period_admin.extend_pay_periods(user_id, 3)
-            db.session.commit()
-
-        _run_concurrent(app, _topup, _extend)
+        assert resp_a.status_code == 200, resp_a.status_code
+        assert resp_b.status_code == 302, resp_b.status_code
+        assert urlsplit(resp_b.headers["Location"]).path != "/login", (
+            "the extend was turned away at sign-in, so nothing raced"
+        )
 
         db.session.expire_all()
         periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()

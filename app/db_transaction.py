@@ -50,14 +50,18 @@ execute ... in a read-only transaction``, which covers
 So the gap is advisory locks alone: a render that took the owner's write lock
 would block every writer for that owner for the length of the page and then
 read from a frozen snapshot, with nothing raising.  **Closed by construction
-since plan step ``balance:X-bn``**: the owner's write lock is taken in ONE
-place, :func:`_bind_transaction_mode`'s COMMAND arm (and
-:func:`_lock_the_open_transaction` for the command transaction already open
-when the owner becomes known), and a query's transaction returns from that
-listener before the arm -- so no render can take it, and
-``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses a second place
-that could.  *Until that step this paragraph said the
-hole was closed only by a census of which functions a GET could reach.*
+since plan step ``balance:X-bn``**: the owner's write lock is taken in two
+functions of this module, and both refuse a query's transaction --
+:func:`_bind_transaction_mode` returns before its COMMAND arm, and
+:func:`_lock_the_open_transaction` (the command transaction already open
+when the owner becomes known) checks the mode first -- so no render can take
+it outside a :func:`write_transaction` block, which is a command.
+``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses any other
+module that names the lock's statement, its key, or a function that takes it;
+``tests/test_services/test_user_write_lock.py`` measures both arms on real
+requests, a render's taking no lock among them.  *Until that step this
+paragraph said the hole was closed only by a census of which functions a GET
+could reach.*
 
 *This paragraph claimed ``FOR UPDATE`` was allowed too, until a peer session
 re-measured it.  The first measurement taken here had it right and an
@@ -145,10 +149,11 @@ the advisory lock of the user whose data the request acts on (a companion's
 linked owner, :attr:`app.models.user.User.data_owner_id`) before it reads any
 of that owner's data, so two of one owner's writes never overlap: the second
 waits for the first to commit, and every statement it then runs sees the
-first's rows.  The one row read before it is the signed-in user's own, loaded
-to sign the request in, and it is expired once the lock is held
-(:func:`_lock_the_open_transaction`).  **The request's first transaction takes
-it after the form-token check and the app-wide rate limit** (ruling
+first's rows.  The only rows read before it are the signed-in user's own,
+loaded to sign the request in, and the role row joined to it; the user's row
+is expired once the lock is held (:func:`_lock_the_open_transaction`).
+**The request's first transaction takes it after the form-token check and
+the app-wide rate limit** (ruling
 **R-CC122**), in a before-request hook registered after theirs
 (:func:`_take_the_request_owner_s_lock`), so a request either one refuses
 never waits for it or holds it; a route's own ``@limiter.limit`` runs inside
@@ -175,9 +180,11 @@ signing-in person's owner lock** right after finding the account and before
 reading its codes or failed-attempt count (ruling **R-CC121**,
 :func:`bind_sign_in_owner`): it writes a committed user's rows before anyone
 is signed in, which no hook above can see.  A CLI script, a deploy reconcile
-and Alembic hold no request, and the three deploy reconciles lock every owner
-at their own start
-(:func:`app.services.user_write_lock.lock_every_user_writes`).
+and Alembic hold no request, so nothing here locks for them: the three deploy
+reconciles lock every owner at their own start
+(:func:`app.services.user_write_lock.lock_every_user_writes`), and a script
+that writes an existing owner's data must take that owner's lock at its own
+start in the same way.
 
 **What this module does NOT do**, said here because the boundary is worth
 knowing rather than discovering: a COMMAND's own re-render still reads at
@@ -211,9 +218,11 @@ from app.services.user_write_lock import take_owner_write_lock
 # answers OPTIONS from the URL map without dispatching a view "so it issues no
 # statement for a mode to bind".  Flask runs ``preprocess_request`` -- every
 # before-request hook -- BEFORE ``dispatch_request`` reaches its automatic
-# OPTIONS branch, so an authenticated ``OPTIONS`` issues three statements
-# (measured): the user load, and the actor bind on the writable transaction it
-# opens.  What is true is narrower and is why it stays out: OPTIONS runs no
+# OPTIONS branch, so an authenticated ``OPTIONS`` issued three statements
+# (measured before plan step ``balance:X-bn``): the user load, and the actor
+# bind on the writable transaction it opens.  Being a signed-in command, it
+# now takes the owner's write lock on that transaction as well.  What is true
+# is narrower and is why it stays out: OPTIONS runs no
 # view, so nothing it can reach is a render whose figures need one snapshot.
 # Whether a method that can never write should nonetheless be a QUERY is a
 # behaviour question this step did not take.
@@ -610,7 +619,7 @@ def bind_request_actor(user_id: int, owner_id: "int | None") -> None:
         user_id: The acting ``auth.users.id``.
         owner_id: The id of the user whose data the actor acts on
             (:attr:`app.models.user.User.data_owner_id`); ``None`` for a
-            companion whose owner was deleted, who has no budget to write and
+            companion with no linked owner, who has no budget to write and
             takes no lock.
     """
     session = db.session()
@@ -663,7 +672,7 @@ def bind_sign_in_owner(user_id: int, owner_id: "int | None") -> None:
         user_id: The ``auth.users.id`` being signed in, found by email or by
             the pending-MFA session key.
         owner_id: That user's :attr:`~app.models.user.User.data_owner_id`;
-            ``None`` for a companion whose owner was deleted, who takes no lock.
+            ``None`` for a companion with no linked owner, who takes no lock.
     """
     _lock_the_open_transaction(user_id, owner_id)
 
@@ -677,11 +686,13 @@ def _lock_the_open_transaction(user_id: "int | None", owner_id: "int | None") ->
     ``g`` is armed LAST, so the listener takes the lock on every transaction
     that begins after this one and never on this one twice.
 
-    The only row that transaction has read before the lock is *user_id*'s own,
-    loaded to sign the request in or to find the account -- and the password,
-    MFA and settings doors write that row -- so it is EXPIRED once the lock is
-    held, and its next use reloads it under the lock: nothing a write decides
-    on was read before it.  Only that row, and only if it is loaded (looked up
+    The only rows that transaction has read before the lock are *user_id*'s
+    own, loaded to sign the request in or to find the account, and the role
+    row joined to it (``User.role``, ``lazy="joined"``: the same statement).
+    The password, MFA and settings doors write the user's row, so it is
+    EXPIRED once the lock is held, and its next use reloads it under the lock:
+    nothing a write decides on was read before it.  The role row is a
+    reference row no request writes.  Only that row, and only if it is loaded (looked up
     in the identity map, so no statement is issued to find it): under the test
     client this session is also the test body's, whose other loaded state is
     not this request's to discard.

@@ -265,14 +265,16 @@ def lock_lines(account_id: int, line_ids: "frozenset[int]") -> None:
 
     **What it does not remove is every other lock a pass takes**, and the
     claim above is scoped to the lines on purpose.  An item that settles a
-    row locks ``budget.transactions`` and, through the posting sync, takes
-    the per-user advisory lock, which is then held to commit -- so two presses
-    of one owner sharing NO line, or a press against a concurrent settle,
-    can still cross on those (finding **N-193**'s class, owner
-    ``balance:X-bn``), and an import DELETE cascades through these rows in
-    the referential trigger's own scan order, which no ``ORDER BY`` of ours
-    composes with.  This read closes the cycle on the BANK LINES, which is
-    the one this door created by locking per item.
+    row locks ``budget.transactions``, and until plan step ``balance:X-bn``
+    it then took the per-user advisory lock through the posting sync -- so
+    two presses of one owner sharing NO line, or a press against a
+    concurrent settle, could cross on those (finding **N-193**'s class).
+    Since that step the advisory lock is held from before the pass's first
+    row lock (below), so those two serialise on it instead.  An import
+    DELETE cascades through these rows in the referential trigger's own
+    scan order, which no ``ORDER BY`` of ours composes with.  This read
+    closes the cycle on the BANK LINES, which is the one this door created
+    by locking per item.
 
     **It takes the lock under the account FILTER**, so ids the pass has no
     business with lock nothing, and it returns nothing: what a door needs to
@@ -282,12 +284,14 @@ def lock_lines(account_id: int, line_ids: "frozenset[int]") -> None:
     stale (plan step ``bank_import:X-gv``).  An empty set emits no statement
     at all, which is the ordinary untouched-form press.
 
-    **The per-user advisory lock is not taken here, and when
-    ``balance:X-bn`` brings it to this door it goes ABOVE this read**: that
-    step's invariant is that the advisory lock is a transaction's FIRST lock,
-    and this is the pass's first ROW lock.  Taking the advisory lock at one
-    door ahead of that step would put this door's order against every door
-    it has not reached yet, which is the cycle finding **N-193** records.
+    **The per-user advisory lock is not taken here, and it is already held
+    ABOVE this read**: since plan step ``balance:X-bn`` the command
+    transaction a pass runs in took it before reading any of the owner's
+    data (:mod:`app.db_transaction`), so it is that transaction's FIRST lock
+    and this is the pass's first ROW lock.  *Until that step this paragraph
+    said the lock was still to come, and that taking it at one door first
+    would put this door's order against every door not yet reached, the
+    cycle finding **N-193** records.*
 
     Args:
         account_id: The pass's account, which is the ONE statement of whose

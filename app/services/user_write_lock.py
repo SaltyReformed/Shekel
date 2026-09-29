@@ -1,17 +1,28 @@
 """
 Shekel Budget App -- The per-user write lock
 
-ONE transaction-scoped PostgreSQL advisory lock, keyed on the owning user,
-serialising every write of that user's data.  **Since plan step
-``balance:X-bn`` it is taken in exactly two places** (rulings **R-CC106**,
-**R-CC114**, **R-CC115**): at the start of EVERY command transaction a
-signed-in request opens (:mod:`app.db_transaction`), before that transaction
-reads anything, and at the start of each deploy reconcile, which takes every
-owner's (:func:`lock_every_user_writes`).  No service takes it for itself any
-more, and ``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses one
-that tries.  *It was taken by sixteen calls inside the write paths that needed
-it most, each taking it at its own point in the transaction, which is what made
-the deadlock below reachable.*
+ONE transaction-scoped PostgreSQL advisory lock, keyed on the owning user, so
+two writes of one user's data never overlap (the two writers that take none
+are named below).  **Since plan step
+``balance:X-bn`` it is taken from exactly two modules** (rulings **R-CC106**,
+**R-CC114**, **R-CC115**, **R-CC121**): :mod:`app.db_transaction`, at the
+start of every command transaction a signed-in request opens -- before it
+reads any of the owner's data; the signed-in user's own row, read to sign the
+request in, is the one row read first, and it is re-read under the lock -- and
+at a sign-in right after the account is found; and this module's
+:func:`lock_every_user_writes`, at the start of each deploy reconcile.  No
+service takes it for itself any more, and
+``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses one that
+tries.  **Two writers take none, and each is stated so it is not mistaken for
+covered**: registration (``/register`` and ``scripts/seed_user.py``) writes a
+user that is not committed, so no other transaction can reach it; and a script
+that writes an EXISTING owner's data must take that owner's lock at its own
+start, because no request takes it for it -- the deploy reconciles are the only
+such writers today.  *It was taken by sixteen calls in nine modules inside the
+write paths that needed it most, plus three that plan step
+``credit_card:CC-5-4a-4`` put inside ``row_write_lock``, each taking it at its
+own point in the transaction, which is what made the deadlock below
+reachable.*
 
 Two families of write are why the lock exists at all, and they need the SAME
 lock because the second reads the first's output:
@@ -65,13 +76,23 @@ settle paths took row locks first (finding **N-193**), plan step
 locks it introduced, and a census over the whole suite (2026-09-24) still
 found 27 endpoints that locked a row and then asked for this lock in the same
 request -- the popover's Save, a purchase's edit and delete, carry-forward and
-the reconcile tick among them.*  **It is now structural**: the lock is taken
-where each command transaction begins (:mod:`app.db_transaction`), so there is
-no earlier statement for a row lock to ride on -- and the deploy reconciles,
-which hold no request, take every owner's at their own start, in ascending
-order.  Shipping the lock with a detected-and-rolled-back deadlock was strictly
-better than shipping the silent ledger divergence it replaced; shipping it
-with a docstring claiming the deadlock impossible was not, which is why this
+the reconcile tick among them.*  **It is now structural on every request
+path**: the lock is taken where each command transaction a signed-in request
+opens begins (:mod:`app.db_transaction`), so the only earlier statement is
+the signed-in user's own row, and no row lock rides on it.  **The deploy is the
+one place it is not first, and what keeps that safe is an ORDER, not this
+module**: the deploy reconciles take every owner's lock, ascending, at the
+start of each reconcile FUNCTION, but ``scripts/init_database.py`` runs them
+in the one transaction that has already run the migrations and the
+infrastructure DDL, with their table locks.  That is safe because
+``entrypoint.sh`` runs ``init_database.py`` before it hands over to gunicorn,
+so no request can hold an owner's lock while the deploy waits.  If that
+order ever changes, a request could take owner A's lock, block on a migrated
+table, and deadlock against the deploy waiting on A.
+
+Shipping the lock with a detected-and-rolled-back deadlock was strictly better
+than shipping the silent ledger divergence it replaced; shipping it with a
+docstring claiming the deadlock impossible was not, which is why this
 paragraph said so until the step that made it so.
 
 **Why a lock at all, rather than a constraint.**  A reconcile emits the
@@ -99,8 +120,10 @@ ruling R-EN cited it as the precedent to copy.
 
 Transaction-scoped: PostgreSQL releases the lock at COMMIT or ROLLBACK, so it
 cannot leak -- and a request that commits and goes on writing takes it again
-in its next transaction (:mod:`app.db_transaction`).  Re-entrant, which no
-caller relies on any more: each transaction takes it once, at its start.
+in its next transaction (:mod:`app.db_transaction`).  Re-entrant, and one
+caller relies on that: ``scripts/init_database.py`` runs the three deploy
+reconciles in ONE transaction, and each takes every owner's lock again.  A
+request's transaction takes it once, at its start.
 
 Flask-isolated -- takes and returns plain data, never imports ``request`` /
 ``session``.  Takes no transaction of its own: the caller owns the boundary,
@@ -136,8 +159,9 @@ def take_owner_write_lock(connection: Connection, owner_id: int) -> None:
 
     The one statement of the lock, taken by exactly two callers:
     :mod:`app.db_transaction` at the start of every command transaction a
-    signed-in request opens, and :func:`lock_every_user_writes` for the deploy
-    reconciles (the module docstring).  Blocks until any other transaction
+    signed-in request opens and at a sign-in, and
+    :func:`lock_every_user_writes` for the deploy reconciles (the module
+    docstring).  Blocks until any other transaction
     holding the same key commits or rolls back; PostgreSQL releases it
     automatically at this transaction's end.
 
