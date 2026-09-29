@@ -133,16 +133,16 @@ class TestTheCallersRenderParseableAttributes:
         assert b' minlength="12"' in password and b' maxlength="72"' in password
 
     def test_the_pay_period_count_boxes_read_the_batch_bounds(self, auth_client):
-        """Extend, regenerate and reset bound the count by the batch policy, not a literal.
+        """Extend, add earlier, regenerate and reset bound the count by the batch policy, not a literal.
 
-        Three boxes share ``id="num_periods"`` on this page, one per form --
+        Four boxes share ``id="num_periods"`` on this page, one per form --
         pre-existing, and reported by this step's review rather than fixed
         here: duplicate ids break ``<label for>`` and ``aria-describedby``
         targeting for a screen reader.
         """
         page = auth_client.get("/settings?section=pay-periods").data
         counts = [t for t in _tags(page, b"input") if b'id="num_periods"' in t]
-        assert len(counts) == 3
+        assert len(counts) == 4
         for tag in counts:
             assert f' min="{PERIOD_BATCH_MIN}"'.encode() in tag
             assert f' max="{PERIOD_BATCH_MAX}"'.encode() in tag

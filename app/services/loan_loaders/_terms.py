@@ -485,14 +485,14 @@ def load_loan_account_ids_for_user(user_id: int) -> list[int]:
     :class:`~app.models.account.Account`.  Where the all-owners sweep backs the
     system / deploy-time backfill
     (:func:`app.services.loan_posting_service.backfill_all_loan_postings`), this
-    scoped set backs a PER-USER re-sync: ``pay_period_admin.reset_pay_periods``
-    calls it (via
-    :func:`app.services.loan_posting_service.resync_user_loan_postings`) to
-    rebuild only the reset user's loan genesis postings after the wipe -- the
-    period CASCADE (``journal_entries.pay_period_id ON DELETE CASCADE``) disposes
-    THIS user's loan opening / true-up entries along with the periods, so the
-    reset stays inside its own single-user transaction rather than reconciling
-    every owner's loans.
+    scoped set backs a PER-USER re-sync: ``pay_period_admin`` calls it (via
+    :func:`app.services.loan_posting_service.resync_user_loan_postings`, from
+    ``_refile_ledger``) to rebuild only one user's loan genesis postings after a
+    reset's wipe or a "Remove earlier paychecks" delete (plan step
+    ``pay_calendar:C21``) -- the period CASCADE (``journal_entries.pay_period_id
+    ON DELETE CASCADE``) disposes THIS user's loan opening / true-up entries
+    along with the periods, so each stays inside its own single-user
+    transaction rather than reconciling every owner's loans.
 
     Args:
         user_id: The owning user's id.
