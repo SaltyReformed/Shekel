@@ -290,11 +290,12 @@ def _reject_settled_addition(txn: Transaction) -> None:
     ended Paid holding the $300.00 payment AND the $12.34 purchase in either
     order -- Mark Paid chose its figure from a read taken before the purchase
     committed, and this refusal read a ``status`` the locking read handed back
-    as ``None`` after its wait.  Both doors now lock the row before they read
-    it (``transaction_service.settle_transaction``; the purchase door through
-    :func:`app.services.row_write_lock.lock_and_read`), so the second click
-    either settles at the purchases or meets this sentence, naming the row
-    (ruling **R-CC98**).
+    as ``None`` after its wait.  Since plan step ``balance:X-bn`` (ruling
+    **R-CC106**) both clicks' transactions take the owner's write lock before
+    they read any of the owner's data (:mod:`app.db_transaction`), so they
+    run one after the other and the second click either settles at the
+    purchases or meets this sentence, naming the row (ruling **R-CC98**).
+    Until that step each door locked the row itself before it read it.
     It read the row's ``settled_basis_id`` through ``X-bi-4a``; that column
     is the movement's stale cache, deleted at ``X-bi-4b-2``.
 

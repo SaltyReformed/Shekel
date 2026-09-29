@@ -26,11 +26,8 @@ purchase door -- say the same sentence, and a service imports no Flask
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
-
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 
 
 @dataclass(frozen=True)
@@ -53,7 +50,7 @@ class HiddenRow:
     item is archived (finding **CC-377**); the transfer service's settle
     refusal of a deleted transfer shadow (``transfer_service._settle``), a
     sentence about a transfer's leg, which the transfer's code owns; and Mark
-    Credit's "not found" for a row deleted while it waited
+    Credit's "not found" for a deleted row
     (``credit_workflow.mark_as_credit``), which never reaches a screen --
     the route answers ruling **R-CC89**'s bare "not found" (**R-CC99** (b)).
 
@@ -85,40 +82,35 @@ class HiddenRow:
         (ruling **R-CC107**'s last sentence).  A row with no item -- a CC
         payback, a transfer shadow -- is never archived.
 
-        **Read FRESH, by a statement of its own, and never through**
-        ``row.template``.  A row that loaded its definition before the door's
-        row lock -- a companion's visibility check loads it -- keeps it, and
-        the settle verb's and the seam's lock (``row_write_lock.lock_row``)
-        re-reads ``is_deleted`` alone: an archive that committed while such a
-        door waited for the lock (the race ruling **R-CC96** lets a door see)
-        would still read active there.  Measured by Mark Paid racing the
-        archive (``test_cc5_4a4_row_lock_races.TestMarkPaidAgainstArchive``).
-        The purchase door's ``lock_and_read`` reloads the row and drops its
-        ``template``, and the route doors' race arms read after a rollback, so
-        those read fresh either way; the case is the SETTLE's sentence, which a
-        service caller is told.
+        **Read off the row's own definition** (``row.template``), as the
+        request's owner lock left it.  Until plan step ``balance:X-bn`` it was
+        read FRESH, by a statement of its own, because a row that loaded its
+        definition before a door's row lock kept it, and an archive that
+        committed while the door waited for that lock (the race ruling
+        **R-CC96** let a door see) would still read active -- measured by
+        Mark Paid racing the archive.  The request's owner write lock
+        (ruling **R-CC106**) now precedes every read the request makes of the
+        owner's data, so an archive from another tab committed before the
+        row and its definition were loaded or waits for the request to end.
 
         **Nothing it reads flushes**: the whole body is under
         ``no_autoflush``, the row's own columns included, so an EXPIRED row
         refreshes without writing and asking writes none of the caller's
         staged state.  The three settle verbs ask it at their first check,
-        through ``reject_unsettleable``, before any lock and any read that
-        would flush, so a call refused at that check leaves a caller's staged
-        state unwritten.  A call refused later -- a delete that won the race
-        for the row lock -- is refused after that lock's own statement has
-        flushed (``row_write_lock.lock_row``).  An autoflushing read here
+        through ``reject_unsettleable``, before any read that would flush, so
+        a call refused at that check leaves a caller's staged state
+        unwritten.  An autoflushing read here
         broke the first check for a row loaded deleted beside a staged change,
         and all three verbs flushed it before raising (review 7 of this step,
         measured 2026-09-24), and a read of an expired row's columns outside
         the guard did the same (review 8); both are graded by
         ``test_cc5_4a4_hidden_row_doors.TestTheHiddenRowsWordsFlushNothing``.
-        What it reads is the definition's ``is_active`` as the database holds
-        it, so a caller that staged an archive and had not flushed it would
-        read the item active.  None does: the two route modules that write
-        ``TransactionTemplate.is_active`` (``routes/templates/crud``,
-        ``routes/salary/profiles``) reach no caller of this, directly or
-        through the services they call, before their commit (a caller
-        census, 2026-09-24).
+        What it reads is the loaded definition's ``is_active``, so a caller
+        that staged an archive would read the item archived.  None does: the
+        two route modules that write ``TransactionTemplate.is_active``
+        (``routes/templates/crud``, ``routes/salary/profiles``) reach no
+        caller of this, directly or through the services they call, before
+        their commit (a caller census, 2026-09-24).
 
         Args:
             row: A session-attached row the caller has found hidden.  A
@@ -129,30 +121,8 @@ class HiddenRow:
             The row's name, and whether its item is archived.
         """
         with db.session.no_autoflush:
-            if row.template_id is None:
-                return cls(row.name)
-            active = db.session.execute(
-                select(TransactionTemplate.is_active)
-                .where(TransactionTemplate.id == row.template_id)
-            ).scalar_one_or_none()
-            return cls(row.name, archived=active is False)
-
-    @classmethod
-    def of_reread(cls, row: "Transaction | None", name: str) -> "HiddenRow":
-        """Return what a refusal may say about a row a door re-read after its rollback.
-
-        The race arm's answer at the two doors that name the row they lost to
-        a delete (``routes/transactions/_helpers._door_naming_a_gone_row``
-        and ``routes/entries._purchase_refused_response``): *row* is the
-        re-read, ``None`` when a one-off's delete took it out of the table --
-        named then by the *name* the door read while it was live, and never
-        archived -- and otherwise :meth:`of` the row.
-
-        Args:
-            row: The row as re-read, or ``None``.
-            name: The row's name, read before the door acted on it.
-
-        Returns:
-            The :class:`HiddenRow`.
-        """
-        return cls(name) if row is None else cls.of(row)
+            template = row.template
+            return cls(
+                row.name,
+                archived=template is not None and not template.is_active,
+            )

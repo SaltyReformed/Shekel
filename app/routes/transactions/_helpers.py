@@ -54,7 +54,6 @@ from app.utils.error_fragments import (
     designed_error,
     refusal_for_a_gone_row,
 )
-from app.utils.hidden_row import HiddenRow
 
 # Name of the partial unique index that backstops commit C-19's
 # duplicate CC Payback fix.  Mirrors the literal in
@@ -367,9 +366,10 @@ def _mark_done_success_response(txn, target):
 def _credit_payback_idempotent_response(exc, txn_id):
     """Translate a credit-payback unique-index violation into a 200.
 
-    Backstop for commit C-19 (audit finding F-008): if a future
-    caller bypasses ``credit_workflow.mark_as_credit``'s row lock
-    and a duplicate payback INSERT reaches PostgreSQL,
+    Backstop for commit C-19 (audit finding F-008): if a writer that
+    holds no owner lock races ``credit_workflow.mark_as_credit`` (the
+    request's owner write lock serialises every request since plan step
+    ``balance:X-bn``) and a duplicate payback INSERT reaches PostgreSQL,
     ``uq_transactions_credit_payback_unique`` rejects it and this
     helper rolls back, re-fetches the source row, and renders the
     cell at HTTP 200 -- matching what a serialised request would
@@ -485,8 +485,8 @@ def _error_transaction_response(txn_id, message, target=None, status=400):
 
     Raises:
         _RowGone: When the re-fetch finds no row this surface may draw --
-            the row was deleted while the request ran, most often -- so the
-            door, which knows what was refused, answers it.
+            a companion's request for the owner-only desktop cell -- and the
+            blueprint's handler answers it "not found".
     """
     db.session.rollback()
     db.session.expire_all()
@@ -508,23 +508,25 @@ def _error_transaction_response(txn_id, message, target=None, status=400):
 
 
 class _RowGone(Exception):
-    """A refused request's row is gone from every surface its door may draw it on.
+    """A refused request's row is not one its surface may draw.
 
     Raised by :func:`_error_transaction_response` and
     :func:`_stale_transaction_response` when, after rolling back, their
-    re-fetch through the ownership door finds nothing to render: the row was
-    deleted -- soft or hard -- while the request ran (the race ruling
-    **R-CC96**'s lock makes the door see), or the door refuses it for
-    another reason.  Those two helpers answer for every transaction door and
-    know neither the ACT that was refused nor the row's name, which a
-    one-off's delete takes out of the table; the door read the name while
-    the row was live.  So they hand the moment up rather than answering it.
+    re-fetch through the ownership door finds nothing to render: the door
+    refuses the row for this surface -- a companion's request for the
+    owner-only desktop cell.  Those two helpers answer for every
+    transaction door, so they hand the moment up to the blueprint's handler
+    (:func:`_row_gone_is_not_found`), which answers ruling **R-CC89**'s "not
+    found".
 
-    The doors ruling **R-CC101** names say which act the delete refused
-    (:func:`_door_naming_a_gone_row`, plan step ``credit_card:CC-5-4a-4``);
-    every other door answers ruling **R-CC89**'s "not found", unchanged,
-    through this blueprint's handler (:func:`_row_gone_is_not_found`), so a
-    door that never names a gone row needs no code for it.
+    *Until plan step ``balance:X-bn`` it also carried a row deleted WHILE the
+    request ran -- the race ruling **R-CC96**'s row lock let a door see --
+    and the doors ruling **R-CC101** names caught it to say which act the
+    delete refused.  The request's owner write lock (ruling **R-CC106**) now
+    precedes the door's first read, so a Delete from another tab either
+    committed before that read, and the door names the row before the view
+    runs, or waits for the request to end; the catch was deleted with the
+    row lock.*
     """
 
 
@@ -534,10 +536,8 @@ def _row_gone_is_not_found(_exc):
 
     Ruling **R-CC89**'s answer, and what the two helpers that raise
     :class:`_RowGone` returned themselves until plan step
-    ``credit_card:CC-5-4a-4``: Delete, Mark Credit, Undo CC and Cancel keep
-    it.  Two of the three doors ruling **R-CC101** names -- Mark Paid and the
-    popover's Save -- catch the signal first (:func:`_door_naming_a_gone_row`);
-    the third, add purchase, is the entries blueprint's and never raises it.
+    ``credit_card:CC-5-4a-4``.  Every transaction door answers it here,
+    the two :func:`_door_naming_a_gone_row` opens among them.
 
     Returns:
         ``("Not found", 404)``.
@@ -622,27 +622,25 @@ def _door_naming_a_gone_row(refusal):
     routes ruling **R-CC101** names (Mark Paid, the popover's Save), as a
     decorator, so each view states its sentence once and receives the live
     row it acts on.  A row that is gone is answered on the surface the
-    request targeted (:func:`_gone_transaction_response`), in two moments:
+    request targeted (:func:`_gone_transaction_response`) before the view
+    runs -- the page acted on a row deleted in another tab (ruling
+    **R-CC104**): a deleted row the requester may reach is named by
+    *refusal*, saying so where its recurring item is archived, however the
+    row was hidden (ruling **R-CC107**), and anything else -- a one-off row
+    its delete removed, a missing id, another user's row -- reads
+    :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`, the same
+    words whichever it was.
 
-    * **before the view runs** -- the page acted on a row deleted minutes
-      ago (ruling **R-CC104**): a deleted row the requester may reach is
-      named by *refusal*, and anything else -- a one-off row its delete
-      removed, a missing id, another user's row -- reads
-      :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`, the same
-      words whichever it was;
-    * **while it runs** -- the delete won the race for the row's lock
-      (ruling **R-CC96**) and the refusal's re-fetch found nothing
-      (:class:`_RowGone`): a row still in the table is named as it now
-      stands, and one a one-off's delete took out of it by the name read here
-      while it was live (:meth:`~app.utils.hidden_row.HiddenRow.of_reread`).
-      A row that still stands undeleted -- the door refused it for another
-      reason, such as a companion's request for the owner-only desktop cell
-      -- is answered "not found", as before.
-
-    In both moments a row whose recurring item is archived says so, however
-    the row was hidden (ruling **R-CC107**).  The view is called as
-    ``view(txn, target)``: the row as the door served it, and the
-    :class:`_RenderTarget` read off the form.
+    **That is the only moment a Delete can land in** since plan step
+    ``balance:X-bn`` (ruling **R-CC106**): the request's transaction takes
+    its owner's write lock before this door reads the row, so another tab's
+    Delete either committed before the read or waits for the request to
+    end.  A second moment, a Delete that won the race for the row's lock
+    WHILE the view ran (ruling **R-CC96**), had its own answer here until
+    that step deleted the row lock.  A row the view's refusal cannot redraw
+    for another reason (:class:`_RowGone`) is the blueprint handler's "not
+    found".  The view is called as ``view(txn, target)``: the row as the
+    door served it, and the :class:`_RenderTarget` read off the form.
 
     Args:
         refusal: The door's sentence for its act, taking a
@@ -660,18 +658,7 @@ def _door_naming_a_gone_row(refusal):
                 return _gone_transaction_response(
                     answer, refusal, txn_id, target,
                 )
-            # Read while the row is live: a one-off's delete takes the row,
-            # and its name with it, before a refusal can re-read it.
-            name = answer.name
-            try:
-                return view(answer, target)
-            except _RowGone:
-                row = db.session.get(Transaction, txn_id)
-                if row is not None and not row.is_deleted:
-                    return "Not found", 404
-                return _gone_transaction_response(
-                    HiddenRow.of_reread(row, name), refusal, txn_id, target,
-                )
+            return view(answer, target)
         return door
     return decorator
 

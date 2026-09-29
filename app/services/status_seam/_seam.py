@@ -32,7 +32,7 @@ from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import pay_period_service, row_write_lock
+from app.services import pay_period_service
 from app.services.planned_rows_books import reject_revert_below_the_books
 from app.services.settle_day import (
     SettleDay,
@@ -492,9 +492,6 @@ def apply_status_change(
             inside its books (propagated from
             :func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
             ruling **R-PC97**).
-        StaleDataError: When *row* is a ``Transaction`` carrying a record and
-            it left the table while this waited for its lock -- another tab's
-            hard delete won (:func:`app.services.row_write_lock.lock_row`).
         ValueError: If a ``Transaction`` ENTERS the settled band with no
             *settlement*.  A programming error at the call site -- no form can
             express it -- so it is not a ``ValidationError``.
@@ -540,20 +537,15 @@ def apply_status_change(
 
     # A deleted row takes no money (ruling **R-CC89**): the record is what the
     # covering writer below turns into a payment under the row, so it is
-    # refused here, ahead of any mutation like the three above.  **The owner's
-    # write lock and then the row's come first** (rulings **R-CC96**,
-    # **R-CC100**), before the refusal reads ``is_deleted`` and before this
-    # act's first write to the row: the popover's Actual correction racing the
-    # row's delete then waits here and meets the refusal in words.  Without
-    # this line the correction read the row as live and met the delete's moved
-    # version as a ``StaleDataError`` -- measured by removing it, against
-    # ``test_cc5_4a4_row_lock_races``'s ``TestActualCorrectionAgainstDelete``.
-    # Mark Paid has already taken the same locks in the settle verb, so here
-    # they cost it nothing.  Only a ``Transaction`` recording a record takes
-    # them: a record of ``None`` writes no money, and a ``Transfer``'s money is
-    # its shadows', each of which comes through here.
-    if settlement is not None and isinstance(row, Transaction):
-        row_write_lock.lock_row(row)
+    # refused here, ahead of any mutation like the three above.  **It reads
+    # ``is_deleted`` as the request's owner lock left it** (plan step
+    # ``balance:X-bn``, ruling **R-CC106**): the popover's Actual correction
+    # and another tab's Delete of its row run one after the other, so a Delete
+    # that came first is committed before the request read the row, and the
+    # correction meets this refusal in words.  Until that step this line was
+    # preceded by the row's own lock (ruling **R-CC96**), without which the
+    # correction read the row as live and met the delete's moved version as a
+    # ``StaleDataError`` (measured 2026-09-23).
     reject_settlement_on_a_deleted_row(row, settlement)
 
     # (``reject_settle_day_without_a_record`` stood here through plan step

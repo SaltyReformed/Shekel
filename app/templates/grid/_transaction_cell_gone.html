@@ -12,9 +12,11 @@
 
    Rendered by `routes/transactions/_helpers._gone_transaction_response` when
    Mark Paid or the popover's Save is refused because the row is hidden --
-   deleted, or its recurring item archived -- in another tab minutes ago
-   (ruling R-CC104), or while the request waited for the row's lock (ruling
-   R-CC101).  It is the cell's own refusal grammar (`_transaction_cell.html`'s
+   deleted, or its recurring item archived -- in another tab (ruling
+   R-CC104).  Until plan step balance:X-bn it was also rendered for a row
+   hidden while the request waited for the row's lock (ruling R-CC101); the
+   request's owner write lock now precedes the door's read, so that moment
+   cannot occur.  It is the cell's own refusal grammar (`_transaction_cell.html`'s
    `error`: the red octagon, the reason on hover and for a screen reader)
    with the amount replaced by one visible word, because a gone row has no
    amount left to draw.  No `.txn-open` opener and no Mark Paid button: the

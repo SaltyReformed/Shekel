@@ -27,9 +27,9 @@ from app.models.user import User
 from app import ref_cache
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, movement_removal, posting_service
-from app.services.credit_workflow import lock_source_transaction_for_payback
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.movement_account import admitted_movement_account_id
+from app.services.owned_transaction import load_owned_transaction
 from app.services.settle_day import (
     SettleDay,
     record_settle_day,
@@ -347,19 +347,19 @@ def create_entry(
     """
     owner_id = resolve_owner_id(user_id)
 
-    # **The row's write lock FIRST, so every refusal below reads the row as it
-    # stands locked** (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC96**:
-    # "whichever click lands second gets a sentence").  A purchase added while
-    # the same row's delete was open read the row as live, waited at the
-    # payback sync's lock until the delete committed, and then committed under
-    # the hidden row -- measured by the step's fourth review.  Locked here, it
-    # waits BEFORE the refusals and meets the one below in words.  The helper
-    # the payback sync already calls, so the strength is stated once
-    # (:mod:`app.services.row_write_lock`); it re-reads every column, which
-    # this door may, because it writes none of the row's own.  Ownership is the
-    # row's own owner column, asked inside it (security response rule: 404;
-    # ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
-    txn = lock_source_transaction_for_payback(transaction_id, owner_id)
+    # **Every refusal below reads the row as it stands after the request's
+    # owner lock** (plan step ``balance:X-bn``, ruling **R-CC106**, which ended
+    # the class ruling **R-CC96** closed door by door: "whichever click lands
+    # second gets a sentence").  A purchase added while the same row's delete
+    # was open read the row as live, waited at the payback sync's row lock
+    # until the delete committed, and then committed under the hidden row --
+    # measured by plan step ``credit_card:CC-5-4a-4``'s fourth review.  The
+    # request's transaction now takes its owner's write lock before it reads
+    # any of the owner's data (:mod:`app.db_transaction`), so another tab's
+    # Delete either committed before this read or waits for this purchase to
+    # commit, and a Delete that came first meets the refusal below in words.
+    # Ownership is the row's own owner column (security response rule: 404).
+    txn = load_owned_transaction(transaction_id, owner_id)
 
     # **A DELETED row takes no purchase** (plan step ``credit_card:CC-5-4a-4``,
     # its second review, H1).  Deleting a recurring occurrence empties it and
@@ -370,10 +370,11 @@ def create_entry(
     # period with no row to delete it from.  The settle doors' own refusal of
     # the same row (``transaction_service._row_rules.reject_unsettleable``).
     # One of the three layers of ruling **R-CC89** ("a deleted row takes no
-    # money"): the ownership doors now answer a deleted row "not found", so a
-    # route reaches here with one only when the delete won a race after its
-    # door read the row live (ruling **R-CC96**; the lock above is why this
-    # line then sees it); a service caller that skipped them still could, and
+    # money"): the ownership doors now answer a deleted row "not found", and
+    # since plan step ``balance:X-bn`` no Delete can commit between their read
+    # and this one (both follow the request's owner lock), so a route that
+    # passed them hands this line a live row; a service caller that skipped
+    # them still could hand it a deleted one, and
     # :mod:`app.deleted_row_infrastructure` refuses the write in the database
     # for one that skips this line too.
     if txn.is_deleted:
@@ -939,11 +940,7 @@ def get_entries_for_transaction(
     """
     owner_id = resolve_owner_id(user_id)
 
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    txn = load_owned_transaction(transaction_id, owner_id)
 
     # The entries relationship is ordered by ``purchased_on`` via the
     # ``order_by`` on ``Transaction.entries`` -- the BUDGET clock, which is

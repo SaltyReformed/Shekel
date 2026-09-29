@@ -28,8 +28,8 @@ from app.services.credit_workflow import (
     create_cc_payback_transaction,
     get_active_payback,
     get_or_create_cc_category,
-    lock_source_transaction_for_payback,
 )
+from app.services.owned_transaction import load_owned_transaction
 from app.exceptions import ValidationError
 from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
@@ -84,24 +84,18 @@ def sync_entry_payback(
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
 
-    Concurrency model: the parent transaction row is locked with
-    ``SELECT ... FOR NO KEY UPDATE`` before the read-then-insert
-    below so two concurrent entry mutations on the same parent
-    serialise instead of both falling through the existing-payback
-    check and inserting two payback rows.  ``FOR NO KEY UPDATE``
-    (rather than the stricter ``FOR UPDATE``) is required because
-    the entry INSERT triggered by ``entry_service.create_entry`` /
-    ``update_entry`` / ``delete_entry`` upstream of this call
-    already holds ``FOR KEY SHARE`` on this row to validate the
-    inbound foreign key, and ``FOR UPDATE`` would deadlock with
-    that lock.  The lock is released at the next session
-    ``commit()`` / ``rollback()`` (the caller's route handler
-    always performs one).  ``budget.transactions`` carries
-    ``uq_transactions_credit_payback_unique`` as a database-level
-    backstop -- if any future caller reaches the INSERT without
-    this lock, the unique-index violation surfaces as an
-    ``IntegrityError`` that the route layer converts to idempotent
-    success.  Audit reference: F-008 (High) / commit C-19.
+    Concurrency model (plan step ``balance:X-bn``, ruling **R-CC106**): the
+    request's transaction took its owner's write lock before it read any of
+    the owner's data (:mod:`app.db_transaction`), so two purchase writes on
+    the same parent -- two tabs, or a double click -- run one after the
+    other, and the second reads the first's payback instead of both falling
+    through the existing-payback check and inserting two.  Until that step
+    the parent row's own ``FOR NO KEY UPDATE`` lock did the serialising.
+    ``budget.transactions`` carries ``uq_transactions_credit_payback_unique``
+    as the database-level backstop for a writer that holds no request: a
+    second payback surfaces as an ``IntegrityError`` that the route layer
+    converts to idempotent success.  Audit reference: F-008 (High) / commit
+    C-19.
 
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
@@ -109,22 +103,14 @@ def sync_entry_payback(
         ValidationError: If a payback needs to be created but no next
             pay period exists.
     """
-    # See ``credit_workflow.lock_source_transaction_for_payback`` for
-    # the full rationale behind FOR NO KEY UPDATE + populate_existing.
-    # Note that FOR NO KEY UPDATE is non-negotiable here:
-    # ``entry_service.create_entry`` / ``update_entry`` /
-    # ``delete_entry`` already mutated a TransactionEntry referencing
-    # this row before delegating, taking FOR KEY SHARE for the FK
-    # validation; the stricter FOR UPDATE would deadlock.
-    txn = lock_source_transaction_for_payback(transaction_id, owner_id)
+    txn = load_owned_transaction(transaction_id, owner_id)
 
     # Expire the entries relationship so we read fresh data from the
     # database.  Without this, a prior load of txn.entries in the same
     # session could be stale after an entry was added or deleted via
-    # FK assignment rather than collection mutation.  The
-    # ``with_for_update()`` query above refreshes the txn columns
-    # themselves but does not touch the related ``entries``
-    # collection.
+    # FK assignment rather than collection mutation.  The load above
+    # hands back the session's own instance and refreshes nothing, so
+    # the collection is expired by name.
     db.session.expire(txn, ["entries"])
 
     # Partition via the shared helper so "which entries are credits" has

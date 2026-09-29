@@ -27,7 +27,8 @@ so each can race a sign-in or an MFA door that holds the lock (reported at
 plan step ``balance:X-bn``'s checkpoint 4 review, 2026-09-29).  *It was
 taken by sixteen calls in nine modules inside the write paths that needed it
 most, plus three that plan step ``credit_card:CC-5-4a-4`` put inside
-``row_write_lock``, each taking it at its own point in the transaction, which
+``row_write_lock`` (the row locks' module, deleted with them at plan step
+``balance:X-bn``), each taking it at its own point in the transaction, which
 is what made the deadlock below reachable.*
 
 Two families of write are why the lock exists at all, and they need the SAME

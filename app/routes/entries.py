@@ -46,7 +46,6 @@ from app.utils.error_fragments import (
     flatten_schema_errors,
     refusal_for_a_gone_row,
 )
-from app.utils.hidden_row import HiddenRow
 
 logger = logging.getLogger(__name__)
 
@@ -300,45 +299,6 @@ def _gone_entry_list_response(
     )
 
 
-def _purchase_refused_response(
-    txn_id: int, name: str, message: str, host: str, status: int = 400,
-) -> ResponseReturnValue:
-    """Answer a refused purchase: the list with its banner, or the banner alone.
-
-    The add-purchase door's refusals (plan step ``credit_card:CC-5-4a-4``,
-    rulings **R-CC101**, **R-CC103**).  After the rollback the row is read
-    again: when the delete won the race for the row's lock (ruling
-    **R-CC96**), soft or hard, the list has nothing left to draw, and the
-    banner alone says so -- naming a row still in the table as it now stands,
-    "was archived" where its recurring item is (ruling **R-CC107**), and one
-    a one-off's delete took out of the table by the *name* the route read
-    while it was live, since rendering the vanished instance was a 500
-    (review 5, M3).  Otherwise the list re-renders with the refusal, as every
-    entries refusal does (:func:`_error_entry_response`), off the row as it
-    now stands.
-
-    Args:
-        txn_id: The row id the request named.
-        name: The row's name, read while it was live.
-        message: The refusal, for a row that still stands.
-        host: The validated host prefix from :func:`_request_host`.
-        status: The HTTP status for a row that still stands (400 refusal,
-            422 validation, 404 foreign account).
-
-    Returns:
-        A designed-fragment Flask response tuple.
-    """
-    db.session.rollback()
-    row = db.session.get(Transaction, txn_id)
-    if row is None or row.is_deleted:
-        return _gone_entry_list_response(
-            txn_id, host, entry_service.deleted_row_purchase_refusal(
-                HiddenRow.of_reread(row, name),
-            ),
-        )
-    return _error_entry_response(row, message, host, status=status)
-
-
 def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue:
     """Build the shared success response for an entries mutation.
 
@@ -389,10 +349,11 @@ def _credit_payback_idempotent_response(
 
     Shared between :func:`create_entry`, :func:`update_entry`, and
     :func:`delete_entry`.  All three routes funnel through
-    ``entry_credit_workflow.sync_entry_payback`` (commit C-19) where
-    a SELECT FOR NO KEY UPDATE on the parent transaction prevents
-    the duplicate-payback race in normal flow.  This helper is the
-    backstop for any future caller that bypasses the lock: the
+    ``entry_credit_workflow.sync_entry_payback`` (commit C-19), and the
+    request's owner write lock (plan step ``balance:X-bn``, which replaced
+    C-19's lock on the parent row) prevents the duplicate-payback race in
+    normal flow.  This helper is the backstop for a writer that holds no
+    owner lock: the
     partial unique index ``uq_transactions_credit_payback_unique``
     rejects the duplicate INSERT, the calling route catches the
     resulting :class:`IntegrityError`, and this helper either returns
@@ -531,12 +492,17 @@ def create_entry(txn_id):
 
     **A row that is gone gets the banner alone** (plan step
     ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC103**,
-    **R-CC104**): a purchase on a row deleted in another tab, or while this
-    one waited for the row's lock, answers "Groceries was deleted: a purchase
-    cannot be recorded under it.  Reload the page." where the list stood --
-    "Groceries was archived: ..." where its recurring item is (ruling
-    **R-CC107**) -- :func:`_gone_entry_list_response` before the door serves
-    the row, :func:`_purchase_refused_response` after.
+    **R-CC104**): a purchase on a row deleted in another tab answers
+    "Groceries was deleted: a purchase cannot be recorded under it.  Reload
+    the page." where the list stood -- "Groceries was archived: ..." where
+    its recurring item is (ruling **R-CC107**) --
+    :func:`_gone_entry_list_response`, before the door serves the row.  That
+    is the only moment another tab's Delete can land in: since plan step
+    ``balance:X-bn`` (ruling **R-CC106**) the request's transaction takes its
+    owner's write lock before the door reads the row, so a Delete either
+    committed before that read or waits for this purchase to commit.  The
+    answer for a Delete landing WHILE the request ran (the race ruling
+    **R-CC96** let a door see) was deleted with the row lock at that step.
     """
     host = _request_host()
     answer = get_accessible_transaction_or_deleted(txn_id)
@@ -548,14 +514,11 @@ def create_entry(txn_id):
             ),
         )
     txn = answer
-    # Read while the row is live: a one-off's delete takes the row, and its
-    # name with it, before a refusal can re-read it.
-    name = txn.name
 
     errors = _create_schema.validate(request.form)
     if errors:
-        return _purchase_refused_response(
-            txn_id, name, flatten_schema_errors(errors), host, status=422,
+        return _error_entry_response(
+            txn, flatten_schema_errors(errors), host, status=422,
         )
 
     data = _create_schema.load(request.form)
@@ -599,15 +562,10 @@ def create_entry(txn_id):
         # Through CC-5-1 no ``NotFoundError`` could reach this arm at all:
         # the row is resolved above, so every 404 the door could raise was
         # already answered, and the 400 this shared with ``ValidationError``
-        # was never exercised.  The row lock's own "not found" -- a one-off
-        # deleted while this waited -- lands here too, and
-        # :func:`_purchase_refused_response` tells the two apart by reading
-        # the row again.
-        return _purchase_refused_response(
-            txn_id, name, str(exc), host, status=404,
-        )
+        # was never exercised.
+        return _error_entry_response(txn, str(exc), host, status=404)
     except ValidationError as exc:
-        return _purchase_refused_response(txn_id, name, str(exc), host)
+        return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)
 
@@ -854,8 +812,8 @@ def delete_entry(txn_id, entry_id):
         return _stale_entry_response(txn, host)
     except IntegrityError as exc:
         # Defensive backstop for commit C-19 -- ``delete_entry``
-        # also calls ``sync_entry_payback``, so the same race window
-        # exists if a future caller bypasses the row lock.  See
+        # also calls ``sync_entry_payback``, so a writer that holds no
+        # owner lock could race it the same way.  See
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(
             exc, txn.id, f"delete_entry id={entry_id}", host,

@@ -36,7 +36,6 @@ from app.services import (
     definition_unarchive,
     posting_service,
     recurrence_engine,
-    row_write_lock,
     template_amount_service,
 )
 from app.services.balance_at import BalanceContext
@@ -616,8 +615,7 @@ def _soft_delete_projected_rows(template):
     unarchive's restore scope is.
 
     Args:
-        template: The definition being archived; its owner is whose write
-            lock the rows' locks queue behind (ruling **R-CC100**).
+        template: The definition being archived.
 
     Returns:
         ``(hidden, kept)`` -- how many rows the statement hid, and the
@@ -629,17 +627,17 @@ def _soft_delete_projected_rows(template):
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
     )
-    # **The owner's write lock, then the rows' locks, FIRST, then both reads
-    # as NEW statements** (rulings **R-CC96**: the archive is one of the two
-    # hiders that take the row lock before anything else; **R-CC100**: the
-    # owner's lock before the rows', and before the ``is_active`` change the
-    # route staged reaches the database).  A purchase added to one of these
-    # rows while the archive ran was invisible to the reads below -- each
-    # reads committed data only -- so the row was hidden over it and the
-    # database's hiding arm refused the whole commit as a raw error.  Locked
-    # first, the archive waits for that purchase to commit and then reads it:
-    # the row is KEPT and named in the flash with the rest.
-    row_write_lock.lock_rows(template.user_id, *projected)
+    # **Both reads see every purchase another tab added** (plan step
+    # ``balance:X-bn``, ruling **R-CC106**).  A purchase added to one of these
+    # rows while the archive ran was invisible to them -- each reads committed
+    # data only -- so the row was hidden over it and the database's hiding arm
+    # refused the whole commit as a raw error.  The request's transaction
+    # took its owner's write lock before it read any of the owner's data
+    # (:mod:`app.db_transaction`), so that purchase either committed before
+    # these reads, and its row is KEPT and named in the flash with the rest,
+    # or waits for the archive to commit.  Until that step the rows' own locks
+    # did it here (ruling **R-CC96**: the archive was one of the two hiders
+    # that took the row lock before anything else).
     kept = archive_helpers.rows_holding_movements(*projected)
     hidden = db.session.query(Transaction).filter(
         *projected, archive_helpers.holds_nothing(),

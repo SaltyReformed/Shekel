@@ -63,8 +63,9 @@ answering "not found" for a deleted row (``get_accessible_transaction`` and
 ``routes/transactions/_helpers._get_owned_transaction``).  The hiding arm has
 no words of its own because no door reaches it in either order of a race: the
 row delete takes the movements off first and the archive leaves a holding row
-alone, and each takes the row's lock (below) BEFORE it reads what the row
-holds.  Both arms are what make the rule hold for a bulk statement, a psql
+alone, and each reads what the row holds after its request's owner lock (plan
+step ``balance:X-bn``), so no other click of the owner's can add a movement
+between that read and the hide.  Both arms are what make the rule hold for a bulk statement, a psql
 session and a writer nobody enumerated, the same pairing
 ``ck_transaction_entries_positive_amount`` has with ``entry_service``'s refusal
 of a purchase worth nothing.
@@ -95,13 +96,14 @@ and two such writers each holding it then wait on each other.  Measured
 2026-09-23 on two raw connections, ``FOR SHARE`` then ``FOR NO KEY UPDATE`` on
 one row: ``DeadlockDetected`` for one of the two, where taking ``FOR NO KEY
 UPDATE`` first let both commit.  The app's own doors never reach that shape:
-they take the owner's write lock and then this same row lock BEFORE their
-insert (:mod:`app.services.row_write_lock`, rulings R-CC96 and R-CC100), so
-for them the arm's lock is their own and waits on nothing, and the second
-click of a race meets a door's sentence instead of this arm's raw error.  So
-the strength is graded by the raw measurement alone: with ``FOR SHARE`` here
-the app's race module still passes (the step's fifth review).  It is the RAW
-writer's guarantee.
+each runs after its request's owner write lock (plan step ``balance:X-bn``,
+ruling **R-CC106**), so two of one owner's clicks never hold the row at once,
+and the second click of a race meets a door's sentence instead of this arm's
+raw error.  Until that step each door took this same row lock itself, BEFORE
+its insert (rulings R-CC96 and R-CC100).  So the strength is graded by the raw
+measurement alone: with ``FOR SHARE`` here the app's race module still passed
+(the step's fifth review, measured while the doors took the row lock).  It is
+the RAW writer's guarantee.
 
 **The arrival arm is an immediate ``BEFORE`` row trigger**, as
 :mod:`app.level_infrastructure` chose and for a sharper reason here.  A
@@ -161,9 +163,8 @@ DELETED_ROW_TRIGGERS: tuple[tuple[str, str], ...] = (
 )
 
 #: The row lock the arrival arm takes on the movement's row, whatever state the
-#: row is in -- the strength every door that writes money under a row, or hides
-#: one, takes FIRST (ruling **R-CC96**, :mod:`app.services.row_write_lock`).
-#: The module docstring's two concurrency paragraphs say why this strength.
+#: row is in (ruling **R-CC96**).  The module docstring's two concurrency
+#: paragraphs say why this strength.
 ROW_WRITE_LOCK = "FOR NO KEY UPDATE"
 
 _CREATE_ARRIVAL_FUNCTION_SQL = f"""

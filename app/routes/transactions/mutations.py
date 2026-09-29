@@ -670,9 +670,7 @@ def delete_transaction(txn_id):
     handler converts to a 409 + conflict cell so the user can retry against
     fresh state -- or to a 404 when that commit deleted the row, soft or hard
     (``_stale_transaction_response`` re-fetches through the ownership door,
-    which answers a deleted row "not found").  A hard delete that won while
-    this one waited for the row's lock (ruling **R-CC96**) raises the same
-    error from the lock, and is answered the same way.
+    which answers a deleted row "not found").
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -824,8 +822,8 @@ def mark_done(txn, target):
 
     **The door is** :func:`_door_naming_a_gone_row` (plan step
     ``credit_card:CC-5-4a-4``), which also reads the rendering surface
-    (``target``) off the form: a Mark Paid on a row deleted in another tab,
-    or while this one waited for the row's lock, answers the cell's red
+    (``target``) off the form: a Mark Paid on a row deleted in another tab
+    answers the cell's red
     "Deleted" or the card's banner saying "Hotel was deleted: a payment
     cannot be recorded under it.  Reload the page." (rulings **R-CC101**,
     **R-CC102**, **R-CC104**) -- "Archived" and "was archived" for a row

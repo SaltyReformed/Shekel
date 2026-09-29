@@ -326,10 +326,11 @@ def reject_unsettleable(txn: Transaction) -> None:
     flipped it into the settled band.  Measured on production: 102 soft-deleted
     rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
     cost is to the data.  (The ownership doors answer a deleted row "not
-    found" since plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89**, so a
-    route reaches this arm only when the row's delete won a race after the
-    door read it live -- the settle verb's row lock, ruling **R-CC96**, is
-    what lets it see the winner -- and a service caller still can.  The words
+    found" since plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89**, and
+    since plan step ``balance:X-bn`` no Delete can commit between the door's
+    read and this one -- both follow the request's owner lock -- so a route
+    that passed the door never reaches this arm; a service caller that skips
+    the door still can.  The words
     are the seam's own for the same refusal, one sentence naming the row,
     ruling **R-CC98**, and saying "was archived" where its recurring item is,
     ruling **R-CC107**.)

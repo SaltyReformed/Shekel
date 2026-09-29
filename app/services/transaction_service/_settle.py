@@ -37,8 +37,7 @@ from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
-from app.extensions import db
-from app.services import posting_service, row_write_lock
+from app.services import posting_service
 from app.services.cash_ledger import (
     AmountBasis,
     derived_amount_basis,
@@ -511,11 +510,6 @@ def settle_transaction(
         NotFoundError: When *tender_account_id* names no account of the ROW's
             owner (the security response rule: one answer for "not found"
             and "not yours").  A 404 at the route.
-        StaleDataError: When the row left the table while this waited for its
-            lock -- another tab's hard delete won
-            (:func:`app.services.row_write_lock.lock_row`).  The ORM's own
-            answer when a version-pinned write finds its row gone, so the
-            route answers it as it answers that: the 409 and re-fetch.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
@@ -524,34 +518,27 @@ def settle_transaction(
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
     # its own three refusals, and for the same reason.  Nothing it reads
     # flushes (two of the row's columns, and for a deleted row's sentence one
-    # more read, all under ``no_autoflush``), which is why it may precede the
-    # lock below: a call refused here writes none of a caller's staged state.
-    # A delete that wins the race for the lock is refused after it, once the
-    # lock's own statement has flushed (``row_write_lock.lock_row``).
+    # more read, all under ``no_autoflush``), so a call refused here writes
+    # none of a caller's staged state.  It also precedes the identity no-op
+    # below, which answered first for a row already Paid: a replayed Mark Paid
+    # on a row another tab had deleted returned quietly and the grid redrew
+    # the deleted row as a live Paid chip (plan step ``credit_card:CC-5-4a-4``,
+    # its review 9, measured 2026-09-24).
+    #
+    # **Everything below decides from the row as the request's owner lock
+    # left it** (plan step ``balance:X-bn``, ruling **R-CC106**): whether it
+    # settles from its purchases, and at what figure.  Decided from a read
+    # taken before a racing purchase committed, a Groceries envelope with
+    # nothing spent settled at its $300.00 plan while the companion's $12.34
+    # purchase landed beside it -- $312.34 recorded against a $300.00
+    # envelope, measured 2026-09-23.  The request's transaction took its
+    # owner's write lock before it read any of the owner's data
+    # (:mod:`app.db_transaction`), so the companion's purchase either
+    # committed before this read, and the row settles at the purchases, or
+    # waits and meets the purchase door's settled-row refusal.  Until that
+    # step the row's own lock did it here (rulings **R-CC96**, **R-CC99**
+    # (a)), and re-read ``is_deleted`` and the movements under it.
     reject_unsettleable(txn)
-    # **The owner's write lock, then the row's, before anything reads the
-    # database for it** (plan step ``credit_card:CC-5-4a-4``, rulings
-    # **R-CC96** -- Mark Paid "takes that lock first" --, **R-CC99** (a) and
-    # **R-CC100**, the owner's lock first).  Everything below decides
-    # from the row: whether it settles from its purchases, and at what figure.
-    # Decided from a read taken before a racing purchase committed, a Groceries
-    # envelope with nothing spent settled at its $300.00 plan while the
-    # companion's $12.34 purchase landed beside it -- $312.34 recorded against
-    # a $300.00 envelope, measured 2026-09-23.  Locked here and its movements
-    # re-read (``entries`` expired; the row lock's statement has flushed
-    # anything staged), the purchase is either in before the decision, which
-    # then settles at the purchases, or waits and meets the purchase door's
-    # settled-row refusal.  ``is_deleted`` is re-read by the lock, so a delete
-    # that won is refused HERE, in the seam's words (one sentence), by
-    # ``reject_unsettleable`` asked again straight after the lock -- ahead of
-    # the identity no-op below, which answered first for a row already Paid:
-    # a replayed Mark Paid losing the race to that row's delete returned
-    # quietly and the grid redrew the deleted row as a live Paid chip (review
-    # 9 of this step, measured 2026-09-24).  The seam takes the same locks
-    # again for its other callers, which costs nothing once held.
-    row_write_lock.lock_row(txn)
-    reject_unsettleable(txn)
-    db.session.expire(txn, ["entries"])
     # The tender's reading and its gate, before any mutation for the same
     # reason and ahead of the identity no-op below: a bad REFERENCE is refused
     # whatever the row's state, so a replayed settle naming a foreign account

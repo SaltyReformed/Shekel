@@ -325,12 +325,11 @@ def reject_settlement_on_a_deleted_row(
 
     Raises:
         ValidationError: When *settlement* is not ``None`` and *row* is
-            soft-deleted.  A 400.  A route reaches it only when the row's
-            delete won a race after the route's ownership door read the row
-            live -- that door answers a deleted row "not found" -- and the
-            seam's lock on the row (ruling **R-CC96**) is what lets this read
-            see the winner.  A service caller that skipped the door reaches it
-            directly.
+            soft-deleted.  A 400.  The route's ownership door answers a
+            deleted row "not found", and since plan step ``balance:X-bn`` no
+            Delete can commit between that door's read and this one (both
+            follow the request's owner lock), so only a service caller that
+            skipped the door reaches it.
     """
     if settlement is None or not row.is_deleted:
         return
@@ -345,8 +344,8 @@ def deleted_row_payment_refusal(gone: HiddenRow) -> str:
 
     **One sentence for the three places that refuse it** -- this seam's
     :func:`reject_settlement_on_a_deleted_row`, the settle verbs'
-    ``transaction_service`` ``reject_unsettleable`` (since ruling **R-CC96**
-    what a Mark Paid that lost a race to the row's delete meets), and the Mark
+    ``transaction_service`` ``reject_unsettleable`` (what a service caller's
+    Mark Paid on a deleted row meets), and the Mark
     Paid route, which shows it on the cell or the card for a row that is gone
     (rulings **R-CC101**, **R-CC104**) -- so the owner reads one answer
     whichever of them refused.  It names the row and never its id (ruling

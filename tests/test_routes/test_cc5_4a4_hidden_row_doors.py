@@ -36,9 +36,17 @@ and a purchase on a one-off row deleted while it waited was a 500.  Rulings
 red "Deleted"), **R-CC103** (the purchase list's banner alone), **R-CC104**
 (a stale tab is told too, and a row it may not name reads the same words
 whoever's it was) and **R-CC105** (one sentence for every Save) are pinned in
-:class:`TestAStaleTabIsToldTheRowWasDeleted` and
-:class:`TestADeleteThatWinsTheRaceIsNamed`; the doors those rulings do not
+:class:`TestAStaleTabIsToldTheRowWasDeleted`; the doors those rulings do not
 name keep R-CC89's bare "not found" (:class:`TestTheOtherDoorsStillSayNotFound`).
+*Until plan step ``balance:X-bn`` a second class,
+``TestADeleteThatWinsTheRaceIsNamed``, pinned the same words for a Delete
+that committed WHILE the request ran, after its door read the row and before
+the row's lock.  The request's owner write lock (ruling **R-CC106**) now
+precedes the door's first read, so that moment cannot occur; the class, the
+two archive races in :class:`TestAnArchivedItemsRowSaysArchived` and Mark
+Credit's in :class:`TestTheOtherDoorsStillSayNotFound` were deleted with the
+row lock, and the lock that makes the moment impossible is graded by
+``tests/test_services/test_cc5_4a4_row_lock_races.py``.*
 Finding **CC-376** -- a refused purchase removal was a 500 -- is
 :class:`TestARefusedRemovalIsTheListsBanner`.
 
@@ -59,7 +67,6 @@ ungraded (L1, L5, L4).  Every figure is made up.
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 
@@ -74,14 +81,9 @@ from app.models.statement_match import StatementMatch, StatementMatchCreation
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-# The archive's write is the route module's helper, shared by its two archive
-# doors; a thread cannot hold a ROUTE's transaction open, so the other tab
-# calls the write the route makes (the race module's ``_archive`` does too).
-from app.routes.templates.crud import _soft_delete_projected_rows
 from app.services import (
     entry_service,
     pay_period_gates,
-    row_write_lock,
     transaction_service,
     transfer_service,
 )
@@ -616,80 +618,6 @@ def _placed_one_off(seed_user, period, *, name, amount, is_envelope):
     return row
 
 
-def _in_another_tab(app, act):
-    """Run *act* and commit it from a session of its own, now.
-
-    The other tab is another thread with its own app context, so its session
-    is its own; ``result`` re-raises anything it raised here, in the test.
-    """
-    def other_tab():
-        with app.app_context():
-            try:
-                act()
-                db.session.commit()
-            finally:
-                db.session.remove()
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        pool.submit(other_tab).result(timeout=8.0)
-
-
-def _deleted_in_another_tab(app, row_id, owner_id):
-    """Commit the app's own Delete of *row_id* from a session of its own, now."""
-    _in_another_tab(app, lambda: transaction_service.delete_transaction(
-        db.session.get(Transaction, row_id), owner_id,
-    ))
-
-
-def _archived_in_another_tab(app, template_id):
-    """Commit the archive of *template_id* from a session of its own, now.
-
-    The archive route's own write -- the definition off, then its empty
-    Projected rows hidden (``_soft_delete_projected_rows``, which both archive
-    doors share) -- because a thread cannot hold a ROUTE's transaction open.
-    """
-    def archive():
-        template = db.session.get(TransactionTemplate, template_id)
-        template.is_active = False
-        _soft_delete_projected_rows(template)
-
-    _in_another_tab(app, archive)
-
-
-def _lands_before_the_lock(monkeypatch, lock_name, row_id, other_tab):
-    """Make *other_tab* commit just before the door locks row *row_id*.
-
-    Ruling R-CC96's race, the technique review 5 used: the route's door has
-    read the row live, then the other tab's act commits, then the door's row
-    lock (``row_write_lock.<lock_name>``) sees the winner.  The act commits
-    BEFORE the lock is requested, so the door never waits: under READ
-    COMMITTED the outcome is the waiting interleaving's, which the race
-    module grades at service level.  Returns a list that holds the row id
-    once the act has fired, so a test can assert its race was staged rather
-    than skipped.
-    """
-    real = getattr(row_write_lock, lock_name)
-    fired = []
-
-    def act_first(target, *args, **kwargs):
-        target_id = target if isinstance(target, int) else target.id
-        if not fired and target_id == row_id:
-            fired.append(target_id)
-            other_tab()
-        return real(target, *args, **kwargs)
-
-    monkeypatch.setattr(row_write_lock, lock_name, act_first)
-    return fired
-
-
-def _delete_lands_before_the_lock(monkeypatch, app, lock_name, row_id, owner_id):
-    """Make another tab's Delete of *row_id* commit just before the door locks it."""
-    return _lands_before_the_lock(
-        monkeypatch, lock_name, row_id,
-        lambda: _deleted_in_another_tab(app, row_id, owner_id),
-    )
-
-
 def _is_the_deleted_cell(response, sentence, word="Deleted"):
     """Assert *response* is R-CC102's red cell, showing *word* and saying *sentence*.
 
@@ -933,208 +861,6 @@ class TestAStaleTabIsToldTheRowWasDeleted:
             assert db.session.get(Transaction, theirs_id).status_id == (
                 ref_cache.status_id(StatusEnum.PROJECTED)
             )
-
-
-class TestADeleteThatWinsTheRaceIsNamed:
-    """R-CC101: the delete commits after the door read the row live, before its lock.
-
-    Staged by :func:`_delete_lands_before_the_lock`, which commits the delete
-    before the door requests the row's lock, so the door does not wait; the
-    waiting interleaving is graded at service level, in
-    ``tests/test_services/test_cc5_4a4_row_lock_races.py``.
-    """
-
-    def test_mark_paid_on_the_cell(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """Review 5's M2 case on the recurring $120.00 Hotel: the cell's red "Deleted"."""
-        with app.app_context():
-            period = seed_periods_today[3]
-            _template, row = _occurrence(
-                seed_user, period, name="Hotel", amount="120.00",
-                is_envelope=False,
-            )
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = auth_client.post(f"/transactions/{row_id}/mark-done")
-
-            assert fired == [row_id]
-            _is_the_deleted_cell(response, _PAYMENT_REFUSED)
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
-    def test_mark_paid_on_the_card(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The same race from the phone card: the banner-only card."""
-        with app.app_context():
-            period = seed_periods_today[3]
-            _template, row = _occurrence(
-                seed_user, period, name="Hotel", amount="120.00",
-                is_envelope=False,
-            )
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = _card_mark_paid(auth_client, row_id)
-
-            assert fired == [row_id]
-            _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
-
-    @pytest.mark.parametrize("surface", ("cell", "card"))
-    def test_a_replayed_mark_paid_on_a_paid_row(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-        surface,
-    ):
-        """Review 9's L1: the $120.00 Hotel is already Paid, and its Delete wins the replay's race.
-
-        Before: 200 and a live "Hotel ... Paid" chip, because the settle
-        verb's identity no-op answered for the Paid row before anything asked
-        whether the lock had found it deleted.
-        """
-        with app.app_context():
-            period = seed_periods_today[3]
-            _template, row = _occurrence(
-                seed_user, period, name="Hotel", amount="120.00",
-                is_envelope=False,
-            )
-            _settle(row, period.start_date)
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = _press(auth_client, surface, row_id)
-
-            assert fired == [row_id]
-            _is_the_gone_answer(response, surface, row_id, _PAYMENT_REFUSED)
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
-    def test_mark_paid_on_an_erased_one_off_names_it(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """A made-up $45.00 one-off Hotel bill erased mid-click is still named.
-
-        The row is gone from the table by the time the refusal re-reads it,
-        so the name is the one the door read while it was live.
-        """
-        with app.app_context():
-            bill = _placed_one_off(
-                seed_user, seed_periods_today[3], name="Hotel",
-                amount="45.00", is_envelope=False,
-            )
-            row_id, user_id = bill.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = auth_client.post(f"/transactions/{row_id}/mark-done")
-
-            assert fired == [row_id]
-            _is_the_deleted_cell(response, _PAYMENT_REFUSED)
-            db.session.expire_all()
-            assert db.session.get(Transaction, row_id) is None
-
-    def test_mark_paid_on_the_card_of_an_erased_one_off_names_it(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The erased one-off's race from the phone card: the banner card, named."""
-        with app.app_context():
-            bill = _placed_one_off(
-                seed_user, seed_periods_today[3], name="Hotel",
-                amount="45.00", is_envelope=False,
-            )
-            row_id, user_id = bill.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = _card_mark_paid(auth_client, row_id)
-
-            assert fired == [row_id]
-            _is_the_banner_card(response, row_id, _PAYMENT_REFUSED)
-
-    def test_a_save_with_an_actual(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """Review 5's M2 correction case: the Paid Hotel deleted as its Actual is saved."""
-        with app.app_context():
-            period = seed_periods_today[3]
-            _template, row = _occurrence(
-                seed_user, period, name="Hotel", amount="120.00",
-                is_envelope=False,
-            )
-            _settle(row, period.start_date)
-            row_id, user_id = row.id, seed_user["user"].id
-            payload = _popover_form(auth_client, row_id)
-            payload["settled_amount"] = "125.00"
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_row", row_id, user_id,
-            )
-
-            response = auth_client.patch(f"/transactions/{row_id}", data=payload)
-
-            assert fired == [row_id]
-            _is_the_deleted_cell(response, _SAVE_REFUSED)
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
-    def test_a_purchase_on_a_recurring_row(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The purchase door's race, soft: the banner alone where the list stood (R-CC103)."""
-        with app.app_context():
-            period = seed_periods_today[3]
-            _template, row = _occurrence(
-                seed_user, period, name="Groceries", amount="300.00",
-                is_envelope=True,
-            )
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_and_read", row_id, user_id,
-            )
-
-            response = auth_client.post(
-                f"/transactions/{row_id}/entries", data=_a_purchase_form(),
-            )
-
-            assert fired == [row_id]
-            _is_the_banner_list(
-                response, f"entry-list-{row_id}", _PURCHASE_REFUSED,
-            )
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
-    def test_a_purchase_on_an_erased_one_off_names_it(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """Review 5's M3: a one-off envelope erased mid-purchase was a 500."""
-        with app.app_context():
-            envelope = _placed_one_off(
-                seed_user, seed_periods_today[3], name="Groceries",
-                amount="300.00", is_envelope=True,
-            )
-            row_id, user_id = envelope.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_and_read", row_id, user_id,
-            )
-
-            response = auth_client.post(
-                f"/transactions/{row_id}/entries?host=tp",
-                data=_a_purchase_form(),
-            )
-
-            assert fired == [row_id]
-            _is_the_banner_list(
-                response, f"entry-list-tp-{row_id}", _PURCHASE_REFUSED,
-            )
-            db.session.expire_all()
-            assert db.session.get(Transaction, row_id) is None
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=row_id,
-            ).count() == 0
 
 
 #: The five places a gone row is answered (review 6, M2): Mark Paid on the
@@ -1441,52 +1167,6 @@ class TestAnArchivedItemsRowSaysArchived:
             )
             _holds_nothing_and_locks_nothing(row_id, period, user_id)
 
-    def test_mark_paid_losing_to_the_archive_says_archived(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The archive commits after the door read Gym's row live, before its lock.
-
-        The refusal's re-read after its rollback is what names the row here
-        (``HiddenRow.of_reread``), so this grades that arm's archive reading.
-        """
-        with app.app_context():
-            period = seed_periods_today[3]
-            template, row = self._gym(seed_user, period)
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _lands_before_the_lock(
-                monkeypatch, "lock_row", row_id,
-                lambda: _archived_in_another_tab(app, template.id),
-            )
-
-            response = auth_client.post(f"/transactions/{row_id}/mark-done")
-
-            assert fired == [row_id]
-            _is_the_deleted_cell(response, _GYM_ARCHIVED["cell"], "Archived")
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
-    def test_a_purchase_losing_to_the_archive_says_archived(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The same race at add purchase: the banner alone, saying archived."""
-        with app.app_context():
-            period = seed_periods_today[3]
-            template, row = self._gym(seed_user, period)
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _lands_before_the_lock(
-                monkeypatch, "lock_and_read", row_id,
-                lambda: _archived_in_another_tab(app, template.id),
-            )
-
-            response = auth_client.post(
-                f"/transactions/{row_id}/entries", data=_a_purchase_form(),
-            )
-
-            assert fired == [row_id]
-            _is_the_banner_list(
-                response, f"entry-list-{row_id}", _GYM_ARCHIVED["list"],
-            )
-            _holds_nothing_and_locks_nothing(row_id, period, user_id)
-
     def test_the_settle_verb_says_archived(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
@@ -1664,35 +1344,6 @@ class TestTheHiddenRowsWordsFlushNothing:
 
 class TestTheOtherDoorsStillSayNotFound:
     """R-CC104 names three doors; every other door keeps R-CC89's bare answer."""
-
-    def test_mark_credit_racing_a_delete_is_not_found(
-        self, app, db, auth_client, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """Mark Credit on a $80.00 Phone deleted while it waited: bare "Not found".
-
-        Pins the blueprint's default answer for a gone row, which the helpers
-        that used to return it now hand up to.
-        """
-        with app.app_context():
-            _template, row = _occurrence(
-                seed_user, seed_periods_today[3], name="Phone",
-                amount="80.00", is_envelope=False,
-            )
-            row_id, user_id = row.id, seed_user["user"].id
-            fired = _delete_lands_before_the_lock(
-                monkeypatch, app, "lock_and_read", row_id, user_id,
-            )
-
-            response = auth_client.post(f"/transactions/{row_id}/mark-credit")
-
-            assert fired == [row_id]
-            assert (response.status_code, response.get_data()) == (
-                404, b"Not found",
-            )
-            assert "Shekel-Designed-Fragment" not in response.headers
-            assert db.session.query(Transaction).filter_by(
-                credit_payback_for_id=row_id,
-            ).count() == 0
 
     def test_a_live_row_the_door_refuses_is_never_called_deleted(
         self, app, db, companion_client, seed_user, seed_periods_today,

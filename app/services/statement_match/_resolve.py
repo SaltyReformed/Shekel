@@ -140,9 +140,10 @@ def locked_for_write(query):
     :func:`lock_lines` it is vacuous by construction -- that read selects
     the id column alone and hydrates no instance, so there is nothing for it
     to hand back stale -- and the doors' own reads, which are what hand a
-    row to a door, are where it acts.  The precedent one table over is
-    :func:`app.services.credit_workflow.lock_source_transaction_for_payback`,
-    for the same trap on ``status_id``.  Graded by
+    row to a door, are where it acts.  The precedent one table over was
+    ``credit_workflow.lock_source_transaction_for_payback``, for the same
+    trap on ``status_id``, until plan step ``balance:X-bn`` deleted it with
+    the transaction row locks it took.  Graded by
     ``tests/test_services/test_statement_match/test_locked_read_refresh.py``,
     which reproduced the stale read on the tree before this step: the skip
     landed on a line whose merchant now paid an account the owner holds, and

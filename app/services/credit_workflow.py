@@ -19,13 +19,13 @@ from app.services import (
     match_withdrawal,
     movement_removal,
     posting_service,
-    row_write_lock,
     status_seam,
 )
 from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
 )
+from app.services.owned_transaction import load_owned_transaction
 from app.services.pay_calendar import DerivedPeriod, FiledRow, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
@@ -42,110 +42,6 @@ logger = logging.getLogger(__name__)
 # The category used for auto-generated credit card payback expenses.
 CC_PAYBACK_GROUP = "Credit Card"
 CC_PAYBACK_ITEM = "Payback"
-
-
-def lock_source_transaction_for_payback(
-    transaction_id: int, owner_id: int,
-) -> Transaction:
-    """Acquire ``SELECT ... FOR NO KEY UPDATE`` on a source transaction.
-
-    Shared by :func:`mark_as_credit` and
-    :func:`entry_credit_workflow.sync_entry_payback` to bracket each
-    one's read-then-insert sequence with a row-level write lock, and
-    by :func:`app.services.entry_service.create_entry`, which takes it
-    FIRST (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC96**): a
-    purchase door that locks its row before any refusal reads it sees a
-    delete that won a race as committed, and refuses in words.  The lock
-    keywords are :data:`app.services.row_write_lock.WRITE_LOCK`, the one
-    statement of the strength every such door takes.
-    PostgreSQL serialises any concurrent ``FOR NO KEY UPDATE`` /
-    ``FOR UPDATE`` request on the same row, so two concurrent
-    payback-creating callers serialise instead of both falling
-    through their idempotency check and double-inserting.
-
-    **It locks FIRST and reads SECOND, in two statements** (plan step
-    ``credit_card:CC-5-4a-4``, ruling **R-CC99**), through
-    :func:`app.services.row_write_lock.lock_and_read`.  It was one locking
-    ``SELECT`` carrying the joined eager loads below until then, and after
-    waiting on a concurrent Mark Paid that statement handed back the Paid
-    row's ``status_id`` with ``status`` of ``None`` -- measured 2026-09-23;
-    ``lock_and_read``'s docstring has why -- so every caller reading
-    ``txn.status`` after the wait read nothing.  The three options below
-    are split between the two statements: the lock carries ``of=`` and
-    ``key_share``, the read ``populate_existing()``.  ``of=`` is kept although
-    the locking statement now joins nothing, so a join added to it later
-    cannot turn the lock into the ``FeatureNotSupported`` it guards against:
-
-      * ``of=Transaction`` -- ``Transaction.account``, ``.status``,
-        ``.category``, and ``.transaction_type`` are
-        ``lazy="joined"`` so the default query emits LEFT OUTER
-        JOINs.  PostgreSQL rejects ``FOR UPDATE`` whose target
-        spans the nullable side of an outer join
-        (``FeatureNotSupported``).  Restricting the lock to the
-        transactions table with ``OF`` keeps the syntax legal
-        while still locking the row we care about.
-
-      * ``key_share=True`` -- selects ``FOR NO KEY UPDATE`` rather
-        than the stricter ``FOR UPDATE``.  Both lock modes
-        serialise concurrent FOR-NO-KEY-UPDATE / FOR-UPDATE
-        requests on the same row, but FOR-NO-KEY-UPDATE does NOT
-        conflict with the FOR-KEY-SHARE locks PostgreSQL takes
-        automatically while validating an inbound foreign key
-        (e.g. the payback INSERT downstream of this call, or a
-        concurrent transaction_entries INSERT against the same
-        parent).  The stricter FOR UPDATE would deadlock with
-        those FK-validation locks under load.
-
-      * ``populate_existing()`` -- forces the read after the lock to
-        overwrite any cached attributes already in the session's
-        identity map.  Without it a serialised second request
-        would observe its own pre-lock cached attributes
-        (``status_id`` in particular) and skip the post-lock
-        idempotency short-circuit, falling through to a duplicate
-        INSERT that the partial unique index would only catch as
-        an ``IntegrityError``.
-
-    The lock is released at the next session ``commit()`` /
-    ``rollback()`` -- the caller's route handler always performs
-    one.  Audit reference: F-008 (High) / commit C-19.
-
-    **The ROW owner's write lock comes before the ownership check below**
-    (review 6, L8): ``lock_and_read`` takes the owner's write lock first
-    (ruling **R-CC100**), and the owner it reads is the row's, so a caller
-    passing another user's id would queue on that user's write lock, and
-    hold it until its transaction ends, before the ``owner_id`` comparison
-    refuses it.  No caller can today: each hands it a row already proved the
-    requester's -- a route's ownership door, the entry doors' own ownership
-    check ahead of their payback sync, or the statement matcher's
-    owner-scoped reads -- and a new caller must too.  Plan step
-    ``balance:X-bn`` moves the
-    owner's lock to the start of the request (ruling **R-CC106**), where it is
-    always the requester's owner, and the per-door lock here goes with it.
-
-    Args:
-        transaction_id: Primary key of the row to lock.
-        owner_id: Resolved owner user ID; the loaded txn's
-            pay-period user must match this so an attacker probing
-            for valid IDs cannot tell "row exists but belongs to
-            someone else" from "row does not exist."
-
-    Returns:
-        The locked Transaction with refreshed column attributes.
-
-    Raises:
-        NotFoundError: If the row does not exist or does not belong to
-            ``owner_id``.
-    """
-    txn = row_write_lock.lock_and_read(transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership on the row's own owner column
-    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
-    # Performed after the lock is acquired so an attacker probing for valid
-    # IDs cannot race the lock window to confirm existence.
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    return txn
 
 
 def get_active_payback(source_txn_id: int) -> Transaction | None:
@@ -347,41 +243,31 @@ def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
     Steps:
-      1. Acquire a row-level write lock on the source transaction
-         with ``SELECT ... FOR NO KEY UPDATE`` so two concurrent
-         POSTs serialise instead of both falling through the
-         idempotency check.
-      2. Verify ownership via the transaction's pay period.
-      3. Set the transaction's status to 'credit'.
-      4. Find or create the CC payback category.
-      5. Find the next pay period.
-      6. Create a payback expense in the next period linked to the original.
+      1. Load the source transaction, refusing it unless *user_id* owns it.
+      2. Set the transaction's status to 'credit'.
+      3. Find or create the CC payback category.
+      4. Find the next pay period.
+      5. Create a payback expense in the next period linked to the original.
 
-    Concurrency model: the row lock acquired in step 1 (``SELECT
-    ... FOR NO KEY UPDATE``) is held until the caller commits or
-    rolls back the SQLAlchemy session.  When a second request races
-    with the first, the second's locking SELECT blocks until the
-    first commits; PostgreSQL then returns the post-commit row to
-    the second request, whose idempotency check (status already
-    ``credit``, payback already exists) returns the existing
-    payback without inserting a duplicate.  ``FOR NO KEY UPDATE``
-    rather than the stricter ``FOR UPDATE`` is required so the
-    payback INSERT later in this function (which takes
-    ``FOR KEY SHARE`` on the source row to validate its FK) does
-    not deadlock with the lock acquired here -- see PostgreSQL's
-    row-lock conflict matrix.  ``budget.transactions`` carries
-    ``uq_transactions_credit_payback_unique`` as a database-level
-    backstop -- if any future caller reaches the INSERT without
-    this lock, the unique-index violation surfaces as an
-    ``IntegrityError`` that the route layer converts to idempotent
-    success.  Audit reference: F-008 (High) / commit C-19.
+    Concurrency model (plan step ``balance:X-bn``, ruling **R-CC106**): the
+    request's transaction took its owner's write lock before it read any of
+    the owner's data (:mod:`app.db_transaction`), so a second Mark Credit on
+    the same row -- a double click, or another tab -- waits for the first to
+    commit and then reads the row as Credit with its payback, and the
+    idempotency check below returns that payback without inserting a
+    duplicate.  Until that step this door took the row's own
+    ``FOR NO KEY UPDATE`` lock for the same serialisation (audit F-008 /
+    commit C-19).  ``budget.transactions`` carries
+    ``uq_transactions_credit_payback_unique`` as the database-level backstop
+    for a writer that holds no request: a duplicate payback surfaces as an
+    ``IntegrityError`` that the route layer converts to idempotent success.
 
     Args:
         transaction_id: The ID of the transaction to mark as credit.
         user_id: The ID of the user who owns the transaction.
-            Defense-in-depth: ownership is verified via the
-            transaction's pay period even if the caller already
-            checked at the route level.
+            Defense-in-depth: ownership is verified against the row's own
+            ``user_id`` column even if the caller already checked at the
+            route level.
 
     Returns:
         The newly created payback Transaction, or the existing
@@ -394,19 +280,18 @@ def mark_as_credit(transaction_id, user_id):
             is a transfer shadow, uses entry tracking, has a status
             other than projected, or has no following pay period.
     """
-    # See ``lock_source_transaction_for_payback`` for the full
-    # rationale behind FOR NO KEY UPDATE + populate_existing().
-    txn = lock_source_transaction_for_payback(transaction_id, user_id)
-    # **A row deleted while this waited is "not found"** (plan step
-    # ``credit_card:CC-5-4a-4``, ruling **R-CC99** (b), extending **R-CC89**:
-    # "the stale Mark Credit gets 'not found', exactly as for another user's
-    # row").  The route's ownership door answers a deleted row so, but it read
-    # the row before this lock; measured 2026-09-23, a Delete landing first
-    # left this door turning the hidden $80.00 Dinner Credit and creating a
-    # live $80.00 payback in the next period with no visible source.  Asked
-    # after the lock, which re-reads the row, so the delete has committed by
-    # now.  The route answers ``NotFoundError`` by re-fetching through that
-    # same door, which 404s the deleted row.
+    txn = load_owned_transaction(transaction_id, user_id)
+    # **A deleted row is "not found"** (plan step ``credit_card:CC-5-4a-4``,
+    # ruling **R-CC99** (b), extending **R-CC89**: "the stale Mark Credit gets
+    # 'not found', exactly as for another user's row").  The route's ownership
+    # door already answers a deleted row so, and since plan step
+    # ``balance:X-bn`` a Delete from another tab can no longer land between
+    # that door's read and this one: both run after the request's owner lock,
+    # and the Delete either committed before it or waits behind it.  Measured
+    # 2026-09-23, before either lock: a Delete landing between them left this
+    # door turning the hidden $80.00 Dinner Credit and creating a live $80.00
+    # payback in the next period with no visible source.  Kept for a service
+    # caller that skips the route's door.
     if txn.is_deleted:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     if txn.is_income:
@@ -565,13 +450,8 @@ def unmark_credit(transaction_id, user_id):
             case the bespoke guard is bypassed) is not allowed by
             the state machine.
     """
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership on the row's own owner column
-    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
-    if txn.user_id != user_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # Defense-in-depth: ownership on the row's own owner column.
+    txn = load_owned_transaction(transaction_id, user_id)
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
