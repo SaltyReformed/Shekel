@@ -427,17 +427,23 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     caller that reaches it built the move by hand, and the recovery page
     that error reaches is the loud answer for that.
 
-    **What it does NOT hold, stated rather than fenced** (review 4 of C18-b).
-    The UPDATE is keyed on the phase the door read, and nothing checks that
-    it moved a row.  Every era writer takes the per-user lock the door read
-    under, except the two ledger row **P71** records (the first-schedule
-    generate route and registration).  A first-schedule generate that read
-    an empty record before a first schedule committed, and retires every era
-    after this door's read, would leave the UPDATE matching nothing: the
-    earlier door's paydays below an unmoved phase -- the state ruling
-    R-PC105 exists to prevent -- or the removal's record above one, a legal
-    shape that has lost only R-PC110's "since".  The root is P71's missing
-    lock, and a row count here would route around it rather than close it.
+    **What it does NOT check, and why nothing needs to** (review 4 of C18-b;
+    plan step ``balance:X-bn``).  The UPDATE is keyed on the phase the door
+    read, and nothing checks that it moved a row, because no other write can
+    move that phase in between: every era writer runs in a signed-in
+    request's command transaction, which takes the owner's write lock before
+    it reads any of the owner's data (:mod:`app.db_transaction`) -- the
+    first-schedule generate route included, which ledger row **P71** recorded
+    as taking none -- or in ``registration_service.register_user``'s (from
+    ``/register`` and ``scripts/seed_user.py``), whose new user no other
+    transaction can see until it commits.  *Until that step a first-schedule
+    generate that read an empty record before a first schedule committed,
+    and retired every era after this door's read, would have left the UPDATE
+    matching nothing: the earlier door's paydays below an unmoved phase --
+    the state ruling R-PC105 exists to prevent -- or the removal's record
+    above one, a legal shape that has lost only R-PC110's "since".  The root
+    was P71's missing lock, and a row count here would have routed around it
+    rather than closed it.*
 
     Args:
         user_id: The owning user's id.  They hold at least one era -- the

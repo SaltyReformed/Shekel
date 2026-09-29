@@ -44,8 +44,10 @@ the point.**  Measured statement by statement, each in its own transaction:
 ``pg_advisory_xact_lock`` SUCCEEDS inside a read-only transaction and assigns no
 transaction id, while every row-lock strength is refused -- ``FOR UPDATE``,
 ``FOR SHARE``, ``FOR NO KEY UPDATE`` and ``FOR KEY SHARE`` all raise ``cannot
-execute ... in a read-only transaction``, which covers
-``credit_workflow``'s ``with_for_update(key_share=True)``.
+execute ... in a read-only transaction``, which covers the bank-line lock
+``statement_match._resolve`` takes with ``with_for_update(key_share=True)``.
+*The example here was ``credit_workflow``'s C-19 payback lock, the same
+strength, until plan step ``balance:X-bn`` deleted it.*
 
 So the gap is advisory locks alone: a render that took the owner's write lock
 would block every writer for that owner for the length of the page and then

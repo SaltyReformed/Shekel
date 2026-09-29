@@ -503,7 +503,7 @@ def get_accessible_transaction(txn_id):
     a missing PK emits ``resource_not_found`` at INFO; an ownership or
     companion-visibility denial emits ``access_denied_cross_user`` at
     WARNING.  The requesting user's id is read through
-    :func:`_safe_user_id` and the role / linked-owner reads use
+    :func:`_safe_user_id` and the role / data-owner reads use
     ``getattr`` fallbacks, so an anonymous or misordered-decorator call
     denies-and-logs (``user_id`` ``None`` => "anonymous probe") rather
     than raising ``AttributeError`` -- exactly like the sibling helpers.
@@ -569,12 +569,18 @@ def get_accessible_transaction_or_deleted(txn_id):
         return None
     requester_id = _safe_user_id()
     owner_id = txn.user_id
+    # Whose data the requester acts on, read ONCE for both branches off the one
+    # statement of that rule, :attr:`app.models.user.User.data_owner_id` (plan
+    # step ``balance:X-bn``): an owner's own id, a companion's linked owner.
+    # The ``getattr`` is for the anonymous principal alone, which has no such
+    # attribute and reads ``None`` -- never a row's owner, since
+    # ``transactions.user_id`` is NOT NULL -- so both branches refuse it.
+    acts_on = getattr(current_user, "data_owner_id", None)
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
     if getattr(current_user, "role_id", None) == companion_role_id:
         # Companion path: linked owner's data + companion-visible
         # (resolved from the template, or the row's own flag for ad-hoc).
-        if (owner_id != getattr(current_user, "linked_owner_id", None)
-                or not txn.visible_to_companion):
+        if owner_id != acts_on or not txn.visible_to_companion:
             log_event(
                 logger, logging.WARNING,
                 EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
@@ -587,8 +593,8 @@ def get_accessible_transaction_or_deleted(txn_id):
             )
             return None
     else:
-        # Owner path: standard pay-period ownership check.
-        if owner_id != requester_id:
+        # Owner path: the owner's own data.
+        if owner_id != acts_on:
             log_event(
                 logger, logging.WARNING,
                 EVT_ACCESS_DENIED_CROSS_USER, ACCESS,

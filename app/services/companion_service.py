@@ -104,7 +104,7 @@ def _validate_companion(user_id: int) -> User:
     if user.role_id != companion_role_id:
         raise NotFoundError("User is not a companion.")
 
-    if user.linked_owner_id is None:
+    if user.data_owner_id is None:
         raise NotFoundError(
             f"Companion user {user_id} has no linked owner. "
             "This is a data integrity issue -- contact the administrator."
@@ -185,7 +185,7 @@ def get_visible_transactions(
             :func:`~app.services.pay_calendar.calendar_for` gives.
     """
     user = _validate_companion(companion_user_id)
-    owner_id = user.linked_owner_id
+    owner_id = user.data_owner_id
     calendar = calendar_for(owner_id)
 
     if period_id is None:

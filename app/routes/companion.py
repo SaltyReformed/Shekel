@@ -110,7 +110,7 @@ def _build_partial_context(
         the companion has none (plan step ``credit_card:CC-4-2``).
     """
     transactions = view.transactions
-    owner_id = current_user.linked_owner_id
+    owner_id = current_user.data_owner_id
     all_categories = (
         db.session.query(Category)
         .filter_by(user_id=owner_id)

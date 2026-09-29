@@ -353,11 +353,17 @@ def mark_as_credit(transaction_id, user_id):
     # second read of a span the derivation on this line already holds.
     #
     # **The READ ORDER, stated because ``require_period`` requires every caller
-    # to state its own**: the ROW is read first, the paydays second, so a
-    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
-    # -- committing between them raises rather than answering off a stale
-    # picture.  That is balance finding **N-358**, whose remedy is
-    # `balance:X-i5`.
+    # to state its own**: the ROW is read first, the paydays second, and since
+    # plan step ``balance:X-bn`` no DESTRUCTIVE pay-period door -- reset,
+    # regenerate, truncate or remove-earlier -- can commit between them.  Each
+    # is reached only from a route, so its request takes the owner's write lock
+    # before it reads any of the owner's data, and this door's request took
+    # that lock before it read the row: such a door committed before both
+    # reads or waits for this one.
+    # *Until that step the order decided how this door lost the race: a door
+    # committing between the reads raised here rather than answering off a
+    # stale picture (balance finding **N-358**, whose remedy is
+    # ``balance:X-i5``).*
     calendar = calendar_for(user_id)
     next_period = calendar.period_starting_after(
         calendar.require_period(FiledRow.for_row(txn)).start_date,
