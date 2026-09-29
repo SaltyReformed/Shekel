@@ -9551,3 +9551,63 @@ class TestTheLoanPageNamesAPaymentByItsInstallment:
             ("Feb 2026", 200000.0), ("Mar 2026", 199600.8),
             ("Apr 2026", 199399.7),
         ]
+
+
+class TestTheLoanChartKeepsTheMonthsRecordedBeforeATrackingStart:
+    """Ruling R-R113 on the loan chart: a statement added after payments starts nothing.
+
+    Ruling R-R113's example: $20,000.00 at 6% for 24 months, kept in the app
+    from 2025-12-22, due the 22nd, $2,000.00 paid on Jan 22, Feb 22 and Mar 22
+    2026, then a tracking start added on 2026-04-01 at $15,000.00.  Payments
+    were recorded before the statement, so the loan's record starts at its
+    origination and the chart's grid runs from the first installment after it
+    (Jan 22).  As built before R-R113 the record started Apr 1 and the grid
+    dropped Jan-Mar, opening at Apr 22.  The seam's figures for those months
+    are pinned in ``test_balance_at.py``
+    (``TestAPaymentRecordedBeforeTheTrackingStartStartsTheRecordAtOrigination``).
+    """
+
+    def test_the_grid_opens_at_the_first_installment_after_origination(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The band's first four points are Jan 22, Feb 22, Mar 22 and Apr 22 2026."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            freeze_today,
+            insert_tracking_start_event,
+            loan_params_for,
+        )
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Kept in the app",
+                principal=Decimal("20000.00"), rate=Decimal("0.06000"), term=24,
+                origination_date=date(2025, 12, 22), payment_day=22,
+            )
+            db.session.commit()
+            for period_index, paid_on in (
+                (1, date(2026, 1, 22)), (3, date(2026, 2, 22)),
+                (5, date(2026, 3, 22)),
+            ):
+                create_settled_transfer(
+                    seed_user, db.session, seed_user["account"], loan,
+                    seed_periods[period_index], amount=Decimal("2000.00"),
+                    settled_on=paid_on, due_date=paid_on,
+                )
+            db.session.commit()
+            insert_tracking_start_event(
+                loan_params_for(db.session, loan.id), Decimal("15000.00"),
+                date(2026, 4, 1),
+            )
+            db.session.commit()
+
+            _ctx, _scenarios, dates = TestBandChartLongestBaseline._band_inputs(
+                seed_user, loan,
+            )
+
+            assert dates[:4] == [
+                date(2026, 1, 22), date(2026, 2, 22), date(2026, 3, 22),
+                date(2026, 4, 22),
+            ]

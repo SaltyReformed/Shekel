@@ -6944,3 +6944,198 @@ class TestThePreTrackingEstimateReadsTheRecordedStart:
             )
             assert resolved.recorded_start == date(2026, 1, 22)
             assert _back_projection_by_month(resolved) == {}
+
+
+class TestAPaymentRecordedBeforeTheTrackingStartStartsTheRecordAtOrigination:
+    """Ruling R-R113: a tracking start recorded AFTER payments corrects, it does not start.
+
+    The dashboard lets an owner add a tracking-start statement to a loan kept
+    in the app from its origination, after payments are already recorded.
+    Ruling R-R111's "Read the start" assumed a tracking start means a loan
+    imported mid-life; R-R113 ("Earlier record wins") amends it: the record
+    starts at the ORIGINATION when any payment was recorded before the
+    tracking start, and the statement then only corrects the balance, like a
+    true-up.  A tracking start with nothing recorded before it -- a real
+    mid-life import -- still starts the record (the class above).
+
+    "Recorded before" is a payment whose cash moved strictly before the
+    tracking date (``PaymentDates.settled_on``, the ledger's own visible day):
+    a payment settled ON the tracking day walks before the statement that day
+    but leaves no recorded history in any earlier month, and one settled
+    before the tracking date counts whatever installment it is due for.
+
+    Ruling R-R113's own example, hand-checked: $20,000.00 at 6% a year for 24
+    months, kept in the app from 2025-12-22, due the 22nd, $2,000.00 paid on
+    Jan 22, Feb 22 and Mar 22 2026.  Each month charges the balance times
+    0.005, rounded to the cent: 20,000.00 + 100.00 - 2,000.00 = $18,100.00;
+    18,100.00 + 90.50 - 2,000.00 = $16,190.50; 16,190.50 + 80.95 - 2,000.00 =
+    $14,271.45.  A tracking start on 2026-04-01 at $15,000.00 then corrects
+    the balance.  As built before R-R113 the record started Apr 1, so Jan-Mar
+    read the contractual estimate instead ($19,213.59 / $18,423.25 /
+    $17,628.96: the 24-month level payment $886.41 from $20,000.00).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the tracking start (the seed periods run through 2026-05)."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import freeze_today
+        freeze_today(monkeypatch, date(2026, 4, 20))
+
+    @staticmethod
+    def _loan(db, seed_user, seed_periods, payments, tracked_from):
+        """Ruling R-R113's loan, its payments ``[(period index, settled, due)]`` and its statement.
+
+        The payments are recorded BEFORE the tracking start is added, the order
+        the dashboard allows; the statement is $15,000.00.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            insert_tracking_start_event,
+            loan_params_for,
+        )
+        loan = create_loan_account(
+            seed_user, db.session, name="Kept in the app",
+            principal=Decimal("20000.00"), rate=Decimal("0.06000"), term=24,
+            origination_date=date(2025, 12, 22), payment_day=22,
+        )
+        db.session.commit()
+        for period_index, settled_on, due_date in payments:
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[period_index], amount=Decimal("2000.00"),
+                settled_on=settled_on, due_date=due_date,
+            )
+        db.session.commit()
+        insert_tracking_start_event(
+            loan_params_for(db.session, loan.id), Decimal("15000.00"),
+            tracked_from,
+        )
+        db.session.commit()
+        return loan
+
+    def test_the_ledger_keeps_the_months_before_the_statement(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The record starts at 2025-12-22; Jan-Mar read the ledger, April the statement."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        with app.app_context():
+            loan = self._loan(
+                db, seed_user, seed_periods,
+                [
+                    (1, date(2026, 1, 22), date(2026, 1, 22)),
+                    (3, date(2026, 2, 22), date(2026, 2, 22)),
+                    (5, date(2026, 3, 22), date(2026, 3, 22)),
+                ],
+                date(2026, 4, 1),
+            )
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            assert resolved_loan(loan, bctx).recorded_start == date(2025, 12, 22)
+            assert _back_projection_by_month(resolved_loan(loan, bctx)) == {}
+            assert [
+                liability_sign.owed(balance_at.balance_at(loan, bctx, day))
+                for day in (
+                    date(2026, 1, 31), date(2026, 2, 28), date(2026, 3, 31),
+                    date(2026, 4, 20),
+                )
+            ] == [
+                Decimal("18100.00"), Decimal("16190.50"), Decimal("14271.45"),
+                Decimal("15000.00"),
+            ]
+
+    @pytest.mark.parametrize(
+        ("settled_on", "due_date", "expected_start"),
+        [
+            # The day before the statement: recorded before it.
+            (date(2026, 3, 21), date(2026, 3, 22), date(2025, 12, 22)),
+            # The statement's own day: no earlier month holds it.
+            (date(2026, 3, 22), date(2026, 3, 22), date(2026, 3, 22)),
+            # Cash moved before the statement for an installment due after it.
+            (date(2026, 3, 20), date(2026, 4, 22), date(2025, 12, 22)),
+        ],
+        ids=["day-before", "same-day", "paid-before-due-after"],
+    )
+    def test_the_cash_day_strictly_before_the_statement_decides(
+        self, app, db, seed_user, seed_periods, settled_on, due_date,
+        expected_start,
+    ):
+        """One $2,000.00 payment around a 2026-03-22 statement: its CASH day decides."""
+        with app.app_context():
+            loan = self._loan(
+                db, seed_user, seed_periods, [(5, settled_on, due_date)],
+                date(2026, 3, 22),
+            )
+
+            assert resolved_loan(
+                loan, BalanceContext.build(seed_user["user"].id),
+            ).recorded_start == expected_start
+
+    def test_an_unsettled_payment_before_the_statement_does_not_count(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A projected $2,000.00 payment due Feb 22 moved no cash: the Mar 22 statement starts."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_transfer
+        with app.app_context():
+            loan = self._loan(db, seed_user, seed_periods, [], date(2026, 3, 22))
+            create_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[3], amount=Decimal("2000.00"),
+                due_date=date(2026, 2, 22),
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(loan, BalanceContext.build(seed_user["user"].id))
+
+            assert [
+                payment.dates.settled_on for payment in resolved.context.payments
+            ] == [None], "precondition: the feed carries the unsettled payment"
+            assert resolved.recorded_start == date(2026, 3, 22)
+
+    def test_the_property_chart_reads_the_ledger_not_the_estimate(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The loan's debt line holds Jan-Mar at the ledger's figures, tiered confirmed.
+
+        As built before ruling R-R113 the months before the Apr 1 statement
+        were the contractual estimate: $19,213.59 / $18,423.25 / $17,628.96,
+        tiered ``estimated`` (+$3,357.51 in March against the ledger).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import property_equity_chart
+        from tests._test_helpers import create_account_of_type
+        with app.app_context():
+            loan = self._loan(
+                db, seed_user, seed_periods,
+                [
+                    (1, date(2026, 1, 22), date(2026, 1, 22)),
+                    (3, date(2026, 2, 22), date(2026, 2, 22)),
+                    (5, date(2026, 3, 22), date(2026, 3, 22)),
+                ],
+                date(2026, 4, 1),
+            )
+            house = create_account_of_type(
+                seed_user, db.session, AcctTypeEnum.PROPERTY.value, "House",
+                anchor_balance=Decimal("400000.00"),
+            )
+            db.session.flush()
+            loan.collateral_account_id = house.id
+            db.session.commit()
+
+            (series,) = balance_at.secured_loan_series(
+                house, BalanceContext.build(seed_user["user"].id),
+            )
+
+            confirmed = property_equity_chart.TIER_CONFIRMED
+            assert [
+                series.month_balances[month]
+                for month in ((2026, 1), (2026, 2), (2026, 3))
+            ] == [
+                (Decimal("18100.00"), confirmed),
+                (Decimal("16190.50"), confirmed),
+                (Decimal("14271.45"), confirmed),
+            ]
