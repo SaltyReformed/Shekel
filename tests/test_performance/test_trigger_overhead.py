@@ -15,10 +15,14 @@ with no change to the trigger (finding **recurrence:REC-533**).
 graded, because an exception is deterministic, and this directory has already
 rotted unseen once: its tests errored at setup from 2026-05-20 to 2026-08-28
 while nothing ran them.  So does one that HANGS: the suite's per-test timeout
-(``pytest.ini``, 50 s) still applies (**R-BAL153**).  Measured 2026-09-25 on a
-busy dev box: the whole report takes about 10 s, and with the trigger slowed to
-about 1 ms per row (some 25-35 times today's cost) it still finished in 18 s,
-so the timeout trips only on a hang or a trigger far slower than that.
+(``pytest.ini``, 50 s) still applies (**R-BAL153**).  The whole report, all
+five tests, took 10.5-13.0 s over the five runs on a busy dev box that the
+2026-09-25 block in :mod:`tests._audit_trigger_workloads` records, in which
+the trigger cost under 0.26 ms a row on every workload.  With a ``pg_sleep``
+added to the trigger function, under which the trigger cost 1.1-1.4 ms a row,
+the whole report still finished in 17.5-20.9 s in every round of this step's
+mutation proofs (2026-09-25 and 2026-09-29), so no one test came near 50 s.
+The timeout trips only on a hang or a trigger far slower than that.
 
 The figures print on a PASSING run, through ``capsys.disabled()``, while the
 app's own logs stay captured.  The directory is excluded from the default
@@ -32,7 +36,7 @@ import time
 import pytest
 
 from app.extensions import db as _db
-from tests._audit_trigger_workloads import WORKLOADS
+from tests._audit_trigger_workloads import WORKLOADS, audit_triggers_off
 
 # Number of timing iterations for more stable measurements.
 ITERATIONS = 15
@@ -81,34 +85,15 @@ def _paired_overhead(sample):
 
     with_ms, without_ms, ratios = [], [], []
     for _ in range(ITERATIONS):
-        _enable_triggers()
         timed_with = sample()
-
-        _disable_triggers()
-        try:
+        with audit_triggers_off():
             timed_without = sample()
-        finally:
-            _enable_triggers()
 
         with_ms.append(timed_with)
         without_ms.append(timed_without)
         ratios.append(((timed_with - timed_without) / timed_without) * 100)
 
     return _median(ratios), _median(with_ms), _median(without_ms)
-
-
-def _disable_triggers():
-    """Disable audit triggers on budget.transactions."""
-    _db.session.execute(
-        _db.text("ALTER TABLE budget.transactions DISABLE TRIGGER audit_transactions")
-    )
-
-
-def _enable_triggers():
-    """Re-enable audit triggers on budget.transactions."""
-    _db.session.execute(
-        _db.text("ALTER TABLE budget.transactions ENABLE TRIGGER audit_transactions")
-    )
 
 
 def _report(capsys, label, overhead_pct, time_with, time_without):

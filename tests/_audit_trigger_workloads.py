@@ -29,11 +29,12 @@ pass over an unchanged template wrote nothing at all; ``update`` re-wrote the
 note its first run had already written, which the trigger's no-op guard
 answers with no audit row.  Both were timed and printed as the trigger's
 overhead while the trigger wrote nothing, and a count over either would have
-passed with a trigger that writes no audit row at all.  :class:`Regenerate` now renames its
-template before each pass and :class:`Update` alternates between two notes, and
-the gate runs every workload twice to hold that.
+passed with a trigger that writes no audit row at all.  :class:`Regenerate`
+now renames its template before each pass and :class:`Update` alternates
+between two notes, and the gate runs every workload twice to hold that.
 """
 import abc
+import contextlib
 import hashlib
 from datetime import timedelta
 from decimal import Decimal
@@ -470,23 +471,61 @@ WORKLOADS = (Generate, Regenerate, Insert, Update, Delete)
 # The cost surface, and the one the timings were measured against
 # ---------------------------------------------------------------------------
 
+#: The triggers that audit ``budget.transactions``: every trigger on it that
+#: calls the audit function, whatever its name or events.  The pin reads them
+#: and the report switches them off (:func:`audit_triggers_off`), so both mean
+#: the same triggers.
+_AUDIT_ATTACHMENTS = (
+    "FROM pg_trigger WHERE tgrelid = 'budget.transactions'::regclass "
+    "AND tgfoid = 'system.audit_trigger_func()'::regprocedure"
+)
+
 #: The catalogue reads whose answers decide what ONE audited write on
 #: ``budget.transactions`` costs (**R-BAL149**): the trigger function's whole
 #: definition (its body, and the attributes a body cannot show -- ``SECURITY
-#: DEFINER``, a ``SET`` clause, volatility); EVERY trigger on the table the
-#: report times that calls it, whatever its name or events, and whether each
-#: is enabled; the columns of that table, because the function copies the
-#: whole row into the audit log twice over (``to_jsonb``) and walks it key by
-#: key, so a wider row is a heavier write (the developer's answer after this
-#: step's second review: 12 added text columns took an insert's audit data
-#: from 668 to 1,284 bytes with the pin unmoved); and ``system.audit_log`` as
-#: the function's INSERT meets it -- the relation's kind, persistence, storage
-#: options and row security, every column's type, storage, compression,
-#: collation and default, and its indexes, constraints, triggers, rules,
-#: policies and id sequence.  An index added to the audit log is one more index
-#: insert on every audited write in the application, with the function's text
-#: unchanged.  NOT read: the server's settings and publications, which are the
-#: cluster's rather than the trigger's.  Each read returns text lines in a
+#: DEFINER``, a ``SET`` clause, volatility); :data:`_AUDIT_ATTACHMENTS`, and
+#: whether each is enabled; that table's columns (name, type, storage,
+#: compression) and its ``toast_tuple_target``, because the function copies the
+#: whole row into the audit log (``to_jsonb`` of the new row on an insert, of
+#: the old on a delete, of both on an update, which it also walks key by key),
+#: so a wider row is a heavier write (the developer's answer after this
+#: step's second review, **R-BAL154**: 12 added text columns took an insert's
+#: audit data from 668 to 1,284 bytes with the pin unmoved), and
+#: ``toast_tuple_target`` decides when the row's values are stored compressed
+#: or out of line, which the function must then expand; and
+#: ``system.audit_log`` as the function's INSERT meets it -- the relation's
+#: kind, persistence, ``fillfactor`` and ``toast_tuple_target``, row security
+#: and access method, every column's type, storage, compression, collation and
+#: default, its indexes and constraints, its id sequence and that sequence's
+#: persistence, and its triggers, rules and row-security policies, with
+#: whether each trigger and rule is enabled and whom each policy applies to.
+#: An index added to the audit log is one more index insert on every audited
+#: write in the application, with the function's text unchanged.
+#:
+#: NOT read, and why.  Outside both tables: the server's settings,
+#: tablespaces and roles, and the database's publications -- so neither the
+#: tablespace either table or its indexes is stored in, nor the role the
+#: application writes as and whether row security binds it, which
+#: ``system.audit_log``'s owner also decides (an owner bypasses row security
+#: unless it is forced).  The report runs as the test cluster's superuser,
+#: which row security never binds, so a changed ``system.audit_log`` policy
+#: moves the pin but a re-measure here cannot see what it costs production.
+#: What costs the write in both of the report's arms alike, or costs no write
+#: at all: ``budget.transactions``' indexes, constraints, rules (one can add
+#: a statement or suppress the write, not widen the row), policies, AFTER
+#: triggers other than the audit ones, replica identity and every storage
+#: option but ``toast_tuple_target``; ``system.audit_log``'s replica identity
+#: (the function only inserts into it), every storage option but the two
+#: above (autovacuum's, for one; ``user_catalog_table`` costs an insert only
+#: under ``wal_level = logical``, which neither this repository nor the
+#: production compose files set) and its TOAST table's options.  What fills
+#: ``budget.transactions``' row: its column defaults and generation
+#: expressions and its BEFORE triggers other than the audit ones.  Any of
+#: them that writes a wider value makes every audited row it fills
+#: heavier, but R-BAL154 pins the columns' names, types and storage, and most
+#: such changes (a new default status, say) widen nothing.  And should
+#: ``system.audit_log`` become partitioned, a change that moves the pin, what
+#: is set on its partitions afterwards.  Each read returns text lines in a
 #: fixed order.
 _COST_SURFACE_QUERIES = (
     (
@@ -496,8 +535,7 @@ _COST_SURFACE_QUERIES = (
     (
         "every trigger calling it on budget.transactions, and whether each is enabled",
         "SELECT concat_ws(' ', pg_get_triggerdef(oid), 'enabled', tgenabled::text) "
-        "FROM pg_trigger WHERE tgrelid = 'budget.transactions'::regclass "
-        "AND tgfoid = 'system.audit_trigger_func()'::regprocedure ORDER BY 1",
+        f"{_AUDIT_ATTACHMENTS} ORDER BY 1",
     ),
     (
         "budget.transactions columns (the row the function copies whole)",
@@ -507,10 +545,22 @@ _COST_SURFACE_QUERIES = (
         "AND NOT attisdropped ORDER BY attnum",
     ),
     (
-        "system.audit_log: kind, persistence, storage options, row security",
-        "SELECT concat_ws(' ', relkind, relpersistence, reloptions::text, "
-        "relrowsecurity, relforcerowsecurity) FROM pg_class "
-        "WHERE oid = 'system.audit_log'::regclass",
+        "budget.transactions toast_tuple_target",
+        "SELECT concat_ws(' ', 'toast_tuple_target', "
+        "(SELECT option_value FROM pg_options_to_table(c.reloptions) "
+        "WHERE option_name = 'toast_tuple_target')) "
+        "FROM pg_class AS c WHERE c.oid = 'budget.transactions'::regclass",
+    ),
+    (
+        "system.audit_log: kind, persistence, fillfactor and toast_tuple_target, "
+        "row security, access method",
+        "SELECT concat_ws(' ', c.relkind, c.relpersistence, "
+        "(SELECT string_agg(option_name || '=' || option_value, ',' "
+        "ORDER BY option_name) FROM pg_options_to_table(c.reloptions) "
+        "WHERE option_name IN ('fillfactor', 'toast_tuple_target')), "
+        "c.relrowsecurity, c.relforcerowsecurity, am.amname) FROM pg_class AS c "
+        "LEFT JOIN pg_am AS am ON am.oid = c.relam "
+        "WHERE c.oid = 'system.audit_log'::regclass",
     ),
     (
         "system.audit_log columns",
@@ -533,27 +583,31 @@ _COST_SURFACE_QUERIES = (
         "WHERE conrelid = 'system.audit_log'::regclass ORDER BY 1",
     ),
     (
-        "system.audit_log triggers",
-        "SELECT pg_get_triggerdef(oid) FROM pg_trigger "
+        "system.audit_log triggers, and whether each is enabled",
+        "SELECT concat_ws(' ', pg_get_triggerdef(oid), 'enabled', tgenabled::text) "
+        "FROM pg_trigger "
         "WHERE tgrelid = 'system.audit_log'::regclass AND NOT tgisinternal "
         "ORDER BY 1",
     ),
     (
-        "system.audit_log rules",
-        "SELECT pg_get_ruledef(oid) FROM pg_rewrite "
+        "system.audit_log rules, and whether each is enabled",
+        "SELECT concat_ws(' ', pg_get_ruledef(oid), 'enabled', ev_enabled::text) "
+        "FROM pg_rewrite "
         "WHERE ev_class = 'system.audit_log'::regclass ORDER BY 1",
     ),
     (
-        "system.audit_log row-security policies",
+        "system.audit_log row-security policies, and whom each applies to",
         "SELECT concat_ws(' ', polname, polcmd, polpermissive, "
+        "polroles::regrole[]::text, "
         "pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid)) "
         "FROM pg_policy WHERE polrelid = 'system.audit_log'::regclass ORDER BY 1",
     ),
     (
-        "system.audit_log's id sequence",
-        "SELECT concat_ws(' ', seqtypid::regtype, seqstart, seqincrement, seqmax, "
-        "seqmin, seqcache, seqcycle) FROM pg_sequence "
-        "WHERE seqrelid = pg_get_serial_sequence('system.audit_log', 'id')::regclass",
+        "system.audit_log's id sequence, and its persistence",
+        "SELECT concat_ws(' ', s.seqtypid::regtype, s.seqstart, s.seqincrement, "
+        "s.seqmax, s.seqmin, s.seqcache, s.seqcycle, c.relpersistence) "
+        "FROM pg_sequence AS s JOIN pg_class AS c ON c.oid = s.seqrelid "
+        "WHERE s.seqrelid = pg_get_serial_sequence('system.audit_log', 'id')::regclass",
     ),
 )
 
@@ -561,9 +615,9 @@ _COST_SURFACE_QUERIES = (
 def cost_surface():
     """Return the audit trigger's cost surface, read from the live database.
 
-    Read from the test database's catalogue, so what a MIGRATION adds to
-    ``system.audit_log`` or ``budget.transactions`` -- a column, an index, a
-    constraint, a rule, a policy, its storage -- is in it.  **What
+    Read from the test database's catalogue, so a MIGRATION's change to what
+    :data:`_COST_SURFACE_QUERIES` reads is in it (that constant says what it
+    reads and what it does not), with one exception.  **What
     ``app.audit_infrastructure`` re-applies is the MODULE's, not a
     migration's**: the test template's build runs it after ``alembic upgrade``
     (``scripts/build_test_template.py``), so the trigger FUNCTION, its
@@ -600,6 +654,64 @@ def fingerprint_of(surface):
     return hashlib.sha256(surface.encode("utf-8")).hexdigest()
 
 
+#: The ``ALTER TABLE`` action that puts a trigger back in each
+#: ``pg_trigger.tgenabled`` state PostgreSQL has.
+_TRIGGER_STATE_ACTION = {
+    "O": "ENABLE",
+    "D": "DISABLE",
+    "R": "ENABLE REPLICA",
+    "A": "ENABLE ALWAYS",
+}
+
+#: The ``tgenabled`` states whose trigger fires in a session whose
+#: ``session_replication_role`` is ``origin``, as this suite's sessions are.
+_FIRES_IN_AN_ORIGIN_SESSION = ("O", "A")
+
+
+@contextlib.contextmanager
+def audit_triggers_off():
+    """Switch off every trigger :data:`_AUDIT_ATTACHMENTS` names, then restore each.
+
+    The report's without-trigger arm runs inside this, so it switches off
+    exactly the triggers the pin reads: a second trigger calling the function
+    is off in that arm too, rather than inflating the base the overhead is
+    measured against.  On the way out each trigger goes back to the state the
+    schema gave it, so the with-trigger arm times the triggers as the pin
+    records them, a disabled one included.  Nothing is committed here.  On an
+    exception nothing is restored either: the test fails, and its database is
+    a clone of its own that is thrown away.
+
+    Raises:
+        LookupError: When no trigger on ``budget.transactions`` that calls
+            the function fires in an origin session -- none exists, or each
+            is disabled or replica-only -- because the two arms would then
+            time the same unaudited write.  An attachment that fires, but not
+            on a workload's operation (its events, an ``UPDATE OF`` list, a
+            ``WHEN`` clause, statement level), is not refused here: the
+            gate's count fails it.
+    """
+    states = db.session.execute(
+        db.text(f"SELECT quote_ident(tgname), tgenabled::text {_AUDIT_ATTACHMENTS} ORDER BY 1")
+    ).all()
+    if not any(state in _FIRES_IN_AN_ORIGIN_SESSION for _, state in states):
+        raise LookupError(
+            "no trigger on budget.transactions that calls "
+            f"system.audit_trigger_func() fires in an origin session: {states}"
+        )
+    for name, _ in states:
+        db.session.execute(
+            db.text(f"ALTER TABLE budget.transactions DISABLE TRIGGER {name}")
+        )
+    yield
+    for name, state in states:
+        db.session.execute(
+            db.text(
+                f"ALTER TABLE budget.transactions {_TRIGGER_STATE_ACTION[state]} "
+                f"TRIGGER {name}"
+            )
+        )
+
+
 # The audit trigger's measured overhead, one dated block per measurement, on
 # the dev box (PostgreSQL in docker) through the report's paired harness,
 # serially.  This table and the pin below are ONE record: a change to the
@@ -623,11 +735,13 @@ def fingerprint_of(surface):
 #   delete     21.3 -  25.4 %      base  5.5-5.7 ms
 #
 # **The regenerate and update figures above time a trigger that wrote NO
-# audit row** (R-BAL150): regenerate's pass changed nothing, and every update
-# sample after the first re-wrote the value the first had written (the amount
-# on 2026-08-28, the note on 2026-09-18).  They are the cost
-# of firing the trigger and computing a row's changed fields, not of auditing
-# a change, and they do not compare with the block below.
+# audit row** (R-BAL150), and they do not compare with the block below.
+# Regenerate's pass changed nothing, so it issued no UPDATE and the trigger
+# never fired at all: its range is noise around zero.  Every update sample
+# after the first re-wrote the value the first had written (the amount on
+# 2026-08-28, the note on 2026-09-18), so the trigger fired on every row and
+# wrote nothing: the cost of firing it and computing a row's changed fields,
+# not of auditing a change.
 #
 # 2026-09-25, FIVE runs on a BUSY machine (load average 22-23, another
 # session's pytest live during all five), PostgreSQL 18.6 (the test image), on
@@ -642,8 +756,9 @@ def fingerprint_of(surface):
 
 #: :func:`fingerprint_of` the :func:`cost_surface` of the database the
 #: 2026-09-25 block above was measured on, the test image (PostgreSQL 18.6).
-#: The reader was widened twice after that measurement, by this step's reviews;
-#: the database it reads did not change.  A PostgreSQL upgrade that re-renders
-#: the catalogue's text moves the fingerprint too, and a re-measure is the
-#: right answer then as well.
-PINNED_COST_FINGERPRINT = "7f551b172ebb5cf2556899ac05bbcda127bde878b9516faab879d9686eff8755"
+#: The reader changed after that measurement, by this step's reviews (widened,
+#: and system.audit_log's storage-option reads narrowed); the database it
+#: reads did not.  A
+#: PostgreSQL upgrade that re-renders the catalogue's text moves the
+#: fingerprint too, and a re-measure is the right answer then as well.
+PINNED_COST_FINGERPRINT = "48249463dd2a7464bc45bb9a364428c7bd72cec2d8604af268e0be218b629e83"

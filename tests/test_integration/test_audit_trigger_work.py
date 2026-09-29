@@ -22,9 +22,11 @@ Two properties, one class each:
 * :class:`TestTheMeasuredCostSurfaceIsPinned` -- the trigger's cost surface is
   the one the report's recorded figures were measured against (**R-BAL149**;
   what it reads is :data:`tests._audit_trigger_workloads._COST_SURFACE_QUERIES`).
-  It grades the MODULE's function and attachment as the test template installs
-  them; a migration that changes either alone is not seen here (finding
-  **balance:BAL-556**).
+  It grades the MODULE's function, attachments and three audit-log indexes as
+  the test template installs them, so a migration that changes the function
+  or an attachment alone is not seen here, and one that drops one of those
+  indexes is re-created over (finding **balance:BAL-556**;
+  :func:`tests._audit_trigger_workloads.cost_surface` says how).
 """
 from collections import Counter
 
@@ -167,9 +169,9 @@ class TestTheMeasuredCostSurfaceIsPinned:
         """The live cost surface's fingerprint equals the pinned one.
 
         A failure is not a flake and is not fixed by re-pinning alone: the
-        recorded figures describe the OLD surface (R-BAL144).  The function
-        and attachment read are the module's as the template installs them
-        (BAL-556).
+        recorded figures describe the OLD surface (R-BAL144).  The function,
+        attachments and three audit-log indexes read are the module's as the
+        template installs them (BAL-556).
 
         Pylint: ``unused-argument`` -- ``app`` and ``db`` are requested for the
         application context and the test's own database the surface is read from.
