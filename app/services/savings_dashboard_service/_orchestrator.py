@@ -454,13 +454,16 @@ def _build_trend_window(
 
     Reads the day each loan's record starts -- the data the balance maps do
     NOT carry -- then delegates to :func:`build_trend_periods`.  The start is
-    the loan's :attr:`~app.services.balance_at.LoanTerms.recorded_start` (its
-    ``tracking_start`` assertion, else its origination; ruling **R-R111**), off
-    the read pass's one memoized resolution.  It was the earliest amortization
-    row's date until plan step recurrence:R16-c-2.  A loan whose schedule is
-    EMPTY (paid off or fully resolved) still does not gate, so the schedules
-    are read for that and nothing else; the dense-map build assembles its own
-    inside the :mod:`app.services.balance_at` seam.
+    the loan's :attr:`~app.services.balance_at.LoanTerms.recorded_start`, off
+    the read pass's one memoized resolution, and EVERY configured loan gates
+    from it, paid off or not (rulings **R-R111** and **R-R112**).  Until plan
+    step recurrence:R16-c-2 this read each loan's amortization rows: the
+    earliest row's date stood in for the start, and a loan whose rows were
+    EMPTY (paid off) did not gate.  Before its record starts the ledger holds
+    only the loan's origination principal, so a loan first tracked once paid
+    off drew that principal through the history: a $20,000.00 loan tracked at
+    $0.00 beside $1,000.00 of cash read -$19,000.00 at every point before its
+    tracking start (ruling R-R112's example).  Nothing here reads a schedule.
 
     **It carries no no-baseline guard of its own** (plan step X-t2, finding
     N-107): its one caller owns that rule for the whole region, so this is
@@ -477,10 +480,6 @@ def _build_trend_window(
         ``(trend_periods, current_index, honest_start)`` from
         :func:`build_trend_periods`.
     """
-    loan_accounts = [
-        acct for acct in core.accounts if acct.id in params.loan_params_map
-    ]
-    schedules = balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx)
     return build_trend_periods(
         core.accounts, core.balance_ctx.reported_periods(),
         core.current_period,
@@ -488,7 +487,7 @@ def _build_trend_window(
             acct.id: balance_at.loan_terms(
                 acct, core.balance_ctx,
             ).recorded_start
-            for acct in loan_accounts if schedules.get(acct.id)
+            for acct in core.accounts if acct.id in params.loan_params_map
         },
     )
 
