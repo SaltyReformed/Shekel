@@ -469,7 +469,7 @@ jobs:
           SHEKEL_TEST_SHARD: ${{ strategy.job-index }}/${{ strategy.job-total }}
         run: ./scripts/test.sh -n logical -m "" --tb=short -q --durations=25
 
-      # ── 7b. Audit-trigger benchmarks, SERIALLY ───────────────────
+      # ── 7b. Audit-trigger overhead REPORT, SERIALLY ──────────────
       # ``tests/test_performance`` is excluded from step 7 by
       # ``pytest.ini``'s ``--ignore``, and until 2026-08-28 that meant
       # it ran NOWHERE: its five tests had errored at setup since
@@ -480,21 +480,31 @@ jobs:
       # thing.  Same directory-is-invisible mechanism as the
       # ``tests/manual/`` rot that step 5a3 answers.
       #
-      # It gets its own invocation rather than joining step 7 because
-      # these tests assert a WALL-CLOCK RATIO -- the same statement
-      # timed with and without the audit trigger -- and that ratio is
-      # destroyed by oversubscription.  Measured 2026-08-28, identical
-      # tree, same five tests: serially the regenerate benchmark reads
-      # 0.8-3.0% overhead; under ``-n 12`` it reads 24.3-26.6%.  The
-      # contention inflates the measurement by 25 points, so collecting
-      # them into the parallel run would not "stop ignoring them", it
-      # would put a guaranteed flake on a branch-protected gate.
+      # Since plan step balance:X-cy these tests PRINT the audit
+      # trigger's overhead (past pytest's capture, so a passing run shows
+      # it) and no assertion reads a time (ruling R-BAL144): wall-clock
+      # ceilings here failed the required check four times in ~14 hours
+      # on shared runners with no change to the trigger (finding
+      # REC-533).  What the trigger DOES is graded in step 7 instead, by
+      # tests/test_integration/test_audit_trigger_work.py.  The step
+      # stays GRADED (R-BAL152): a benchmark that raises still fails it,
+      # because the silent rot above is what an ungraded step would allow
+      # again, and so does one that hangs past the suite's 50 s per-test
+      # timeout (R-BAL153).
+      #
+      # It gets its own invocation rather than joining step 7 because the
+      # ratio it prints is destroyed by oversubscription.  Measured
+      # 2026-08-28, identical tree, same five tests: serially the
+      # regenerate benchmark reads 0.8-3.0% overhead; under ``-n 12`` it
+      # reads 24.3-26.6%.  That workload wrote no audit row at all (found
+      # at X-cy), so the whole 25-point gap is contention: a wrong number
+      # to print.
       #
       # ONE shard runs them, after its own suite has finished, so the runner
       # is otherwise idle.  ``--override-ini=addopts=`` drops the whole
       # default addopts line (which is what carries the ``--ignore`` and
       # ``-n 12``); ``-n 0`` then runs them in-process, the only condition
-      # under which the numbers mean anything.  Five tests, 27 s measured.
+      # under which the numbers mean anything.
       - name: Run audit-trigger benchmarks (serial)
         if: strategy.job-index == 0
         run: ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
