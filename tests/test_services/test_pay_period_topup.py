@@ -308,7 +308,10 @@ class TestTopUpDeficitPath:
             i for i, (sql, _params) in enumerate(statements)
             if sql.lstrip().upper().startswith("INSERT INTO BUDGET.PAY_PERIODS")
         ]
-        assert len(inserts) == 5 - (3 + _BOOTSTRAP_IN_WINDOW), inserts
+        # ONE append statement: SQLAlchemy sends a multi-period append as one
+        # multi-row INSERT, so the NUMBER appended is graded by the window
+        # below, not by counting statements.
+        assert len(inserts) == 1, inserts
         assert lock_at < inserts[0]
         schedule_reads = [
             i for i, (sql, _params) in enumerate(statements)
@@ -316,6 +319,13 @@ class TestTopUpDeficitPath:
         ]
         assert schedule_reads and schedule_reads[0] < inserts[0], (
             "the top-up read no schedule under the lock before appending"
+        )
+        count_reads = [
+            i for i, (sql, _params) in enumerate(statements)
+            if "FROM budget.pay_periods" in sql and lock_at < i < inserts[0]
+        ]
+        assert count_reads, (
+            "the top-up counted no paychecks under the lock before appending"
         )
         with app.app_context():
             assert _future_count(user_id) == 5

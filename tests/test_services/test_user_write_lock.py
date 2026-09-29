@@ -573,15 +573,17 @@ class TestTheKeyIsTheOwner:
         assert response.status_code == 200, response.status_code
         assert set(advisory_lock_keys(statements)) == {owner_lock_key(owner_id)}
 
-    def test_lock_every_user_acquires_ascending(self, app, seed_user):
+    def test_lock_every_user_acquires_ascending(
+        self, app, seed_user, seed_second_user,
+    ):
         """The deploy reconciles' every-owner form acquires ascending by user id.
 
         They are the only transactions that reconcile more than one owner, so
         the only ones that hold more than one key; taking them in one global
         order is what keeps two concurrent sweeps from taking the same two keys
-        in opposite orders.
+        in opposite orders.  TWO users, or the order cannot be graded: with
+        one, a reversed loop passed (neutral review of cp4, 2026-09-29).
         """
-        assert seed_user
         with app.app_context():
             locked, statements = capture_sql_statements(lock_every_user_writes)
             # The ACQUISITION order, read off the emitted binds -- not the
@@ -596,7 +598,9 @@ class TestTheKeyIsTheOwner:
                 f"the returned ids {locked} disagree with what was locked "
                 f"{acquired}"
             )
-            assert seed_user["user"].id in acquired
+            assert {
+                seed_user["user"].id, seed_second_user["user"].id,
+            } <= set(acquired) and len(acquired) >= 2, acquired
             db.session.rollback()
 
     def test_the_lock_is_re_entrant_within_one_transaction(self, app, seed_user):

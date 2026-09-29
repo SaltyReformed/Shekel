@@ -26,7 +26,8 @@ path by adding another at the wrong depth.
 What this test enforces
 -----------------------
 
-Over every Python module under ``app/``, ``scripts/`` and ``migrations/``:
+Over every Python module under ``app/``, ``scripts/`` and ``migrations/``, and
+the repository root's own (``gunicorn.conf.py``, ``run.py``):
 
 * Each name that takes the lock, or reaches a function that does, is
   referenced only by its homes (:data:`_HOMES`): the one statement of the lock
@@ -36,24 +37,34 @@ Over every Python module under ``app/``, ``scripts/`` and ``migrations/``:
   by ``user_write_lock.py`` alone, so no module can take the same lock under
   its own statement; ``bind_request_actor`` (where a request's owner becomes
   known) by the logging hook that signs the request in;
-  ``bind_sign_in_owner`` by the two sign-in routes; and the two private
-  functions that do the locking by ``db_transaction`` itself.
+  ``bind_sign_in_owner`` by the two sign-in routes; the two private
+  functions that do the locking by ``db_transaction`` itself; and the two
+  ``g`` keys that arm the listener for an owner -- ``_OWNER_KEY`` and
+  ``_PENDING_OWNER_KEY`` reached as ``db_transaction``'s attributes or
+  imported from it, and their string values as a string or as a ``g``
+  attribute -- by nothing outside ``db_transaction``.
 * Every PostgreSQL advisory-lock function -- any name or attribute spelled
   ``pg_advisory...`` or ``pg_try_advisory...``, and any non-docstring string
   that names one, which is a raw SQL statement -- appears only in
   ``user_write_lock.py``.
 * The name ``lock_user_writes`` -- the deleted per-service form -- is bound
   nowhere.
-* **The homes cannot grow a new door.**  ``user_write_lock.py`` defines
-  exactly the two functions above, so a helper wrapping the statement under a
-  new name (the ``lock_user_writes`` shape again) fails here rather than
-  passing as "inside a home".  Inside ``db_transaction``, the functions that
-  call the lock's statement, and the functions that call the private locking
-  function, are pinned by name, so a new caller there fails too.
+* **The homes cannot grow a new door.**  ``user_write_lock.py`` binds
+  exactly its namespace and the two functions above at module level -- no
+  lambda, class or alias -- so a helper wrapping the statement under a new
+  name (the ``lock_user_writes`` shape again) fails here rather than passing
+  as "inside a home".  And inside EVERY home, the functions allowed to
+  reference each locking name are pinned by name
+  (:data:`_PINNED_CALLERS`): ``db_transaction``'s listener and locker, the
+  every-owner form alone calling the statement, and each deploy reconcile
+  alone calling the every-owner form -- so a new request-path function in
+  ``posting_service`` that takes every owner's lock (the deadlock that form
+  exists to prevent, taken by two requests) fails too.
 
 **What it does not see, stated rather than implied**: a lock reached through
 ``getattr``, or a statement assembled from pieces at run time, which nothing
-catches and no honest module writes.  It also cannot prove the lock is taken,
+catches and no honest module writes; and a reference in a decorator or a
+default argument is attributed to the function it decorates.  It also cannot prove the lock is taken,
 or taken FIRST, on a real request; that is :mod:`app.db_transaction`'s
 construction, measured on real requests by
 ``tests/test_services/test_user_write_lock.py`` (the command arm takes it, a
@@ -86,7 +97,17 @@ _REQUEST_OWNER = "bind_request_actor"
 _SIGN_IN_OWNER = "bind_sign_in_owner"
 _LOCK_OPEN = "_lock_the_open_transaction"
 _REQUEST_HOOK = "_take_the_request_owner_s_lock"
+_ARMED_OWNER = "_OWNER_KEY"
+_PENDING_OWNER = "_PENDING_OWNER_KEY"
 _DELETED = "lock_user_writes"
+
+#: The one entry that stands for the two ``g`` keys' STRING values, so
+#: ``setattr(g, "shekel_write_owner", ...)`` is a reference like the name.
+_OWNER_KEY_STRING = "owner-key string"
+_OWNER_KEY_VALUES = frozenset({"shekel_write_owner", "shekel_pending_write_owner"})
+
+#: Names counted only as an attribute or an import, never as a bare name.
+_OUTSIDE_ONLY = frozenset({_ARMED_OWNER, _PENDING_OWNER})
 
 #: The one entry that stands for EVERY advisory-lock spelling, so the home
 #: table reads the statement's rule in the same place as the names'.
@@ -112,22 +133,43 @@ _HOMES: dict[str, frozenset[str]] = {
     }),
     _LOCK_OPEN: frozenset({_DB_TRANSACTION}),
     _REQUEST_HOOK: frozenset({_DB_TRANSACTION}),
+    # Reached from OUTSIDE db_transaction only (an attribute of it, or an
+    # import from it): a bare name is any module's own constant -- the 4a-4
+    # migration has an unrelated ``_OWNER_KEY`` -- and db_transaction's own
+    # uses are its string values' home below.
+    _ARMED_OWNER: frozenset(),
+    _PENDING_OWNER: frozenset(),
+    _OWNER_KEY_STRING: frozenset({_DB_TRANSACTION}),
     _STATEMENT: frozenset({_USER_WRITE_LOCK}),
     _DELETED: frozenset(),
 }
 
-#: Every function ``user_write_lock.py`` may define: the statement, and the
-#: every-owner form built on it.
-_USER_WRITE_LOCK_FUNCTIONS = frozenset({_PRIMITIVE, _EVERY_OWNER})
+#: Every name ``user_write_lock.py`` may bind at module level: the lock's key,
+#: the statement, and the every-owner form built on it.
+_USER_WRITE_LOCK_BINDINGS = frozenset({_NAMESPACE, _PRIMITIVE, _EVERY_OWNER})
 
-#: Inside ``db_transaction``: which functions may reference each locking
-#: name.  The listener's COMMAND arm and the open-transaction lock take the
-#: statement; the before-request hook and the sign-in door call the
-#: open-transaction lock; only the boundary registers the hook.
-_DB_TRANSACTION_CALLERS: dict[str, frozenset[str]] = {
-    _PRIMITIVE: frozenset({"_bind_transaction_mode", _LOCK_OPEN}),
-    _LOCK_OPEN: frozenset({_REQUEST_HOOK, _SIGN_IN_OWNER}),
-    _REQUEST_HOOK: frozenset({"register_transaction_boundary"}),
+#: Inside each home: which functions may reference each locking name.  In
+#: ``db_transaction`` the listener's COMMAND arm and the open-transaction lock
+#: take the statement, the before-request hook and the sign-in door call the
+#: open-transaction lock, and only the boundary registers the hook; in
+#: ``user_write_lock`` only the every-owner form calls the statement; in each
+#: deploy reconcile's module only that reconcile calls the every-owner form.
+_PINNED_CALLERS: dict[str, dict[str, frozenset[str]]] = {
+    _DB_TRANSACTION: {
+        _PRIMITIVE: frozenset({"_bind_transaction_mode", _LOCK_OPEN}),
+        _LOCK_OPEN: frozenset({_REQUEST_HOOK, _SIGN_IN_OWNER}),
+        _REQUEST_HOOK: frozenset({"register_transaction_boundary"}),
+    },
+    _USER_WRITE_LOCK: {_PRIMITIVE: frozenset({_EVERY_OWNER})},
+    "app/services/posting_service.py": {
+        _EVERY_OWNER: frozenset({"resync_all_cash_postings"}),
+    },
+    "app/services/account_posting_service/_sync.py": {
+        _EVERY_OWNER: frozenset({"backfill_all_account_anchor_postings"}),
+    },
+    "app/services/loan_posting_service/_sync.py": {
+        _EVERY_OWNER: frozenset({"backfill_all_loan_postings"}),
+    },
 }
 
 
@@ -184,19 +226,23 @@ def _references(source: str, filename: str) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         names: list[str] = []
-        if isinstance(node, ast.Name):
+        if isinstance(node, ast.Name) and node.id not in _OUTSIDE_ONLY:
             names = [node.id]
         elif isinstance(node, ast.Attribute):
             names = [node.attr]
+            if node.attr in _OWNER_KEY_VALUES:
+                found.append((_OWNER_KEY_STRING, node.lineno))
         elif isinstance(node, ast.ImportFrom):
             names = [alias.name for alias in node.names]
         elif (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and id(node) not in docstrings
-            and _STATEMENT_PATTERN.search(node.value)
         ):
-            found.append((_STATEMENT, node.lineno))
+            if _STATEMENT_PATTERN.search(node.value):
+                found.append((_STATEMENT, node.lineno))
+            if node.value in _OWNER_KEY_VALUES:
+                found.append((_OWNER_KEY_STRING, node.lineno))
         for name in names:
             key = _watched(name)
             if key is not None:
@@ -222,13 +268,25 @@ def _violations(relative: str, source: str) -> list[str]:
     ]
 
 
-def _module_functions(source: str) -> set[str]:
-    """Return the names of the functions *source* defines at module level."""
-    return {
-        node.name
-        for node in ast.parse(source).body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+def _module_bindings(source: str) -> set[str]:
+    """Return every name *source* binds at module level, imports aside.
+
+    A function, a class, and an assignment's or annotated assignment's plain
+    name targets -- so a lambda or an alias bound at the top of a module is
+    counted like a ``def``.
+    """
+    bound: set[str] = set()
+    for node in ast.parse(source).body:
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            bound.update(
+                target.id for target in targets if isinstance(target, ast.Name)
+            )
+    return bound
 
 
 def _callers(source: str, name: str) -> set[str]:
@@ -262,41 +320,53 @@ def _callers(source: str, name: str) -> set[str]:
     return owners
 
 
-def _surface_violations(user_write_lock: str, db_transaction: str) -> list[str]:
+def _surface_violations(sources: dict[str, str]) -> list[str]:
     """Return one message per new door inside a home module.
 
     Args:
-        user_write_lock: ``app/services/user_write_lock.py``'s text.
-        db_transaction: ``app/db_transaction.py``'s text.
+        sources: Each pinned home's text, keyed by its path (every key of
+            :data:`_PINNED_CALLERS`).
 
     Returns:
-        Empty when each home defines, and calls the lock from, exactly the
-        functions pinned above.
+        Empty when ``user_write_lock`` binds exactly its three names and
+        every home references each locking name from exactly the functions
+        pinned above.
     """
     found: list[str] = []
-    defined = _module_functions(user_write_lock)
-    if defined != _USER_WRITE_LOCK_FUNCTIONS:
+    bound = _module_bindings(sources[_USER_WRITE_LOCK])
+    if bound != _USER_WRITE_LOCK_BINDINGS:
         found.append(
-            f"{_USER_WRITE_LOCK} defines {sorted(defined)}, "
-            f"not {sorted(_USER_WRITE_LOCK_FUNCTIONS)}"
+            f"{_USER_WRITE_LOCK} binds {sorted(bound)}, "
+            f"not {sorted(_USER_WRITE_LOCK_BINDINGS)}"
         )
-    for name, allowed in _DB_TRANSACTION_CALLERS.items():
-        callers = _callers(db_transaction, name)
-        if callers != allowed:
-            found.append(
-                f"{_DB_TRANSACTION}: {name} is referenced from "
-                f"{sorted(callers)}, not {sorted(allowed)}"
-            )
+    for relative, pins in _PINNED_CALLERS.items():
+        for name, allowed in pins.items():
+            callers = _callers(sources[relative], name)
+            if callers != allowed:
+                found.append(
+                    f"{relative}: {name} is referenced from "
+                    f"{sorted(callers)}, not {sorted(allowed)}"
+                )
     return found
 
 
+def _home_sources() -> dict[str, str]:
+    """Every pinned home's text on the real tree, keyed by its path."""
+    return {
+        relative: (ROOT / relative).read_text(encoding="utf-8")
+        for relative in _PINNED_CALLERS
+    }
+
+
 def _scanned_modules() -> list[Path]:
-    """Every Python module under ``app/``, ``scripts/`` and ``migrations/``, ``__pycache__`` excluded."""
+    """Every Python module under ``app/``, ``scripts/``, ``migrations/`` and at the root, ``__pycache__`` excluded."""
     return sorted(
-        path
-        for top in ("app", "scripts", "migrations")
-        for path in (ROOT / top).rglob("*.py")
-        if "__pycache__" not in path.parts
+        [
+            path
+            for top in ("app", "scripts", "migrations")
+            for path in (ROOT / top).rglob("*.py")
+            if "__pycache__" not in path.parts
+        ] + list(ROOT.glob("*.py"))
     )
 
 
@@ -312,6 +382,7 @@ class TestTheOwnerLockHasOneHome:
         assert not missing, f"homes the scan does not reach: {sorted(missing)}"
         assert "scripts/init_database.py" in scanned
         assert "migrations/env.py" in scanned
+        assert "gunicorn.conf.py" in scanned
         assert any(path.startswith("migrations/versions/") for path in scanned)
 
     def test_each_home_still_holds_its_name(self) -> None:
@@ -351,10 +422,7 @@ class TestTheOwnerLockHasOneHome:
 
     def test_the_homes_grow_no_new_door(self) -> None:
         """Each home defines, and calls the lock from, exactly the pinned functions."""
-        violations = _surface_violations(
-            (ROOT / _USER_WRITE_LOCK).read_text(encoding="utf-8"),
-            (ROOT / _DB_TRANSACTION).read_text(encoding="utf-8"),
-        )
+        violations = _surface_violations(_home_sources())
         assert not violations, "\n".join(violations)
 
     def test_the_scanner_catches_each_spelling(self, tmp_path: Path) -> None:
@@ -371,7 +439,10 @@ class TestTheOwnerLockHasOneHome:
             "text('SELECT pg_advisory_lock(5)')\n"
             "from app.db_transaction import bind_request_actor, bind_sign_in_owner\n"
             "from app.db_transaction import _lock_the_open_transaction\n"
-            "app.before_request(_take_the_request_owner_s_lock)\n",
+            "app.before_request(_take_the_request_owner_s_lock)\n"
+            "setattr(g, db_transaction._OWNER_KEY, 12)\n"
+            "g.shekel_pending_write_owner = 13\n"
+            "setattr(g, 'shekel_write_owner', 14)\n",
             encoding="utf-8",
         )
         assert _violations(
@@ -389,6 +460,9 @@ class TestTheOwnerLockHasOneHome:
             "app/services/some_service.py:9 bind_sign_in_owner",
             "app/services/some_service.py:10 _lock_the_open_transaction",
             "app/services/some_service.py:11 _take_the_request_owner_s_lock",
+            "app/services/some_service.py:12 _OWNER_KEY",
+            "app/services/some_service.py:13 owner-key string",
+            "app/services/some_service.py:14 owner-key string",
         ]
 
     def test_a_home_is_a_home_for_its_own_name_only(self, tmp_path: Path) -> None:
@@ -404,31 +478,61 @@ class TestTheOwnerLockHasOneHome:
         ) == ["app/db_transaction.py:2 lock_every_user_writes"]
 
     def test_a_wrapper_inside_a_home_is_a_new_door(self) -> None:
-        """The ``lock_user_writes`` shape under a new name, in either home, fails."""
-        user_write_lock = (ROOT / _USER_WRITE_LOCK).read_text(encoding="utf-8")
-        db_transaction = (ROOT / _DB_TRANSACTION).read_text(encoding="utf-8")
-        wrapper = (
-            "\n\ndef lock_owner(owner_id):\n"
-            "    take_owner_write_lock(db.session.connection(), owner_id)\n"
+        """The ``lock_user_writes`` shape under a new name, in any home, fails.
+
+        The four shapes a neutral review measured passing an earlier cut of
+        this test (2026-09-29): a lambda and a class method wrapping the
+        statement in ``user_write_lock``, a second caller of the
+        open-transaction locker in ``db_transaction``, and a new
+        request-path function in ``posting_service`` taking every owner's
+        lock.
+        """
+        real = _home_sources()
+        assert _surface_violations(real) == []
+
+        def mutated(relative: str, tail: str) -> list[str]:
+            sources = dict(real)
+            sources[relative] = sources[relative] + tail
+            return _surface_violations(sources)
+
+        lam = "\n\nlock_owner = lambda owner_id: take_owner_write_lock(None, owner_id)\n"
+        assert mutated(_USER_WRITE_LOCK, lam) == [
+            f"{_USER_WRITE_LOCK} binds "
+            f"{sorted(_USER_WRITE_LOCK_BINDINGS | {'lock_owner'})}, "
+            f"not {sorted(_USER_WRITE_LOCK_BINDINGS)}",
+            f"{_USER_WRITE_LOCK}: {_PRIMITIVE} is referenced from "
+            f"{sorted({'<module>', _EVERY_OWNER})}, not {[_EVERY_OWNER]}",
+        ]
+        klass = (
+            "\n\nclass OwnerLock:\n"
+            "    def take(self, owner_id):\n"
+            "        take_owner_write_lock(None, owner_id)\n"
         )
-        assert _surface_violations(user_write_lock + wrapper, db_transaction) == [
-            f"{_USER_WRITE_LOCK} defines "
-            f"{sorted(_USER_WRITE_LOCK_FUNCTIONS | {'lock_owner'})}, "
-            f"not {sorted(_USER_WRITE_LOCK_FUNCTIONS)}",
+        assert mutated(_USER_WRITE_LOCK, klass) == [
+            f"{_USER_WRITE_LOCK} binds "
+            f"{sorted(_USER_WRITE_LOCK_BINDINGS | {'OwnerLock'})}, "
+            f"not {sorted(_USER_WRITE_LOCK_BINDINGS)}",
+            f"{_USER_WRITE_LOCK}: {_PRIMITIVE} is referenced from "
+            f"{sorted({'take', _EVERY_OWNER})}, not {[_EVERY_OWNER]}",
         ]
         second_caller = (
             "\n\ndef lock_again(owner_id):\n"
             "    _lock_the_open_transaction(None, owner_id)\n"
         )
-        assert _surface_violations(
-            user_write_lock, db_transaction + wrapper + second_caller,
-        ) == [
-            f"{_DB_TRANSACTION}: {_PRIMITIVE} is referenced from "
-            f"{sorted({'_bind_transaction_mode', _LOCK_OPEN, 'lock_owner'})}, "
-            f"not {sorted({'_bind_transaction_mode', _LOCK_OPEN})}",
+        assert mutated(_DB_TRANSACTION, second_caller) == [
             f"{_DB_TRANSACTION}: {_LOCK_OPEN} is referenced from "
             f"{sorted({_REQUEST_HOOK, _SIGN_IN_OWNER, 'lock_again'})}, "
             f"not {sorted({_REQUEST_HOOK, _SIGN_IN_OWNER})}",
+        ]
+        posting = "app/services/posting_service.py"
+        every_owner = (
+            "\n\ndef resync_one_owner(owner_id):\n"
+            "    lock_every_user_writes()\n"
+        )
+        assert mutated(posting, every_owner) == [
+            f"{posting}: {_EVERY_OWNER} is referenced from "
+            f"{sorted({'resync_all_cash_postings', 'resync_one_owner'})}, "
+            f"not ['resync_all_cash_postings']",
         ]
 
     def test_prose_is_not_a_reference(self, tmp_path: Path) -> None:

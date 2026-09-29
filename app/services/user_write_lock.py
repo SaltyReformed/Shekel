@@ -2,27 +2,33 @@
 Shekel Budget App -- The per-user write lock
 
 ONE transaction-scoped PostgreSQL advisory lock, keyed on the owning user, so
-two writes of one user's data never overlap (the two writers that take none
-are named below).  **Since plan step
+two writes of one user's data that both take it never overlap (the writers
+that take none are named below).  **Since plan step
 ``balance:X-bn`` it is taken from exactly two modules** (rulings **R-CC106**,
 **R-CC114**, **R-CC115**, **R-CC121**): :mod:`app.db_transaction`, at the
 start of every command transaction a signed-in request opens -- before it
-reads any of the owner's data; the signed-in user's own row, read to sign the
-request in, is the one row read first, and it is re-read under the lock -- and
-at a sign-in right after the account is found; and this module's
-:func:`lock_every_user_writes`, at the start of each deploy reconcile.  No
-service takes it for itself any more, and
+reads any of the owner's data; the signed-in user's own row and the role row
+joined to it, read to sign the request in, are the only rows read first, and
+the user's row is re-read under the lock -- and at a sign-in right after the
+account is found; and this module's :func:`lock_every_user_writes`, at the
+start of each deploy reconcile.  No service takes it for itself any more, and
 ``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses one that
-tries.  **Two writers take none, and each is stated so it is not mistaken for
+tries.  **The writers that take none, each named so it is not mistaken for
 covered**: registration (``/register`` and ``scripts/seed_user.py``) writes a
-user that is not committed, so no other transaction can reach it; and a script
-that writes an EXISTING owner's data must take that owner's lock at its own
-start, because no request takes it for it -- the deploy reconciles are the only
-such writers today.  *It was taken by sixteen calls in nine modules inside the
-write paths that needed it most, plus three that plan step
-``credit_card:CC-5-4a-4`` put inside ``row_write_lock``, each taking it at its
-own point in the transaction, which is what made the deadlock below
-reachable.*
+user that is not committed, so no other transaction can reach it; and every
+script that writes an EXISTING user's rows holds no request, so nothing takes
+the lock for it.  The deploy reconciles take every owner's at their own start.
+Four operator scripts write rows the lock covers and take none --
+``scripts/reset_mfa.py`` (``mfa_configs``), ``scripts/rotate_totp_key.py``
+(every ``totp_secret_encrypted``), ``scripts/rotate_sessions.py`` (every
+``users.session_invalidated_at``) and ``scripts/seed_companion.py``'s
+existing-user branch (``role_id`` and ``linked_owner_id``, the lock's key) --
+so each can race a sign-in or an MFA door that holds the lock (reported at
+plan step ``balance:X-bn``'s checkpoint 4 review, 2026-09-29).  *It was
+taken by sixteen calls in nine modules inside the write paths that needed it
+most, plus three that plan step ``credit_card:CC-5-4a-4`` put inside
+``row_write_lock``, each taking it at its own point in the transaction, which
+is what made the deadlock below reachable.*
 
 Two families of write are why the lock exists at all, and they need the SAME
 lock because the second reads the first's output:
@@ -123,7 +129,8 @@ cannot leak -- and a request that commits and goes on writing takes it again
 in its next transaction (:mod:`app.db_transaction`).  Re-entrant, and one
 caller relies on that: ``scripts/init_database.py`` runs the three deploy
 reconciles in ONE transaction, and each takes every owner's lock again.  A
-request's transaction takes it once, at its start.
+request's transaction takes it once: at its start, or, at a sign-in, right
+after the account is found.
 
 Flask-isolated -- takes and returns plain data, never imports ``request`` /
 ``session``.  Takes no transaction of its own: the caller owns the boundary,
