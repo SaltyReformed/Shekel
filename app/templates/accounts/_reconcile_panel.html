@@ -102,8 +102,16 @@
      3. a section is printed where the kind changes -- resolved by the
         producer as ``group.section``, because it is a function of the ORDER
         and a template deriving it would index into the previous element.  A
-        section carries its heading and, for transfers, one sentence saying
-        that a tick settles the other account too.
+        section carries its heading and, for transfers and for "Paid from this
+        account" (credit_card:CC-5-4b), one sentence about what a tick there
+        does.
+
+   **"Paid from this account" rows render through the same childless arm and
+   post the same fields as a bill's** (rulings R-CC44 / R-CC116): each is a
+   row planned on another account whose payment was recorded here and then
+   reopened, headed by the producer's label ("Groceries (Checking's plan,
+   paid from this card)"), and an envelope among them keeps its "Close " verb
+   (R-CC119) through ``group.settle_closes_an_envelope`` like any other.
 
    **An amount box appears exactly where the producer says it may** --
    ``group.settle.is_correctable``, which is ruling R-FF: a tick is correctable
@@ -215,8 +223,10 @@
        only where the producer supplies one (``OfferKind.section_note``):
        transfers carry one because ticking there settles a second account --
        both legs and the parent move together (transfer invariant 3) -- which
-       a panel captioned "your statement" otherwise does not say.  The template
-       never asks WHICH kind; it prints what the producer resolved. #}
+       a panel captioned "your statement" otherwise does not say; "Paid from
+       this account" carries R-CC111's, because its rows were recorded here and
+       reopened.  The template never asks WHICH kind; it prints what the
+       producer resolved. #}
     <h6 class="text-uppercase text-body-secondary fs-xs fw-semibold mt-3 mb-2">
       {{ group.section.label }}
     </h6>

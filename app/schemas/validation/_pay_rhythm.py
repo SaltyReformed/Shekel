@@ -227,7 +227,7 @@ class BusinessDayShiftField(_RefEnumField):
     id travelling under the name ``shift`` is the natural mistake, and it is
     one that would move a money date.  The conversion happens once here and
     once in
-    :func:`~app.services.pay_schedule_service.mint_era`, at the two edges of
+    :func:`~app.services.pay_era_write.mint_era`, at the two edges of
     the wire.
 
     Whether the cadence beside it can CARRY the chosen convention is a

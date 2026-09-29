@@ -96,6 +96,7 @@ from app.models.statement_line_skip import StatementLineSkip
 # Salary domain
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
+from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.paycheck_line import PaycheckLine
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
@@ -195,6 +196,7 @@ __all__ = [
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",
+    "SalaryPayEntry",
     "PaycheckLine",
     "PensionProfile",
     "CalibrationOverride",

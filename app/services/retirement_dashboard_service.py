@@ -34,8 +34,8 @@ from app.services import (
     paycheck_calculator,
     pension_calculator,
 )
-from app.services.pay_calendar import PayCadence
-from app.services.payroll_basis import gross_per_paycheck
+from app.services.pay_calendar import PayCadence, PayCalendar
+from app.services.payroll_basis import PayrollBasis
 from app.services.salary_raises import RaiseTerms
 from app.utils.dates import add_months
 from app.utils.money import round_money
@@ -68,18 +68,19 @@ class PensionSummary:
     Returned by :func:`compute_pension_summary` so the picture producer
     carries the pension-derived values it forwards downstream as one
     immutable result rather than parallel locals: the summed monthly
-    pension income (the gap calculator's pension input), the
-    raise-projected salary-by-year series (reused by the gap-comparison
-    salary projection so it is not recomputed), and the per-pension
-    derivation entries (the P3c page's footer; the pre-P3b "last benefit
-    only" field this superseded is gone -- audit finding D6).
+    pension income (the gap calculator's pension input) and the
+    per-pension derivation entries (the P3c page's footer; the pre-P3b "last
+    benefit only" field this superseded is gone -- audit finding D6).  *It
+    carried the last qualifying pension's salary-by-year series too, for the
+    gap-comparison projection to reuse, until plan step salary:X-av-3a read
+    that projection's final-year pay off the pay list's walk directly: the
+    series was the LAST pension's profile's while the gap scaled the FIRST
+    active profile's take-home rate, two profiles on one figure whenever an
+    owner held more than one.*
 
     Attributes:
         monthly_income: The summed monthly benefit across all qualifying
             pensions (``Decimal("0")`` when none qualify).
-        salary_by_year: The ``(year, salary)`` projection produced for
-            the last qualifying pension, or ``None`` when none qualified;
-            reused by :func:`compute_gap_net_biweekly`.
         per_pension: One dict per qualifying pension (``name``,
             ``benefit_multiplier``, ``consecutive_high_years``,
             ``benefit``), in iteration order.  Retains the benefits the
@@ -90,7 +91,6 @@ class PensionSummary:
     """
 
     monthly_income: Decimal
-    salary_by_year: list[tuple[int, Decimal]] | None
     per_pension: list = field(default_factory=list)
 
 
@@ -332,15 +332,14 @@ def compute_pension_summary(
     pensions: list[PensionProfile],
     as_of: date,
     terms_for: TermsFor,
+    calendar: PayCalendar,
     month_offset: int = 0,
 ) -> PensionSummary:
     """Aggregate the pension benefit across the user's active pensions.
 
     Iterates the active pensions, projecting each one that carries both a
     planned retirement date and a linked salary profile, and sums their
-    monthly benefit.  The last qualifying pension's benefit and
-    salary-by-year series are retained (the series is reused by the
-    gap-comparison salary projection).
+    monthly benefit, retaining each qualifying pension's derivation.
 
     Args:
         pensions: The user's active :class:`PensionProfile` rows.
@@ -365,6 +364,11 @@ def compute_pension_summary(
             pension linked to a profile the rail does not list (an archived
             one) is projected from that profile's stored rows, which is what
             the point's fallback answers for it.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`
+            (the read pass's): the rhythms each profile's pay list is walked
+            at, since plan step salary:X-av-3a projects the salary path
+            through :meth:`~app.services.payroll_basis.PayrollBasis
+            .base_pay_on` (ruling **R-SAL59**).
         month_offset: Whole months added to EACH qualifying pension's
             planned retirement date before projecting (the P2b retire-later
             probes: a later retirement extends the salary path, the years
@@ -375,12 +379,10 @@ def compute_pension_summary(
 
     Returns:
         A :class:`PensionSummary` bundling the summed monthly pension
-        income, the last salary-by-year series (``Decimal("0")`` /
-        ``None`` when no pension qualifies), and the per-pension
-        derivation entries.
+        income (``Decimal("0")`` when no pension qualifies) and the
+        per-pension derivation entries.
     """
     monthly_income = Decimal("0")
-    salary_by_year = None
     per_pension = []
     for pension in pensions:
         if pension.planned_retirement_date and pension.salary_profile:
@@ -389,8 +391,7 @@ def compute_pension_summary(
                 pension.planned_retirement_date, month_offset,
             )
             salary_by_year = pension_calculator.project_profile_salaries(
-                profile,
-                terms_for(profile),
+                PayrollBasis(profile, calendar, terms_for(profile)),
                 as_of.year,
                 planned.year,
             )
@@ -411,7 +412,7 @@ def compute_pension_summary(
                 "consecutive_high_years": pension.consecutive_high_years,
                 "benefit": benefit,
             })
-    return PensionSummary(monthly_income, salary_by_year, per_pension)
+    return PensionSummary(monthly_income, per_pension)
 
 
 def compute_current_paycheck(
@@ -683,8 +684,8 @@ def compute_gap_net_biweekly(
     gap: GapInputs,
     payroll: BelievedPayroll,
     planned_retirement_date: date | None,
-    salary_by_year: list[tuple[int, Decimal]] | None,
     as_of: date,
+    calendar: PayCalendar,
 ) -> GapPaycheck:
     """Project the final-year net biweekly pay for the gap comparison.
 
@@ -707,9 +708,8 @@ def compute_gap_net_biweekly(
 
     Args:
         gap: The render's :class:`GapInputs`, read for the owner's active
-            salary profiles (the first is the profile whose salary path is
-            projected) and the pay cadence the final-year salary is divided
-            into a paycheck by.
+            salary profiles (the first is the profile whose final-year pay is
+            projected) and the pay cadence of the zero-paycheck answer.
         payroll: What the plan point believes (:class:`BelievedPayroll`):
             the owner's current paycheck off the pass's pricer
             (:func:`compute_current_paycheck`; ``None`` when they have no
@@ -720,8 +720,6 @@ def compute_gap_net_biweekly(
             bundle is loaded once per render (see :class:`GapInputs`); the
             believed set joined it at S3-f-2b.
         planned_retirement_date: The projection horizon, or ``None``.
-        salary_by_year: The pension-derived salary projection if one was
-            already built, else ``None`` (recomputed here when needed).
         as_of: The read pass's pinned day, whose YEAR opens the salary path.
             It was ``date.today()`` here until pay-calendar plan step C2-f2e
             (ledger row **P55**): one of the last three producers on
@@ -733,10 +731,13 @@ def compute_gap_net_biweekly(
             projecting its salary path from year N while the lever card beside
             it projects from N+1, which is the two-cards-two-clocks shape plan
             step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`
+            (the read pass's), whose rhythms the final year's pay is walked
+            at (plan step salary:X-av-3a).
 
     Returns:
-        The :class:`GapPaycheck`: the projected final-year net at the gap
-        inputs' cadence; the current net at the rhythm it was priced at
+        The :class:`GapPaycheck`: the projected final-year net at the rhythm
+        its pay is walked at; the current net at the rhythm it was priced at
         (:attr:`~app.services.paycheck_calculator.PeriodInfo.cadence`) when the
         projection cannot be performed; ``Decimal("0")`` at the gap inputs'
         cadence when there is no current paycheck, which is ``$0.00`` a month
@@ -762,30 +763,26 @@ def compute_gap_net_biweekly(
     ):
         return current
 
+    if planned_retirement_date.year < as_of.year:
+        return current
+
     profile = gap.salary_profiles[0]
     # F-20 / MED-06 / F-032: the rate's denominator is the same per-period
     # gross the engine reports (the pre-Commit-17 ``annual_salary /
     # pay_periods`` recompute silently dropped any applicable SalaryRaise).
     effective_take_home_rate = take_home_rate_pct / _PCT_SCALE
-    if salary_by_year is None:
-        salary_by_year = pension_calculator.project_profile_salaries(
-            profile, payroll.terms_for(profile), as_of.year,
-            planned_retirement_date.year,
-        )
-    if not salary_by_year:
-        return current
-
-    final_salary = salary_by_year[-1][1]
-    # The owner's OWN paycheck count, off the cadence the inputs already
-    # carry (plan step R-F16); it was a second stored column on the profile,
-    # and the two could disagree with each other by any factor.
-    # Through the ONE per-paycheck producer (plan step balance:X-aw).
-    final_gross_biweekly = gross_per_paycheck(
-        final_salary, gap.pay_cadence.periods_per_year,
-    )
+    # The final year's pay off the ONE walk the paychecks and the pension's
+    # salary path read (plan step salary:X-av-3a), on the December 1 the
+    # pension evaluates each year at.  It was the pension path's final
+    # yearly salary divided back into a paycheck (plan step balance:X-aw's
+    # ``gross_per_paycheck``): a division of a product the walk had already
+    # made, now read at the rate itself.
+    final = PayrollBasis(
+        profile, calendar, payroll.terms_for(profile),
+    ).base_pay_on(date(planned_retirement_date.year, 12, 1))
     return GapPaycheck(
-        net=round_money(final_gross_biweekly * effective_take_home_rate),
-        cadence=gap.pay_cadence,
+        net=round_money(final.per_paycheck * effective_take_home_rate),
+        cadence=final.cadence,
     )
 
 

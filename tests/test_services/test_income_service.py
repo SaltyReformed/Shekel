@@ -4,25 +4,26 @@ Shekel Budget App -- Income Service Tests (C17 / F-20 / MED-06 / F-032).
 Pins the raise-aware paycheck-engine producer contract:
 
 - The helper returns ``Decimal("0")`` when no active SalaryProfile exists.
-- The helper returns ``annual_salary`` over the owner's PAYCHECK COUNT --
-  derived from their cadence since plan step R-F16 -- byte-identical to the
+- The helper returns the profile's pay a paycheck -- its pay list's entry
+  since plan step salary:X-av-3a (ruling R-SAL59) -- byte-identical to the
   engine for a no-raise profile.
 - The helper APPLIES applicable ``SalaryRaise`` rows so the post-raise
-  per-period gross is returned -- the F-032 worked example: $104,000
-  base with a 3% raise effective in the as-of period yields $4,120.00
-  per period, not the pre-Commit-17 off-engine $4,000.00.
+  per-period gross is returned -- the F-032 worked example: $4,000.00 a
+  paycheck ($104,000 a year over 26) with a 3% raise effective in the as-of
+  period yields $4,120.00 per period, not the pre-Commit-17 off-engine
+  $4,000.00.
 - Every downstream consumer (savings, year-end, retirement, investment)
   reads the same engine-derived value through the helper for a
   raise-applicable user.
 
 Test fixture math (hand-computed):
 
-- ``annual_salary = $104,000`` + 3% one-time raise effective 2026-03
-- Post-raise annual = ``104000 * 1.03 = 107,120``
-- Per-period (10-period-year fallback to ROUND_HALF_UP):
-  ``107120 / 26 = 4,120.000...`` -> ``Decimal("4120.00")``
-- Pre-fix (no raise applied): ``104000 / 26 = 4,000.00`` -> the
-  pre-Commit-17 value the off-engine sites returned.
+- one pay entry of ``$4,000.00`` a paycheck (``$104,000`` a year over 26)
+  + 3% one-time raise effective 2026-03
+- Post-raise pay a paycheck: ``4000.00 * 1.03 = 4,120.00`` ->
+  ``Decimal("4120.00")``, the raise rounding to the cent (ruling R-SAL60)
+- Pre-fix (no raise applied): ``4,000.00`` -> the pre-Commit-17 value the
+  off-engine sites returned.
 """
 
 from dataclasses import replace
@@ -64,18 +65,20 @@ from tests._test_helpers import (
     payroll_basis,
     pricing_over,
     repriced_by_the_owner,
+    start_test_pay_list,
 )
 
 
 # Hand-computed expected values (see module docstring for derivation).
-_RAISE_APPLIED_GROSS = Decimal("4120.00")  # 104000 * 1.03 / 26
-_NO_RAISE_GROSS = Decimal("4000.00")  # 104000 / 26
+_RAISE_APPLIED_GROSS = Decimal("4120.00")  # the 4,000.00 entry x 1.03
+_NO_RAISE_GROSS = Decimal("4000.00")  # the entry: $104,000 a year / 26
 _AS_OF_AFTER_RAISE = date(2026, 3, 15)  # inside seed_periods period 5
 _AS_OF_BEFORE_RAISE = date(2026, 1, 5)  # inside seed_periods period 0
 
 
 def _create_profile(
-    user_id: int, scenario_id: int, *, annual_salary: str = "104000.00",
+    user_id: int, scenario_id: int, *,
+    pay: str = "4000.00",  # $104,000.00 a year / 26
 ) -> SalaryProfile:
     """Create an active SalaryProfile for the user.
 
@@ -88,11 +91,11 @@ def _create_profile(
         scenario_id=scenario_id,
         filing_status_id=filing.id,
         name="Test Salary",
-        annual_salary=Decimal(annual_salary),
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal(pay))
     db.session.flush()
     return profile
 
@@ -762,13 +765,19 @@ class TestConsumerIntegration:
         :class:`income_service.ProfilePaychecks`, the ONE spelling of a
         profile's projection, rather than re-derived here.
 
-        Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.
+        Hand arithmetic: ``4000.00 * 1.03 = 4120.00`` (the pay entry,
+        $104,000 / 26, raised once).  The raise is effective February 2026:
+        the pay entry is recorded on the window's first payday, 2026-01-19
+        (today pinned to 2026-03-20), and holds every raise landing on or
+        before it (ruling R-SAL59), so a January raise -- landing 2026-01-01
+        -- would be inside it; February lands after it and before the
+        current payday.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(
-                profile, effective_month=1, effective_year=2026,
+                profile, effective_month=2, effective_year=2026,
             )
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
@@ -1652,9 +1661,10 @@ class TestThePricerIsKeyedOnTheRaiseSet:
     ):
         """The paychecks a keyed pricer answers are the terms', end to end.
 
-        A June 2028 payday: three applications of 5% on ``$104,000`` under
-        the rows (``$120,393.00 / 26 = $4,630.50``), one under terms believed
-        through 2026 (``$109,200.00 / 26 = $4,200.00``).
+        A June 2028 payday: three applications of 5% on the ``$4,000.00``
+        entry under the rows (``4,000.00 x 1.05 = 4,200.00``, ``x 1.05 =
+        4,410.00``, ``x 1.05 = $4,630.50``), one under terms believed through
+        2026 (``4,000.00 x 1.05 = $4,200.00``).
         """
         with app.app_context():
             profile, row = self._profile_with_a_forever_raise(seed_user)
@@ -1684,6 +1694,12 @@ class TestThePricerIsKeyedOnTheRaiseSet:
         FK through the ref cache instead, and the paycheck moves by the
         raise.  A second adversarial review of S3-f-1 found the relationship
         read raising ``AttributeError`` on exactly this row.
+
+        **The raise is effective February and the paycheck priced is the
+        first one in February** since plan step salary:X-av-3a.  The pay
+        entry is recorded on the first payday, 2026-01-02, and holds every
+        raise landing on or before it (ruling R-SAL59); a January raise lands
+        on 2026-01-01, so it would be inside the entry and move nothing.
         """
         with app.app_context():
             profile = _create_profile(
@@ -1693,9 +1709,13 @@ class TestThePricerIsKeyedOnTheRaiseSet:
             db.session.refresh(profile)
             calendar = calendar_for(profile.user_id)
             first = calendar.saved()[0]
+            february = next(
+                period for period in calendar.saved()
+                if period.start_date >= date(first.start_date.year, 2, 1)
+            )
             before = pricing_over(calendar).for_profile(
                 profile,
-            ).at(first).earnings.gross_biweekly
+            ).at(february).earnings.gross_biweekly
 
             with db.session.no_autoflush:
                 pending = SalaryRaise(
@@ -1703,7 +1723,7 @@ class TestThePricerIsKeyedOnTheRaiseSet:
                     raise_type_id=ref_cache.raise_type_id(
                         RaiseTypeEnum.CUSTOM,
                     ),
-                    effective_month=1, effective_year=first.start_date.year,
+                    effective_month=2, effective_year=first.start_date.year,
                     flat_amount=Decimal("26000.00"), percentage=None,
                     is_recurring=False, terminal_year=None,
                 )
@@ -1714,7 +1734,7 @@ class TestThePricerIsKeyedOnTheRaiseSet:
                 assert pending.raise_type is None
                 after = pricing_over(
                     calendar,
-                ).for_profile(profile).at(first)
+                ).for_profile(profile).at(february)
                 db.session.rollback()
 
             # $26,000 a year is exactly $1,000.00 a paycheck over 26.

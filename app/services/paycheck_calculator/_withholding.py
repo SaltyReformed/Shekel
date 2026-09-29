@@ -55,8 +55,8 @@ class _WageBasis:
             under an earlier rhythm was annualised at a count it was never
             paid at.  It arrives from
             :meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, the
-            read that divides the same paycheck's salary, so the divisor and
-            the annualiser cannot part.
+            read that prices the same paycheck's salary at that rhythm, so the
+            rhythm it is paid at and the annualiser cannot part.
     """
     gross_biweekly: Decimal
     taxable_biweekly: Decimal

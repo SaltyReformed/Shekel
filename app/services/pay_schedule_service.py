@@ -30,8 +30,11 @@ writes the schedule row; :mod:`app.services.pay_era_write` writes the eras**
 -- the reader / writer split ``pay_period_service`` / ``pay_period_write``
 already draws for the paydays (plan step C3-b), made for the same reason: an
 era is minted by ``mint_era`` when a batch states a rhythm the era covering
-its first payday does not hold, retired by ``retire_eras`` when a later batch
-supersedes it, and the two refusals both writers ask live HERE, beside the
+its first payday does not hold, has its phase moved down in place by
+``rephase_earliest_era`` when a batch records below the record (plan step
+``pay_calendar:C18-b``), and is retired by ``retire_eras`` when a later batch
+supersedes it.  The two refusals every door that STATES a rhythm asks (the
+cadence bound and the cadence-convention pairing) live HERE, beside the
 column bounds they state.
 
 **:class:`~app.services.pay_rhythm.Rhythm` and :class:`~app.services.pay_rhythm.Era`
@@ -464,10 +467,12 @@ def reject_out_of_range_cadence(cadence) -> None:
 
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).
-    :func:`~app.services.pay_era_write.mint_era` is the one writer
-    of the column (``budget.pay_eras.cadence_days`` since plan step
-    ``C17-a``; the schedule row's until then) and asks this immediately before
-    writing, so no door can persist a value the CHECK refuses.
+    :func:`~app.services.pay_era_write.mint_era` is the one door that writes
+    a cadence a row did not already hold (``budget.pay_eras.cadence_days``
+    since plan step ``C17-a``; the schedule row's until then) and asks this
+    immediately before writing, so no door can persist a value the CHECK
+    refuses; ``pay_era_write.rephase_earliest_era`` writes back the row's own
+    value at a new phase.
     ``registration_service.register_user`` asks
     it EARLIER -- in its up-front validation block, before the ``User`` row is
     added to the session -- because a registration that refuses halfway leaves
@@ -625,6 +630,36 @@ def reject_out_of_range_history_opening(history_opens_on: date | None) -> None:
         )
 
 
+def record_below_history(
+    first_payday: date | None, history_opens_on: date | None,
+) -> bool:
+    """Return whether a record opening on *first_payday* starts below the stated history.
+
+    **The ONE predicate for "a payday before the day the owner said their
+    paychecks started"** (ruling **pay_calendar:R-PC104**).  Two refusals
+    ask it and word it for their own door: :func:`reject_history_opening_after_payday`
+    (a history STATED after the record's first payday) and
+    ``pay_period_batch.reject_payday_before_history`` ("Add earlier
+    paychecks" reaching below the stated history, plan step
+    ``pay_calendar:C18-b``).  One predicate is what the ruling's "the same
+    rule" means: the two doors can never admit different sets.
+
+    Args:
+        first_payday: The record's first payday, or the one a door would make
+            first; ``None`` for an owner with no paydays.
+        history_opens_on: The stated day, or ``None`` for not stated.
+
+    Returns:
+        ``True`` when both are present and the history opens after the
+        payday.  Equality is not below: a history ON the first payday counts
+        nothing under the record, which is an ordinary statement.
+    """
+    return (
+        first_payday is not None and history_opens_on is not None
+        and history_opens_on > first_payday
+    )
+
+
 def reject_history_opening_after_payday(
     history_opens_on: date | None, opening_payday: date | None,
 ) -> None:
@@ -638,6 +673,7 @@ def reject_history_opening_after_payday(
     it of the payday the schedule RECORDS, because by then there is a schedule
     to read.  Two spellings of "your paychecks cannot have begun after your
     first one" would be two chances for the two doors to admit different sets.
+    The test itself is :func:`record_below_history`, which a third door asks.
 
     Equality passes, and it is the ordinary answer for one whole class of
     owner: a floor ON the opening payday means "count nothing below the
@@ -655,9 +691,7 @@ def reject_history_opening_after_payday(
         ValidationError: *history_opens_on* falls after *opening_payday*.  The
             message names both days, so a surface can render it verbatim.
     """
-    if history_opens_on is None or opening_payday is None:
-        return
-    if history_opens_on > opening_payday:
+    if record_below_history(opening_payday, history_opens_on):
         raise ValidationError(
             f"Your paychecks cannot have started on "
             f"{history_opens_on.isoformat()}: that is after your first "

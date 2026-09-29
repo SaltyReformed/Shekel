@@ -576,12 +576,16 @@ def resync_user_account_anchor_postings(user_id: int) -> list[int]:
     sync the deploy backfill uses, so a re-synced correction is identical to a
     go-forward one by construction.
 
-    Two callers need it: ``pay_period_admin.reset_pay_periods`` (the wipe
+    Three callers need it: ``pay_period_admin.reset_pay_periods`` (the wipe
     CASCADE-disposed the user's correction entries with their periods, so this
     re-derives the corrections onto the rebuilt schedule) and
-    ``routes.grid.create_baseline`` (the recovery path for baseline-less
-    users, so openings skipped at account-create time are not silently
-    stranded).  Scoped to one user because both are single-user operations.
+    ``pay_period_admin.remove_earlier_pay_periods`` (plan step
+    ``pay_calendar:C21``, ruling **R-PC114**: its delete takes the corrections
+    the ledger had filed in the removed paychecks), both through
+    ``pay_period_admin._refile_ledger``; and ``routes.grid.create_baseline``
+    (the recovery path for baseline-less users, so openings skipped at
+    account-create time are not silently stranded).  Scoped to one user
+    because all three are single-user operations.
 
     **The reset half no longer fabricates anything to re-derive FROM**, and
     that is ruling R-EO (plan step X-f1c3c).  It used to run a

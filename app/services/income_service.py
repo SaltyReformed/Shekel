@@ -3,9 +3,10 @@ Shekel Budget App -- Income Service (F-20 / MED-06 / F-032).
 
 Single source of truth for what a salary profile PAYS: the paycheck engine's
 own :class:`~app.services.paycheck_calculator.PaycheckBreakdown`, per period,
-never the off-engine ``Decimal(str(profile.annual_salary)) / <a paycheck
-count>`` recompute that silently dropped any applicable
-:class:`~app.models.salary_raise.SalaryRaise` row pre-Commit-17.
+never an off-engine recompute: the ``Decimal(str(profile.annual_salary)) / <a
+paycheck count>`` one silently dropped any applicable
+:class:`~app.models.salary_raise.SalaryRaise` row pre-Commit-17, and the
+column it read is gone since plan step salary:X-av-3a.
 :class:`ProfilePaychecks` is the ONE spelling of a profile's projection (ledger
 row **N-443**, plan step **salary:R14-a**) and :class:`SalaryPricing` is what
 prices a generated row from it.
@@ -141,16 +142,16 @@ class ProfilePaychecks:
     (the tax series was all of it, at construction); the PROFILE's reads need
     not happen at construction either, and an adversarial review of plan step
     salary:S3-d corrected a sentence here that claimed otherwise.**
-    ``SalaryProfile.raises`` and ``.lines`` are ``lazy="select"``.  The
-    deductions are read by
+    ``SalaryProfile.raises``, ``.lines`` and ``.pay_entries`` are
+    ``lazy="select"``.  The deductions and the pay entries are read by
     :func:`~app.services.paycheck_calculator.calculate_paycheck` on the FIRST
     paycheck priced; the raises are read one call earlier since plan step
     salary:S3-f-1, by :meth:`PaycheckPricing.for_profile` canonicalising the
     raise set for its memo key, and the engine reads only that value.  Whether
-    either read issues a SELECT depends on how the caller loaded the profile,
-    not on this class.
+    any of those reads issues a SELECT depends on how the caller loaded the
+    profile, not on this class.
     :func:`~app.services.projection_inputs.load_payroll_feeds` eager-loads
-    them (``subqueryload`` on both); :meth:`SalaryPricing._profile_by_template`
+    them (``subqueryload`` on all three); :meth:`SalaryPricing._profile_by_template`
     does not, and that is a pre-existing property of the amount model's
     profile lookup rather than something this step introduced.  It is
     reported, not fixed here: adding eager options to that query changes what

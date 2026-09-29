@@ -31,7 +31,7 @@ from app.services.salary_raises import (
     EndYearError,
     end_year_of,
 )
-from app.utils.dates import to_display_date
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN, to_display_date
 
 # The raise form's end-year answer is a MODE beside the year (plan step
 # **salary:S3-c**, ruling **R-SAL13**); the vocabulary and the ONE rule that
@@ -40,6 +40,15 @@ from app.utils.dates import to_display_date
 # mode is consumed by :meth:`RaiseCreateSchema.drop_end_year_mode` and never
 # reaches the model.  This maps the rule's two halves onto THIS form's controls.
 _END_YEAR_FIELDS = {"mode": "raise_end_mode", "year": "terminal_year"}
+
+
+#: What one paycheck may pay: above zero like ``ck_pay_entries_positive_amount``,
+#: under the same form-layer ceiling the other monetary inputs take.
+_PAY_AMOUNT_RANGE = validate.Range(
+    min=Decimal("0"), min_inclusive=False, max=Decimal("10000000"),
+)
+#: The window a pay entry's payday may be typed in: the calendar's own.
+_PAYDAY_RANGE = validate.Range(min=CALENDAR_DATE_MIN, max=CALENDAR_DATE_MAX)
 
 
 class SalaryProfileCreateSchema(BaseSchema):
@@ -51,10 +60,16 @@ class SalaryProfileCreateSchema(BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    annual_salary = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
+    # The profile's FIRST pay entry: what one paycheck pays, and the payday it
+    # pays it from (plan step salary:X-av-3a, rulings R-SAL59 and R-SAL61:
+    # "Pay is only ever typed per paycheck").  Whether the day is a payday, and
+    # not later than the owner's next one, is the service's question
+    # (``pay_list_service``, through ``pay_stub_service.payday_refusal_for_door``:
+    # rulings R-SAL90 and R-SAL93).
+    pay_amount = fields.Decimal(
+        required=True, places=2, as_string=True, validate=_PAY_AMOUNT_RANGE,
     )
+    pay_payday = fields.Date(required=True, validate=_PAYDAY_RANGE)
     filing_status_id = RowId(required=True)
     state_code = fields.String(
         required=True, validate=validate.Length(min=2, max=2)
@@ -101,10 +116,6 @@ class SalaryProfileUpdateSchema(BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(validate=validate.Length(min=1, max=200))
-    annual_salary = fields.Decimal(
-        places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
-    )
     filing_status_id = RowId()
     state_code = fields.String(validate=validate.Length(min=2, max=2))
     # W-4 fields (IRS Pub 15-T)
@@ -131,6 +142,29 @@ class SalaryProfileUpdateSchema(BaseSchema):
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))
+
+
+class SalaryPayEntryFixSchema(BaseSchema):
+    """Validates POST data for fixing one entry of a salary's pay list.
+
+    Plan step **salary:X-av-3a**, ruling **R-SAL61**: "'Fix' edits one" --
+    its amount, its payday, or both.  Whether the payday is a payday, and
+    whether another entry already holds it, are the service's questions
+    (:func:`~app.services.pay_list_service.fix_entry`).  ``version_id`` is
+    the entry's optimistic-locking counter; see
+    :class:`TransactionUpdateSchema` for the contract.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
+    amount = fields.Decimal(
+        required=True, places=2, as_string=True, validate=_PAY_AMOUNT_RANGE,
+    )
+    payday = fields.Date(required=True, validate=_PAYDAY_RANGE)
+    version_id = RowId(required=True, validate=validate.Range(min=1))
 
 
 class RaiseCreateSchema(BaseSchema):

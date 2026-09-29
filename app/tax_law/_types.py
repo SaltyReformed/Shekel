@@ -28,8 +28,9 @@ bound EQUAL to the lower one); a state code of two capital letters; a state's
 standard deduction always stated (``$0.00`` where it has none; the column
 allowed ``NULL``); a figure with more decimal places than its column refused
 where the column silently rounded it, because a transcription that disagrees
-with its scale is a slip to fix, not a figure to reinterpret; and a law that
-cannot change once it loads, because every mapping in it is a read-only view.
+with its scale is a slip to fix, not a figure to reinterpret; a law that
+cannot change once it loads, because every mapping in it is a read-only view;
+and no year skipped between two the law carries (ruling salary:R-SAL86).
 
 **The attribute names are the calculator's.**  :mod:`app.services.tax_calculator`
 reads ``standard_deduction``, ``brackets`` (each ``min_income`` / ``max_income``
@@ -284,12 +285,21 @@ class TaxYearLaw:
 
 @dataclass(frozen=True)
 class TaxLaw:
-    """Every tax year the app carries, oldest first, each year once."""
+    """Every tax year the app carries, oldest first, each year once, none skipped.
+
+    **No skipped year (ruling salary:R-SAL86).**  A year between two the law
+    carries would be priced on the earlier one's rules
+    (:func:`app.services.tax_config_service.resolve_tax_year`) with nothing to
+    say it is missing, because the tax-law alarms ask only whether the law
+    reaches the year a date calls for (:mod:`app.services.tax_law_alarm`).
+    Refusing the gap here is what lets "the law carries the due year" mean
+    "and every year before it back to the first".
+    """
 
     years: tuple[TaxYearLaw, ...]
 
     def __post_init__(self):
-        """Refuse a year that is not a TaxYearLaw, or years out of order or repeated."""
+        """Refuse a year that is not a TaxYearLaw, or years out of order, repeated or skipped."""
         if not isinstance(self.years, tuple):
             raise ValueError("the tax law's years are a tuple")
         for year in self.years:
@@ -298,6 +308,25 @@ class TaxLaw:
         numbers = [year.tax_year for year in self.years]
         if numbers != sorted(set(numbers)):
             raise ValueError(f"tax years must be distinct and ascending: {numbers}")
+        if numbers and numbers != list(range(numbers[0], numbers[-1] + 1)):
+            raise ValueError(f"the tax law skips a year: {numbers}")
+
+    def years_listing(self, state_code: str) -> tuple[TaxYearLaw, ...]:
+        """Return the years whose law lists *state_code*, oldest first.
+
+        The ONE spelling of a state's series: the paycheck's state line is
+        resolved from it (:func:`app.services.tax_config_service.profile_tax_series`)
+        and so is the year the tax-law alarms name for a state
+        (:mod:`app.services.tax_law_alarm`), so the two cannot part.
+
+        Args:
+            state_code: A two-letter state code.
+
+        Returns:
+            The :class:`TaxYearLaw` of each year listing the state; empty when
+            no year does.
+        """
+        return tuple(year for year in self.years if state_code in year.states)
 
 
 def _require_number(value, what: str) -> None:

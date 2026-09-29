@@ -23,6 +23,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.routes.salary import checkpoint as checkpoint_module
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from tests._test_helpers import start_test_pay_list
 
 _VALID_FORM = {
     "as_of_date": "2026-06-30",
@@ -45,12 +46,12 @@ def _make_profile(seed_user, name="Checkpoint Route Profile"):
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name=name,
-        annual_salary=Decimal("130000.00"),
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("5000.00"))  # $130,000.00 a year / 26
     db.session.flush()
     return profile
 

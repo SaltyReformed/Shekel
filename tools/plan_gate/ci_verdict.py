@@ -3,9 +3,10 @@
 Branch protection on ``main`` requires a status named ``lint-and-test``.  Until
 plan step ``bank_import:X-gy`` that was one job running everything in series;
 it is now several jobs in parallel -- the change-set classifier, the plan gate,
-lint and the test shards -- and ``lint-and-test`` is the job that NEEDS all of
-them and answers for them.  ``ci.yml`` hands it the ``needs`` context as JSON
-on stdin and this module prints the verdict and exits non-zero on red.
+the tax-law check, lint and the test shards -- and ``lint-and-test`` is the job
+that NEEDS all of them and answers for them.  ``ci.yml`` hands it the ``needs``
+context as JSON on stdin and this module prints the verdict and exits non-zero
+on red.
 
 **Why it cannot simply be a job that depends on the others.**  GitHub skips a
 job whose dependency failed, and a SKIPPED required check counts as PASSING.
@@ -38,8 +39,11 @@ import sys
 
 from ci_scope import REGISTRY_ONLY
 
-#: Jobs that grade in every scope: the classifier itself and the plan gate.
-EVERY_SCOPE = ("scope", "plan-gate")
+#: Jobs that grade in every scope: the classifier itself, the plan gate, and
+#: the tax-law check, which refuses EVERY pull request from December 1 until
+#: next year's tax law is in the app (plan step salary:X-at-4, ruling
+#: salary:R-SAL74) -- a registry-only pass included.
+EVERY_SCOPE = ("scope", "plan-gate", "tax-law")
 
 #: Jobs guarded by ``needs.scope.outputs.scope != 'registry-only'``: they grade
 #: code, and a registry-only change set skips them.

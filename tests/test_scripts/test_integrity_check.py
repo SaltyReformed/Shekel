@@ -30,6 +30,7 @@ from tests._test_helpers import (
     open_owner_calendar,
     populate_in_a_fresh_pass,
     settle_day_columns,
+    start_test_pay_list,
 )
 from scripts.integrity_check import (
     CheckResult,
@@ -1024,9 +1025,9 @@ class TestDataConsistency:
             scenario_id=seed_user["scenario"].id,
             filing_status_id=filing.id,
             name="Test Salary",
-            annual_salary=Decimal("80000.00"),
         )
         db.session.add(profile)
+        start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
         db.session.flush()
 
         timing = db.session.query(PaycheckLineKind).first()

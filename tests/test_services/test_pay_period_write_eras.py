@@ -603,7 +603,7 @@ class TestTheEraRuleIsKeyedOnTheErasFirstPayday:
             )
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="on or after 2026-02-13"):
+            with pytest.raises(ValidationError, match="Choose 2026-02-13 or later"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 1, 2),
                     num_periods=4,

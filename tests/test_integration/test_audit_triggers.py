@@ -12,7 +12,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.ref import Status, TransactionType
 import pytest
-from tests._test_helpers import one_off_row_of
+from tests._test_helpers import one_off_row_of, start_test_pay_list
 
 
 def _get_audit_rows(table_name=None, operation=None):
@@ -115,11 +115,11 @@ class TestAuditTriggerInsert:
             user_id=seed_user["user"].id,
             scenario_id=seed_user["scenario"].id,
             name="Test Salary",
-            annual_salary=Decimal("80000.00"),
             filing_status_id=filing.id,
         )
         db.session.add(profile)
         db.session.flush()
+        start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
         rows = _get_audit_rows("salary_profiles", "INSERT")
         # Exactly 1 INSERT from the profile creation above
         assert len(rows) == 1

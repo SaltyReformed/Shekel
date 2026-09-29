@@ -48,7 +48,10 @@ over THREE row kinds whose settle verbs are genuinely different:
 * a TRANSACTION settles through the status seam and a posting reconcile, at
   the verb the grid's Mark Paid shares (ruling **R-FA**), and a BILL's tick may
   correct its amount while an envelope's close may not (ruling **R-FB**) --
-  plan step X-f2-c2;
+  plan step X-f2-c2.  Two scopes share that verb since plan step
+  ``credit_card:CC-5-4b`` (ruling **R-CC44**): the rows on this account, and
+  the rows planned on ANOTHER whose kept payment is on this one, listed as
+  "Paid from this account" -- one module, because the cut here is by verb;
 * a TRANSFER settles through ``transfer_service.settle_transfer`` so both
   legs and the parent move together, carrying the loan-payment freeze
   (:mod:`._transfers`) -- plan step X-f2-c3.  It is offered as its LEG on this

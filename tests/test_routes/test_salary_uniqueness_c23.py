@@ -41,7 +41,9 @@ from app.models.salary_raise import SalaryRaise
 from app.models.transaction_template import TransactionTemplate
 from app.utils.db_errors import is_unique_violation
 
-from tests._test_helpers import freeze_today, make_every_period_rule
+from tests._test_helpers import (
+    freeze_today, make_every_period_rule, start_test_pay_list,
+)
 
 
 # ── Fixtures and helpers ────────────────────────────────────────
@@ -104,10 +106,10 @@ def _create_profile(seed_user):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Day Job",
-        annual_salary=Decimal("75000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -226,10 +228,10 @@ class TestSalaryRaiseUniqueConstraint:
                 template_id=None,
                 filing_status_id=filing.id,
                 name="Side Gig",
-                annual_salary=Decimal("20000.00"),
                 state_code="NC",
             )
             db.session.add(profile_b)
+            start_test_pay_list(profile_b, Decimal("769.23"))  # $20,000.00 a year / 26
             db.session.commit()
 
             merit = db.session.query(RaiseType).filter_by(name="merit").one()

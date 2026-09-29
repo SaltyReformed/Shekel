@@ -43,6 +43,7 @@ from app.services.tax_report_service import compute_tax_report
 
 from tests._test_helpers import (
     era_of,
+    start_test_pay_list,
     strip_owner_schedule,
 )
 
@@ -117,10 +118,11 @@ def _investment_account_with_an_active_deduction(db, seed_user, name):
     profile = SalaryProfile(
         user_id=user_id, scenario_id=seed_user["scenario"].id,
         filing_status_id=1, name=f"{name} profile",
-        annual_salary=Decimal("50000.00"), state_code="NC",
+        state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
     db.session.flush()
     db.session.add(PaycheckLine(
         salary_profile_id=profile.id, name=name,
@@ -163,6 +165,17 @@ _CADENCES = [
     (365, 1),    # annual (a contractor)
 ]
 
+#: The $91,675.00 salary's pay entry at each count above: what ONE paycheck
+#: pays at that rhythm, rounded to the cent ROUND_HALF_UP (plan step
+#: salary:X-av-3a stores the paycheck, not the year).
+_PAY_OF_91675_AT = {
+    52: Decimal("1762.98"),   # $91,675.00 a year / 52
+    26: Decimal("3525.96"),   # $91,675.00 a year / 26
+    24: Decimal("3819.79"),   # $91,675.00 a year / 24
+    12: Decimal("7639.58"),   # $91,675.00 a year / 12
+    1: Decimal("91675.00"),   # $91,675.00 a year / 1
+}
+
 
 def _calendar(cadence_days, count, user_id=1, first=date(2026, 1, 1)):
     """A derived calendar of *count* paydays spaced *cadence_days* apart."""
@@ -199,12 +212,15 @@ class TestTheCountIsTheSchedule:
     def test_a_years_paychecks_sum_to_a_years_salary(
         self, app, db, seed_user, cadence_days, count,
     ):
-        """The year's grosses total the annual salary, at every rhythm.
+        """A year's grosses total the yearly figure the engine reports, at every rhythm.
 
-        Input: a $91,675 raise-free profile -- the developer's own salary --
-        projected over one full year at each authorable cadence.
-        Expected: the grosses sum to $91,675.00 within HALF A CENT PER
-        PAYCHECK, whatever the rhythm.
+        Input: a raise-free profile whose one pay entry is $91,675.00 a year's
+        worth at the rhythm tested (91,675.00 / count, half-up), projected
+        over one full year at each authorable cadence.
+        Expected: exactly ``count`` paychecks, every one the same figure,
+        summing EXACTLY to the yearly figure the engine reports
+        (``Earnings.annual_salary``: the pay times the count it annualises
+        by); and within half a cent per paycheck of $91,675.00.
         Why: **this is the money property finding F-16 destroyed**, and it is
         an identity rather than a figure, so it holds at every cadence without
         a per-cadence expected value to get wrong.  Before R-F16 the engine
@@ -213,19 +229,17 @@ class TestTheCountIsTheSchedule:
         cadence, 46% at 30 days.  Measured on this exact salary at plan step
         R-F16.
 
-        **The bound replaced an exact equality at plan step balance:X-aw**
-        (ruling **balance:R-HW**), and it is derived rather than chosen.  The
-        gross is ``round_money(salary / count)``, one ROUND_HALF_UP at the
-        cent, so a single paycheck sits at most half a cent from its exact
-        share and ``count`` of them at most ``count / 2`` cents from the
-        salary -- $0.04 at the 7 / 14 / 15 / 30-day cadences here, against a
-        bound of $0.13 at 26, and exactly $0.00 at the 365-day one, whose single
-        yearly paycheck IS the salary and rounds nothing.
-        MED-05 / PA-07 bought the exact equality by giving the earliest
-        paychecks of a year an extra cent, which made a paycheck's value
-        depend on how many pay-period rows existed (finding **N-239**).
-        **The bound is far tighter than the defect this case guards**: F-16
-        was wrong by 100% and 54% of a year's salary, not by cents.
+        **Since plan step salary:X-av-3a the stored fact is the paycheck**
+        (ruling **R-SAL59**) and nothing divides it, so the property F-16
+        needs is that the COUNT the yearly figure is multiplied by is the
+        number of paydays the calendar pays in a year: the exact equality
+        grades that, and a count read anywhere but the calendar (hardcoded to
+        26, say) fails it at every other rhythm.  The half-cent bound against
+        $91,675.00 is the property as ruling **balance:R-HW** stated it for a
+        divided salary; each fixture's pay is already that salary over its
+        own count, so the bound now holds by construction and cannot fail on
+        its own (an adversarial review of this step hardcoded the count to 26
+        and found the bound alone passing).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -234,10 +248,10 @@ class TestTheCountIsTheSchedule:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=1,
                 name=f"Cadence {cadence_days}",
-                annual_salary=Decimal("91675.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, _PAY_OF_91675_AT[count])
             db.session.flush()
 
             calendar = _calendar(cadence_days, count, user_id=user_id)
@@ -259,20 +273,41 @@ class TestTheCountIsTheSchedule:
             # ruling R-HW states.  Without this the bound above would pass
             # for an engine that varied the gross period by period.
             assert len({b.earnings.gross_biweekly for b in breakdowns}) == 1
+            # The identity F-16 needs on a pay list: a year's paydays sum
+            # exactly to the reported yearly figure.  The first line is the
+            # fixture's premise (it builds ``count`` paydays), asserted so the
+            # sum is a year's; the second is the engine's property.
+            assert len(breakdowns) == count
+            assert total == breakdowns[0].earnings.annual_salary
 
     def test_the_same_profile_prices_differently_at_two_rhythms(
         self, app, db, seed_user,
     ):
         """THE FIRING CONTROL: the cadence actually moves the answer.
 
-        Input: ONE profile, priced at 7 days and at 14 days.
-        Expected: the weekly gross is half the biweekly one, exactly.
+        Input: ONE profile -- one pay entry of $3,525.96 a paycheck
+        ($91,675.00 a year / 26, the owner's own 14-day rhythm) -- walked on a
+        7-day calendar and on a 14-day one.
+        Expected: the same $3,525.96 paycheck on both, counted 52 and 26 times
+        a year, so the weekly calendar's yearly figure is twice the biweekly
+        one's, exactly.
         Why: every assertion above would still pass if the engine ignored the
         cadence and hardcoded 26 for a 14-day-cadence fixture -- the suite
         would be green and the defect back.  This is the case that fails if
-        the divisor stops being a function of the argument, and it is the
-        assertion the whole pre-R-F16 suite lacked: nothing varied this axis,
-        so nothing could see a count that was not the schedule's.
+        the count stops being a function of the calendar argument, and it is
+        the assertion the whole pre-R-F16 suite lacked: nothing varied this
+        axis, so nothing could see a count that was not the schedule's.
+
+        **Re-stated on the pay list's walk at plan step salary:X-av-3a.**  It
+        priced one YEARLY salary on each calendar and asserted the paycheck
+        was that salary over the calendar's count ($1,762.98 weekly against
+        $3,525.96 biweekly).  The stored fact is one PAYCHECK now (ruling
+        **R-SAL59**), so no calendar divides anything: what survives is that
+        the count comes from the calendar the basis carries and the yearly
+        figure is the paycheck times it.  Each calendar holds one era and the
+        entry's payday (the owner's first saved payday, 2024-01-05) sits
+        below both, where the earliest era runs backward, so the walk crosses
+        no change of rhythm and carries nothing (R-SAL82).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -281,42 +316,35 @@ class TestTheCountIsTheSchedule:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=1,
                 name="One profile, two rhythms",
-                annual_salary=Decimal("91675.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            # The owner's own rhythm on the entry's payday is 14 days.
+            start_test_pay_list(profile, _PAY_OF_91675_AT[26])
             db.session.flush()
-            configs = load_tax_configs_for_year(profile, 2026)
 
             weekly = _calendar(7, 52, user_id=user_id)
             biweekly = _calendar(14, 26, user_id=user_id)
 
-            weekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, weekly), weekly.periods[0], configs,
-            ).earnings.gross_biweekly
-            biweekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, biweekly), biweekly.periods[0], configs,
-            ).earnings.gross_biweekly
+            weekly_pay = PayrollBasis(profile, weekly).base_pay_on(
+                weekly.periods[0].start_date,
+            )
+            biweekly_pay = PayrollBasis(profile, biweekly).base_pay_on(
+                biweekly.periods[0].start_date,
+            )
 
-            # Hand-computed, and stated as the cents rather than as a
-            # tolerance band: $91,675 / 52 = $1,762.9807... -> $1,762.98 and
-            # $91,675 / 26 = $3,525.9615... -> $3,525.96, each one
-            # ROUND_HALF_UP at the cent.  A band would not catch a one-cent
-            # error, which is exactly the size of what the code around this
-            # computes.
-            #
-            # **Re-pinned at plan step balance:X-aw** from $1,762.99 /
-            # $3,525.97, which carried MED-05 / PA-07's residue cent (and
-            # whose comment misstated the biweekly residue as 10 cents; it
-            # was 4 -- $91,675 - $3,525.96 * 26 = $0.04).
-            assert weekly_gross == Decimal("1762.98")
-            assert biweekly_gross == Decimal("3525.96")
-            # The docstring's own claim, now literally true: two weekly
-            # paychecks make one biweekly one, to the cent.  Under the
-            # superseded rule it was FALSE at this salary -- $1,762.99 x 2 =
-            # $3,525.98 against a biweekly $3,525.97 -- because the residue
-            # was distributed independently in each of the two years.
-            assert weekly_gross * 2 == biweekly_gross
+            # The paycheck is the entry on both calendars: nothing divides it.
+            assert weekly_pay.per_paycheck == Decimal("3525.96")
+            assert biweekly_pay.per_paycheck == Decimal("3525.96")
+            # The count is each calendar's own.
+            assert weekly_pay.periods_per_year == Decimal("52")
+            assert biweekly_pay.periods_per_year == Decimal("26")
+            # Hand-computed, exact (a product rounds nothing):
+            # $3,525.96 x 52 = $183,349.92 and $3,525.96 x 26 = $91,674.96.
+            assert weekly_pay.annual == Decimal("183349.92")
+            assert biweekly_pay.annual == Decimal("91674.96")
+            # Twice the paychecks, twice the year, to the cent.
+            assert weekly_pay.annual == biweekly_pay.annual * 2
 
 
 class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
@@ -365,12 +393,14 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No paydays",
-                annual_salary=Decimal("50000.00"), state_code="NC",
+                state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             _strip_every_payday_keeping_the_schedule(db, user_id)
 
             report = compute_tax_report(user_id, 2026, date(2026, 3, 1))
@@ -394,12 +424,14 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user_id, scenario_id=seed_user["scenario"].id,
                 filing_status_id=1, name="No cadence",
-                annual_salary=Decimal("50000.00"), state_code="NC",
+                state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             _strip_every_payday(db, user_id)
 
             with pytest.raises(PayCalendarError, match="no pay calendar"):
@@ -578,7 +610,11 @@ class TestTheSecondCountIsGone:
                 )
             }
             assert "pay_periods_per_year" not in columns
-            assert "annual_salary" in columns  # the census reached the table
+            # The census reached the table.  The witness was ``annual_salary``
+            # until plan step salary:X-av-3a dropped that column for
+            # ``salary.pay_entries``; ``filing_status_id`` is a live column of
+            # the same table that no step in flight removes.
+            assert "filing_status_id" in columns
 
     def test_the_columns_check_constraint_is_gone_too(self, app):
         """``ck_salary_profiles_positive_periods`` is dropped with its column.

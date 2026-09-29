@@ -39,22 +39,29 @@
           </div>
 
           <div class="row mb-3">
+            {# The FIRST pay entry, typed per paycheck (plan step
+               salary:X-av-3a, rulings R-SAL59 and R-SAL61: "Pay is only ever
+               typed per paycheck").  An existing profile's pay is its pay
+               list, the card below this form. #}
+            {% if not profile %}
             <div class="col-md-6">
-              <label for="annual_salary" class="form-label">Annual Salary</label>
+              <label for="pay_amount" class="form-label">Pay a paycheck</label>
               <div class="input-group">
                 <span class="input-group-text">$</span>
-                <input type="number" step="0.01" id="annual_salary" name="annual_salary"
-                       class="form-control" required
-                       value="{{ profile.annual_salary if profile else '' }}">
+                <input type="number" step="0.01" min="0.01" id="pay_amount" name="pay_amount"
+                       class="form-control" required>
               </div>
+              <div class="form-text">Gross base pay, before deductions, as your stub prints it.</div>
             </div>
+            {% endif %}
             {# Paychecks a year is DERIVED from the pay schedule's cadence and
                is not a second control here (plan step R-F16).  It was a
                12/24/26/52 dropdown, and it was the divisor the paycheck engine
-               turned this salary into one paycheck with -- so a profile saying
-               26 beside a 7-day cadence modelled double the owner's income.
-               Shown rather than hidden because the gross this page previews is
-               unexplainable without it. #}
+               turned a yearly salary into one paycheck with -- so a profile
+               saying 26 beside a 7-day cadence modelled double the owner's
+               income.  It is the LATEST rhythm's count; a yearly figure is a
+               pay times the count in force on its own payday (R-SAL59,
+               R-SAL66), which the pay list states per entry. #}
             <div class="col-md-6">
               <span class="form-label d-block">Paychecks / Year</span>
               {% if paychecks_per_year %}
@@ -76,6 +83,21 @@
               {% endif %}
             </div>
           </div>
+
+          {% if not profile %}
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="pay_payday" class="form-label">From payday</label>
+              <input type="date" id="pay_payday" name="pay_payday" class="form-control" required
+                     value="{{ current_payday.isoformat() if current_payday else '' }}">
+              <div class="form-text">
+                The payday this pay starts on, no later than your next
+                payday.  A forecast raise dated on or before it is taken to be
+                in this pay already.
+              </div>
+            </div>
+          </div>
+          {% endif %}
 
           <div class="row mb-3">
             <div class="col-md-6">
@@ -195,6 +217,9 @@
     </form>
 
     {% if profile %}
+
+    {# ── Pay list (plan step salary:X-av-3a) ── #}
+    {% include "salary/_pay_list.html" %}
 
     {# ── Raises Section ── #}
     {% include "salary/_raises_section.html" %}

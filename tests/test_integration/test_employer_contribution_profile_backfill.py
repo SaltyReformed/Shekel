@@ -39,6 +39,7 @@ from tests._test_helpers import (
     load_migration_module,
     replay_paycheck_lines_rename,
     rewind_paycheck_lines_rename,
+    start_test_pay_list,
 )
 
 _MIGRATION = load_migration_module(
@@ -118,11 +119,11 @@ def _profile(user_id: int, scenario_id: int, name: str, *, is_active: bool):
         scenario_id=scenario_id,
         filing_status_id=filing_status_id,
         name=name,
-        annual_salary=Decimal("50000.00"),
         is_active=is_active,
     )
     db.session.add(profile)
     db.session.flush()
+    start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
     return profile
 
 
