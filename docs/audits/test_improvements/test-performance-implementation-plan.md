@@ -2749,16 +2749,20 @@ after measurement confirms the architecture works.
 
 ## Out of scope (documented as follow-ups)
 
-- Tuning `app/audit_infrastructure.py` itself. The trigger function
-  is gated by the 20 % overhead bound in
-  `tests/test_performance/test_trigger_overhead.py:23`; as long as
-  that bound holds, no action is needed. Optimising the trigger
-  would be a separate "audit trigger perf" project with its own
-  benchmarks.
+- Tuning `app/audit_infrastructure.py` itself. Since plan step
+  balance:X-cy (ruling balance:R-BAL144) no overhead bound gates the
+  trigger: `tests/test_integration/test_audit_trigger_work.py`
+  asserts one audit row per changed row and pins a fingerprint of the
+  trigger's cost surface, which a change to the module's function
+  fails until the pin is re-set, its failure message asking first for
+  a re-run of the report in
+  `tests/test_performance/test_trigger_overhead.py`, which only prints
+  the overhead. Optimising the trigger would be a separate "audit
+  trigger perf" project with its own benchmarks.
 - Adopting `pytest-clean-database` or `pgtestdbpy` as third-party
   dependencies. `pytest-clean-database` would double the per-table
   trigger count (clashes with the 28 audit triggers and the
-  perf-test ceiling). `pgtestdbpy` solves the same problem as
+  perf-test ceiling, which balance:X-cy deleted). `pgtestdbpy` solves the same problem as
   Phase 3 but is designed for raw SQLAlchemy use, not
   Flask-SQLAlchemy globals -- the hand-rolled fixture in Phase 3b
   integrates more cleanly with this codebase.
