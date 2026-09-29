@@ -49,13 +49,16 @@ disjoint charts, and WHICH counter row a correction books into is ruling
 Flask-isolated: plain data in, plain values out; flushes but never commits
 (the caller owns the transaction boundary).
 
-**Write status.**  WIRED as of C6, at seven lifecycle chokepoints: account
+**Write status.**  WIRED as of C6, at eight lifecycle chokepoints: account
 create (``account_service.create_account``), the anchor true-up
 (``anchor_service.apply_anchor_true_up``), the account-type change
 (``routes.accounts.crud.update_account`` -- which was the *direct anchor edit*
 until plan step X-f1e deleted that door, and now reaches this package only when
 a re-type crosses a posting boundary), the pay-period reset
-(``pay_period_admin.reset_pay_periods``), the effect-time self-heal at the
+(``pay_period_admin.reset_pay_periods``) and, since plan step
+``pay_calendar:C21``, "Remove earlier paychecks"
+(``pay_period_admin.remove_earlier_pay_periods``), both through
+``pay_period_admin._refile_ledger``, the effect-time self-heal at the
 ``posting_service`` sync tails (:func:`self_heal_anchor_corrections`), the
 ``create_baseline`` recovery path, and the account-type boundary changes
 (the crud/type routes re-sync an allowed crossing; the validation guards

@@ -5,11 +5,15 @@ Shekel Budget App -- Pay Era Writer
 ``pay_calendar:C17-a``, ruling **R-PC58**).  An era is one row per *how I have
 been paid since* -- the rhythm a span of paydays runs on, kept when the next
 span starts on a different one -- and every batch that records a payday
-reaches this table through :func:`mint_era` and :func:`retire_eras`, called
-from ``pay_period_write._apply`` and from nothing else.  The ERA RULE that
-decides what a batch does here is stated in the same module, in two halves:
-:func:`eras_describing` says which eras a batch leaves standing, and
-:func:`era_to_mint` says whether it states a new one.
+reaches this table through :func:`mint_era`, :func:`retire_eras` and, for
+the two changes that move the record's FIRST payday,
+:func:`rephase_earliest_era` (plan steps ``pay_calendar:C18-b`` and ``C21``),
+called from ``pay_period_write._apply`` and from nothing else.  The ERA RULE that
+decides what a batch does here is stated in the same module, in three
+parts: :func:`eras_describing` says which eras a batch leaves standing,
+:func:`era_to_mint` says whether it states a new one, and
+:func:`era_to_move` says where a removal of the record's first paydays
+moves the earliest one (plan step ``pay_calendar:C21``).
 
 **Why a module of its own.**  :mod:`app.services.pay_schedule_service` reads
 the eras (as :class:`~app.services.pay_schedule_service.ScheduleFacts`) and
@@ -21,8 +25,8 @@ the terms ledger row **PC-498** records.  The two refusals both writers ask
 (the cadence bound, the cadence-convention pairing) stay in the service beside
 the column bounds they state, and this module imports them.
 
-**A caller holding a loaded ``PaySchedule`` must re-read it after either
-door**: ``PaySchedule.eras`` is view-only, so an insert reaches no loaded
+**A caller holding a loaded ``PaySchedule`` must re-read it after any of
+these doors**: ``PaySchedule.eras`` is view-only, so an insert reaches no loaded
 collection, the bulk delete synchronises nothing, and a joined load does not
 replace a collection the identity map already holds (measured 2026-09-11).
 ``pay_period_write._apply`` expires the session after it;
@@ -33,10 +37,11 @@ Flask-isolated -- takes and returns plain data, never imports ``request`` /
 route layer owns the transaction.
 """
 
+from dataclasses import dataclass
 from datetime import date
 
 from app import ref_cache
-from app.exceptions import ValidationError
+from app.exceptions import PayPeriodRemovalRefused, ValidationError
 from app.extensions import db
 from app.models.pay_era import PayEra
 from app.services import pay_schedule_service
@@ -44,6 +49,8 @@ from app.services.pay_calendar import (
     cadence_steps_to,
     first_payday_of,
     nominal_payday,
+    opening_rephase,
+    validate_eras,
 )
 from app.services.pay_rhythm import (
     Era,
@@ -79,7 +86,8 @@ def _nominal_day_of(effective_from: date, day: int) -> "int | None":
     one meaning and ``ck_pay_eras_nominal_day`` can tie presence to the
     clamp.  A meant day BELOW the anchor's own day is not a clamp but an
     anchor off its grid, which :func:`reject_phase_off_grid` refuses before
-    this is asked.
+    this is asked for a minted era, and :func:`_on_grid` -- the stronger
+    question, which implies it -- before a moved phase's columns are.
 
     Args:
         effective_from: The era's phase, a day on its grid.
@@ -154,13 +162,18 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
     step zero, dispatched on the kind, so nothing here restates what a
     month grid passes through.
 
-    **Asked twice, and the storage cannot catch what the second ask
-    refuses.**  ``pay_period_write.record_paydays`` asks it in its
+    **Asked at every write, and the storage cannot catch what the write's
+    ask refuses.**  ``pay_period_write.record_paydays`` asks it in its
     precondition block, before ``pay_period_batch.requested_paydays`` spaces
     the batch from the stated day -- on an off-grid anchor that batch's
     first element would not be the day the owner stated.  :func:`mint_era`
     asks it again immediately before the write, as it asks the cadence
-    bound and the pairing, so no door can persist the state.  The CHECKs
+    bound and the pairing, so no door can persist the state.
+    :func:`rephase_earliest_era` asks the STRONGER question instead --
+    whether the phase is a day of the earliest era's own grid
+    (:func:`_on_grid`) -- which implies this one for every kind and which
+    this function cannot ask: a fixed-days grid anchored at ANY day passes
+    through it.  The CHECKs
     see only half of it: a meant day ABOVE the anchor's would be written
     as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
     the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
@@ -194,16 +207,49 @@ def reject_phase_off_grid(effective_from: date, cadence) -> None:
         )
 
 
+def _on_grid(era: Era, day: date) -> bool:
+    """Return whether *day* is a NOMINAL day on *era*'s own grid.
+
+    The grid's own round trip: the grid day
+    :func:`~app.services.pay_calendar.cadence_steps_to` names for *day* is
+    *day* itself.  ONE spelling for the two questions this module asks of an
+    era's grid -- whether a batch's first payday continues the era covering
+    it (:func:`era_to_mint`, whose docstring carries why the test is the
+    round trip rather than a modulo) and whether a phase move keeps the
+    earliest era on the grid it had (:func:`rephase_earliest_era`).
+    :func:`reject_phase_off_grid` is a different question -- whether a grid
+    anchored AT a day passes through it, which a fixed-days grid does for
+    every day -- and cannot stand in for this one.
+
+    Args:
+        era: The era whose grid is asked.
+        day: A nominal day.
+
+    Returns:
+        ``True`` when *era*'s grid passes through *day*.
+    """
+    cadence = era.rhythm.cadence
+    return day == nominal_payday(
+        era.effective_from, cadence,
+        cadence_steps_to(era.effective_from, cadence, day),
+    )
+
+
 def mint_era(user_id: int, era: Era) -> PayEra:
     """Record that the owner has been paid on *era*'s rhythm since its day.
 
-    **The ONE writer of ``budget.pay_eras``** (plan step ``C17-a``, ruling
-    **R-PC58**).  Called by ``pay_period_write.record_paydays`` when a batch
+    **The ONE door that INSERTS into ``budget.pay_eras``** (plan step
+    ``C17-a``, ruling **R-PC58**).  The table's one writer is this MODULE,
+    in three functions: this one inserts an era, :func:`rephase_earliest_era`
+    moves the earliest era's phase along its own grid in place, and
+    :func:`retire_eras` deletes.  Called by ``pay_period_write.record_paydays`` when a batch
     states a rhythm the era covering its first payday does not already hold
     -- a first schedule, a cadence or convention changed going forward, or a
     phase off the covering grid -- and by nothing else: a batch that continues
     an era mints nothing, which is what closed the read-path re-judging
-    ledger row **N-494** recorded.
+    ledger row **N-494** recorded, and the batch that records BELOW the
+    record moves the earliest era's phase in place
+    (:func:`rephase_earliest_era`) rather than minting it again.
 
     **The refusals live HERE, at the column's writer** (plan step X-ad-a's
     placement, carried over).  The cadence bound, the cadence-convention
@@ -243,7 +289,17 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             writer retired every era "taking effect on or after" the mint's
             day, which it never did; a rebuild from an existing era's day
             with a changed convention and every lower payday held reached
-            the key as an IntegrityError.*
+            the key as an IntegrityError.*  **That floor argument needs the
+            record to stand on the earliest era's first grid step or
+            above**, which is why the earlier door moves the phase down
+            (:func:`rephase_earliest_era`, **R-PC105**): with only earlier
+            paychecks kept below an unmoved phase, the floor IS that phase,
+            and a rebuild from it with a new rhythm reached this key.  The
+            removal of the first paydays moves it UP (**R-PC110**), and not
+            for this argument: a record standing ABOVE the phase already
+            satisfies it (the migrated era's shape).  It moves so the phase
+            keeps naming the first paycheck the owner holds, and so a
+            removal undoing an add leaves the era as the add found it.
 
     Returns:
         The new :class:`~app.models.pay_era.PayEra` row, flushed.
@@ -275,6 +331,148 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     db.session.add(row)
     db.session.flush()
     return row
+
+
+@dataclass(frozen=True)
+class EarliestRephase:
+    """A change's era write when it moves the EARLIEST era's phase in place.
+
+    The other value ``pay_period_write._PaydayChange.era`` can hold beside an
+    :class:`~app.services.pay_rhythm.Era` to MINT, so a batch that does one
+    cannot also do the other: the change carries ONE era write or none, and
+    the type says which (review 2 of plan step ``pay_calendar:C18-b``).
+
+    **It carries EVERY era as read, not the earliest alone, since plan step
+    ``pay_calendar:C21``.**  A move DOWN can collide with nothing, so the
+    earliest era was all the writer needed; a move UP (ruling **R-PC110**)
+    can reach the next era's day, pass it, or leave the earliest era paying
+    nothing before it, and the writer can judge that only against the eras
+    after it -- which it must not read a second time (rule 14).
+
+    Attributes:
+        eras: The owner's eras AS THE DOOR READ THEM, in the same operation
+            and under the same lock, ``effective_from`` ascending.  The
+            first is the era the move keeps the rhythm of and the row it
+            moves; the rest are what the moved phase is judged against.
+        phase: The earliest era's new ``effective_from``: a NOMINAL day on
+            its own grid -- below the current one when paydays are recorded
+            below the record, above it when the record's first paydays are
+            retired.
+    """
+
+    eras: "tuple[Era, ...]"
+    phase: date
+
+
+def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
+    """Move the owner's EARLIEST era's phase along its own grid, its rhythm untouched.
+
+    **The era write of the two changes that move the record's first
+    payday.**  "Add earlier paychecks" records paydays below the record
+    (plan step ``pay_calendar:C18-b``, ruling **R-PC105**), and the era that
+    pays them is the earliest one (**R-PC66**), so its phase moves DOWN to
+    the grid day of the earliest new payday (``pay_calendar.earlier_paydays``
+    computes it).  "Remove earlier paychecks" retires the first paydays
+    (plan step ``C21``, ruling **R-PC110**), and the phase moves UP to the
+    grid day of the payday left first (``pay_calendar.opening_rephase``).
+    Either way the same rhythm on the same grid, so every payday it plans
+    is unchanged, and the record's first payday stands for the era's first
+    grid step again.  Left below the
+    phase, a regenerate keeping only earlier paychecks could restate a
+    rhythm from the old phase (a second era on
+    ``uq_pay_eras_user_effective_from``) or from inside the next paycheck
+    (an era ``pay_calendar._derive.validate_eras`` refuses on every read);
+    left under a record whose first paydays are gone, the era's "since"
+    would name a paycheck the owner no longer holds.
+
+    **An UPDATE of one row rather than a retire and a mint, and review 1 of
+    C18-b is why.**  :func:`mint_era` re-asks the cadence bound and the
+    cadence-convention pairing, which judges a rhythm the door never
+    stated: an owner whose stored pairing a later holiday-set change made
+    illegal (ledger row **N-493**) was refused by a door that states no
+    rhythm -- the principle that closed **N-494** -- and refused after the
+    retire's DELETE had run.  A phase move changes the row's
+    ``effective_from`` and the parameter columns read against it (a clamped
+    month day's ``nominal_day``, which member of a semi-monthly pair the
+    anchor stands for) and nothing else.  The rhythm those columns are
+    written from is the stored one the door read (``rephase.eras[0]``), so
+    ``cadence_days`` is written back with the value the row already holds.
+
+    **It moves the phase to a day on the SAME grid that leaves a sequence
+    the calendar can derive, and refuses anything else** (reviews 2 and 3
+    of C18-b; plan step C21).  SAME GRID: "every payday it plans is
+    unchanged" holds only for a phase the era's grid already passes through
+    (:func:`_on_grid`).  A phase off it -- the new first payday's DISPLACED
+    cash day under ``prior`` or ``next`` rather than its nominal day --
+    re-phases the grid and moves every planned payday for good, and
+    :func:`reject_phase_off_grid` cannot see that for a fixed-days era; the
+    same-grid question implies it for every kind, so it is not asked beside
+    it.  A DERIVABLE SEQUENCE: moved down, the earliest era cannot reach a
+    later era's day, pass it, or be left paying nothing (ruling
+    **R-PC75**); moved UP it can do all three, and those are three of the
+    states ``pay_calendar.validate_eras`` refuses.  The move is asked of
+    that validator over the sequence it would leave -- the calendar's one
+    statement of which sequences derive, rather than a second spelling of
+    three of its clauses here -- so it refuses a move up past what the
+    earliest era can pay, and admits every move down as it did.  The
+    column writer holds both refusals, so neither rests on the caller.
+
+    **Why the two refusals raise different errors.**  The grid refusal is a
+    ``ValidationError`` because C18-b made it one and tests name its text.
+    The sequence refusal is the validator's own ``PayCalendarError``, and it
+    is unreachable from both doors: the earlier door's phase is below the
+    current one, and the removal door moves the phase only onto a paycheck
+    the earliest era pays (``pay_calendar.opening_rephase`` answers
+    ``None`` otherwise and the door refuses first, ruling **R-PC110**).  A
+    caller that reaches it built the move by hand, and the recovery page
+    that error reaches is the loud answer for that.
+
+    **What it does NOT hold, stated rather than fenced** (review 4 of C18-b).
+    The UPDATE is keyed on the phase the door read, and nothing checks that
+    it moved a row.  Every era writer takes the per-user lock the door read
+    under, except the two ledger row **P71** records (the first-schedule
+    generate route and registration).  A first-schedule generate that read
+    an empty record before a first schedule committed, and retires every era
+    after this door's read, would leave the UPDATE matching nothing: the
+    earlier door's paydays below an unmoved phase -- the state ruling
+    R-PC105 exists to prevent -- or the removal's record above one, a legal
+    shape that has lost only R-PC110's "since".  The root is P71's missing
+    lock, and a row count here would route around it rather than close it.
+
+    Args:
+        user_id: The owning user's id.  They hold at least one era -- the
+            door that calls this has read their calendar.
+        rephase: The eras as read, and the earliest one's new phase
+            (:class:`EarliestRephase`).
+
+    Raises:
+        ValidationError: The phase is not a day of the earliest era's own
+            grid (:func:`_on_grid`).  Both doors hand a nominal grid day, so
+            neither reaches it; it is the column writer's own precondition,
+            asked as :func:`mint_era` asks its own.
+        PayCalendarError: The moved era would leave a sequence
+            ``pay_calendar.validate_eras`` refuses -- a phase on or past the
+            next era's, or one that leaves the earliest era no planned
+            payday before it.  Unreachable from both doors (above).
+    """
+    eras, phase = rephase.eras, rephase.phase
+    earliest = eras[0]
+    cadence = earliest.rhythm.cadence
+    if not _on_grid(earliest, phase):
+        raise ValidationError(
+            f"The earliest pay era cannot move from "
+            f"{earliest.effective_from.isoformat()} to {phase.isoformat()}: "
+            f"that day is not on the era's grid, so every payday it plans "
+            f"would move with it."
+        )
+    validate_eras((Era(effective_from=phase, rhythm=earliest.rhythm), *eras[1:]))
+    db.session.query(PayEra).filter(
+        PayEra.user_id == user_id,
+        PayEra.effective_from == earliest.effective_from,
+    ).update(
+        {"effective_from": phase, **_COLUMNS_OF[type(cadence)](phase, cadence)},
+        synchronize_session=False,
+    )
 
 
 def eras_describing(
@@ -401,15 +599,77 @@ def era_to_mint(
     if not eras:
         return Era(effective_from=first_payday, rhythm=rhythm)
     covering = era_covering(eras, first_payday)
-    on_grid = first_payday == nominal_payday(
-        covering.effective_from, covering.rhythm.cadence,
-        cadence_steps_to(
-            covering.effective_from, covering.rhythm.cadence, first_payday,
-        ),
-    )
+    on_grid = _on_grid(covering, first_payday)
     if covering.rhythm == rhythm and on_grid:
         return None
     return Era(effective_from=first_payday, rhythm=rhythm)
+
+
+def era_to_move(
+    eras: "tuple[Era, ...]",
+    paydays: "list[date]",
+    opening: date,
+) -> EarliestRephase:
+    """Return the earliest era's move when a removal leaves *opening* first.
+
+    **The era rule's third half** (plan step ``pay_calendar:C21``, ruling
+    **R-PC110**), beside :func:`eras_describing` and :func:`era_to_mint`:
+    what a change that RECORDS NOTHING but takes the record's first paydays
+    does here.  ``pay_period_write.retire_paydays`` asks it before any
+    statement, of the eras it read, only for such a removal.
+
+    **It moves the earliest era's phase UP to the payday left first**:
+    :func:`~app.services.pay_calendar.opening_rephase` matches *opening* to
+    the paycheck it stands for and hands back the era re-phased onto that
+    paycheck's nominal grid day -- the move ``pay_period_write.prepend_paydays``
+    makes down, in reverse, so a removal undoing an add leaves the era as the
+    add found it, and the era's "since" keeps naming the first paycheck the
+    owner holds.  No era is minted or retired: the ruling's option text says
+    the saved rhythms never change but for this start.
+
+    **It REFUSES a removal that takes every payday the earliest era pays**
+    -- the ruled message, naming the last of them and the era's rhythm.
+    That era alone runs backward below the record (ruling **R-PC66**), so
+    left with none of the record's paydays it would place the new opening
+    on its own grid past its seam and count below it a payday the seam
+    replaced (**R-PC75**); retiring it instead would re-describe every
+    payday below the record on the next era's rhythm, the option the ruling
+    refused.  "Keep one" also refuses removing every paycheck, which no
+    door sends: the one that retires from the start keeps the paycheck it
+    is told to start from.
+
+    Args:
+        eras: The owner's eras as read, ``effective_from`` ascending.
+        paydays: Every recorded payday BEFORE the removal, ascending -- the
+            refusal names the latest the earliest era pays.  The record's
+            first is one of them for every state a door writes (each leaves
+            it standing for that era's first grid step, or above it for the
+            C17-a migrated era); a hand-built record whose first payday sits
+            at an exact half-cadence tie with a later era's first would match
+            the later one and leave the list empty, and no door writes that.
+        opening: The payday the removal leaves first.
+
+    Returns:
+        The :class:`EarliestRephase` onto *opening*'s paycheck, carrying the
+        eras as read.
+
+    Raises:
+        PayPeriodRemovalRefused: A later era pays *opening*.
+    """
+    moved = opening_rephase(eras, opening)
+    if moved is None:
+        # Which era pays a record is ONE rule, the producer that refused the
+        # opening, so the payday named is placed by it too.
+        earliest_pays = [
+            payday for payday in paydays
+            if opening_rephase(eras, payday) is not None
+        ]
+        raise PayPeriodRemovalRefused(
+            f"Keep at least {earliest_pays[-1].isoformat()}, your last "
+            f"paycheck paid {eras[0].rhythm.cadence.phrase}. Removing it "
+            f"would erase that pay rhythm."
+        )
+    return EarliestRephase(eras=eras, phase=moved.effective_from)
 
 
 def retire_eras(user_id: int, standing: "tuple[date, ...]") -> int:
