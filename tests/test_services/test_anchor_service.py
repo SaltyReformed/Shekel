@@ -1259,11 +1259,16 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
         plan step ``balance:X-bn`` neither the door nor the stager takes it
         -- the signed-in request's command transaction takes it where it
         begins (:mod:`app.db_transaction`) -- so the save is driven through
-        its route, ``PATCH /accounts/<id>/true-up``, and it is the REQUEST's
-        acquisition this grades.  The stager's read of the latest assertion --
-        the report's before since ruling R-CC85 -- holding it proves the lock
-        came first; the after-read holding it proves it came before the
-        commit, which releases the key.  The probe answers ``False`` before
+        its route, ``PATCH /accounts/<id>/true-up``.  What this grades is that
+        SOME acquisition on this session precedes both reads; the probe cannot
+        tell who took it.  That it is the REQUEST's is graded elsewhere:
+        ``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses a
+        service that takes one, and
+        ``tests/test_services/test_user_write_lock.py`` turns red when the
+        request's is removed.  The stager's read of the latest assertion -- the
+        report's before since ruling R-CC85 -- holding it proves the lock came
+        first; the after-read holding it proves it came before the commit,
+        which releases the key.  The probe answers ``False`` before
         the request and after it, so it can.  *Until that step this called
         :func:`apply_anchor_true_up` directly and graded the stager's own
         acquisition.*

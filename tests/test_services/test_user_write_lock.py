@@ -29,12 +29,15 @@ door production uses, and the same five properties survive the move:
 1. **The lock is taken, and taken BEFORE the owner's data is read.**  A lock
    acquired after the read serialises nothing -- the loser has already read the
    same pre-state.  Graded as strongly as the design allows: every statement
-   the request issues before the lock reads the signed-in user's own row and
-   nothing else, and the door's own reads (the ledger, the governing
-   assertion, the opening, the movements) are asserted to happen at all, so
-   the ordering cannot pass over a run that read nothing.
+   the request issues before the lock names no table but ``auth.users`` and
+   ``ref.user_roles`` -- the signed-in user's row and the role row joined to
+   it, read to sign the request in (the check is by TABLE, not by row) -- and
+   the door's own reads (the ledger, the governing assertion, the opening, the
+   movements) are asserted to happen at all, so the ordering cannot pass over
+   a run that read nothing.
 2. **The signed-in user's row is read AGAIN under the lock**, because it was
-   the one row read before it (:func:`app.db_transaction._lock_the_open_transaction`).
+   read before it (:func:`app.db_transaction._lock_the_open_transaction`); the
+   role row read with it is a reference row no request writes.
 3. **A render takes no lock; its write block does** (ruling **R-CC114**).  A
    plain page load runs ``READ ONLY`` and takes nothing; ``/grid``'s rolling
    top-up runs in a ``write_transaction`` block, a command transaction, which
@@ -104,10 +107,13 @@ def _lock_index(statements):
 
 
 def _reads_before_the_lock(statements):
-    """Return every statement before the first lock that names a table other than the user's.
+    """Return every statement before the first lock that names a table a sign-in does not read.
 
     A statement that names no schema-qualified table at all (a ``SET``, the
-    audit actor's ``set_config``) reads no row and is not returned.
+    audit actor's ``set_config``) reads no row and is not returned.  Every
+    ``"`` is dropped before the split, so a quoted identifier
+    (``"budget"."accounts"``) is read as the table it names: SQLAlchemy quotes
+    nothing in this schema, but a hand-written ``text()`` statement may.
 
     Args:
         statements: The ``(statement, parameters)`` list from
@@ -122,9 +128,9 @@ def _reads_before_the_lock(statements):
     offending = []
     for sql, _params in statements[:lock_at]:
         tables = {
-            ".".join(word.strip('"(),').split(".")[:2])
-            for word in sql.split()
-            if word.strip('"(').split(".", 1)[0] in _SCHEMAS
+            ".".join(word.strip("(),").split(".")[:2])
+            for word in sql.replace('"', "").split()
+            if word.strip("(").split(".", 1)[0] in _SCHEMAS
         }
         if tables - set(_READABLE_BEFORE_THE_LOCK):
             offending.append(sql)
@@ -195,7 +201,8 @@ class TestASaveLocksBeforeItReadsTheOwnersData:
         The door's compare-then-append (ruling R-EQ) and the reconcile it
         reaches (the account anchor sync) are both read-modify-writes, so both
         of their reads are named, and every statement before the lock is
-        checked to read only the signed-in user's own row.
+        checked to name no table but the two a sign-in reads (the user's row
+        and the role row joined to it).
         """
         assert seed_periods_today
         with app.app_context():
@@ -221,7 +228,7 @@ class TestASaveLocksBeforeItReadsTheOwnersData:
     def test_the_signed_in_user_is_read_again_under_the_lock(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Property 2: the one row read before the lock is re-read after it.
+        """Property 2: the user row read before the lock is re-read after it.
 
         The password, MFA and settings doors write the signed-in user's row,
         so a copy read before the lock is stale by the time a write decides on

@@ -41,7 +41,6 @@ from app.routes._period_population import populate_new_periods
 from app.services import (
     pay_era_write,
     pay_period_rolling,
-    pay_period_write,
     pay_schedule_service,
 )
 from app.services.pay_calendar import calendar_for

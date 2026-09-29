@@ -689,17 +689,29 @@ class TestConcurrentRollingTopUp:
         constraint as a 500.  Regardless of which ran first, every payday is
         unique, the window is at least the rolling target, and the structure
         invariants hold.
+
+        **Both requests must really append**, or nothing raced.  With one
+        current period and a target of 5, either order appends twice: the
+        top-up's four then the extend's three, or the extend's three then the
+        top-up's one.  So exactly two append statements are counted over both
+        threads.  The extend answers the same redirect to the same page on
+        success and on a refusal (``app/routes/pay_periods.py``'s
+        ``_append_periods`` and ``extend``), and a refusal raised by the
+        repopulation rolls back an append already sent, so the extend's
+        success flash, set only after its commit, is asserted as well.
         """
         data = _create_user_with_data(db.session)
         user_id = data["user"].id
         self._enable_rolling(db.session, user_id, target=5)
         client_a, client_b = self._two_signed_in_clients(app)
 
-        resp_a, resp_b = _run_concurrent(
-            app,
-            lambda: client_a.get("/grid"),
-            lambda: client_b.post(
-                "/pay-periods/extend", data={"num_periods": "3"},
+        (resp_a, resp_b), statements = capture_sql_statements(
+            lambda: _run_concurrent(
+                app,
+                lambda: client_a.get("/grid"),
+                lambda: client_b.post(
+                    "/pay-periods/extend", data={"num_periods": "3"},
+                ),
             ),
         )
 
@@ -707,6 +719,19 @@ class TestConcurrentRollingTopUp:
         assert resp_b.status_code == 302, resp_b.status_code
         assert urlsplit(resp_b.headers["Location"]).path != "/login", (
             "the extend was turned away at sign-in, so nothing raced"
+        )
+        inserts = [
+            sql for sql, _params in statements
+            if sql.lstrip().upper().startswith("INSERT INTO BUDGET.PAY_PERIODS")
+        ]
+        assert len(inserts) == 2, (
+            f"expected the top-up and the extend to append once each, got "
+            f"{len(inserts)} append statements"
+        )
+        with client_b.session_transaction() as sess:
+            flashes = sess.get("_flashes", [])
+        assert ("success", "Added 3 pay periods.") in flashes, (
+            f"the extend did not commit its append: {flashes}"
         )
 
         db.session.expire_all()
