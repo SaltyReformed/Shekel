@@ -127,9 +127,12 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     sync happened to run.  Flushes but does not commit (the caller owns the
     transaction).
 
-    **Runs under the owner's write lock, held since its transaction began**
-    (plan step ``balance:X-bn``, :mod:`app.db_transaction`; plan step X-f1c3c
-    took it here, before the walk, until then).  Both
+    **Runs under the owner's write lock, which every caller already holds**:
+    a signed-in request's command transaction takes it before its view reads
+    anything of the owner's (plan step ``balance:X-bn``,
+    :mod:`app.db_transaction`), and the deploy reconciles take every owner's
+    at their start; plan step X-f1c3c took it here, before the walk, until
+    then.  Registration never reaches this: it creates no loan.  Both
     reconciles below are read-modify-writes -- read what is posted, subtract
     it from what the walk says, write the difference -- and two of them
     interleaved both compute their delta against the same posted state.
@@ -415,10 +418,11 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     A brand-new or unresolvable loan (no anchors) syncs nothing.  Idempotent and
     self-healing.  Flushes but does not commit (the caller owns the transaction).
 
-    **Runs under the owner's write lock, held since its transaction began**
-    (plan step ``balance:X-bn``), which matters here beyond the per-scenario
-    sync it loops: the SCENARIO SET below is itself a read this function then
-    acts on, and a scenario that became live between that read and the loop
+    **Runs under the owner's write lock, which every caller already holds**
+    (:func:`sync_loan_postings` says whose it is; plan step
+    ``balance:X-bn``).  That matters here beyond the per-scenario sync it
+    loops: the SCENARIO SET below is itself a read this function then acts
+    on, and a scenario that became live between that read and the loop
     would otherwise be missed.  *From plan step X-f1c3c until ``balance:X-bn``
     this function and the one it loops each took the lock themselves, as the
     cash twin did.*

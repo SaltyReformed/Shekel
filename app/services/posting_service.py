@@ -703,9 +703,10 @@ def resync_all_cash_postings() -> tuple[int, int]:
     entries the first 6-3 deploy wrote on its rehearsal over the 2026-09-22
     production dump.  So both arms run the doors' re-book halves
     (:func:`_rebook_transaction_family`, :func:`_rebook_transfer_family`) and
-    the one re-check per scenario (one owner; the self-heal locks the owner
-    off the entries) reads the finished ledger.  The union's earliest day can
-    only make the re-check run where one source alone would skip it.
+    the one re-check per scenario (one owner's; the self-heal takes no lock,
+    and this function took every owner's at its start) reads the finished
+    ledger.  The union's earliest day can only make the re-check run where
+    one source alone would skip it.
 
     **Until ``X-bi-6-5`` it REFUSES to finish while any transfer still holds a
     nonzero legacy net** (ruling **R-BAL104**, amended by **R-BAL105**): a

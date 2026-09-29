@@ -689,19 +689,20 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
     Because the delete set is ``current`` less ``keep``, an id from another
     owner (or a stale one) retires nothing rather than being deleted or counted.
 
-    **What the re-read does and does NOT guarantee**, corrected by an
-    adversarial review of plan step C2-f3b.  Under the owner's write lock,
-    which every writing transaction holds from its start since plan step
-    ``balance:X-bn``, it cannot see FEWER rows than the gate
-    did, which is the direction that matters: no period the caller refused to
-    delete can be missing here.  It is not the SAME set, and a first draft said
-    it was: ``POST /pay-periods/generate`` and ``registration_service.register_user``
-    both reach :func:`record_paydays` without taking that lock (finding
-    **P71**), so a concurrent generate can commit a payday between the gate's
-    read and this one and this read sees a SUPERSET.  A row this read gained is
-    simply one it does not name, so it survives -- where the caller-supplied
-    snapshot it replaced left it in neither ``current`` nor ``keep`` and gave
-    the newly-last survivor a cadence-projected end that could run past it.
+    **What the re-read does and does NOT guarantee.**  Both callers
+    (truncate, "Remove earlier paychecks") run in a signed-in request's
+    command transaction, which takes the owner's write lock before its view
+    reads anything of the owner's (plan step ``balance:X-bn``,
+    :mod:`app.db_transaction`); so does every other writer of an owner's
+    paydays but registration, whose user no other transaction can reach
+    before it commits.  So this read sees the SAME set the gate did, never
+    FEWER rows: no period the caller refused to delete can be missing here.
+    *Until that step it could see a SUPERSET, as a review of plan step
+    C2-f3b corrected a first draft to say: ``POST /pay-periods/generate``
+    took no lock (finding **P71**).*  A row this read gained would be one it
+    does not name, so it would survive -- where the caller-supplied snapshot
+    it replaced left it in neither ``current`` nor ``keep`` and gave the
+    newly-last survivor a cadence-projected end that could run past it.
 
     Args:
         user_id: The owning user's id.

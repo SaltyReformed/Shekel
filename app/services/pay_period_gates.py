@@ -192,7 +192,8 @@ def gate_deletable_tail(
 
     Args:
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).
         kept: The last period to KEEP, or ``None`` to delete every period in
             *periods*.  ``None`` is reachable only from regenerate, whose
             rebuildable tail can start at the very first period; it then
@@ -332,7 +333,8 @@ def gate_removable_head(
         user_id: The owning user's id -- the dated money of (3) is the
             owner's anywhere, not only in the head.
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).
         first_kept: The period the owner chose to START FROM (ruling
             **R-PC111**); it and every later period stay.
         as_of: The owner's civil day, resolved once by the caller.
@@ -757,9 +759,10 @@ def regenerate_keep_through_period(
 
     Args:
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.  Taken as an argument rather than
-            re-queried so the boundary and the delete that consumes it see one
-            snapshot.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).  Taken as an argument rather
+            than re-queried so the boundary and the delete that consumes it
+            see one snapshot.
         locks: The caller's lock classification, covering *periods*.  Taken for
             the reason :func:`gate_deletable_tail` takes it: this function and
             that one used to classify separately, against two independently

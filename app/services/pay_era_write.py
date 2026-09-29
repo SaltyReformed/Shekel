@@ -29,8 +29,8 @@ the column bounds they state, and this module imports them.
 these doors**: ``PaySchedule.eras`` is view-only, so an insert reaches no loaded
 collection, the bulk delete synchronises nothing, and a joined load does not
 replace a collection the identity map already holds (measured 2026-09-11).
-``pay_period_write._apply`` expires the session after it;
-``pay_schedule_service.reread_schedule`` is the door for anything else.
+``pay_period_write._apply`` expires the session after it; any other caller
+expires the row (``db.session.expire``) before it reads the eras again.
 
 Flask-isolated -- takes and returns plain data, never imports ``request`` /
 ``session``.  Flushes so callers see assigned ids, but never commits: the

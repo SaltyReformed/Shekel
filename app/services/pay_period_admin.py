@@ -130,8 +130,12 @@ def extend_pay_periods(user_id, num_periods):
 
     **It STATES nothing, since plan step ``pay_calendar:C17-c-2b``** (rulings
     **R-PC75**, **R-PC78**; ledger rows **PC-509** and **N-494** closed).
-    This door is one call, under the owner's write lock its transaction holds
-    from its start (plan step ``balance:X-bn``): the writer's CONTINUE door records
+    This door is one call, under the owner's write lock.  Every caller runs
+    in a signed-in request's command transaction -- the extend and generate
+    POSTs, and the ``write_transaction`` block ``/grid`` and ``/dashboard``
+    run the rolling top-up in -- which takes the lock before it reads
+    anything of the owner's (plan step ``balance:X-bn``,
+    :mod:`app.db_transaction`).  The writer's CONTINUE door records
     the next paydays the owner's own plan projects
     (:func:`~app.services.pay_calendar.planned_paydays_after`), reading the
     eras and the record itself.  Until then this door computed the batch --
@@ -172,11 +176,12 @@ def extend_pay_periods(user_id, num_periods):
             surface for "this owner has no derivable calendar" and the wrong
             one for "that date is not allowed".
     """
-    # The record is read under the owner's write lock, held since this
-    # transaction began (plan step ``balance:X-bn``, :mod:`app.db_transaction`),
-    # so the append cannot race another extend / top-up into a duplicate
-    # payday.  ``uq_pay_periods_user_start`` is the hard guard; the lock keeps
-    # the racing loser from hitting it as a 500.
+    # The record is read under the owner's write lock, which every caller's
+    # command transaction takes before it reads anything of the owner's (the
+    # docstring names the callers; plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so the append cannot race another extend /
+    # top-up into a duplicate payday.  ``uq_pay_periods_user_start`` is the
+    # hard guard; the lock keeps the racing loser from hitting it as a 500.
     return pay_period_write.continue_paydays(user_id, num_periods)
 
 
@@ -434,8 +439,10 @@ def truncate_pay_periods(
             rows and ``confirm_discard`` is False.
     """
     # The resolve, the classify and the bulk DELETE run under the owner's
-    # write lock, held since this transaction began (plan step
-    # ``balance:X-bn``), so they see one consistent set -- the
+    # write lock, which this door's one caller (``POST /pay-periods/truncate``,
+    # a signed-in request) took on its command transaction before its view
+    # read anything of the owner's (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so they see one consistent set -- the
     # classify-then-DELETE TOCTOU against another extend / top-up / truncate
     # for this user stays closed.
 
@@ -549,8 +556,10 @@ def regenerate_pay_periods(
             (``record_paydays``' two bounds).
     """
     # The whole rebuild -- boundary computation through the truncate +
-    # regenerate -- runs under the owner's write lock, held since this
-    # transaction began (plan step ``balance:X-bn``).
+    # regenerate -- runs under the owner's write lock, which this door's one
+    # caller (``POST /pay-periods/regenerate``, a signed-in request) took on
+    # its command transaction before its view read anything of the owner's
+    # (plan step ``balance:X-bn``, :mod:`app.db_transaction`).
 
     # The schedule is read ONCE, under the lock, and threaded into both the
     # boundary computation and the delete.  Before plan step C3-a each of
@@ -628,8 +637,11 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
       1. Refuse if any settled transaction exists, or any row holds a
          payment or purchase (delete nothing).
-      2. (The per-user advisory lock is held from the transaction's start,
-         plan step ``balance:X-bn``, so step 1's gates read under it.)
+      2. (The owner's write lock is already held, so step 1's gates read
+         under it: the one caller, ``POST /pay-periods/reset``, is a
+         signed-in request, whose command transaction takes the lock before
+         its view reads anything of the owner's -- plan step
+         ``balance:X-bn``, :mod:`app.db_transaction`.)
       3. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
          pass: transactions and transfers (+ both shadows, preserving the
          transfer invariant) go; audit triggers still fire.  Anchor history is
@@ -753,9 +765,12 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     if holding > 0:
         raise PayPeriodResetBlocked(holding_count=holding)
 
-    # Under the owner's write lock since this transaction began (plan step
-    # ``balance:X-bn``) -- so the two gates above read under it too, where
-    # they used to run before this door's own acquisition.
+    # Under the owner's write lock, which this door's one caller (``POST
+    # /pay-periods/reset``, a signed-in request) took on its command
+    # transaction before its view read anything of the owner's (plan step
+    # ``balance:X-bn``, :mod:`app.db_transaction`) -- so the two gates above
+    # read under it too, where they used to run before this door's own
+    # acquisition.
 
     # Wipe ALL the user's periods (the cascade handles the dependents) and
     # build the new schedule in ONE write, so the writer derives and

@@ -105,18 +105,23 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     :func:`_load_non_amortizing_account`).  Flushes but does not commit
     (the caller owns the transaction).
 
-    **Runs under the owner's write lock, held since its transaction began**
-    (plan step ``balance:X-bn``, :mod:`app.db_transaction`; the deploy
-    reconciles take every owner's at their start).  Everything below this line
-    is a read-modify-write -- read what is posted, subtract it from what the
-    account's facts say, write the difference -- and two of them interleaved
-    both compute their delta against the same posted state, so the second
-    silently under-posts by the first's amount.  *From plan step X-f1c3c until
-    ``balance:X-bn`` the lock was taken HERE, at the one per-(account,
-    scenario) chokepoint every door funnels through; ruling R-CC115 deleted
-    the acquisition when the lock moved ahead of every read.*  See
-    :mod:`app.services.user_write_lock` for the reproduction and for why the
-    lock is per USER rather than per account.
+    **Runs under the owner's write lock wherever another transaction can
+    reach the owner's ledger**: a signed-in request's command transaction
+    takes it before its view reads anything of the owner's (plan step
+    ``balance:X-bn``, :mod:`app.db_transaction`), and the deploy reconciles
+    take every owner's at their start.  Registration (``/register``,
+    ``scripts/seed_user.py``) reaches this through
+    ``account_service.create_account`` holding none: its user is not
+    committed yet, so no other transaction can reach it.  Everything below
+    this line is a read-modify-write -- read what is posted, subtract it
+    from what the account's facts say, write the difference -- and two of
+    them interleaved both compute their delta against the same posted state,
+    so the second silently under-posts by the first's amount.  *From plan
+    step X-f1c3c until ``balance:X-bn`` the lock was taken HERE, at the one
+    per-(account, scenario) chokepoint every door funnels through; ruling
+    R-CC115 deleted the acquisition when the lock moved ahead of every
+    read.*  See :mod:`app.services.user_write_lock` for the reproduction and
+    for why the lock is per USER rather than per account.
 
     Args:
         account_id: The non-loan account whose corrections to reconcile.
@@ -192,12 +197,15 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
     no-op (see :func:`_load_non_amortizing_account`).  Flushes but does not
     commit (the caller owns the transaction).
 
-    **Runs under the owner's write lock, held since its transaction began**
-    (plan step ``balance:X-bn``), which matters here beyond the per-scenario
-    sync it loops: the SCENARIO SET below is itself a read this function then
-    acts on, and a scenario that became live between that read and the loop
-    would otherwise be missed.  *From plan step X-f1c3c until ``balance:X-bn``
-    this function and the one it loops each took the lock themselves.*
+    **Runs under the owner's write lock wherever
+    :func:`sync_account_anchor_postings` does, whose docstring says who
+    takes it** (plan step ``balance:X-bn``; registration, whose user is not
+    committed yet, takes none).  That matters here beyond the per-scenario
+    sync it loops: the SCENARIO SET below is itself a read this function
+    then acts on, and a scenario that became live between that read and the
+    loop would otherwise be missed.  *From plan step X-f1c3c until
+    ``balance:X-bn`` this function and the one it loops each took the lock
+    themselves.*
 
     Args:
         account_id: The non-loan account whose corrections to reconcile
@@ -333,9 +341,12 @@ def self_heal_anchor_corrections(
     if not delta_entries:
         return
     # **The owner's write lock covers the SKIP DECISION, not just the
-    # reconcile it guards** (plan step X-f1c3c, finding N-193) -- held since
-    # this transaction began (plan step ``balance:X-bn``), where it used to be
-    # taken on the line below this comment.  Both predicates below are READS --
+    # reconcile it guards** (plan step X-f1c3c, finding N-193).  Nothing here
+    # takes it since plan step ``balance:X-bn`` (it used to be taken on the
+    # line below this comment); every caller already holds it: a signed-in
+    # request's command transaction takes it before its view reads anything
+    # of the owner's (:mod:`app.db_transaction`), and the deploy reconciles
+    # take every owner's at their start.  Both predicates below are READS --
     # the account's coverage boundary and an EXISTS over its posted corrections
     # -- and their answer decides whether the locked reconcile is entered AT
     # ALL.  A skip taken against a stale read is permanent: nothing re-derives
@@ -343,9 +354,10 @@ def self_heal_anchor_corrections(
     # settle dated after the account's latest assertion correctly skips, while a
     # concurrent true-up walks a ledger that cannot yet see that $70.00 and
     # posts its correction $70.00 short -- both commit, and the linked ledger
-    # sits $70.00 under its own resolved assertion forever.  Held from the
-    # transaction's start, the loser blocks before its first read, then reads
-    # a boundary that already covers its own entry, and fires.
+    # sits $70.00 under its own resolved assertion forever.  With the lock
+    # taken before either request reads anything of the owner's, the loser
+    # blocks before its first read, then reads a boundary that already covers
+    # its own entry, and fires.
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
         # ONE statement of "the account's coverage boundary", asked through the
