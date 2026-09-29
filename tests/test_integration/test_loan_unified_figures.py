@@ -16,9 +16,15 @@ with ``round_money`` (the E-26 / HIGH-04 boundary).
 Test IDs C17-1..C17-6 trace to ``remediation_plan.md`` Section 9
 "Commit 17" subsection E.  C17-1 (the year-end aggregation's per-period
 rows equal the resolver's) was deleted at plan step recurrence:R16-c-2 with
-the ``debt_schedule_rows`` accessor it read: the year-end consumer went at
-plan step F2, so the test compared the resolver's rows to themselves.  Hand-computed expectations follow the
-arithmetic conventions in
+the ``debt_schedule_rows`` accessor it read, with the developer's approval
+(2026-09-29).  It compared the schedule the resolver builds with no payment
+feed (``_resolver_state``) against the seam's resolution seeded from the
+ledger -- two producers, not one read twice -- but no screen reads either
+schedule's rows: the year-end consumer went at plan step F2, and the one
+``app/`` reader left asks only whether the schedule is empty.  A narrower
+form of that comparison, a read before origination, stays in
+``tests/test_services/test_confirmed_view.py``.  Hand-computed expectations
+follow the arithmetic conventions in
 ``tests/test_integration/test_loan_resolver_single_source.py``; the
 two files reinforce each other on the loan single-source-of-truth
 contract.
@@ -431,10 +437,11 @@ def test_arm_payoff_date_consistent_across_surfaces(
     payoff, the date the BALANCE folds to zero.  So the invariant is the chip
     agreeing with the seam, and for this fixture the seam and the contractual
     schedule deliberately DIFFER, which the control below pins.  (It also
-    pinned that the two SCHEDULE consumers agreed, until plan step
-    recurrence:R16-c-2 deleted the second one's accessor,
-    ``debt_schedule_rows``: with the year-end consumer gone at plan step F2 it
-    read the same resolution as the first.)  This ARM originated
+    pinned, until plan step recurrence:R16-c-2 deleted ``debt_schedule_rows``,
+    that the schedule the resolver builds with no payment feed ended where
+    the seam's ledger-seeded resolution did -- rows no screen reads since the
+    year-end consumer went at plan step F2; deleted with the developer's
+    approval, 2026-09-29.)  This ARM originated
     2026-01-01 and has never been paid, so its balance is still the full
     $400,000.00: the contractual schedule says Jan 2056 (it amortizes six
     installments nobody paid), while the fold says the borrower is still a

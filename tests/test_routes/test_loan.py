@@ -8431,32 +8431,33 @@ class TestRecordTrackingStartRoute:
         db.session.expire_all()
         assert len(self._tracking_start_events(db.session, acct)) == before
 
-    def test_accepts_a_date_after_a_recorded_payment(
+    def test_refuses_a_date_after_a_recorded_payment(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """A tracking-start dated after a recorded payment is recorded and governs.
+        """A tracking-start dated after a recorded payment is refused; nothing is written.
 
-        **The route refused this until plan step R20** (ruling R-R72 part 3),
-        on the ground that the payment "would sort before the opening in the
-        walk and be subsumed" -- a claim about an opening the tracking-start
-        stopped being at step C1.  It is an ordinary dated assertion: with a
-        $500 payment settled in an early period (due well before the frozen
-        today of 2026-03-20), a $20,000 tracking-start dated today is
-        appended, and it is the loan's LATEST assertion, so the ledger's
-        balance today reads exactly $20,000 -- the payment before it is
-        superseded by the owner's statement, precisely as a true-up dated
-        today would supersede it.
+        **Ruling R-R114 ("Decide at the door") flips this test**, which pinned
+        the opposite from plan step R20 (it was
+        ``test_accepts_a_date_after_a_recorded_payment``): a tracking start
+        says where the app's record of the loan STARTS -- what the loan's
+        recorded start reads -- and a payment the app already records says it
+        started earlier, so the statement is a balance correction and the
+        flash names the Record balance control that records one.  A $500
+        payment settles on Jan 2 (seed period 0's start); a $20,000
+        tracking-start asserted for today, Mar 20, appends nothing and moves
+        no balance.
         """
         acct = _create_auto_loan(seed_user, db.session)
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
         )
         db.session.commit()
         before = len(self._tracking_start_events(db.session, acct))
-        assert posted_loan_balance_at(
+        balance_before = posted_loan_balance_at(
             acct.id, seed_user["scenario"].id, date.today(),
-        ) != Decimal("20000.00")
+        )
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
@@ -8464,22 +8465,125 @@ class TestRecordTrackingStartRoute:
                 "anchor_date": date(2026, 3, 20).isoformat(),
                 "anchor_balance": "20000.00",
             },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert (
+            b"A payment is already recorded on Jan 2, 2026, on or before "
+            b"Mar 20, 2026" in resp.data
+        )
+        assert b"or use Record balance to correct the loan" in resp.data
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before
+        assert posted_loan_balance_at(
+            acct.id, seed_user["scenario"].id, date.today(),
+        ) == balance_before
+
+    def test_refuses_the_day_a_payment_is_recorded(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Ruling R-R114's "on or before": a tracking start ON the payment's day is refused."""
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-01-02", "anchor_balance": "25000.00"},
+            follow_redirects=True,
+        )
+        assert (
+            b"A payment is already recorded on Jan 2, 2026, on or before "
+            b"Jan 2, 2026" in resp.data
+        )
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before
+
+    def test_accepts_a_date_before_the_first_recorded_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The day before the Jan 2 payment is a start: the event is appended."""
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2025-12-31", "anchor_balance": "25100.00"},
         )
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith(f"/accounts/{acct.id}/loan")
         db.session.expire_all()
         events = self._tracking_start_events(db.session, acct)
         assert len(events) == before + 1
-        assert posted_loan_balance_at(
-            acct.id, seed_user["scenario"].id, date.today(),
-        ) == Decimal("20000.00")
-        page = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert page.status_code == 200
-        # Two tracking-start rows now wear the anchors card's badge (the
-        # form's own label is on every page and grades nothing).
-        assert page.data.count(
-            b'<span class="badge bg-secondary ms-1">Tracking start</span>'
-        ) == 2
+        assert (date(2025, 12, 31), Decimal("25100.00")) in {
+            (e.anchor_date, e.anchor_balance) for e in events
+        }
+
+    def test_a_zero_close_counts_from_the_installment_it_skips(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A $0.00 close due Mar 20 on a loan due the 15th is recorded from Mar 15.
+
+        It moved no cash, so its day in the loan's record is the installment
+        it skips (ruling R-R107): a tracking start on Mar 17 comes after it
+        and is refused, naming Mar 15, though the close's own due and settled
+        days are Mar 20.
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[5], amount=Decimal("500.00"),
+            settled_amount=Decimal("0.00"),
+            settled_on=date(2026, 3, 20), due_date=date(2026, 3, 20),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-17", "anchor_balance": "20000.00"},
+            follow_redirects=True,
+        )
+        assert (
+            b"A payment is already recorded on Mar 15, 2026, on or before "
+            b"Mar 17, 2026" in resp.data
+        )
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before
+
+    def test_a_projected_payment_does_not_refuse(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A payment due Feb 15 that has not settled is not recorded: Mar 1 is a start."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_transfer
+        acct = _create_auto_loan(seed_user, db.session)
+        create_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[3], amount=Decimal("500.00"),
+            due_date=date(2026, 2, 15),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-01", "anchor_balance": "24000.00"},
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before + 1
 
 
 class TestLoanBalanceTrueUp:
@@ -9555,18 +9659,19 @@ class TestTheLoanPageNamesAPaymentByItsInstallment:
         ]
 
 
-class TestTheLoanChartKeepsTheMonthsRecordedBeforeATrackingStart:
-    """Ruling R-R113 on the loan chart: a statement added after payments starts nothing.
+class TestTheLoanChartKeepsTheMonthsOfACorrectedLoan:
+    """Ruling R-R114 on the loan chart: a corrected in-app loan charts from its first installment.
 
     Ruling R-R113's example: $20,000.00 at 6% for 24 months, kept in the app
     from 2025-12-22, due the 22nd, $2,000.00 paid on Jan 22, Feb 22 and Mar 22
-    2026, then a tracking start added on 2026-04-01 at $15,000.00.  Payments
-    were recorded before the statement, so the loan's record starts at its
-    origination and the chart's grid runs from the first installment after it
-    (Jan 22).  As built before R-R113 the record started Apr 1 and the grid
-    dropped Jan-Mar, opening at Apr 22.  The seam's figures for those months
-    are pinned in ``test_balance_at.py``
-    (``TestAPaymentRecordedBeforeTheTrackingStartStartsTheRecordAtOrigination``).
+    2026, then its balance corrected on 2026-04-01 to $15,000.00.  Since ruling
+    R-R114 the tracking-start door refuses that date (payments are recorded
+    before it), so the correction is a TRUE-UP, which starts nothing: the
+    loan's record starts at its origination and the chart's grid runs from the
+    first installment after it (Jan 22).  Recorded as a tracking start, the
+    state the door now refuses, the record would start Apr 1 and the grid
+    would open at Apr 22.  The seam's figures for those months are pinned in
+    ``test_balance_at.py`` (``TestNoPaymentMovesTheRecordedStart``).
     """
 
     def test_the_grid_opens_at_the_first_installment_after_origination(
@@ -9578,7 +9683,7 @@ class TestTheLoanChartKeepsTheMonthsRecordedBeforeATrackingStart:
             create_loan_account,
             create_settled_transfer,
             freeze_today,
-            insert_tracking_start_event,
+            insert_trueup_event,
             loan_params_for,
         )
         freeze_today(monkeypatch, date(2026, 4, 20))
@@ -9599,7 +9704,7 @@ class TestTheLoanChartKeepsTheMonthsRecordedBeforeATrackingStart:
                     settled_on=paid_on, due_date=paid_on,
                 )
             db.session.commit()
-            insert_tracking_start_event(
+            insert_trueup_event(
                 loan_params_for(db.session, loan.id), Decimal("15000.00"),
                 date(2026, 4, 1),
             )

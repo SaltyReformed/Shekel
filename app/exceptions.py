@@ -686,3 +686,46 @@ class PayStubRefused(ValidationError):
     def __init__(self, errors: "dict[str, str]") -> None:
         self.errors = dict(errors)
         super().__init__("; ".join(self.errors.values()))
+
+
+class TrackingStartRefused(ValidationError):
+    """A tracking start added to a loan was refused: a payment is recorded on or before it.
+
+    Plan step ``recurrence:R16-c-2``, ruling **R-R114**.  A ``tracking_start``
+    states "the app's record of this loan starts HERE", and the loan's
+    recorded start reads nothing else
+    (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`).
+    A payment the app already records on or before that day contradicts the
+    statement: the record plainly started earlier.  Such a statement is a
+    balance CORRECTION, which the dashboard's Record balance control writes
+    (a ``user_trueup``, which starts nothing), so the tracking-start door
+    refuses it and names that control.  Raised by
+    :func:`app.services.loan_anchor_service.record_loan_tracking_start` before
+    anything is written.
+
+    **Its own class, for the reason** :class:`PayPeriodRemovalRefused`
+    **gives**: the route must catch this door's refusal and nothing else.  A
+    subclass of :class:`ValidationError`, so a caller asking the broader
+    question still hears it.
+
+    Args:
+        asked: The date the submitted tracking start asserts for.
+        recorded: The day of the earliest recorded payment on or before it.
+
+    Attributes:
+        asked: As above.
+        recorded: As above.
+    """
+
+    def __init__(self, asked, recorded):
+        """Keep both dates and say which control records a correction."""
+        self.asked = asked
+        self.recorded = recorded
+        super().__init__(
+            f"A payment is already recorded on "
+            f"{recorded.strftime('%b %-d, %Y')}, on or before "
+            f"{asked.strftime('%b %-d, %Y')}, so the app's record of this loan "
+            f"starts earlier than the tracking start you entered.  Choose a "
+            f"date before {recorded.strftime('%b %-d, %Y')}, or use Record "
+            f"balance to correct the loan's balance instead."
+        )

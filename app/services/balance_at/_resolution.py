@@ -134,11 +134,8 @@ class ResolvedLoan:
             loan with no definition, whose plan is then the contract's.
         recorded_start: (A property, not a field.)  The day the app's record
             of the loan STARTS: its ``tracking_start`` assertion's date for a
-            loan imported mid-life, else its origination (ruling **R-R111**)
-            -- and its origination too when a payment was recorded before
-            that statement, which then only corrects the balance like a
-            true-up (ruling **R-R113**: an owner may add a tracking start to a
-            loan kept in the app from its origination).
+            loan imported mid-life, else its origination (rulings **R-R111**,
+            **R-R114**); no payment moves it.
             Before it the ledger holds nothing but the origination principal,
             so the readers that ask "since when is this loan's balance real?"
             -- the property chart's pre-tracking estimate, the net-worth
@@ -162,37 +159,29 @@ class ResolvedLoan:
 
     @property
     def recorded_start(self) -> date:
-        """The day the loan's record starts: DERIVED from the facts (rulings R-R111, R-R113).
+        """The day the loan's record starts: DERIVED from its statements alone.
 
-        The tracking-start assertion's date, unless a payment was recorded
-        before it; then, and for a loan with no tracking start, the
-        origination.  "Recorded before" is a payment whose cash moved strictly
-        before the tracking date (the payment feed's ``settled_on``, which is
-        :func:`app.services.loan_ledger.payment_visible_on`'s day; a ``$0.00``
-        close's is the installment it skips, ruling R-R107).  A payment
-        settled ON the tracking day walks before that day's statement but puts
-        no recorded history in any earlier month, and counting it would give a
-        loan imported mid-life that pays on its setup day a flat "confirmed"
-        history back to its origination.  A payment settled before the
-        tracking date counts whatever installment it is due for: its cash day
-        is the one answer to "has it happened".
-
-        Read off the payment FEED rather than the pass's ledger walk because
-        :func:`~app.services.balance_at.loan_terms` reads this for an owner
-        with no baseline scenario (plan step C8e), which the walk refuses
-        (``BaselineMissingError``): the feed is empty then, and the tracking
-        start stands.
+        The tracking-start assertion's date, else the origination (rulings
+        **R-R111** and **R-R114**).  **No payment moves it**: whether a
+        statement added to a loan with a recorded history starts the record
+        or only corrects the balance is decided ONCE, at the door that adds a
+        tracking start later
+        (:func:`app.services.loan_anchor_service.record_loan_tracking_start`
+        refuses a date on or before a recorded payment, so the owner records
+        a true-up, which starts nothing).  Ruling R-R113 read the payment feed
+        here instead, and review 5 of plan step recurrence:R16-c-2 measured
+        two ways that misfired on a loan imported mid-life: a ``$0.00`` close
+        is dated by the installment it skips (ruling R-R107), so a close due
+        after the statement counted as recorded before it; and one real
+        payment dated the day before the statement put the untracked
+        origination principal back in every earlier month, as confirmed.
+        Reading the statements alone also keeps this a CONTRACT fact, the
+        same with or without a baseline scenario (plan step C8e).
         """
-        tracking_start = next(
+        return next(
             (fact.anchor_date for fact in self.anchor_facts if fact.is_tracking_start),
-            None,
+            self.params.origination_date,
         )
-        if tracking_start is None or any(
-            payment.dates.is_confirmed and payment.dates.settled_on < tracking_start
-            for payment in self.context.payments
-        ):
-            return self.params.origination_date
-        return tracking_start
 
 
 def resolved_loan(

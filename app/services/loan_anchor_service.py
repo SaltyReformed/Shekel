@@ -8,6 +8,9 @@ form (:func:`record_loan_tracking_start`, a ``tracking_start``).  Both return
 the :class:`~app.services.anchor_service.AnchorTrueUpOutcome` enum the cash
 door's :class:`~app.services.anchor_service.AnchorTrueUpReport` carries, so
 the route layer's response composition is uniform across account kinds.
+The tracking-start form alone can also refuse: a date on or before a
+recorded payment is a correction, not a start (ruling **R-R114**,
+:class:`~app.exceptions.TrackingStartRefused`).
 
 **Split from :mod:`app.services.anchor_service` at plan step
 ``recurrence:R20``**, the moment that step's third loan door pushed the module
@@ -48,11 +51,13 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
+from app.exceptions import TrackingStartRefused
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.services import loan_loaders, loan_posting_service
 from app.services.anchor_service import AnchorTrueUpOutcome
+from app.services.loan_ledger import payment_installments
 from app.services.user_write_lock import lock_user_writes
 
 logger = logging.getLogger(__name__)
@@ -367,6 +372,50 @@ def apply_loan_anchor_true_up(
     )
 
 
+def _earliest_recorded_payment_day(account: Account) -> date | None:
+    """Return the day the loan's earliest RECORDED payment counts from, or ``None``.
+
+    The tracking-start door's question (ruling **R-R114**): does the app
+    already hold a payment on or before a given day?  A payment is RECORDED
+    when it is settled -- the settled half of
+    :func:`app.services.loan_loaders.income_shadows`, the app's one answer to
+    "which of this loan's payments have happened" -- and its day is the one
+    the loan walk counts it from, :func:`app.services.loan_ledger.payment_visible_on`
+    as :func:`app.services.loan_ledger.payment_installments` carries it: the
+    day its cash moved, or for a ``$0.00`` close the installment it skips
+    (ruling R-R107).  That is the day the payment enters the loan's recorded
+    history, so it is the day a tracking start must come before.
+
+    **Every scenario the loan has a payment in**, through
+    :func:`app.services.loan_posting_service.scenarios_with_loan_payments`, the
+    same enumeration the all-scenario re-sync walks: a tracking start is a fact
+    of the loan ACCOUNT and re-bases the walk in each of them, so a payment
+    recorded in any one of them contradicts it.  Read only for the dates, so
+    no relationship is eagerly loaded (``options=()``, ``leg_options=()``).
+
+    Args:
+        account: The configured loan account.
+
+    Returns:
+        The earliest recorded payment's walk day across the loan's scenarios,
+        or ``None`` when no payment into the loan is recorded.
+    """
+    params = loan_loaders.load_loan_params(account.id)
+    return min(
+        (
+            installment.dates.settled_on
+            for scenario_id in loan_posting_service.scenarios_with_loan_payments(
+                account.id,
+            )
+            for installment in payment_installments(
+                account.id, scenario_id, params, options=(), leg_options=(),
+            )
+            if installment.dates.is_confirmed
+        ),
+        default=None,
+    )
+
+
 def record_loan_tracking_start(
     *,
     account: Account,
@@ -385,11 +434,29 @@ def record_loan_tracking_start(
     ``loan_loaders._opening_anchor_fact`` -- deleted by step C1 along with the
     behaviour.  Origination is the opening ALWAYS: opening at a mid-life
     tracking-start read the loan out of existence for its whole pre-tracking
-    window (finding B-11).  *Nor need it precede the loan's recorded payments,
-    and the route refused one that did not until plan step ``recurrence:R20``*
-    (ruling **R-R72** part 3): an assertion after payments is exactly what a
-    true-up already is, the two sources differ in label alone, and the walk
-    resets on both identically.
+    window (finding B-11).
+
+    **It is refused when a payment is already recorded on or before its date**
+    (ruling **R-R114**, which amends R-R113 and ruling R-R72 part 3).  The
+    walk resets on a tracking start and a true-up identically, so the two
+    differ in label alone -- but the label is what the loan's RECORDED START
+    reads (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`:
+    "the app's record of this loan starts here"), and a recorded payment on
+    or before the date says the record started earlier.  Such a statement is
+    a balance correction, which :func:`apply_loan_anchor_true_up` records, so
+    this door refuses it (:class:`~app.exceptions.TrackingStartRefused`) and
+    the route names the dashboard's Record balance control.  The route
+    refused a date on or after the earliest recorded payment's DUE date until
+    plan step ``recurrence:R20``, on an opening argument step C1 had retired;
+    this refusal rests on the label instead, and reads each payment's walk day
+    (:func:`_earliest_recorded_payment_day`).  The loan SETUP door's tracking
+    start (:func:`stage_loan_tracking_start`) is not refused: the ruling
+    governs a tracking start added LATER.
+
+    **The owner's write lock is taken BEFORE the payments are read** (ruling
+    R-EQ's order: the lock precedes the read a decision is made from), so a
+    payment recorded concurrently cannot slip in between the check and the
+    append.  :func:`_stage_loan_anchor` takes the same re-entrant lock again.
 
     Shares the append + all-scenario re-sync + duplicate rule of
     :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;
@@ -400,7 +467,7 @@ def record_loan_tracking_start(
     Args:
         account: An attached :class:`Account` row for the loan.  Caller is
             responsible for the ownership check and for confirming the account
-            carries ``has_amortization=True``.
+            carries ``has_amortization=True`` and a :class:`LoanParams` row.
         anchor_balance: The validated :class:`Decimal` opening balance
             (``>= 0`` at the schema layer).
         anchor_date: The date the balance is asserted for.  Caller is
@@ -413,7 +480,17 @@ def record_loan_tracking_start(
         (idempotent success).  The comparison is scoped to this source, so a
         re-submitted tracking-start is recognised even when true-ups have been
         recorded after it -- see :func:`_append_loan_anchor_and_sync`.
+
+    Raises:
+        TrackingStartRefused: When a payment is recorded on or before
+            *anchor_date*.  Nothing is written, and the session is rolled back
+            before the raise.
     """
+    lock_user_writes(account.user_id)
+    recorded = _earliest_recorded_payment_day(account)
+    if recorded is not None and recorded <= anchor_date:
+        db.session.rollback()
+        raise TrackingStartRefused(anchor_date, recorded)
     return _append_loan_anchor_and_sync(
         account=account,
         anchor_balance=anchor_balance,

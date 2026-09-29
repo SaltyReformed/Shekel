@@ -59,12 +59,11 @@ class LoanTerms:
 
     The scenario-INDEPENDENT half of what a loan surface reads.  Every field here
     comes from the loan's params, its rate history evaluated at the pass's
-    ``as_of``, its recorded balance assertions and, for :attr:`recorded_start`
-    alone, the cash days of its settled payments (ruling **R-R113**): no
-    projected payment, no ledger walk, and no baseline scenario REQUIRED.  The
-    settled payments are the one scenario-scoped input -- with no baseline
-    the pass's payment feed is empty and :attr:`recorded_start` is the
-    tracking-start assertion's date, or the origination for a loan with none.
+    ``as_of`` and its recorded balance assertions: no payment, no ledger walk,
+    no baseline scenario.  (Plan step recurrence:R16-c-2's checkpoint 10 made
+    :attr:`recorded_start` read the settled payments too, the one
+    scenario-scoped input on this type; ruling **R-R114** moved that decision
+    to the tracking-start door and the field reads assertions alone again.)
 
     **Why this is its own type (plan step C8e).**  :class:`LoanFigures` used to
     carry the first four of these fields alongside the scenario-scoped ones, and
@@ -114,18 +113,13 @@ class LoanTerms:
         recorded_start: The day the app's record of the loan starts
             (:attr:`~app.services.balance_at._resolution.ResolvedLoan.recorded_start`):
             its ``tracking_start`` assertion's date for a loan imported
-            mid-life, else its origination (ruling **R-R111**) -- and its
-            origination too when a payment's cash moved before that assertion
-            (ruling **R-R113**).  A fact of the loan's recorded assertions and
-            settled payments rather than of its params or rates.  The payments
-            are the one scenario-scoped input here: with no baseline scenario
-            the pass's payment feed is empty, R-R113 finds nothing recorded and
-            R-R111's answer stands.  They are read off that feed rather than
-            the ledger walk, which refuses a caller with no baseline, so this
-            value stays total for one (plan step C8e).  The loan chart's first
-            month (ruling **R-R110**) and the net-worth trend's gate (ruling
-            **R-R112**) read it here, where each read a schedule row's date
-            until plan step recurrence:R16-c-2.
+            mid-life, else its origination (rulings **R-R111**, **R-R114**);
+            no payment moves it.  A fact of the loan's recorded assertions
+            rather than of its params or rates, and as scenario-independent.
+            The loan chart's first month (ruling **R-R110**) and the
+            net-worth trend's gate (ruling **R-R112**) read it here, where
+            each read a schedule row's date until plan step
+            recurrence:R16-c-2.
     """
 
     monthly_payment: Decimal

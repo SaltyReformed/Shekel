@@ -2466,7 +2466,7 @@ class TestUnifiedAllScenariosSync:
         """A brand-new loan with no payments gets its opening posted in the baseline.
 
         A payment-less loan is in NO scenario's payment set
-        (``_scenarios_with_loan_payments`` is empty), so the all-scenarios sync
+        (``scenarios_with_loan_payments`` is empty), so the all-scenarios sync
         must add the owner's baseline -- otherwise ``create_params`` would post no
         opening for a fresh loan.  Origination $250,000, trueup $100,000: the
         opening (-250000) + true-up (+150000) net the baseline linked ledger to

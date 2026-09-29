@@ -57,7 +57,7 @@ from ._linked_ledger import _movement_nets_by_date, _visible_nets
 _ZERO_MONEY = Decimal("0.00")
 
 
-def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
+def scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
     """Return the scenarios that carry a payment for a loan.
 
     The distinct ``scenario_id`` set over the live transfers INTO the loan --
@@ -405,7 +405,7 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     :func:`sync_loan_postings` over the union of:
 
     * every scenario the loan has a payment in
-      (:func:`_scenarios_with_loan_payments`), and
+      (:func:`scenarios_with_loan_payments`), and
     * the owner's BASELINE scenario -- so a payment-less loan (a brand-new loan
       at params-create, before any payment settles) still gets its opening
       posted, and so the baseline is never skipped.  The opening is per-scenario
@@ -431,7 +431,7 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     if owner_id is None:
         return
     lock_user_writes(owner_id)
-    scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
+    scenario_ids = set(scenarios_with_loan_payments(loan_account_id))
     baseline = get_baseline_scenario(owner_id)
     if baseline is not None:
         scenario_ids.add(baseline.id)

@@ -159,9 +159,8 @@ def _back_projection_by_month(
 
     **The tracking start is the loan's RECORDED start** (ruling **R-R111**,
     :attr:`~app.services.balance_at._resolution.ResolvedLoan.recorded_start`):
-    its ``tracking_start`` assertion's date, else its origination -- and its
-    origination too when a payment's cash moved before that assertion, which
-    then only corrects the balance (ruling **R-R113**).  It was the
+    its ``tracking_start`` assertion's date, else its origination; no payment
+    moves it (ruling **R-R114**).  It was the
     first resolved schedule row's date until plan step recurrence:R16-c-2, a
     stand-in that ruling R-R109 broke: a confirmed row is dated by the
     installment its payment pays, which for a payment due off the loan's day
@@ -172,9 +171,8 @@ def _back_projection_by_month(
 
     Empty ``{}`` in the two cases with no pre-tracking gap to estimate:
 
-    * a loan whose record starts at its origination -- an IN-APP loan, or one
-      with a payment recorded before its tracking-start assertion (ruling
-      **R-R113**) -- so no contractual row falls strictly before it; and
+    * an IN-APP loan, whose record starts at its origination, so no contractual
+      row falls strictly before it; and
     * a loan with an EMPTY resolved schedule (a retired loan the producer drops, or
       a degenerate zero-remaining-term one) -- drawing NO back-projection rather
       than, as the pre-C5 clip did, admitting the loan's ENTIRE contractual walk

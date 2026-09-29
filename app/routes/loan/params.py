@@ -16,6 +16,7 @@ from decimal import Decimal
 from flask import abort, flash, redirect, request, url_for
 from flask_login import current_user
 
+from app.exceptions import TrackingStartRefused
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_features import RateHistory
@@ -452,15 +453,19 @@ def record_tracking_start(account_id):
     **Since plan step ``recurrence:R20`` the setup door writes this same row
     for the balance the owner states at setup**, so the common mid-life import
     never reaches this door at all; it remains for a tracking-start recorded
-    after the fact.  *The route also refused a date not STRICTLY BEFORE the
-    earliest recorded payment's due date until R20* (ruling **R-R72** part 3),
-    on the ground that the payment "would sort before the opening in the walk
-    and be subsumed" -- the opening claim step C1 had already retired.  An
-    assertion dated after payments is exactly what a true-up already is, the
-    two sources differ in label alone
-    (:func:`app.services.loan_anchor_service._append_loan_anchor_and_sync`), and the
-    walk resets on both identically; the refusal, and the loader that served
-    only it, are gone.
+    after the fact.  **It refuses a date on or before a recorded payment**
+    (ruling **R-R114**; the service's
+    :class:`~app.exceptions.TrackingStartRefused`): a tracking start says where
+    the app's record of the loan STARTS, which is what the loan's recorded
+    start reads, and a payment recorded on or before the date says it started
+    earlier -- so the statement is a balance correction, and the flash names
+    the Record balance control above, which records one.  *The route refused a
+    date not STRICTLY BEFORE the earliest recorded payment's due date until
+    R20* (ruling R-R72 part 3), on the ground that the payment "would sort
+    before the opening in the walk and be subsumed" -- the opening claim step
+    C1 had already retired, and R20 deleted that refusal.  R-R114's rests on
+    the label instead, and reads each payment's walk day rather than its due
+    date.
 
     Validation chain (mirrors :func:`true_up_balance`):
 
@@ -471,6 +476,9 @@ def record_tracking_start(account_id):
       3. The route enforces ``anchor_date >= params.origination_date`` (a loan
          cannot be tracked before it existed), route-level because the schema
          has no access to the loan.
+      4. The service refuses a date on or before a recorded payment (ruling
+         R-R114, above): a danger flash naming Record balance and a redirect;
+         nothing is written.
 
     Outcomes mirror the true-up: COMMITTED (success flash + redirect) or
     UNCHANGED (idempotent success when the governing ``tracking_start`` already
@@ -500,11 +508,16 @@ def record_tracking_start(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    outcome = loan_anchor_service.record_loan_tracking_start(
-        account=account,
-        anchor_balance=anchor_balance,
-        anchor_date=anchor_date,
-    )
+    try:
+        outcome = loan_anchor_service.record_loan_tracking_start(
+            account=account,
+            anchor_balance=anchor_balance,
+            anchor_date=anchor_date,
+        )
+    except TrackingStartRefused as refused:
+        # Ruling R-R114: the service refused before writing and rolled back.
+        flash(str(refused), "danger")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     if outcome is AnchorTrueUpOutcome.UNCHANGED:
         flash(

@@ -131,11 +131,8 @@ class PaymentDates:
         assert what it had removed) once it measured the two to be the same
         predicate.  This property is the answer for the readers that ask the
         question directly -- the loan card's "has this loan ever been paid?"
-        (``balance_at._loan_figures``), whether a payment was recorded before
-        a loan's tracking start
-        (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`,
-        ruling **R-R113**), whether the payment history prices a payment off
-        its record or its plan
+        (``balance_at._loan_figures``), whether the payment history prices a
+        payment off its record or its plan
         (:func:`app.services.loan_payment_service.get_payment_history`), and
         the suite.
 

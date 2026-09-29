@@ -35,7 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
-from app.exceptions import ValidationError
+from app.exceptions import TrackingStartRefused, ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
@@ -63,7 +63,9 @@ from app.services.user_write_lock import _USER_WRITE_LOCK_NAMESPACE
 from app.utils.dates import display_today
 from tests._test_helpers import (
     figure_source_columns,
+    create_loan_account,
     create_settled_cash_transaction,
+    create_settled_transfer,
     current_pay_period,
     freeze_today,
     generate_row_of,
@@ -1902,6 +1904,23 @@ class TestApplyLoanAnchorTrueUpCommitted:
             ) == params_snapshot
 
 
+def _loan_with_open_books(seed_user):
+    """A $20,000.00 loan from 2025-01-01, due the 1st, whose books open at its origination.
+
+    :func:`_make_loan_account` opens the account's books TODAY, so the
+    ledger refuses a payment dated before it; ruling R-R114's refusal is
+    about payments recorded before a tracking start, which need books open
+    earlier (:func:`tests._test_helpers.create_loan_account`).
+    """
+    account = create_loan_account(
+        seed_user, db.session, name="Tracked Loan",
+        principal=Decimal("20000.00"), rate=Decimal("0.05000"), term=60,
+        origination_date=date(2025, 1, 1), payment_day=1,
+    )
+    db.session.commit()
+    return account
+
+
 class TestRecordLoanTrackingStart:
     """The tracking-start opening flow appends a tracking_start event and re-syncs."""
 
@@ -2038,6 +2057,72 @@ class TestRecordLoanTrackingStart:
                 f"A re-submitted opening must append nothing; found "
                 f"{len(openings)} tracking_start rows."
             )
+
+    def test_refuses_on_or_after_a_recorded_payment_and_writes_nothing(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Ruling R-R114: a tracking start on or after a recorded payment is refused.
+
+        A payment settled on period 1's first day is in the loan's record from
+        that day.  A tracking start that day or ten days later raises
+        :class:`TrackingStartRefused` naming both days and appends nothing; the
+        day before is a start and is recorded.
+        """
+        with app.app_context():
+            account = _loan_with_open_books(seed_user)
+            paid_on = seed_periods_today[1].start_date
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], account,
+                seed_periods_today[1], amount=Decimal("400.00"),
+                settled_on=paid_on,
+            )
+            db.session.commit()
+
+            for asked in (paid_on, paid_on + timedelta(days=10)):
+                with pytest.raises(TrackingStartRefused) as refused:
+                    record_loan_tracking_start(
+                        account=account,
+                        anchor_balance=Decimal("18000.00"),
+                        anchor_date=asked,
+                    )
+                assert (refused.value.asked, refused.value.recorded) == (
+                    asked, paid_on,
+                )
+            assert record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=paid_on - timedelta(days=1),
+            ) is AnchorTrueUpOutcome.COMMITTED
+
+            db.session.expire_all()
+            tracking_source_id = ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.TRACKING_START,
+            )
+            assert [
+                event.anchor_date
+                for event in db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id, source_id=tracking_source_id)
+                .all()
+            ] == [paid_on - timedelta(days=1)]
+
+    def test_a_true_up_after_a_recorded_payment_is_not_refused(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The refusal is the tracking-start door's alone: a correction there is recorded."""
+        with app.app_context():
+            account = _loan_with_open_books(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], account,
+                seed_periods_today[1], amount=Decimal("400.00"),
+                settled_on=seed_periods_today[1].start_date,
+            )
+            db.session.commit()
+
+            assert apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=date.today(),
+            ) is AnchorTrueUpOutcome.COMMITTED
 
 
 class TestApplyLoanAnchorTrueUpUnchanged:

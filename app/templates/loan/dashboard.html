@@ -629,10 +629,10 @@
         {# Tracking start (mid-life import).  The setup form records the
            balance stated at setup as this same tracking-start (plan step
            recurrence:R20); this door is for recording one after the fact.
-           It is an ordinary dated assertion that resets the ledger's running
-           balance on its date, whatever payments are recorded around it --
-           the "on or before your first recorded payment" rule went with R20
-           (ruling R-R72 part 3). #}
+           It resets the ledger's running balance on its date like a true-up,
+           and it also says where the app's record of the loan STARTS, so the
+           door refuses a date on or before a recorded payment and points to
+           Record balance above (ruling R-R114). #}
         <form method="POST" action="{{ url_for('loan.record_tracking_start', account_id=account.id) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label class="form-label mb-1"><i class="bi bi-flag"></i> Tracking start</label>
@@ -640,7 +640,9 @@
             Started tracking this loan mid-life and did not record the balance
             at setup? Record the lender's balance as of the date you began
             tracking. The ledger reads that balance from there instead of
-            amortizing the original loan amount.
+            amortizing the original loan amount. The date must come before any
+            payment recorded here; to correct the balance of a loan whose
+            payments you have recorded, use Record balance above.
           </p>
           <div class="row g-2 align-items-end">
             <div class="col-sm-6">
