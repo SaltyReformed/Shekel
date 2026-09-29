@@ -433,7 +433,9 @@ def _loan_record_start_index(
     never recorded.
 
     **The loan's record starts at its RECORDED start** (ruling **R-R111**):
-    its ``tracking_start`` assertion's date, else its origination
+    its ``tracking_start`` assertion's date, else its origination -- and its
+    origination too when a payment's cash moved before that assertion
+    (ruling **R-R113**)
     (:attr:`app.services.balance_at.LoanTerms.recorded_start`).  This read the
     EARLIEST schedule row's date until plan step recurrence:R16-c-2, a
     stand-in ruling R-R109 broke: a confirmed row is dated by the installment

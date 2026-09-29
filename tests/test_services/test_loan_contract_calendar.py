@@ -682,3 +682,31 @@ class TestTheBandChartsMonthsAreTheLoansInstallments:
         assert band_chart_dates(
             scenarios, None, [], self._PARAMS, date(2026, 2, 22),
         ) == [date(2026, 3, 22), date(2026, 4, 22)]
+
+    def test_a_record_starting_at_the_loans_end_charts_nothing_past_it(self):
+        """A contract ending Mar 22: a start on or after it charts no month at all.
+
+        The grid runs through the contract's last installment, so a record
+        that starts on Mar 22 itself (its statement already states the
+        balance after that installment) or on Apr 21, after the loan's end,
+        has no installment left to chart.  The loop appended the first
+        installment after the start before testing the end, so both read
+        ``[Apr 22]``, a month past the loan's last installment (measured on
+        R16-c-2's checkpoint 10), while a start of Apr 22 already read
+        ``[]``.  A start the day before the last installment still charts it.
+        """
+        scenarios = SimpleNamespace(
+            history_rows=[
+                SimpleNamespace(payment_date=date(2026, 1, 22)),
+                SimpleNamespace(payment_date=date(2026, 2, 22)),
+                SimpleNamespace(payment_date=date(2026, 3, 22)),
+            ],
+            original_forward=[],
+        )
+        assert [
+            band_chart_dates(scenarios, None, [], self._PARAMS, start)
+            for start in (
+                date(2026, 3, 21), date(2026, 3, 22), date(2026, 4, 21),
+                date(2026, 4, 22),
+            )
+        ] == [[date(2026, 3, 22)], [], [], []]

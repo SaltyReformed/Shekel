@@ -196,9 +196,12 @@ def resolve_loan(
     CONTRACT's forward, ``history_rows + original_forward``); derives the
     total interest from the same schedule.  **The schedule is the contract's
     since plan step R7d-g-3** (ruling **R-R88**): what the loan is projected
-    to PAY is the balance seam's plan fold, and every reader of this
-    schedule takes a DATE off it (the net-worth trend's first-payment gate,
-    the equity chart's tracking start), never a balance.  The loan's BALANCE is not here
+    to PAY is the balance seam's plan fold, and no reader takes a balance
+    off this schedule.  Nor a date since plan step recurrence:R16-c-2: the
+    net-worth trend's gate and the property chart's tracking start read the
+    loan's recorded start instead (rulings **R-R111**, **R-R112**), and the
+    one app reader left, the property chart's pre-tracking estimate, asks
+    only whether it is empty (a retired loan).  The loan's BALANCE is not here
     (plan step D2a): the ``balance_at`` seam folds it from the loan's recorded
     events (see the :class:`LoanState` docstring).
 

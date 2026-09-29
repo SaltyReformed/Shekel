@@ -59,12 +59,17 @@ class LoanTerms:
 
     The scenario-INDEPENDENT half of what a loan surface reads.  Every field here
     comes from the loan's params, its rate history evaluated at the pass's
-    ``as_of`` and its recorded balance assertions: no projected payment, no
-    ledger walk, no baseline scenario.
+    ``as_of``, its recorded balance assertions and, for :attr:`recorded_start`
+    alone, the cash days of its settled payments (ruling **R-R113**): no
+    projected payment, no ledger walk, and no baseline scenario REQUIRED.  The
+    settled payments are the one scenario-scoped input -- with no baseline
+    the pass's payment feed is empty and :attr:`recorded_start` is the
+    tracking-start assertion's date, or the origination for a loan with none.
 
     **Why this is its own type (plan step C8e).**  :class:`LoanFigures` used to
-    carry these four fields alongside the scenario-scoped ones, and that mixture
-    was invisible while every field happened to be scenario-independent.  Step C8d
+    carry the first four of these fields alongside the scenario-scoped ones, and
+    that mixture was invisible while every field happened to be
+    scenario-independent.  Step C8d
     added the first scenario-scoped field (the DERIVED ``payoff_date``, which folds
     the loan's projected payments), and the mismatch surfaced immediately as an
     outage: the escrow editor, the rate-history swap, and the recurring-payment
@@ -106,13 +111,21 @@ class LoanTerms:
             ``ResolvedLoan`` -- it reached for ``resolved_loan(account, ctx).params``
             to read this ONE boolean, and a route holding a ``ResolvedLoan`` is a
             route one attribute read away from an unfenced loan balance.
-        recorded_start: The day the app's record of the loan starts -- its
-            ``tracking_start`` assertion's date, else its origination
-            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.recorded_start`,
-            ruling **R-R111**).  A fact of the loan's recorded assertions
-            rather than of its params or rates, and as scenario-independent:
-            the loan chart's first month reads it (ruling **R-R110**), where
-            it read the first confirmed schedule row's date.
+        recorded_start: The day the app's record of the loan starts
+            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.recorded_start`):
+            its ``tracking_start`` assertion's date for a loan imported
+            mid-life, else its origination (ruling **R-R111**) -- and its
+            origination too when a payment's cash moved before that assertion
+            (ruling **R-R113**).  A fact of the loan's recorded assertions and
+            settled payments rather than of its params or rates.  The payments
+            are the one scenario-scoped input here: with no baseline scenario
+            the pass's payment feed is empty, R-R113 finds nothing recorded and
+            R-R111's answer stands.  They are read off that feed rather than
+            the ledger walk, which refuses a caller with no baseline, so this
+            value stays total for one (plan step C8e).  The loan chart's first
+            month (ruling **R-R110**) and the net-worth trend's gate (ruling
+            **R-R112**) read it here, where each read a schedule row's date
+            until plan step recurrence:R16-c-2.
     """
 
     monthly_payment: Decimal
@@ -143,8 +156,8 @@ class LoanFigures:
 
     Attributes:
         terms: The loan's scenario-independent :class:`LoanTerms` (payment, rate,
-            originated, ARM).  Read through here so there is ONE derivation of
-            them, whichever value a consumer holds.
+            originated, ARM, recorded start).  Read through here so there is ONE
+            derivation of them, whichever value a consumer holds.
         payoff_date: The DERIVED payoff -- the date the loan's balance folds to
             zero (:func:`~app.services.balance_at.loan_payoff_date`, plan step
             C8), read off the pass's memo so every surface that shows a payoff
@@ -220,8 +233,8 @@ def loan_terms(
 ) -> LoanTerms | None:
     """Return *account*'s CONTRACT terms, or ``None`` if it is not a loan.
 
-    The scenario-INDEPENDENT read (plan step C8e): payment, rate, originated, ARM,
-    all off the read pass's ONE memoized resolution
+    The scenario-INDEPENDENT read (plan step C8e): payment, rate, originated, ARM
+    and the recorded start, all off the read pass's ONE memoized resolution
     (:func:`~app.services.balance_at._resolution.resolved_loan`).  It
     needs no baseline scenario and derives no balance, so the loan's non-balance
     WRITE surfaces -- the escrow editor, the rate-history swap, the recurring

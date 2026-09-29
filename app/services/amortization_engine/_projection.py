@@ -61,8 +61,8 @@ class PaymentRecord:
 
     Attributes:
         dates: The payment's :class:`~app.services.amortization_engine.PaymentDates`
-            -- its funding period, the installment it satisfies, and the day
-            its cash moved.  See that class for what each governs and for what
+            -- its funding period, its own due date, and the day its cash
+            moved.  See that class for what each governs and for what
             conflating any two of them costs.
         amount: The total payment amount (principal + interest).  Must
             be >= 0.  A zero amount represents a missed payment where
@@ -306,7 +306,7 @@ def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
     ``R16-f``'s.
 
     Args:
-        due_dates: Each payment's own installment date, in the order the caller
+        due_dates: Each payment's own due date, in the order the caller
             wants collisions resolved (the caller's order decides which payment
             keeps a contested month, so it must be the chronology both the
             replay and the priced feed use).

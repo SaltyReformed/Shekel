@@ -9454,8 +9454,10 @@ class TestTheLoanPageNamesAPaymentByItsInstallment:
     ledger entry already read Feb 22.  The page now names it the same way:
     the payment-history card lists it under ``Feb 2026`` (R-R108), and the
     schedule's row for it is ``#1 . Feb 22, 2026`` in every column -- its date,
-    its number, the escrow it is priced with -- and the band chart plots it
-    there (R-R109).
+    its number, the escrow it is priced with (R-R109).  The band chart does not
+    name payments at all: it plots every installment, each at the balance the
+    ledger holds that day (ruling R-R110, which replaced R-R109's "plots it
+    there").
 
     Josh's worked example for R-R109, rendered through both routes: a
     ``$200,000.00`` mortgage at 6%, due the 22nd from 2026-01-22 (P&I

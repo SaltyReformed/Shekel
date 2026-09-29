@@ -514,7 +514,9 @@ def band_chart_dates(
     Returns:
         Ascending installment dates, one per month; empty for a loan whose
         history and contract both hold no row (a retired loan the composer
-        drops).
+        drops), and empty when *start* is on or after the grid's last
+        installment (a tracking start recorded at or after a loan's end), so
+        no point ever falls past it.
     """
     rows = [*scenarios.history_rows, *scenarios.original_forward]
     if not rows:
@@ -524,15 +526,15 @@ def band_chart_dates(
         payoff = installments[-1].due_date if installments else contract_end
     # Through the contract's last installment, or the first installment on or
     # after a later payoff (a payoff on a definition's own cadence can fall
-    # between two).
+    # between two).  The end is tested whether or not an installment is
+    # charted, so a start on or after it charts nothing past it.
     last = max(contract_end, payoff)
     dates: list[date] = []
     for due in installment_dates(
         params.origination_date, params.payment_day, add_months(last, 1),
     ):
-        if due <= start:
-            continue
-        dates.append(due)
+        if due > start:
+            dates.append(due)
         if due >= last:
             break
     return dates
