@@ -7,18 +7,18 @@ R1-R4 and the R7c cutover are ARCHIVED; the closed pattern set is GONE, which is
 for (R-R16 / R-R18 / R-R27). Which steps are in PRODUCTION is a measurement, never a stored value:
 `git branch -r --contains <hash>` against `origin/main`.
 
-**R7d SHIPPED WHOLE 2026-09-14** (seven leaves, R-R33 / R-R34 / R-R38 / R-R80..R-R83 / **R-R88**):
-every reader is on the resolver and the WRITE is gone.
-**A tie-break is a sign the SEARCH is the wrong question** (R-R35): only ONE tier of three asks
-"which transfer into a loan is its payment", and **R16** deletes the rest (four leaves, **R-R36**):
-`R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), `R20` 2026-09-19 (`b4da8068`, **R-R72** part 3: the
-stated balance is an assertion) and `R16-c-1` 2026-09-20 (`c88ed6ba`, **R-R90**: the past and the
-future are ONE event stream, byte-identical); `R23` 2026-09-23 (`f3bf8b9d`, **R-R98**) moved a
-balance a migration had dated its own run day to the setup day. `R16-c-2` (the contract calendar,
-**R-R89**; MOVES POSTED MONEY) is next.
+**R7d SHIPPED WHOLE 2026-09-14** (R-R33 / R-R34 / R-R38 / R-R80..R-R83 / **R-R88**): every reader is
+on the resolver and the WRITE is gone. **A tie-break is a sign the SEARCH is the wrong question**
+(R-R35): only ONE tier of three asks "which transfer into a loan is its payment", and **R16**
+deletes the rest (four leaves, **R-R36**): `R16-b-2` (`7e2e6413`), `R20` (`b4da8068`, **R-R72** part
+3) and `R16-c-1` (`c88ed6ba`, **R-R90**: ONE event stream) shipped, and `R23` (`f3bf8b9d`,
+**R-R98**) moved a balance a migration had dated its own run day to the setup day. `R16-c-2` (the
+contract calendar, **R-R89**; MOVES POSTED MONEY) is next. **JUST LANDED: `R5-a` (`b0e1322a`)**: a
+row is dated from its occurrence, the rule's due day gone (**R-R94**..**R-R97**, **D18**).
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
-the findings, the index, the rules and `verification.md` are the shared registries in `docs/plans/`.
+the findings (`ledger.md`), the index, the rules and `verification.md` are the shared registries in
+`docs/plans/`.
 
 ## The rulings
 
@@ -53,9 +53,9 @@ dependency -- and `R6`, `R8-b`, `R8-c`, `R8-d` and `balance:X-k` follow R5 and i
 stays behind R5 (it reads `due_on`); the split-off accessor option was not taken.
 
 **Consequence for Half A:** it must leave the `due_date` contract byte-identical so the R1 oracle
-stays green, so no step before R5 touches the column. The transaction-template form's live "Due Day
-of Month" field (`_recurrence_fields.html:104-111`, `routes/templates.py:472,649`) stays exactly as
-it is until R5 gives the installment a column of its own.
+stays green, so no step before R5 touches the column. The transaction-template form's "Due Day of
+Month" field went at `R5-a` (**R-R96**): a recurring due day that differs from the payment day is a
+CONTRACT term, and it lives on the loan.
 
 ---
 
@@ -131,15 +131,15 @@ budget.recurrence_weekday_anchors    [R2b created it, EMPTY; R8 is the first wri
 -- DROPPED by R-R13, unwritten: budget.recurrence_month_anchors.  Its whole
 -- content was "the day I actually meant", present iff a DATE anchor had lost
 -- it; ``nominal_day`` above holds it once instead.
--- NEVER CREATED (R-R12): budget.recurrence_due_dates.  The installment is a
--- fact about a generated ROW (``transactions.due_on``), where the loan ledger
--- already reads it, not about the rule.
+-- NEVER CREATED (R-R12): budget.recurrence_due_dates.  A loan's recurring
+-- due day is a CONTRACT term on the loan (``loan_params.payment_day``,
+-- R-R96), not a fact about the rule.
 
-budget.transactions / budget.transfers          [R5, ruling R-R12]
+budget.transactions / budget.transfers          [R5-b, rulings R-R12, R-R94]
   occurs_on        DATE  NOT NULL   -- the date the CADENCE names
   pay_period_id    FK                -- the funding.  Already exists.
-  due_on           DATE  NULL        -- the contractual installment, when it
-                                     -- differs.  A POSTING INPUT.
+  due_on           DATE  NULL        -- a date someone STATED that the
+                                     -- occurrence does not give (R-R94).
   UNIQUE (template_id, scenario_id, occurs_on) WHERE ...   -- re-keyed off the paycheck
 ```
 
@@ -193,7 +193,7 @@ asserts at start and which R7c must therefore update in the same commit.
 | `offset_periods` | `starts_on` (a date survives a schedule rebuild; an index does not) -- kills D1 |
 | `start_period_id` (weak, bypassable) | deleted; `starts_on` is the start and is applied unconditionally -- kills D2 |
 | `start_date` (strong, loan-sync only) | `starts_on` at R7c-c, which NARROWS D6 rather than closing it: for a loan rule that fires on a day of the month -- both live loans, and what `routes/loan/payment_transfer.py` sets up -- the first contractual installment IS an occurrence, so the fold is exact; for a DAY-LESS loan rule (row D27's unenforced precondition) `starts_on` is the payday of the paycheck that installment falls in, which selects the same paycheck and generates identically but does not keep the installment DATE. Nothing is lost that the app cannot re-derive: `rate_period_engine.first_installment_date(origination_date, payment_day)` answers it from the loan |
-| `due_day_of_month` + implicit next-month rule | `transactions.due_on` / `transfers.due_on` on the generated ROW (R-R12) |
+| `due_day_of_month` + implicit next-month rule | dropped at `R5-a` (R-R96): a recurring due day that differs from the payment day is the loan's contract term, `loan_params.payment_day` |
 | `Once` pattern | deleted; `recurrence_rule_id IS NULL` for both template kinds |
 
 ### Generation becomes one function
@@ -257,59 +257,81 @@ record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed
 
 - [x] **R17** `4e8b40b3` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R5 -- a generated row carries THREE dates, in three places.**
+- [ ] **R5 -- a row's due date is DERIVED, and only a STATED date is stored**, the DECOMPOSED parent
+      of two leaves (**R-R94**, **R-R95**, **R-R96**, 2026-09-23), cut by the coordinator: the date
+      read from the OCCURRENCE with the rule's due day dropped (a), and the stored column's deletion
+      (b), which waits for `balance:X-bi-6-4`'s transfer work. **R-R94** amends **R-R12**: the third
+      home is a date someone STATED, and a loan's installment is its contract term (**R-R96**, step
+      `R6`). Ticks with its last leaf.
 
-**RESPECIFIED by ruling R-R12** (2026-08-08). The old specification -- rename `due_date` to
-`occurs_on` as a pure rename, then read a `recurrence_due_dates` table -- rested on a premise
-`ledger.md`'s **D4** now records as false, and is not buildable as written.
+- [x] **R5-a -- a row is dated from its occurrence.** `b0e1322a` --
+      `compute_due_date(rule, occurrence, period)` through one body, `_row_day.date_row`: the
+      occurrence, or the funding payday for a rule naming no day (**R-R94**, **R-R95**); a
+      carried-forward override row takes its rule's first occurrence in the paycheck, else the
+      payday (**R-R97**); migration `1c569c51b449` drops the rule's `due_day_of_month` and its CHECK
+      (**R-R96**). Closed **D18**; filed **REC-537**.
 
-`occurs_on NOT NULL` is the date the CADENCE names, written from the `OccurrencePlacement` the
-engine already computes and `resolve_generation_plan` already carries to the write loop.
-`pay_period_id` is the funding and already exists. `due_on NULL` is the contractual installment,
-present only when it differs. **`compute_due_date` is DELETED** -- it is the last reader of the
-endpoint-month scan R4a deleted from period selection (row D18) and the last place the disproved
-`due_dom < dom` next-month inference lives (R-R2). Two things follow that the old specification did
-not have: the write loop stops discarding `PlannedOccurrence.occurrence` (the two producers of one
-fact, one per ENGINE: `grep -rn 'due_date=compute_due_date' app/`, which is where the line numbers
-pointed before `recurrence_engine` became a PACKAGE), and
-**the index re-key this step used to carry SHIPPED at `R17`**, with the
-`RecurrenceCadenceUnsupported` retirement that rode on it. What remains here is the DATE split:
-`compute_due_date` reads a row's PERIOD, so two occurrences inside one paycheck -- storable since
-that re-key -- take the same due date, which is **D18**'s third door.
+- [ ] **R5-b -- the stored date goes** (**R-R94**'s column half). It waits for `balance:X-bi-6-4`,
+      which re-parents a transfer's record half and may delete the `transfer_service` shadow
+      `due_date` mirror (`_create` / `_update` / `_restore`) and `TransferLeg.due_date` outright, so
+      this specification is RE-DERIVED on the tree that step leaves before anything is built.
 
-**It is a value-SPLITTING migration, not `alter_column ... new_column_name`**, and it is
-destructive: it carries the `Review:` line and a refusing downgrade. The split is per row class -- a
-loan payment shadow's stored value moves to `due_on` (it is the installment the ledger reads,
-`models/transfer.py:169-177`), every other row's stays as `occurs_on`.
-**`due_date` is a POSTING INPUT**, so the migration is followed by
-`loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
-PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
-that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 63 code files `due_date` in `app/**/*.py`) --
-a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
-narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
-in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
-too). The plan's four "highest-risk readers" were wrong about three of them --
-`balance_at/_plan.py`, `rate_period_engine.py` and `loan_payment_service.py` hold **zero** column
-references between them and are R6 surfaces.
+Add `due_on DATE NULL` to both row tables, backfilled exactly where the accessor would not reproduce
+the stored date (on the 2026-09-23 production clone: 10 live transactions, 3 live transfers and 51
+deleted transfers, a shadow reading its parent; RE-MEASURE, since `balance:X-bi-6-4` and time move
+it), and drop `due_date`; every live row keeps its date. ONE accessor -- the stated `due_on`, else
+`R5-a`'s formula over the occurrence -- is read by every price, screen and loan reader and the
+`TransferLeg` proxy; the owner doors write `due_on`, and a one-off keeps `occurs_on` through
+`one_off.state_due_date`. `DerivedRowFields.due_date`, `DerivedTransferFields.due_date`, the
+maintain rewrite and `compute_due_date` itself are DELETED, and `build_transient_rule` is
+re-examined: its last callers are tests needing a rule only because `compute_due_date` takes one
+(carried from `R-F6`'s entry, archived 2026-08-19).
+**AN OPEN QUESTION for the developer at this re-derivation:** **R-R94**'s picked words say both
+`ck_*_template_row_needs_due_date` CHECKs (set up by **balance:R-BAL6**) are deleted, while the
+lane's precise form keeps them as
+`template_id IS NULL OR occurs_on IS NOT NULL OR due_on IS NOT NULL` until `R19-b` binds `occurs_on`
+NOT NULL; the two differ and he has not been told, so he rules which before either is built.
+`idx_transactions_due_date` is re-examined. The downgrade can restore `due_date` from the accessor,
+since it is derivable, so whether it refuses is decided and stated.
+**`due_date` is a POSTING INPUT**: each `_POSTING_RELEVANT_FIELDS` names `due_on`,
+`loan_posting_service.backfill_all_loan_postings()` runs after the migration (the caveat
+`c4e91a7b2d38` carries), and the posted ledger is proven identical. The Python files naming
+`due_date` in code (census 64 code files `due_date` in `app/**/*.py`) are a SUPERSET of the column's
+sites, and two templates carry `<input name="due_date">`, so the wire moves too. **Rule 14 hazard:**
+`spending_analysis.py` spells the date in SQL (`COALESCE(due_date, PayPeriod.start_date)`), a second
+producer of the accessor; the step names ONE walk. **Carried relays:**
+`definition_unarchive._own_day_inside` (**R-PC96**) reads a hidden row's STORED `due_date` for
+rule-less and `occurs_on`-NULL rows and must still get the day the money lands; an **R-R97**
+leftover dated from an occurrence it does not answer carries a STATED `due_on`, a no-occurrence one
+the derivable payday; and nothing here may re-create **REC-537**. `loan_loaders/_terms.py`'s
+installment reader is `R6`'s (**R-R96**): this step only re-points its read of the stored date and
+answers IDENTICALLY. Closes **D26**.
 
-**It must also re-examine `build_transient_rule`**, carried here from `R-F6`'s entry when that step
-was archived (2026-08-19, `conventions.md` rule 4: an overflow's destination is the OWNING step):
-its last callers are tests needing a rule only because `compute_due_date` takes one, and this step
-deletes that function.
+- [ ] **R6 -- `payment_day` is the loan's contract day; one installment accessor** (**R-R96**,
+      2026-09-23, revising this entry's "delete `payment_day`").
 
-- [ ] **R6 -- Delete `payment_day`; one installment accessor.**
-
-`loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
-**There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
-the ROW, where the ledger already reads it, rather than on the rule. The files carrying
-`payment_day` in code (census 18 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
-only in prose, which a code census excludes by construction --
-**already read it as the installment, bar two** -- exactly two make it a CASH day, in
-`routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.
-Eight distinct producers of "when is this installment due" collapse into one; the plan previously
-counted them as one accessor plus a rule read. Kills D4. **This step needs its own review pass** --
-it is the deepest cut into the ledger.
+A recurring due day that differs from the payment day is a CONTRACT term, so it lives on the loan:
+the Van Loan's terms say the 1st while its payment rule stays on the 22nd, when the money moves.
+`loan_installment_date(...)` becomes the single derivation, each payment covering the first contract
+day on or after its payment day, so a late-clearing payment keeps its installment.
+**It fixes the two places that write the payment day into `payment_day`** (**R-R96**): the setup
+form's "Payment Day of Month" (`templates/loan/setup.html:98-100`) and the dashboard's "Payment day"
+(`templates/loan/dashboard.html:567-568`), which today store the day the money moves; the Van's
+stored `payment_day` is corrected from 22 to 1 here too.
+**There is no `recurrence_due_dates` table and there will not be.** The files carrying `payment_day`
+in code (census 19 code files `payment_day` in `app/**/*.py`)
+**already read it as the installment, bar one** -- `loan_recurrence_sync.py` makes it a CASH day
+(`loan_cadence_start`, which READS it at :416-417 as the payment rule's first date), and that is
+D4's mechanism, re-pointed here so the rule keeps the day the money moves while `payment_day` holds
+the contract day; `routes/loan/payment_transfer.py`, which once typed `day_of_month=payment_day`
+itself, now calls that producer and names `payment_day` only in a comment (:190), so it is not among
+the code files. The other files of the (census 30 files `payment_day` in `app/**/*.py`) that name it
+at all carry it only in comments or string literals, which a code census blanks by construction, and
+not every one of those is prose: `routes/loan/_helpers.py`'s `_PARAM_FIELDS` keys a form field by
+the string. Eight distinct producers of "when is this installment due" collapse into one; the plan
+previously counted them as one accessor plus a rule read. Kills D4 and closes **D27**, whose
+precondition the derivation makes structural. **This step needs its own review pass** -- it is the
+deepest cut into the ledger.
 
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
@@ -434,30 +456,33 @@ The same two lines pass a `date | None` into a `date` field, whose only disposit
 that has none. Whatever this step rules, it states the value honestly at both sites. Closes **D34**.
 
 - [ ] **R8 -- the DECOMPOSED parent of the ruled add-ons.** Split 2026-08-16 (**R-R23**) on a
-      measurement, not on size: three of the four add-ons cannot deliver what they promise before
-      **R5**. `recurrence_engine.compute_due_date(rule, period)` never receives the occurrence
-      (ledger row **D26**), so a generated row is dated from the rule's day of the month or from its
-      PAY PERIOD and from nothing else -- and a weekly row, an nth-weekday row and a shifted row
-      each name a date neither source can carry. The count-bounded end left at **R7b-3**.
+      measurement, not on size: three of the four add-ons could not deliver what they promise before
+      **R5**, because `compute_due_date(rule, period)` never received the occurrence and dated a
+      generated row from the rule's day of the month or its PAY PERIOD alone, and a weekly row, an
+      nth-weekday row and a shifted row each name a date neither source can carry. Since `R5-a` it
+      receives the occurrence (`recurrence/_row_day.date_row`): a row is dated from it for a cadence
+      naming a day of the month and from the funding payday otherwise. The count-bounded end left at
+      **R7b-3**.
 
 - [x] **R8-a** `87e2c5b9` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R8-b -- the WEEK unit.** Blocked by **R5**, and the blocker is measured rather than
-      inherited: with the router's refusal lifted a `(2, WEEK)` rule already resolves, walks, places
-      and words itself correctly -- and every row it generates carries the funding PAYDAY, because
-      `scheduling_day_of_month` answers `None` for a unit with no day of the month and
-      `compute_due_date` reads `None` as "date this from the period". The step is therefore the
-      DELETION of `has_row_date_coordinate` and its raising twin, which R5's `occurs_on` makes
-      unnecessary rather than merely satisfied. A second measurement bounds the value: at the
-      developer's 14-day cadence `(1, WEEK)` puts TWO occurrences in one paycheck, which
-      `idx_transactions_template_period_scenario` cannot hold and
-      `_recurrence_common.refuse_unstorable_repeats` refuses -- so weekly-by-date needs R5's re-key
-      as well, and only `(2, WEEK)` and coarser are storable before it.
+- [ ] **R8-b -- the WEEK unit.** Its blocker is `R5-a`, which has shipped: `compute_due_date`
+      receives the occurrence since it shipped and dates a row from it for a cadence naming a day of
+      the month. With the router's refusal lifted a `(2, WEEK)` rule already resolves, walks, places
+      and words itself correctly -- and every row it generates would carry the funding PAYDAY,
+      because `scheduling_day_of_month` answers `None` for a unit with no day of the month and
+      `_row_day.date_row` reads that as "date this from the paycheck". The step is therefore to date
+      a weekly row from its occurrence too and DELETE `has_row_date_coordinate` and its raising twin
+      (`recurrence/_offer.py:42`, `:95`, whose docstrings say they die here). The second bound this
+      entry recorded is gone: `R17` re-keyed the generation index onto the occurrence and
+      `refuse_unstorable_repeats` no longer exists, so nothing refuses `(1, WEEK)`'s two occurrences
+      in one 14-day paycheck.
 
-- [ ] **R8-c -- the nth-weekday coordinate.** Blocked by **R5** for the same reason: a "third
-      Tuesday" rule has unit MONTH, so `scheduling_day_of_month` answers `starts_on.day` -- the
-      anchor's incidental day -- and every generated row is dated on the 17th of its month rather
-      than on that month's third Tuesday. That is ledger row **D29**'s display defect in the DATE.
+- [ ] **R8-c -- the nth-weekday coordinate.** Its blocker is `R5-a`, which has shipped: a generated
+      row is dated from its occurrence since it shipped, so a "third Tuesday" rule's rows carry
+      whatever day the walk emits for it -- and until this step a MONTH-unit rule has no weekday
+      coordinate and fires on `starts_on`'s day, so every row would be dated on the 17th rather than
+      on that month's third Tuesday. That is ledger row **D29**'s display defect in the DATE.
       **RULED 2026-08-16 (R-R25)**: the two fields go on `budget.recurrence_rules` as an EXCLUSIVE
       ARC under one CHECK, and `budget.recurrence_weekday_anchors` is DROPPED unwritten. The plan
       said this invariant becomes "a CHECK against `recurrence_rules.nominal_day`", which is not
@@ -466,19 +491,21 @@ that has none. Whatever this step rules, it states the value honestly at both si
       `recurrence_month_anchors`. `_describe._coordinate` must then dispatch on the coordinate KIND
       rather than on "WEEK or else".
 
-- [ ] **R8-d -- the business-day shift.** Blocked by **R5**, and this one cannot even be OBSERVED
-      before it: the shift moves an OCCURRENCE and the write loop discards it (**D26**), so no
-      stored row's date would move at all -- only which paycheck the occurrence places into.
-      **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
-      holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
-      composes with the nth-weekday machinery R8-c builds. **The holiday set and the weekend rule
-      live in the ONE business-day module `pay_calendar:C14-a` builds** (**R-PC47**, 2026-09-03), so
-      this step CONSUMES it for the cash date rather than building a second copy. The shift applies
-      to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still
-      satisfies the Aug 1 installment, so `due_on` is never shifted. `RecurrenceSpec` carries no
-      `shift` field today and `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. The PAY
-      SCHEDULE's own shift (once **F-4**, merged into `pay_calendar:N-398`) is `C14`'s question and
-      stays separate.
+- [ ] **R8-d -- the business-day shift.** Blocked by **R5**, and which leaf R8-d waits on, or
+      whether it needs a step of its own, is an open question: the shift moves an OCCURRENCE, and
+      since `R5-a` a row is dated from its occurrence (`recurrence/_row_day.date_row`), so a shifted
+      occurrence would now move the stored date -- the due date with the cash date, where this step
+      shifts the cash date alone (below) -- and no leaf of R5 as specified gives the cash date a
+      home apart from the due date. **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends
+      plus the eleven US federal holidays DERIVED as rules rather than seeded as rows, which needs
+      no per-year migration and composes with the nth-weekday machinery R8-c builds. **The holiday
+      set and the weekend rule live in the ONE business-day module `pay_calendar:C14-a` builds**
+      (**R-PC47**, 2026-09-03), so this step CONSUMES it for the cash date rather than building a
+      second copy. The shift applies to the CASH date only -- a bill due Aug 1 paid Friday because
+      Aug 1 is a Sunday still satisfies the Aug 1 installment, so `due_on` is never shifted.
+      `RecurrenceSpec` carries no `shift` field today and `resolve` hardcodes `NONE`; 46 of 46 live
+      rules carry `none`. The PAY SCHEDULE's own shift (once **F-4**, merged into
+      `pay_calendar:N-398`) is `C14`'s question and stays separate.
 
 ### R10 -- the regeneration's own defect
 
@@ -627,7 +654,10 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       the calendar as `balance:X-bh-2` made it run below the record when `history_opens_on` is
       stated; generation still needs a saved period. `$0.00` today; graded by re-pricing a stated
       owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-09-11
-      schedule bound (**R-R64**) for stated owners only.
+      schedule bound (**R-R64**) for stated owners only. It also owns **REC-518** (the developer,
+      2026-09-23, at R5's design fork): "the same boundary seen from generation: an occurrence
+      before the schedule opens should place nowhere, or on a back-dated paycheck, never on the
+      first saved one. Same code, one fix."
 
 - [ ] **R22 -- the plan is computed, only the owner's acts are stored** (a DESIGN step: an audit,
       then forks to the developer with worked dollars, BEFORE any build. Asked for by the developer

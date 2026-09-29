@@ -13,9 +13,8 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_line import PaycheckLine
-from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
-from app.services import pay_period_write
+from app.services import pay_list_service, pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -50,9 +49,10 @@ from tests._test_helpers import (
     make_every_period_rule,
     open_owner_calendar,
     rebuild_calendar,
-    seed_fica_config,
-    seed_state_tax_config,
-    seed_tax_bracket_set,
+    start_test_pay_list,
+    EMPTY_TAX_LAW,
+    bracket_set_law,
+    state_and_fica_law,
 )
 
 
@@ -106,10 +106,10 @@ def _create_profile(seed_user):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Day Job",
-        annual_salary=Decimal("75000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -183,10 +183,10 @@ def _create_other_user_profile():
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Other Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
 
     return {"user": other_user, "profile": profile}
@@ -216,7 +216,10 @@ class TestProfileList:
             response = auth_client.get("/salary/new")
 
             assert response.status_code == 200
-            assert b'name="annual_salary"' in response.data
+            # The first pay entry, typed per paycheck (plan step
+            # salary:X-av-3a, ruling R-SAL61).
+            assert b'name="pay_amount"' in response.data
+            assert b'name="pay_payday"' in response.data
             assert b'name="filing_status_id"' in response.data
             assert b"New Salary Profile" in response.data
 
@@ -256,7 +259,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -270,55 +274,34 @@ class TestProfileCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Day Job")
                 .one()
             )
-            assert profile.annual_salary == Decimal("75000.00")
+            # The salary is the profile's pay list: ONE entry, what was typed,
+            # from the payday it was typed for (plan step salary:X-av-3a).
+            assert [(e.payday, e.amount) for e in profile.pay_entries] == [
+                (date(2026, 1, 2), Decimal("2884.62")),
+            ]
             assert profile.template is not None
             assert profile.template.is_active is True
 
-    def test_create_profile_template_amount(self, app, auth_client, seed_user, seed_periods):
-        """Created template amount equals annual_salary over the paycheck count."""
-        with app.app_context():
-            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-
-            auth_client.post("/salary", data={
-                "name": "Salary Check",
-                "annual_salary": "52000.00",
-                "filing_status_id": filing_status.id,
-                "state_code": "NC",
-            }, follow_redirects=True)
-
-            profile = (
-                db.session.query(SalaryProfile)
-                .filter_by(user_id=seed_user["user"].id, name="Salary Check")
-                .one()
-            )
-            # 52000 / 26 = 2000
-            assert profile.template.default_amount == Decimal("2000.00")
-
-    def test_create_profile_template_amount_follows_the_cadence(
-        self, app, auth_client, seed_user, seed_periods,
+    def test_create_profile_yearly_pay_follows_the_cadence(
+        self, app, auth_client, seed_user, seed_periods, tax_law,
     ):
-        """A weekly owner's paycheck template is the salary over 52, not 26.
+        """A weekly owner's created pay is 52 paychecks a year, not 26.
 
-        Input: the same $52,000 create POST as the test above, from an owner
-        whose ``budget.pay_schedule.cadence_days`` is 7.
-        Expected: ``default_amount`` is $1,000.00 ($52,000 / 52).
-        Why: **the sibling above cannot see this** -- its owner is biweekly, so
-        a route that hardcoded 26, or read a per-profile count, produces the
-        same $2,000.00 either way.  Before plan step R-F16 nothing checked the
-        form's ``pay_periods_per_year`` against the schedule, so a weekly owner
-        accepting the dropdown's default seeded every paycheck row at DOUBLE
-        their pay.
-
-        **What this pins, measured rather than assumed.**  The figure asserted
-        is the one ``create_profile`` finally writes, which is the paycheck
-        ENGINE's answer for the reference period -- ``_paycheck_template``'s
-        own ``annual / count`` seed is overwritten by ``set_amount`` in the
-        same request, and mutating that seed to ``/ 26`` leaves this test
-        green.  Hardcoding :attr:`PayrollBasis.periods_per_year` to 26 fails
-        it, and it is the ONLY test in this module that does -- which is the
-        point: every other case here is biweekly, where the derived count and
-        the old constant agree.
+        Input: a create POST of $1,000.00 a paycheck from 2026-01-02, from an
+        owner whose paydays are 7 days apart.
+        Expected: the template is born at $1,000.00 (no tax law, so net ==
+        gross), and the pay list states the entry at 52 paychecks a year,
+        $1,000.00 x 52 = $52,000.00 (ruling R-SAL59).
+        Why: pay is typed per paycheck since plan step salary:X-av-3a, so the
+        yearly division this case graded until then (the salary over the
+        derived count) is gone from the create door.  The derived count
+        survives in the yearly figure, and a count hardcoded to 26 -- the
+        regression plan step R-F16 removed, where a weekly owner accepting
+        the dropdown's default was modelled at double their pay -- reads
+        $26,000.00 here.  Every other case in this module is biweekly, where
+        the derived count and the old constant agree.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single",
@@ -331,7 +314,8 @@ class TestProfileCreate:
 
             auth_client.post("/salary", data={
                 "name": "Weekly Check",
-                "annual_salary": "52000.00",
+                "pay_amount": "1000.00",  # $52,000.00 a year / 52
+                "pay_payday": "2026-01-02",  # the first weekly payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -341,8 +325,15 @@ class TestProfileCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Weekly Check")
                 .one()
             )
-            # 52000 / 52 = 1000, gross == net here (no tax configs seeded).
+            # Typed 1,000.00; gross == net here (no tax law).
             assert profile.template.default_amount == Decimal("1000.00")
+            rows = pay_list_service.pay_rows(
+                PayrollBasis(profile, calendar_for(seed_user["user"].id)),
+            )
+            # 1,000.00 x 52 = 52,000.00.
+            assert [(row.paychecks_a_year, row.yearly) for row in rows] == [
+                (52, Decimal("52000.00")),
+            ]
 
     def test_the_salary_form_states_the_derived_paycheck_count(
         self, app, auth_client, seed_user, seed_periods,
@@ -404,7 +395,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -425,7 +417,8 @@ class TestProfileCreate:
 
             response = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -463,7 +456,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -525,7 +519,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -569,7 +564,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -620,7 +616,8 @@ class TestProfileCreate:
             ).one()
             resp = auth_client.post("/salary", data={
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -642,7 +639,8 @@ class TestProfileCreate:
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
             data = {
                 "name": "Day Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }
@@ -667,7 +665,8 @@ class TestProfileCreate:
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
             response = auth_client.post("/salary", data={
                 "name": "Link Test",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2024-01-05",  # the seed owner's bootstrap payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -697,7 +696,6 @@ class TestProfileUpdate:
 
             response = auth_client.post(f"/salary/{profile.id}", data={
                 "name": "Updated Job",
-                "annual_salary": "80000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -705,8 +703,10 @@ class TestProfileUpdate:
             assert response.status_code == 200
             assert b"updated" in response.data
 
+            # The update takes no salary since plan step salary:X-av-3a (a
+            # salary change is the pay list's Fix); the name is the edit.
             db.session.refresh(profile)
-            assert profile.annual_salary == Decimal("80000.00")
+            assert profile.name == "Updated Job"
 
     def test_delete_profile(self, app, auth_client, seed_user, seed_periods):
         """POST /salary/<id>/delete deactivates the profile and its template."""
@@ -2038,7 +2038,6 @@ def _authored_columns(rule):
         "interval_n": rule.interval_n,
         "starts_on": rule.starts_on,
         "nominal_day": rule.nominal_day,
-        "due_day_of_month": rule.due_day_of_month,
         "max_per_month": rule.max_per_month,
         "end_date": rule.end_date,
         "max_occurrences": rule.max_occurrences,
@@ -2338,8 +2337,7 @@ class TestDeductionCadenceForm:
             starts_on = re.search(r'<input type="date" id="starts_on"[^>]*>', form).group(0)
             assert 'value=""' in starts_on, "the ADD form's start opens blank"
             for absent in (
-                'name="due_day_of_month"', 'id="recurrence-preview"',
-                'name="deductions_per_year"',
+                'id="recurrence-preview"', 'name="deductions_per_year"',
             ):
                 assert absent not in form, absent
             assert "js/recurrence_form.js" in html
@@ -2768,17 +2766,16 @@ class TestDeductionCadenceForm:
                 "starts-on": "", **never_ending,
             }
 
-    def test_a_stated_start_and_bound_reach_the_rule_and_a_due_day_does_not(
+    def test_a_stated_start_and_bound_reach_the_rule(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``starts_on`` and a closing bound are the owner's and are authored; a due day is dropped.
+        """``starts_on`` and a closing bound are the owner's and are authored.
 
         Until plan step salary:R18-c every one of these was dropped on the
         wire (rulings R-SAL30 / R-SAL31); ruling **R-SAL38** (2) gives every
         line a start and an optional end, so a monthly line that begins
-        2026-04-01 and ends 2026-06-30 is stored exactly so.  ``due_day_of
-        _month`` is still nobody's on a payroll line and still meets the
-        schema's EXCLUDE; ``max_occurrences`` beside an ``on_date`` mode is
+        2026-04-01 and ends 2026-06-30 is stored exactly so.
+        ``max_occurrences`` beside an ``on_date`` mode is
         the input that shape does not need and is dropped by the compose.
         """
         with app.app_context():
@@ -2795,7 +2792,6 @@ class TestDeductionCadenceForm:
                         ),
                     ),
                     "starts_on": "2026-04-01",
-                    "due_day_of_month": "20",
                     "recurrence_end_mode": "on_date",
                     "end_date": "2026-06-30",
                     "max_occurrences": "2",
@@ -2810,7 +2806,6 @@ class TestDeductionCadenceForm:
             rule = added.recurrence_rule
             assert rule.starts_on == date(2026, 4, 1)
             assert rule.nominal_day is None
-            assert rule.due_day_of_month is None
             assert rule.end_date == date(2026, 6, 30)
             assert rule.max_occurrences is None
             # The section words the span beside the cadence, and the edit
@@ -3393,17 +3388,17 @@ class TestDeductionFrequencyDisplay:
     def test_the_page_derives_no_calendar_for_lines_without_a_rule(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A rule is described against the owner's calendar; no rule, no calendar.
+        """A rule is described against the owner's calendar; no rule, no calendar of its own.
 
-        The edit page deliberately loads no calendar of its own
-        (``profiles._paychecks_per_year`` gives the reason), so the cadence
-        reader derives one only when a line carries a rule -- which is also
-        the only case ``calendar_for``'s refusal of a schedule-less owner
-        cannot reach, a rule being authored against a calendar.  Counted at
+        Since plan step salary:X-av-3a the edit page prices the pay list, so
+        it derives the owner's calendar ONCE for every profile
+        (``edit_profile``'s ``PayrollBasis``); the cadence reader must add no
+        derivation of its own for a line that carries no rule.  Counted at
         the cursor: a calendar is derived by loading the owner's
         ``budget.pay_periods`` rows (their ``start_date``s); the page's own
         ``SELECT EXISTS`` over that table is not a derivation and is let
-        through.
+        through.  Exactly one, so a counter that never fired reads 0 and
+        fails here.
         """
         # pylint: disable=import-outside-toplevel
         from sqlalchemy import event
@@ -3426,13 +3421,21 @@ class TestDeductionFrequencyDisplay:
                 assert response.status_code == 200
                 return [s for s in statements if "pay_periods.start_date" in s]
 
-            assert not calendar_loads(), (
-                "the edit page derived a calendar for a line with no rule"
+            loads = calendar_loads()
+            assert len(loads) == 1, (
+                f"the edit page derived {len(loads)} calendars for a profile "
+                "whose one line has no rule; the pay list's is the one"
             )
-            # The positive control: give one line a rule and the same page
-            # derives the calendar it describes the rule against.
+            # The positive control: give one line a rule and the page still
+            # derives ONE calendar -- the pass's, which the rule is described
+            # against (the lines section is handed the pass's memo, plan step
+            # salary:X-av-3a; it derived a second of its own until then,
+            # measured at 2).  It also proves the counter fires.
             self._seed(profile, "Health Insurance", 24)
-            assert calendar_loads(), "the predicate never fires; the case above measured nothing"
+            assert len(calendar_loads()) == 1, (
+                "a line with a rule made the edit page derive the owner's "
+                "calendar more than once"
+            )
 
     def test_deduction_frequency_column_header(
         self, app, auth_client, seed_user, seed_periods
@@ -3637,7 +3640,12 @@ class TestBreakdown:
 
 
 class TestTaxConfig:
-    """Tests for tax config page, state tax, and FICA config endpoints."""
+    """The old tax-config address, which only redirects now.
+
+    Its state-tax and FICA POST doors were deleted at plan step salary:X-at-1
+    (ruling R-SAL74): the tax law lives in :mod:`app.tax_law`, and nothing in
+    the app writes it.
+    """
 
     def test_tax_config_redirects_to_settings(self, app, auth_client, seed_user):
         """GET /salary/tax-config returns 302 redirect to settings dashboard."""
@@ -3647,110 +3655,6 @@ class TestTaxConfig:
             assert response.status_code == 302
             assert "/settings" in response.headers["Location"]
             assert "section=tax" in response.headers["Location"]
-
-    def test_update_state_tax_config(self, app, auth_client, seed_user):
-        """POST /salary/tax-config creates a per-filing-status state tax config.
-
-        T-P5: the state config is filing-status-keyed, so a create builds ONE
-        row per filing status (the settings form applies the single rate +
-        deduction uniformly across statuses).  Every created row carries the
-        entered rate.
-        """
-        with app.app_context():
-            # Seed the 'flat' tax type (needed for creating new state config).
-            response = auth_client.post("/salary/tax-config", data={
-                "tax_year": "2026",
-                "state_code": "NC",
-                "flat_rate": "4.50",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            # Flash could be "created" or "updated" depending on state.
-            assert b"State tax config for NC" in response.data
-
-            configs = (
-                db.session.query(StateTaxConfig)
-                .filter_by(user_id=seed_user["user"].id, state_code="NC", tax_year=2026)
-                .all()
-            )
-            # One row per filing status (single, MFJ, MFS, HoH = 4).
-            filing_status_count = db.session.query(FilingStatus).count()
-            assert len(configs) == filing_status_count
-            assert all(c.flat_rate == Decimal("0.0450") for c in configs)
-
-    def test_create_state_tax_config_without_rate_is_rejected(
-        self, app, auth_client, seed_user,
-    ):
-        """Creating a NEW state tax config with no flat_rate fails loud (#50/#7).
-
-        The schema leaves flat_rate optional, so a scripted POST that omits
-        it validates.  Previously the handler created no row, flashed
-        nothing, yet still committed, regenerated salary transactions, and
-        redirected -- reporting a silent success for a skipped write.  It
-        must now reject with a danger flash and persist nothing.
-        """
-        with app.app_context():
-            response = auth_client.post("/salary/tax-config", data={
-                "tax_year": "2026",
-                "state_code": "NC",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b"A flat rate is required" in response.data
-
-            # No config was persisted (the rejection returns before commit).
-            count = (
-                db.session.query(StateTaxConfig)
-                .filter_by(
-                    user_id=seed_user["user"].id, state_code="NC", tax_year=2026,
-                )
-                .count()
-            )
-            assert count == 0
-
-    def test_update_fica_config(self, app, auth_client, seed_user):
-        """POST /salary/fica-config creates/updates FICA configuration."""
-        with app.app_context():
-            response = auth_client.post("/salary/fica-config", data={
-                "tax_year": "2026",
-                "ss_rate": "6.20",
-                "ss_wage_base": "176100.00",
-                "medicare_rate": "1.45",
-                "medicare_surtax_rate": "0.90",
-                "medicare_surtax_threshold": "200000.00",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b"FICA config for 2026" in response.data
-
-            fica = (
-                db.session.query(FicaConfig)
-                .filter_by(user_id=seed_user["user"].id, tax_year=2026)
-                .one()
-            )
-            assert fica.ss_rate == Decimal("0.0620")
-
-    def test_update_state_tax_invalid_code(self, app, auth_client, seed_user):
-        """POST /salary/tax-config with invalid state code flashes danger."""
-        with app.app_context():
-            response = auth_client.post("/salary/tax-config", data={
-                "state_code": "X",
-                "flat_rate": "5",
-                "tax_year": "2026",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b"Please correct the highlighted errors" in response.data
-
-    def test_update_fica_validation_error(self, app, auth_client, seed_user):
-        """POST /salary/fica-config with missing fields shows a validation error."""
-        with app.app_context():
-            response = auth_client.post("/salary/fica-config", data={
-                "tax_year": "",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b"Please correct the highlighted errors" in response.data
 
 
 class TestTaxConfigLayout:
@@ -3766,8 +3670,8 @@ class TestTaxConfigLayout:
             response = auth_client.get("/settings?section=tax")
             html = response.data.decode()
 
-            state_pos = html.index("State Tax Configuration")
-            fica_pos = html.index("FICA Configuration")
+            state_pos = html.index("State Tax")
+            fica_pos = html.index("FICA")
             federal_pos = html.index("Federal Tax Brackets")
 
             assert state_pos < fica_pos < federal_pos, (
@@ -3775,11 +3679,10 @@ class TestTaxConfigLayout:
                 f"< Federal ({federal_pos})"
             )
 
-    def test_federal_brackets_collapsed_by_default(self, app, auth_client, seed_user):
+    def test_federal_brackets_collapsed_by_default(self, app, auth_client, seed_user, tax_law):
         """Federal brackets card body starts collapsed (no 'show' class)."""
         with app.app_context():
-            seed_tax_bracket_set(seed_user["user"].id)
-            db.session.commit()
+            tax_law(bracket_set_law())
 
             response = auth_client.get("/settings?section=tax")
             html = response.data.decode()
@@ -3787,11 +3690,10 @@ class TestTaxConfigLayout:
             assert 'class="collapse" id="federal-brackets-collapse"' in html
             assert 'class="collapse show" id="federal-brackets-collapse"' not in html
 
-    def test_federal_brackets_content_present_in_dom(self, app, auth_client, seed_user):
+    def test_federal_brackets_content_present_in_dom(self, app, auth_client, seed_user, tax_law):
         """Bracket data is in the DOM even though the section is collapsed."""
         with app.app_context():
-            seed_tax_bracket_set(seed_user["user"].id)
-            db.session.commit()
+            tax_law(bracket_set_law())
 
             response = auth_client.get("/settings?section=tax")
             html = response.data.decode()
@@ -3812,33 +3714,10 @@ class TestTaxConfigLayout:
             # Outer toggle starts collapsed.
             assert 'aria-expanded="false" aria-controls="federal-brackets-collapse"' in html
 
-    def test_state_tax_form_action_intact(self, app, auth_client, seed_user):
-        """State Tax form POSTs to the correct endpoint after section reorder."""
-        with app.app_context():
-            response = auth_client.get("/settings?section=tax")
-            html = response.data.decode()
-
-            assert 'action="/salary/tax-config"' in html
-            assert 'method="POST"' in html
-
-    def test_fica_form_action_intact(self, app, auth_client, seed_user):
-        """FICA form POSTs to the correct endpoint after section reorder."""
-        with app.app_context():
-            # FICA form only renders when fica_configs is non-empty.
-            seed_fica_config(seed_user["user"].id)
-            db.session.commit()
-
-            response = auth_client.get("/settings?section=tax")
-            html = response.data.decode()
-
-            assert 'action="/salary/fica-config"' in html
-
-    def test_tax_config_no_nested_forms(self, app, auth_client, seed_user):
+    def test_tax_config_no_nested_forms(self, app, auth_client, seed_user, tax_law):
         """No form tags are nested inside other form tags after the reorder."""
         with app.app_context():
-            seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
-            seed_fica_config(seed_user["user"].id)
-            db.session.commit()
+            tax_law(state_and_fica_law())
 
             response = auth_client.get("/settings?section=tax")
             html = response.data.decode()
@@ -3866,12 +3745,10 @@ class TestTaxConfigLayout:
                     depth -= 1
                     i = close_idx + 1
 
-    def test_multiple_tax_years_most_recent_expanded(self, app, auth_client, seed_user):
+    def test_multiple_tax_years_most_recent_expanded(self, app, auth_client, seed_user, tax_law):
         """With multiple tax years, the most recent is expanded, older collapsed."""
         with app.app_context():
-            seed_tax_bracket_set(seed_user["user"].id, tax_year=2025)
-            seed_tax_bracket_set(seed_user["user"].id, tax_year=2026)
-            db.session.commit()
+            tax_law(bracket_set_law(2025, 2026))
 
             response = auth_client.get("/settings?section=tax")
             html = response.data.decode()
@@ -3887,7 +3764,7 @@ class TestTaxConfigLayout:
         with app.app_context():
             response = auth_client.get("/settings?section=tax")
             assert response.status_code == 200
-            assert b"Tax Configuration" in response.data
+            assert b"Tax Rates" in response.data
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────
@@ -3946,10 +3823,10 @@ def _create_second_user_salary_profile(second_user_data):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name="Other Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2307.69"))  # $60,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -3974,7 +3851,6 @@ class TestSalaryNegativePaths:
 
             resp = auth_client.post("/salary/999999", data={
                 "name": "Ghost",
-                "annual_salary": "50000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -4143,141 +4019,17 @@ class TestSalaryNegativePaths:
 
 
 class TestNetBiweeklyMismatchFixes:
-    """Tests for the three root causes of net biweekly mismatch (section 3.3).
+    """Tests for the root causes of net biweekly mismatch (section 3.3).
 
-    Verifies that:
-    1. Updating state tax config regenerates salary transactions.
-    2. Updating FICA config regenerates salary transactions.
-    3. Creating a salary profile sets template default_amount to NET,
-       not GROSS.
+    Verifies that creating a salary profile sets template default_amount to
+    NET, not GROSS, and that a future year prices on the latest year's law.
+    The other two causes -- a state or FICA save that did not regenerate the
+    salary rows -- went with those Settings saves at plan step salary:X-at-1,
+    which left the tax law nothing in the app can edit.
     """
 
-    def test_state_tax_update_regenerates_salary_transactions(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Changing the state tax rate updates salary transaction amounts.
-
-        Without the fix, updating the state tax config would leave stale
-        transaction amounts in the grid while the salary page showed the
-        new net pay.
-        """
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
-            db.session.commit()
-
-            # Grab a projected salary transaction's amount before the change.
-            txn_before = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-            amount_before = txn_before.estimated_amount if txn_before else None
-
-            # Update the state tax rate to a higher value.
-            auth_client.post("/salary/tax-config", data={
-                "tax_year": "2026",
-                "state_code": "NC",
-                "flat_rate": "5.50",
-                "standard_deduction": "25500.00",
-            }, follow_redirects=True)
-
-            # Refresh the session to see the regenerated transactions.
-            db.session.expire_all()
-
-            txn_after = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-            assert txn_after is not None
-
-            # With a higher tax rate, net pay decreases so the amount
-            # should be lower (or at least different if the rate changed).
-            if amount_before is not None:
-                assert txn_after.estimated_amount != amount_before, (
-                    "Transaction amount should change when state tax rate changes"
-                )
-
-    def test_fica_update_regenerates_salary_transactions(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Changing the FICA SS rate updates salary transaction amounts.
-
-        Without the fix, updating FICA would leave stale transaction
-        amounts in the grid.
-        """
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
-            db.session.commit()
-
-            txn_before = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-            amount_before = txn_before.estimated_amount if txn_before else None
-
-            # Update SS rate to a significantly different value.
-            auth_client.post("/salary/fica-config", data={
-                "tax_year": "2026",
-                "ss_rate": "9.00",
-                "ss_wage_base": "176100.00",
-                "medicare_rate": "1.45",
-                "medicare_surtax_rate": "0.90",
-                "medicare_surtax_threshold": "200000.00",
-            }, follow_redirects=True)
-
-            db.session.expire_all()
-
-            txn_after = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-            assert txn_after is not None
-
-            if amount_before is not None:
-                assert txn_after.estimated_amount != amount_before, (
-                    "Transaction amount should change when SS rate changes"
-                )
-
-    def test_tax_update_with_no_profiles_is_safe(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Updating tax config with no salary profiles does not error.
-
-        The regeneration loop should gracefully handle zero profiles.
-        """
-        with app.app_context():
-            response = auth_client.post("/salary/tax-config", data={
-                "tax_year": "2026",
-                "state_code": "NC",
-                "flat_rate": "4.50",
-            }, follow_redirects=True)
-
-            assert response.status_code == 200
-            assert b"State tax config for NC" in response.data
-
     def test_create_profile_sets_template_default_to_net(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """Creating a salary profile sets template.default_amount to NET pay.
 
@@ -4288,8 +4040,7 @@ class TestNetBiweeklyMismatchFixes:
         """
         with app.app_context():
             user = seed_user["user"]
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             filing_status = db.session.query(FilingStatus).filter_by(
@@ -4298,7 +4049,8 @@ class TestNetBiweeklyMismatchFixes:
 
             auth_client.post("/salary", data={
                 "name": "Net Test Job",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -4321,7 +4073,7 @@ class TestNetBiweeklyMismatchFixes:
             )
 
     def test_create_profile_without_tax_configs_uses_gross_as_fallback(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """Without tax configs, default_amount equals GROSS (no taxes to subtract).
 
@@ -4329,6 +4081,7 @@ class TestNetBiweeklyMismatchFixes:
         with no state config, state tax is $0; with no FICA config, FICA
         is $0.  NET == GROSS when there are no taxes.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single"
@@ -4336,7 +4089,8 @@ class TestNetBiweeklyMismatchFixes:
 
             auth_client.post("/salary", data={
                 "name": "No Tax Job",
-                "annual_salary": "60000.00",
+                "pay_amount": "2307.69",  # $60,000.00 a year / 26
+                "pay_payday": "2026-01-02",  # the first period's payday
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
             }, follow_redirects=True)
@@ -4361,7 +4115,7 @@ class TestNetBiweeklyMismatchFixes:
             )
 
     def test_future_year_transactions_use_current_year_tax_configs(
-        self, app, auth_client, seed_user, seed_periods_52
+        self, app, auth_client, seed_user, seed_periods_52, tax_law
     ):
         """Future-year salary rows fall back to current-year tax configs.
 
@@ -4379,8 +4133,7 @@ class TestNetBiweeklyMismatchFixes:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"), tax_year=2026)
-            seed_fica_config(user.id, tax_year=2026)
+            tax_law(state_and_fica_law(tax_year=2026))
             db.session.commit()
 
             # Regenerate transactions via the recurrence engine so that
@@ -4468,14 +4221,13 @@ class TestCalibration:
             assert b'name="actual_gross_pay"' in resp.data
 
     def test_calibrate_saves_and_regenerates(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """Full calibration workflow: preview then confirm saves overrides."""
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             # Step 1: Preview -- derive rates.
@@ -4578,14 +4330,13 @@ class TestCalibration:
             assert remaining is None
 
     def test_calibrate_regenerates_grid_transactions(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """After calibration, grid income transactions use calibrated net pay."""
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             # Get a transaction amount before calibration.
@@ -4647,14 +4398,13 @@ class TestCalibration:
                 )
 
     def test_recalibrate_replaces_existing(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """Re-calibrating replaces the old calibration, not creates a second."""
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             # First calibration.
@@ -5064,7 +4814,7 @@ class TestCalibrationServerDerivedSnapshot:
             ).count() == 0
 
     def test_snapshot_immutable_on_profile_edit(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """C19-3: editing pre-tax deductions after confirm leaves snapshot intact.
 
@@ -5082,8 +4832,7 @@ class TestCalibrationServerDerivedSnapshot:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             resp = self._post_confirm(auth_client, profile.id)
@@ -5188,7 +4937,7 @@ class TestCalibrationServerDerivedSnapshot:
             ) <= one_cent
 
     def test_calibration_then_paycheck_uses_snapshot(
-        self, app, auth_client, seed_user, seed_periods
+        self, app, auth_client, seed_user, seed_periods, tax_law
     ):
         """C19-5: projected paycheck uses snapshot rates + capped statutory SS.
 
@@ -5215,8 +4964,7 @@ class TestCalibrationServerDerivedSnapshot:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            seed_state_tax_config(user.id, Decimal("0.0399"))
-            seed_fica_config(user.id)
+            tax_law(state_and_fica_law())
             db.session.commit()
 
             resp = self._post_confirm(auth_client, profile.id)
@@ -5244,7 +4992,7 @@ class TestCalibrationServerDerivedSnapshot:
             calendar = calendar_for(user.id)
             current_period = calendar.period_containing(date.today())
             tax_configs = load_tax_configs_for_year(
-                user.id, profile, current_period.start_date.year,
+                profile, current_period.start_date.year,
             )
             breakdown = paycheck_calculator.calculate_paycheck(
                 PayrollBasis(profile, calendar), current_period, tax_configs,
@@ -5271,7 +5019,7 @@ class TestButtonPlacement:
 
     The former salary LIST page (and its per-row action buttons) was
     removed; the restyled edit form carries "Open cockpit" / "Projection
-    ledger" / "Tax settings" buttons on the submit row instead of the old
+    ledger" / "Tax rates" buttons on the submit row instead of the old
     "View Breakdown" / "View Projection" pair.  These tests pin the new
     contract: labels, targets (cockpit with the profile focused, the
     projection page, the honest direct settings link), and the
@@ -5417,11 +5165,11 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name=name,
-        annual_salary=Decimal("40000.00"),
         state_code="NC",
         is_active=False,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("1538.46"))  # $40,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -5454,15 +5202,17 @@ def _capture_render(app, auth_client, url, template_name):
 class TestCockpitContext:
     """Cockpit context contract: selection, chips, composition, chart JSON."""
 
-    def test_context_single_profile(self, app, auth_client, seed_user, seed_periods):
+    def test_context_single_profile(self, app, auth_client, seed_user, seed_periods, tax_law):
         """Chips/composition are hand-correct for a no-tax $75,000 profile.
 
         With no tax configs, every withholding is $0, so net == gross.
-        Gross biweekly = round_money(75000 / 26) = 2884.62 (75000 / 26 =
+        Gross biweekly = the one pay entry, 2884.62 ($75,000 / 26 =
         2884.6153..., half-up to cents).  Net == gross == 2884.62; annual
-        salary (no raises) stays 75000.00; take-home = 2884.62/2884.62*100
-        = 100; net is 100.0% of gross.
+        salary (no raises) is the paycheck times the count (ruling
+        R-SAL59): 2884.62 x 26 = 75000.12; take-home =
+        2884.62/2884.62*100 = 100; net is 100.0% of gross.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -5475,7 +5225,7 @@ class TestCockpitContext:
             assert ctx["empty_state"] is None
             assert ctx["profile"].id == profile.id
             assert ctx["chips"]["gross"] == Decimal("2884.62")
-            assert ctx["chips"]["annual_salary"] == Decimal("75000.00")
+            assert ctx["chips"]["annual_salary"] == Decimal("75000.12")
             assert ctx["chips"]["take_home_rate_pct"] == Decimal("100")
             assert ctx["composition"]["net"] == Decimal("2884.62")
             assert ctx["composition"]["taxes_total"] == Decimal("0")
@@ -5868,7 +5618,7 @@ class TestBreakdownRedirectStubs:
 class TestProjectionSummary:
     """The projection route's summary framing context (P3 renders it)."""
 
-    def test_projection_summary_values(self, app, auth_client, seed_user, seed_periods):
+    def test_projection_summary_values(self, app, auth_client, seed_user, seed_periods, tax_law):
         """yearly_nets sums the 10 no-tax periods; no future raise/third.
 
         With no tax configs each of the 10 seeded periods nets its gross,
@@ -5876,6 +5626,7 @@ class TestProjectionSummary:
         2884.62 * 10 = 28846.20.  There are no raises and (after today
         2026-03-20) no remaining third paycheck in the seeded window.
         """
+        tax_law(EMPTY_TAX_LAW)
         with app.app_context():
             profile = _create_profile(seed_user)
 

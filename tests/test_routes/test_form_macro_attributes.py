@@ -31,7 +31,6 @@ import re
 import pytest
 
 from app.services.pay_period_batch import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
-from app.services.registration_service import _seed_tax_data_for_user
 from tests._test_helpers import make_salary_profile
 
 #: The tell of an attribute whose SYNTAX went through autoescape: an equals
@@ -134,16 +133,16 @@ class TestTheCallersRenderParseableAttributes:
         assert b' minlength="12"' in password and b' maxlength="72"' in password
 
     def test_the_pay_period_count_boxes_read_the_batch_bounds(self, auth_client):
-        """Extend, regenerate and reset bound the count by the batch policy, not a literal.
+        """Extend, add earlier, regenerate and reset bound the count by the batch policy, not a literal.
 
-        Three boxes share ``id="num_periods"`` on this page, one per form --
+        Four boxes share ``id="num_periods"`` on this page, one per form --
         pre-existing, and reported by this step's review rather than fixed
         here: duplicate ids break ``<label for>`` and ``aria-describedby``
         targeting for a screen reader.
         """
         page = auth_client.get("/settings?section=pay-periods").data
         counts = [t for t in _tags(page, b"input") if b'id="num_periods"' in t]
-        assert len(counts) == 3
+        assert len(counts) == 4
         for tag in counts:
             assert f' min="{PERIOD_BATCH_MIN}"'.encode() in tag
             assert f' max="{PERIOD_BATCH_MAX}"'.encode() in tag
@@ -160,10 +159,10 @@ class TestTheCallersRenderParseableAttributes:
         """
         with app.app_context():
             # The tab computes a tax report before it renders the card, so
-            # the owner needs the tax seeds and an active profile -- the
-            # taxes-tab route tests' own recipe.  An HTMX request, because a
-            # direct GET renders the analytics shell and loads the tab later.
-            _seed_tax_data_for_user(seed_user["user"].id)
+            # the owner needs an active profile (the shipped tax law prices
+            # it) -- the taxes-tab route tests' own recipe.  An HTMX request,
+            # because a direct GET renders the analytics shell and loads the
+            # tab later.
             make_salary_profile(seed_user, db.session)
             db.session.commit()
             page = auth_client.get(

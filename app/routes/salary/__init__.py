@@ -20,8 +20,8 @@ Module map:
 * :mod:`app.routes.salary._helpers` -- shared Marshmallow schema
   singletons, form-field allowlists, unique-constraint name constants,
   and the private helpers used across handlers
-  (``_regenerate_salary_transactions``, ``_regenerate_all_salary_transactions``,
-  ``_compute_total_pre_tax``, ``_reject_if_rates_inconsistent``, the
+  (``_regenerate_salary_transactions``, ``_compute_total_pre_tax``,
+  ``_reject_if_rates_inconsistent``, the
   ``_render_*_partial`` / ``_respond_after_*_change`` HTMX responders,
   ``_get_investment_accounts``).
 * :mod:`app.routes.salary.cockpit` -- the ``GET /salary`` cockpit landing
@@ -40,7 +40,8 @@ Module map:
 * :mod:`app.routes.salary.stubs` -- the transcribed pay stub's entry door
   (plan step salary:S11-b): the payday step, record, the stub's page, edit
   and its "Use for pricing" switch.
-* :mod:`app.routes.salary.tax_config` -- state-tax and FICA config updates.
+* :mod:`app.routes.salary.tax_config` -- the old tax-configuration URL,
+  redirected to the read-only Settings tax section.
 """
 
 # Re-export ``salary_bp`` from the leaf declaration module so consumers

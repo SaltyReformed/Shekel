@@ -1107,32 +1107,6 @@ def _drive_end_bound(page, kind: str, url: str) -> None:
            "preview broke")
 
 
-def _posted_due_day(page) -> list[str]:
-    """Return the ``due_day_of_month`` values the form would actually submit.
-
-    From a real ``FormData``, for the reason :func:`_posted_intervals` reads
-    one -- and this is the control that shipped the defect the idiom exists
-    for.  The Due Day row is HIDDEN for a cadence that anchors on a paycheck
-    and was never DISABLED, so a value typed under "every 1 month" still
-    posted after switching to "funded from the first paycheck" and landed in
-    the column through ``recurrence._authoring._author``.  Rendered HTML cannot
-    tell a hidden row from a hidden row that still submits.
-
-    Args:
-        page: The Playwright page.
-
-    Returns:
-        Every value the form would post under that name.  Empty on the
-        transfer form, which does not render the control at all.
-    """
-    return page.evaluate(
-        """() => {
-            const form = document.getElementById('recurrence_unit').form;
-            return new FormData(form).getAll('due_day_of_month');
-        }"""
-    )
-
-
 def _drive_visibility(page, kind: str, url: str) -> None:
     """Check which controls each cadence shows, on one form kind.
 
@@ -1148,16 +1122,12 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     their own driver: ``starts_on`` (always shown --
     :func:`_drive_opening_bound`) and ``nominal_day`` (conditionally shown --
     :func:`_drive_nominal_day`).  What is left cadence-dependent, and what this
-    function is now about, is ``field-due-dom``: the bill's separate REAL due
-    day, which ``recurrence_form.js`` toggles on the chosen offer's
-    ``schedules_on_day_of_month`` -- named ``anchors_day_of_month`` until plan
-    step R8-a, for an anchor router that step deleted.
-
-    Every visibility check is paired with a POSTED-VALUE check, which is what
-    earns the re-point rather than merely keeping the function alive: the row
-    was hidden by class and never disabled, so it submitted from behind the
-    hiding.  That is this file's whole defect class, live, in the one control
-    it was left holding.
+    function was about until plan step recurrence:R5-a, was ``field-due-dom``:
+    the bill's separate REAL due day.  That step dropped the control with its
+    column (ruling R-R96: a rule's own day is the day its rows are due), so
+    this function now asserts it is GONE -- an absence stated as the goal, not
+    a hidden-element check that passes vacuously -- and drives the interval,
+    placement and ceiling rows every cadence still toggles.
 
     Args:
         page: The Playwright page.
@@ -1169,13 +1139,12 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     page.wait_for_selector("#recurrence_unit")
     units = _unit_ids(page)
     unit = page.locator("#recurrence_unit")
-    # The transfer form does not render a Due Day at all (only a transaction
-    # template carries one), so its every due-day assertion would be vacuous in
-    # exactly the way this rewrite exists to remove.  Named once, asked at each
-    # site.
-    has_due_day = page.evaluate(
-        "() => document.getElementById('field-due-dom') !== null")
-    print(f"   (due-day row rendered on this form: {has_due_day})")
+    # The Due Day of Month control left BOTH forms at plan step R5-a (ruling
+    # R-R96).  Asserted as an absence by NAME and by ROW id, because a control
+    # that came back under either would post a key the schema now drops.
+    _check(f"{kind}: no Due Day of Month control (R-R96)",
+           page.locator("[name='due_day_of_month'], #field-due-dom").count() == 0,
+           "a due-day control is rendered")
 
     def one_interval(label: str) -> list[str]:
         """Exactly one interval control submits, in every state."""
@@ -1183,27 +1152,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
         _check(f"{kind} {label}: exactly one interval_n posts",
                len(posted) <= 1, f"posted={posted}")
         return posted
-
-    def due_day(label: str, shown: bool) -> None:
-        """The Due Day row is shown and submits together, or neither.
-
-        Args:
-            label: The case letter.
-            shown: Whether this cadence should render the row.
-        """
-        if not has_due_day:
-            return
-        _check(f"{kind} {label}: due-day row "
-               f"{'VISIBLE' if shown else 'hidden'}",
-               _visible(page, "field-due-dom") == shown,
-               "hidden" if shown else "shown")
-        posted = _posted_due_day(page)
-        # A control the user cannot see must state NOTHING.  ``["25"]`` here
-        # is the live defect: a value typed under a day-of-month cadence
-        # surviving the switch to one that reads no day.
-        _check(f"{kind} {label}: due-day posts "
-               f"{'its value' if shown else 'NOTHING'}",
-               (posted != []) == shown, f"posted={posted}")
 
     def placement_help(label: str, fixed: bool) -> None:
         """The funding row is SHOWN and says which state the user is in.
@@ -1238,7 +1186,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     _check(f"{kind} A: interval box disabled",
            page.evaluate("() => document.getElementById('interval_n').disabled"),
            "enabled beside no unit, so half a cadence can post")
-    due_day("A", shown=False)
     one_interval("A")
 
     # Paychecks: the placement is INERT here, so the row explains itself.
@@ -1248,25 +1195,14 @@ def _drive_visibility(page, kind: str, url: str) -> None:
            page.evaluate("() => !document.getElementById('interval_n').disabled"),
            "disabled")
     placement_help("B", fixed=True)
-    due_day("B", shown=False)
     one_interval("B")
 
-    # Months at 1: anchors on the calendar, so the bill's due day applies.
+    # Months at 1: anchors on the calendar.
     unit.select_option(units["months"])
     _settle(page)
     _set_interval(page, 1)
     placement_help("C", fixed=False)
-    due_day("C", shown=True)
     one_interval("C")
-
-    # TYPE a due day here, so the next case measures whether it SURVIVES the
-    # switch to a cadence that reads no day.  This is the defect: the value is
-    # what makes D's posted check able to fail.
-    if has_due_day:
-        page.fill("#due_day_of_month", "25")
-        _settle(page)
-        _check(f"{kind} C: a typed due day posts",
-               _posted_due_day(page) == ["25"], str(_posted_due_day(page)))
 
     # Months at 1, funded from the month's FIRST paycheck: anchors on a
     # paycheck, so it reads no day of the month.
@@ -1275,7 +1211,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
                    s.selectedIndex = 1;
                    s.dispatchEvent(new Event('change', {bubbles: true})); }""")
     _settle(page)
-    due_day("D", shown=False)
 
     # Months at 3, still funded from the month's first paycheck.  **This is
     # plan ledger row D32's defect ceasing to exist**: the closed set had no
@@ -1288,7 +1223,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
                "() => document.getElementById('recurrence_placement')"
                ".selectedIndex") == 1,
            "the funding choice was silently reassigned")
-    due_day("E", shown=False)
     one_interval("E")
 
     # Months at 2 -- the cadence the closed pattern set could never name, and
@@ -1301,7 +1235,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     _set_interval(page, 2)
     _check(f"{kind} F: every-other-month posts its own interval",
            one_interval("F") == ["2"], "the free box lost the typed interval")
-    due_day("F", shown=True)
 
     # Years: the interval box carries over, so it is typed back to 1.
     #
@@ -1315,7 +1248,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     _settle(page)
     _set_interval(page, 1)
     placement_help("G", fixed=False)
-    due_day("G", shown=True)
     _check(f"{kind} G: posts interval 1", one_interval("G") == ["1"], "wrong interval")
 
     # A year-scale cadence funded from the month's FIRST paycheck: the reading
@@ -1334,10 +1266,6 @@ def _drive_visibility(page, kind: str, url: str) -> None:
                ".selectedIndex") == 1,
            "the deferring placement is still not selectable on the YEAR unit")
     placement_help("H", fixed=False)
-    # Its rows are dated from the funding PAYCHECK, exactly as the MONTH twin's
-    # are, so the Due Day row is hidden for it -- ``schedules_on_day_of_month``
-    # is False for every deferring reading.
-    due_day("H", shown=False)
 
     preview = page.locator("#recurrence-preview").inner_text().strip()
     _check(f"{kind}: the live preview answered",

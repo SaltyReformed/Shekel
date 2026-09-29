@@ -2,9 +2,9 @@
 
 Audit reference: F-091 (Low) / C-16 of the 2026-04-15 security
 remediation plan.  C-16 also folds in F-114 (seed-script PII redaction)
-and F-160 (log scrubber); see ``scripts/seed_user.py``,
-``scripts/seed_tax_brackets.py``, and ``app/utils/logging_config.py``
-for those.
+and F-160 (log scrubber); see ``scripts/seed_user.py`` and
+``app/utils/logging_config.py`` for those (and ``scripts/seed_tax_brackets.py``
+until plan step salary:X-at-1 deleted it).
 
 What this module does
 ---------------------

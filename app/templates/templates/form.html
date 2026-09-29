@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_starts_on with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_end_bound, recurrence_preview, recurrence_starts_on with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
 
@@ -109,7 +109,6 @@
                                    recurrence.selected_start,
                                    recurrence.starts_on_min,
                                    recurrence.starts_on_max) }}
-          {{ recurrence_detail_fields(template, include_due_day=true) }}
           {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>

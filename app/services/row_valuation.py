@@ -268,6 +268,25 @@ def leg_settled_figure(leg) -> "Decimal | None":
     """
     if leg.status_id not in settled_status_ids():
         return None
+    return _leg_recorded_figure(leg)
+
+
+def _leg_recorded_figure(leg) -> Decimal:
+    """Return what *leg*'s record states moved: its movement's figure, or ``$0.00``.
+
+    The one read of a leg's recorded figure, behind both questions that ask
+    it: :func:`leg_settled_figure` once the parent has settled, and
+    :func:`leg_settled_contribution`'s ruling **R-BAL140** arm for a leg whose
+    money moved under a parent still Projected.  A leg holding no movement
+    states the ``$0.00`` record (ruling **R-BAL82**).
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`, its
+            record loaded.
+
+    Returns:
+        The covering movement's ``amount``, or ``Decimal("0")`` with none.
+    """
     if leg.record is None:
         return Decimal("0")
     return leg.record.amount
@@ -507,19 +526,34 @@ def leg_settled_contribution(leg) -> Decimal:
     docstring asserting it, and a leg handed to a settled-only reader outside
     its scope fails loud instead of publishing its PLAN as money that moved.
 
+    **A leg has SETTLED when its parent has, OR when its own money has moved**
+    (plan step balance:X-bi-6-4b, ruling **R-BAL140**).  The loan and
+    contribution readers read the settled half of
+    :func:`app.services.loan_loaders.income_shadows`, whose membership is the
+    plan half's exact complement: a still-Projected transfer whose side
+    carries a DATED covering movement -- a status drift no door writes -- is a
+    payment that happened, and it is worth what that movement moved, as the
+    cash fold already counts it (``cash_ledger.movement_cash_leg``).  The
+    Spending report and the savings metric narrow to settled parents in SQL,
+    so that arm never reaches them.  A leg that is neither is still refused:
+    its money has not moved and there is nothing recorded to answer with.
+
     Args:
         leg: The :class:`~app.services.transfer_legs.TransferLeg`, its
             record loaded.
 
     Returns:
         ``0`` for a leg whose parent contributes nothing -- soft-deleted,
-        Credit or Cancelled -- else the figure its covering movement RECORDED.
+        Credit or Cancelled -- else the figure its covering movement RECORDED
+        (``0`` for a settled parent holding none, the ``$0.00`` record).
 
     Raises:
-        AmountUnresolvable: When the parent has NOT settled, so the leg
-            recorded nothing.
+        AmountUnresolvable: When the parent has NOT settled and the leg's
+            money has not moved, so the leg recorded nothing.
     """
     fixed = leg_fixed_contribution(leg)
+    if fixed is None and leg.settled_on is not None:
+        fixed = _leg_recorded_figure(leg)
     if fixed is None:
         raise AmountUnresolvable(
             f"Transfer {leg.transfer.id}'s leg on account {leg.account_id} "

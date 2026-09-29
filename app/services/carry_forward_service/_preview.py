@@ -10,10 +10,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import List, Optional
 
-from app.models.transaction import Transaction
-from app.services.cash_ledger import resolve_transaction_amount
+from app.services.cash_ledger import (
+    resolve_transaction_amount,
+    resolve_transfer_amount,
+)
 from app.services.one_off import due_date_for
 from app.services.row_valuation import purchases_total
+from app.services.transfer_legs import PlanItem, leg_of
 
 from ._context import (
     _build_carry_forward_context,
@@ -52,9 +55,16 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
     """One row's planned action under ``carry_forward_unpaid``.
 
     Attributes:
-        transaction: The source Transaction the plan applies to.
-            Held by reference so the modal template can render
-            ``txn.name``, ``txn.entries``, etc. without a re-query.
+        item: What the plan moves, held by reference so the modal renders its
+            ``name`` without a re-query: the source ROW for an envelope or
+            discrete plan, and for a transfer plan the transfer's FROM-side
+            :class:`~app.services.transfer_legs.TransferLeg` -- its label
+            ("Transfer to <account>", composed from the endpoints' current
+            names) is the plan's, and its ``transfer`` is what moves.  It was
+            ``transaction``, holding whichever of the transfer's two SHADOW
+            rows an unordered query returned first, until plan step
+            balance:X-bi-6-4c-2 (finding **BAL-546**: a transfer plan read
+            "Transfer to Savings" or "Transfer from Checking" by chance).
         budget: What the row's amount RESOLVES to, carried for EVERY kind
             because all three modal sentences name it.  The template read
             ``plan.transaction.estimated_amount`` until plan step X-au-c2b --
@@ -105,7 +115,7 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
     no design gain.
     """
 
-    transaction: Transaction
+    item: PlanItem
     kind: str
     budget: Decimal
     blocked: bool = False
@@ -188,11 +198,11 @@ def preview_carry_forward(
     so the user confirms before any database writes happen (Phase 5
     of ``docs/carry-forward-aftermath-implementation-plan.md``).
 
-    Returns one ``CarryForwardPlan`` per source row, partitioned and
-    ordered the same way ``carry_forward_unpaid`` would process them
+    Returns one ``CarryForwardPlan`` per source row or transfer, partitioned
+    and ordered the same way ``carry_forward_unpaid`` would process them
     (envelope rollovers first because they are the only ones that
-    can block the batch; then discrete defers; then transfer moves
-    de-duplicated by parent transfer_id).  Each plan carries enough
+    can block the batch; then discrete defers; then transfer moves, one per
+    transfer in id order).  Each plan carries enough
     structured data (entries_sum, leftover, target_estimated_after,
     block_reason_code) for the modal template to render the action
     label without re-deriving any business logic.
@@ -249,12 +259,8 @@ def preview_carry_forward(
     for txn in ctx.discrete_txns:
         plans.append(_build_discrete_plan(txn, ctx.basis))
 
-    seen_transfers = set()
-    for txn in ctx.shadow_txns:
-        if txn.transfer_id in seen_transfers:
-            continue
-        seen_transfers.add(txn.transfer_id)
-        plans.append(_build_transfer_plan(txn, ctx.basis))
+    for transfer in ctx.transfers:
+        plans.append(_build_transfer_plan(transfer, ctx.basis))
 
     return CarryForwardPreview(
         source_period=ctx.source_period,
@@ -310,7 +316,7 @@ def _build_envelope_plan(source_txn, target_period, basis, schedule):
         source_txn, target_period, basis, leftover, schedule,
     )
     return CarryForwardPlan(
-        transaction=source_txn,
+        item=source_txn,
         kind=PLAN_KIND_ENVELOPE,
         budget=budget,
         entries_sum=entries_sum,
@@ -328,7 +334,7 @@ def _resolve_envelope_target_fields(source_txn, target_period,
     ``block_reason``, ``target_estimated_before``,
     ``target_estimated_after``, ``target_will_be_generated``.  The
     caller (``_build_envelope_plan``) supplies the remaining fields
-    (``transaction``, ``kind``, ``entries_sum``, ``leftover``).
+    (``item``, ``kind``, ``entries_sum``, ``leftover``).
 
     A thin switch over ``_classify_leftover_target`` -- the same
     read-only decision the mutating path acts on -- so the preview can
@@ -409,29 +415,45 @@ def _build_discrete_plan(source_txn, basis):
         basis: The request's amount basis, for the figure the modal names.
     """
     return CarryForwardPlan(
-        transaction=source_txn,
+        item=source_txn,
         kind=PLAN_KIND_DISCRETE,
         budget=resolve_transaction_amount(source_txn, basis),
         blocked=False,
     )
 
 
-def _build_transfer_plan(shadow_txn, basis):
-    """Plan for a shadow row's parent transfer: move whole.
+def _build_transfer_plan(transfer, basis):
+    """Plan for a transfer: move whole.
 
     The mutating path delegates to ``transfer_service.update_transfer``
-    which moves the parent and both shadow legs together.  No block
+    which moves the parent and both legs together.  No block
     conditions exist in the carry-forward usage of that service
     (target period ownership and is_override are both already
     validated upstream).
 
+    **The subject is the TRANSFER since plan step balance:X-bi-6-4c-2**, and
+    two things follow.  Its figure is ``resolve_transfer_amount`` over the
+    parent, which is what ``resolve_transaction_amount`` answered for either
+    shadow on every door-written state: a derived shadow delegates to exactly
+    that (``cash_ledger``'s amount rule 5), and an owner-priced one holds an
+    OWN copy of the parent's figure that ``transfer_service._amount`` keeps
+    equal (Transfer Invariant 3) -- so the figure does not move (the
+    2026-09-25 clone grade replayed 95 transfer plans: every figure equal).
+    Its label is its FROM side's
+    (:attr:`~app.services.transfer_legs.TransferLeg.name`, "Transfer to
+    <account>"), stated here where it was whichever shadow the context's
+    unordered query returned first (finding **BAL-546**, a DECLARED display
+    change): money leaving is what a carry-forward confirms, as the
+    dashboard's bills and the Spending report draw a transfer from the side
+    its money leaves (``transfer_legs.expense_legs``).
+
     Args:
-        shadow_txn: Either leg of the transfer that would move.
+        transfer: The transfer that would move.
         basis: The request's amount basis, for the figure the modal names.
     """
     return CarryForwardPlan(
-        transaction=shadow_txn,
+        item=leg_of(transfer, transfer.from_account_id),
         kind=PLAN_KIND_TRANSFER,
-        budget=resolve_transaction_amount(shadow_txn, basis),
+        budget=resolve_transfer_amount(transfer, basis),
         blocked=False,
     )

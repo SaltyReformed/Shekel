@@ -15,6 +15,8 @@ these cases assert on did not move -- only the surface they are read from.
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
@@ -25,6 +27,7 @@ from app.models.calibration_override import CalibrationOverride
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
+from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import UserSettings
@@ -49,6 +52,7 @@ from tests._test_helpers import (
     rhythm_of,
     all_periods,
     current_pay_period,
+    derived_calendar,
     derived_span,
     generate_row_of,
     last_covered_day,
@@ -57,7 +61,8 @@ from tests._test_helpers import (
     make_salary_profile,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
-    seed_fica_config,
+    fica_only_law,
+    start_test_pay_list,
 )
 
 
@@ -157,11 +162,11 @@ class TestThePicturesPublishedSurface:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Main",
-                annual_salary=Decimal("80000"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
             db.session.flush()
 
             pension = PensionProfile(
@@ -186,10 +191,39 @@ class TestThePicturesPublishedSurface:
 
 
 #: The read pass's day these pure-unit gap cases pin.  ``compute_gap_net_biweekly``
-#: takes it since pay-calendar plan step C2-f2e; every case below supplies a
-#: series explicitly, so it reaches no projection and only the SIGNATURE
-#: depends on it -- which is why one literal serves all three.
+#: takes it since pay-calendar plan step C2-f2e.  Its YEAR is the horizon
+#: guard's (a retirement year before it answers the current net); the two
+#: scaling cases retire in 2055, well past it, and the other three return
+#: before the guard -- which is why one literal serves all five.
 _AS_OF = date(2026, 3, 20)
+
+#: The first payday of the pure cases' calendar, and the payday their
+#: profiles' one pay entry is recorded from.
+_FIRST_PAYDAY = date(2026, 1, 2)
+
+
+def _pay_calendar(cadence_days=14):
+    """The owner's calendar for the pure cases: one payday, :data:`_FIRST_PAYDAY`.
+
+    ``compute_gap_net_biweekly`` and ``compute_pension_summary`` walk a
+    profile's pay list at the calendar's rhythms since plan step
+    salary:X-av-3a, so a case that reaches the walk hands one in; a derived
+    calendar keeps the case free of the database.
+    """
+    return derived_calendar([_FIRST_PAYDAY], cadence_days=cadence_days)
+
+
+def _paid(pay):
+    """A transient profile paying *pay* a paycheck from :data:`_FIRST_PAYDAY`, raise-free.
+
+    The pay list's one entry is the salary's stored fact since plan step
+    salary:X-av-3a (ruling R-SAL59); with no raise the walk answers the
+    entry's pay on every later payday, so a projected final year is exactly
+    *pay* and the case's figures depend only on the arithmetic it grades.
+    """
+    return SalaryProfile(pay_entries=[
+        SalaryPayEntry(payday=_FIRST_PAYDAY, amount=Decimal(pay)),
+    ])
 
 
 def _gap_inputs(profile, cadence_days=14):
@@ -248,7 +282,9 @@ def _believed(pay):
     )
 
 
-def _current_paycheck(net_pay, gross_biweekly, annual_salary):
+def _current_paycheck(
+    net_pay, gross_biweekly, annual_salary, cadence=PayCadence(FixedDays(14)),
+):
     """The engine's breakdown for one current paycheck, with hand-set figures.
 
     ``compute_gap_net_biweekly`` takes the current paycheck as the engine's own
@@ -267,12 +303,17 @@ def _current_paycheck(net_pay, gross_biweekly, annual_salary):
             case may hand in ``0`` to reach the no-positive-gross arm, a
             state the engine cannot price into being.
         annual_salary: The annual figure the earnings record carries.
+        cadence: The rhythm the paycheck was priced at (ruling R-SAL70):
+            biweekly, the gap inputs' own, unless a case prices the current
+            paycheck under an earlier era than the latest.
 
     Returns:
         The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`.
     """
     return paycheck_calculator.PaycheckBreakdown(
-        period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
+        period=paycheck_calculator.PeriodInfo(
+            date(2026, 1, 2), period_id=1, cadence=cadence,
+        ),
         earnings=paycheck_calculator.Earnings(
             annual_salary=annual_salary,
             base_biweekly=gross_biweekly,
@@ -297,9 +338,13 @@ class TestComputeGapNetBiweekly:
     as the engine's own breakdown; the figures these cases pin did not move,
     which is what the scaling's exactness claim rests on.*
 
-    Supplying ``salary_by_year`` directly keeps the helper pure (no DB,
-    no ref_cache, no paycheck engine) so the asserted numbers depend only
-    on the scaling math under test.
+    *They supplied the salary series directly until plan step
+    salary:X-av-3a*, which deleted that argument: the producer walks the
+    profile's pay list to the retirement year's December 1 itself.  The
+    cases hand it a transient profile with ONE raise-free pay entry
+    (:func:`_paid`) and a derived calendar (:func:`_pay_calendar`), so the
+    final year's pay is the entry's and the case stays pure (no DB) -- the
+    asserted numbers still depend only on the scaling math under test.
     """
 
 
@@ -309,8 +354,9 @@ class TestComputeGapNetBiweekly:
         Inputs chosen so every step is exact and hand-checkable:
 
           effective take-home rate = 2000.00 / 2500.00 = 0.80
-          final-year gross biweekly = 131,000.00 / 26
-                                    = 5038.4615...  -> 5038.46 (quantize .01)
+          final-year gross biweekly = the pay entry, raise-free = 5038.46
+                                      ($131,000.00 / 26 = 5038.4615...,
+                                      the paycheck the migration records)
           gap net biweekly = 5038.46 * 0.80
                            = 4030.768  -> 4030.77 (quantize .01)
 
@@ -319,21 +365,15 @@ class TestComputeGapNetBiweekly:
         the rate stays raise-aware (the pre-Commit-17 ``annual / periods``
         recompute silently dropped any applicable raise).
         """
-        profile = SalaryProfile()
+        profile = _paid("5038.46")
         pay = _current_paycheck(
             Decimal("2000.00"), Decimal("2500.00"), Decimal("65000.00"),
         )
-        salary_by_year = [
-            (2026, Decimal("120000.00")),
-            (2055, Decimal("131000.00")),
-        ]
-        # salary_by_year is supplied, so the helper never recomputes it (the
-        # ``None`` branch is the only one that opens a salary path).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
-            salary_by_year, _AS_OF,
+            _AS_OF, _pay_calendar(),
         )
-        assert result == Decimal("4030.77")
+        assert result.net == Decimal("4030.77")
 
     def test_a_non_terminating_rate_is_carried_at_full_precision(self):
         """The take-home rate reaches the scaling UNROUNDED.
@@ -345,26 +385,23 @@ class TestComputeGapNetBiweekly:
         DISPLAY pre-computation (an adversarial review of that step).  Here
         the rate is ``2000 / 3000 = 0.666...``:
 
-          final-year gross = 65,000.00 / 26 = 2,500.00
+          final-year gross = the pay entry, raise-free = 2,500.00
+                             ($65,000.00 / 26)
           x 0.666...       = 1,666.666...  -> 1,666.67 (quantize .01)
 
         A rate quantized to two decimals of percent (66.67%) answers
         ``1,666.75``; to one decimal (66.7%) ``1,667.50``.  Only the
         unrounded ratio answers the line asserted.
         """
-        profile = SalaryProfile()
+        profile = _paid("2500.00")
         pay = _current_paycheck(
             Decimal("2000.00"), Decimal("3000.00"), Decimal("65000.00"),
         )
-        salary_by_year = [
-            (2026, Decimal("65000.00")),
-            (2055, Decimal("65000.00")),
-        ]
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
-            salary_by_year, _AS_OF,
+            _AS_OF, _pay_calendar(),
         )
-        assert result == Decimal("1666.67")
+        assert result.net == Decimal("1666.67")
 
     def test_returns_current_net_when_no_retirement_horizon(self):
         """No planned retirement date -> current net biweekly, unscaled.
@@ -380,9 +417,9 @@ class TestComputeGapNetBiweekly:
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile), _believed(pay), None,
-            [(2026, Decimal("120000.00"))], _AS_OF,
+            _AS_OF, _pay_calendar(),
         )
-        assert result == Decimal("1800.00")
+        assert result.net == Decimal("1800.00")
 
     def test_returns_zero_when_there_is_no_current_paycheck(self):
         """No current paycheck -> ``Decimal("0")``, whatever else is set.
@@ -396,9 +433,9 @@ class TestComputeGapNetBiweekly:
         """
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(SalaryProfile()), _believed(None), date(2055, 1, 1),
-            [(2055, Decimal("131000.00"))], _AS_OF,
+            _AS_OF, _pay_calendar(),
         )
-        assert result == Decimal("0")
+        assert result.net == Decimal("0")
 
     def test_returns_current_net_when_current_gross_is_zero(self):
         """A non-positive gross -> unscaled net, no divide-by-zero.
@@ -414,9 +451,9 @@ class TestComputeGapNetBiweekly:
         pay = _current_paycheck(Decimal("1500.00"), Decimal("0"), Decimal("0"))
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
-            [(2055, Decimal("131000.00"))], _AS_OF,
+            _AS_OF, _pay_calendar(),
         )
-        assert result == Decimal("1500.00")
+        assert result.net == Decimal("1500.00")
 
 
 class TestTheRenderDayOpensTheSalaryPath:
@@ -451,8 +488,12 @@ class TestTheRenderDayOpensTheSalaryPath:
     """
 
     def _profile(self):
-        """A raise-free profile, so the projected series is flat and exact."""
-        return SalaryProfile(annual_salary=Decimal("100000.00"))
+        """A raise-free profile paying $3,846.15 a paycheck ($100,000.00 / 26).
+
+        Raise-free, so the walk answers the same pay every year and the
+        projected series is flat and exact.
+        """
+        return _paid("3846.15")
 
     def test_the_pension_path_opens_at_the_pass_year(self):
         """``compute_pension_summary`` projects from the pass's year.
@@ -460,6 +501,15 @@ class TestTheRenderDayOpensTheSalaryPath:
         A pension retiring 2030-06-30, projected from a pass pinned to 2027
         and again from one pinned to 2028: the series opens on the pass's year
         both times and is one year shorter the second time.
+
+        **Read off the benefit's high-salary window** since plan step
+        salary:X-av-3a deleted the summary's copy of the series.  The series
+        is flat (3,846.15 x 26 = 99,999.90 every year), and the window is the
+        FIRST best run of ``consecutive_high_years`` = 3 years -- a later run
+        replaces it only on a strictly higher average -- so the window opens
+        on the series' first year: 2027-2029 from the 2027 pass (four years,
+        2027-2030) and 2028-2030 from the 2028 pass (three).  A series opened
+        at the wrong year shifts the window with it.
         """
         pension = PensionProfile(
             planned_retirement_date=date(2030, 6, 30),
@@ -470,73 +520,50 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
 
         early = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2027, 3, 20), _stored_terms,
+            [pension], date(2027, 3, 20), _stored_terms, _pay_calendar(),
         )
         late = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2028, 3, 20), _stored_terms,
+            [pension], date(2028, 3, 20), _stored_terms, _pay_calendar(),
         )
 
-        assert [year for year, _ in early.salary_by_year] == [
-            2027, 2028, 2029, 2030,
-        ]
-        assert [year for year, _ in late.salary_by_year] == [
-            2028, 2029, 2030,
-        ]
+        early_window = early.per_pension[0]["benefit"].high_salary_years
+        late_window = late.per_pension[0]["benefit"].high_salary_years
+        assert [year for year, _ in early_window] == [2027, 2028, 2029]
+        assert [year for year, _ in late_window] == [2028, 2029, 2030]
 
     def test_the_gap_path_opens_at_the_pass_year(self):
-        """``compute_gap_net_biweekly``'s recompute branch uses the pass's year.
+        """``compute_gap_net_biweekly``'s walk uses the pass's year.
 
-        The branch runs when no pension supplied a series -- an owner with a
-        retirement date in SETTINGS and no pension profile, which is reachable
-        and is why the recompute exists.  A raise-free $100,000.00 profile
-        projects flat, so the FIGURE is the same either way; what has to differ
-        is the series the projection walked, and the observable difference is
-        the horizon guard: a pass pinned PAST the retirement date projects an
-        empty series and the producer returns the current net unchanged.
+        An owner with a retirement date in SETTINGS and no pension profile is
+        reachable, and the producer walks the first profile's pay list to the
+        retirement year itself.  A raise-free $3,846.15-a-paycheck profile
+        walks flat, so the FIGURE is the same from any pass before the
+        horizon; the observable difference is the horizon guard: a pass
+        pinned PAST the retirement year has no final year to walk and the
+        producer returns the current net unchanged.
         """
         pay = _current_paycheck(
             Decimal("2000.00"), Decimal("2500.00"), Decimal("100000.00"),
         )
         gap = _gap_inputs(self._profile())
 
-        # Pass pinned BEFORE the horizon: the path is walked and the final-year
-        # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
-        # (2000 / 2500 = 0.80) -> $3,076.92.
+        # Pass pinned BEFORE the horizon: the final year's gross (the entry,
+        # $3,846.15) is scaled by the take-home rate (2000 / 2500 = 0.80) ->
+        # $3,076.92.
         before = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), date(2027, 3, 20),
+            _pay_calendar(),
         )
-        assert before == Decimal("3076.92")
+        assert before.net == Decimal("3076.92")
 
         # Pass pinned AFTER it: no year to project, so the producer falls back
         # to the current net.  A producer reading its own clock would answer
         # the line above for both.
         after = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, _believed(pay), date(2030, 6, 30), None, date(2032, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), date(2032, 3, 20),
+            _pay_calendar(),
         )
-        assert after == Decimal("2000.00")
-
-    def test_a_weekly_owners_gap_divides_by_52(self):
-        """THE CADENCE AXIS: the projected paycheck follows the owner's rhythm.
-
-        Input: the same $100,000 profile and 0.80 take-home rate, on a 7-day
-        cadence.
-        Expected: ``($100,000 / 52) x 0.80 = $1,923.08 x 0.80 = $1,538.46``,
-        half the biweekly answer above.
-        Why: every other case here is biweekly, where the derived count and
-        the ``pay_periods_per_year`` column plan step R-F16 deleted both read
-        26 -- so none of them can tell the two apart. This is the case that
-        fails if the divisor stops being the owner's cadence.
-        """
-        pay = _current_paycheck(
-            Decimal("2000.00"), Decimal("2500.00"), Decimal("100000.00"),
-        )
-        gap = _gap_inputs(self._profile(), cadence_days=7)
-
-        # $100,000 / 52 = $1,923.0769 -> $1,923.08; x 0.80 -> $1,538.464 ->
-        # $1,538.46.
-        assert retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
-        ) == Decimal("1538.46")
+        assert after.net == Decimal("2000.00")
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(
         self, app, db, seed_user, seed_periods,
@@ -566,11 +593,11 @@ class TestTheRenderDayOpensTheSalaryPath:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Main",
-                annual_salary=Decimal("80000"),
                 state_code="NC",
                 is_active=True,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
             db.session.flush()
             db.session.add(PensionProfile(
                 user_id=seed_user["user"].id,
@@ -587,14 +614,20 @@ class TestTheRenderDayOpensTheSalaryPath:
             early = _picture(seed_user["user"].id, as_of=date(2027, 3, 20))
             late = _picture(seed_user["user"].id, as_of=date(2028, 3, 20))
 
+            # Read off the benefit's high-salary window since plan step
+            # salary:X-av-3a deleted the summary's copy of the series: with
+            # ``consecutive_high_years`` = 4 the window is the whole series
+            # whenever the series is four years or fewer, which both are.
+            early_window = early.pension.per_pension[0]["benefit"].high_salary_years
+            late_window = late.pension.per_pension[0]["benefit"].high_salary_years
             # The premise, asserted rather than assumed: a path was projected
             # at all, so the years below are the projection's and not an empty
             # list's.
-            assert early.pension.salary_by_year
-            assert [year for year, _ in early.pension.salary_by_year] == [
+            assert early_window
+            assert [year for year, _ in early_window] == [
                 2027, 2028, 2029, 2030,
             ]
-            assert [year for year, _ in late.pension.salary_by_year] == [
+            assert [year for year, _ in late_window] == [
                 2028, 2029, 2030,
             ]
 
@@ -614,15 +647,15 @@ class TestTheCurrentPaycheckIsThePassPricers:
     the equality is the producer under test.
 
     The owner: a raise-free ``$52,000.00`` profile on a 14-day cadence, no
-    deductions, FICA seeded for 2026 and no bracket set or state config, so
-    every line is arithmetic::
+    deductions, and a made-up law with FICA for 2026 and no federal or state
+    rules (``fica_only_law``), so every line is arithmetic::
 
         gross per paycheck   52,000.00 / 26            = 2,000.00
         Social Security      2,000.00 x 6.20%          =   124.00
         Medicare             2,000.00 x 1.45%          =    29.00
 
     With no calibration the bracket path withholds no federal or state (no
-    config seeded), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
+    rules for either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
     ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare
     (:func:`~app.services.calibration_service.apply_calibration`: the income
     rates on the taxable base, which equals the gross here; FICA on the gross,
@@ -637,14 +670,18 @@ class TestTheCurrentPaycheckIsThePassPricers:
     (``4001.83`` where ``3351.83`` is asserted).
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     @staticmethod
     def _seed_owner(db, seed_user, *, calibrated):
         """The owner above, with the calibration row present or not."""
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 / 26
         )
         db.session.flush()
-        seed_fica_config(seed_user["user"].id)
         settings = (
             db.session.query(UserSettings)
             .filter_by(user_id=seed_user["user"].id)
@@ -914,15 +951,16 @@ class TestRetirementProjectionEntryAware:
 
             # Active salary profile so the gap path is reachable.
             filing = db.session.query(FilingStatus).first()
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=user.id,
                 scenario_id=scenario.id,
                 filing_status_id=filing.id,
                 name="Day Job",
-                annual_salary=Decimal("80000.00"),
                 state_code="NC",
                 is_active=True,
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
 
             inv_type = (
                 db.session.query(AccountType)
@@ -1171,11 +1209,11 @@ def _seed_active_salary_profile(db_session, user, scenario):
         scenario_id=scenario.id,
         filing_status_id=filing.id,
         name="C20 Day Job",
-        annual_salary=Decimal("80000.00"),
         state_code="NC",
         is_active=True,
     )
     db_session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db_session.flush()
     return profile
 

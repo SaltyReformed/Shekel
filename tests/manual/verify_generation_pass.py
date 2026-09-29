@@ -224,9 +224,9 @@ with app.app_context():
         source.period_id, target.period_id, scenario.id, **cf_argument(USER_ID),
     )
     print(f"# DOOR 3 carry-forward preview: {len(preview.plans)} plans")
-    for plan in sorted(preview.plans, key=lambda p: (p.kind, p.transaction.name)):
+    for plan in sorted(preview.plans, key=lambda p: (p.kind, p.item.name)):
         print(
-            f"CF\t{plan.kind}\t{plan.transaction.name}"
+            f"CF\t{plan.kind}\t{plan.item.name}"
             f"\tbudget={plan.budget}\tblocked={plan.blocked}"
             f"\treason={plan.block_reason_code}"
             f"\tentries={plan.entries_sum}\tleftover={plan.leftover}"

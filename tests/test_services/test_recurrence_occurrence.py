@@ -573,8 +573,10 @@ class TestTheParallelRun:
             "the shape set moved between the snapshot and this run"
         )
         # 434 until plan step R7d-g retired ``bounds.window.inverted`` (the
-        # comment on the oracle's bound shapes says why).
-        assert len(committed) == 433, f"{len(committed)} shapes captured"
+        # comment on the oracle's bound shapes says why); 433 until plan step
+        # recurrence:R5-a removed the 124 ``due_sweep.`` shapes with the
+        # column they swept (ruling R-R96).
+        assert len(committed) == 309, f"{len(committed)} shapes captured"
         for label in sorted(committed):
             assert new[label] == committed[label], (
                 f"{label}: forward engine answers {new[label]}, the committed "
@@ -857,10 +859,12 @@ class TestTheParallelRun:
             assert emitted[0].occurrence == resolved.starts_on, shape.label
             checked += 1
         assert skipped == ["horizon_bound.monthly_first"], skipped
-        # 433 captured shapes less the 41 pay-period-space ones, less the one
+        # 309 captured shapes less the 41 pay-period-space ones, less the one
         # above that fires nowhere.  Plan step R7c-b's four new
-        # ``anchor.*`` shapes split 3 period-space to 1 calendar.
-        assert checked == 391, f"{checked} calendar-unit shapes checked"
+        # ``anchor.*`` shapes split 3 period-space to 1 calendar; plan step
+        # recurrence:R5-a's removal of the 124 ``due_sweep.`` shapes (every
+        # one a monthly, calendar-unit rule) took this from 391.
+        assert checked == 267, f"{checked} calendar-unit shapes checked"
 
     def test_a_period_units_first_occurrence_is_a_payday(self):
         """A pay-period-space rule fires on paydays, not on its bound.

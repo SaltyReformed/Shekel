@@ -955,37 +955,6 @@ class TestRefusals:
                 build_calendar(),
             )
 
-    @pytest.mark.parametrize("day", [0, 32, -1, 99])
-    def test_a_stated_due_day_outside_1_31_is_refused(self, day):
-        """The last column DOMAIN the write door writes verbatim.
-
-        ``ck_recurrence_rules_due_dom`` bounds it, so letting one through would
-        raise an unhandled ``IntegrityError`` naming neither the field nor the
-        value.  ``0`` is refused rather than read as absence: the column is
-        nullable and Python truthiness conflates the two where the CHECK does
-        not.
-        """
-        with pytest.raises(RecurrenceResolutionError, match="due_day_of_month"):
-            resolve(
-                spec_for(
-                    MONTHLY, date(2026, 4, 15),
-                    due_day_of_month=day,
-                ),
-                build_calendar(),
-            )
-
-    def test_a_null_due_day_states_nothing_and_passes(self):
-        """``NULL`` is the value that means "this rule states no due day"."""
-        resolved = resolve(
-            spec_for(
-                MONTHLY, date(2026, 4, 15),
-                due_day_of_month=None,
-            ),
-            build_calendar(),
-        )
-
-        assert resolved.starts_on == date(2026, 4, 15)
-
     def test_an_empty_schedule_is_refused_for_a_paycheck_cadence(self):
         """There is no paycheck to normalise onto.
 

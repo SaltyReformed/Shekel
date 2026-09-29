@@ -4,7 +4,7 @@ Shekel Budget App -- The DAY a generated row carries, from a cadence's own coord
 The pure core behind :func:`~app.services.recurrence.compute_due_date` and
 :func:`~app.services.recurrence.scheduling_day_of_month`: which day of the
 month a cadence schedules its rows on (:func:`cadence_scheduled_day`), and the
-calendar day a row placed in a pay period is then due (:func:`date_row`).
+calendar day a row answering an occurrence is then due (:func:`date_row`).
 
 **Split out at plan step ``pay_calendar:C18-a`` (ruling R-PC86) so the
 occurrence WALK can date a placement exactly as the row would be dated.**
@@ -20,14 +20,19 @@ and ``scheduling_day_of_month`` feed it from a rule, the resolved value feeds
 it from its own fields, and it is written once (``CLAUDE.md`` rule 14's
 placement clause -- move the leaf, not the logic).
 
-Nothing here changed in the move, including the defect: :func:`date_row`
-picks the base month from the period's two endpoint months (plan ledger row
-**D18**), and plan step **R5** still deletes it with ``compute_due_date``.
+**:func:`date_row` reads the OCCURRENCE since plan step recurrence:R5-a**
+(rulings **R-R94** / **R-R95**).  It moved here unchanged, defect included:
+it picked the base month from the period's two endpoint months, so at a pay
+cadence where the firing month is neither endpoint the row was dated in the
+wrong month, and two occurrences seated in one paycheck of 30 days or more
+shared one date (plan ledger row **D18**).  Both callers hold the placement
+the walk seated, so the day the cadence names is in hand and the scan is
+deleted rather than fixed; the due-day arm went with the rule's
+``due_day_of_month`` column (ruling **R-R96**).
 
 Pure: no Flask, no ORM, no clock, no database.  It imports only the leaves
 ``_resolution`` already imports, so the walk can import it with no cycle.
 """
-import calendar as cal
 from datetime import date
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
@@ -83,87 +88,36 @@ def cadence_scheduled_day(
 
 
 def date_row(
-    scheduled_day: int | None,
-    due_day_of_month: int | None,
-    period: DerivedPeriod,
+    occurrence: date, period: DerivedPeriod, *, from_paycheck: bool,
 ) -> date:
-    """Return the calendar day a row scheduled on *scheduled_day* in *period* is due.
+    """Return the calendar day a row answering *occurrence* in *period* is due.
 
     **The body of** :func:`~app.services.recurrence.compute_due_date`,
     **moved rather than restated** (plan step ``pay_calendar:C18-a``).  That
-    function reads a rule's two coordinates and hands them here; the
-    occurrence walk reads a resolved value's two and hands them here too, so
-    the day a row carries and the day the walk bounds by the books (ruling
+    function reads a rule's coordinates and hands the answer here; the
+    occurrence walk reads a resolved value's and hands it here too, so the day
+    a row carries and the day the walk bounds by the books (ruling
     **R-PC86**) cannot come apart.
 
-    Source priority:
-      1. *due_day_of_month* (if set and it differs from the scheduling day)
-      2. *scheduled_day*, placed within the period's month context
-      3. ``period.start_date`` (for a cadence that names no day of the month)
-
-    Next-month convention: if *due_day_of_month* < *scheduled_day*, the due
-    date falls in the following calendar month.  Example: a rule scheduled on
-    the 22nd with a due day of 1 is due on the 1st of the month after the
-    scheduling month.  Month-end clamping: a day past the month's last day is
-    clamped (day 31 in April becomes 30).
+    **Ruling R-R94's formula over the placed occurrence** (plan step
+    recurrence:R5-a): a cadence dated from a day of the month is due ON the
+    occurrence, and one dated from its paycheck -- every paycheck, every N
+    paychecks, a calendar cadence funded from a LATER paycheck -- is due on
+    its FUNDING paycheck's payday (ruling **R-R95**).
 
     Args:
-        scheduled_day: The day the cadence schedules rows on, from
-            :func:`cadence_scheduled_day`, or ``None``.
-        due_day_of_month: The real bill due day when it differs from the
-            scheduling day, or ``None``.
-        period: The :class:`~app.services.pay_calendar.DerivedPeriod` the row
-            is placed in -- saved, or PROJECTED past the horizon.
+        occurrence: The date the cadence names for this row, off the
+            placement that seated it.
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` that
+            placement seated it in -- saved, or PROJECTED past the horizon.
+            Read for its payday alone.
+        from_paycheck: ``True`` when the cadence schedules its rows on no day
+            of the month -- :func:`cadence_scheduled_day` answered ``None``,
+            which each caller asks after its own refusal.
 
     Returns:
         The due day.
     """
-    # A cadence that names no day of the month -- every-paycheck, every-N, and
-    # a monthly rule funded from the month's first paycheck -- is dated from
-    # its period's start.
-    if scheduled_day is None:
+    if from_paycheck:
         return period.start_date
-
-    # Determine the base month by finding which month within the period
-    # contains the scheduling-day target.  This is the LAST reader of the
-    # endpoint-month scan plan step R4a deleted from period selection, and it
-    # carries the same defect: at a cadence where the firing month is neither
-    # endpoint the row is dated in the wrong month entirely (plan ledger row
-    # D18).  Plan step R5 owns it, with the due-date model it rewrites.
-    #
-    # The containment test is the PERIOD's own rule since pay-calendar plan
-    # step C4-a-3 (``DerivedPeriod.covers``, ruling R-PC31); it was
-    # ``period.start_date <= target <= period.end_date`` open-coded here, one
-    # of the three sites that spelled it out.
-    base_year = period.start_date.year
-    base_month = period.start_date.month
-
-    for dt in (period.start_date, period.end_date):
-        last_day = cal.monthrange(dt.year, dt.month)[1]
-        target_day = min(scheduled_day, last_day)
-        target = date(dt.year, dt.month, target_day)
-        if period.covers(target):
-            base_year = dt.year
-            base_month = dt.month
-            break
-
-    if due_day_of_month is None or due_day_of_month == scheduled_day:
-        # No separate due date -- use the scheduling day in the base month.
-        last_day = cal.monthrange(base_year, base_month)[1]
-        return date(base_year, base_month, min(scheduled_day, last_day))
-
-    # Next-month convention: a due day before the scheduling day means the
-    # due date falls in the month after the scheduling month.
-    if due_day_of_month < scheduled_day:
-        if base_month == 12:
-            due_year = base_year + 1
-            due_month = 1
-        else:
-            due_year = base_year
-            due_month = base_month + 1
-    else:
-        due_year = base_year
-        due_month = base_month
-
-    last_day = cal.monthrange(due_year, due_month)[1]
-    return date(due_year, due_month, min(due_day_of_month, last_day))
+    return occurrence

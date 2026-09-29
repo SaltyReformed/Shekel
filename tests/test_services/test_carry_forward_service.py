@@ -4116,25 +4116,60 @@ class TestACarriedForwardLeftoverRowIsDated:
             assert priced == Decimal("100.00")
             assert handed_back.due_date is not None
 
+    def test_the_EARLIEST_occurrence_dates_the_row_where_the_rule_fires_twice(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """R-R97's tie-break: two occurrences in one paycheck, the first one dates it.
+
+        A paycheck of 28 days or more can seat two occurrences of one monthly
+        rule (a monthly-paid owner, plan step R13), and the leftover row answers
+        neither.  Ruling **R-R97** dates it on the EARLIEST -- the occurrence
+        ``_context._leftover_recipient`` would bump -- which is what makes the
+        choice a rule and not an accident of iteration order.  Asked of the
+        dating function directly, because the occurrences reach it ascending
+        from ``recurrence_engine.occurrences_in_period`` and it is this
+        function's ``[0]`` that states the rule.
+        """
+        # pylint: disable=import-outside-toplevel,protected-access
+        from app.services.carry_forward_service import _execute
+
+        with app.app_context():
+            template = _create_envelope_template(seed_user, name="Twice")
+            template.recurrence_rule = None
+            db.session.flush()
+            make_cadence_rule(template, MONTHLY, fires_on_day=15)
+            db.session.refresh(template)
+            period = derived_span(seed_periods[1])
+            first = period.start_date + timedelta(days=2)
+            second = period.start_date + timedelta(days=9)
+
+            assert _execute._leftover_due_date(
+                template, period, (first, second),
+            ) == first
+            # And where the rule fires nowhere in it, the payday.
+            assert _execute._leftover_due_date(
+                template, period, (),
+            ) == period.start_date
+
+
     def test_a_definition_that_does_not_fire_in_that_paycheck_still_dates_it(
         self, app, db, seed_user, seed_periods,
     ):
-        """THE BRANCH THIS CONSTRUCTOR EXISTS FOR, and its answer is a
-        counterfactual.
+        """THE BRANCH THIS CONSTRUCTOR EXISTS FOR: dated on the target's payday.
 
         ``_create_target_override_row``'s own docstring names it: "a yearly
         Father's Day envelope rolling into an off-anniversary period".  The
         rule names NO occurrence in the target paycheck, so there is no
-        definition-placed row for the leftover to be dated like --
-        ``compute_due_date`` is a pure function of ``(rule, period)`` and
-        answers anyway, from the rule's day of month in the month the paycheck
-        opens in.  The date can therefore fall OUTSIDE the target paycheck.
+        definition-placed row for the leftover to be dated like, and ruling
+        **R-R97** (plan step recurrence:R5-a) dates it on that paycheck's
+        payday -- the date R-BAL22 gives any row answering no occurrence.
+        Until R5-a it was a COUNTERFACTUAL: ``compute_due_date`` answered from
+        ``(rule, period)`` alone with the rule's day of month in the month the
+        paycheck opened in, which could fall OUTSIDE the target paycheck --
+        before it opened, reading overdue at birth.
 
-        That is the price of one producer over a second spelling and it is
-        paid deliberately: ``DerivedPeriod.attribution_day`` clamps such a date
-        back into the period, so no period total and no period-end balance
-        moves.  What the row gains is the thing it had no way to get before --
-        a date its definition's price series can be resolved on.
+        What the row gains either way is the thing it had no way to get before
+        dating -- a date its definition's price series can be resolved on.
         """
         with app.app_context():
             template = _create_envelope_template(
@@ -4171,9 +4206,8 @@ class TestACarriedForwardLeftoverRowIsDated:
                 ).one()
             )
             assert fresh.is_override is True
-            assert fresh.due_date is not None
-            # The authored day survives; the MONTH is the counterfactual.
-            assert fresh.due_date.day == 15
+            # The target's payday (R-R97): the rule fires nowhere in it.
+            assert fresh.due_date == derived_span(seed_periods[1]).start_date
 
             # The point of dating it: the hand-back now prices.
             recurrence_engine.resolve_conflicts(

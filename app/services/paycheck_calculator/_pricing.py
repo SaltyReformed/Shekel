@@ -3,8 +3,9 @@ Shekel Budget App -- Paycheck engine: PRICING one paycheck, and a list of them.
 
 The two public entries: :func:`calculate_paycheck`, which prices ONE
 paycheck by composing the other leaves in the order its own numbered steps
-name -- the post-raise annual salary off the basis, the per-paycheck base
-rate, the taxable earning lines and the gross they make, the deduction
+name -- the payday's base pay off the basis (the per-paycheck rate its pay
+list walks to, and the paychecks a year its rhythm pays), the
+taxable earning lines and the gross they make, the deduction
 passes, the wage figures, the withholding path, the after-tax earning lines,
 the net -- and :func:`project_salary`, the batch over a period list that is
 nothing but a loop over the first with the tax configs resolved per period
@@ -19,8 +20,7 @@ which is the door every caller uses.
 from collections.abc import Sequence
 
 from app.services.pay_calendar import DerivedPeriod
-from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
-from app.services.salary_raises import get_raise_event
+from app.services.payroll_basis import PayrollBasis
 from app.utils.money import ZERO
 
 from ._breakdown import Earnings, PaycheckBreakdown, PeriodInfo, waterfall_net
@@ -42,11 +42,14 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
                        *, calibration=None):
     """Calculate a single paycheck for a given period.
 
-    The BASE pay is the (post-raise) annual salary divided by
-    ``basis.periods_per_year`` and rounded once, at the cent
-    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  It is a RATE:
-    the same figure for every paycheck in one salary segment, and a function of
-    the salary and the cadence alone -- the payday SET does not reach it.  See
+    The BASE pay is what the profile's pay list pays on the payday: the entry
+    it is priced from, carried across any change of rhythm and raised by each
+    forecast raise landing after that entry, each step rounded to the cent
+    (:meth:`~app.services.payroll_basis.PayrollBasis.base_pay_on`, since plan
+    step **salary:X-av-3a**; the post-raise annual over the payday's count
+    until then).  It is a RATE: the same figure for every paycheck in one
+    salary segment, and a function of the pay list, the raises and the
+    rhythm alone -- the payday SET does not reach it.  See
     the package docstring section "The per-paycheck gross -- a RATE, not a share
     of a year" for what that replaced (plan step **balance:X-aw**, ruling
     **balance:R-HW**, superseding audit MED-05 / PA-07).  **The gross is the
@@ -63,9 +66,11 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
                       is priced under (plan step salary:S3-f-1; read through
                       ``basis.raises``, never off the profile).  The calendar is
                       REQUIRED and carries both facts the engine needs beyond
-                      the profile: the cadence it divides the salary by
-                      (assuming biweekly would model a weekly-paid owner's
-                      income at half its true value) and the payday set the
+                      the profile: the cadence it divides the salary by --
+                      the era's in force on the payday, since plan step
+                      salary:X-av-2 (assuming biweekly would model a
+                      weekly-paid owner's income at half its true value) --
+                      and the payday set the
                       calendar questions are counted over -- and, since plan
                       step salary:R15-b, the calendar each deduction's
                       cadence rule is resolved against.  It was
@@ -85,14 +90,15 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     Returns:
         PaycheckBreakdown dataclass.
     """
-    # Step 1: Determine annual salary after raises (off the basis's raise set).
-    annual_salary = basis.annual_salary_on(period.start_date)
-
-    # Step 2: Base pay -- the salary over the owner's paycheck count, rounded
-    # once.  Deliberately NOT a function of the payday SET: that is what plan
-    # step balance:X-aw removed (finding N-239).  The base every percentage
-    # line is a percentage of (ruling R-SAL38).
-    base_biweekly = gross_per_paycheck(annual_salary, basis.periods_per_year)
+    # Steps 1-2: the payday's base pay, read ONCE -- the rate the pay list
+    # walks to (off the basis's raise set; plan step salary:X-av-3a) and the
+    # rhythm in force on the payday (plan step salary:X-av-2).  Deliberately
+    # NOT a function of the payday SET: that is what plan step balance:X-aw
+    # removed (finding N-239).  The rate is the base every percentage line is
+    # a percentage of (ruling R-SAL38); the count is what the withholding
+    # below annualises by.
+    base_pay = basis.base_pay_on(period.start_date)
+    base_biweekly = base_pay.per_paycheck
 
     # Step 3: this payday's position in its month -- read BEFORE any line is
     # priced, because the read is where a payday this calendar cannot place
@@ -128,6 +134,7 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
             gross_biweekly,
             taxable_biweekly,
             _get_cumulative_wages(basis, period),
+            base_pay.periods_per_year,
         ),
         deductions.total_pre_tax, tax_configs, calibration,
     )
@@ -147,10 +154,12 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
         period=PeriodInfo(
             period.start_date, period.period_id,
             _is_third_paycheck(month_ordinal),
-            get_raise_event(basis.raises, period),
+            basis.pay_event_on(period),
+            cadence=base_pay.cadence,
         ),
         earnings=Earnings(
-            annual_salary, base_biweekly, gross_biweekly, taxable_biweekly, net_pay,
+            base_pay.annual, base_biweekly, gross_biweekly,
+            taxable_biweekly, net_pay,
             taxable=taxable_lines, after_tax=after_tax_lines,
         ),
         taxes=taxes,

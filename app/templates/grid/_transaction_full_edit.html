@@ -481,7 +481,9 @@
          after it.
 
          Where a bill's due day genuinely moves, it moves on the TEMPLATE's
-         recurrence rule (``due_day_of_month``), which applies it to every
+         recurrence rule -- a rule's rows are due on the day it fires, or on
+         the funding payday for one naming no day (rulings R-R94 / R-R95; the
+         separate due day left at R-R96) -- which applies it to every
          instance.  A row NO RULE generated keeps the input -- keyed on
          ``txn.recurs`` since plan step balance:X-bi-7a, not on the link: an
          ad-hoc row owns its figure, so nothing reads its date; a rule-less

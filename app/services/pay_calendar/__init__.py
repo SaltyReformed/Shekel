@@ -101,13 +101,15 @@ second answer.
 
 from ._cadence import DAYS_PER_YEAR, PayCadence
 from ._calendar import PayCalendar
-from ._derive import DerivedPeriod, derive_periods
+from ._derive import DerivedPeriod, derive_periods, validate_eras
 from ._eras import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
     PayCalendarError,
+    earlier_paydays,
     era_index_at,
     first_payday_of,
+    opening_rephase,
     payday_after,
     planned_paydays_after,
     projected_payday,
@@ -120,6 +122,7 @@ from ._loader import (
     schedule_for,
 )
 from ._rhythm import (
+    cadence_on,
     paydays_in_month_through,
     paydays_in_year_before,
     saved_paydays_in_month_through,
@@ -147,11 +150,13 @@ __all__ = [
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
+    "cadence_on",
     "cadence_steps_to",
     "calendar_at_schedule",
     "calendar_for",
     "containing_period",
     "derive_periods",
+    "earlier_paydays",
     "earliest_started_period",
     "era_index_at",
     "final_covered_day",
@@ -159,6 +164,7 @@ __all__ = [
     "latest_started_period",
     "nominal_payday",
     "opening_payday",
+    "opening_rephase",
     "paychecks_from",
     "span_starting_on_or_after",
     "paydays_in_month_through",
@@ -169,4 +175,5 @@ __all__ = [
     "projected_payday",
     "saved_paydays_in_month_through",
     "schedule_for",
+    "validate_eras",
 ]

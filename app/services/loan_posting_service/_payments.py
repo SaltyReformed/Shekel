@@ -109,9 +109,10 @@ def _loan_payment_target(outcome: PaymentOutcome) -> LegMap:
 
     Args:
         outcome: The payment's :class:`~app.services.loan_ledger.PaymentOutcome`
-            -- a RECORDED payment's, whose ``event.source`` is its settled
-            income shadow (the walk this writer books from carries no
-            projection: :func:`~app.services.loan_ledger.walk_loan_ledger`).
+            -- a RECORDED payment's, whose ``event.source`` is the to-side
+            :class:`~app.services.transfer_legs.TransferLeg` of its settled
+            transfer (the walk this writer books from carries no projection:
+            :func:`~app.services.loan_ledger.walk_loan_ledger`).
 
     Returns:
         ``{ledger_account_id: (amount, posting_kind_id)}`` for the non-zero
@@ -121,12 +122,14 @@ def _loan_payment_target(outcome: PaymentOutcome) -> LegMap:
         PostingError: If the loan account has no linked ledger account (a broken
             chart-of-accounts pairing).
     """
-    shadow = outcome.source
-    # The shadow's OWN owner column (plan step ``pay_calendar:C13-b``); it
-    # walked ``shadow.pay_period.user_id`` until then, and a shadow states its
-    # parent transfer's owner directly since ``C13-a``.
-    owner_id = shadow.user_id
-    loan_account_id = shadow.account_id
+    leg = outcome.source
+    # The TRANSFER's owner and the leg's account -- the loan -- read through the
+    # leg (plan step balance:X-bi-6-4b).  It read the loan-side shadow's own
+    # owner column from plan step ``pay_calendar:C13-b`` until then, which
+    # stated the parent's owner since ``C13-a``; before C13-b it walked
+    # ``shadow.pay_period.user_id``.
+    owner_id = leg.user_id
+    loan_account_id = leg.account_id
     target: LegMap = {}
 
     # The loan-linked leg backs the non-principal cash out of the loan; its
@@ -161,8 +164,9 @@ def payment_split_targets(
     visible day)`` through
     :func:`app.services._posting_reconcile.merge_target_legs` -- the same
     merge the anchor half applies to two same-day anchors.  The PERIOD is the
-    payment's own stored one (the owner's budgeting choice, ruling
-    **pay_calendar:R-PC53**), which is what the anchors cannot have and so
+    payment's own stored one -- its TRANSFER's, read through the leg since
+    plan step balance:X-bi-6-4b (the owner's budgeting choice, ruling
+    **pay_calendar:R-PC53**) -- which is what the anchors cannot have and so
     derive; the DAY is the fold's one clock for the payment
     (:attr:`~app.services.loan_ledger.PaymentOutcome.visible_on`, the settled
     day the cash movement's entry carries too), so the split and the cash it

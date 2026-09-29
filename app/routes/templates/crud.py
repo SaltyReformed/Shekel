@@ -184,7 +184,6 @@ def create_template():
         data,
         user_id=current_user.id,
         redirect=RedirectTarget("templates.new_template"),
-        include_due_day_of_month=True,
     )
 
     # Create the template.
@@ -418,7 +417,6 @@ def update_template(template_id):
                 "templates.edit_template",
                 {"template_id": template_id},
             ),
-            include_due_day_of_month=True,
         ),
         pass_ctx=pass_ctx,
     )

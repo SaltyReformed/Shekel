@@ -1198,8 +1198,12 @@ class TestTheMigrationRoundTrips:
         The chain is driven IN ORDER: ``9b64df71cc34`` (the stub line's own
         kind, ruling R-SAL58) is this revision's child, so it is stepped down
         first and back up last, and the stored amount carries the kind the
-        model now requires; ``cddb15ffba5f``, which now follows it, touches no
-        salary object and is not stepped.
+        model now requires.  Three revisions follow it, and none is stepped:
+        ``cddb15ffba5f`` (recurrence:R23) and ``1c569c51b449``
+        (recurrence:R5-a) touch no salary object, and ``9b2c5656eed9``
+        (salary:X-av-1) adds only a unique key over
+        ``salary.salary_profiles``' own ``scenario_id`` and ``template_id``,
+        which nothing the two stepped revisions create or drop depends on.
         """
         with app.app_context():
             assert all(_schema_objects().values()), _schema_objects()

@@ -619,17 +619,24 @@ class TestComputeLoanPaymentSplits:
     def test_projected_payment_is_excluded(
         self, app, db, seed_user, seed_periods,
     ):
-        """An unsettled (Projected) payment is a future commitment, not history."""
+        """An unsettled (Projected) payment is a future commitment, not history.
+
+        Un-settled through the transfer's own revert door.  *Re-expressed under
+        rule 5 (developer approval, 2026-09-24): it bulk-updated the two SHADOW
+        rows back to Projected under a still-Paid transfer, which the loan no
+        longer reads since plan step balance:X-bi-6-4b -- the transfer decides.*
+        """
         with app.app_context():
             loan = _make_loan(seed_user)
             # Settle one, then un-settle it back to Projected directly.
-            _, shadow = _settle_payment(
+            xfer, _ = _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             db.session.commit()
-            db.session.query(Transaction).filter(
-                Transaction.transfer_id == shadow.transfer_id,
-            ).update({"status_id": ref_cache.status_id(StatusEnum.PROJECTED)})
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             db.session.commit()
 
             splits = loan_ledger.compute_loan_payment_splits(
@@ -1362,8 +1369,11 @@ class TestTheSplitIsADateKeyedCorrection:
         -500.00 principal, Interest +500.00}`` and the debt grows by the
         interest not paid: the app's only way to accrue a missed installment.
         Keyed by the loan-side movement (R-BAL100) that split had nothing to
-        hang on; keyed by ``(loan_payment, P1, the settle day)`` it posts as it
-        always did, linking no row, and the checked-projection assert holds:
+        hang on; keyed by ``(loan_payment, P1, its installment 2026-02-01)``
+        it posts linking no row -- the INSTALLMENT's day since ruling
+        **R-BAL139**, where a payment that moved nothing is dated (it was the
+        settle day until plan step balance:X-bi-6-4b; rule-5 re-expression,
+        developer approval 2026-09-24) -- and the checked-projection assert holds:
         the loan-linked ledger nets opening (-250000) + true-up (+150000) +
         principal (-500) = -100500.00 and the interest ledger 500.00.
         """
@@ -1377,7 +1387,14 @@ class TestTheSplitIsADateKeyedCorrection:
             db.session.commit()
 
             assert shadow.covering_movements == []
-            entries = _correction_entries(shadow)
+            assert loan_correction_entries_at(
+                db.session, loan.id, scenario_id, seed_periods[_P1].id,
+                shadow.settled_on,
+            ) == []
+            entries = loan_correction_entries_at(
+                db.session, loan.id, scenario_id, seed_periods[_P1].id,
+                date(2026, 2, 1),
+            )
             assert len(entries) == 1
             entry = entries[0]
             assert (entry.transaction_id, entry.transfer_id,
@@ -1464,16 +1481,21 @@ class TestTheSplitIsADateKeyedCorrection:
                 (date(2026, 3, 1), Decimal("497.50"), Decimal("302.50")),
             ]
 
-    def test_a_figure_re_recorded_to_zero_leaves_the_split_untouched(
+    def test_a_figure_re_recorded_to_zero_moves_the_split_to_its_installment(
         self, app, db, seed_user, seed_periods,
     ):
-        """Correcting a settled $1,000 payment to $0.00 moves only the cash leg.
+        """Correcting a settled $1,000 payment to $0.00 moves its split, not its size.
 
         The seam withdraws the covering movement (a ``$0.00`` record carries
-        nothing) and its cash leg reverses through the movement door; the
-        split's key is unchanged because the interest charged does not depend
-        on the cash -- ``apply_payment_cash`` echoes the standing charge --
-        so the reconcile computes a zero delta and writes no split entry.
+        nothing) and its cash leg reverses through the movement door.  The
+        split's FIGURES are unchanged because the interest charged does not
+        depend on the cash -- ``apply_payment_cash`` echoes the standing
+        charge -- but its DAY moves: a payment that moved nothing is dated by
+        the installment it skips (ruling **R-BAL139**), so the settle day's
+        correction reverses and the same split books at 2026-02-01.  *Until
+        plan step balance:X-bi-6-4b the day was the shadow's settle day and the
+        key did not move (rule-5 re-expression, developer approval
+        2026-09-24).*
         Under a movement key this correction would have SET NULL the split's
         link on the withdrawal and stranded it.  Arithmetic: -99500.00 (cash
         +1000, split -500 on the anchors' -100000) becomes -100500.00 (no
@@ -1497,7 +1519,13 @@ class TestTheSplitIsADateKeyedCorrection:
             db.session.commit()
 
             assert shadow.covering_movements == []
-            assert len(_correction_entries(shadow)) == 1
+            assert len(_correction_entries(shadow)) == 2, (
+                "the settle day's correction and its reversal"
+            )
+            assert len(loan_correction_entries_at(
+                db.session, loan.id, scenario_id, seed_periods[_P1].id,
+                date(2026, 2, 1),
+            )) == 1
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-100500.00")
@@ -3142,7 +3170,7 @@ class TestCheckedProjection:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            xfer, shadow = _settle_payment(
+            xfer, _ = _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
                 settled_on=date(2026, 1, 20),
             )
@@ -3189,7 +3217,7 @@ class TestCheckedProjection:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            xfer, shadow = _settle_payment(
+            xfer, _ = _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
                 settled_on=date(2026, 2, 5),
             )

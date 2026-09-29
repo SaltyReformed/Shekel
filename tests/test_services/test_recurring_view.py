@@ -563,7 +563,7 @@ class TestNextDates:
         # caller holds a handle to.
         rule = tmpl.recurrence_rule
         matched = [
-            placement.period
+            placement
             for placement in rule_occurrences(
                 rule, _calendar(seed_periods_today),
             )
@@ -571,9 +571,9 @@ class TestNextDates:
             and placement.period.end_date >= today
         ]
         expected = next(
-            compute_due_date(rule, p)
+            compute_due_date(rule, p.occurrence, p.period)
             for p in matched
-            if compute_due_date(rule, p) >= today
+            if compute_due_date(rule, p.occurrence, p.period) >= today
         )
         assert next_date == expected
         assert next_date >= today

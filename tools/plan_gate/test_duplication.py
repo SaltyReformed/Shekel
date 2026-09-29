@@ -21,6 +21,29 @@ import pytest
 import _duplication as duplication
 import _registry as registry
 
+#: A verbatim question's worth of words, past the 400 characters a WRAPPED
+#: quote is held to, as ruling rows have quoted since ``balance:R-BAL136``.
+_LONG = "which of the two remedies do you want, with the worked numbers " * 8
+
+
+def _scan(text: str) -> tuple[list[str], list[str]]:
+    """Return *text*'s blanked lines and the statements the arms grade in it.
+
+    Args:
+        text: A whole document.
+
+    Returns:
+        The blanked document split on newlines, and its units.
+    """
+    # Pylint: protected-access -- these controls grade the scanner below the
+    # arms, because an arm reports only what it chained or counted: on
+    # 2026-09-25 at ee76c0b9, 56 rows of rulings.md had lost a pipe to a quote
+    # from an adjacent row and no arm fired, so an arm-level control alone
+    # reads green.
+    scanned = duplication._scannable(text)  # pylint: disable=protected-access
+    # Pylint: protected-access -- the same, for the splitter the arms read.
+    return scanned.split("\n"), duplication._units(scanned)  # pylint: disable=protected-access
+
 
 class TestTheOrderIsStatedOnlyInStepsMd:
     """conventions.md rule 16, first arm."""
@@ -205,6 +228,87 @@ class TestARegistrySizeIsStatedOnlyInItsOwnRegistry:
             'stands at 166 rows", which was right.\n',
         )
         assert not duplication.foreign_count_violations()
+
+
+class TestAQuotedSpanNeverLeavesItsTableRow:
+    """Scanning note 3: a markdown row is one line, so its quotes pair on it.
+
+    Blanking the whole document in one pass let a quote past the wrapped-span
+    bound fail to pair, and its CLOSING mark then paired with the next quote
+    along, in its own row or the next: the pipes between were blanked, a row
+    that lost its leading pipe was read as prose and folded into a paragraph,
+    and the quoted words were left for the arms to read.
+    """
+
+    def test_two_rows_quoting_past_the_bound_stay_two_rows(self, stage_arc):
+        """Two ruling rows in the shape ``R-BAL136`` gave them, side by side.
+
+        Each question quotes an ORDER, which is a citation of the developer's
+        words and not a claim, so the order arm must not read it -- and each
+        row must keep every pipe, so the arms see two rows of cells rather
+        than one paragraph.
+        """
+        a, b = [row.ident for row in registry.step_rows() if row.arc == "balance"][:2]
+        rows = [
+            f'| balance | R-T1 | Question: "{a}, then {b}? {_LONG}" Answer: "{_LONG}" |',
+            f'| balance | R-T2 | Question: "{b}, then {a}? {_LONG}" Answer: "{_LONG}" |',
+        ]
+        stage_arc("balance", "## Where the arc stands",
+                  "## Where the arc stands\n\n" + "\n".join(rows) + "\n")
+        text = registry.ARC_DOCS["balance"].read_text(encoding="utf-8")
+        lines, units = _scan(text)
+        for index, row in enumerate(rows, start=text.split("\n").index(rows[0])):
+            blanked = lines[index]
+            assert blanked.count("|") == row.count("|"), blanked
+            assert "then" not in blanked, f"a quote in the row was not blanked: {blanked}"
+        assert " R-T1 " in units and " R-T2 " in units, "a row was folded into a paragraph"
+        assert not duplication.order_restatement_violations()
+
+    def test_a_wrapped_quote_below_a_table_is_still_a_citation(self, stage_arc):
+        """The documented wrap, with a long-quoting row directly above it.
+
+        The row's closing mark is the nearest quote before the prose's opening
+        one, which is the pairing a single pass took.  The wrap itself is the
+        case ``test_a_citation_wrapped_across_a_line_is_still_a_citation``
+        pins; this one grades that a table above cannot take it apart.
+        """
+        stage_arc(
+            "balance",
+            "## Where the arc stands",
+            f'## Where the arc stands\n\n| balance | R-T1 | Question: "{_LONG}" |\n\n'
+            'Its own sentence read "The\nledger stands at 166 rows", which was right.\n',
+        )
+        assert not duplication.foreign_count_violations()
+
+    @pytest.mark.parametrize(
+        ("stray", "below"),
+        [
+            ('| R-T1 | a 12" rule, whose quote mark pairs with nothing |',
+             '| R-T2 | 98 open findings, beside a "quoted" word |'),
+            ('| R-T1 | a 12" rule, whose quote mark pairs with nothing |',
+             '\nThe blocks partition all 98 open findings, beside a "quoted" word.'),
+            ('A 12" rule, whose quote mark pairs with nothing.',
+             '| R-T2 | 98 open findings, beside a "quoted" word |'),
+        ],
+        ids=["row into the next row", "last row into the prose under it",
+             "prose into the first row under it"],
+    )
+    def test_a_stray_quote_blanks_nothing_across_a_row_edge(self, stage_arc, stray, below):
+        """A stray mark must not HIDE a real claim on the other side of a row edge.
+
+        Each direction is its own way to be wrong: a pattern that only refuses
+        to ENTER a row still lets a stray quote in a table's LAST row pair with
+        the first quote of the prose below, and a blanker that kept a table's
+        first row in one block with the prose above it lets a stray quote there
+        pair into the row.
+        """
+        stage_arc("balance", "## Where the arc stands",
+                  f"## Where the arc stands\n\n{stray}\n{below}\n")
+        text = registry.ARC_DOCS["balance"].read_text(encoding="utf-8")
+        lines, _ = _scan(text)
+        assert lines[text.split("\n").index(stray)] == stray
+        problems = duplication.foreign_count_violations()
+        assert any("98 open findings" in p for p in problems), problems
 
 
 class TestALiveDocumentDoesNotDeclareItsOwnSectionsDead:

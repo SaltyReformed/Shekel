@@ -25,7 +25,6 @@ from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
     PaycheckLineCreateSchema,
-    FicaConfigSchema,
     InlineTransactionCreateSchema,
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
@@ -852,24 +851,31 @@ class TestSalaryProfileCreateSchema:
     """Tests for SalaryProfileCreateSchema."""
 
     def test_valid_data(self):
-        """Valid salary profile data loads with defaults."""
+        """Valid salary profile data loads with defaults.
+
+        The salary is the first pay entry, typed per paycheck (plan step
+        salary:X-av-3a): its amount and the payday it pays from.
+        """
         data = SalaryProfileCreateSchema().load({
             "name": "My Salary",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
         })
-        assert data["annual_salary"] == Decimal("75000.00")
+        assert data["pay_amount"] == Decimal("2884.62")
+        assert data["pay_payday"] == date(2026, 1, 2)
 
     def test_missing_required_field(self):
-        """Missing annual_salary raises ValidationError."""
+        """Missing pay (amount and payday) raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load({
                 "name": "Bad Profile",
                 "filing_status_id": "1",
                 "state_code": "NC",
             })
-        assert "annual_salary" in exc.value.messages
+        assert "pay_amount" in exc.value.messages
+        assert "pay_payday" in exc.value.messages
 
     def test_pay_periods_per_year_cannot_be_submitted(self):
         """A submitted paycheck count reaches no column (R-F16).
@@ -885,7 +891,8 @@ class TestSalaryProfileCreateSchema:
         """
         data = SalaryProfileCreateSchema().load({
             "name": "Stale client",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
             "pay_periods_per_year": "52",
@@ -897,7 +904,8 @@ class TestSalaryProfileCreateSchema:
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load({
                 "name": "Bad",
-                "annual_salary": "75000.00",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                "pay_payday": "2026-01-02",
                 "filing_status_id": "1",
                 "state_code": "NCC",  # 3 chars, max is 2.
             })
@@ -1105,33 +1113,6 @@ class TestDeductionCreateSchema:
         assert exc.value.messages == RECURRENCE_NEEDS_A_START
 
 
-# ── FicaConfigSchema ─────────────────────────────────────────────────
-
-
-class TestFicaConfigSchema:
-    """Tests for FicaConfigSchema."""
-
-    def test_valid_data(self):
-        """Valid FICA config data loads successfully."""
-        data = FicaConfigSchema().load({
-            "tax_year": "2026",
-            "ss_rate": "6.20",
-            "ss_wage_base": "176100.00",
-            "medicare_rate": "1.45",
-            "medicare_surtax_rate": "0.90",
-            "medicare_surtax_threshold": "200000.00",
-        })
-        assert data["ss_rate"] == Decimal("6.20")
-        assert data["tax_year"] == 2026
-
-    def test_missing_required_field(self):
-        """Missing ss_rate raises ValidationError."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load({
-                "tax_year": "2026",
-                # Missing all rate fields.
-            })
-        assert "ss_rate" in exc.value.messages
 
 
 # ── AccountCreateSchema ──────────────────────────────────────────────
@@ -1544,7 +1525,8 @@ class TestSalaryProfileCreateSchemaBoundary:
         """Return a valid salary profile payload with optional overrides."""
         data = {
             "name": "Test Profile",
-            "annual_salary": "75000.00",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1",
             "state_code": "NC",
         }
@@ -1582,80 +1564,6 @@ class TestSalaryProfileCreateSchemaBoundary:
         assert data["state_code"] == "nc"
 
 
-# ── TestFicaConfigSchemaBoundary ────────────────────────────────────
-
-
-class TestFicaConfigSchemaBoundary:
-    """Boundary tests for FicaConfigSchema rate validation gaps."""
-
-    def _valid_fica_data(self, **overrides):
-        """Return a valid FICA config payload with optional overrides."""
-        data = {
-            "tax_year": "2026",
-            "ss_rate": "6.20",
-            "ss_wage_base": "176100.00",
-            "medicare_rate": "1.45",
-            "medicare_surtax_rate": "0.90",
-            "medicare_surtax_threshold": "200000.00",
-        }
-        data.update(overrides)
-        return data
-
-    def test_fica_rate_over_100_rejected(self):
-        """ss_rate=200 (200%) is rejected by Range(min=0, max=100) validator."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="200")
-            )
-        assert "ss_rate" in exc.value.messages
-
-    def test_negative_fica_rate_rejected(self):
-        """Negative ss_rate is rejected by Range(min=0, max=100) validator."""
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_rate="-5")
-            )
-        assert "ss_rate" in exc.value.messages
-
-    def test_zero_wage_base_rejected(self):
-        """ss_wage_base=0 is rejected by Range(min=0, min_inclusive=False).
-
-        Wage base must be positive. Matches the database CHECK constraint
-        ``ss_wage_base > 0``.
-        """
-        with pytest.raises(ValidationError) as exc:
-            FicaConfigSchema().load(
-                self._valid_fica_data(ss_wage_base="0")
-            )
-        assert "ss_wage_base" in exc.value.messages
-
-    def test_rate_at_zero_accepted(self):
-        """ss_rate=0 is accepted -- inclusive lower bound of Range(min=0, max=100)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="0.00")
-        )
-        assert data["ss_rate"] == Decimal("0.00")
-
-    def test_rate_at_100_accepted(self):
-        """ss_rate=100 is accepted -- inclusive upper bound of Range(min=0, max=100)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_rate="100.00")
-        )
-        assert data["ss_rate"] == Decimal("100.00")
-
-    def test_wage_base_minimum_accepted(self):
-        """ss_wage_base=0.01 is accepted -- smallest valid value (> 0)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(ss_wage_base="0.01")
-        )
-        assert data["ss_wage_base"] == Decimal("0.01")
-
-    def test_threshold_minimum_accepted(self):
-        """medicare_surtax_threshold=0.01 is accepted -- smallest valid value (> 0)."""
-        data = FicaConfigSchema().load(
-            self._valid_fica_data(medicare_surtax_threshold="0.01")
-        )
-        assert data["medicare_surtax_threshold"] == Decimal("0.01")
 
 
 # ── TestCategoryCreateSchemaBoundary ────────────────────────────────
@@ -1701,32 +1609,39 @@ class TestCategoryCreateSchemaBoundary:
 
 
 class TestAnnualSalaryRange:
-    """SalaryProfileCreateSchema rejects zero and negative annual_salary (H-06)."""
+    """SalaryProfileCreateSchema rejects zero and negative pay (H-06).
+
+    The salary is typed per paycheck since plan step salary:X-av-3a, so the
+    bound is ``pay_amount``'s: above zero (``min_inclusive=False``).
+    """
 
     def _base(self, **overrides):
         data = {
-            "name": "Test", "annual_salary": "75000.00",
+            "name": "Test",
+            "pay_amount": "2884.62",  # $75,000.00 a year / 26
+            "pay_payday": "2026-01-02",
             "filing_status_id": "1", "state_code": "NC",
         }
         data.update(overrides)
         return data
 
     def test_zero_salary_rejected(self):
-        """annual_salary=0 is rejected (min_inclusive=False)."""
+        """pay_amount=0 is rejected (min_inclusive=False)."""
         with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load(self._base(annual_salary="0"))
-        assert "annual_salary" in exc.value.messages
+            SalaryProfileCreateSchema().load(self._base(pay_amount="0"))
+        assert "pay_amount" in exc.value.messages
 
     def test_negative_salary_rejected(self):
-        """Negative annual_salary is rejected."""
+        """Negative pay_amount is rejected."""
         with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load(self._base(annual_salary="-50000"))
-        assert "annual_salary" in exc.value.messages
+            # -$50,000.00 a year / 26
+            SalaryProfileCreateSchema().load(self._base(pay_amount="-1923.08"))
+        assert "pay_amount" in exc.value.messages
 
     def test_positive_salary_accepted(self):
-        """Valid positive annual_salary passes."""
-        data = SalaryProfileCreateSchema().load(self._base(annual_salary="1.00"))
-        assert data["annual_salary"] == Decimal("1.00")
+        """Valid positive pay_amount passes."""
+        data = SalaryProfileCreateSchema().load(self._base(pay_amount="1.00"))
+        assert data["pay_amount"] == Decimal("1.00")
 
 
 class TestRaiseRangeValidation:

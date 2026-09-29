@@ -6,20 +6,25 @@ ledger does or the two would diverge (step B2's parallel run is an EQUALITY).
 That day is the day the event HAPPENED, and it is already the day the posting
 carries in ``journal_entries.entry_date``:
 
-* a **PAYMENT** is visible from its **settled date** -- the shadow's STORED
-  ``transactions.settled_on``, read through the
-  :func:`app.utils.balance_predicates.settled_day` accessor; the posting
-  writer files the loan-side entry under the loan-side covering movement's
-  own day (plan step ``balance:X-bi-6-3``), which the pair applier keeps
-  equal to the shadow's, the day the cash walk folds that movement on, and
+* a **PAYMENT** is visible from its **settled date** -- the STORED
+  ``settled_on`` of the loan-side covering movement its leg carries as its
+  record (plan step ``balance:X-bi-6-4b``; the shadow's own column until
+  then, which the pair applier keeps equal), read through the
+  :func:`app.utils.balance_predicates.settled_day` accessor.  It is the day
+  the posting writer files the loan-side entry under (plan step
+  ``balance:X-bi-6-3``), the day the cash walk folds that movement on, and
   the SAME date the checking outflow moves on, so the loan and checking move
-  together (ruling R-A).
+  together (ruling R-A).  A payment that moved NO money -- a ``$0.00``
+  close, whose leg carries no record -- is visible from the installment it
+  skips (ruling **R-BAL139**).
 
   **There is no derivation and no fallback left here, and that is plan step
   X-f1** (ruling R-EC).  It WAS the display-timezone civil date of the shadow's
   ``paid_at``, falling back to its pay period's ``start_date`` when the instant
   was NULL (the developer ruling of 2026-07-17); the day is a stored fact now,
-  and a settled shadow carrying none is REFUSED rather than dated by a fallback.
+  and a settled payment whose record carries none is REFUSED rather than
+  dated by a fallback.  R-BAL139's due date is not a fallback for a missing
+  day: it is the day of a payment that has no movement to carry one.
 
   **The zone moved from UTC to ``America/New_York`` at ruling R-DH (b)**
   (2026-07-31), together with the cash half, because a split zone is what pulls a
@@ -75,7 +80,8 @@ prefer, because claiming it before it was true is how
 
 from datetime import date
 
-from app.models.transaction import Transaction
+from app.services.loan_loaders import loan_payment_due_date
+from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import settled_day
 
 
@@ -104,23 +110,37 @@ def anchor_visible_on(anchor_date: date) -> date:
     return anchor_date
 
 
-def payment_visible_on(shadow: Transaction) -> date:
+def payment_visible_on(leg: TransferLeg, payment_day: int) -> date:
     """Return the date a settled payment's principal becomes visible to a read.
 
-    Its **settled date** (step C2, ruling R-A): the shadow's STORED
-    ``settled_on``, read through the shared
-    :func:`app.utils.balance_predicates.settled_day`.  The covering movement
-    the seam mirrors that day onto is what the cash fold counts AND what the
-    posting writer files the loan-side entry under (plan step
-    ``balance:X-bi-6-3``), so the day the fold counts this payment and the
-    day the sum-of-postings reader counts it cannot drift; and it is the day
-    the checking outflow moves, so the loan and checking move together.
+    Its **settled date** (step C2, ruling R-A): the STORED ``settled_on`` of
+    the leg's record -- the loan-side covering movement -- read through the
+    shared :func:`app.utils.balance_predicates.settled_day`.  That movement is
+    what the cash fold counts AND what the posting writer files the loan-side
+    entry under (plan step ``balance:X-bi-6-3``), so the day the fold counts
+    this payment and the day the sum-of-postings reader counts it cannot
+    drift; and it is the day the checking outflow moves, so the loan and
+    checking move together.  It read the SHADOW's ``settled_on`` until plan
+    step balance:X-bi-6-4b; the pair applier keeps the two equal (measured
+    equal on all 20 settled income shadows of the 2026-09-23 21:17 production
+    dump).
 
-    **It DERIVED that day from ``paid_at`` until plan step X-f1** (ruling R-EC)
+    **A leg with NO record is a ``$0.00`` close, and it is dated by the
+    installment it skips** (ruling **R-BAL139**, extending **R-BAL90**: no
+    transfer stores a day): :func:`app.services.loan_loaders.loan_payment_due_date`,
+    the day the loan's interest / principal split already keys on.  Nothing
+    moved on any day, so this is the day the debt grows by the charge the
+    payment did not clear, and the ledger books that correction on it.  Until
+    X-bi-6-4b it was the settle day stated on the close, read off the shadow
+    row that ``X-bi-6-4d`` deletes.
+
+    **It DERIVED the day from ``paid_at`` until plan step X-f1** (ruling R-EC)
     -- a display-timezone conversion of the click instant with the pay period's
     ``start_date`` as a NULL fallback.  The column stores the day now, so this
-    reads a fact; a settled shadow carrying none is refused rather than dated by
-    a fallback.
+    reads a fact; a record carrying none under a settled transfer is refused
+    rather than dated by a fallback.  No door writes that state: a revert
+    un-dates the movement and leaves the transfer unsettled, and a ``$0.00``
+    re-close withdraws it (``status_seam._covering``).
 
     **The split MATH is untouched by the zone, and that is what bounds this
     rule's blast radius to one day of VISIBILITY.**  The interest / principal /
@@ -133,15 +153,26 @@ def payment_visible_on(shadow: Transaction) -> date:
     against which anchor.
 
     Args:
-        shadow: The settled loan-side income shadow.  Only ``id`` and
-            ``settled_on`` are read.  *This said its ``pay_period`` "must be
-            loaded" until plan step C2-d read the body against the sentence* --
-            true while the NULL fallback dated a settle by its period's start,
-            and false since ruling R-EC made the day a stored column.  A
-            precondition a caller can satisfy needlessly is still a false
-            precondition.
+        leg: The settled payment's to-side
+            :class:`~app.services.transfer_legs.TransferLeg`, its record
+            attached (:func:`app.services.loan_loaders.settled_income_shadows`
+            attaches it).  A record-less leg's ``due_date`` and ``pay_period``
+            are read, so its parent's period must be loaded -- the producer
+            loads it as its sort key.
+        payment_day: The loan's contractual day-of-month due day
+            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
+            by R-BAL139's arm, and there only for a transfer storing no
+            ``due_date``.
 
     Returns:
         The date from which a balance read counts this payment's principal.
+
+    Raises:
+        UndatedSettleError: When the leg's record carries no ``settled_on``.
+            The refusal names the row the movement hangs off
+            (``transaction_id``, the shadow the same refusal named before
+            X-bi-6-4b) until ``X-bi-6-4d`` re-parents the movement.
     """
-    return settled_day(shadow.id, shadow.settled_on)
+    if leg.record is None:
+        return loan_payment_due_date(leg, payment_day)
+    return settled_day(leg.record.transaction_id, leg.record.settled_on)

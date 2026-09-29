@@ -3,18 +3,19 @@
    Single source for the recurrence picker that templates/form.html
    (recurring income / expense) and transfers/form.html (recurring
    transfer) previously each defined verbatim.  The two forms differ only
-   in two parameters, so the markup itself is shared here and the
-   differences are passed in:
+   in one parameter, so the markup itself is shared here and the
+   difference is passed in:
 
-     * include_due_day -- only transaction templates carry a separate bill
-       due-day; the transfer schemas do not expose the field.
      * whether start_period_field is placed at all -- since plan step R7b-4
        only the TRANSFER form places it, because only a transfer needs a pay
        period when it does not repeat (it materialises one Transfer there; a
        rule-less transaction template materialises nothing).  It sits OUTSIDE
        #recurrence-fields for that reason, and it is a separate macro each
-       form places itself rather than being baked into
-       recurrence_detail_fields.
+       form places itself rather than being baked into a shared detail
+       macro.  The other difference, include_due_day, left with the
+       transaction form's Due Day of Month control at plan step
+       recurrence:R5-a (ruling R-R96), and the detail macro it gated went
+       with it: that control was all the macro held.
 
    An include_none_option flag used to be a third: the transfer form had no
    "does not repeat" option, because a one-time transfer carried a ONCE
@@ -139,8 +140,8 @@
        ENABLED only beside a unit whose occurrences can repeat within a month
        -- the wire's can_repeat_within_month, the same predicate the write
        door refuses the pair against -- and disabled otherwise so it posts
-       nothing, the discipline #field-due-dom keeps: a hidden input still
-       submits.  Empty means no ceiling.  The server renders the state
+       nothing, the discipline every toggled row here keeps: a hidden input
+       still submits.  Empty means no ceiling.  The server renders the state
        matching ``selected`` (ceiling_applies) so the form is correct before
        any script runs. #}
     <div class="col-auto d-none" id="field-max-per-month">
@@ -162,7 +163,7 @@
 
    "Offered", not "rendered unconditionally": the row carries d-none here like
    every other cadence-dependent row on this form (#field-interval,
-   #field-due-dom, #field-end-bound, #field-start-period), and
+   #field-end-bound, #field-start-period), and
    recurrence_form.js reveals it as soon as a cadence is chosen.  What D32's
    remedy changed is that syncPlacements reveals it for EVERY cadence instead
    of hiding it whenever exactly one placement was admissible -- the row no
@@ -204,48 +205,6 @@
     {{- placement_choice_help -}}
   </div>
 </div>
-{% endmacro %}
-
-{# The one remaining cadence-dependent detail inside #recurrence-fields: the
-   bill's real DUE day, when it differs from the day the cadence is scheduled
-   on.  recurrence_form.js toggles it by id from the facts the chosen offer
-   carries.  Does NOT include the pay-period selector, the preview or the
-   "Ends" control (each form places those).
-
-   **Day of Month and Month LEFT at plan step R7c-b** (ruling R-R16).  Three
-   inputs said what one date says: the first occurrence's day IS the cycle's
-   day and its month IS the cycle's residue class, so the "Starts on" control
-   below carries both and the pair cannot state two different cadences.  Row
-   D28 measured what the old split cost -- 18 of 24 live multi-month rules
-   would have fired in the wrong months once the anchor became a column.
-
-   ``due_day_of_month`` survives because it is NOT a coordinate of the cadence:
-   it is the servicer's date for a bill the cadence schedules elsewhere.  Plan
-   step R5 moves it onto the generated ROW as ``due_on``.
-
-   The END BOUND left at plan step R7b-3, into recurrence_end_bound below: it
-   is not cadence-dependent -- every cadence can stop -- and it needs the
-   picker and the stored bound, which this macro is not handed.
-
-   The interval moved OUT at plan step
-   R7b-2: it is one of the three cadence axes now, so it lives beside the unit
-   it counts in recurrence_cadence_controls rather than as a detail toggled on
-   for one pattern.  That also retired its pattern-scoped prefill, which
-   existed because a value labelled "every N paychecks" could otherwise be read
-   off a Quarterly rule's column -- a column whose validity depended on the
-   pattern, the exact defect this redesign removes. #}
-{% macro recurrence_detail_fields(template, include_due_day) %}
-{% if include_due_day %}
-<div class="row mb-3">
-  <div class="col d-none" id="field-due-dom">
-    <label for="due_day_of_month" class="form-label">Due Day of Month</label>
-    <input type="number" id="due_day_of_month" name="due_day_of_month" class="form-control" min="1" max="31"
-           value="{{ template.recurrence_rule.due_day_of_month if template and template.recurrence_rule and template.recurrence_rule.due_day_of_month else '' }}"
-           placeholder="Same as scheduled day">
-    <small class="form-text text-muted">Actual bill due day (if different from the day it is scheduled on)</small>
-  </div>
-</div>
-{% endif %}
 {% endmacro %}
 
 {# The "Ends" control (plan step R7b-3): ONE control for a bound that has
@@ -437,7 +396,7 @@
    refusal is what a crafted POST meets.
 
    NO ``d-none`` of its own, unlike every other row in this file.  Those are
-   toggled per cadence by recurrence_form.js -- a due-day cell belongs to some
+   toggled per cadence by recurrence_form.js -- a ceiling cell belongs to some
    cadences and not others -- and EVERY cadence has a first occurrence, so
    this one shows and hides with the #recurrence-fields container that wraps
    it.  Carrying a class no script removes is how a control ships permanently

@@ -32,7 +32,7 @@
     <li class="nav-item">
       <a class="nav-link{{ ' active' if active_section == 'tax' }}"
          href="{{ url_for('settings.show', section='tax') }}">
-        Tax Config
+        Tax Rates
       </a>
     </li>
     <li class="nav-item">
@@ -74,7 +74,7 @@
       </a>
       <a href="{{ url_for('settings.show', section='tax') }}"
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'tax' }}">
-        <i class="bi bi-sliders"></i> Tax Config
+        <i class="bi bi-sliders"></i> Tax Rates
       </a>
       <a href="{{ url_for('settings.show', section='account-types') }}"
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'account-types' }}">

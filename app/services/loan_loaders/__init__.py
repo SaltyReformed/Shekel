@@ -10,9 +10,9 @@ The pure data-loading functions every loan consumer shares, in two leaves:
   :class:`~app.models.escrow_line.EscrowLine` loaders, the synthesized
   origination anchor, and the ONE derivation of which installment a payment
   satisfies.
-* :mod:`._shadows` -- WHICH rows are an account's payments and which of them
-  have HAPPENED: the shadow-income predicate and the single settled/projected
-  partition every settled-payment consumer reads.
+* :mod:`._shadows` -- WHICH transfers are an account's payments and which of
+  them have HAPPENED: the single settled/projected partition every
+  settled-payment consumer reads.
 
 The graph is a line -- ``_terms`` imports ``_shadows`` for the settled set the
 escrow forward-only guard bounds on, and nothing there reads back.
@@ -37,21 +37,23 @@ This package is a LEAF: it imports models, the pure engine primitives
 (:class:`~app.services.amortization_engine.RateChangeRecord`,
 :func:`~app.services.rate_period_engine.monthly_due_date`), the shared
 balance predicates and the transfer-leg leaf
-(:mod:`app.services.transfer_legs`, itself models and predicates only) --
-never another loan service.  Flask-isolated, reads only, no commits.
+(:mod:`app.services.transfer_legs`, itself a leaf: models, the session, the
+reference cache and the shared predicates, and no service) -- never another
+loan service.  Flask-isolated, reads only, no commits.
 
-Its SETTLED half queries ``budget.transactions`` (the record of a payment
-that moved) and, since plan step balance:X-bi-6a, its PROJECTED half queries
-``budget.transfers`` (the plan, as legs derived from the parent) -- the two
-halves of Transfer Invariant 5 as restated at that step (ruling R-BAL13).  No
-amount is read off a transfer for a payment that has settled.
+Both halves query ``budget.transfers``.  The PROJECTED half has since plan step
+balance:X-bi-6a (the plan, as legs derived from the parent; ruling R-BAL13);
+the SETTLED half has since plan step balance:X-bi-6-4b (ruling R-BAL140):
+the transfers into the account that are no longer Projected or whose to-side
+money has moved, each leg carrying its covering movement -- the record of a
+payment that moved -- through the one join in :mod:`app.services.transfer_legs`.
+No amount is read off a transfer for a payment that has settled.
 """
 
 from ._shadows import (
     ShadowSets,
     income_shadows,
     projected_income_legs,
-    query_shadow_income,
     settled_income_shadows,
 )
 from ._terms import (
@@ -89,7 +91,6 @@ __all__ = [
     "load_standing_loan_assertions",
     "loan_payment_due_date",
     "projected_income_legs",
-    "query_shadow_income",
     "settled_income_shadows",
     "synthesize_origination_anchor",
 ]

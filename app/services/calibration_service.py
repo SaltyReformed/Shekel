@@ -160,7 +160,8 @@ def apply_calibration(
         cumulative_wages:  Decimal -- year-to-date gross wages BEFORE this
                            period.  Required; the SS cap cannot be evaluated
                            without it.
-        fica_config:       FicaConfig with `ss_rate` and `ss_wage_base`.
+        fica_config:       The year's :class:`app.tax_law.FicaRules`, with
+                           `ss_rate` and `ss_wage_base`.
                            Required; carries the statutory SS rate (the cap
                            ceiling) and the wage-base cap the helper enforces.
 

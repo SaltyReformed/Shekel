@@ -36,10 +36,10 @@ ZERO = Decimal("0")
 # further capped at the per-child refundable ceiling.  These two parameters
 # are STATUTORY and, verified 2026-07 against the 2025 Schedule 8812
 # instructions, were NOT changed by OBBBA and are not inflation-indexed --
-# so they are module constants, not seeded per-year columns (unlike the
-# per-child ceiling, which does carry a per-year seeded value on the bracket
-# set).  If a future law makes either parameter year-varying, promote it to
-# a seeded column then.
+# so they are module constants, not per-year figures in the tax law (unlike
+# the per-child ceiling, which each year of :mod:`app.tax_law` states on its
+# federal rules).  If a future law makes either parameter year-varying, move
+# it into the tax law then.
 ACTC_EARNED_INCOME_RATE = Decimal("0.15")
 ACTC_EARNED_INCOME_FLOOR = Decimal("2500")
 
@@ -124,9 +124,11 @@ def calculate_federal_withholding(gross_pay, pay_periods, bracket_set, w4=W4Inpu
     Args:
         gross_pay:              Gross pay for one pay period.
         pay_periods:            Number of pay periods per year (e.g. 26).
-        bracket_set:            TaxBracketSet with .standard_deduction,
-                                .child_credit_amount, .other_dependent_credit_amount,
-                                and .brackets (list of TaxBracket).
+        bracket_set:            The year's federal rules for the filer's
+                                status (:class:`app.tax_law.FederalRules`)
+                                with .standard_deduction, .child_credit_amount,
+                                .other_dependent_credit_amount, and .brackets
+                                (:class:`app.tax_law.Bracket` rungs).
         w4:                     :class:`W4Inputs` -- the employee's W-4 /
                                 pre-tax withholding adjustments (Step 3
                                 dependent counts, Step 4(a)/(b)/(c) amounts,
@@ -251,7 +253,7 @@ def _apply_marginal_brackets(taxable_income, brackets):
 
     Args:
         taxable_income: Decimal -- income after standard deduction.
-        brackets:       Iterable of TaxBracket objects.
+        brackets:       Iterable of :class:`app.tax_law.Bracket` rungs.
 
     Returns:
         Decimal -- annual tax before credits, rounded to 2 places.
@@ -315,7 +317,7 @@ def marginal_rate_for(taxable, brackets):
         taxable: The federal taxable income to place (Decimal, or any
             value ``Decimal(str(...))`` accepts; coerced from a string so
             a ``float`` never enters the money math).
-        brackets: The bracket set's TaxBracket iterable, each exposing
+        brackets: The federal rules' bracket rungs, each exposing
             ``sort_order``, ``min_income``, and ``rate`` (the same objects
             :func:`_apply_marginal_brackets` iterates).
 
@@ -373,7 +375,7 @@ def calculate_annual_federal_liability(annual_wage_income, bracket_set, w4=W4Inp
     """Compute the filing-time FEDERAL income tax liability for a full year.
 
     This is the annual-liability sibling of
-    :func:`calculate_federal_withholding`: it applies the SAME seeded
+    :func:`calculate_federal_withholding`: it applies the SAME
     bracket ladder and dependent credits, but ONCE to the whole year's
     income rather than per pay period, to answer "what will this taxpayer
     owe the IRS at filing time" (the tax-refund estimate the analytics
@@ -405,7 +407,7 @@ def calculate_annual_federal_liability(annual_wage_income, bracket_set, w4=W4Inp
             base (a documented approximation -- Box-1 wages are the
             taxpayer's earned income here).  Constructed to ``Decimal`` from
             a string; a ``float`` argument is coerced via ``str`` first.
-        bracket_set: A TaxBracketSet (or a stand-in) exposing
+        bracket_set: The year's :class:`app.tax_law.FederalRules` (or a stand-in) exposing
             ``standard_deduction``, ``child_credit_amount``,
             ``other_dependent_credit_amount``, ``child_credit_refundable_cap``,
             and ``brackets``.
@@ -520,8 +522,9 @@ def calculate_state_tax(annual_gross, state_config, *, additional_deduction=ZERO
 
     Args:
         annual_gross:  Total annual gross income (Decimal).
-        state_config:  A StateTaxConfig object. If None or tax_type is 'none',
-                       returns 0.
+        state_config:  The year's state rules for the filer's status
+                       (:class:`app.services.tax_config_service.StateTaxRules`).
+                       If None or its tax type is 'none', returns 0.
         additional_deduction:  A further deduction subtracted from the base
             alongside the state standard deduction (the resolved NC per-child
             deduction total -- T-P5).  Defaults to ``ZERO`` so the withholding
@@ -552,7 +555,7 @@ def resolve_child_deduction_per_child(agi, tiers):
     """Return the per-child state child-deduction for the AGI tier.
 
     The NC child deduction (N.C.G.S. 105-153.5(a1)) is AGI-tiered: each tier
-    (a :class:`~app.models.tax_config.StateChildDeduction` row, or any object
+    (an :class:`app.tax_law.ChildDeductionTier`, or any object
     exposing ``agi_max`` and ``deduction_per_child``) applies to AGI in
     ``(agi_min, agi_max]``.  The statute reads "Up to $X" (inclusive) then
     "Over $X", so a threshold value belongs to the LOWER / more-generous
@@ -627,13 +630,12 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
     Args:
         gross:            Gross pay for this pay period (NOT annualized).
         cumulative_wages: Year-to-date gross wages BEFORE this period.
-        fica_config:      FicaConfig with `ss_rate` and `ss_wage_base`.  When
-                          None, returns ZERO -- mirroring `calculate_fica`'s
-                          None-fica handling so paycheck projection on a
-                          profile without a seeded FICA config produces a
-                          zero SS line on both the bracket and calibration
-                          paths (e.g. during early bootstrap or unit tests
-                          that omit the FICA seed).
+        fica_config:      The year's :class:`app.tax_law.FicaRules`, with
+                          `ss_rate` and `ss_wage_base`.  When None -- the
+                          law resolved no FICA year at all -- returns ZERO,
+                          mirroring `calculate_fica`'s None-fica handling so
+                          both the bracket and calibration paths produce a
+                          zero SS line.
         ss_rate:          Optional per-period SS rate applied to `gross`.
                           Defaults to the statutory `fica_config.ss_rate`
                           (the bracket path).  The calibration path passes
@@ -670,7 +672,7 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
 
     Args:
         annual_gross:     Gross income for this pay period (NOT annualized).
-        fica_config:      A FicaConfig object with rates and thresholds.
+        fica_config:      The year's :class:`app.tax_law.FicaRules` (rates and thresholds).
         cumulative_wages: Year-to-date gross wages BEFORE this period.
 
     Returns:

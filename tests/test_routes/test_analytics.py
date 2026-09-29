@@ -33,6 +33,7 @@ from tests._test_helpers import (
     rhythm_of,
     set_default_grid_account,
     settle_day_columns,
+    start_test_pay_list,
 )
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 from tests._test_helpers import (
@@ -1865,18 +1866,16 @@ class TestCalendarFlowStrip:
 
 
 def _seed_taxes_profile(seed_user, db):
-    """Seed the DEFAULT_* tax configs and a 130k single/NC salary profile.
+    """Seed a 130k single/NC salary profile; it prices under the shipped law.
 
     The T-P4 route-test fixture: 130,000 / 26 = 5,000.00 gross per period
     exactly (no rounding residue), no deductions, no calibration -- so every
-    figure asserted below is hand-computable from the 2026 seeds.
+    figure asserted below is hand-computable from the 2026 law.
     """
     from app.extensions import db as _db
     from app.models.ref import FilingStatus
     from app.models.salary_profile import SalaryProfile
-    from app.services.registration_service import _seed_tax_data_for_user
 
-    _seed_tax_data_for_user(seed_user["user"].id)
     filing_status = (
         _db.session.query(FilingStatus).filter_by(name="single").one()
     )
@@ -1884,12 +1883,12 @@ def _seed_taxes_profile(seed_user, db):
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
         name="Taxes Tab Profile",
-        annual_salary=Decimal("130000.00"),
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("5000.00"))  # $130,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -2016,9 +2015,7 @@ class TestTaxesTab:
             from app.extensions import db as _db
             from app.models.ref import FilingStatus
             from app.models.salary_profile import SalaryProfile
-            from app.services.registration_service import _seed_tax_data_for_user
 
-            _seed_tax_data_for_user(seed_user["user"].id)
             filing_status = (
                 _db.session.query(FilingStatus)
                 .filter_by(name="married_jointly").one()
@@ -2027,13 +2024,13 @@ class TestTaxesTab:
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 name="MFJ Four Kids",
-                annual_salary=Decimal("130000.00"),
                 filing_status_id=filing_status.id,
                 state_code="NC",
                 is_active=True,
                 qualifying_children=4,
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("5000.00"))  # $130,000.00 a year / 26
             db.session.commit()
 
             resp = auth_client.get(

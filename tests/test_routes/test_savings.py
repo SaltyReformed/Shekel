@@ -44,6 +44,7 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
     rhythm_of,
     settle_day_columns,
+    start_test_pay_list,
     transient_cadence_rule,
 )
 from tests.oracles.recurrence_baseline import (
@@ -259,10 +260,13 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
         scenario_id=scenario.id,
         filing_status_id=filing_status.id,
         name="Test Salary",
-        annual_salary=Decimal("100000.00"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(
+        profile, Decimal("3846.15"),  # $100,000.00 a year / 26
+        seed_periods[0].start_date,
+    )
     db.session.flush()
 
     pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").first()
@@ -551,10 +555,11 @@ class TestDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing_status.id,
                 name="Main Job",
-                annual_salary=Decimal("100000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            # $100,000.00 a year / 26, from the first payday recorded above.
+            start_test_pay_list(profile, Decimal("3846.15"), start)
             db.session.flush()
             params.salary_profile_id = profile.id
             db.session.commit()
@@ -3061,10 +3066,10 @@ class TestTrajectoryDisplay:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             acct = _create_savings_account(seed_user)
 
@@ -3390,10 +3395,10 @@ class TestDebtSummaryDisplay:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user)
             db.session.commit()
 

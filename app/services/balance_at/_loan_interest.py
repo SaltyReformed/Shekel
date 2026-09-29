@@ -26,14 +26,15 @@ the balance it describes come from the ONE total producer and cannot disagree:
   ``tax_report_service``, closing B-6 (the Taxes tab no longer prints interest
   for a loan the seam values a different way).
 
-**Two clocks, deliberately.**  The interest figure is a TAX figure, so it counts a
-payment in the year the user PAID it on their WALL CLOCK
-(:func:`app.utils.balance_predicates.settled_day`, the L9 rule) -- which diverges from
-the balance ledger's UTC ``entry_date`` clock across the New Year (a settle at 8:05
-PM EST Dec 31 is stored 01:05 UTC Jan 1, deductible in the OLD year).  This is why
-interest-in-year is NOT ``positions().cum_interest`` keyed on the fold's UTC
-visible date, and why it lives in its own function rather than on the balance
-producer: the balance is a storage-clock quantity, the deduction a wall-clock one.
+**The tax clock is the WALL clock.**  The interest figure is a TAX figure, so it
+counts a payment in the year the user PAID it on their wall clock -- the civil
+day its money moved, which the outcome carries as ``visible_on``
+(:func:`app.services.loan_ledger.payment_visible_on`, the L9 rule).  A UTC clock
+diverges from it across the New Year (a settle at 8:05 PM EST Dec 31 is 01:05 UTC
+Jan 1, deductible in the OLD year).  *This paragraph called the fold's visible
+date that UTC clock, and said interest-in-year could not key on it; ruling
+R-DH (b) moved the one clock onto the civil day, which made that false, and
+since plan step balance:X-bi-6-4b the year is read off ``visible_on`` itself.*
 
 **One record per installment, by construction.**  The settled half and the
 projected half are ONE list since plan step **recurrence:R16-c-1**: the
@@ -61,7 +62,6 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services.loan_ledger import LoanLedgerWalk, PaymentOutcome
-from app.utils.balance_predicates import settled_day
 
 from ._context import BalanceContext
 from ._inputs import _require_scenario
@@ -79,7 +79,7 @@ def loan_interest_paid_in_year(
     The loan-detail "Interest paid, YTD" chip (step **C6c**): the interest side of
     each settled payment's real split (:func:`app.services.loan_ledger.walk_loan_ledger`),
     attributed to the DISPLAY-timezone civil YEAR of its paid date
-    (:func:`_paid_year`, the L9 tax basis) -- the interest actually PAID, and
+    (the outcome's ``visible_on``, the L9 tax basis) -- the interest actually PAID, and
     nothing projected.  This is the SETTLED half of :func:`loan_interest_in_year`
     on its own; the two share :func:`_settled_sum_in_year`, so the chip and the
     Schedule-A figure describe one set of payments.
@@ -129,7 +129,7 @@ def loan_principal_paid_in_year(
     settled payment's real split (:func:`app.services.loan_ledger.walk_loan_ledger`
     -- extra principal included, a payoff overpayment's refund excluded, so an
     extra or short payment counts honestly), attributed on the SAME display-tz paid
-    year (:func:`_paid_year`).  Sharing :func:`_settled_sum_in_year` with the
+    year (the outcome's ``visible_on``).  Sharing :func:`_settled_sum_in_year` with the
     interest chip is what keeps the two chips describing one set of payments.
 
     Folded from the loan's SOURCE events, it replaces the posting reader
@@ -169,9 +169,19 @@ def _settled_sum_in_year(
     :func:`loan_principal_paid_in_year`, and the SETTLED half of
     :func:`loan_interest_in_year`: it sums *part* (``split.interest`` or
     ``split.principal``) over the walk's settled payment splits whose payment was
-    PAID in *year* on the display clock (:func:`_paid_year`).  One derivation, so
+    PAID in *year* on the display clock: the outcome's ``visible_on``, the civil
+    day its money moved as the stream's builder read it ONCE through
+    :func:`app.services.loan_ledger.payment_visible_on`.  One derivation, so
     the interest chip, the principal chip, and the Schedule-A figure can never
     disagree on WHICH payments a year contains.
+
+    **It re-read that day off the payment's SHADOW** (``_paid_year``, the
+    shadow's ``settled_on`` through ``settled_day``) **until plan step
+    balance:X-bi-6-4b**, a second read of the fact the outcome already
+    carried; the two agree on every recorded payment.  A ``$0.00`` close,
+    which moved no money, is attributed to the year of the installment it
+    skips (ruling **R-BAL139**), where the shadow's stated settle day put it
+    before.
 
     Args:
         walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`.
@@ -187,7 +197,7 @@ def _settled_sum_in_year(
         (
             part(outcome)
             for outcome in walk.settled_splits
-            if _paid_year(outcome.source) == year
+            if outcome.visible_on.year == year
         ),
         _ZERO_MONEY,
     )
@@ -207,7 +217,7 @@ def loan_interest_in_year(
       cash paid on the reset-aware running balance, correct even for an
       off-schedule extra / short payment, where the schedule's replayed figure is
       not), attributed to the DISPLAY-timezone civil YEAR of its paid date
-      (:func:`app.utils.balance_predicates.settled_day`, the L9 tax basis).  This
+      (the outcome's ``visible_on``, the L9 tax basis).  This
       reads the loan's SOURCE events, not the posting cache, so a loan the
       posting reader cannot value (no genesis opening posting) is still valued
       from its facts -- closing B-6 -- rather than falling back to the schedule.
@@ -267,29 +277,3 @@ def loan_interest_in_year(
         _ZERO_MONEY,
     )
     return settled_interest + projected_interest
-
-
-def _paid_year(shadow) -> int:
-    """Return the DISPLAY-timezone civil YEAR a settled payment was paid in.
-
-    The tax attribution rule (L9): mortgage interest deducts in the year the user
-    PAID it on their wall clock, so a payment's interest belongs to the civil year
-    of the day its money moved -- the shadow's STORED ``settled_on``, read through
-    the shared :func:`app.utils.balance_predicates.settled_day`.  This is the SAME
-    attribution the posting ledger stamps each interest / principal leg's
-    ``entry_date`` with, so the fold-based figure and the posted legs it projects
-    agree on WHICH year a payment lands in -- they differ only in reading the
-    fold's split rather than the posted net.
-
-    **It derived the year from ``paid_at``'s display-timezone day until plan step
-    X-f1** (ruling R-EC).  The stored day IS the user's civil day, so the wall-clock
-    rule L9 states is now read rather than re-derived.
-
-    Args:
-        shadow: The settled loan-side income shadow (its ``pay_period`` is
-            eager-loaded by :func:`~app.services.loan_loaders.settled_income_shadows`).
-
-    Returns:
-        The calendar year the payment was paid in, on the display-tz clock.
-    """
-    return settled_day(shadow.id, shadow.settled_on).year

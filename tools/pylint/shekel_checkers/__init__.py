@@ -36,8 +36,9 @@ Rules implemented:
   balance-ingredient packages W9910 cannot protect (``loan_ledger``,
   ``loan_posting_service``, ``cash_ledger``, ``loan_resolver``,
   ``loan_payment_service``, ``account_projection``, plus
-  the seam-private ``balance_at._context`` whose publicly re-exported
-  ``BalanceContext`` W9910 cannot see methods on). Flags a PUBLIC top-level
+  the seam-private ``balance_at._context`` and ``balance_at._recurrence_memos``
+  (its mixin), whose publicly re-exported ``BalanceContext`` W9910 cannot see
+  methods on). Flags a PUBLIC top-level
   function or public method there classified as NEITHER a producer nor a
   deliberate non-producer. The rulings are keyed BY MODULE, so a name ruled
   harmless in one cannot exempt a same-named function added to another. A

@@ -7,9 +7,14 @@ future pay periods (every_period, monthly, annual, etc.).
 **This table states its recurrence in SEVEN columns and carries no second
 statement of any of them.**  ``interval_n`` / ``unit_id`` / ``placement_id`` /
 ``shift_id`` / ``starts_on`` / ``nominal_day`` / ``max_per_month`` are what a
-caller AUTHORS and what every reader takes; beside them sit only
-``due_day_of_month`` -- the servicer's date for a bill the cadence schedules
-elsewhere -- and the closing bound's exclusive arc.  The seventh, the per-month
+caller AUTHORS and what every reader takes; beside them sits only the
+closing bound's exclusive arc.  ``due_day_of_month`` -- a servicer's date for
+a bill the cadence scheduled elsewhere -- was dropped at plan step
+recurrence:R5-a (ruling **R-R96**, migration ``1c569c51b449``): a rule's own day
+IS the day its rows are due, and a recurring due day that differs from the day
+money moves is a term of the LOAN (``loan_params.payment_day``), not of the
+rule.  None carried one on the production clone measured 2026-09-23, and
+the migration refuses to run over one that does.  The seventh, the per-month
 ceiling, arrived at plan step **salary:R15-a** (ruling **R-SAL29**) as the
 cadence's third value: "every paycheck, at most 2 a month" is how a payroll
 benefit taken on a month's first two paychecks is stated, and neither axis
@@ -445,20 +450,6 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     # the absence has one meaning -- the same discipline ``nominal_day`` keeps
     # one column up.
     max_per_month = db.Column(db.SmallInteger, nullable=True)
-    # The bill's real due day, when the servicer's date differs from the day
-    # the cadence schedules it on.  NOT a coordinate of the cadence -- the rule
-    # fires on its own day and the row carries this one -- which is why it
-    # survived plan step R7c-c's contraction while ``day_of_month`` did not.
-    # Plan step **R5** moves it onto the generated ROW as ``due_on``, where the
-    # loan ledger already reads it.
-    due_day_of_month = db.Column(
-        db.Integer,
-        db.CheckConstraint(
-            "due_day_of_month IS NULL OR "
-            "(due_day_of_month >= 1 AND due_day_of_month <= 31)",
-            name="ck_recurrence_rules_due_dom",
-        ),
-    )
     # Optional end date -- recurrence stops generating after this date.
     # NULL means indefinite (no end).
     end_date = db.Column(db.Date, nullable=True)

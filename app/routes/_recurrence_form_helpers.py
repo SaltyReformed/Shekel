@@ -44,9 +44,8 @@ The helpers:
   each ``update_*`` route resolves its recurrence rule with a single
   call.  [F-24; the clear branch is plan step R2e-1]
 
-The first three helpers share a verbatim trio of inputs -- the form's
-closing bound, the validation-error redirect target, and the
-transaction-vs-transfer ``due_day_of_month`` flag -- bundled into the
+The first three helpers share a verbatim pair of inputs -- the form's
+closing bound and the validation-error redirect target -- bundled into the
 frozen :class:`~app.routes._recurrence_form_refusals.RecurrenceFormContext`,
 which is DEFINED in the refusals module since plan step R7d-f (see there for
 why the leaf moved) and imported here.
@@ -154,15 +153,11 @@ def _pop_end_bound_keys(data: dict[str, Any]) -> None:
     for key in _END_BOUND_KEYS:
         data.pop(key, None)
 
-_DUE_DAY_KEY: str = "due_day_of_month"
-
-
 def recurrence_spec_for_create(
     data: dict[str, Any],
     *,
     user_id: int,
     redirect: RedirectTarget,
-    include_due_day_of_month: bool,
 ) -> RecurrenceSpec | None:
     """Run the whole create-form recurrence preamble, for either kind.
 
@@ -201,8 +196,6 @@ def recurrence_spec_for_create(
             :func:`recurrence_spec_from_form` has a failure left, and
             the field is on the context because
             :func:`resolve_recurrence_rule_for_update` does.
-        include_due_day_of_month: ``True`` for transaction templates, ``False``
-            for transfer templates.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec` the form states,
@@ -218,7 +211,6 @@ def recurrence_spec_for_create(
             # so the builder reads it as "ends never".
             end_bound=data.pop(RECURRENCE_END_BOUND_KEY, None),
             redirect=redirect,
-            include_due_day_of_month=include_due_day_of_month,
         ),
     )
 
@@ -344,15 +336,12 @@ def recurrence_spec_from_form(
         data: Marshmallow-validated payload; mutated in place.  The
             helper pops ``recurrence_unit``, ``recurrence_placement``,
             ``interval_n``, ``nominal_day``, ``max_per_month``,
-            ``starts_on``, the closing
-            bound's three (:data:`_END_BOUND_KEYS`), and -- when
-            ``ctx.include_due_day_of_month`` is ``True`` --
-            ``due_day_of_month``.
+            ``starts_on``, and the closing
+            bound's three (:data:`_END_BOUND_KEYS`).
         user_id: Owner of the resulting :class:`RecurrenceRule` row.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_bound`` (written onto the rule, or ``NEVER_ENDS`` when the
-            form stated none) and the ``include_due_day_of_month``
-            transaction-vs-transfer flag.  Its ``redirect`` is unused here now
+            form stated none).  Its ``redirect`` is unused here now
             that the helper has no failure, and kept only because the three
             helpers share one context object.
 
@@ -387,8 +376,6 @@ def recurrence_spec_from_form(
             data.pop(key, None)
         _pop_end_bound_keys(data)
         data.pop(RECURRENCE_STARTS_ON_KEY, None)
-        if ctx.include_due_day_of_month:
-            data.pop(_DUE_DAY_KEY, None)
         return None
 
     placement = data.pop("recurrence_placement")
@@ -423,9 +410,6 @@ def recurrence_spec_from_form(
     # interval beside it; ``None`` -- a cleared box, or a control the form
     # disabled beside a calendar-month unit -- authors no ceiling.
     max_per_month = data.pop(RECURRENCE_MAX_PER_MONTH_KEY, None)
-    due_day_of_month = (
-        data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
-    )
 
     # The offset auto-derivation this branch used to run inline -- "for an
     # every-N-paychecks rule, phase it on the chosen start period" -- moved
@@ -453,7 +437,6 @@ def recurrence_spec_from_form(
         interval_n=interval_n,
         placement=placement,
         nominal_day=nominal_day,
-        due_day_of_month=due_day_of_month,
         max_per_month=max_per_month,
         # A create form that stated no bound authors an UNBOUNDED rule:
         # there is no stored bound to leave alone, so absence and "never"
@@ -506,13 +489,10 @@ def update_recurrence_rule_from_form(
             tests ``template.recurrence_rule``).
         data: Marshmallow-validated payload; mutated in place.  Pops
             ``recurrence_unit``, ``recurrence_placement``, ``interval_n``,
-            ``nominal_day``, ``max_per_month``, ``starts_on``, and -- when
-            ``ctx.include_due_day_of_month`` is ``True`` --
-            ``due_day_of_month``.
+            ``nominal_day``, ``max_per_month`` and ``starts_on``.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_bound`` (which REPLACES the rule's when stated and leaves it
-            alone when ``None``) and the ``include_due_day_of_month``
-            transaction-vs-transfer flag.  Its ``redirect`` is unused here and
+            alone when ``None``).  Its ``redirect`` is unused here and
             kept only because the three helpers share one context object.
         calendar: The OWNER's pay calendar the re-author resolves against.
             TAKEN since plan step R7d-f rather than loaded here: the update
@@ -580,8 +560,6 @@ def update_recurrence_rule_from_form(
     # than a wrong answer, but a refusal reachable from an ordinary edit is a
     # defect either way.
     states_a_start = RECURRENCE_STARTS_ON_KEY in data
-    # Read before the pop below, for the reason the start's presence is.
-    states_a_due_day = _DUE_DAY_KEY in data
     # The per-month ceiling on the same present-versus-absent rule (plan step
     # salary:R15-a): the control is rendered beside the cadence and DISABLED
     # beside a unit that cannot repeat within a month, so absence means the
@@ -655,26 +633,6 @@ def update_recurrence_rule_from_form(
         rule,
         replace(
             current,
-            # PRESENT replaces, ABSENT leaves alone -- the same rule the two
-            # validity bounds run on, and it was missing here (plan step
-            # R7c-b).  The control is inside ``#recurrence-fields`` and hidden
-            # for a cadence that anchors on a paycheck; ``recurrence_form.js``
-            # now DISABLES it with the hiding, because a hidden input still
-            # SUBMITS and a stale due day typed under a monthly cadence was
-            # landing in the column after a switch to "funded from the first
-            # paycheck".  A disabled control posts nothing, so reading absence
-            # as a stated ``None`` would have traded that for the opposite
-            # defect: the hidden row ERASING a due day it could not show, and
-            # an amount-only PATCH erasing it too.
-            #
-            # The field is ``allow_none``, so CLEARING the box still arrives as
-            # a present ``None`` and still clears -- which is the whole reason
-            # presence and value are different questions.
-            due_day_of_month=(
-                data.pop(_DUE_DAY_KEY, None)
-                if ctx.include_due_day_of_month and states_a_due_day
-                else current.due_day_of_month
-            ),
             starts_on=(
                 submitted_starts_on if states_a_start else current.starts_on
             ),
@@ -834,8 +792,8 @@ def resolve_recurrence_rule_for_update(
             ``recurrence_unit`` and ``starts_on`` are PRESENT before those
             pops consume them.
         ctx: The :class:`RecurrenceFormContext` forwarded unchanged to
-            the delegated builder / updater (its ``end_bound``,
-            ``redirect`` target, and ``include_due_day_of_month`` flag).
+            the delegated builder / updater (its ``end_bound`` and
+            ``redirect`` target).
         pass_ctx: The read pass the route built BEFORE this write (plan step
             R7d-f).  The refusals judge the stored definition against it --
             the loan's standing payment is read off its loan-resolution memo,

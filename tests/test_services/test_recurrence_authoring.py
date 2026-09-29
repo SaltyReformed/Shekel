@@ -114,7 +114,7 @@ from tests._test_helpers import (
 #: column at all, and the two owning FKs that replaced it are
 #: :data:`_OWNING_ARC_COLUMNS`.
 _AUTHORED_COLUMNS = (
-    "due_day_of_month", "end_date", "max_occurrences",
+    "end_date", "max_occurrences",
 )
 
 #: The OWNING ARC: which definition this rule belongs to (plan step R-F6).
@@ -806,7 +806,8 @@ class TestSalaryProfileWriter:
 
         resp = auth_client.post("/salary", data={
             "name": "Day Job",
-            "annual_salary": "104000.00",
+            "pay_amount": "4000.00",  # $104,000.00 a year / 26
+            "pay_payday": seed_periods[0].start_date.isoformat(),
             "filing_status_id": str(filing_status.id),
             "state_code": "PA",
         })

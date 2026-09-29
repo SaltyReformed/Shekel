@@ -133,17 +133,19 @@ class TestRecurrenceBaseline:
         Guards the failure mode where a builder silently stops contributing and
         the gate keeps passing over a shrunken shape set -- the "0 bugs found"
         shape of a green run.  The floor is well below the real count so it
-        does not need editing whenever a shape is added.
+        does not need editing whenever a shape is added.  It was 400 until plan
+        step recurrence:R5-a removed the 124 ``due_sweep.`` shapes with the
+        column they swept (ruling R-R96), leaving 309.
         """
         shapes = recurrence_baseline.build_shapes()
         labels = [shape.label for shape in shapes]
 
-        assert len(shapes) > 400, f"only {len(shapes)} shapes"
+        assert len(shapes) > 280, f"only {len(shapes)} shapes"
         assert len(set(labels)) == len(labels), "duplicate shape labels"
         # Every builder's prefix is represented, so a builder that stopped
         # appending is caught by name rather than by a count nobody reads.
         for prefix in (
-            "annual.", "bounds.", "due_sweep.", "every_n_periods.",
+            "annual.", "bounds.", "every_n_periods.",
             "every_period", "long_cadence.", "monthly.", "monthly_first",
             "quarterly.", "semi_annual.",
         ):
@@ -236,8 +238,8 @@ class TestBaselineFiringControls:
         before = recurrence_baseline.capture_baseline()
         real_compute = _row_date.compute_due_date
 
-        def shifted(rule, period):
-            return real_compute(rule, period) + timedelta(days=1)
+        def shifted(rule, occurrence, period):
+            return real_compute(rule, occurrence, period) + timedelta(days=1)
 
         monkeypatch.setattr(_row_date, "compute_due_date", shifted)
         after = recurrence_baseline.capture_baseline()

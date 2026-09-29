@@ -189,7 +189,6 @@ def _form_ctx(end_bound):
         redirect=RedirectTarget(
             "transfers.edit_transfer_template", {"template_id": 1},
         ),
-        include_due_day_of_month=False,
     )
 
 

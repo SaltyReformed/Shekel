@@ -2416,6 +2416,8 @@ class TestReaderParallelRunAgainstResolver:
                 .filter_by(transfer_id=early.id, account_id=loan.id)
                 .one()
             )
+            # On the transfer and its shadow alike -- see ``_settle_late``.
+            early.due_date = date(2026, 3, 1)
             shadow.due_date = date(2026, 3, 1)
             db.session.flush()
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
@@ -3054,6 +3056,11 @@ class TestLatePaidPaymentDating:
             .filter_by(transfer_id=payment.id, account_id=loan.id)
             .one()
         )
+        # On the TRANSFER, where a payment's installment is read since plan step
+        # balance:X-bi-6-4b, and on its shadow beside it (Transfer Invariant 3).
+        # It wrote the shadow's copy alone until then (rule-5 re-expression,
+        # developer approval 2026-09-24).
+        payment.due_date = date(2026, 2, 1)
         shadow.due_date = date(2026, 2, 1)
         db.session.flush()
         loan_posting_service.sync_loan_postings_all_scenarios(loan.id)

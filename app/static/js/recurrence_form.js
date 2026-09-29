@@ -36,8 +36,8 @@
  * **Plan step salary:R15-c gave the controls a THIRD form, and made this file
  * re-runnable for it.**  The payroll-line form on the salary edit page
  * places recurrence_cadence_controls alone -- no #recurrence-fields (a payroll
- * line's first occurrence is derived, ruling R-SAL30), no due day, no end
- * bound, no preview -- so every element beyond the four cadence controls is
+ * line's first occurrence is derived, ruling R-SAL30), no end bound, no
+ * preview -- so every element beyond the four cadence controls is
  * optional here, the container included.  And that form lives INSIDE the
  * #lines-section fragment that htmx swaps wholesale after every add, edit
  * and delete: the elements this closure bound at load are replaced, and a
@@ -66,7 +66,6 @@ function initRecurrenceForm() {
   var placementHelp = document.getElementById('placement-help');
 
   var container = document.getElementById('recurrence-fields');
-  var dueDom = document.getElementById('field-due-dom');
   var startPeriod = document.getElementById('field-start-period');
   var startPeriodSelect = document.getElementById('start_period_id');
   var preview = document.getElementById('recurrence-preview');
@@ -438,8 +437,10 @@ function initRecurrenceForm() {
   // what keeps this an affordance rather than a rule.
   //
   // ``hasDayCoordinate`` is the offer's has_day_of_month_coordinate, which is
-  // keyed on the UNIT -- never schedules_on_day_of_month, which is keyed on
-  // the (unit, placement) pair and answers a different question.  Passing the
+  // keyed on the UNIT -- never the (unit, placement) pair's "is a ROW dated
+  // from that day" (the wire's schedules_on_day_of_month until plan step
+  // recurrence:R5-a removed it with the Due Day row), which answers a
+  // different question.  Passing the
   // wrong one MOVED MONEY: they disagree for Monthly First, whose occurrences
   // are days of the month even though its rows are dated from the paycheck, so
   // this cleared and disabled a control the server had rendered enabled.  The
@@ -474,34 +475,8 @@ function initRecurrenceForm() {
     if (!startsOnLocked) nominalDay.disabled = !any;
   }
 
-  // The bill's separate real DUE day, shown only for a cadence that anchors on
-  // a day of the month.
-  //
-  // DISABLED as well as hidden, and that half was missing: this row is the one
-  // control in this file that was toggled by class alone, so a due day typed
-  // under "every 1 month" still POSTED after switching to "funded from the
-  // first paycheck" and landed in the column through _author.  It is the same
-  // defect class the pay-period select, the "Ends" inputs and the nominal day
-  // each carry a comment about; the browser pass could not see it, because
-  // _drive_visibility was still driving the two controls this step deleted.
-  //
-  // The value is NOT cleared with it, unlike the nominal day's: a due day is
-  // the servicer's date rather than a coordinate of the cadence, so switching
-  // cadence does not make it wrong -- and the update door reads an ABSENT key
-  // as "leave the stored one alone" (RecurrenceFormContext), so a hidden row
-  // states nothing rather than erasing what it cannot show.
-  function syncDueDom(schedulesOnDay) {
-    if (!dueDom) return;
-    dueDom.classList.toggle('d-none', !schedulesOnDay);
-    Array.prototype.forEach.call(
-      dueDom.querySelectorAll('input'),
-      function(input) { input.disabled = !schedulesOnDay; }
-    );
-  }
-
-  // The value is NOT cleared with the row, for the reason the due day's is
-  // not: switching to a monthly unit and back should not lose a typed
-  // ceiling, and the update door reads an ABSENT key (a disabled control) as
+  // The value is NOT cleared with the row: switching to a monthly unit and
+  // back should not lose a typed ceiling, and the update door reads an ABSENT key (a disabled control) as
   // "leave the stored one alone" and drops a stored ceiling itself where the
   // saved unit cannot hold it.
   function syncCeiling(canRepeatWithinMonth) {
@@ -533,7 +508,6 @@ function initRecurrenceForm() {
       syncStartPeriod(false);
       syncStartsOn(false);
       syncNominalDay(false);
-      syncDueDom(false);
       syncCeiling(false);
       fetchPreview();
       return;
@@ -557,15 +531,10 @@ function initRecurrenceForm() {
     // true of every cadence offered then, is true of NONE now that every unit
     // uses the free box, and was never the same fact either way.
     var chosen = currentOption(id, placementSelect.value);
-    // Two facts, two questions, and they differ for Monthly First -- see
-    // syncNominalDay.  The DUE DAY row asks whether a generated row is DATED
-    // from a day of the month, which is the question it has always asked; the
-    // "repeating on" control asks whether occurrences land on a day of the
-    // month at all.
-    var schedulesOnDay = chosen !== null && chosen.schedules_on_day_of_month;
+    // The "repeating on" control asks whether occurrences land on a day of the
+    // month at all -- keyed on the unit; see syncNominalDay.
     var hasDayCoordinate =
       chosen !== null && chosen.has_day_of_month_coordinate;
-    syncDueDom(schedulesOnDay);
     syncCeiling(chosen !== null && chosen.can_repeat_within_month);
 
     syncStartPeriod(true);
@@ -748,7 +717,7 @@ function initRecurrenceForm() {
   // The source accounts and the envelope box re-preview too (plan step
   // pay_calendar:C18-a): the books floor the endpoint bounds by is theirs,
   // and the box picks which of a row's days it is compared on.
-  ['due_day_of_month', 'nominal_day', 'max_per_month', 'end_date',
+  ['nominal_day', 'max_per_month', 'end_date',
    'max_occurrences', 'is_envelope'].concat(SOURCE_ACCOUNT_FIELDS).forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);

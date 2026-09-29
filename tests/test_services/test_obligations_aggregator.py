@@ -149,7 +149,6 @@ def _fake_template(
             placement_id=ref_cache.period_placement_id(
                 PeriodPlacementEnum.CONTAINING_DATE,
             ),
-            due_day_of_month=None,
             end_date=end_date,
             max_occurrences=None,
             max_per_month=None,

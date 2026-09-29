@@ -21,7 +21,7 @@ refuse the save until they have:
   **R-PC88**; ``opening_service._reject_books_open_on_or_after_planned_rows``);
 * a recurring definition's edit, whatever field it changes (rulings
   **R-PC90** -- an account move -- and **R-PC91**, which widened it to any
-  save, an envelope box unticked or a due day cleared included):
+  save, an envelope box unticked or (until recurrence:R5-a) a due day cleared):
   :func:`definition_edit_refusal`, asked by the transaction- and
   transfer-template edit routes AFTER the edit is applied, so it reads the
   state the save would leave.
@@ -68,10 +68,10 @@ would leave, and a row is matched to its occurrence by ``occurs_on``, the
 key the maintain pass matches by, so a door refuses exactly the rows the
 pass would stop naming.
 Reading a row's STORED due day instead let a save through that strands one:
-the regeneration re-dates every still-named row by the NEW rule, so clearing
-a bill's due day moves its cash day back onto its scheduled day, inside the
-books, while the stored day still read as outside them.  The day a refusal
-names is the walk's for the placement
+the regeneration re-dates every still-named row by the NEW rule, so funding a
+bill from the paycheck containing its date moves its cash day back onto its
+scheduled day, inside the books, while the stored day still read as outside
+them.  The day a refusal names is the walk's for the placement
 (:meth:`~app.services.recurrence.ResolvedRecurrence.books_day`: the due day
 for a bill, ruling **R-PC86**; the paycheck's last day for an envelope,
 ruling **R-PC89**) -- the row as the save would leave it, which is the
@@ -923,12 +923,12 @@ def definition_edit_refusal(
     definition's edit is refused when the state it would SAVE leaves a
     still-projected row of that definition answering an occurrence the books
     drop, or inside the books of the account it sits on (ruling **R-PC99**)
-    -- whatever field changed.  An account moved onto one whose books
-    open later, an envelope box unticked (its rows then compare on their due
-    day, not their paycheck's last day), a due day cleared (the row's cash
-    day moves back onto its scheduled day), or a row that already sat below
-    its books: one check, of the state the save LEAVES, so no field has to
-    be remembered.  An ARCHIVED definition's edit counts the rows its
+    -- whatever field changed.  An account moved onto one whose books open
+    later, an envelope box unticked (its rows then compare on their due day,
+    not their paycheck's last day), a funding switch moving the row's cash
+    day back onto its scheduled day, or a row that already sat below its
+    books: one check, of the state the save LEAVES, so no field has to be
+    remembered.  An ARCHIVED definition's edit counts the rows its
     unarchive would bring back too (ruling **R-PC93**) -- as it stood BEFORE
     the edit (*restorable*, :func:`restorable_before_the_edit`), since a row
     its books already dropped stays deleted when it is unarchived (ruling

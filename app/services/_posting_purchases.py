@@ -7,13 +7,16 @@ half -- what makes a movement postable, what its two legs are, and the
 reconcile-to-target emission for one of them.  Since plan step
 ``balance:X-bi-3b`` a bill's or a paycheck's covering movement posts through
 it too (a movement's legs are its parent's, ruling **R-BAL35**), and since
-``balance:X-bi-6-3`` so does a transfer shadow's (ruling **R-BAL101**): ONE
+``balance:X-bi-6-3`` so does a transfer's (ruling **R-BAL101**): ONE
 movement writer, the COUNTER LEG dispatched by the parent's shape.  A row's
 movement books against the row's category under the ``purchase`` source; a
-shadow's books against the owner's Transfers-in-transit account under the
-``transfer_movement`` source with the ``transfer`` leg kind (ruling
+transfer LEG's books against the owner's Transfers-in-transit account under
+the ``transfer_movement`` source with the ``transfer`` leg kind (ruling
 **R-BAL45**'s shape C: two entries per settled transfer, each side on its own
-bank day, the transit account netting to zero once both have cleared).
+bank day, the transit account netting to zero once both have cleared).  The
+parent is what :func:`app.services.transfer_legs.movement_parent` resolves
+(leaf ``X-bi-6-4a``): a plan row, or a transfer's leg, never the shadow row
+a transfer movement still hangs off.
 
 **Why a module of its own rather than more of :mod:`app.services.posting_service`.**
 The purchase was a THIRD posting source beside the transfer and the transaction,
@@ -53,7 +56,6 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transfer import Transfer
 from app.services import ledger_account_service
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
@@ -63,6 +65,7 @@ from app.services._posting_write import (
 )
 from app.services.cash_ledger import movement_cash_leg
 from app.services.posting_reads import _ledger_account_for
+from app.services.transfer_legs import PlanItem
 from app.utils.balance_predicates import is_balance_contributing
 
 
@@ -99,37 +102,7 @@ def posted_purchase_exists_clause():
     )
 
 
-def dated_transfer_movement_exists_clause():
-    """Return the SQL form of "this transfer holds a dated covering movement".
-
-    The transfer twin of :func:`posted_purchase_exists_clause`, correlated to
-    ``Transfer``: an ``EXISTS`` over the movements of the transfer's LIVE
-    shadows carrying a ``settled_on``.  It is what makes the deploy resync's
-    transfer arm TOTAL over the family the ledger holds (plan step
-    ``balance:X-bi-6-3``, ruling **R-BAL101**): a movement posts iff it is
-    dated under a contributing parent, whatever the parent's status, so the
-    arm must reach every transfer that could hold a leg and not only the
-    settled ones -- the identical argument the transaction arm makes for a
-    purchase under a still-Projected envelope.  The contributing gate is the
-    caller's own filter, as it is for the sibling clause.
-
-    Returns:
-        A SQLAlchemy ``EXISTS`` clause, correlated to ``Transfer``, for use in
-        any query rooted there.
-    """
-    return (
-        db.session.query(TransactionEntry.id)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(
-            Transaction.transfer_id == Transfer.id,
-            Transaction.is_deleted.is_(False),
-            TransactionEntry.settled_on.isnot(None),
-        )
-        .exists()
-    )
-
-
-def purchase_posts(txn: Transaction, entry) -> bool:
+def purchase_posts(parent: PlanItem, entry) -> bool:
     """Return whether *entry* books a cash leg of its own -- ruling **R-FM**.
 
     The ONE statement of "is this purchase in the ledger" on the write side,
@@ -147,27 +120,46 @@ def purchase_posts(txn: Transaction, entry) -> bool:
     It reads no status of the parent beyond the contributing gate, deliberately:
     a purchase against a still-PROJECTED envelope has left the bank exactly as
     one against a closed envelope has.  The same three narrowings decide a
-    transfer shadow's covering movement (plan step ``balance:X-bi-6-3``, ruling
+    transfer's covering movement (plan step ``balance:X-bi-6-3``, ruling
     **R-BAL101**), which is what let ``sync_transfer_postings`` drop the
     ``settled`` flag it used to be told: a settle dates the movement and a
     revert un-dates it (ruling **R-BAL61**), so the movement's own state says
     whether its leg is in the ledger.
 
+    **A transfer LEG posts its RECORD alone** (leaf ``X-bi-6-4a``): its gate
+    is the TRANSFER's, read through the leg, so the fold's leg arm
+    (``settled_cash_facts``) and this answer from one parent.  Through the
+    interval a movement under a DEAD shadow of its transfer is no leg's
+    record (:func:`app.services.transfer_legs.movement_parent` gives its leg
+    none), so it posts nothing and any leg it holds reverses: the answer the
+    dead shadow's own gate gave while the writer read the shadow, and the
+    fold's.  No door writes that state (0 on the 2026-09-22 17:06 dump); the
+    term answers ``True`` for every movement from ``X-bi-6-4d``, where each
+    movement a side links is that side's record, and goes then.
+
     Args:
-        txn: The parent row: a transaction, or a transfer shadow.
-        entry: One of its ``budget.transaction_entries`` rows.
+        parent: The movement's parent, as
+            :func:`~app.services.transfer_legs.movement_parent` resolves it
+            FOR *entry*: a plan row, or a transfer leg carrying *entry* as its
+            record when it is one.  A leg built without the movement
+            (``transfer_legs.leg_of``, ``planned_transfer_legs``) carries no
+            record, and this answers ``False`` for it -- a dated leg would
+            silently reverse -- so every door resolves the parent through
+            ``movement_parent`` and none hands the writer a leg of its own.
+        entry: The movement.
 
     Returns:
         True when the ledger should hold a cash leg for *entry*.
     """
     return (
-        is_balance_contributing(txn)
+        is_balance_contributing(parent)
         and not entry.is_credit
         and entry.settled_on is not None
+        and (not is_transfer_leg(parent) or parent.record is entry)
     )
 
 
-def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
+def _purchase_target(entry, parent: PlanItem) -> dict[int, Decimal]:
     """Return the debit-positive ledger target for a POSTED movement.
 
     The ONE ledger target a row's family has (plan step
@@ -185,10 +177,11 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
 
     **The counter leg is dispatched by the PARENT's shape, and that is the
     whole of what a transfer adds** (plan step ``balance:X-bi-6-3``, rulings
-    **R-BAL45** and **R-BAL101**).  A transfer shadow's covering movement
-    books its cash leg on the shadow's account -- ``-figure`` off the
-    from-side's expense shadow, ``+figure`` into the to-side's income shadow,
-    through the same producer -- against the owner's Transfers-in-transit
+    **R-BAL45** and **R-BAL101**).  A transfer LEG's covering movement
+    books its cash leg on the movement's account -- ``-figure`` on the
+    from-side, ``+figure`` on the to-side, the side the leg's (leaf
+    ``X-bi-6-4a``; the shadow's type through ``X-bi-6-3``), through the same
+    producer -- against the owner's Transfers-in-transit
     account rather than a category: a transfer between two of the owner's
     accounts is neither income nor expense, which is why the purchase source
     with its category counter was REJECTED for it at R-BAL45.  Worked on the
@@ -232,12 +225,14 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
             since plan step ``credit_card:CC-5-1`` (ruling **R-BAL75**: the
             ledger, the fold and the self-heal all read the movement's) --
             so the cash account is read straight off it.
-        txn: Its parent transaction, taken as an ARGUMENT rather than through
-            ``entry.transaction`` so the caller that already holds it -- every
-            caller does -- pays no lazy load, and so every movement of one
-            family is provably booked to one category.  Its ``user_id`` is
-            the category account's owner, the ONE home ``pay_calendar:C13-b``
-            gave a row's owner: a parameter every caller binds from that home
+        parent: Its parent -- a plan row, or a transfer leg -- taken as an
+            ARGUMENT rather than resolved here, so the caller that already
+            holds it -- every caller does, through
+            :func:`app.services.transfer_legs.movement_parent` -- pays no lazy
+            load, and so every movement of one family is provably booked to
+            one category.  Its ``user_id`` is the counter account's owner,
+            the ONE home ``pay_calendar:C13-b`` gave a row's owner (a leg's is
+            its transfer's): a parameter every caller binds from that home
             would be a second home one hop away.
 
     Returns:
@@ -246,25 +241,25 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
     Raises:
         PostingError: If the movement's account has no linked ledger account.
         ValueError: Propagated from the resolver if the parent's non-NULL
-            ``category_id`` names no category owned by ``txn.user_id``.
+            ``category_id`` names no category owned by ``parent.user_id``.
     """
     cash_ledger = _ledger_account_for(entry.account_id)
-    if is_transfer_leg(txn):
+    if is_transfer_leg(parent):
         counter_ledger = (
             ledger_account_service.get_or_create_transit_ledger_account(
-                txn.user_id,
+                parent.user_id,
             )
         )
     else:
         counter_ledger = ledger_account_service.get_or_create_category_ledger_account(
-            txn.user_id, txn.category_id, ledger_class_of(txn),
+            parent.user_id, parent.category_id, ledger_class_of(parent),
         )
-    leg = movement_cash_leg(txn, entry)
+    leg = movement_cash_leg(parent, entry)
     return {cash_ledger.id: leg, counter_ledger.id: -leg}
 
 
 def emit_purchase_deltas(
-    entry, txn: Transaction, *, posted: bool,
+    entry, parent: PlanItem, *, posted: bool,
 ) -> "list[JournalEntry]":
     """Emit the delta entries for ONE purchase's own cash leg -- ruling **R-FM**.
 
@@ -281,12 +276,16 @@ def emit_purchase_deltas(
     **The PERIOD is the parent's and the DATE is the purchase's**, which is the
     same two-clock split every cash source keeps: the budget column a purchase
     spends is its envelope's, and the day its money moved is its own.  A
-    transfer shadow's movement keeps both: the shadow's period is the
-    transfer's, and the day is the side's own bank day (ruling **R-BAL45**).
+    transfer leg's movement keeps both: the leg's period is its transfer's
+    (read off the TRANSFER since leaf ``X-bi-6-4a``, the shadow's through
+    ``X-bi-6-3``, equal under Transfer Invariant 3), and the day is the
+    side's own bank day (ruling **R-BAL45**).
 
     Args:
         entry: The movement.
-        txn: Its parent: a transaction, or a transfer shadow.
+        parent: Its parent as
+            :func:`app.services.transfer_legs.movement_parent` resolves it: a
+            plan row, or a transfer leg.
         posted: Whether the ledger should hold a cash leg for it
             (:func:`purchase_posts`; ``False`` also means "reverse it", which
             is what the teardown doors pass).
@@ -296,20 +295,20 @@ def emit_purchase_deltas(
     """
     targets: "dict[tuple[int, date], dict[int, Decimal]]" = {}
     if posted:
-        targets[(txn.pay_period_id, entry.settled_on)] = _purchase_target(
-            entry, txn,
+        targets[(parent.pay_period_id, entry.settled_on)] = _purchase_target(
+            entry, parent,
         )
     # The PARENT types the legs (plan step X-bi-3b): ``expense`` under an
     # envelope or a bill, ``income`` under a paycheck, ``transfer`` under a
-    # shadow -- and names the SOURCE the header carries and the reconcile
-    # filters on (plan step ``balance:X-bi-6-3``): ``transfer_movement`` for a
-    # shadow's movement, ``purchase`` for every other.
+    # transfer leg -- and names the SOURCE the header carries and the
+    # reconcile filters on (plan step ``balance:X-bi-6-3``):
+    # ``transfer_movement`` for a leg's movement, ``purchase`` for every other.
     source = (
-        PostingSourceEnum.TRANSFER_MOVEMENT if is_transfer_leg(txn)
+        PostingSourceEnum.TRANSFER_MOVEMENT if is_transfer_leg(parent)
         else PostingSourceEnum.PURCHASE
     )
     return emit_typed_source_deltas(
-        txn,
+        parent,
         targets=targets,
         source=source,
         description=entry.description[:_MAX_DESCRIPTION_LENGTH],

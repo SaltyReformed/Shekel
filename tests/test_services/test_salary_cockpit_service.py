@@ -25,7 +25,8 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import salary_cockpit_service as svc
-from app.services.pay_calendar import DerivedPeriod
+from app.services.pay_calendar import DerivedPeriod, PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
     PricedLine,
@@ -55,11 +56,15 @@ def _fake_period(period_id, start_date, end_date):
     )
 
 
+#: The rhythm a paycheck here is priced at unless a case says otherwise.
+_BIWEEKLY = PayCadence(FixedDays(14))
+
+
 def _pair(
     pid, start, end, annual, gross, net, *,
     taxable="0", is_third=False, raise_event="",
     federal="0", state="0", ss="0", medicare="0",
-    pre=(), post=(), taxable_lines=(), after_tax=(),
+    pre=(), post=(), taxable_lines=(), after_tax=(), cadence=_BIWEEKLY,
 ):
     """Build a ``(period, breakdown)`` pair from plain values.
 
@@ -68,13 +73,16 @@ def _pair(
     step salary:R18-b).  ``gross`` is the figure the engine would report --
     base plus the taxable lines -- and ``base_biweekly`` is derived from it
     here so the fake carries the engine's own identity.  Every monetary
-    value is constructed from a string.
+    value is constructed from a string.  ``cadence`` is the rhythm the
+    paycheck was priced at (ruling R-SAL70); biweekly unless a case crosses
+    an era change.
     """
     period = _fake_period(pid, start, end)
     breakdown = PaycheckBreakdown(
         period=PeriodInfo(
             period.start_date, pid,
             is_third_paycheck=is_third, raise_event=raise_event,
+            cadence=cadence,
         ),
         earnings=Earnings(
             annual_salary=Decimal(annual),

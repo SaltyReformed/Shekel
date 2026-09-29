@@ -504,7 +504,7 @@ class TestTheOutstandingSet:
             # The card: offered under its envelope's heading, and stamped.
             on_the_card = _reconciled(seed_user, account_id=card.id)
             offered = [
-                (group.transaction_id, purchase.entry_id)
+                (group.key, purchase.entry_id)
                 for group in reconcile_service.outstanding_set(on_the_card).groups
                 for purchase in group.purchases
             ]
@@ -850,7 +850,7 @@ class TestTheSetIsGroupedByItsParent:
             assert result.is_empty is False
             # The block names its PARENT, which is the key the grouping is
             # built on and the id plan step X-f2-c2's close tick will post.
-            assert [g.transaction_id for g in result.groups] == [
+            assert [g.key for g in result.groups] == [
                 groceries.id, gas.id,
             ]
 
@@ -1109,9 +1109,9 @@ class TestTheTransactionArm:
 
     @staticmethod
     def _offered(seed_user, observed_on=_OBSERVED_ON):
-        """Return ``{transaction id: offer}`` for the seed user's account."""
+        """Return ``{offer key: offer}`` for the seed user's account (a row's id, a leg's pair)."""
         return {
-            group.settle.transaction_id: group.settle
+            group.settle.key: group.settle
             for group in reconcile_service.outstanding_set(
                 _reconciled(seed_user, observed_on=observed_on),
             ).groups
@@ -1120,15 +1120,16 @@ class TestTheTransactionArm:
 
     @staticmethod
     def _settle(seed_user, ids, corrections=None,
-                observed_on=_OBSERVED_ON):
+                observed_on=_OBSERVED_ON, transfer_ids=(),
+                transfer_corrections=None):
         """Run the WRITE UNION against the seed user's own account.
 
         It was ``record_settled_transactions`` until plan step X-f2-c3, which
         made the two source-row arms one writer parameterised by an ``Arm``
         (finding **N-225**) -- so there is no per-arm entry point left to call
-        and the union is the door.  Every assertion below is unchanged: the
-        ids it settles are still exactly the ones the transaction arm's scope
-        admits, because the transfer arm's scope is that scope's COMPLEMENT.
+        and the union is the door.  *ids* are the rows' ticks and
+        *transfer_ids* the transfers' -- each arm's own form field since leaf
+        ``balance:X-bi-6-4c-2`` (ruling **R-BAL145**), re-scoped by that arm.
         """
         return reconcile_service.record_reconciliation(
             reconcile_service.ReconcileSubmission(
@@ -1136,6 +1137,8 @@ class TestTheTransactionArm:
                 entry_ids=set(),
                 transaction_ids=set(ids),
                 corrections=corrections or {},
+                transfer_ids=set(transfer_ids),
+                transfer_corrections=transfer_corrections or {},
             ),
         )
 
@@ -1280,7 +1283,7 @@ class TestTheTransactionArm:
                 .one()
             )
 
-            offer = self._offered(seed_user)[shadow.id]
+            offer = self._offered(seed_user)[(transfer.id, seed_user["account"].id)]
             assert offer.kind is reconcile_service.OfferKind.TRANSFER
             assert offer.amount == Decimal("75.00")
             # The transaction arm's own scope still refuses it: asked directly,
@@ -1353,6 +1356,7 @@ class TestTheTransactionArm:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
+                    transfer_ids=set(), transfer_corrections={},
                 ),
             ) == 0
 
@@ -1395,6 +1399,7 @@ class TestTheTransactionArm:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
+                    transfer_ids=set(), transfer_corrections={},
                 ),
             ) == 0
 
@@ -1614,7 +1619,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
             db.session.commit()
 
             offered = {
-                group.settle.transaction_id
+                group.settle.key
                 for group in reconcile_service.outstanding_set(
                     reconcile_service.Statement(
                         self._short_calendar(seed_user, seed_periods[1].id),
@@ -1645,7 +1650,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
             db.session.commit()
 
             offered = {
-                group.settle.transaction_id
+                group.settle.key
                 for group in reconcile_service.outstanding_set(
                     _reconciled(seed_user, observed_on=date(2026, 1, 20)),
                 ).groups
@@ -1679,11 +1684,11 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
                 ),
             ).groups
 
-            assert later.id not in {group.transaction_id for group in groups}
+            assert later.id not in {group.key for group in groups}
 
 
 class TestTheTransferArm:
-    """Plan step **X-f2-c3**: the panel offers a TRANSFER's shadow too.
+    """Plan step **X-f2-c3**: the panel offers a TRANSFER's leg too.
 
     Money moving between two of the owner's own accounts still leaves one of
     them, so a checking statement shows it exactly as it shows a bill.
@@ -1766,7 +1771,7 @@ class TestTheTransferArm:
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
             statement = _statement(seed_user["account"].id)
 
-            assert self._settle(seed_user, [shadow.id]) == 1
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
             db.session.commit()
             db.session.expire_all()
 
@@ -1803,7 +1808,7 @@ class TestTheTransferArm:
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
 
-            assert self._settle(seed_user, [shadow.id]) == 1
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
             db.session.commit()
 
             db.session.expire_all()
@@ -1831,12 +1836,12 @@ class TestTheTransferArm:
         exactly what it is not.
         """
         with app.app_context():
-            _transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer, _shadow = self._transfer_out(seed_user, seed_periods)
 
             groups = reconcile_service.outstanding_set(_reconciled(seed_user)).groups
             block = next(
                 group for group in groups
-                if group.transaction_id == shadow.id
+                if group.key == (transfer.id, seed_user["account"].id)
             )
             assert block is groups[-1]
             assert block.section.label == "Transfers"
@@ -1886,12 +1891,12 @@ class TestTheTransferArm:
         account.
         """
         with app.app_context():
-            _transfer, shadow = self._transfer_out(
+            transfer, shadow = self._transfer_out(
                 seed_user, seed_periods, due_date=date(2026, 1, 11),
             )
 
-            assert shadow.id not in self._offered(seed_user)
-            assert self._settle(seed_user, [shadow.id]) == 0
+            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
             assert db.session.get(Transaction, shadow.id).settled_on is None
@@ -1924,8 +1929,8 @@ class TestTheTransferArm:
                 .one()
             )
 
-            assert shadow.id not in self._offered(seed_user)
-            assert self._settle(seed_user, [shadow.id]) == 0
+            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
             db.session.expire_all()
             assert db.session.get(Transaction, shadow.id).settled_on is None
@@ -1948,8 +1953,8 @@ class TestTheTransferArm:
             )
             db.session.commit()
 
-            assert shadow.id not in self._offered(seed_user)
-            assert self._settle(seed_user, [shadow.id]) == 0
+            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 0
 
     def test_a_settled_transfer_is_neither_offered_nor_re_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1963,12 +1968,12 @@ class TestTheTransferArm:
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
-            assert self._settle(seed_user, [shadow.id]) == 1
+            assert self._settle(seed_user, [], transfer_ids=[transfer.id]) == 1
             db.session.commit()
 
-            assert shadow.id not in self._offered(seed_user)
+            assert (transfer.id, seed_user["account"].id) not in self._offered(seed_user)
             assert self._settle(
-                seed_user, [shadow.id], observed_on=date(2026, 1, 14),
+                seed_user, [], observed_on=date(2026, 1, 14), transfer_ids=[transfer.id],
             ) == 0
 
             db.session.expire_all()
@@ -1991,11 +1996,12 @@ class TestTheTransferArm:
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
-            assert self._offered(seed_user)[shadow.id].is_correctable is True
+            assert self._offered(seed_user)[(transfer.id, seed_user["account"].id)].is_correctable is True
 
             with caplog.at_level("INFO"):
                 assert self._settle(
-                    seed_user, [shadow.id], {shadow.id: Decimal("74.11")},
+                    seed_user, [], transfer_ids=[transfer.id],
+                    transfer_corrections={transfer.id: Decimal("74.11")},
                 ) == 1
             db.session.commit()
 
@@ -2028,7 +2034,8 @@ class TestTheTransferArm:
 
             with caplog.at_level("INFO"):
                 assert self._settle(
-                    seed_user, [shadow.id], {shadow.id: Decimal("75.00")},
+                    seed_user, [], transfer_ids=[transfer.id],
+                    transfer_corrections={transfer.id: Decimal("75.00")},
                 ) == 1
             db.session.commit()
 
@@ -2255,6 +2262,7 @@ class TestWhatATickBooks:
                 "purchase_count", "purchase_total",
                 "payment_count", "payment_total",
                 "deposit_count", "deposit_total",
+                "damaged",
             }
 
 
@@ -2424,7 +2432,7 @@ class TestTheCashFigureBesideTheBookedOne:
             )
             offered = self._offered(seed_user)
             assert offered[bill.id].cash_amount is None
-            assert offered[shadow.id].cash_amount is None
+            assert offered[(transfer.id, seed_user["account"].id)].cash_amount is None
 
     def test_the_cash_figure_matches_what_the_LEDGER_will_post(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2459,6 +2467,7 @@ class TestTheCashFigureBesideTheBookedOne:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
+                    transfer_ids=set(), transfer_corrections={},
                 ),
             ) == 1
             db.session.commit()
@@ -2637,7 +2646,7 @@ class TestTheSectionsAndTheOrder:
             db.session.commit()
 
             by_id = {
-                group.transaction_id: group.kind
+                group.key: group.kind
                 for group in self._resolved(seed_user).groups
             }
             assert by_id[envelope.id] is reconcile_service.OfferKind.ENVELOPE
@@ -2669,7 +2678,7 @@ class TestTheSectionsAndTheOrder:
             db.session.commit()
 
             order = [
-                group.transaction_id
+                group.key
                 for group in self._resolved(seed_user).groups
             ]
             assert order == [
@@ -2719,7 +2728,7 @@ class TestTheSectionsAndTheOrder:
             db.session.commit()
 
             by_id = {
-                group.transaction_id: group
+                group.key: group
                 for group in self._resolved(seed_user).groups
             }
             assert len(by_id[envelope.id].purchases) == 1
@@ -2736,14 +2745,21 @@ class TestTheSectionsAndTheOrder:
         kinds = list(reconcile_service.OfferKind)
         assert sorted(kind.rank for kind in kinds) == list(range(len(kinds)))
         assert all(kind.section_label for kind in kinds)
-        # And exactly one carries a NOTE.  Asserted as a set rather than as a
-        # count so a note appearing on the wrong section fails here rather than
-        # on the screen: the sentence is about what a TICK does, and printing
-        # "settles both sides" over the Bills section would be a false promise
-        # about somebody's money.
+        # And exactly these two carry a NOTE: Transfers, because a tick there
+        # settles a second account too, and Paid from this account (ruling
+        # R-CC111, plan step credit_card:CC-5-4b), because its rows were
+        # recorded here and reopened and a tick records one here on the
+        # statement's day.  Asserted as a set rather than as a count so a note
+        # appearing on the wrong section fails here rather than on the screen:
+        # each sentence is about what a TICK does, and printing "settles both
+        # sides" over the Bills section would be a false promise about
+        # somebody's money.
         assert {
             kind for kind in kinds if kind.section_note
-        } == {reconcile_service.OfferKind.TRANSFER}
+        } == {
+            reconcile_service.OfferKind.TRANSFER,
+            reconcile_service.OfferKind.SETTLEMENT,
+        }
 
 
 class TestThePanelHoldsONEAmountBasis:
@@ -2787,7 +2803,7 @@ class TestThePanelHoldsONEAmountBasis:
             built = count_amount_bases(monkeypatch)
 
             offers = {
-                group.settle.transaction_id: group.settle
+                group.settle.key: group.settle
                 for group in reconcile_service.outstanding_set(_reconciled(seed_user)).groups
                 if group.settle is not None
             }

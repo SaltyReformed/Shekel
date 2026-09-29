@@ -506,7 +506,7 @@ was the hardcoded `26` this table used to name.
 | IDOR     | GET `/salary/<id>/edit` -- other user's profile → redirect                     | ✅ `test_edit_other_users_profile_redirects`   |
 | IDOR     | POST `/salary/<id>` -- other user's profile → redirect                         | ✅ `test_update_other_users_profile_redirects` |
 | IDOR     | POST `/salary/<id>/delete` -- other user's profile → redirect                  | ✅ `test_delete_other_users_profile_redirects` |
-| FIN      | Created template amount = `annual_salary` / the owner's paycheck count      | ✅ `test_create_profile_template_amount`       |
+| FIN      | Created profile's yearly figure = its pay x the owner's paycheck count        | ✅ `test_create_profile_yearly_pay_follows_the_cadence` |
 | IDEM     | POST `/salary` -- double-submit → 2nd attempt duplicate name or re-create      | ✅ `test_create_profile_double_submit`         |
 
 #### Raises
@@ -543,13 +543,12 @@ was the hardcoded `26` this table used to name.
 
 #### Tax Config
 
-| Category | Tests Needed                                                  | Status                                  |
-| -------- | ------------------------------------------------------------- | --------------------------------------- |
-| HP       | GET `/salary/tax-config` -- renders tax config page            | ✅ `test_tax_config_page_renders`       |
-| HP       | POST `/salary/tax-config` -- creates/updates state config      | ✅ `test_update_state_tax_config`       |
-| HP       | POST `/salary/fica-config` -- creates/updates FICA config      | ✅ `test_update_fica_config`            |
-| SP       | POST `/salary/tax-config` -- invalid state code → flash danger | ✅ `test_update_state_tax_invalid_code` |
-| SP       | POST `/salary/fica-config` -- validation error → flash danger  | ✅ `test_update_fica_validation_error`  |
+| Category | Tests Needed                                                             | Status                                    |
+| -------- | ------------------------------------------------------------------------ | ----------------------------------------- |
+| HP       | GET `/salary/tax-config` -- redirects to Settings (Tax Rates, read-only) | ✅ `test_tax_config_redirects_to_settings` |
+
+The state-tax and FICA POST doors were deleted at plan step salary:X-at-1: the tax law lives in
+`app/tax_law/`, and nothing in the app writes it.
 
 **Estimated new tests: ~~35~~ 36 Done**
 
@@ -881,7 +880,6 @@ and @validates_schema cross-field rules.
 | `SalaryProfileCreateSchema` (4) | Required fields; OneOf pay_periods; state_code length    |
 | `RaiseCreateSchema` (5)         | percentage/flat_amount XOR; month range; both/neither    |
 | `PaycheckLineCreateSchema` (3)     | Required fields; the frequency count left with its column (salary:R15-b) |
-| `FicaConfigSchema` (2)          | All required; Decimal coercion                           |
 | `AccountCreateSchema` (3)       | Required fields; @pre_load strips empty optional         |
 | `PayPeriodGenerateSchema` (4)   | Defaults; Range num_periods/cadence; missing start_date  |
 | `CategoryCreateSchema` (2)      | Required fields; sort_order default                      |

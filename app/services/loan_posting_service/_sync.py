@@ -25,22 +25,22 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload
 
-from app import ref_cache
-from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders
 from app.services._posting_reconcile import account_owner_id
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import leg_settled_contribution
 from app.services.posting_service import (
     PostingError,
     _ledger_account_for,
     sync_transfer_postings,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.transfer_legs import movement_parent
 from app.services.user_write_lock import lock_every_user_writes
 from app.utils.db_errors import is_unique_violation
 from app.utils.money import round_money
@@ -58,12 +58,16 @@ _ZERO_MONEY = Decimal("0.00")
 
 
 def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
-    """Return the scenarios that carry a payment shadow for a loan.
+    """Return the scenarios that carry a payment for a loan.
 
-    The distinct ``scenario_id`` set over the loan's non-deleted income shadows
-    (transfer-linked, Income type) -- the scenarios whose split corrections a
-    loan-GLOBAL change re-bases.  A balance true-up, a rate change, and a
-    params edit all live on the loan ACCOUNT, not a scenario, so they move the
+    The distinct ``scenario_id`` set over the live transfers INTO the loan --
+    the scenarios whose split corrections a loan-GLOBAL change re-bases.  It
+    read the loan's non-deleted income SHADOWS until plan step
+    balance:X-bi-6-4b; every live transfer carries one live income shadow in
+    its own scenario (Transfer Invariants 1 and 3), so the two sets are one
+    (measured equal on the 2026-09-23 21:17 production dump).  A balance
+    true-up, a rate change, and a params edit all live on the loan ACCOUNT,
+    not a scenario, so they move the
     confirmed-payment split in every scenario the loan has payments in;
     :func:`sync_loan_postings_all_scenarios` reconciles each in turn (adding the
     baseline so a payment-less loan is not skipped).  A projected-only scenario
@@ -76,14 +80,11 @@ def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
     Returns:
         The distinct scenario ids, ascending.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     rows = (
-        db.session.query(Transaction.scenario_id)
+        db.session.query(Transfer.scenario_id)
         .filter(
-            Transaction.account_id == loan_account_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
+            Transfer.to_account_id == loan_account_id,
+            Transfer.is_deleted.is_(False),
         )
         .distinct()
         .all()
@@ -199,13 +200,15 @@ def _reconcile_lineage_transfer_entries(
     settle date (the SAME leaf clock the fold and the writer share -- the
     event's ``visible_on``, read once by the stream's builder through
     :func:`app.services.loan_ledger.payment_visible_on`), keyed by the
-    shadow's covering movement; for any other movement, nothing (every date
-    nets zero).  Only a movement that fails that comparison is re-synced, so
+    payment leg's record, its covering movement; for any other movement,
+    nothing (every date nets zero).  Only a movement that fails that comparison is re-synced, so
     the steady-state cost is the ONE probe query; each stale movement's
     TRANSFER runs :func:`app.services.posting_service.sync_transfer_postings`
     -- the one date-aware reconcile for those entries, which reads each
-    movement's own state (a soft-deleted shadow is non-contributing, so its
-    leg reverses) and brings the legacy one-entry source to zero besides.  A
+    movement's own state under its transfer LEG (a soft-deleted payment's
+    legs are non-contributing, the transfer's gate read through the leg since
+    leaf ``balance:X-bi-6-4a``, so they reverse) and brings the legacy
+    one-entry source to zero besides.  A
     pre-guard legacy transfer OUT of the loan (the R6 KEEP arm) never matches
     its walk expectation and re-syncs as a no-op each pass -- bounded, and
     such a loan is already assert-blocked as an N-11-class F1 item.
@@ -234,29 +237,27 @@ def _reconcile_lineage_transfer_entries(
     #
     # A loop rather than a comprehension because the cash is needed BOTH as the
     # value and by the zero filter, and the comprehension form read it twice per
-    # split -- two valuations of one row, which is the shape that lets a filter
-    # and the figure it admits come to disagree.  Every shadow here comes from
-    # ``loan_loaders.settled_income_shadows`` (the walk's own loader, filtered
-    # ``status_id.in_(settled_status_ids())``), so it RECORDED what moved and
-    # ``settled_contribution`` answers from that record.  Since plan step X-bx
-    # that accessor REFUSES a row which has not settled rather than pricing its
-    # plan, so this loop's precondition is stated by the call it makes and not
-    # only by the loader above it.  The record IS the shadow's covering
-    # movement (plan step ``balance:X-bi-4b-1``), so a non-zero cash has
-    # exactly one (``uq_transaction_entries_one_settlement_record``), and its
-    # id is the key the posted side groups by.
+    # split -- two valuations of one payment, which is the shape that lets a
+    # filter and the figure it admits come to disagree.  Every source here is
+    # a leg from ``loan_loaders.settled_income_shadows`` (the walk's own
+    # loader, plan step balance:X-bi-6-4b), so it RECORDED what moved and
+    # ``leg_settled_contribution`` answers from that record -- and REFUSES a
+    # leg outside the settled half rather than pricing its plan, so this
+    # loop's precondition is stated by the call it makes and not only by the
+    # loader above it.  A non-zero cash is the leg's RECORD, its covering
+    # movement, whose id is the key the posted side groups by; a ``$0.00``
+    # close carries none and is skipped by the zero filter.  A leg is always
+    # a transfer's, so the ``transfer_id is None`` skip the shadow needed is
+    # gone.
     expected: dict[int, dict[date, Decimal]] = {}
     transfer_by_movement: dict[int, int] = {}
     for outcome in walk.settled_splits:
-        shadow = outcome.source
-        if shadow.transfer_id is None:
-            continue
-        cash = round_money(settled_contribution(shadow))
+        leg = outcome.source
+        cash = round_money(leg_settled_contribution(leg))
         if cash == 0:
             continue
-        movement = shadow.covering_movements[0]
-        expected[movement.id] = {outcome.visible_on: cash}
-        transfer_by_movement[movement.id] = shadow.transfer_id
+        expected[leg.record.id] = {outcome.visible_on: cash}
+        transfer_by_movement[leg.record.id] = leg.transfer.id
     stale_ids = {
         movement_id
         for movement_id in set(posted) | set(expected)
@@ -266,16 +267,24 @@ def _reconcile_lineage_transfer_entries(
         return
     # A posted movement the walk does not expect -- a reverted or soft-deleted
     # payment's, or one a legacy transfer OUT of the loan wrote -- names its
-    # transfer through its parent row, in one statement for all of them.  Every
-    # one resolves: only a shadow's movement posts under the transfer-movement
-    # source, and a hard-deleted movement's residue was excluded above.
+    # transfer through the ledger writer's ONE resolution of a movement's
+    # parent (``transfer_legs.movement_parent``, plan step
+    # balance:X-bi-6-4b), over one load of all of them.  Every one resolves to
+    # a leg: only a transfer's movement posts under the transfer-movement
+    # source, and a hard-deleted movement's residue was excluded above.  NOT
+    # ``transfer_movement_rows``: it drops a movement under a DEAD shadow,
+    # which is exactly one this probe must still name, so its postings
+    # reverse.
     unresolved = stale_ids - set(transfer_by_movement)
     if unresolved:
         transfer_by_movement.update(
-            db.session.query(TransactionEntry.id, Transaction.transfer_id)
-            .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+            (movement.id, movement_parent(movement).transfer.id)
+            for movement in db.session.query(TransactionEntry)
+            .options(
+                joinedload(TransactionEntry.transaction)
+                .joinedload(Transaction.transfer),
+            )
             .filter(TransactionEntry.id.in_(unresolved))
-            .all()
         )
     transfers = (
         db.session.query(Transfer)
@@ -566,20 +575,25 @@ def resync_user_loan_postings(user_id: int) -> list[int]:
     go-forward one by construction -- there is no second implementation that could
     drift.
 
-    The caller is ``pay_period_admin.reset_pay_periods``: a full reset wipes the
-    user's pay periods, and ``journal_entries.pay_period_id`` is ON DELETE
-    CASCADE, so the wipe disposes this user's loan opening / true-up genesis
-    entries (which exist independently of any settled transaction, so the reset's
-    zero-settled gate does NOT keep them safe).  The loan's SOURCE facts survive
-    the wipe -- :class:`~app.models.loan_params.LoanParams` and its true-up
-    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry no
-    ``pay_period_id`` -- so this re-derives and re-posts the genesis corrections
-    onto the rebuilt schedule, attributed to the new periods.  Scoped to the one
-    user because a reset is a single-user operation: unlike the deploy backfill it
-    must not reconcile other owners' loans inside the reset transaction.
+    Two callers, both through ``pay_period_admin._refile_ledger``.
+    ``reset_pay_periods``: a full reset wipes the user's pay periods, and
+    ``journal_entries.pay_period_id`` is ON DELETE CASCADE, so the wipe
+    disposes this user's loan opening / true-up genesis entries (which exist
+    independently of any settled transaction, so the reset's zero-settled gate
+    does NOT keep them safe).  ``remove_earlier_pay_periods`` (plan step
+    ``pay_calendar:C21``, ruling **R-PC114**): its delete disposes the genesis
+    entries the ledger had filed in the removed paychecks -- an entry dated
+    before the first paycheck files in the earliest one.  The loan's SOURCE
+    facts survive either -- :class:`~app.models.loan_params.LoanParams` and its
+    true-up :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry
+    no ``pay_period_id`` -- so this re-derives and re-posts the genesis
+    corrections onto the schedule that stands, attributed to its periods.
+    Scoped to the one user because both are single-user operations: unlike
+    the deploy backfill neither may reconcile other owners' loans inside its
+    transaction.
 
     Idempotent and self-healing via reconcile-to-target.  Flushes but does NOT
-    commit -- the caller owns the transaction boundary (the reset's route commit).
+    commit -- the caller owns the transaction boundary (the route's commit).
 
     Args:
         user_id: The owning user whose loans to reconcile.

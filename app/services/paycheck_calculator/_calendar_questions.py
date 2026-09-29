@@ -21,8 +21,10 @@ from a caller-supplied SEQUENCE cost (plan step **balance:X-bh-1**, ledger row
 **D25**).
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
-**P64**).  This leaf imports the calendar and basis modules below the engine
-and, since plan step salary:R18-b, :mod:`._lines` -- whose
+**P64**).  This leaf imports the calendar module below the engine -- the
+basis module too until plan step salary:X-av-2, when its year-to-date replay
+began reading base pay off the basis it is handed rather than dividing for
+itself -- and, since plan step salary:R18-b, :mod:`._lines` -- whose
 :func:`~._lines.priced_gross` is the one producer of a payday's gross, which
 the wage cumulative here replays; :mod:`._lines` imports nothing of the
 package above :mod:`._breakdown`, so there is no cycle.
@@ -33,7 +35,6 @@ from app.services.pay_calendar import (
     paydays_in_month_through,
     paydays_in_year_before,
 )
-from app.services.payroll_basis import gross_per_paycheck
 from app.utils.money import ZERO
 
 from ._lines import _LineContext, priced_gross
@@ -172,7 +173,11 @@ def _get_cumulative_wages(basis, period):
     the earlier grosses summed here match each period's ``gross_biweekly``
     by construction rather than by two expressions happening to agree
     (``CLAUDE.md`` rule 14, one walk).  Until R18-b the term was the base
-    rate alone, which a taxable line would have left out of the cap.
+    rate alone, which a taxable line would have left out of the cap.  **The
+    base it adds to is** :meth:`~app.services.payroll_basis.PayrollBasis
+    .base_pay_on`'s **since plan step salary:X-av-2**, the one the live
+    paycheck reads, so an earlier payday under an earlier rhythm is summed
+    at the pay it was paid at rather than at the latest rhythm's divisor.
 
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` -- its
@@ -187,7 +192,7 @@ def _get_cumulative_wages(basis, period):
     cumulative = ZERO
 
     for payday in paydays_in_year_before(basis.calendar, period.start_date):
-        base = gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
+        base = basis.base_pay_on(payday).per_paycheck
         _taxable, gross = priced_gross(_LineContext(basis, payday, base))
         cumulative += gross
 

@@ -84,8 +84,12 @@ from app.services.status_seam import (
     honoured_correction,
     recorded_settlement,
 )
+from app.services.transfer_legs import TransferLeg
 from app.services.transfer_service._status import apply_status_to_all_three
-from app.services.transfer_service._validation import TransferRows
+from app.services.transfer_service._validation import (
+    TransferRows,
+    _get_shadow_transactions,
+)
 
 
 def _reject_unsettleable(shadow: Transaction) -> None:
@@ -477,10 +481,97 @@ def record_clearing(shadow: Transaction, anchor_id: int) -> None:
     writes, as any lazy load does.
 
     Args:
-        shadow: The leg on the account whose statement was read.  The caller
-            resolved it through that account's own offer scope
-            (:func:`app.services.reconcile_service._rows.outstanding_rows`), so
-            it is this owner's and on this account by construction.
+        shadow: The leg's shadow row on the account whose statement was read.
+            Its one caller in ``app/`` is :func:`record_leg_clearing`, which
+            reaches it from a leg the reconcile panel's own offer scope
+            resolved, so it is this owner's and on this account by
+            construction.
         anchor_id: The ``budget.account_anchor_history`` row the statement is.
     """
     status_seam.record_clearing(shadow, anchor_id)
+
+
+def _shadow_of(leg: TransferLeg) -> Transaction:
+    """Return the shadow row a leg's money still hangs off, through the interval.
+
+    The ONE reach from a :class:`~app.services.transfer_legs.TransferLeg` to
+    its shadow in this package (leaf ``X-bi-6-4c-2``): the transfer's
+    verified pair (:func:`~._validation._get_shadow_transactions`), the side
+    the leg is on.  A pair that is not exactly one live expense and one live
+    income shadow is REFUSED there, as the settle refuses it -- a leg of a
+    corrupt pair has no row to price or link, and answering for one would be
+    a figure :func:`settle` then refuses to book.  Plan step ``X-bi-6-4d``
+    deletes the shadows and, with them, this function: the two doors below
+    re-body off the parent and the side's movement.
+
+    Args:
+        leg: The leg -- its transfer and which side.
+
+    Returns:
+        The income shadow for the to-side, the expense shadow for the
+        from-side.
+
+    Raises:
+        ValidationError: When the transfer's shadow pair is corrupt.
+    """
+    expense, income = _get_shadow_transactions(leg.transfer.id)
+    return income if leg.is_income else expense
+
+
+def leg_settle_amount(leg: TransferLeg, basis: AmountBasis) -> Decimal:
+    """Return what settling *leg*'s transfer would BOOK on the leg's account.
+
+    :func:`settle_amount` asked of a LEG rather than of a shadow row (leaf
+    ``X-bi-6-4c-2``): the reconcile panel offers legs, and its figure must be
+    the one a tick books, so it is this module's figure and not the panel's.
+    **Its body through the interval is :func:`settle_amount` over the leg's
+    shadow** (:func:`_shadow_of`) -- byte-identical to what the panel priced
+    before, because it IS that call -- and plan step ``X-bi-6-4d`` re-bodies
+    it off the parent, where the verb prices.  Plan step ``X-bi-6-4c-1``'s
+    statement match reuses it.
+
+    A PURE read, like its twin.
+
+    Args:
+        leg: The leg being offered, its parent still Projected.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, built for the
+            leg's owner.
+
+    Returns:
+        What :func:`settle_amount` answers for the leg's shadow.
+
+    Raises:
+        ValidationError: When the transfer's shadow pair is corrupt
+            (:func:`_shadow_of`), or from :func:`settle_amount`'s own refusal.
+        AmountUnresolvable: From the amount model.
+    """
+    return settle_amount(_shadow_of(leg), basis)
+
+
+def record_leg_clearing(leg: TransferLeg, anchor_id: int) -> None:
+    """Record WHICH statement showed *leg* (ruling **R-FL**), asked of the leg.
+
+    :func:`record_clearing` asked of a LEG (leaf ``X-bi-6-4c-2``), for the
+    reconcile panel's tick, which holds legs.  **Its body through the
+    interval is :func:`record_clearing` over the leg's shadow**
+    (:func:`_shadow_of`), so the link lands on exactly the row and mirror it
+    did before; plan step ``X-bi-6-4d`` re-bodies it onto the side's
+    movement and applies ruling **R-BAL141** there (a leg closed at `$0.00`
+    keeps no link).  Per LEG and never mirrored to the sibling, for
+    :func:`record_clearing`'s reason.
+
+    Issues no flush and no commit -- the caller owns the session boundary.
+
+    Args:
+        leg: The leg on the account whose statement was read, resolved
+            through that account's own offer scope
+            (``reconcile_service._transfers``), so it is this owner's and on
+            this account by construction.  Its transfer has just settled.
+        anchor_id: The ``budget.account_anchor_history`` row the statement is.
+
+    Raises:
+        ValidationError: When the transfer's shadow pair is corrupt
+            (:func:`_shadow_of`).
+    """
+    record_clearing(_shadow_of(leg), anchor_id)

@@ -48,8 +48,9 @@ from tests._test_helpers import (
     make_projected_envelope_expense,
     make_salary_profile,
     open_books_before_the_first_assertion,
-    seed_fica_config,
+    fica_only_law,
     settle_day_columns,
+    start_test_pay_list,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -519,10 +520,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -623,10 +624,10 @@ class TestIncomeRelativeGoalDashboard:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Test Salary",
-                annual_salary=Decimal("75000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
             paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
@@ -871,11 +872,12 @@ class TestARenderWalksAGoalTransferOnce:
         the read rather than the memo serving it.
         """
         # Pylint: ``import-outside-toplevel`` -- the walk-once control patches
-        # the name the PASS calls at call time (``_context``), a seam-private
+        # the name the PASS calls at call time (``_recurrence_memos``, the
+        # module of the context's mixin since ruling R-BAL146), a seam-private
         # module this file otherwise has no business importing; kept local
         # so the import states its one purpose beside its one use.
         # pylint: disable=import-outside-toplevel
-        from app.services.balance_at import _context
+        from app.services.balance_at import _recurrence_memos
         from tests._test_helpers import make_transfer_template
 
         with app.app_context():
@@ -906,13 +908,13 @@ class TestARenderWalksAGoalTransferOnce:
             db.session.commit()
 
             calls = []
-            real = _context.occurrence_walk
+            real = _recurrence_memos.occurrence_walk
 
             def counting(resolved, calendar, **kwargs):
                 calls.append(resolved)
                 return real(resolved, calendar, **kwargs)
 
-            monkeypatch.setattr(_context, "occurrence_walk", counting)
+            monkeypatch.setattr(_recurrence_memos, "occurrence_walk", counting)
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -963,6 +965,119 @@ class TestEmergencyFundMetrics:
             # Both Checking ($1000, liquid) and Savings ($8000, liquid)
             # contribute to total_savings.
             assert result["total_savings"] == Decimal("9000.00")
+
+
+class TestTheHistoricalOperandReadsATransferAsItsFromLeg:
+    """A settled transfer out of checking is one expense: its FROM-side leg.
+
+    The historical operand of the emergency-fund denominator
+    (``_metrics._recent_settled_expenses_monthly``) reads a transfer as its
+    legs since leaf ``balance:X-bi-6-4a`` (ruling **R-BAL106**): the
+    transfers are selected in SQL (out of checking, in the window, in the
+    scenario, settled, live) and their legs filtered to the from side by
+    ``expense_legs``.  No test put a settled transfer through it (the leaf's
+    adversarial review, finding M3), so deleting any of those clauses, or
+    the leg arm whole, left the suite green.  This class grades three of the
+    clauses (out of checking, the window, the scenario), ``expense_legs`` and
+    the leg arm.  **The settled and live clauses stay ungraded here**: every
+    transfer in it is settled and live.  A soft-deleted parent's legs are
+    dropped with its shadows already (``transfer_legs
+    ._covering_movements_query`` reads live shadows only) and valued ``0``
+    by ``row_valuation.leg_fixed_contribution``.
+    """
+
+    def test_a_transfer_out_of_checking_counts_once_and_nothing_else_does(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Five settled transfers; two count, once each.
+
+        The pass is pinned to the first period's start, so the window is that
+        period alone (``len(recent_periods) == 1``), and the owner is paid
+        biweekly (26 paychecks a year).  In the window period, baseline
+        scenario:
+
+        * ``$200.00`` checking -> savings counts.
+        * ``$150.00`` checking -> a SECOND checking account counts ONCE.  Both
+          of its legs sit on the checking set, so this is the case that
+          grades the SIDE rather than the account: filtering legs by account
+          instead of by ``expense_legs`` counts it twice.
+        * ``$300.00`` savings -> checking does not count: it arrives in
+          checking, it does not leave it.
+
+        Out of scope, each checking -> savings, neither counts:
+
+        * ``$40.00`` in the SECOND period, which the one-period window ends
+          before (the window clause).
+        * ``$25.00`` in a what-if scenario (the scenario clause).
+
+        Per period: ``200.00 + 150.00 = 350.00``.  Monthly, unquantized, in
+        production's own order (``per_period * 26 / 12``):
+        ``350.00 * 26 / 12 = 758.333...``.  What each lost clause reads
+        instead, per period: no ``expense_legs``, every to-side leg too,
+        ``200 + 200 + 150 + 150 = 700``; legs filtered by ACCOUNT,
+        ``200 + 150 + 150 = 500``; no leg arm, ``0``; no out-of-checking
+        clause, the savings -> checking transfer's from-side leg too,
+        ``350 + 300 = 650``; no window clause, ``350 + 40 = 390``; no
+        scenario clause, ``350 + 25 = 375``.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._metrics import (
+            _recent_settled_expenses_monthly,
+        )
+        from tests._test_helpers import (
+            create_account_of_type,
+            create_settled_transfer,
+        )
+
+        with app.app_context():
+            checking = seed_user["account"]
+            second_checking = create_account_of_type(
+                seed_user, db.session, "Checking", "Joint Checking",
+                anchor_balance=Decimal("500.00"),
+            )
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("5000.00"),
+            )
+            what_if = Scenario(
+                user_id=seed_user["user"].id, name="What if",
+                is_baseline=False,
+            )
+            db.session.add(what_if)
+            db.session.flush()
+            in_window, after_window = seed_periods[0], seed_periods[1]
+            for from_account, to_account, amount, period, scenario in (
+                (checking, savings, "200.00", in_window, None),
+                (checking, second_checking, "150.00", in_window, None),
+                (savings, checking, "300.00", in_window, None),
+                (checking, savings, "40.00", after_window, None),
+                (checking, savings, "25.00", in_window, what_if),
+            ):
+                create_settled_transfer(
+                    seed_user, db.session, from_account, to_account, period,
+                    amount=Decimal(amount), settled_on=period.start_date,
+                    scenario=scenario,
+                )
+            db.session.commit()
+
+            ctx = BalanceContext.build(
+                seed_user["user"].id, as_of=in_window.start_date,
+            )
+            calendar = ctx.calendar()
+            monthly = _recent_settled_expenses_monthly(
+                [checking.id, second_checking.id],
+                ctx.reported_periods(),
+                calendar.period_containing(ctx.as_of),
+                ctx.scenario_id,
+                calendar.cadence,
+            )
+
+            assert monthly == Decimal("350.00") * 26 / 12, (
+                f"expected $350.00 a period ($200.00 + $150.00, each from-side "
+                f"leg once) as 350.00 * 26 / 12 a month, got {monthly}"
+            )
 
 
 # ── Paid-Off Flag Tests (Commit 5.9-2) ──────────────────────────────
@@ -1488,14 +1603,15 @@ class TestDebtSummary:
         """
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
-            db.session.add(SalaryProfile(
+            profile = SalaryProfile(
                 user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="Equivalence Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
-            ))
+            )
+            db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2266,10 +2382,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2305,10 +2421,10 @@ class TestDTI:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             acct = _create_small_loan(seed_user, db.session)
             create_transfer(
                 TransferSpec(
@@ -2449,17 +2565,17 @@ class TestDTIRaiseAware:
         """C26-1: With an applicable raise the DTI denominator is the
         post-raise engine gross.
 
-        Salary $104,000.00 + a one-time 3% raise effective month 1 of
-        the current period's year.  ``apply_raises`` applies the raise
-        once for the current period, so the engine's per-period gross
-        reflects the post-raise salary; the period-to-monthly factor
-        (26/12) is the structural biweekly-pay-schedule normalization
-        and is preserved.
+        Salary $4,000.00 a paycheck ($104,000.00 / 26, from the first
+        payday, 2026-01-02) + a one-time 3% raise effective month 2 of the
+        current period's year.  The raise lands on 2026-02-01, after the pay
+        entry (an entry holds every raise landing on or before its payday,
+        ruling R-SAL59, so a January raise would be inside it) and before the
+        current period's payday, so the engine's per-period gross reflects
+        the post-raise pay; the period-to-monthly factor (26/12) is the
+        structural biweekly-pay-schedule normalization and is preserved.
 
         Hand-computed engine output (MED-06 / F-032):
-            annual_after_raise = 104000.00 * 1.03 = 107120.00
-            gross_biweekly     = 107120.00 / 26   = 4120.0000 -> $4,120.00
-                                 (ROUND_HALF_UP via paycheck_calculator)
+            gross_biweekly     = 4000.00 * 1.03 = 4120.00
             gross_monthly      = 4120.00 * 26 / 12 = 8926.6666...
                                                    -> $8,926.67 ROUND_HALF_UP
 
@@ -2470,7 +2586,12 @@ class TestDTIRaiseAware:
 
         DTI ratio uses the engine-derived ``total_monthly_payments``
         (verified by sibling debt-summary tests) over the new
-        denominator, quantized to one decimal place.
+        denominator, quantized to one decimal place.  **The loan is
+        $10,000.00, not the helper's $1,000.00**, because a one-decimal
+        ratio cannot see the $260.00 over the small loan's $43.87 payment
+        (both denominators give 0.5%).  At $10,000.00, 5%, 24 months the
+        payment is $438.71: 438.71 / 8,926.67 = 4.91% -> 4.9, where the
+        dropped raise's 438.71 / 8,666.67 = 5.06% -> 5.1.
         """
         from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
         from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
@@ -2482,10 +2603,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Raise Salary",
-                annual_salary=Decimal("104000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("4000.00"))  # $104,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -2503,11 +2624,13 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))
-            _create_small_loan(seed_user, db.session)
+            _create_small_loan(
+                seed_user, db.session, principal=Decimal("10000.00"),
+            )
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -2522,7 +2645,7 @@ class TestDTIRaiseAware:
             # which no longer stores it (plan step X-s3) -- and the identity is
             # the stronger pin, since the off-engine $8,666.67 would fail it.
             # total_monthly_payments is the engine-derived monthly P&I
-            # from _create_small_loan ($1,000 @ 5% for 24mo); we
+            # from _create_small_loan ($10,000 @ 5% for 24mo); we
             # consume it as an input here so the test pins behaviour
             # without re-deriving the amortization engine's output.
             expected_dti = (
@@ -2556,10 +2679,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI No-Raise Salary",
-                annual_salary=Decimal("78000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("3000.00"))  # $78,000.00 a year / 26
             _create_small_loan(seed_user, db.session)
             db.session.commit()
 
@@ -2709,10 +2832,12 @@ class TestDTIRaiseAware:
             36-43% -> moderate
             > 43%  -> high
 
-        Salary $50,000 + a one-time 3% raise effective month 1 of the
-        current year (applies once in the current period):
-            annual_after_raise = 50000.00 * 1.03 = 51500.00
-            gross_biweekly     = 51500.00 / 26   = 1980.7692... -> $1,980.77
+        Salary $1,923.08 a paycheck ($50,000 / 26, from the first payday,
+        2026-01-02) + a one-time 3% raise effective month 2 of the current
+        year -- landing 2026-02-01, after the pay entry, so it applies once
+        in the current period (a January raise would be inside the entry,
+        ruling R-SAL59):
+            gross_biweekly     = 1923.08 * 1.03 = 1980.7724 -> $1,980.77
             gross_monthly      = 1980.77 * 26 / 12 = 4291.6683...
                                                    -> $4,291.67 ROUND_HALF_UP
             36% band floor (engine)  = 4291.67 * 0.36 = $1,545.00
@@ -2744,10 +2869,10 @@ class TestDTIRaiseAware:
                 scenario_id=seed_user["scenario"].id,
                 filing_status_id=filing.id,
                 name="DTI Band Raise Salary",
-                annual_salary=Decimal("50000.00"),
                 state_code="NC",
             )
             db.session.add(profile)
+            start_test_pay_list(profile, Decimal("1923.08"))  # $50,000.00 a year / 26
             db.session.flush()
 
             current = current_pay_period(
@@ -2762,7 +2887,7 @@ class TestDTIRaiseAware:
                 salary_profile_id=profile.id,
                 raise_type_id=merit.id,
                 percentage=Decimal("0.0300"),
-                effective_month=1,
+                effective_month=2,
                 effective_year=current.start_date.year,
                 is_recurring=False,
             ))
@@ -7002,15 +7127,16 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
 
     The owner is ``TestTheCurrentPaycheckIsThePassPricers``'s
     (``test_retirement_dashboard_service``): a raise-free ``$52,000.00``
-    profile on a 14-day cadence, no deductions, FICA seeded for 2026 and no
-    bracket set or state config, so every line is arithmetic::
+    profile on a 14-day cadence, no deductions, and a made-up law with FICA
+    for 2026 and no federal or state rules (``fica_only_law``), so every line
+    is arithmetic::
 
         gross per paycheck   52,000.00 / 26            = 2,000.00
         Social Security      2,000.00 x 6.20%          =   124.00
         Medicare             2,000.00 x 1.45%          =    29.00
 
     With no calibration the bracket path withholds no federal or state (no
-    config seeded), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
+    rules for either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
     ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare,
     net is ``2,000.00 - 453.00 = 1,547.00``.  An income-relative goal of
     THREE PAYCHECKS is ``3 x net``, so the page publishes ``$4,641.00``
@@ -7029,15 +7155,19 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
     that figure as its negative control.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fica_and_nothing_else(self, tax_law):
+        """Install the law the owner above is priced on: 2026 FICA, nothing else."""
+        tax_law(fica_only_law())
+
     @staticmethod
     def _seed_owner(db, seed_user, *, calibrated, second_profile=False,
                     multiplier=Decimal("3.00")):
         """The owner above, with the calibration row and the second profile as asked."""
         profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("52000.00"),
+            seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 a year / 26
         )
         db.session.flush()
-        seed_fica_config(seed_user["user"].id)
         if calibrated:
             db.session.add(CalibrationOverride(
                 salary_profile_id=profile.id,
@@ -7056,7 +7186,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         if second_profile:
             make_salary_profile(
                 seed_user, db.session, name="Second Job",
-                annual_salary=Decimal("26000.00"),
+                pay=Decimal("1000.00"),  # $26,000.00 a year / 26
             )
         db.session.add(SavingsGoal(
             user_id=seed_user["user"].id,

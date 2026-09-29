@@ -178,10 +178,12 @@ class SalaryProfileScopedMixin:
       ``salary_profile_id`` -- INTEGER NOT NULL, ``FK
                                salary.salary_profiles.id ON DELETE
                                CASCADE``.  Deleting the profile cascades
-                               to the raise / deduction / calibration row.
+                               to the raise / deduction / calibration /
+                               pay entry row.
 
-    Applied to ``salary_raise``, ``paycheck_line``, and
-    ``calibration_override``, whose ``salary_profile_id`` blocks are
+    Applied to ``salary_raise``, ``paycheck_line``,
+    ``calibration_override`` and (plan step salary:X-av-3a)
+    ``salary_pay_entry``, whose ``salary_profile_id`` blocks are
     byte-identical and form a duplicate-code clique.  EXCLUDES
     ``pension_profile``, whose FK is ``ON DELETE SET NULL`` and
     ``nullable=True`` (a pension can outlive the linked salary profile),

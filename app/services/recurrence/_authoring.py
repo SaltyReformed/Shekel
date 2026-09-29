@@ -23,8 +23,10 @@ The shape that leaves nothing for a writer to get half-right:
 **Since plan step R7c-c there is ONE representation and this function writes
 it.**  The rule states its recurrence in ``interval_n`` / ``unit_id`` /
 ``placement_id`` / ``shift_id`` / ``starts_on`` / ``nominal_day``, and that is
-the whole table apart from ``due_day_of_month`` and the closing bound's
-exclusive arc.  The closed set's storage encoding -- ``pattern_id``,
+the whole table apart from the closing bound's exclusive arc
+(``due_day_of_month`` was the other exception until plan step
+recurrence:R5-a dropped it, ruling **R-R96**).  The closed set's storage
+encoding -- ``pattern_id``,
 ``day_of_month``, ``month_of_year``, ``start_date``, ``start_period_id``,
 ``offset_periods``, and ``interval_n``'s encoded value -- was derived here and
 is dropped; two representations with one producer became one representation
@@ -126,8 +128,8 @@ def _author(
     """Write *spec* onto *rule*, every column of it.
 
     The ONE place a recurrence rule's columns are assigned.  It writes the
-    authored spec -- the five columns that state the recurrence, plus
-    ``due_day_of_month`` and the closing bound's exclusive arc -- taking every
+    authored spec -- the columns that state the recurrence, plus the closing
+    bound's exclusive arc -- taking every
     value from the same ``resolve`` call that validates it, which is also where
     the pay-period normalisation and the canonical cadence are decided.
 
@@ -226,7 +228,6 @@ def _author(
     # produces a plausible wrong date rather than an error.  Writing it onto
     # the row would put a second copy of the owner beside the first, which is
     # what that step deleted.
-    rule.due_day_of_month = spec.due_day_of_month
     # ---- what the rule AUTHORS -------------------------------------------
     #
     # **The WHOLE table since plan step R7c-c**: six columns, every one of them
@@ -281,8 +282,8 @@ def build_transient_rule(
     (``tests/oracles/recurrence_baseline``), because
     ``recurrence.compute_due_date`` takes one, plus the test helpers
     and route-helper cases that hand a resolved rule to a producer without
-    persisting it.  Plan step **R5** deletes ``compute_due_date``; this entry
-    point is re-examined with the last caller rather than removed ahead of it.
+    persisting it.  Plan step **R5-b** re-examines this entry point with
+    ``compute_due_date``'s last caller rather than removing it ahead of it.
 
     **It BUILDS the owner rather than taking one, and an adversarial review of
     this step is why.**  A rule belongs to exactly one definition -- the schema

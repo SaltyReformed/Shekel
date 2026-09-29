@@ -45,9 +45,10 @@ def has_row_date_coordinate(unit: RecurrenceUnitEnum) -> bool:
     **The offer set's first rule, and the one that keeps the ``WEEK`` unit out
     of it** (plan step R8-a).  A generated row's date is
     :func:`~app.services.recurrence.compute_due_date`, which has exactly two
-    sources: the rule's scheduling DAY OF THE MONTH, or -- when it has none --
-    the funding paycheck's own ``start_date``.  A unit whose occurrences are
-    neither is a unit whose rows cannot carry the date the cadence names:
+    sources: the OCCURRENCE, for a cadence dated from a day of the month
+    (plan step R5-a), or -- for one naming no day -- the funding paycheck's
+    own ``start_date``.  A unit whose occurrences are neither is a unit whose
+    rows cannot carry the date the cadence names:
 
     * ``PERIOD`` -- an occurrence IS a payday, so the paycheck's ``start_date``
       is the occurrence exactly (:func:`emits_period_starts`);
@@ -70,10 +71,10 @@ def has_row_date_coordinate(unit: RecurrenceUnitEnum) -> bool:
     and word itself correctly, and its generated rows would still every one of
     them have carried the wrong date.
 
-    **It dies at plan step R5**, which gives a generated row its own
-    ``occurs_on`` and deletes ``compute_due_date`` -- so this predicate goes
-    with the function whose two sources it names, and the ``WEEK`` unit becomes
-    authorable by the deletion rather than by a second edit.  Plan ledger rows
+    **It dies at plan step R8-b**, which dates a weekly row from its
+    occurrence too -- ``compute_due_date`` reads the occurrence since R5-a,
+    but only for a cadence naming a day of the month -- so this predicate goes
+    and the ``WEEK`` unit becomes authorable by that deletion.  Plan ledger rows
     **D26** (a generated row's date has two producers and the engine discards
     the occurrence) and **D18** are the same function's other faces.
 
@@ -119,9 +120,8 @@ def require_row_date_coordinate(unit: RecurrenceUnitEnum, where: str) -> None:
     worse than an error, and this one would move which paycheck a bill is
     budgeted in.
 
-    **It dies with :func:`has_row_date_coordinate` at plan step R5**, which
-    gives a generated row its own ``occurs_on`` and deletes the function whose
-    two date sources this names.
+    **It dies with :func:`has_row_date_coordinate` at plan step R8-b**, which
+    dates a weekly row from its occurrence.
 
     Args:
         unit: The cadence unit.
@@ -141,8 +141,8 @@ def require_row_date_coordinate(unit: RecurrenceUnitEnum, where: str) -> None:
         f"else -- so answering 'no day of the month' would date every row on "
         f"the funding payday instead and discard the authored coordinate.  "
         f"authorable_cadences withholds the unit for this reason, so a stored "
-        f"rule carrying it is a hand edit or a restore; plan step R5 gives a "
-        f"row its own occurs_on and removes both."
+        f"rule carrying it is a hand edit or a restore; plan step R8-b dates a "
+        f"weekly row from its occurrence and removes both."
     )
 
 

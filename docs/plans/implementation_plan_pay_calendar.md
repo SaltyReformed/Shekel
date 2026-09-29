@@ -2,15 +2,15 @@
 
 ## Where this stands
 
-**JUST LANDED: `C18-a` (`22f3d85b`)**, the books bound (**PC-500** closed; section 4 says what it
-does). **NEXT: `C18-b`** (**R-PC87**, the "Add earlier paychecks" door), which ticks `C18`;
-`steps.md` carries the order.
+**JUST LANDED: `C18-b` (`f23fef7b`), which ticks `C18`, and its undo `C21` (`f73246a3`)**, to reach
+production together (**R-PC108**; **PC-499** closed). **NEXT: `C22`** (**R-PC112**, the purchase
+lock on truncate and regenerate, **PC-524**); `steps.md` carries the order.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C13-a`, `C13-b`; `C14` whole, archived
-2026-09-11; `C17-a`, `C17-b-1`, `C17-d`, `C20-a` and `C18-a`. Section 4 carries each commit, and
-`steps.md` alone carries the ORDER. **A cold session starts at section 4**; the shared registries
-are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+2026-09-11; `C17-a`, `C17-b-1`, `C17-d`, `C20-a`, `C18` whole and `C21`. Section 4 carries each
+commit, and `steps.md` alone carries the ORDER. **A cold session starts at section 4**; the shared
+registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
@@ -248,16 +248,17 @@ their only live specimen from them, which both `_staging` docstrings predict and
 - [x] **C2 -- one calendar value answers every "which period" question.** `4f134bf4`. The DECOMPOSED
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
-- [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
-      in" as `period_containing(date.today())` (census 4 code lines `period_containing` in
+- [ ] **C10 -- the salary package reads the OWNER's day.** Six sites answer "which paycheck am I in"
+      as `period_containing(date.today())`, three of them since `salary:X-av-3a` over a pass's
+      `as_of` that defaults to it (census 5 code lines `period_containing` in
       `app/routes/salary/**/*.py`) plus the regeneration's, moved to the service at `salary:S3-f-3`
       (census 1 code lines `period_containing` in `app/services/salary_regeneration.py`) -- derived
       at `C2-f2d-3`, still on the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its
-      adversarial design review caught that before the commit. Five one-line reads, in a step of
+      adversarial design review caught that before the commit. Six one-line reads, in a step of
       their own because a clock change on money-adjacent screens gets its own review.
       **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here 2026-09-03): a pylint checker
       forbidding the process clock -- `date.today()`, `datetime.now()` -- outside one clock module,
-      so the five reads stay moved. Closes **P49**, **N-138**.
+      so the six reads stay moved. Closes **P49**, **N-138**.
 - [ ] **C11 -- the LAYER predicate.** The four service modules that still open their own read pass
       take one instead -- `calendar_service`, `investment_dashboard_service/_context` and
       `/_orchestrator`, `tax_report_service` -- and the gate becomes the layer rule rather than a
@@ -282,22 +283,28 @@ their only live specimen from them, which both `_staging` docstrings predict and
       **PC-497** fault 1 (the row was carried open through two re-points in error).
 - [x] **C14-f -- the generate door asks one job's questions.** `5d14e4d4`. **P80** re-pointed at
       `C17` as an era question; **N-493**, **N-494** narrowed.
-- [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
-      generates nothing** (ruling **R-PC62**): the DECOMPOSED parent of two leaves, cut 2026-09-22
-      by the coordinator when **R-PC85**-**R-PC88** were ruled; it ticks with `C18-b`.
-- [x] **C18-a** `22f3d85b` -- the books bound: a recurring item's occurrences start above the books
-      of every account it moves money in (**R-PC85**, **R-PC86**, **R-PC89**, **R-PC94**); the
-      restatement, both template edit doors and the revert refuse to leave an unpaid recurring row
-      inside the books it sits on, and the unarchive keeps one deleted (**R-PC88**,
-      **R-PC90**-**R-PC93**, **R-PC95**-**R-PC102**). The revert refusal (**R-PC97**) is a stopgap
-      `recurrence:R22` deletes. Closed **PC-500**.
-- [ ] **C18-b -- "Add earlier paychecks"** (ruling **R-PC87**; closes **PC-499**). An action beside
-      Extend asks only how many paychecks to add before the first and records the paydays the
-      EARLIEST era projects just below it: it states no date or rhythm, and deletes, moves and
-      re-files nothing, so it reaches no paycheck regenerate's lock protects. The new periods are
-      populated (**R-R38**); since `C18-a` a period before the books fills with nothing.
-      `pay_period_batch.reject_backward_payday` stays for the forms that state a start, its
-      docstring and refusal message corrected.
+**The `C18` span, and `C5`'s below, are ARCHIVED under rule 5** (2026-09-29) to
+`historical/pay_calendar_c18_c5_archived_2026-09-29.md`, one line each; the COMMIT is the record.
+- [x] **C18 -- a payday before the earliest, nothing below the books.** `f23fef7b` (**R-PC62**).
+- [x] **C18-a -- the books bound.** `22f3d85b` (**R-PC85**-**R-PC102**). Closed **PC-500**.
+- [x] **C18-b -- "Add earlier paychecks".** `f23fef7b` (**R-PC87**, **R-PC103**-**R-PC107**). Closed
+      **PC-499**.
+- [x] **C21 -- "Remove earlier paychecks".** `f73246a3` -- the undo of `C18-b`, in its release
+      (**R-PC108**). A select names the paycheck to START FROM (**R-PC111**); every paycheck before
+      it goes with its untouched template rows, and one holding anything the owner entered, a pay
+      stub on its payday or money dated inside it is refused and named (**R-PC109**). The earliest
+      era's phase moves up in place, "Refuse, keep one" (**R-PC110**); the ledger is re-filed,
+      refused ONLY if a posted total moves (**R-PC114**). `$0.00`.
+- [ ] **C22 -- truncate and regenerate refuse a paycheck holding a purchase** (ruling **R-PC112**;
+      after `C21`, **R-PC113**; closes **PC-524**). Both reach `gate_deletable_tail`, whose discard
+      count asks `_regenerable` alone, so a purchase goes with its row by cascade: unasked on an
+      untouched template row, after Confirm & discard on an override or rule-less envelope. Each
+      door REFUSES a paycheck holding ANY live row with a purchase the owner entered, whatever
+      `_regenerable` says: a hard refusal separate from the discard count, confirmed or not, naming
+      the purchases and deleting nothing ("Paycheck 03-13 holds 1 purchase you entered (Kroger,
+      $87.43). Remove or move it first."), through the check C21's remove-earlier reuses,
+      `pay_period_gates.transactions_holding_purchases`. A purchase's one reading is
+      `Transaction.purchases` (**R-BAL68**), whose query-side twin is `status_seam.covering_clause`.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
       2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per
       *how I have been paid since* -- `effective_from`, `kind_id`, `cadence_days`, `shift_id` --
@@ -340,10 +347,10 @@ record.
       its 16 callers in four templates pass dicts; `min` / `max` / `step` / `maxlength` /
       `autocomplete` and the ARIA pair reach the browser; a hostile value stays escaped inside the
       quotes. Closed **PC-515**.
-- [ ] **C20-b** -- the month-day clamp's ONE producer where `rate_period_engine`,
-      `salary_cockpit_service` and `recurrence/_row_date.py` still spell it (**PC-516**); the manage
-      card's hand-written `min` / `max` through the macro (**PC-517**) and its macro-rendered inputs
-      given distinct ids per form (**PC-518**). `$0.00`.
+- [ ] **C20-b** -- the month-day clamp's ONE producer where `rate_period_engine` and
+      `salary_cockpit_service` still spell it (**PC-516**); the manage card's hand-written `min` /
+      `max` through the macro (**PC-517**) and its macro-rendered inputs given distinct ids per form
+      (**PC-518**). `$0.00`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only
@@ -406,14 +413,9 @@ rows **P62**, **P63** and **P64**'s engine half; its specification is
 - [x] **C4-c -- the drop.** `c703e1c7`, migration `b7a41e2c9d63`. Closed **P1**, **P4**, **P5**,
       **P9**, **P26**, **P27**, **P28**, **P33**, **P53**, **P70**; opened **P79**, **P80**. As
       built, with the whole `C4` span: `historical/c4_as_built_2026-09-06.md`.
-- [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`. The
-      decomposed parent, ticked with `C5b`. This span is COMPLETE and condensed under rule 5, to buy
-      the room `C4-b`'s decomposition needed; the commits are the record and `steps.md` carries each
-      row's own sentence.
-- [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at `C2-b2`; ticks
-      `recurrence:R-F10`.
-- [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`. One commit under two
-      arc names with `recurrence:R17`; closed **P16**.
+- [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`.
+- [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticks `recurrence:R-F10`.
+- [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`. Closed **P16**.
 - [ ] **C6 -- a payday may be inserted mid-schedule.**
 
 **Starts with the two rulings section 3 names**, neither of which the 2026-08-08 lock ruling

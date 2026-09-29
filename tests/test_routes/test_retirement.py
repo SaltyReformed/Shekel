@@ -29,7 +29,9 @@ from app.models.ref import (
     TransactionType,
 )
 from app.utils.dates import display_today
-from tests._test_helpers import freeze_today, make_every_period_rule, make_recurring_raise
+from tests._test_helpers import (
+    freeze_today, make_every_period_rule, make_recurring_raise, start_test_pay_list,
+)
 
 
 #: One recurring-raise row of the assumptions rail: ``(raise id, inner markup)``.
@@ -81,9 +83,9 @@ def _create_salary_profile(seed_user, db_session, name="Main Job"):
         template_id=template.id,
         filing_status_id=filing_status.id,
         name=name,
-        annual_salary=Decimal("80000.00"),
     )
     db_session.add(profile)
+    start_test_pay_list(profile, Decimal("3076.92"))  # $80,000.00 a year / 26
     db_session.flush()
     return profile
 
@@ -3174,20 +3176,29 @@ class TestTheRailSavesARaisesEndYear:
     """
 
     @staticmethod
-    def _seed_saveable_raise(seed_user, db, seed_periods_today, *, terminal_year=None):
+    def _seed_saveable_raise(
+        seed_user, db, periods, *, terminal_year=None, effective_month=1,
+    ):
         """An owner with a template-backed profile and one recurring 5% raise.
 
-        Effective the year BEFORE the current payday's (R-SAL21's fixture):
-        believed forever it has applied twice by that payday, believed through
-        its first year only once, so a Save that ends it after its first year
-        moves TODAY's paycheck -- the case in which the regeneration's
-        re-pricing of the template amount is observable.
+        Effective the year BEFORE the current payday's (R-SAL21's fixture),
+        in *effective_month*.  **It is priced only where it lands AFTER the
+        profile's one pay entry** (plan step salary:X-av-3a, ruling R-SAL59:
+        a raise landing on or before the entry is already in it), and the
+        entry sits on the first of *periods*.  So believed forever it has
+        applied twice by the current payday, and believed through its first
+        year only once -- the case in which a Save that ends it after its
+        first year moves TODAY's paycheck -- only where the caller's calendar
+        opens before its first landing; see
+        :meth:`test_an_end_year_is_written_and_the_paychecks_regenerated`.
+        Every other caller grades the row's write, which the pricing does
+        not touch.
 
         Returns:
             ``(raise id, effective year, profile id)``.
         """
         current_payday = max(
-            period.start_date for period in seed_periods_today
+            period.start_date for period in periods
             if period.start_date <= display_today()
         )
         _seed_underfunded(seed_user, db.session)
@@ -3198,7 +3209,7 @@ class TestTheRailSavesARaisesEndYear:
         effective = current_payday.year - 1
         row = make_recurring_raise(
             profile.id, db.session, effective_year=effective,
-            terminal_year=terminal_year,
+            effective_month=effective_month, terminal_year=terminal_year,
         )
         db.session.commit()
         return row.id, effective, profile.id
@@ -3258,7 +3269,7 @@ class TestTheRailSavesARaisesEndYear:
         assert self._stored(db, raise_id) == before
 
     def test_an_end_year_is_written_and_the_paychecks_regenerated(
-        self, auth_client, seed_user, db, seed_periods_today, monkeypatch,
+        self, auth_client, seed_user, db, seed_periods_52, monkeypatch,
     ):
         """Ending the raise after its first year writes the column AND re-prices.
 
@@ -3271,15 +3282,30 @@ class TestTheRailSavesARaisesEndYear:
         two cannot disagree.  Ending the raise a year earlier is the smaller
         figure (``$3,230.77`` against ``$3,392.31`` gross), which the second
         Save shows.
+
+        **Built on fixed days, so it holds in any month** (plan step
+        salary:X-av-3a).  The one pay entry sits on the first payday,
+        2026-01-02, at $3,076.92 ($80,000.00 / 26), and a raise is priced
+        only where it lands AFTER the entry (ruling R-SAL59), so both
+        landings must follow the entry and precede the payday priced.  No
+        calendar built from the wall clock holds that: ``seed_periods_today``
+        spans 20 weeks, and a yearly raise lands twice in no fewer than 12
+        months.  So the calendar is ``seed_periods_52`` (paydays 2026-01-02
+        through 2027-12-17), today is 2027-03-20 (the 2027-03-12 payday's
+        period, so the effective year is 2026), and the raise moves to
+        February -- the first month after the entry's payday -- landing
+        2026-02-01 and 2027-02-01.  Each step rounds to the cent (R-SAL60):
+        believed forever, 3,076.92 x 1.05 = 3,230.766 -> 3,230.77, then
+        x 1.05 = 3,392.3085 -> 3,392.31; ended after 2026, 3,230.77.
         """
         # The regeneration prices the period containing the PROCESS clock's
         # today (its own read; pay_calendar plan step C10's residue) while the
         # pricer below is asked for the display day's: pin both clocks to one
-        # civil day so the comparison holds on every day of the calendar,
-        # the four UTC hours after a New York midnight included.
-        freeze_today(monkeypatch, display_today())
+        # civil day so the comparison holds, the four UTC hours after a New
+        # York midnight included.
+        freeze_today(monkeypatch, date(2027, 3, 20))
         raise_id, effective, profile_id = self._seed_saveable_raise(
-            seed_user, db, seed_periods_today,
+            seed_user, db, seed_periods_52, effective_month=2,
         )
         template = db.session.get(SalaryProfile, profile_id).template
         seeded_amount = template.default_amount

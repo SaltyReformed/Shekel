@@ -29,6 +29,7 @@ from tests._test_helpers import (
     loan_params_for,
     one_off_row_of,
     register_form_data,
+    start_test_pay_list,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -133,10 +134,10 @@ def _create_salary_profile(seed_user, seed_periods_today):
         scenario_id=seed_user["scenario"].id,
         filing_status_id=filing_single.id,
         name="XSS Test Salary",
-        annual_salary=Decimal("75000"),
         state_code="NC",
     )
     db.session.add(profile)
+    start_test_pay_list(profile, Decimal("2884.62"))  # $75,000.00 a year / 26
     db.session.commit()
     return profile
 
@@ -335,7 +336,9 @@ class TestXSSPrevention:
             # POST creates the profile (also creates template + txns).
             auth_client.post("/salary", data={
                 "name": payload,
-                "annual_salary": "75000",
+                "pay_amount": "2884.62",  # $75,000.00 a year / 26
+                # The first period's payday.
+                "pay_payday": seed_periods_today[0].start_date.isoformat(),
                 "filing_status_id": filing_single.id,
                 "state_code": "NC",
             })

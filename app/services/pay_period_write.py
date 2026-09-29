@@ -4,13 +4,17 @@ Shekel Budget App -- Pay Period Writer
 **The ONE place in ``app/`` that changes ``budget.pay_periods``** (plan step
 C3-b, developer ruling 2026-08-10).  Every door that grows, rebuilds or
 shortens an owner's schedule -- generate, extend, the rolling top-up,
-regenerate, reset, truncate -- reaches the table through
-:func:`record_paydays`, :func:`continue_paydays` or :func:`retire_paydays`
-and through nothing else.  The first STATES a batch (a first payday and a
-rhythm); the second CONTINUES the owner's own plan (plan step
-``pay_calendar:C17-c-2b``); the third removes.
+regenerate, reset, truncate, add-earlier -- reaches the table through
+:func:`record_paydays`, :func:`continue_paydays`, :func:`prepend_paydays` or
+:func:`retire_paydays` and through nothing else.  The first STATES a batch (a
+first payday and a rhythm); the second CONTINUES the owner's own plan (plan
+step ``pay_calendar:C17-c-2b``); the third records the paydays that plan puts
+just BEFORE the record (plan step ``pay_calendar:C18-b``); the fourth
+removes, and when it takes the record's FIRST paydays -- "Remove earlier
+paychecks" (plan step ``pay_calendar:C21``) -- it moves the earliest era's
+phase up to the payday left first.
 ``pay_period_service`` keeps only its readers; ``pay_period_admin`` keeps only
-its four doors, and the gates they consult live in ``pay_period_gates`` since
+its doors, and the gates they consult live in ``pay_period_gates`` since
 plan step ``pay_calendar:C14-f``.
 
 That split is C3-a's, one level up.  C3-a moved the read-only lock classifier
@@ -99,7 +103,15 @@ A batch that records nothing retires none: truncating a tail leaves the
 declared rhythm as it was.  **A CONTINUING batch states no rhythm and so
 mints and retires nothing** (:func:`continue_paydays`, plan step
 ``C17-c-2b``): it records the paydays the owner's stored eras already plan,
-so the eras are the plan's description before and after it.
+so the eras are the plan's description before and after it.  **The EARLIER
+batch states no rhythm either, and moves the earliest era's phase down to
+its first payday's grid day** (:func:`prepend_paydays`, ruling **R-PC105**): the same
+rhythm on the same grid, the row moved in place rather than minted again (a
+mint would re-judge a rhythm nobody stated), so the record's first payday
+stands for that era's first grid step, as it does for every other door.
+**A removal that takes the record's first paydays moves that phase UP to the
+payday left first** (:func:`retire_paydays`, ruling **R-PC110**), the same
+move in reverse, and refuses to take every payday the earliest era pays.
 
 **Ledger row P28 -- "the horizon the app projects" disagreeing with "the end
 stored on the last row" -- has no subject at all since C4-c**: there is one
@@ -503,15 +515,148 @@ def continue_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
     return created
 
 
+def prepend_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
+    """Record the *num_periods* paydays the owner's rhythm projects just before their first.
+
+    **The EARLIER door, "Add earlier paychecks"** (plan step
+    ``pay_calendar:C18-b``, ruling **R-PC87**; closing ledger row
+    **PC-499**).  :func:`continue_paydays`' mirror at the record's other
+    end, and for its reason it takes no date and no rhythm: an owner who
+    says "I was paid twice before this" has said how many, and their
+    earliest rhythm says when
+    (:func:`~app.services.pay_calendar.earlier_paydays`, the grid the
+    backward count already walks).  Nothing typed means nothing that can
+    split a paycheck or leave a gap, and nothing is retired: no paycheck or
+    transaction row moves.
+
+    **What it writes beside the paydays is the earliest era's PHASE**
+    (ruling **R-PC105**, which narrows R-PC87's "moves nothing" to
+    paychecks).  The producer hands that era back re-phased onto the grid
+    day of the earliest new payday -- the same rhythm on the same grid, so every payday
+    it plans is unchanged -- and :func:`_apply` moves the stored row's
+    phase in place in the same operation
+    (``pay_era_write.rephase_earliest_era``).  In place rather than retired
+    and minted again, because a mint re-judges the rhythm it writes and
+    this door states none (review 1 of this step; ledger rows **N-493**,
+    **N-494**).  Left below the phase, the record would let a regenerate
+    that keeps only earlier paychecks restate a rhythm from the old phase
+    (a second era on ``uq_pay_eras_user_effective_from``, an
+    ``IntegrityError``) or from inside the next paycheck (an era
+    ``pay_calendar._derive.validate_eras`` refuses on every read).
+
+    **Neither of the forward batch's fences is asked, because both bound a
+    batch ABOVE the record** and this one lies wholly below it: the floor
+    (:func:`~app.services.pay_period_batch.reject_backward_payday`) would
+    refuse every day it records -- that refusal, worded as a split, was
+    PC-499 -- and the ceiling reads the plan past the latest payday.  What
+    bounds it is below the record: the owner's stated history
+    (:func:`~app.services.pay_period_batch.reject_payday_before_history`,
+    ruling **R-PC104**) and the application's calendar
+    (:func:`~app.services.pay_period_batch.reject_payday_before_calendar`),
+    both asked before any statement, the history first so its ruled
+    message is the one a stated owner reads.
+
+    **Nothing here is guarded against a hole the plan itself holds**, as at
+    :func:`continue_paydays` and for its reason: two nominal paydays a
+    closed run displaces onto one cash day (a stored pairing below the
+    collision floor, ledger row **N-493**) would record one day twice, or
+    a new payday equal to the record's first, and the insert would refuse
+    it on ``uq_pay_periods_user_start`` after the phase's UPDATE had run in
+    the same operation.  It needs a closed run at least as long as the
+    cadence, which no pairing a door writes admits
+    (``pay_schedule_service.reject_shift_on_short_cadence`` holds the gap
+    above the longest run); a stored pairing below that floor is N-493's
+    state, and ``C17-e`` owns it at the calendar.
+
+    Args:
+        user_id: The owning user's id.
+        num_periods: How many paydays to record, bounded by
+            :func:`~app.services.pay_period_batch.reject_out_of_range_batch_size`
+            like every batch.
+
+    Returns:
+        The newly created :class:`~app.models.pay_period.PayPeriod` objects,
+        flushed so their ids are assigned, ``start_date`` ascending -- always
+        *num_periods* of them, since every day lies below the record.
+
+    Raises:
+        ValidationError: *num_periods* is outside the batch bound; the owner
+            holds no payday, so there is nothing to add before; or the
+            earliest new payday falls before the owner's stated history or
+            before the application's calendar -- the route flashes each.
+        PayCalendarError: The owner holds no ``budget.pay_schedule`` row or
+            no era (:func:`~app.services.pay_calendar.schedule_for`), as at
+            :func:`continue_paydays`.
+    """
+    pay_period_batch.reject_out_of_range_batch_size(num_periods)
+    facts = pay_calendar.schedule_for(user_id)
+    current = _owner_paydays(user_id)
+    if not current:
+        raise ValidationError(
+            "Generate your first pay-period schedule before adding earlier "
+            "paychecks."
+        )
+    era, recording = pay_calendar.earlier_paydays(
+        facts.eras, current[0][1], num_periods,
+    )
+    # The history first: a stated history is never below the calendar's
+    # floor (``ck_pay_schedule_history_opens_range``), so a payday under the
+    # floor is under the history too, and asked the other way round the
+    # calendar's message would hide the one ruling R-PC104 worded.
+    pay_period_batch.reject_payday_before_history(
+        recording[0], facts.history_opens_on,
+    )
+    pay_period_batch.reject_payday_before_calendar(recording[0])
+    # Every era stands and none is minted: the earliest one's phase moves in
+    # place (ruling R-PC105), its rhythm untouched, so no rhythm is judged.
+    # The era it moves is the one read above, not a second read of the row.
+    created = _apply(
+        _PaydayChange(
+            user_id=user_id,
+            retiring=[],
+            recording=list(recording),
+            era=pay_era_write.EarliestRephase(
+                eras=facts.eras, phase=era.effective_from,
+            ),
+            eras_standing=tuple(stood.effective_from for stood in facts.eras),
+        ),
+    )
+    log_event(
+        logger, logging.INFO, EVT_PAY_PERIODS_GENERATED, BUSINESS,
+        "Pay periods generated",
+        user_id=user_id,
+        count=len(created),
+        retired=0,
+        start_date=created[0].start_date.isoformat(),
+        era_minted_from=None,
+        era_rephased_to=era.effective_from.isoformat(),
+        cadence=era.rhythm.cadence.phrase,
+        shift=era.rhythm.shift.value,
+    )
+    return created
+
+
 def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
     """Delete the pay periods *doomed_ids* names.
 
     **The one door that removes from ``budget.pay_periods``.**  Truncate,
-    regenerate's rebuild step and reset's whole-schedule wipe all reach the
-    table here; the LOCK and DISCARD gates that decide WHICH periods may go
-    live in ``pay_period_gates`` (split out of ``pay_period_admin`` at plan
-    step ``pay_calendar:C14-f``), because deciding is a different concern
-    from doing (``pay_period_locks``' own split, one level up).
+    "Remove earlier paychecks", regenerate's rebuild step and reset's
+    whole-schedule wipe all reach the table here; the gates that decide
+    WHICH periods may go live in ``pay_period_gates`` (split out of
+    ``pay_period_admin`` at plan step ``pay_calendar:C14-f``), because
+    deciding is a different concern from doing (``pay_period_locks``' own
+    split, one level up).
+
+    **Taking the record's FIRST paydays moves the earliest era's phase UP,
+    or is refused** (plan step ``pay_calendar:C21``, ruling **R-PC110**;
+    the decision and its argument are the era rule's,
+    ``pay_era_write.era_to_move``).  Asked HERE rather than by the door that
+    sends such a removal, because it is a property of what a removal
+    leaves, not of who asked; truncate keeps the period it is named, so it
+    never takes the first payday and reads no eras for it.  A removal that
+    takes EVERY payday moves nothing: an owner with eras and no paydays is
+    ordinary (reset passes through that state), and the one door that
+    retires from the start keeps the paycheck it is told to start from.
 
     **The survivors are untouched, and since plan step C4-c that is a property
     of the SCHEMA rather than of this function.**  While the two derived
@@ -568,19 +713,37 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
         The number of pay periods actually deleted -- the size of the
         intersection of *doomed_ids* with this owner's periods, never the size
         of the argument.
+
+    Raises:
+        PayPeriodRemovalRefused: *doomed_ids* takes the record's first
+            payday and every payday the earliest era pays, while leaving a
+            later era's (ruling **R-PC110**).  Nothing is written.
     """
+    current = _owner_paydays(user_id)
     retiring = [
-        period_id for period_id, _payday in _owner_paydays(user_id)
+        period_id for period_id, _payday in current
         if period_id in doomed_ids
     ]
     if not retiring:
         return 0
+    surviving = [
+        payday for period_id, payday in current if period_id not in retiring
+    ]
+    era = None
+    if surviving and current[0][0] in retiring:
+        # Asked before any statement, so R-PC110's refusal writes nothing;
+        # the eras are read only for a removal that takes the first payday.
+        era = pay_era_write.era_to_move(
+            pay_calendar.schedule_for(user_id).eras,
+            [payday for _period_id, payday in current],
+            surviving[0],
+        )
     _apply(
         _PaydayChange(
             user_id=user_id,
             retiring=retiring,
             recording=[],
-            era=None,
+            era=era,
             eras_standing=(),
         ),
     )
@@ -614,15 +777,24 @@ class _PaydayChange:
             :func:`_owner_paydays` read, so the OWNER scoping is structural
             rather than a property of the two callers.
         recording: The paydays to create, already filtered of any that exist.
-        era: The :class:`~app.services.pay_rhythm.Era` this batch MINTS, or
-            ``None`` when it records nothing or continues the era covering
-            its first payday on that era's own grid
-            (:func:`~app.services.pay_era_write.era_to_mint`).  One
-            value, because a row written through two statements passes
-            through a state neither means.  Its ``effective_from`` is the
-            batch's own ``first_payday``, a point on the grid the batch is
-            written on -- always STATED by a door since plan step
-            ``C17-c-2b``, where the continue path stopped computing one.
+        era: The batch's ONE era write, or ``None`` for none.  An
+            :class:`~app.services.pay_rhythm.Era` is one this batch MINTS
+            (:func:`~app.services.pay_era_write.era_to_mint`; ``None`` when it
+            records nothing or continues the era covering its first payday
+            on that era's own grid): one value, because a row written
+            through two statements passes through a state neither means, and
+            its ``effective_from`` is the batch's own ``first_payday``, a
+            point on the grid the batch is written on -- always STATED by a
+            door since plan step ``C17-c-2b``, where the continue path
+            stopped computing one.  An
+            :class:`~app.services.pay_era_write.EarliestRephase` MOVES the
+            earliest era's phase in place, its rhythm untouched: down when
+            :func:`prepend_paydays` records below the record (ruling
+            **R-PC105**), up when :func:`retire_paydays` takes the record's
+            first paydays (ruling **R-PC110**) -- the one era write a change
+            that records nothing can carry.  One field rather than two, so a
+            batch that mints cannot also move (review 2 of plan step
+            ``pay_calendar:C18-b``).
         eras_standing: The ``effective_from`` of every era the batch leaves
             standing -- those with a surviving payday, and the earliest
             whenever any payday survives
@@ -630,21 +802,25 @@ class _PaydayChange:
             other era is retired before the mint, all of them for an empty
             tuple (``reset``'s shape).  Derived by :func:`record_paydays`
             from the payday sets it computed, so no door can claim a wipe it
-            did not perform.
+            did not perform; :func:`continue_paydays` and
+            :func:`prepend_paydays` name every era.  Read only when the
+            change RECORDS: a removal retires no era, so
+            :func:`retire_paydays` passes an empty tuple that nothing reads.
     """
 
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
-    era: "pay_rhythm.Era | None"
+    era: "pay_rhythm.Era | pay_era_write.EarliestRephase | None"
     eras_standing: "tuple[date, ...]"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
-    """Carry out one payday change: delete, mint the era, insert.
+    """Carry out one payday change: delete, mint or move the era, insert.
 
     **Every refusal a route RENDERS has already happened**, in
-    :func:`record_paydays`, which is what lets truncate keep promising it
+    :func:`record_paydays`, :func:`prepend_paydays` or :func:`retire_paydays`,
+    which is what lets truncate keep promising it
     deletes nothing on a refusal and what makes the module docstring's "a
     refusal leaves nothing behind" true of this module rather than of its
     callers.  Nothing here refuses anything: the bounds are asked at the door
@@ -657,18 +833,26 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
        payday being retired and re-recorded in the same operation -- which is
        what regenerate and reset do -- cannot collide on
        ``uq_pay_periods_user_start``.
-    2. Make sure the owner's ``budget.pay_schedule`` row exists, when the
-       batch records anything: both era and payday keys target it.
-    3. RETIRE every era the batch does not leave standing (the era rule)
-       BEFORE the mint, so ``uq_pay_eras_user_effective_from`` cannot
-       collide on a day being restated; then MINT the era, when the batch
-       states one.
+    2. When the batch records anything: make sure the owner's
+       ``budget.pay_schedule`` row exists (both era and payday keys target
+       it), RETIRE every era the batch does not leave standing (the era rule)
+       BEFORE the mint, so ``uq_pay_eras_user_effective_from`` cannot collide
+       on a day being restated, and then MINT the era, when the batch states
+       one.
+    3. MOVE the earliest era's phase in place, when the change carries that
+       instead -- down with a batch recorded below the record (ruling
+       **R-PC105**), up with a removal that takes the record's first paydays
+       (ruling **R-PC110**).  Outside step 2, because the removal records
+       nothing; after it, because a move is judged against the eras that
+       stand.  ``change.era`` holds at most one era write, so a change mints
+       or moves, never both.
     4. INSERT one row per recorded payday.
 
-    ``expire_all`` runs LAST, when a row was deleted or an era minted: the
-    bulk ``DELETE`` synchronises nothing and ``PaySchedule.eras`` is
-    view-only, so a row the wider request already loaded would otherwise name
-    a period that is gone or the eras it had BEFORE the mint.
+    ``expire_all`` runs LAST, when a row was deleted or an era minted or
+    moved: the bulk ``DELETE`` and ``UPDATE`` synchronise nothing and
+    ``PaySchedule.eras`` is view-only, so a row the wider request already
+    loaded would otherwise name a period that is gone or the eras it had
+    BEFORE the write.
 
     Args:
         change: The whole change (:class:`_PaydayChange`).
@@ -677,10 +861,18 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         The newly created rows, flushed, ``start_date`` ascending.
 
     Raises:
-        ValidationError: ``mint_era`` refuses the cadence or the pairing.
-            Unreachable from :func:`record_paydays`, which asks the same
-            bounds before any statement is issued; kept because ``mint_era``
-            is the column's one writer and owns the refusal.
+        ValidationError: ``mint_era`` refuses the cadence or the pairing, or
+            ``rephase_earliest_era`` a phase off its grid.  Unreachable from
+            the doors -- :func:`record_paydays` asks the mint's bounds before
+            any statement is issued, and :func:`prepend_paydays` and
+            :func:`retire_paydays` hand a nominal grid day -- and kept
+            because the era writer owns the refusals.
+        PayCalendarError: ``rephase_earliest_era`` refuses a move the era
+            sequence cannot derive.  Unreachable the same way: the earlier
+            door moves the phase down, and :func:`retire_paydays` only onto
+            a payday the earliest era pays.  Either error would arrive after
+            step 1's DELETE, in the same transaction, which the caller's
+            rollback discards.
     """
     if change.retiring:
         db.session.query(PayPeriod).filter(
@@ -693,8 +885,10 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         retired_eras = pay_era_write.retire_eras(
             change.user_id, change.eras_standing,
         )
-        if change.era is not None:
+        if isinstance(change.era, pay_rhythm.Era):
             pay_era_write.mint_era(change.user_id, change.era)
+    if isinstance(change.era, pay_era_write.EarliestRephase):
+        pay_era_write.rephase_earliest_era(change.user_id, change.era)
     created = _create_periods(change.user_id, change.recording)
     if change.retiring or retired_eras or change.era is not None:
         db.session.expire_all()

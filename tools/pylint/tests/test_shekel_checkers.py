@@ -692,7 +692,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         D3's adversarial review re-measured the same shape from the other side
         (a ``ctx.balance_now(account)`` folding the memoized walk rated
         10.00/10 with the ``_context`` ruling deleted), which is why that
-        ruling is the ONE seam-private scope D3 keeps: ``BalanceContext`` is
+        ruling is the seam-private scope D3 keeps (its mixin's module joined it
+        at ruling R-BAL146): ``BalanceContext`` is
         publicly re-exported, and W9910 cannot see a method on an object a
         consumer holds.
         """
@@ -818,9 +819,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
           ``loan_payment_service``, and the scope moved with them so a fenced
           module's contents could not leave the fence by changing address)
         * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (``balance_at._context`` -- the
-          one seam-private ruling D3 keeps: ``BalanceContext`` is publicly
+          seam-private ruling D3 keeps: ``BalanceContext`` is publicly
           re-exported, so a new public METHOD on it reaches every route with
-          no ``__init__`` edit, and W9910 cannot see attribute access)
+          no ``__init__`` edit, and W9910 cannot see attribute access -- and,
+          since ruling R-BAL146, ``balance_at._recurrence_memos``, the mixin
+          it inherits three of those methods from)
 
         For those, a set-equality guard would be SELF-ATTESTING: delete the
         registry entry and empty the constant -- two adjacent edits in one
@@ -844,6 +847,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.loan_resolver",
             "app.services.recurring_transfer_query",
             "app.services.balance_at._context",
+            "app.services.balance_at._recurrence_memos",
         ):
             node = self._function_def(
                 "def balance_on(account, target):\n    return None\n",

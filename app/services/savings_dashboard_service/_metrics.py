@@ -20,13 +20,18 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     obligations_aggregator,
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PayCalendar, PeriodWindow
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import (
+    leg_settled_contribution,
+    settled_contribution,
+)
+from app.services.transfer_legs import expense_legs, recorded_transfer_legs
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _DashboardCoreData,
@@ -52,14 +57,31 @@ class CurrentPay:
     :func:`_current_pay`) when there is no current period or no active
     profile -- absence of an income source is not a ``$0.00`` income (E-12).
 
+    **It carries the rhythm the paycheck was priced at** (ruling
+    **R-SAL70**, plan step salary:X-av-2), because both readers leave paycheck
+    space -- the debt-to-income denominator is a MONTH of gross, a goal stated
+    in months of income a month of net -- and the conversion must use the
+    count the figures were divided by.  They converted at ``cadence_for``,
+    the LATEST era's rhythm, which agreed with the engine only while the
+    engine divided every paycheck by that same count: once X-av-2 priced a
+    payday at its own era's count, an owner paid monthly today with a
+    biweekly rhythm recorded to start later would have read a ``$5,000.00``
+    paycheck as ``$10,833.33`` a month (made-up figures).
+
     Attributes:
         net_biweekly: The summed net pay for one paycheck, off the pass's
             pricer, each profile's own calibration applied.
         gross_biweekly: The summed gross for the same paycheck.
+        cadence: The rhythm that paycheck was priced at, off the priced
+            paychecks' own :attr:`~app.services.paycheck_calculator.PeriodInfo
+            .cadence` -- one value for every profile summed, because each is
+            priced by the pass's one pricer on the pass's one calendar for
+            the one payday.
     """
 
     net_biweekly: Decimal
     gross_biweekly: Decimal
+    cadence: PayCadence
 
 
 @dataclass(frozen=True)
@@ -213,13 +235,21 @@ def _current_pay(balance_ctx, current_period):
         return None
 
     paychecks = balance_ctx.paychecks()
-    net = Decimal("0.00")
-    gross = Decimal("0.00")
-    for profile in profiles:
-        earnings = paychecks.for_profile(profile).at(current_period).earnings
-        net += earnings.net_pay
-        gross += earnings.gross_biweekly
-    return CurrentPay(net_biweekly=net, gross_biweekly=gross)
+    priced = [
+        paychecks.for_profile(profile).at(current_period)
+        for profile in profiles
+    ]
+    return CurrentPay(
+        net_biweekly=sum((p.earnings.net_pay for p in priced), Decimal("0.00")),
+        gross_biweekly=sum(
+            (p.earnings.gross_biweekly for p in priced), Decimal("0.00"),
+        ),
+        # The paycheck's own rhythm, read off what was priced rather than
+        # asked of the calendar again (ruling R-SAL70).  Every profile here is
+        # priced for the one payday on the pass's one calendar, so any
+        # element's cadence is every element's.
+        cadence=priced[0].period.cadence,
+    )
 
 
 def _checking_account_ids(accounts):
@@ -264,9 +294,11 @@ def _recent_settled_expenses_monthly(
     as :func:`_committed_expense_floor` (DH-#29) so the two operands of
     :func:`_compute_avg_monthly_expenses`'s ``max()`` measure the same
     "outflow from checking" universe -- a settled expense on a
-    non-checking account (e.g. a transfer's expense shadow on a
-    savings/HSA source) is excluded here just as it is from the floor,
-    rather than inflating only the historical operand.
+    non-checking account (e.g. a transfer out of a savings/HSA source) is
+    excluded here just as it is from the floor, rather than inflating only
+    the historical operand.  A transfer OUT of checking is one of its
+    expenses, read as its transfer's from-side LEG since leaf
+    ``balance:X-bi-6-4a`` (ruling **R-BAL106**), never as its shadow row.
 
     Args:
         checking_ids: IDs of the user's checking accounts (the
@@ -287,14 +319,9 @@ def _recent_settled_expenses_monthly(
         periods.
 
     **This function took the nullable SCENARIO OBJECT and answered
-    ``Decimal("0.00")`` for a user with no baseline** -- a fabricated monthly
-    expense feeding the emergency-fund runway, and the THIRD surviving guard
-    in a step whose ruling R-BY says exactly two survive.  Both of X-v2's
-    adversarial reviews found it independently.  It is also the site finding
-    N-112's own row named as the reason the census "wants an AST pass", and
-    the AST census X-v built STILL missed it -- because the predicate arrives
-    as a PARAMETER, not as an attribute or a local alias.  The census that
-    replaces a grep needs the same scepticism the grep earned.
+    ``Decimal("0.00")`` for a user with no baseline** (a fabricated expense
+    feeding the runway; the THIRD guard where ruling R-BY allows two).  X-v's
+    AST census missed it because the predicate arrives as a PARAMETER (N-112).
     """
     if current_period is None or not checking_ids:
         return Decimal("0.00")
@@ -307,16 +334,10 @@ def _recent_settled_expenses_monthly(
         return Decimal("0.00")
 
     recent_period_ids = [p.period_id for p in recent_periods]
-    # Both halves of "settled checking EXPENSE" are asked in SQL rather than in
-    # a Python ``if`` beside the valuation (plan step X-au-c2).  They were, and
-    # the row set was every status: the loop's guard was what kept a Projected
-    # row away from the amount read, so the accessor's precondition rested on a
-    # conditional a later edit could reorder rather than on the query.  Asking
-    # here makes it structural -- ``settled_contribution`` below can only ever see
-    # a row that has SETTLED, which answers from the settlement it RECORDED
-    # (plan step X-au-c3) rather than from its plan -- and loads only the rows
-    # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
-    # set it replaces (``ref_seeds``: Paid, Received).
+    # "Settled checking EXPENSE" is asked in the queries (a leg's side by
+    # ``expense_legs``), not a later ``if`` beside the sum (X-au-c2), so each
+    # accessor below sees only what SETTLED and answers from its RECORD (X-au-c3).
+    # ``settled_status_ids()`` is the ``is_settled`` set (Paid, Received).
     recent_txns = (
         db.session.query(Transaction)
         .filter(
@@ -324,6 +345,7 @@ def _recent_settled_expenses_monthly(
             Transaction.account_id.in_(checking_ids),
             Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
+            Transaction.transfer_id.is_(None),
             Transaction.transaction_type_id == ref_cache.txn_type_id(
                 TxnTypeEnum.EXPENSE,
             ),
@@ -338,10 +360,17 @@ def _recent_settled_expenses_monthly(
         .options(selectinload(Transaction.entries))
         .all()
     )
+    legs = expense_legs(recorded_transfer_legs(
+        Transfer.from_account_id.in_(checking_ids),
+        Transfer.pay_period_id.in_(recent_period_ids),
+        Transfer.scenario_id == scenario_id,
+        Transfer.is_deleted.is_(False),
+        Transfer.status_id.in_(settled_status_ids()),
+    ))
 
     total_expenses = sum(
         (settled_contribution(txn) for txn in recent_txns), Decimal("0.00"),
-    )
+    ) + sum((leg_settled_contribution(leg) for leg in legs), Decimal("0.00"))
 
     per_period = total_expenses / len(recent_periods)
     return pay_cadence.per_paycheck_to_monthly(per_period)

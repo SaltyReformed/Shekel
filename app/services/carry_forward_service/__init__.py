@@ -25,9 +25,11 @@ each:
     whole and carry their entries, because there is no recurring canonical
     to roll an unspent leftover into.
 
-  * **Transfer shadows** (``transfer_id IS NOT NULL``) -- delegate to
-    ``transfer_service.update_transfer`` so the parent transfer and
-    both shadow legs move atomically (transfer invariant 5).
+  * **Transfers** (the source period's still-Projected ``budget.transfers``
+    rows, walked as transfers since plan step balance:X-bi-6-4c-2, where the
+    shadow rows were walked and de-duplicated) -- delegate to
+    ``transfer_service.update_transfer`` so the transfer and both legs move
+    atomically (transfer invariant 5).
 
 The whole batch is atomic.  The envelope branch raises a
 ``ValidationError`` only on the AMBIGUOUS guard -- a destination period

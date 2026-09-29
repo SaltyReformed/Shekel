@@ -495,7 +495,6 @@ class TestDockerignoreCoverage:
         "scripts/init_database.py",
         "scripts/seed_user.py",
         "scripts/seed_ref_tables.py",
-        "scripts/seed_tax_brackets.py",
         "scripts/audit_cleanup.py",
         "scripts/integrity_check.py",
         "scripts/reset_mfa.py",

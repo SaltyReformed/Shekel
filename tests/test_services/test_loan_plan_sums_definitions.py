@@ -471,8 +471,12 @@ class TestTheEstimateIsWhatGenerationWouldWrite:
         for payment in estimates:
             period = calendar.span_containing(payment.due_date)
             assert payment.due_date == period.start_date, payment
+            # The occurrence this payday funds: the 1st of its month (a
+            # ``Monthly First`` rule fires on the 1st and is funded by the
+            # first paycheck starting on or after it).
             assert payment.due_date == compute_due_date(
-                template.recurrence_rule, period,
+                template.recurrence_rule, period.start_date.replace(day=1),
+                period,
             )
         assert any(p.due_date.day != 1 for p in estimates), (
             "a payday-dated estimate must differ from the occurrence on the 1st"

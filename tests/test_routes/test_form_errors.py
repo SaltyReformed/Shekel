@@ -497,24 +497,25 @@ class TestTheGenericFallbackSurvives:
         that "Not a valid integer." beside a visible widget adds noise.
         """
         with app.app_context():
-            # ``due_day_of_month`` since plan step R7c-c.  The subject has moved
-            # twice now and for the same reason both times: this arm needs a
-            # field that is DECLARED (an unknown key is dropped by
+            # ``default_amount`` since plan step recurrence:R5-a.  The subject
+            # has moved three times now and for the same reason each time: this
+            # arm needs a field that is DECLARED (an unknown key is dropped by
             # ``unknown = EXCLUDE`` and produces no error at all, which would
             # make the assertion below pass against an EMPTY dict -- the
             # tautology a moved subject leaves behind) and NOT allowlisted.
             # R7c-b deleted ``day_of_month``; R7c-c put ``nominal_day`` on the
             # allowlist, because the pair rule beside it authors a real sentence
-            # naming the control.
+            # naming the control; R5-a dropped ``due_day_of_month`` with its
+            # column (ruling R-R96).
             #
-            # ``due_day_of_month`` is the right subject and not merely the next
-            # one available: it is the servicer's date for a bill the cadence
-            # schedules elsewhere, no layer authors a refusal against it, and 99
-            # is outside its 1-31 domain -- so what comes back is marshmallow's
-            # own stock Range sentence, which is the shape under test.
+            # ``default_amount`` is the right subject and not merely the next
+            # one available: no layer authors a refusal against it, and a
+            # negative figure is outside its ``Range(min=0)`` -- so what comes
+            # back is marshmallow's own stock Range sentence, which is the
+            # shape under test.
             errors = TemplateCreateSchema().validate(
-                {"due_day_of_month": "99"}, partial=True,
+                {"default_amount": "-1.00"}, partial=True,
             )
 
-            assert "due_day_of_month" in errors
+            assert "default_amount" in errors
             assert flash_message_for_errors(errors) == GENERIC_VALIDATION_FLASH

@@ -28,6 +28,7 @@ from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.utils.balance_predicates import settled_status_ids
 from app.services.amortization_engine import PaymentDates, PaymentRecord
@@ -484,36 +485,37 @@ class TestGetPaymentHistory:
     def test_a_settled_shadow_with_no_day_is_refused_not_dated(
         self, app, db, seed_user, seed_periods,
     ):
-        """A broken settled-iff-dated row FAILS LOUD rather than being guessed.
+        """A broken settled-iff-dated payment FAILS LOUD rather than being guessed.
 
         The state is reachable only by bypassing the status seam -- here a bulk
-        ``query.update`` on ``status_id``, the shape finding N-65 measured 41 of
-        in the suite.  The resolver's cut now reads this day, so inventing one
-        would place a real payment on a day nothing recorded; the shared
-        accessor refuses instead
-        (:func:`app.utils.balance_predicates.settled_day`).
+        ``query.update``, the shape finding N-65 measured 41 of in the suite.
+        The resolver's cut now reads this day, so inventing one would place a
+        real payment on a day nothing recorded; the shared accessor refuses
+        instead (:func:`app.utils.balance_predicates.settled_day`).
 
-        **The bulk update writes a VALID settlement record beside the status**
-        (plan step X-au-c3), so the row is broken in exactly ONE way -- the
-        missing day -- and this grades the refusal it names.  Without it
-        ``row_valuation.settled_figure`` refuses first, for the different reason
-        that a settled row states what moved, and the test would pass on an
-        error it was not written about.
+        **The payment is settled through the door, so its transfer and its
+        covering movement are VALID, and the bulk update then releases only the
+        movement's day pair** -- the day a settled payment's leg reads since
+        plan step balance:X-bi-6-4b -- so it is broken in exactly ONE way, the
+        missing day, and this grades the refusal it names.  *Re-expressed under
+        rule 5 (developer approval, 2026-09-24): it bulk-updated the income
+        SHADOW's status to Paid under a still-Projected transfer, which the
+        loan no longer reads -- that state is a status drift the plan half
+        counts once (ruling R-BAL140).*
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
             _create_transfer_to_loan(
                 seed_user, loan, seed_periods[2], Decimal("1500.00"),
-                status_enum=StatusEnum.PROJECTED,
+                status_enum=StatusEnum.DONE,
+                settled_on=seed_periods[2].start_date,
             )
             db.session.commit()
 
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-            db.session.query(Transaction).filter(
-                Transaction.account_id == loan.id,
-                Transaction.transaction_type_id == income_type_id,
+            db.session.query(TransactionEntry).filter(
+                TransactionEntry.account_id == loan.id,
             ).update(
-                {"status_id": ref_cache.status_id(StatusEnum.DONE)},
+                {"settled_on": None, "settled_day_basis_id": None},
                 synchronize_session=False,
             )
             db.session.commit()

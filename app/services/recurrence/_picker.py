@@ -74,10 +74,7 @@ from app.services.recurrence._frequency import (
     can_repeat_within_month,
     has_day_of_month_coordinate,
 )
-from app.services.recurrence._offer import (
-    authorable_cadences,
-    fires_on_day_of_month,
-)
+from app.services.recurrence._offer import authorable_cadences
 
 #: What each cadence UNIT is called on the form, singular and plural.
 #:
@@ -134,30 +131,14 @@ class CadenceWire:
     Attributes:
         unit_id: The ``ref.recurrence_units`` id the form posts.
         placement_id: The ``ref.period_placements`` id the form posts.
-        schedules_on_day_of_month: Whether a row generated from this cadence is
-            DATED from a day of the month, which is what decides whether the
-            form shows its Due Day input -- that field states the servicer's
-            date only where the cadence has a scheduling day to differ from.
-            Answered by
-            :func:`~app.services.recurrence._offer.fires_on_day_of_month`
-            rather than by a unit test the script could repeat, because it is
-            a property of the ``(unit, placement)`` PAIR: a monthly cadence
-            funded from the month's first paycheck dates its rows from the
-            PAYCHECK.
-
-            **It was ``anchors_day_of_month`` until plan step R8-a**, named for
-            the anchor-family router that answered it; that router selected
-            between first-occurrence derivations ruling **R-R16** deleted, and
-            the name outlived the concept.  The fact and its producer are
-            unchanged -- what moved is that the wire now says what the value
-            decides, in the same word ``scheduling_day_of_month`` uses to
-            answer it for a STORED rule.
         has_day_of_month_coordinate: Whether occurrences land on a day of the
             month at all, which is what decides whether the "repeating on"
-            control has anything to ask.  **Not the same fact as the one
-            above**, and shipping only that one was a wrong-money defect plan
-            step R7c-b introduced: this one is ``True`` for ``Monthly First``
-            where the one above is ``False``, so
+            control has anything to ask.  **Not the same fact as
+            :func:`~app.services.recurrence._offer.fires_on_day_of_month`'s**
+            (whether a ROW is dated from that day, keyed on the ``(unit,
+            placement)`` pair), and shipping only that one was a wrong-money
+            defect plan step R7c-b introduced: this one is ``True`` for
+            ``Monthly First`` where that one is ``False``, so
             the script cleared and disabled a control the SERVER had rendered
             enabled -- and the update door reads ``nominal_day`` off the same
             presence key as ``starts_on``, so changing only "Funded from" on a
@@ -181,7 +162,6 @@ class CadenceWire:
 
     unit_id: int
     placement_id: int
-    schedules_on_day_of_month: bool
     has_day_of_month_coordinate: bool
     can_repeat_within_month: bool
 
@@ -202,6 +182,11 @@ class CadenceOption:
     whether a cycle SKIPS months and therefore whether a "Month" select
     narrowed anything; ruling R-R16 put the cycle's month on ``starts_on``, so
     there is no such control and no consumer for the fact.
+
+    **``schedules_on_day_of_month`` left at plan step recurrence:R5-a** the
+    same way, with the Due Day of Month control it decided (ruling R-R96,
+    developer 2026-09-23): whether a ROW is dated from a day of the month, a
+    fact nothing on the form reads once that control is gone.
 
     Attributes:
         wire: The ids and facts both the template and the script read.
@@ -252,9 +237,6 @@ def cadence_options() -> tuple[CadenceOption, ...]:
                     unit_id=ref_cache.recurrence_unit_id(cadence.unit),
                     placement_id=ref_cache.period_placement_id(
                         cadence.placement,
-                    ),
-                    schedules_on_day_of_month=fires_on_day_of_month(
-                        cadence.unit, cadence.placement,
                     ),
                     has_day_of_month_coordinate=(
                         has_day_of_month_coordinate(cadence.unit)
@@ -413,7 +395,7 @@ class EndBoundOption:
             or ``None`` for the shape that needs none.  The script shows that
             one and disables the others, so exactly the input the chosen shape
             reads is the input that submits -- the same idiom the nominal-day
-            and due-day controls use, and what keeps a stale value from a shape
+            control uses, and what keeps a stale value from a shape
             the user moved off from reaching the door.
     """
 

@@ -140,8 +140,9 @@ class ProjectionBatch:
             story: the ``/retirement`` picture prices this wiring PER PLAN
             POINT under the raise set the point believes
             (:func:`~app.services.projection_inputs.price_payroll_feeds`:
-            no query at the stored set, one tax-series load per profile the
-            first time a probed set names it) and replaces the feeds on a
+            no query at the stored set, nor at a probed one since plan step
+            salary:X-at-1 -- one tax-series load per profile the first time a
+            probed set named it before that) and replaces the feeds on a
             copy of this batch.
         feeds: ``{account_id: AccountPayrollFeed}`` -- what each account's
             payroll puts in per payday and what gross funds its employer

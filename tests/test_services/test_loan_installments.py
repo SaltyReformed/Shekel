@@ -13,13 +13,14 @@ they are graded on different grounds:
   here is the arithmetic no case reached before: a cascade past two allocated
   months, and the day clamp a ``payment_day`` of 31 needs in February.
 * :func:`~app.services.loan_ledger.payment_installments` is a loader, so it is
-  graded against the query it must not narrow.  The load-bearing case is
-  :meth:`TestPaymentInstallments.test_the_two_sets_partition_the_shadow_query`:
-  the producer reads the SETTLED set and the PROJECTED set and unions them,
-  which is only equal to "every non-excluded shadow" while those two statuses
-  exhaust the non-excluded band.  That is a claim about ``ref.statuses``, not
-  about this code, so it is asserted over a loan carrying one shadow in EVERY
-  status rather than assumed -- a sixth status would fail it.
+  graded against the set it must not narrow.  The load-bearing case is
+  :meth:`TestPaymentInstallments.test_the_two_halves_partition_the_transfers_into_the_loan`:
+  the producer reads the SETTLED half and the PROJECTED half and unions them,
+  which is only equal to "every live, non-excluded transfer into the loan,
+  once" while those two halves exhaust the non-excluded band.  That is a claim
+  about ``ref.statuses``, not about this code, so it is asserted over a loan
+  carrying one transfer in EVERY status rather than assumed -- a sixth status
+  would fail it.
 """
 
 from contextlib import contextmanager
@@ -36,7 +37,9 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.amortization_engine import schedule_dates, slotted_dates
 from app.services.loan_ledger import payment_installments
-from app.services.loan_loaders import _shadows, query_shadow_income
+from app.models.transfer import Transfer
+from app.services.loan_loaders import _shadows
+from app.utils.balance_predicates import balance_excluded_status_ids
 from app.services.loan_payment_service import get_payment_history, load_loan_context
 from app.services.cash_ledger import derived_amount_basis
 from app.services.transfer_legs import TransferLeg
@@ -105,16 +108,12 @@ def _income_shadow(transfer, loan):
 def _shadow_id_of(installment, loan):
     """Return the id of the income SHADOW an installment stands for.
 
-    Since plan step balance:X-bi-6a a projected installment's ``source`` is
-    the leg of its parent transfer rather than the shadow row, so a control
-    comparing the feed against the shadow query maps each installment back to
-    the shadow it replaces: the settled source IS the shadow, and a leg's
-    shadow is looked up off its parent.
+    Every installment's ``source`` is the leg of its parent transfer -- a
+    projected one since plan step balance:X-bi-6a, a settled one since
+    balance:X-bi-6-4b -- so a control stated in shadow ids maps each
+    installment back to the shadow it replaces, looked up off its parent.
     """
-    source = installment.source
-    if isinstance(source, TransferLeg):
-        return _income_shadow(source.transfer, loan).id
-    return source.id
+    return _income_shadow(installment.source.transfer, loan).id
 
 
 #: How many payments the eager-load controls build.  More than one, because the
@@ -261,28 +260,29 @@ class TestScheduleDates:
 class TestPaymentInstallments:
     """The loader: which rows, in what order, carrying which dates."""
 
-    def test_the_two_sets_partition_the_shadow_query(
+    def test_the_two_halves_partition_the_transfers_into_the_loan(
         self, app, db, seed_user, seed_periods,
     ):
-        """The producer stands for EXACTLY the rows ``query_shadow_income`` does.
+        """The producer answers EVERY live, non-excluded transfer into the loan, ONCE.
 
         **The control this producer's whole shape rests on.**  It reads the
-        SETTLED set and the PROJECTED set and unions them, which equals "every
-        non-excluded shadow" only while ``Projected`` and the settled statuses
-        exhaust the band ``query_shadow_income`` leaves standing.  That is a
-        claim about the ``ref.statuses`` seed -- exactly the kind of set defined
-        by subtraction that nobody re-censuses -- so a shadow is created in
-        EVERY status and the two row sets are compared directly.  Seeding a
+        SETTLED half and the PROJECTED half and unions them, which equals
+        "every live, non-excluded transfer into the loan" only while those two
+        halves exhaust the band the balance-excluded statuses leave standing.
+        That is a claim about the ``ref.statuses`` seed -- exactly the kind of
+        set defined by subtraction that nobody re-censuses -- so a transfer is
+        created in EVERY status and the two are compared directly.  Seeding a
         sixth status that is neither projected nor settled nor
-        balance-excluded would fail here rather than silently dropping its rows
-        from every loan schedule.
+        balance-excluded would fail here rather than silently dropping its
+        payments from every loan schedule.
 
-        **Since plan step balance:X-bi-6a the projected half is read off the
-        PARENT transfers**, so each installment is mapped back to the shadow it
-        stands for (:func:`_shadow_id_of`) before the sets are compared: the
-        claim is unchanged -- every non-excluded shadow is answered exactly
-        once -- and the mapping is what says a projected leg answers its
-        shadow rather than merely a row of the same count.
+        **Re-expressed at plan step balance:X-bi-6-4b** (developer approval
+        under rule 5, 2026-09-24).  It compared the feed against
+        ``query_shadow_income``'s shadow rows, a query that step deleted when
+        both halves became legs of transfers; the claim is unchanged and is
+        now stated over the transfers themselves.  The comparison is of
+        SORTED LISTS, not sets, so a payment answered twice fails it -- the
+        "exactly once" the claim always made.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -300,26 +300,29 @@ class TestPaymentInstallments:
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
-            queried = {
-                shadow.id
-                for shadow in query_shadow_income(
-                    loan.id, scenario_id, options=(),
-                ).all()
-            }
-            produced = {
-                _shadow_id_of(installment, loan)
+            queried = sorted(
+                transfer.id
+                for transfer in db.session.query(Transfer).filter(
+                    Transfer.to_account_id == loan.id,
+                    Transfer.scenario_id == scenario_id,
+                    Transfer.is_deleted.is_(False),
+                    ~Transfer.status_id.in_(balance_excluded_status_ids()),
+                )
+            )
+            produced = sorted(
+                installment.source.transfer.id
                 for installment in payment_installments(
                     loan.id, scenario_id, _PAYMENT_DAY,
                     options=(), leg_options=(),
                 )
-            }
+            )
 
             # Non-vacuous in both directions: the query must have kept some
-            # rows and dropped some, or "the two sets agree" says nothing.
-            assert queried, "query_shadow_income returned nothing to partition"
+            # transfers and dropped some, or "the two agree" says nothing.
+            assert queried, "no transfer into the loan survived to partition"
             assert len(queried) < len(list(StatusEnum)), (
                 "no status was excluded -- this case would pass over a "
-                "producer that simply read every shadow"
+                "producer that simply read every transfer"
             )
             assert produced == queried
 
@@ -660,9 +663,12 @@ def _statements_issued():
 #: before it found nothing, and a control that names a table its fixture cannot
 #: reach grades the fixture.
 _PRICING_TABLE = "budget.transfer_templates"
-#: The PLAN relation, read exactly once by either feed -- the leg loader's own
-#: statement (plan step balance:X-bi-6a), asserted so a projected payment
-#: that arrived through a per-row walk from a shadow would be seen.
+#: The PLAN relation, read exactly once PER HALF by either feed -- each half's
+#: own statement (the projected half's since plan step balance:X-bi-6a, the
+#: settled half's since balance:X-bi-6-4b), asserted so a payment that arrived
+#: through a per-row walk would be seen.  *It was once, for the projected half
+#: alone, until the settled half moved onto transfers (rule-5 re-expression,
+#: developer approval 2026-09-24).*
 _PLAN_TABLE = "budget.transfers"
 
 
@@ -691,7 +697,8 @@ class TestTheCallerStatesItsOwnEagerLoad:
         The whole point of the seam: the schedule replay's reference reads three
         dates per payment and no figure, so it must not pay for -- or be able to
         fail on -- the tier that prices one.  The plan relation itself is read
-        ONCE -- that is the projected half's own load, not a pricing walk.
+        TWICE -- each half's own load (see ``_PLAN_TABLE``), not a pricing
+        walk.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -712,7 +719,7 @@ class TestTheCallerStatesItsOwnEagerLoad:
             assert len({
                 i.source.transfer.transfer_template_id
                 for i in installments
-                if isinstance(i.source, TransferLeg)
+                if not i.dates.is_confirmed
             }) == _SEAM_PROJECTED, (
                 "the projected payments do not carry distinct definitions -- "
                 "the count below could not tell a lazy walk from an eager load"
@@ -724,8 +731,8 @@ class TestTheCallerStatesItsOwnEagerLoad:
                 f"back into the loader, so a consumer of the DATES is paying "
                 f"for the tier that prices them"
             )
-            assert _reads_of(_PLAN_TABLE, statements) == 1, (
-                "the plan relation was read other than once: the projected "
+            assert _reads_of(_PLAN_TABLE, statements) == 2, (
+                "the plan relation was read other than once per half: each "
                 "half is loaded from it in ONE statement, whatever the caller "
                 "states"
             )
@@ -762,8 +769,9 @@ class TestTheCallerStatesItsOwnEagerLoad:
                 f"finding N-296 is about, and a count of 0 means nothing was "
                 f"loaded at all"
             )
-            assert _reads_of(_PLAN_TABLE, statements) == 1, (
-                "the plan relation was read other than once by the priced feed"
+            assert _reads_of(_PLAN_TABLE, statements) == 2, (
+                "the plan relation was read other than once per half by the "
+                "priced feed"
             )
 
 

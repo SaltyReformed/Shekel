@@ -711,7 +711,7 @@ def _clone_worker_database(db_name, admin_url, template=None):
 
 import pytest
 
-from app import create_app
+from app import create_app, tax_law as app_tax_law
 from app.extensions import db as _db
 from app.utils.dates import DISPLAY_TIMEZONE, display_today
 from app.models.user import User, UserSettings
@@ -749,6 +749,7 @@ from tests._test_helpers import (
     make_investment_account,
     open_books_before_the_first_assertion,
     open_owner_calendar,
+    start_test_pay_list,
     posted_loan_balance_at,
     rebuild_calendar,
     rebuild_calendar_on,
@@ -1917,6 +1918,33 @@ def seed_user(app, db):  # pylint: disable=unused-argument
         dict with keys: user, settings, account, scenario, categories.
     """
     return build_seed_user(db)
+
+
+@pytest.fixture()
+def tax_law(monkeypatch):
+    """Return an installer that makes a test price under the tax law it names.
+
+    **The ONE way a test changes the tax law** (ruling salary:R-SAL80, "Real
+    law, tests may swap").  Every test prices under :data:`app.tax_law.LAW`,
+    the law the app ships, unless it calls ``tax_law(law)``: a test whose
+    figures were worked with no tax installs
+    ``tests._test_helpers.EMPTY_TAX_LAW``, and one worked on made-up figures
+    installs those (the builders beside it), so its expected figures do not
+    move when a new year of the real law is published.
+
+    The installer replaces the module attribute, which is what the resolver
+    (:mod:`app.services.tax_config_service`) and the Settings page read at
+    call time; ``monkeypatch`` puts the shipped law back after the test.
+
+    Returns:
+        A function taking a :class:`app.tax_law.TaxLaw`, installing it, and
+        returning it.
+    """
+    def install(law):
+        monkeypatch.setattr(app_tax_law, "LAW", law)
+        return law
+
+    return install
 
 
 def _reset_seed_calendar(owner, first_payday, num_periods, cadence_days):
@@ -3168,10 +3196,15 @@ def _build_full_user_data(db, seed_user, periods):
         scenario_id=scenario.id,
         filing_status_id=filing_single.id,
         name="Day Job",
-        annual_salary=Decimal("75000.00"),
         state_code="NC",
     )
     db.session.add(salary_profile)
+    # Its pay list (plan step salary:X-av-3a): $75,000.00 a year at 26 paychecks, rounded to the cent, from
+    # the first period's payday -- what migration 70680a4a7405 writes for the
+    # yearly figure this fixture carried before.
+    start_test_pay_list(
+        salary_profile, Decimal("2884.62"), periods[0].start_date,
+    )
 
     db.session.commit()
 
@@ -3306,10 +3339,15 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         scenario_id=scenario.id,
         filing_status_id=filing_single.id,
         name="Second Job",
-        annual_salary=Decimal("60000.00"),
         state_code="NC",
     )
     db.session.add(salary_profile)
+    # Its pay list (plan step salary:X-av-3a): $60,000.00 a year at 26 paychecks, rounded to the cent, from
+    # the first period's payday -- what migration 70680a4a7405 writes for the
+    # yearly figure this fixture carried before.
+    start_test_pay_list(
+        salary_profile, Decimal("2307.69"), periods[0].start_date,
+    )
 
     db.session.commit()
 

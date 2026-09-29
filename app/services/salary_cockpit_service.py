@@ -108,9 +108,15 @@ def clean_raise_label(raw_label: str) -> str:
     land in one period: ``"{TYPE} +{pct}%"`` (percentage, e.g.
     ``"MERIT +2.5000%"`` -- the trailing places follow the stored
     ``Numeric(5, 4)`` precision) and ``"{TYPE} +${amount:,.2f}"`` (flat,
-    e.g. ``"COLA +$2,000.00"``).  This cleaner reformats each event for
-    display: the type word is title-cased (``COLA`` -> ``Cola``, matching
-    the app-wide ``raise_type.name|title`` convention) and a percentage's
+    e.g. ``"COLA +$2,000.00"``).  Since plan step salary:X-av-3a
+    :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on` emits a
+    third, alone, for a recorded pay change (ruling **R-SAL84**):
+    ``"PAY +${amount:,.2f}"`` or ``"PAY -${amount:,.2f}"``, the one shape
+    carrying a minus, with a trailing ``" a year"`` when the change is
+    measured in yearly pay across a change of rhythm (kept verbatim here).
+    This cleaner reformats each event for display: the type word is
+    title-cased (``COLA`` -> ``Cola``, matching the app-wide
+    ``raise_type.name|title`` convention) and a percentage's
     trailing zeros are trimmed (``+2.5000%`` -> ``+2.5%``,
     ``+3.0000%`` -> ``+3%``).  Flat amounts keep their to-the-cent money
     formatting verbatim.  Pure string manipulation on the emitter's own
@@ -133,6 +139,8 @@ def clean_raise_label(raw_label: str) -> str:
     for event in raw_label.split(", "):
         type_part, sep, amount_part = event.partition(" +")
         if not sep:
+            type_part, sep, amount_part = event.partition(" -")
+        if not sep:
             # Not an emitter shape; pass through untouched rather than
             # mangling an unrecognised string.
             cleaned_events.append(event)
@@ -142,8 +150,28 @@ def clean_raise_label(raw_label: str) -> str:
             if "." in number:
                 number = number.rstrip("0").rstrip(".")
             amount_part = f"{number}%"
-        cleaned_events.append(f"{type_part.title()} +{amount_part}")
+        cleaned_events.append(f"{type_part.title()}{sep}{amount_part}")
     return ", ".join(cleaned_events)
+
+
+def is_pay_cut(raw_label: str | None) -> bool:
+    """Return whether a calculator ``raise_event`` string announces a pay CUT.
+
+    Ruling **R-SAL85** ("Green up, amber down"): a recorded pay change that
+    lowers base pay renders amber with a down arrow under "Pay cut:", while a
+    raise or a pay increase keeps the green "Raise:" banner.  The cut is the
+    one emitter shape carrying a minus (:func:`clean_raise_label` lists them),
+    and :meth:`~app.services.payroll_basis.PayrollBasis.pay_event_on` emits it
+    alone, never joined with a raise.
+
+    Args:
+        raw_label: The verbatim ``PeriodInfo.raise_event`` string, or
+            ``None``.
+
+    Returns:
+        ``True`` for ``"PAY -$..."``; ``False`` otherwise, empty included.
+    """
+    return bool(raw_label) and raw_label.startswith("PAY -")
 
 
 def raise_run_starts(current_raise_event: str, prev_raise_event: str | None) -> bool:
@@ -229,16 +257,25 @@ def raise_run_start_period_ids(pairs: list[PeriodPair]) -> set[int]:
 
 
 def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:
-    """Return the net of the nearest regular paycheck at the same salary.
+    """Return the net of the nearest regular paycheck at the same base pay.
 
     A third-paycheck period skips the 24x deductions, so its net spikes
     above the regular per-paycheck net.  For the staircase chart line and
     the third-paycheck delta chip we need the "base" regular net at the
-    same annual-salary level: the net of the nearest NON third-paycheck
-    period sharing the period-at-``idx``'s effective annual salary.  Prefer
-    the closest earlier period; fall back to the closest later one; and, in
-    the degenerate case where no regular period at that salary exists, fall
+    same pay level: the net of the nearest NON third-paycheck period
+    sharing the period-at-``idx``'s base pay per paycheck.  Prefer the
+    closest earlier period; fall back to the closest later one; and, in
+    the degenerate case where no regular period at that pay exists, fall
     back to the period's own net.
+
+    **Keyed on BASE PAY since plan step salary:X-av-2** (ruling
+    **R-SAL70**), where it keyed on the annual salary.  The two were one
+    test while every payday divided the annual by the same count; once each
+    payday divides by its own era's, one annual salary is two paychecks
+    across a change of rhythm, and a third paycheck of a new biweekly era
+    matched against a regular WEEKLY paycheck at the same salary would show
+    the difference of the two rhythms as a third-paycheck bonus.  A raise
+    still separates the levels, because it moves the base.
 
     Args:
         pairs: The full ordered ``(period, breakdown)`` list.
@@ -247,16 +284,16 @@ def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:
     Returns:
         The base regular net pay as a :class:`~decimal.Decimal`.
     """
-    target_salary = pairs[idx][1].earnings.annual_salary
+    target_base = pairs[idx][1].earnings.base_biweekly
     for j in range(idx - 1, -1, -1):
         breakdown = pairs[j][1]
         if (not breakdown.period.is_third_paycheck
-                and breakdown.earnings.annual_salary == target_salary):
+                and breakdown.earnings.base_biweekly == target_base):
             return breakdown.earnings.net_pay
     for j in range(idx + 1, len(pairs)):
         breakdown = pairs[j][1]
         if (not breakdown.period.is_third_paycheck
-                and breakdown.earnings.annual_salary == target_salary):
+                and breakdown.earnings.base_biweekly == target_base):
             return breakdown.earnings.net_pay
     return pairs[idx][1].earnings.net_pay
 
@@ -304,8 +341,8 @@ def next_third_after(pairs: list[PeriodPair], today: date) -> dict[str, object] 
     Returns:
         ``{"period_start": date, "net": Decimal, "delta": Decimal}`` where
         ``delta`` is the third-paycheck net minus the base regular net at
-        the same salary level, or ``None`` when no future third paycheck
-        exists in the projection.
+        the same base pay (:func:`base_regular_net`), or ``None`` when no
+        future third paycheck exists in the projection.
     """
     for idx, (period, breakdown) in enumerate(pairs):
         if period.start_date > today and breakdown.period.is_third_paycheck:

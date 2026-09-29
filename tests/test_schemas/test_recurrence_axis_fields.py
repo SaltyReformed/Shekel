@@ -905,9 +905,10 @@ class TestTheLineSchemasTakeTheCadenceAndTheSpan:
     a start -- blank meaning the opening payday -- and an optional end, so
     :class:`~app.schemas.validation.salary.PaycheckLineCreateSchema` inherits
     the fuller ``RecurrenceFormFieldsMixin`` with the start not required.
-    What is STILL undeclared is the one control a payroll line has no use
-    for, ``due_day_of_month`` (a servicer's date), which a crafted POST
-    stating meets ``BaseSchema``'s ``unknown = EXCLUDE``.
+    The one control a payroll line was still denied, the template form's
+    ``due_day_of_month`` (a servicer's date), left every form at plan step
+    recurrence:R5-a with its column (ruling R-R96), so a line and a template
+    now declare the same recurrence controls.
     """
 
     _THE_FOUR = frozenset({
@@ -922,16 +923,13 @@ class TestTheLineSchemasTakeTheCadenceAndTheSpan:
         ("label", "schema_cls"),
         [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
-    def test_the_cadence_and_the_span_are_declared_and_the_due_day_is_not(
+    def test_the_cadence_and_the_span_are_declared(
         self, app, label, schema_cls,
     ):
-        """Eight of the mixin's nine, on both line schemas; the ninth is the template's alone."""
+        """The mixin's nine controls, on both line schemas."""
         with app.app_context():
             declared = set(schema_cls().fields)
-            template_declared = set(TemplateCreateSchema().fields)
         assert (self._THE_FOUR | self._THE_SPAN_FIVE) <= declared, label
-        assert "due_day_of_month" not in declared, label
-        assert "due_day_of_month" in template_declared
         assert not schema_cls.recurrence_start_is_required, label
         assert TemplateCreateSchema.recurrence_start_is_required
 
@@ -939,10 +937,10 @@ class TestTheLineSchemasTakeTheCadenceAndTheSpan:
         ("label", "schema_cls"),
         [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
-    def test_a_stated_span_is_loaded_as_one_bound_and_a_due_day_is_dropped(
+    def test_a_stated_span_is_loaded_as_one_bound(
         self, app, label, schema_cls,
     ):
-        """``starts_on`` loads; the bound's three controls load as ONE value; the due day never does."""
+        """``starts_on`` loads; the bound's three controls load as ONE value."""
         # pylint: disable=import-outside-toplevel
         from app.services.recurrence import EndsOnDate
 
@@ -959,7 +957,6 @@ class TestTheLineSchemasTakeTheCadenceAndTheSpan:
                     ),
                     "interval_n": "1",
                     "starts_on": "2026-04-01",
-                    "due_day_of_month": "20",
                     "recurrence_end_mode": "on_date",
                     "end_date": "2027-01-01",
                     "max_occurrences": "3",
@@ -972,7 +969,6 @@ class TestTheLineSchemasTakeTheCadenceAndTheSpan:
         assert loaded["recurrence_end_mode"] == EndsOnDate(on=date(2027, 1, 1)), label
         # The compose consumed both inputs; the shape kept the one it needed.
         assert "end_date" not in loaded and "max_occurrences" not in loaded, label
-        assert "due_day_of_month" not in loaded, label
 
     def test_the_deduction_schema_hears_its_cadence_refusals(self, app):
         """The two refusals the four controls can raise reach the deduction form verbatim.

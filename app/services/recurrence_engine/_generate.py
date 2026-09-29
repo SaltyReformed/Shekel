@@ -3,7 +3,9 @@ Shekel Budget App -- Recurrence Engine: filling periods that hold no row
 
 :func:`generate_for_template`, the entry point that CREATES, and
 :func:`can_generate_in_period`, its read-only mirror for callers that need to
-predict it without mutating.
+predict it without mutating -- with :func:`occurrences_in_period`, the
+occurrences that mirror reads, for a caller that has to date a row the engine
+will not write (carry-forward's override row, ruling **R-R97**).
 
 **It never touches a row that already exists** -- any existing row, in any
 state, makes its paycheck skipped -- which is the difference between this leaf
@@ -88,7 +90,9 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
             The staged :class:`~app.models.transaction.Transaction`.
         """
         txn = Transaction(
-            **_derive_row_fields(template, plan.rule, period)._asdict(),
+            **_derive_row_fields(
+                template, plan.rule, occurrence, period,
+            )._asdict(),
             # The OWNER sits here beside the other four rather than inside
             # ``DerivedRowFields`` (plan step ``pay_calendar:C13-a``), for the
             # reason stated above about ``occurs_on``: it is what the row IS,
@@ -204,20 +208,7 @@ def can_generate_in_period(template, period_id, scenario_id, *, schedule):
         bool -- True when the engine would create a row, False when
         any of the gating conditions would skip it.
     """
-    plan = resolve_generation_plan(
-        template, schedule, scenario_id, None,
-        block_message="Blocked cross-user recurrence generation prediction",
-    )
-    if plan is None:
-        return False
-    # Membership rather than emptiness: *schedule*'s window may be wider than
-    # the one period asked about (the carry-forward context narrows it to the
-    # target, but a caller threading a whole-schedule value is equally valid),
-    # so the answer is "does the engine name THIS period".
-    here = [
-        placement for placement in plan.placements
-        if placement.period.period_id == period_id
-    ]
+    here = _placements_in_period(template, period_id, scenario_id, schedule)
     if not here:
         return False
 
@@ -228,6 +219,74 @@ def can_generate_in_period(template, period_id, scenario_id, *, schedule):
     return bool(occurrences_to_write(_selector(template, scenario_id), here))
 
 
+
+
+def occurrences_in_period(template, period_id, scenario_id, *, schedule):
+    """Return the occurrences the engine names in ONE period, ascending.
+
+    What :func:`can_generate_in_period` reads before it asks whether a row
+    still needs writing -- the same plan, narrowed to the same period by the
+    same filter -- so a caller dating a row in that paycheck and the
+    prediction that routed it there cannot disagree about which occurrences
+    the rule names.  Its caller is carry-forward's override row (ruling
+    **R-R97**, plan step recurrence:R5-a): a leftover rolled into a paycheck
+    where the rule fires is dated on that occurrence, the earliest if it
+    fires twice, and one rolled where it fires nowhere is dated on the
+    payday.  The rule's walk is the pass's memo, so asking this beside the
+    prediction reads it rather than walking it again.
+
+    Args:
+        template: The TransactionTemplate, its ``recurrence_rule``
+            relationship loaded (as :func:`can_generate_in_period` assumes).
+        period_id: The ``budget.pay_periods.id`` asked about; it must be in
+            *schedule*'s window, because the engine's answer is narrowed to it.
+        scenario_id: The scenario the row belongs to.
+        schedule: The owner's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+
+    Returns:
+        The occurrence dates, ascending, or ``()`` when the rule names none
+        there or the definition does not recur.
+    """
+    return tuple(
+        placement.occurrence
+        for placement in _placements_in_period(
+            template, period_id, scenario_id, schedule,
+        )
+    )
+
+
+def _placements_in_period(template, period_id, scenario_id, schedule):
+    """Return the generation plan's placements in *period_id*, or ``()``.
+
+    The one narrowing :func:`can_generate_in_period` and
+    :func:`occurrences_in_period` share.
+
+    Args:
+        template: The TransactionTemplate.
+        period_id: The ``budget.pay_periods.id`` asked about.
+        scenario_id: The scenario asked about.
+        schedule: The owner's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+
+    Returns:
+        The :class:`~._plan.PlannedOccurrence` values seated in that period,
+        ascending by occurrence.
+    """
+    plan = resolve_generation_plan(
+        template, schedule, scenario_id, None,
+        block_message="Blocked cross-user recurrence generation prediction",
+    )
+    if plan is None:
+        return ()
+    # Membership rather than emptiness: *schedule*'s window may be wider than
+    # the one period asked about (the carry-forward context narrows it to the
+    # target, but a caller threading a whole-schedule value is equally valid),
+    # so the answer is "does the engine name THIS period".
+    return tuple(
+        placement for placement in plan.placements
+        if placement.period.period_id == period_id
+    )
 
 
 def _selector(template, scenario_id):

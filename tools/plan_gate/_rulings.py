@@ -62,7 +62,7 @@ from collections import Counter
 
 from _plan_gate import _blank_fenced_regions
 from _registry import ARC_DOCS, PLANS
-from _tables import RULINGS_HEADER, RulingRow, rows_under
+from _tables import RULINGS_HEADER, RulingRow, is_table_row, rows_under
 
 #: Every arc's rulings, since ``balance:X-ao-2a`` finished the lift.
 RULINGS = PLANS / "rulings.md"
@@ -628,7 +628,7 @@ def _document_side_violations() -> list[str]:
                     f"decisions and points nowhere"
                 )
             stated = [b for b in body
-                      if b.lstrip().startswith("|")
+                      if is_table_row(b)
                       or re.match(r"^\s*(?:\d+\.|[-*])\s+\S", b)]
             if stated:
                 problems.append(

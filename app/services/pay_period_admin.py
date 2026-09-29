@@ -1,10 +1,10 @@
 """
 Shekel Budget App -- Pay Period Admin Service
 
-The structural / destructive pay-period operations -- the lock
-classifier and extend / truncate / regenerate -- kept out of the heavily
-imported read/generate ``pay_period_service`` so the destructive paths
-live in one isolated place.  Flask-isolated: takes and returns plain
+The structural / destructive pay-period operations -- extend / add-earlier /
+remove-earlier / truncate / regenerate / reset -- kept out of
+the heavily imported read/generate ``pay_period_service`` so the destructive
+paths live in one isolated place.  Flask-isolated: takes and returns plain
 data, never imports ``request`` / ``session``; flushes / bulk-deletes,
 never commits (the route owns the transaction).
 
@@ -15,7 +15,7 @@ changes ``budget.pay_periods``.  That single home is why plan step
 ``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
 place: while they were stored, the rule that they equalled the derivation
 over the owner's paydays lived there and nowhere else.  What stays here is
-the orchestration -- the four doors, and which reconciles a wipe owes; the two
+the orchestration -- the doors, and which reconciles a wipe owes; the two
 gates they consult (which periods may go: the lock classifier and the discard
 count) moved to :mod:`app.services.pay_period_gates` at plan step
 ``pay_calendar:C14-f``.
@@ -38,7 +38,7 @@ lock badge.
 
 **The ROLLING TOP-UP left at plan step C4** for
 :mod:`app.services.pay_period_rolling`, and the seam is the one this docstring
-already drew: the four doors here are DESTRUCTIVE and user-initiated, while the
+already drew: the doors here are STRUCTURAL and user-initiated, while the
 top-up is an opportunistic appender ``/grid`` and ``/dashboard`` run on every
 render.  Finding **P31** is what forced it -- this module reached 991 of
 pylint's 1,000-line ceiling, so the next correction would have had to delete
@@ -48,11 +48,12 @@ prose to fit, which is that finding's own sentence.
 C4-c dropped -- and since C4's FIRST commit that is the WHOLE module rather than the
 narrow claim it was** (finding **P70**).  Every door decides on the owner's
 schedule read once through ``pay_calendar``, in
-:class:`~app.services.pay_calendar.DerivedPeriod` values.  Three of the four
-doors still RETURN ``list[PayPeriod]`` from ``pay_period_write`` to their own
+:class:`~app.services.pay_calendar.DerivedPeriod` values.  Every door but
+truncate RETURNS ``list[PayPeriod]`` from ``pay_period_write`` to its own
 caller, which populates them -- the writer's OUTPUT, not an input to any
-decision here.  What the doors hand the writer is the set of
-``budget.pay_periods.id`` to retire.
+decision here.  What truncate, remove-earlier, regenerate and reset hand the
+writer beside any batch they state is the set of ``budget.pay_periods.id`` to
+retire; extend and add-earlier hand it a count and nothing else.
 
 **Each door resolves "today" ONCE, as the OWNER's civil day**
 (``utils.dates.display_today``), and both halves of that are plan step C2-f3b's.
@@ -83,11 +84,18 @@ render paths, and one clock and one map is the trade.
 """
 
 import logging
-from app.exceptions import PayPeriodResetBlocked, PayPeriodUnresolved
+
+from app.exceptions import (
+    PayPeriodRemovalRefused,
+    PayPeriodResetBlocked,
+    PayPeriodUnresolved,
+)
+from app.extensions import db
 from app.services import (
     account_posting_service,
     loan_posting_service,
     pay_period_gates,
+    pay_period_locks,
     pay_period_write,
 )
 from app.services.pay_calendar import calendar_for
@@ -170,6 +178,171 @@ def extend_pay_periods(user_id, num_periods):
     # payday.  ``uq_pay_periods_user_start`` is the hard guard; the lock keeps
     # the racing loser from hitting it as a 500.
     return pay_period_write.continue_paydays(user_id, num_periods)
+
+
+def add_earlier_pay_periods(user_id, num_periods):
+    """Add ``num_periods`` pay periods BEFORE the user's first one.
+
+    **"Add earlier paychecks"** (plan step ``pay_calendar:C18-b``, ruling
+    **R-PC87**): :func:`extend_pay_periods`' twin at the other end of the
+    schedule, and the same shape -- one call to the writer's door,
+    :func:`~app.services.pay_period_write.prepend_paydays`, which
+    records the paydays the owner's earliest rhythm projects just before
+    their first and moves that rhythm's phase down to the grid day of the
+    earliest of them (ruling **R-PC105**).  It states nothing and retires
+    nothing, so neither gate the destructive doors consult
+    (:mod:`app.services.pay_period_gates`) is asked; the new
+    periods come back EMPTY and the caller populates them (ruling
+    **R-R38**), where the books bound (``pay_calendar:C18-a``) generates no
+    item into a period that falls before the books of an account the item
+    moves money in.
+
+    Args:
+        user_id: The owning user's id.
+        num_periods: How many periods to add (>= 1; the route's schema
+            validates the range and the writer re-asks it).
+
+    Returns:
+        The newly created :class:`~app.models.pay_period.PayPeriod` objects,
+        flushed, ``start_date`` ascending, and EMPTY.
+
+    Raises:
+        ValidationError: The writer refuses the batch -- its size, an owner
+            with no paydays, a payday before the application's calendar or
+            before the owner's stated history (ruling **R-PC104**).
+        PayCalendarError: The owner holds no ``budget.pay_schedule`` row or
+            no era, as at :func:`extend_pay_periods`.
+    """
+    # The same serialisation as extend: the record is read under the owner's
+    # write lock, which a signed-in request's command transaction takes before
+    # its view reads anything of the owner's (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so a concurrent add or reset cannot move the
+    # first payday this batch is placed below.
+    return pay_period_write.prepend_paydays(user_id, num_periods)
+
+
+def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
+    """Delete every pay period before the one *start_from_period_id* names.
+
+    **"Remove earlier paychecks"** (plan step ``pay_calendar:C21``, rulings
+    **R-PC108** to **R-PC111**): the undo of :func:`add_earlier_pay_periods`,
+    as :func:`truncate_pay_periods` is :func:`extend_pay_periods`'.  Its shape
+    is truncate's at the schedule's other end -- one read of the calendar,
+    an id the owner picked resolved against their OWN periods, a
+    gate that decides, the writer that deletes -- and each difference is a
+    ruling:
+
+    * **It names the paycheck to START FROM, never a count** (**R-PC111**,
+      truncate's rule since finding **P13**): the id names the row the owner
+      picked, so a page left open while more paychecks were added still
+      means "this one is first".  That paycheck is always KEPT, so this door
+      never empties a schedule -- the second half of **R-PC110**'s "keep one"
+      made structural rather than refused.
+    * **Its gate asks what a paycheck HOLDS, not how it is locked**
+      (:func:`~app.services.pay_period_gates.gate_removable_head`,
+      **R-PC109**): every paycheck it exists to remove is past, which the
+      lock classifier calls HISTORICAL.  No confirmation step.
+    * **The writer moves the earliest era's phase UP with the removal**, or
+      refuses a removal that would take every payday that era pays
+      (``pay_period_write.retire_paydays``, **R-PC110**).
+    * **The posted ledger is RE-FILED, and may lose nothing** (**R-PC114**,
+      amending R-PC109).  The ledger files an entry dated before the first
+      paycheck in the earliest one, so an added paycheck can hold a loan's
+      opening from years back.  Around the delete this door runs Reset's
+      two re-syncs (:func:`_refile_ledger`) and compares the owner's posted
+      totals (``pay_period_locks.posted_totals``): what the re-syncs rebuild
+      lands on the kept paychecks, and a total that still moved is refused
+      (``pay_period_gates.reject_moved_ledger``), the ruling's words exactly:
+      refused iff a posted total would change.  *Checkpoint 2 compared
+      against a re-sync's counterfactual "before", run in a rolled-back
+      savepoint; review 2 measured it refusing falsely wherever that re-sync
+      minted a chart row (the key's id moved) and committing a drift repair
+      unrefused, and the ruling covers neither.*
+
+    Nothing is populated: a removal records no payday.  Deletion is the
+    writer's one bulk ``DELETE``, whose cascade takes the template rows the
+    gate let go (with both shadows of a transfer) and the head's journal
+    entries.  **R-PC114's refusal arrives after statements** -- the delete
+    and the re-sync it exists to judge -- so they run in a SAVEPOINT this
+    door rolls back before it re-raises: the refusal leaves nothing behind
+    whoever called, not only when a route rolls back.  The gate's refusals
+    are asked before any write, R-PC110's inside the savepoint before the
+    delete.
+
+    Args:
+        user_id: The owning user's id.
+        start_from_period_id: The ``budget.pay_periods.id`` of the paycheck
+            the schedule should start from.  Must name one of *user_id*'s
+            own periods.
+
+    Returns:
+        How many pay periods were deleted -- ``0`` when the named one is
+        already the first.
+
+    Raises:
+        PayPeriodUnresolved: The id names no pay period of *user_id*'s --
+            "no such period" and "not yours" alike, as at truncate.
+        PayPeriodRemovalRefused: A paycheck before it holds money or money
+            is dated inside them (**R-PC109**); it is a later era's paycheck
+            (**R-PC110**); or removing them changes a posted total the
+            re-syncs do not rebuild (**R-PC114**).  Nothing is left behind.
+    """
+    # The same serialisation as add-earlier: the calendar is read under the
+    # owner's write lock, which a signed-in request's command transaction
+    # takes before its view reads anything of the owner's (plan step
+    # ``balance:X-bn``, :mod:`app.db_transaction`), so a concurrent add,
+    # truncate or reset cannot move the head this removal was gated on.
+    calendar = calendar_for(user_id)
+    first_kept = calendar.period_by_id(start_from_period_id)
+    if first_kept is None:
+        pay_period_gates.log_unresolved_period(user_id, start_from_period_id)
+        raise PayPeriodUnresolved(
+            start_from_period_id, "the paycheck to start from",
+        )
+    doomed = pay_period_gates.gate_removable_head(
+        user_id, calendar.saved(), first_kept, display_today(),
+    )
+    if not doomed:
+        return 0
+    before = pay_period_locks.posted_totals(user_id)
+    savepoint = db.session.begin_nested()
+    try:
+        removed = pay_period_write.retire_paydays(
+            user_id, {period.period_id for period in doomed},
+        )
+        _refile_ledger(user_id)
+        pay_period_gates.reject_moved_ledger(
+            before, pay_period_locks.posted_totals(user_id),
+        )
+    except PayPeriodRemovalRefused:
+        savepoint.rollback()
+        raise
+    savepoint.commit()
+    return removed
+
+
+def _refile_ledger(user_id: int) -> None:
+    """Re-derive the owner's loan and account ledger corrections onto their schedule.
+
+    The two re-syncs a schedule change owes the posted ledger, in the order
+    :func:`reset_pay_periods` has always run them: a loan's opening and
+    true-up entries, then every account's opening and anchor corrections,
+    each re-derived from the records they come from (``LoanParams`` and the
+    loan's statements, the account's assertions) and filed through
+    ``PayCalendar.filing_period`` on the schedule as it now stands.  The
+    loan half does more than its name says: it also reconciles a loan
+    payment's split corrections and re-dates a settled payment's cash
+    entries (``sync_transfer_postings``, which reaches the paying
+    account's ledger too).  Reset
+    needs it because its wipe took them; "Remove earlier paychecks"
+    (**R-PC114**) because its delete took the ones the ledger had filed in
+    the removed paychecks.
+
+    Args:
+        user_id: The owning user's id.
+    """
+    loan_posting_service.resync_user_loan_postings(user_id)
+    account_posting_service.resync_user_account_anchor_postings(user_id)
 
 
 def truncate_pay_periods(
@@ -274,7 +447,9 @@ def truncate_pay_periods(
     kept = calendar.period_by_id(keep_through_period_id)
     if kept is None:
         pay_period_gates.log_unresolved_period(user_id, keep_through_period_id)
-        raise PayPeriodUnresolved(keep_through_period_id)
+        raise PayPeriodUnresolved(
+            keep_through_period_id, "the period to keep through",
+        )
     doomed = pay_period_gates.gate_deletable_tail(
         calendar.saved(), kept, confirm_discard,
         classify_schedule_locks(calendar, as_of=display_today()),
@@ -593,11 +768,11 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     # Re-post the loan genesis (opening / true-up) corrections the period
     # CASCADE wiped: their source facts survived, so this re-derives them
     # onto the rebuilt schedule inside this transaction (review M2 / R7).
-    loan_posting_service.resync_user_loan_postings(user_id)
-    # Same for the NON-loan accounts' anchor corrections (Build-Order Step
-    # 5): the wipe CASCADEd their opening / true-up ENTRIES with the old
+    # Then the same for the NON-loan accounts' anchor corrections (Build-Order
+    # Step 5): the wipe CASCADEd their opening / true-up ENTRIES with the old
     # periods, but no longer their assertions (ruling R-EO), so this re-derives
-    # every real assertion's correction onto the rebuilt schedule.  Post-reset
+    # every real assertion's correction onto the rebuilt schedule.  Both are
+    # ``_refile_ledger``, which "Remove earlier paychecks" runs too.  Post-reset
     # is clean by construction, and since plan step X-f3b the reason is the
     # CASCADE rather than the gate alone: a PURCHASE whose bank posting day is
     # recorded posts its own cash leg even under a Projected envelope (ruling
@@ -607,5 +782,5 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     # -- both legs of each balanced pair -- along with the transactions and
     # purchases that sourced them.  So each account walks to exactly the
     # balance its latest assertion declares.
-    account_posting_service.resync_user_account_anchor_postings(user_id)
+    _refile_ledger(user_id)
     return new_periods

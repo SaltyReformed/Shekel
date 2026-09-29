@@ -223,8 +223,8 @@ def _reconcile_postings_after_update(
     # The LOAN half is the vacated DESTINATION's alone, and that narrowing is a
     # measurement rather than an economy.  A loan reached as a transfer's SOURCE
     # carries that transfer's EXPENSE shadow, and a loan's payment set is
-    # ``loan_loaders.query_shadow_income`` -- INCOME shadows only -- so such a
-    # transfer was never one of the loan's payments and there is no split to
+    # ``loan_loaders.income_shadows`` -- transfers INTO the loan only -- so such
+    # a transfer was never one of the loan's payments and there is no split to
     # re-derive when it leaves.  Its raw cash leg is reversed by
     # ``sync_transfer_postings`` above, which takes the per-ledger-account delta
     # over the union of posted and target.  Verified by removing the call: the

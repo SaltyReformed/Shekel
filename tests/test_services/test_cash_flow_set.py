@@ -40,6 +40,7 @@ from app.services.cash_flow_set import (
     far_legs_of,
     own_rows_clause,
 )
+from app.services.cash_ledger import settled_cash_facts
 from tests._test_helpers import (
     capture_sql_statements,
     create_account_of_type,
@@ -385,18 +386,21 @@ class TestOwnRowsClause:
 
 
 class TestFarLegsOf:
-    """The seam's reading of the same rule: both identities, no projected shadow read, none for a set of one."""
+    """The seam's reading of the same rule: by transfer id, no shadow read, none for a set of one."""
 
-    def test_answers_the_settled_shadow_ids_and_every_intra_set_transfer_id(
+    def test_answers_every_intra_set_transfer_and_the_paid_leg_names_it(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """The planned half is every intra-set transfer (off ``budget.transfers``);
-        the settled half is the SETTLED far-leg shadows only.
+        """Both halves of a far leg are excluded by the TRANSFER's id.
 
-        Transfer Invariant 5 admits a balance reader to read a settled leg's
-        shadow record and forbids it a projected one: the projected payment's
-        card shadow is therefore NOT in ``transaction_ids`` (its plan leg is
-        excluded by ``transfer_ids``), and the paid payment's card shadow IS.
+        Leaf ``balance:X-bi-6-4a`` (ruling **R-BAL106**): the planned half is
+        a leg derived from its transfer and the settled half a fact that names
+        its transfer (``CashSourceFact.transfer_id``), so the answer is every
+        intra-set transfer and nothing else -- the paid payment's money on the
+        card carries ``paid.id``, which is how the far test finds it.  It
+        answered the settled far-leg SHADOW ids beside the transfer ids until
+        that leaf; re-expressed with the developer's confirmation (rule 5,
+        2026-09-22), because the field it asserted is deleted.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -421,18 +425,28 @@ class TestFarLegsOf:
 
             far = far_legs_of(resolve_cash_flow_set(seed_user["user"].id))
 
-            assert far.transaction_ids == {_shadow_on(paid, card).id}
-            assert _shadow_on(payment, card).id not in far.transaction_ids
-            assert far.transfer_ids == {payment.id, paid.id}
+            assert far == FarLegs(transfer_ids=frozenset({payment.id, paid.id}))
+            leg_facts = [
+                fact for fact in settled_cash_facts(
+                    card.id, seed_user["scenario"].id,
+                )
+                if fact.transfer_id is not None
+            ]
+            assert [(f.transfer_id, f.delta) for f in leg_facts] == [
+                (paid.id, Decimal("80.00")),
+            ]
 
-    def test_reads_no_projected_shadow_row(
+    def test_reads_no_shadow_row(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """Invariant 5 by statement census: the settled-status filter is on every shadow read.
+        """Invariant 5 by statement census, structurally: ONE read, of transfers.
 
-        Every ``budget.transactions`` SELECT the producer issues carries the
-        settled-status ``IN`` predicate; the transfer read touches
-        ``budget.transfers`` alone.
+        Since leaf ``balance:X-bi-6-4a`` the settled half needs no shadow
+        read, so the producer issues exactly one statement and it touches
+        ``budget.transfers`` alone.  It asserted every ``budget.transactions``
+        read carried the settled-status filter (and that one happened) until
+        that leaf; re-expressed with the developer's confirmation (rule 5,
+        2026-09-22) as the stronger form of the same guarantee.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -448,13 +462,9 @@ class TestFarLegsOf:
                 lambda: far_legs_of(cash_flow),
             )
 
-            transaction_reads = [
-                text for text, _params in statements
-                if "budget.transactions" in text
-            ]
-            assert transaction_reads, "the settled half issued no read"
-            for text in transaction_reads:
-                assert "status_id IN" in text, text
+            [(text, _params)] = statements
+            assert "budget.transfers" in text, text
+            assert "budget.transactions" not in text, text
 
     def test_a_set_of_one_issues_no_query(
         self, app, db, seed_user, seed_periods_today,

@@ -8,8 +8,9 @@ Nothing here writes.  This leaf answers "where does this definition fire",
 which is the question ``_generate`` and ``_maintain`` both have to ask before
 they can act, and asking it in one place is what stops the two from drifting
 on which periods a rule applies to.  **"On what day" left at plan step
-R16-b-2**: the rule-and-period derivation of a generated row's own date,
-``compute_due_date``, is :func:`app.services.recurrence.compute_due_date` now
+R16-b-2**: the derivation of a generated row's own date from its placed
+occurrence, ``compute_due_date``, is
+:func:`app.services.recurrence.compute_due_date` now
 (ruling **R-R69**), because the balance seam's ESTIMATED loan tier has to date
 an occurrence no row answers yet exactly as the row would be dated, and the
 seam cannot reach this package without importing the write state machine.
@@ -73,10 +74,11 @@ class PlannedOccurrence(NamedTuple):
         period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
             generated record lives in.  Always inside the pass's write window,
             always materialised (so its ``period_id`` is a real
-            ``budget.pay_periods.id``), and never ``None``.  **The write loops
-            read this and not *occurrence*,** because a row's date still comes
-            from ``compute_due_date`` (plan ledger row D18, owned by plan step
-            R5); the occurrence is what the repeat refusal names.
+            ``budget.pay_periods.id``), and never ``None``.  The write loops
+            read BOTH since plan step R5-a: the period is where the row is
+            funded, and ``compute_due_date`` dates the row from *occurrence*
+            (or from this period's payday, for a cadence naming no day) --
+            it read this alone until then, which is plan ledger row D18.
     """
 
     occurrence: date

@@ -26,7 +26,7 @@ from __future__ import annotations
 import pytest
 
 import _registry as registry
-from _tables import UNESCAPED_PIPE_RX
+from _tables import cells
 from _plan_gate import (
     PlanSpec,
     arc_state_violation,
@@ -414,10 +414,10 @@ class TestTheDocumentsPointAtTheRegistries:
     def test_no_arc_document_still_carries_a_findings_table(self, arc):
         """The five-column ledger shape must not reappear in an arc document."""
         for line in SPECS[arc].read().splitlines():
-            if not line.strip().startswith("|"):
+            row = cells(line)
+            if row is None:
                 continue
-            cells = UNESCAPED_PIPE_RX.split(line)[1:-1]
-            assert not (len(cells) == 5 and cells[0].strip() == "id"), (
+            assert not (len(row) == 5 and row[0] == "id"), (
                 f"{arc} has re-grown a findings table; findings live in ledger.md"
             )
 

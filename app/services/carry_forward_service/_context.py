@@ -2,8 +2,9 @@
 
 Both the mutating path (``carry_forward_unpaid`` in ``_execute``) and the
 read-only path (``preview_carry_forward`` in ``_preview``) start from the
-same validated periods and three-way-partitioned source rows, produced
-once here so the two paths can never diverge.  The envelope target-row
+same validated periods and three-way-partitioned source items -- envelope
+rows, discrete rows and TRANSFERS -- produced once here so the two paths can
+never diverge.  The envelope target-row
 lookup and the "finalised target" reasoning also live here so the
 preview (which predicts) and the execution (which acts) reason about the
 target canonical row from a single source of truth.
@@ -14,9 +15,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import List, Optional
 
+from sqlalchemy.orm import selectinload
+
 from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     AmountBasis,
     amount_basis,
@@ -25,6 +29,7 @@ from app.services.cash_ledger import (
 from app.services.generation_schedule import GenerationSchedule
 from app.services.one_off import another_row_answers, due_date_for
 from app.services.pay_calendar import DerivedPeriod
+from app.utils.amount_relationships import transfer_pricing_load_options
 from app.utils.balance_predicates import is_projected_clause
 
 
@@ -39,7 +44,7 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
 
     Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE one
     carry-forward request: the two validated periods, who and which scenario
-    they belong to, the three-way partition of the rows to move, the
+    they belong to, the three-way partition of what moves, the
     pay-period schedule the envelope branch resolves against, and the amount
     basis it prices through.  Splitting them
     would put one request's facts in two objects both paths must then keep in
@@ -53,7 +58,11 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     target_period: DerivedPeriod
     user_id: int
     scenario_id: int
-    shadow_txns: List[Transaction]
+    # The source period's still-Projected TRANSFERS, in id order (plan step
+    # balance:X-bi-6-4c-2).  It was ``shadow_txns``, the transfers' SHADOW
+    # rows, which the two paths de-duplicated back to transfers by
+    # ``transfer_id`` -- walking the parents is ruling R-BAL86's own words.
+    transfers: List[Transfer]
     envelope_txns: List[Transaction]
     discrete_txns: List[Transaction]
     # The owner's pay-period schedule, its write window narrowed to the ONE
@@ -165,7 +174,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             target_period=target,
             user_id=user_id,
             scenario_id=scenario_id,
-            shadow_txns=[],
+            transfers=[],
             envelope_txns=[],
             discrete_txns=[],
             schedule=schedule,
@@ -175,25 +184,25 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     # Routed through ``is_projected_clause`` (D6-09 / MED-02) so the
     # source-period projected-only query and the two discrete bulk UPDATEs
     # (rows of a recurring definition, and the rest) share one definition of
-    # the rule with every other Projected SQL filter.
+    # the rule with every other Projected SQL filter.  A transfer's SHADOW row
+    # is not a row this moves (``transfer_id IS NULL``): its transfer is
+    # loaded below and moves whole, both legs with it.
     projected_txns = (
         db.session.query(Transaction)
         .filter(
             Transaction.pay_period_id == source_period_id,
             Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.is_(None),
             is_projected_clause(Transaction),
             Transaction.is_deleted.is_(False),
         )
         .all()
     )
 
-    shadow_txns: List[Transaction] = []
     envelope_txns: List[Transaction] = []
     discrete_txns: List[Transaction] = []
     for txn in projected_txns:
-        if txn.transfer_id is not None:
-            shadow_txns.append(txn)
-        elif txn.template_id is not None and txn.tracks_purchases:
+        if txn.template_id is not None and txn.tracks_purchases:
             # Envelope ROLLOVER folds the unspent leftover into the
             # definition's next-period row: a RECURRING definition's canonical
             # (created via recurrence_engine.generate_for_template) or, where
@@ -220,12 +229,41 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         else:
             discrete_txns.append(txn)
 
+    # The source period's TRANSFERS, walked as transfers (plan step
+    # balance:X-bi-6-4c-2; ruling R-BAL86: carry-forward walks
+    # ``budget.transfers``).  The same four clauses the rows take, asked of the
+    # PARENT -- whose period, scenario, status and soft-delete a shadow only
+    # copied (Transfer Invariant 3) -- plus the owner, which the period already
+    # implies and a transfer states directly.  ORDERED, which the shadow query
+    # this replaced was not: the modal listed the transfers in whatever order
+    # it returned their shadows and labelled each by whichever shadow came
+    # first (finding **BAL-546**).  The loads are what both paths read: the
+    # pricing chain the preview's figure resolves through and the endpoints its
+    # label is composed from.
+    transfers = (
+        db.session.query(Transfer)
+        .options(
+            *transfer_pricing_load_options(),
+            selectinload(Transfer.from_account),
+            selectinload(Transfer.to_account),
+        )
+        .filter(
+            Transfer.user_id == user_id,
+            Transfer.pay_period_id == source_period_id,
+            Transfer.scenario_id == scenario_id,
+            is_projected_clause(Transfer),
+            Transfer.is_deleted.is_(False),
+        )
+        .order_by(Transfer.id)
+        .all()
+    )
+
     return _CarryForwardContext(
         source_period=source,
         target_period=target,
         user_id=user_id,
         scenario_id=scenario_id,
-        shadow_txns=shadow_txns,
+        transfers=transfers,
         envelope_txns=envelope_txns,
         discrete_txns=discrete_txns,
         schedule=schedule,

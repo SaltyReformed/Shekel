@@ -141,10 +141,11 @@ What lives where
   took that module past pylint's line ceiling; the model's argument stays in
   ``_occurrence``'s docstring.
 * ``_row_date`` -- the DATE a generated row carries, derived from its rule
-  and the pay period it lands in (:func:`compute_due_date`).  Moved here from
+  and the placed occurrence it answers (:func:`compute_due_date`, plan step
+  R5-a; it read the period alone until then).  Moved here from
   ``recurrence_engine._plan`` at plan step R16-b-2 (ruling **R-R69**) so the
   balance seam can date an occurrence no row answers yet exactly as the row
-  would be dated; plan step R5 deletes it with the period-dated row.
+  would be dated; plan step R5-b re-examines it when the stored date splits.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
   occurrences, and the projection onto periods.  Its own module rather than a
   line in ``_authoring`` because reading is not writing -- and because
@@ -250,6 +251,7 @@ from app.services.recurrence._reading import (
     RuleReading,
     cadence_of,
     has_ended,
+    placed_occurrences,
     placed_periods,
     read_rule,
     recurrence_spec,
@@ -347,6 +349,7 @@ __all__ = [
     "occurrences",
     "picker_model",
     "place",
+    "placed_occurrences",
     "placed_periods",
     "placements_below_the_books",
     "projected_occurrence_placements",
