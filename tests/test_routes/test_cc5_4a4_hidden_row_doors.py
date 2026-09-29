@@ -70,8 +70,6 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.ref import FilingStatus
-from app.models.salary_profile import SalaryProfile
 from app.models.statement_match import StatementMatch, StatementMatchCreation
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -105,6 +103,7 @@ from tests._test_helpers import (
     generate_row_of,
     make_every_period_rule,
     make_expense_template,
+    make_salary_profile,
     typed,
 )
 from tests.test_routes._statement_forms import ReconcileFormReader
@@ -1410,18 +1409,15 @@ class TestAnArchivedItemsRowSaysArchived:
             db.session.add(template)
             db.session.flush()
             make_every_period_rule(db.session, template)
-            profile = SalaryProfile(
-                user_id=seed_user["user"].id,
-                scenario_id=seed_user["scenario"].id,
-                filing_status_id=db.session.query(FilingStatus).first().id,
-                template_id=template.id,
-                name="Made-up salary",
-                annual_salary=Decimal("52000.00"),
-                state_code="NC",
-                is_active=True,
+            # Through the shared builder, which gives the profile the dated pay
+            # list plan step salary:X-av-3a replaced ``annual_salary`` with;
+            # the figure is made up and nothing here reads it.
+            profile = make_salary_profile(
+                seed_user, db.session, name="Made-up salary",
             )
-            db.session.add(profile)
+            profile.template_id = template.id
             db.session.flush()
+            assert profile.is_active
             period = seed_periods_today[3]
             row = generate_row_of(template, period)
             db.session.commit()
