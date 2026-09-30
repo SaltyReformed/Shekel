@@ -80,6 +80,14 @@ def create_params(account_id):
     originating ON the stated date asserts nothing either -- its origination
     IS the assertion (``original_principal`` on ``origination_date``), and a
     second row saying so would be the synthesized opening's twin.
+
+    **A stated day on or after the day a payment into the account moved money
+    is refused whole** (ruling **R-R115**, "Same rule at setup": the dashboard
+    door's R-R114 at this door, and R-BAL155's day): payments can be recorded
+    into an account before its loan is set up, and the form re-renders asking
+    for an earlier day (:func:`_stage_stated_balance_or_refuse`).  That
+    refusal rolls the write back and THEN re-renders, as the schedule doors
+    do (``routes/pay_periods.py``).
     """
     account = get_or_404(Account, account_id)
     if account is None:
@@ -144,37 +152,36 @@ def create_params(account_id):
     # walk and the resolver's replay fallback -- SYNTHESIZES it from the
     # params via ``loan_loaders.load_loan_anchor_facts``.  The balance the
     # owner states at setup is a different fact with no other home (plan
-    # step R20): a ``tracking_start`` assertion, staged here in this same
+    # step R20): a ``tracking_start`` assertion, staged in this same
     # transaction whenever the loan originated BEFORE the day it is stated
-    # for.  Its row is constructed by the anchor service, the one place a
-    # loan anchor is written; the ledger re-sync and the commit below are
-    # the door's, as they were.
-    if params.origination_date < anchor_date:
-        loan_anchor_service.stage_loan_tracking_start(
-            account=account,
-            anchor_balance=anchor_balance,
-            anchor_date=anchor_date,
-        )
-
-    # Posting ledger (read switch): now that the params / origination rate
-    # exist, reconcile the loan's full genesis ledger.  For a brand-new
-    # loan this posts the OPENING (-original_principal onto the loan, its
-    # positive onto a per-loan opening-equity account) in the baseline scenario
-    # -- the payment-less case the all-scenarios sync covers by including the
-    # baseline -- and the stated balance's TRUEUP correction at its date.  A
-    # loan that had payments settled before it was configured (not yet
-    # resolvable, so uncorrected) also gets those payments' split corrections
-    # back-posted here.
-    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
-    # A recurring transfer that already pays into this account is the loan's
-    # standing payment from this moment, and its start is the contract's
-    # (ruling **R-R81**; plan step R7d-g).  Until that step the next
-    # chokepoint of any kind healed it; this door is where it becomes one,
-    # through the entry helper every such door calls (ruling **R-R85**).
-    refused = sync_loan_payment_start_or_refuse(
-        account.id,
-        redirect=RedirectTarget("loan.dashboard", {"account_id": account.id}),
+    # for, and refused as the dashboard's door refuses one (ruling R-R115).
+    # Its row is constructed by the anchor service, the one place a loan
+    # anchor is written; the ledger re-sync and the commit below are the
+    # door's, as they were.
+    refused = _stage_stated_balance_or_refuse(
+        account, account_type, params, anchor_balance, anchor_date,
     )
+    if refused is None:
+        # Posting ledger (read switch): now that the params / origination
+        # rate exist, reconcile the loan's full genesis ledger.  For a
+        # brand-new loan this posts the OPENING (-original_principal onto the
+        # loan, its positive onto a per-loan opening-equity account) in the
+        # baseline scenario -- the payment-less case the all-scenarios sync
+        # covers by including the baseline -- and the stated balance's TRUEUP
+        # correction at its date.  A loan that had payments settled before it
+        # was configured (not yet resolvable, so uncorrected) also gets those
+        # payments' split corrections back-posted here.
+        loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+        # A recurring transfer that already pays into this account is the
+        # loan's standing payment from this moment, and its start is the
+        # contract's (ruling **R-R81**; plan step R7d-g).  Until that step the
+        # next chokepoint of any kind healed it; this door is where it becomes
+        # one, through the entry helper every such door calls (ruling
+        # **R-R85**).
+        refused = sync_loan_payment_start_or_refuse(
+            account.id,
+            redirect=RedirectTarget("loan.dashboard", {"account_id": account.id}),
+        )
     if refused is not None:
         return refused
     db.session.commit()
@@ -182,6 +189,67 @@ def create_params(account_id):
     logger.info("Created loan params for account %d", account.id)
     flash("Loan parameters configured.", "success")
     return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+def _stage_stated_balance_or_refuse(
+    account, account_type, params, anchor_balance, anchor_date,
+):
+    """Stage the balance stated at setup as a tracking start, or refuse the setup whole.
+
+    The loan is asserted from the stated day only when it originated BEFORE
+    that day (plan step ``recurrence:R20``); a loan originating on or after it
+    asserts nothing, since its origination IS the assertion.  The row is the
+    anchor service's to construct
+    (:func:`app.services.loan_anchor_service.stage_loan_tracking_start`), and
+    so is the refusal (ruling **R-R115**): a stated day on or after the day a
+    payment into the account moved money would start the loan's record after
+    a payment it holds (rulings R-R114, R-BAL155).  The whole write is rolled
+    back, the params and their rate row included, and the form re-renders
+    asking for an earlier day.
+
+    **Where the loan originated on or after that payment's day, no stated day
+    both follows the origination and precedes the payment**, so the sentence
+    asks for the origination day itself -- which this door accepts and which
+    asserts nothing beyond the loan's original amount -- and names Record
+    balance for the correction once the loan is set up.
+
+    Args:
+        account: The loan :class:`Account` being configured.
+        account_type: Its :class:`AccountType` row, for the re-render.
+        params: The flushed :class:`LoanParams` row.
+        anchor_balance: The stated balance, a :class:`Decimal`.
+        anchor_date: The day it is stated for.
+
+    Returns:
+        ``None`` when the balance was staged or needed no staging; else the
+        re-rendered setup page, with the write rolled back and the refusal
+        flashed.
+    """
+    if params.origination_date >= anchor_date:
+        return None
+    try:
+        loan_anchor_service.stage_loan_tracking_start(
+            account=account,
+            anchor_balance=anchor_balance,
+            anchor_date=anchor_date,
+        )
+    except TrackingStartRefused as refused:
+        moved_on = refused.moved_on.strftime("%b %-d, %Y")
+        origination = params.origination_date.strftime("%b %-d, %Y")
+        remedy = (
+            f"Enter the balance as of a date before {moved_on}."
+            if refused.moved_on > params.origination_date else
+            f"No date after the loan's origination ({origination}) comes "
+            f"before that payment: enter {origination} as the date, which "
+            f"states only the loan's original amount, then correct the "
+            f"balance with Record balance on the loan's page."
+        )
+        # The sentence is composed before the rollback expires the rows it
+        # reads.
+        db.session.rollback()
+        flash(f"{refused}  {remedy}", "danger")
+        return render_loan_setup(account, account_type)
+    return None
 
 
 def _setup_refusal(data, account_type):
@@ -453,19 +521,22 @@ def record_tracking_start(account_id):
     **Since plan step ``recurrence:R20`` the setup door writes this same row
     for the balance the owner states at setup**, so the common mid-life import
     never reaches this door at all; it remains for a tracking-start recorded
-    after the fact.  **It refuses a date on or before a recorded payment**
-    (ruling **R-R114**; the service's
-    :class:`~app.exceptions.TrackingStartRefused`): a tracking start says where
-    the app's record of the loan STARTS, which is what the loan's recorded
-    start reads, and a payment recorded on or before the date says it started
-    earlier -- so the statement is a balance correction, and the flash names
-    the Record balance control above, which records one.  *The route refused a
-    date not STRICTLY BEFORE the earliest recorded payment's due date until
-    R20* (ruling R-R72 part 3), on the ground that the payment "would sort
-    before the opening in the walk and be subsumed" -- the opening claim step
-    C1 had already retired, and R20 deleted that refusal.  R-R114's rests on
-    the label instead, and reads each payment's walk day rather than its due
-    date.
+    after the fact.  **It refuses a date on or before the day a payment into
+    the loan moved money** (ruling **R-R114**, with ruling **R-BAL155**'s
+    day; the service's :class:`~app.exceptions.TrackingStartRefused`): a
+    tracking start says where the app's record of the loan STARTS, which is
+    what the loan's recorded start reads, and a payment whose money moved on
+    or before the date says it started earlier -- so the statement is a
+    balance correction, and the flash offers an earlier date or the Record
+    balance control above, which records one.  Where the payment's day is on
+    or before the origination, no date this door accepts comes before it, so
+    the flash offers Record balance alone.  *The route refused a date not
+    STRICTLY BEFORE the earliest recorded payment's due date until R20*
+    (ruling R-R72 part 3), on the ground that the payment "would sort before
+    the opening in the walk and be subsumed" -- the opening claim step C1 had
+    already retired, and R20 deleted that refusal.  R-R114's rests on the
+    label instead, and reads the day each payment's money moved rather than
+    its due date.
 
     Validation chain (mirrors :func:`true_up_balance`):
 
@@ -476,9 +547,10 @@ def record_tracking_start(account_id):
       3. The route enforces ``anchor_date >= params.origination_date`` (a loan
          cannot be tracked before it existed), route-level because the schema
          has no access to the loan.
-      4. The service refuses a date on or before a recorded payment (ruling
-         R-R114, above): a danger flash naming Record balance and a redirect;
-         nothing is written.
+      4. The service refuses a date on or before the day a payment moved
+         money (rulings R-R114 and R-BAL155, above), ahead of the duplicate
+         rule, so a resubmit that a payment now contradicts is refused too:
+         the write is rolled back, then a danger flash and a redirect.
 
     Outcomes mirror the true-up: COMMITTED (success flash + redirect) or
     UNCHANGED (idempotent success when the governing ``tracking_start`` already
@@ -515,8 +587,20 @@ def record_tracking_start(account_id):
             anchor_date=anchor_date,
         )
     except TrackingStartRefused as refused:
-        # Ruling R-R114: the service refused before writing and rolled back.
-        flash(str(refused), "danger")
+        # Rulings R-R114 / R-BAL155: nothing was staged.  The remedy is this
+        # door's (the setup form has no Record balance), composed before the
+        # rollback expires the params it reads.
+        moved_on = refused.moved_on.strftime("%b %-d, %Y")
+        remedy = (
+            f"Choose a date before {moved_on}, or use Record balance to "
+            f"correct the loan's balance instead."
+            if refused.moved_on > params.origination_date else
+            f"No tracking start can come before that payment, since the loan "
+            f"originated on {params.origination_date.strftime('%b %-d, %Y')}; "
+            f"use Record balance to correct the loan's balance instead."
+        )
+        db.session.rollback()
+        flash(f"{refused}  {remedy}", "danger")
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
     if outcome is AnchorTrueUpOutcome.UNCHANGED:

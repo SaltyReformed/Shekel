@@ -551,6 +551,10 @@ _FENCED_MODULE_RULINGS = {
             # The anchor EVENT rows (the source documents behind a balance), not
             # the balance itself.
             "loan_balance_anchor_history",
+            # The scenario ids a loan has a payment in: the enumeration the
+            # all-scenario re-sync and the tracking-start refusal (rulings
+            # R-R114, R-R115) walk.  Ids, never a balance.
+            "scenarios_with_loan_payments",
             # WRITERS.  Everything below emits or reconciles postings; a writer
             # is not a balance reader, and the ledger-write path has its own
             # seams (``posting_service._emit_balanced_entry``).  The two
@@ -570,10 +574,6 @@ _FENCED_MODULE_RULINGS = {
             "sync_all_scenarios_or_duplicate",
             "backfill_all_loan_postings",
             "resync_user_loan_postings",
-            # The scenario ids a loan has a payment in: the enumeration the
-            # all-scenario re-sync and the tracking-start door (ruling
-            # R-R114) walk.  Ids, never a balance.
-            "scenarios_with_loan_payments",
         }),
     ),
     # The read pass's context (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`) -- the

@@ -425,12 +425,13 @@ def _loan_record_start_index(
 ) -> int | None:
     """Earliest period_index at which a loan's balance is recorded, not assumed.
 
-    Before a loan's record starts the ledger holds nothing but its origination
-    principal, so the loan's balance map carries that principal flat from its
-    origination to that day -- not the balance the loan really had then.  So a
-    loan is "honest" only from the first period whose ``end_date`` reaches the
-    day its record starts; before that the trend would draw a past the app
-    never recorded.
+    Before a loan's record starts, its balance map carries the origination
+    principal forward from its origination to that day, moved only by what
+    the ledger holds dated there -- a true-up, a ``$0.00`` close, or a payment
+    recorded after the tracking start but settled on an earlier day -- not
+    the balance the loan really had then.  So a loan is "honest" only from
+    the first period whose ``end_date`` reaches the day its record starts;
+    before that the trend would draw a past the app never recorded.
 
     **The loan's record starts at its RECORDED start** (ruling **R-R111**):
     its ``tracking_start`` assertion's date, else its origination; no payment

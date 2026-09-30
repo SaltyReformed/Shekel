@@ -148,9 +148,11 @@ def _back_projection_by_month(
     """Return the pre-tracking contractual balance per calendar month (ruling D2).
 
     The ``estimated`` tier: a mid-life-imported loan's resolved schedule opens at
-    its tracking-start assertion, so the origination-to-tracking-start months have
-    no payment record and the fold holds the origination principal flat across
-    them.  This supplies the honest contractual estimate for those months instead
+    its tracking-start assertion, so across the origination-to-tracking-start
+    months the fold carries the origination principal forward, moved only by
+    what the ledger holds dated there (a true-up, a ``$0.00`` close, or a
+    payment recorded after the tracking start but settled on an earlier day).
+    This supplies the honest contractual estimate for those months instead
     -- the
     :func:`~app.services.balance_at._resolution.contractual_schedule_from_origination`
     balance (amortized from the origination terms on the SAME monthly grid the

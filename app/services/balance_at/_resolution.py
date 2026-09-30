@@ -136,9 +136,12 @@ class ResolvedLoan:
             of the loan STARTS: its ``tracking_start`` assertion's date for a
             loan imported mid-life, else its origination (rulings **R-R111**,
             **R-R114**); no payment moves it.
-            Before it the ledger holds nothing but the origination principal,
-            so the readers that ask "since when is this loan's balance real?"
-            -- the property chart's pre-tracking estimate, the net-worth
+            Before it the app's record of the loan has not started: the
+            ledger carries the origination principal forward, moved only by
+            what is dated there -- a true-up, a ``$0.00`` close, or a payment
+            recorded after the tracking start but settled on an earlier day
+            -- so the readers that ask "since when is this loan's balance
+            real?" -- the property chart's pre-tracking estimate, the net-worth
             trend's honest start and the loan chart's first month -- read it
             here.  They read the FIRST confirmed schedule row's date until
             plan step recurrence:R16-c-2, which ruling R-R109 broke: a row
@@ -164,11 +167,14 @@ class ResolvedLoan:
         The tracking-start assertion's date, else the origination (rulings
         **R-R111** and **R-R114**).  **No payment moves it**: whether a
         statement added to a loan with a recorded history starts the record
-        or only corrects the balance is decided ONCE, at the door that adds a
-        tracking start later
-        (:func:`app.services.loan_anchor_service.record_loan_tracking_start`
-        refuses a date on or before a recorded payment, so the owner records
-        a true-up, which starts nothing).  Ruling R-R113 read the payment feed
+        or only corrects the balance is decided ONCE, where a tracking start
+        is written: the dashboard's door
+        (:func:`app.services.loan_anchor_service.record_loan_tracking_start`)
+        and the setup door
+        (:func:`app.services.loan_anchor_service.stage_loan_tracking_start`)
+        refuse a date on or before the day a payment into the loan moved
+        money (rulings R-R114, R-R115, R-BAL155), so the owner records a
+        true-up, which starts nothing.  Ruling R-R113 read the payment feed
         here instead, and review 5 of plan step recurrence:R16-c-2 measured
         two ways that misfired on a loan imported mid-life: a ``$0.00`` close
         is dated by the installment it skips (ruling R-R107), so a close due

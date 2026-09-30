@@ -883,8 +883,14 @@ class TestLoanSetup:
         assert b'name="anchor_date"' in resp.data
         assert b'max="2026-03-20" value="2026-03-20"' in resp.data
 
-    def _unconfigured_auto_loan(self, seed_user, db, name):
-        """Return a committed, not-yet-configured Auto Loan account."""
+    def _unconfigured_auto_loan(self, seed_user, db, name, opened_on=None):
+        """Return a committed, not-yet-configured Auto Loan account.
+
+        ``opened_on`` is the day its books open (its opening assertion's
+        day, today when omitted): a test that records a payment into the
+        account before setup passes an earlier one, since the ledger refuses
+        a movement dated before the books open.
+        """
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
             account_service.AccountSpec(
@@ -892,6 +898,7 @@ class TestLoanSetup:
                 account_type_id=loan_type.id,
                 name=name,
                 anchor_balance=Decimal("0"),
+                observed_on=opened_on,
             ),
         )
         db.session.add(account)
@@ -1074,6 +1081,162 @@ class TestLoanSetup:
         assert db.session.query(LoanParams).filter_by(
             account_id=account.id,
         ).count() == 0
+        assert self._stored_anchors(db, account) == []
+
+    @staticmethod
+    def _setup_form(anchor_date, origination_date="2025-01-01"):
+        """Return a $30,000 auto-loan setup form stating $25,000 as of *anchor_date*."""
+        return {
+            "original_principal": "30000.00",
+            "anchor_balance": "25000.00",
+            "anchor_date": anchor_date,
+            "interest_rate": "5.000",
+            "term_months": "60",
+            "origination_date": origination_date,
+            "payment_day": "15",
+        }
+
+    @pytest.mark.parametrize("stated_on", ["2026-02-27", "2026-03-01"])
+    def test_setup_refuses_a_stated_day_on_or_after_a_payment_and_writes_nothing(
+        self, auth_client, seed_user, db, seed_periods, stated_on,
+    ):
+        """Ruling R-R115 ("Same rule at setup"): the setup door refuses as the dashboard's does.
+
+        A $500 payment into the account moves money on Feb 27, 2026 (seed
+        period 4's first day), before its loan is set up.  A balance stated
+        for that day or for Mar 1 would start the loan's record after a
+        payment it holds, so the setup is refused WHOLE: the form re-renders
+        asking for an earlier day, and neither params, rate row nor anchor row
+        is written.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Before Setup", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form(stated_on),
+        )
+        assert resp.status_code == 200
+        stated = date.fromisoformat(stated_on).strftime("%b %-d, %Y").encode()
+        assert (
+            b"A payment into this loan already moved money on Feb 27, 2026, "
+            b"on or before " + stated in resp.data
+        )
+        assert b"Enter the balance as of a date before Feb 27, 2026." in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_records_a_stated_day_before_the_first_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The day before the Feb 27 payment starts the record: one tracking start, Feb 26."""
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Stated Before Paying", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-26"),
+        )
+        assert resp.status_code == 302
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        assert self._stored_anchors(db, account) == [(
+            date(2026, 2, 26), Decimal("25000.00"),
+            ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
+        )]
+
+    def test_setup_does_not_count_a_zero_close(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Ruling R-BAL155 at setup: a $0.00 close moved no money and refuses nothing.
+
+        The account's Feb 27 payment is closed at $0.00 before setup; a
+        balance stated for Mar 1 is recorded as the tracking start it is.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Closed Empty Before Setup", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_amount=Decimal("0.00"), settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-01"),
+        )
+        assert resp.status_code == 302
+        assert [
+            (anchor_date, balance)
+            for anchor_date, balance, _ in self._stored_anchors(db, account)
+        ] == [(date(2026, 3, 1), Decimal("25000.00"))]
+
+    def test_setup_asks_for_the_origination_day_when_no_later_day_comes_before_the_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A payment before the origination leaves the origination day as the only answer.
+
+        $500 moves into the account on Feb 19, 2026, before its loan is set
+        up with an origination of Feb 27 (the payment guard, ruling R-C, has
+        no loan terms to compare against until then).  Every stated day after
+        the origination is on or after the payment, and one before it is
+        refused as pre-origination, so the sentence asks for the origination
+        day itself -- which states nothing beyond the original amount -- and
+        names Record balance for the correction.  Following it configures the
+        loan with no tracking start.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Before It Originated", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[3], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 19),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-01", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 200
+        assert (
+            b"No date after the loan&#39;s origination (Feb 27, 2026) comes "
+            b"before that payment: enter Feb 27, 2026 as the date" in resp.data
+        )
+        assert b"Enter the balance as of a date before" not in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-27", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 302
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 1
         assert self._stored_anchors(db, account) == []
 
 
@@ -8440,12 +8603,12 @@ class TestRecordTrackingStartRoute:
         the opposite from plan step R20 (it was
         ``test_accepts_a_date_after_a_recorded_payment``): a tracking start
         says where the app's record of the loan STARTS -- what the loan's
-        recorded start reads -- and a payment the app already records says it
-        started earlier, so the statement is a balance correction and the
-        flash names the Record balance control that records one.  A $500
-        payment settles on Jan 2 (seed period 0's start); a $20,000
-        tracking-start asserted for today, Mar 20, appends nothing and moves
-        no balance.
+        recorded start reads -- and a payment whose money already moved says
+        it started earlier (ruling R-BAL155's day), so the statement is a
+        balance correction and the flash offers an earlier date or the Record
+        balance control that records one.  A $500 payment settles on Jan 2
+        (seed period 0's start); a $20,000 tracking-start asserted for today,
+        Mar 20, appends nothing and moves no balance.
         """
         acct = _create_auto_loan(seed_user, db.session)
         create_settled_transfer(
@@ -8469,10 +8632,13 @@ class TestRecordTrackingStartRoute:
         )
         assert resp.status_code == 200
         assert (
-            b"A payment is already recorded on Jan 2, 2026, on or before "
-            b"Mar 20, 2026" in resp.data
+            b"A payment into this loan already moved money on Jan 2, 2026, "
+            b"on or before Mar 20, 2026" in resp.data
         )
-        assert b"or use Record balance to correct the loan" in resp.data
+        assert (
+            b"Choose a date before Jan 2, 2026, or use Record balance to "
+            b"correct the loan" in resp.data
+        )
         db.session.expire_all()
         assert len(self._tracking_start_events(db.session, acct)) == before
         assert posted_loan_balance_at(
@@ -8498,8 +8664,8 @@ class TestRecordTrackingStartRoute:
             follow_redirects=True,
         )
         assert (
-            b"A payment is already recorded on Jan 2, 2026, on or before "
-            b"Jan 2, 2026" in resp.data
+            b"A payment into this loan already moved money on Jan 2, 2026, "
+            b"on or before Jan 2, 2026" in resp.data
         )
         db.session.expire_all()
         assert len(self._tracking_start_events(db.session, acct)) == before
@@ -8530,15 +8696,21 @@ class TestRecordTrackingStartRoute:
             (e.anchor_date, e.anchor_balance) for e in events
         }
 
-    def test_a_zero_close_counts_from_the_installment_it_skips(
+    def test_a_zero_close_counts_from_no_day(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """A $0.00 close due Mar 20 on a loan due the 15th is recorded from Mar 15.
+        """A $0.00 close moved no money, so no tracking start after it is refused.
 
-        It moved no cash, so its day in the loan's record is the installment
-        it skips (ruling R-R107): a tracking start on Mar 17 comes after it
-        and is refused, naming Mar 15, though the close's own due and settled
-        days are Mar 20.
+        **The developer's explicit change of behaviour, not a rule-5
+        deletion** (ruling **R-BAL155**, answered in the recurrence lane's
+        decisions record, s.18: "The loan's tracking-start button stops
+        counting $0.00 payments now").  This test was ``test_a_zero_close_counts_from_the_installment_it_skips``,
+        which pinned checkpoint 12's reading: a $0.00 close due Mar 20 on a
+        loan due the 15th counted from Mar 15, the installment it skips
+        (ruling R-R107), so a Mar 17 tracking start was refused naming a day
+        nothing was paid.  The same close now counts from no day: a tracking
+        start on Mar 20 -- after the installment it skips and ON its due and
+        settled days -- is recorded.
         """
         acct = _create_auto_loan(seed_user, db.session)
         create_settled_transfer(
@@ -8552,15 +8724,75 @@ class TestRecordTrackingStartRoute:
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
-            data={"anchor_date": "2026-03-17", "anchor_balance": "20000.00"},
+            data={"anchor_date": "2026-03-20", "anchor_balance": "20000.00"},
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        events = self._tracking_start_events(db.session, acct)
+        assert len(events) == before + 1
+        assert (date(2026, 3, 20), Decimal("20000.00")) in {
+            (e.anchor_date, e.anchor_balance) for e in events
+        }
+
+    def test_offers_record_balance_alone_when_no_date_comes_before_the_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A payment before the origination leaves no date this door accepts.
+
+        The door accepts dates from the origination on, so where the
+        payment's money moved on or before the origination the flash cannot
+        ask for an earlier date: it offers Record balance alone.  $500 moves
+        into an account on Feb 19, 2026, before its loan is set up with an
+        origination of Feb 27 and no stated balance (the payment guard, ruling
+        R-C, has no loan terms to compare against until then); a Mar 1
+        tracking start is refused that way and appends nothing.
+        """
+        loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        acct = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Paid Before It Originated",
+                anchor_balance=Decimal("0"),
+                observed_on=date(2026, 1, 2),
+            ),
+        )
+        db.session.add(acct)
+        db.session.flush()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[3], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 19),
+        )
+        db.session.commit()
+        configured = auth_client.post(
+            f"/accounts/{acct.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "30000.00",
+                "anchor_date": "2026-02-27",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2026-02-27",
+                "payment_day": "15",
+            },
+        )
+        assert configured.status_code == 302
+        assert self._tracking_start_events(db.session, acct) == []
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-01", "anchor_balance": "29000.00"},
             follow_redirects=True,
         )
+        assert resp.status_code == 200
         assert (
-            b"A payment is already recorded on Mar 15, 2026, on or before "
-            b"Mar 17, 2026" in resp.data
+            b"No tracking start can come before that payment, since the "
+            b"loan originated on Feb 27, 2026; use Record balance" in resp.data
         )
+        assert b"Choose a date before" not in resp.data
         db.session.expire_all()
-        assert len(self._tracking_start_events(db.session, acct)) == before
+        assert self._tracking_start_events(db.session, acct) == []
 
     def test_a_projected_payment_does_not_refuse(
         self, auth_client, seed_user, db, seed_periods,

@@ -12,6 +12,8 @@ for them -- has exactly one right answer on every surface, and sixteen routes
 deciding it separately is the defect that ruling exists to end.
 """
 
+from datetime import date
+
 
 class ShekelError(Exception):
     """Base exception for all Shekel domain errors."""
@@ -689,43 +691,47 @@ class PayStubRefused(ValidationError):
 
 
 class TrackingStartRefused(ValidationError):
-    """A tracking start added to a loan was refused: a payment is recorded on or before it.
+    """A tracking start was refused: a payment into the loan moved money on or before it.
 
-    Plan step ``recurrence:R16-c-2``, ruling **R-R114**.  A ``tracking_start``
-    states "the app's record of this loan starts HERE", and the loan's
-    recorded start reads nothing else
+    Plan step ``recurrence:R16-c-2``: rulings **R-R114** (the dashboard's
+    tracking-start door), **R-R115** (the setup door, by the same rule) and
+    **R-BAL155** (a payment counts from the day its money moved, so a
+    ``$0.00`` close counts from none).  A ``tracking_start`` states "the app's
+    record of this loan starts HERE", and the loan's recorded start reads
+    nothing else
     (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`).
-    A payment the app already records on or before that day contradicts the
-    statement: the record plainly started earlier.  Such a statement is a
-    balance CORRECTION, which the dashboard's Record balance control writes
-    (a ``user_trueup``, which starts nothing), so the tracking-start door
-    refuses it and names that control.  Raised by
-    :func:`app.services.loan_anchor_service.record_loan_tracking_start` before
-    anything is written.
+    A payment whose money moved on or before that day contradicts the
+    statement: the record plainly started earlier.  Raised by
+    ``loan_anchor_service._stage_loan_anchor``, the one constructor of a loan
+    anchor row, before anything is staged.
+
+    **The message states the fact and no remedy, because the remedy is the
+    door's.**  The dashboard's door offers an earlier date or its Record
+    balance control (a ``user_trueup``, which corrects and starts nothing);
+    the setup form has no such control and asks for an earlier date.  Each
+    route appends its own sentence, and a caller asking the broader
+    :class:`ValidationError` question still hears a true one.
 
     **Its own class, for the reason** :class:`PayPeriodRemovalRefused`
-    **gives**: the route must catch this door's refusal and nothing else.  A
-    subclass of :class:`ValidationError`, so a caller asking the broader
-    question still hears it.
+    **gives**: a route must catch this refusal and nothing else.
 
     Args:
         asked: The date the submitted tracking start asserts for.
-        recorded: The day of the earliest recorded payment on or before it.
+        moved_on: The day the loan's earliest payment moved money, on or
+            before *asked*.
 
     Attributes:
         asked: As above.
-        recorded: As above.
+        moved_on: As above.
     """
 
-    def __init__(self, asked, recorded):
-        """Keep both dates and say which control records a correction."""
+    def __init__(self, asked: date, moved_on: date) -> None:
+        """Keep both dates and state what they contradict."""
         self.asked = asked
-        self.recorded = recorded
+        self.moved_on = moved_on
         super().__init__(
-            f"A payment is already recorded on "
-            f"{recorded.strftime('%b %-d, %Y')}, on or before "
+            f"A payment into this loan already moved money on "
+            f"{moved_on.strftime('%b %-d, %Y')}, on or before "
             f"{asked.strftime('%b %-d, %Y')}, so the app's record of this loan "
-            f"starts earlier than the tracking start you entered.  Choose a "
-            f"date before {recorded.strftime('%b %-d, %Y')}, or use Record "
-            f"balance to correct the loan's balance instead."
+            f"starts earlier than that date."
         )
