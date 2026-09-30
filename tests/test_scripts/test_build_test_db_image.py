@@ -404,19 +404,23 @@ class TestStaleImagesArePrunedOnlyAfterABuild:
     def test_print_tag_imports_nothing_beyond_the_standard_library(self) -> None:
         """Every other worktree's prune runs THIS tree's ``--print-tag``.
 
-        So nothing in ``scripts`` or ``app`` may be able to stop it answering,
-        which is why the prune module is imported only after a build.  This
-        runs the real script in a fresh interpreter; ``--print-tag`` reads
+        So nothing outside the standard library, ``scripts`` and ``app``
+        included, may be able to stop it answering, which is why the prune
+        module is imported only after a build.  This runs the real script in
+        a fresh interpreter and requires every top-level module it newly
+        imports to be in ``sys.stdlib_module_names``; ``--print-tag`` reads
         files and runs no command.
         """
         probe = (
             "import runpy, sys\n"
+            "before = {name.split('.')[0] for name in sys.modules}\n"
             "sys.argv = ['build_test_db_image.py', '--print-tag']\n"
             "try:\n"
             f"    runpy.run_path({str(_SCRIPT)!r}, run_name='__main__')\n"
             "except SystemExit as done:\n"
             "    assert done.code == 0, done.code\n"
-            "print(sorted(n for n in sys.modules if n.split('.')[0] in ('app', 'scripts')))\n"
+            "new = {name.split('.')[0] for name in sys.modules} - before\n"
+            "print(sorted(new - sys.stdlib_module_names))\n"
         )
 
         result = subprocess.run(
@@ -424,9 +428,9 @@ class TestStaleImagesArePrunedOnlyAfterABuild:
         )
 
         assert result.returncode == 0, result.stderr
-        tag, imported = result.stdout.splitlines()
+        tag, beyond_stdlib = result.stdout.splitlines()
         assert tag.startswith("shekel-test-db:"), tag
-        assert imported == "[]", f"--print-tag imported {imported}"
+        assert beyond_stdlib == "[]", f"--print-tag imported {beyond_stdlib}"
 
 
 class TestTheBuilderLeavesNothingBehind:

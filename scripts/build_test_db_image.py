@@ -62,9 +62,9 @@ Usage::
 Exit codes: 0 on success (image present and verified), 1 on a build or
 verification failure, 2 on a usage or environment problem.
 
-A build, never a cache hit or ``--print-tag``, ends by removing stale images of
-earlier keys (:mod:`scripts.prune_test_db_images`, imported only then, so
-``--print-tag`` is standard-library only); nothing the prune meets fails it.
+A build, never a cache hit or ``--print-tag``, ends by pruning stale images of earlier keys
+(:mod:`scripts.prune_test_db_images`, imported only then). At run time nothing the prune meets
+fails the build; a prune module that cannot import fails that one invocation, after the bake.
 """
 from __future__ import annotations
 

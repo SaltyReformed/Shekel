@@ -57,8 +57,11 @@ build actually ran.  Three decisions carry it:
    forced.  One call per tag lets the exit status alone say which tags went
    and which were refused.
 
-A prune problem never fails the build or the test run: whatever goes wrong,
-a hang included, is reported in one line and the caller carries on.
+At run time nothing the prune meets fails the build or the test run: whatever
+goes wrong, a hang included, is reported in one line and the caller carries
+on.  A prune module that cannot be IMPORTED (a mid-edit syntax error, say) is
+the exception: it fails that one builder invocation, after the image is
+built, so the next run is a cache hit.
 
 One window stays open.  ``scripts/test.sh`` resolves its tag, and only then
 runs the builder, which computes the tag again, builds, and prunes; its
@@ -104,11 +107,13 @@ class PruneRefused(RuntimeError):
 def _run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run a command and capture its output; the caller reads the status.
 
-    Undecodable output is REPLACED rather than raised on, where a decode
-    error would have escaped every handler here and failed the build.  A
-    mangled worktree path or printed tag then fails its own check and stops
-    the prune; a mangled listing line matches no tag and is never a
-    candidate.
+    Undecodable bytes are carried as surrogate escapes rather than raised on,
+    where a decode error would have escaped every handler here and failed the
+    build.  A worktree path then keeps its REAL bytes, so ``Path.exists()``
+    sees the directory that is there; replacing them instead turned a
+    still-present, non-UTF-8-named directory into one that did not exist, and
+    it was skipped.  A printed tag or listing line holding one matches no tag,
+    so it stops the prune or is never a candidate.
 
     Args:
         command: argv to execute.
@@ -124,7 +129,7 @@ def _run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedPro
             :data:`_COMMAND_TIMEOUT_SECONDS`; it is killed first.
     """
     return subprocess.run(
-        command, cwd=cwd, capture_output=True, text=True, errors="replace",
+        command, cwd=cwd, capture_output=True, text=True, errors="surrogateescape",
         timeout=_COMMAND_TIMEOUT_SECONDS, check=False,
     )
 

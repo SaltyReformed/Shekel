@@ -19,6 +19,7 @@ raises ``KeyError``.  Only :class:`TestTheRunner` calls the real runner, with
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -238,6 +239,38 @@ class TestTheKeepSet:
         err = capsys.readouterr().err
         assert f"removed nothing: git marks {tmp_path} 'prunable gitdir" in err
         assert "the directory is still there" in err
+
+    def test_a_prunable_worktree_with_a_non_utf8_name_is_still_seen(
+        self, host: _FakeHost, tmp_path: Path
+    ) -> None:
+        """A path's real bytes survive decoding, so a directory still there is seen.
+
+        Decoded with ``errors="replace"``, the ``0xff`` byte became U+FFFD, the
+        mangled path did not exist, and a prunable worktree whose directory is
+        still there was skipped.  The listing here is decoded by the REAL
+        runner, from a real process writing the raw bytes; the check is made
+        on ``live_worktrees`` directly because the refusal's message holds
+        the undecodable byte.
+
+        Args:
+            host: The scripted host.
+            tmp_path: Where the non-UTF-8-named directory is made.
+        """
+        raw = os.fsencode(tmp_path) + b"/wt-\xff"
+        os.mkdir(raw)
+        porcelain = (
+            b"worktree " + raw + b"\n"
+            b"HEAD 4444444444444444444444444444444444444444\n"
+            b"detached\n"
+            b"prunable gitdir file points to non-existent location\n"
+        )
+        host.worktrees = _real_run(
+            [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({porcelain!r})"]
+        )
+
+        assert os.fsdecode(raw) in host.worktrees.stdout
+        with pytest.raises(_MODULE.PruneRefused, match="the directory is still there"):
+            _MODULE.live_worktrees(_ROOT)
 
     @pytest.mark.parametrize(
         ("answer", "reported"),
@@ -503,5 +536,5 @@ class TestTheRunner:
         assert seen["cwd"] == Path("/wt/lane")
         assert isinstance(seen["timeout"], int) and seen["timeout"] > 0
         assert seen["check"] is False
-        assert seen["errors"] == "replace"
+        assert seen["errors"] == "surrogateescape"
         assert "shell" not in seen
