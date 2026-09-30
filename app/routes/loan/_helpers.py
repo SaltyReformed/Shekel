@@ -122,14 +122,16 @@ def render_loan_setup(
     defaults below over a blank form, so an owner who followed a refusal by
     changing only the date re-submitted the prefilled balance instead of the
     one typed -- measured: a prefilled ``0.00`` configured a loan owing
-    $0.00.  The defaults serve the form's FIRST showing only.  The answers
-    that redirect instead come back to the first showing: an account that is
-    not a loan type, a loan already configured, and the standing payment's
-    two refusals
-    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`),
-    whose remedy is the recurring transfer's while the typed contract is
-    right -- a mistyped origination can meet them too, and their redirect
-    loses what was typed.
+    $0.00.  The defaults serve the form's FIRST showing only.  Three
+    answers redirect instead.  An account that is not a loan type goes to
+    ``savings.dashboard`` and a loan already configured to its own page
+    (``loan.dashboard``, which shows it configured): neither
+    has a setup form to re-render.  The standing payment's two refusals
+    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`)
+    roll the whole setup back and redirect to the loan's page, which shows
+    this form's first showing, so what was typed is lost; their remedy is
+    the recurring transfer's while the typed contract is right, and a
+    mistyped origination can meet them too (REC-554).
 
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --

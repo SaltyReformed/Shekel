@@ -879,9 +879,11 @@ class TestLoanSetup:
         )
         assert resp.status_code == 200
         assert b'name="current_principal"' not in resp.data
-        assert b'name="anchor_balance"' in resp.data
-        assert b'value="15000.00"' in resp.data
-        assert b'name="anchor_date"' in resp.data
+        # Read input by input (review 7f): a second input of a name ahead of
+        # the real box is what a browser posts first and the server reads.
+        values, _ = self._inputs(resp.data)
+        assert values.get("anchor_balance") == ["15000.00"]
+        assert values.get("anchor_date") == ["2026-03-20"]
         assert b'max="2026-03-20" value="2026-03-20"' in resp.data
 
     def _unconfigured_auto_loan(self, seed_user, db, name, opened_on=None):
@@ -1364,8 +1366,8 @@ class TestLoanSetup:
         prefilled 0.00 configured a loan owing $0.00).  Each value is read off
         its own input (review 7d: a value echoed into the wrong box must not
         pass), and each typed value differs from its default, so an echo of
-        the defaults fails.  The standing-payment refusal is not here: its
-        remedy is the recurring transfer's, and it redirects.
+        the defaults fails.  The answers that redirect instead are
+        render_loan_setup's docstring's to list, not repeated here.
         """
         account = self._unconfigured_auto_loan(
             seed_user, db, "Refused As Typed", opened_on=date(2026, 1, 2),
@@ -1387,8 +1389,7 @@ class TestLoanSetup:
         assert refusal in resp.data
         values, checked = self._inputs(resp.data)
         assert {field: values.get(field) for field in typed} == {
-            **{field: [value] for field, value in typed.items()},
-            "is_arm": ["true"],
+            field: [value] for field, value in typed.items()
         }
         assert "is_arm" in checked
         assert db.session.query(LoanParams).filter_by(
@@ -1414,6 +1415,9 @@ class TestLoanSetup:
         assert resp.status_code == 200
         assert b"Please correct the highlighted errors" in resp.data
         values, checked = self._inputs(resp.data)
+        # The as-typed render, not the first showing's (which never checks
+        # the box either): the refused day came back.
+        assert values.get("anchor_date") == ["2026-03-21"]
         assert values.get("is_arm") == ["true"]
         assert "is_arm" not in checked
 

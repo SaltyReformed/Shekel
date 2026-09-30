@@ -547,8 +547,9 @@ def record_loan_tracking_start(
     precedes the read a decision is made from).  Since plan step
     ``balance:X-bn`` every command transaction a signed-in request opens
     takes that lock before it reads the owner's data (:mod:`app.db_transaction`;
-    a GET's read-only query transaction takes none, and a write block inside
-    one is a command and does), a settle's included, so a
+    a GET's read-only query transaction takes none, and a write_transaction
+    block inside a GET opens a command transaction, which does), a settle's
+    included, so a
     payment settled in another tab either committed before this door read the
     payments or waits for it to finish.  Until then a settle took the lock
     only inside its posting re-sync, after its own writes (finding
