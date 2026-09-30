@@ -65,15 +65,24 @@ def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
 # ── TransactionEntry Tests ─────────────────────────────────────────────
 
 
-class TestTransactionEntryCascadeDelete:
-    """Verify CASCADE behavior on the transaction_id FK."""
+class TestTransactionEntryRowDeleteIsRefused:
+    """Verify the transaction_id FK REFUSES a row's delete while it holds entries.
 
-    def test_transaction_entry_cascade_delete(self, app, db, seed_user, seed_periods):
-        """Deleting a transaction cascades to delete its entries.
+    It CASCADED until plan step ``credit_card:CC-5-4a-4`` (migration
+    ``c4a4e7d1b9f2``, rulings **R-CC54** / **R-CC64**): a row's delete took
+    its purchases with it, and the template, account and pay-period doors
+    destroyed recorded money that way (finding **CC-363**).  Re-expressed from
+    the cascade's own test under rule 5, developer-confirmed 2026-09-23.
+    """
 
-        The transaction_entries.transaction_id FK is ON DELETE CASCADE, so
-        removing the parent transaction must remove all child entries without
-        raising an IntegrityError.
+    def test_a_row_holding_entries_cannot_be_deleted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Deleting a transaction holding purchases is refused; both purchases survive.
+
+        ``fk_transaction_entries_transaction_id`` is NO ACTION and the
+        ``entries`` relationship carries no delete cascade, so the parent's
+        own ``DELETE`` meets the key.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
@@ -89,12 +98,14 @@ class TestTransactionEntryCascadeDelete:
             ).count() == 2
 
             db.session.delete(txn)
-            db.session.commit()
+            with pytest.raises(sqlalchemy.exc.IntegrityError) as refused:
+                db.session.commit()
+            db.session.rollback()
 
-            # Entries must be gone after CASCADE delete.
+            assert "fk_transaction_entries_transaction_id" in str(refused.value)
             assert db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn_id
-            ).count() == 0
+            ).count() == 2
 
 
 class TestTransactionEntryAmountCheck:

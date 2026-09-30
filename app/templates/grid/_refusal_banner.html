@@ -1,0 +1,23 @@
+{# The red refusal banner: a refused request's reason, said as a banner.
+
+   ONE spelling for every surface that shows one (plan step
+   credit_card:CC-5-4a-4): the mobile card (`_grid_row_macros.html`'s card),
+   the banner-only card for a row that is gone or no longer listed
+   (`_mobile_card_error.html`), the purchase list
+   (`_transaction_entries.html`), and the purchase list for a row that is
+   gone (`_transaction_entries_gone.html`, ruling R-CC103).  The markup was
+   spelled three times before the fourth surface needed it; the bottom margin
+   is the one thing the surfaces differ on.
+
+   Arguments:
+     message -- the sentence to show, autoescaped.
+     margin  -- the Bootstrap bottom-margin class: `mb-2` where a list
+                follows the banner, `mb-0` where nothing does.
+#}
+{% macro refusal_banner(message, margin="mb-0") -%}
+<div class="alert alert-danger py-1 px-2 {{ margin }} small d-flex align-items-center gap-1"
+     role="alert">
+  <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
+  <span>{{ message }}</span>
+</div>
+{%- endmacro %}

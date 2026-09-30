@@ -34,13 +34,17 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from app.exceptions import NotFoundError, ValidationError
-from app.utils.auth_helpers import get_accessible_transaction
+from app.utils.auth_helpers import (
+    get_accessible_transaction,
+    get_accessible_transaction_or_deleted,
+)
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 from app.utils.error_fragments import (
     INVALID_REFERENCE_MSG,
     designed_error,
     flatten_schema_errors,
+    refusal_for_a_gone_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,11 +58,12 @@ _update_schema = EntryUpdateSchema()
 # Name of the partial unique index that backstops the duplicate CC
 # Payback bug closed in commit C-19.  ``entry_service.create_entry``,
 # ``update_entry``, and ``delete_entry`` all funnel through
-# ``entry_credit_workflow.sync_entry_payback`` which acquires
-# ``SELECT ... FOR NO KEY UPDATE`` on the parent transaction; if any
-# future caller bypasses that lock, the partial index rejects the
-# duplicate INSERT and the matching catch below converts the
-# ``IntegrityError`` to idempotent success.  Mirrors the literal in
+# ``entry_credit_workflow.sync_entry_payback``, and the request's owner
+# write lock (:mod:`app.db_transaction`, plan step ``balance:X-bn``, which
+# deleted C-19's ``FOR NO KEY UPDATE`` on the parent row) serialises two
+# of them; for a writer that holds no request, and so no owner lock, the
+# partial index rejects the duplicate INSERT and the matching catch below
+# converts the ``IntegrityError`` to idempotent success.  Mirrors the literal in
 # the matching Alembic migration (b3d8f4a01c92) and the
 # ``__table_args__`` declaration on
 # ``app.models.transaction.Transaction``.
@@ -174,28 +179,29 @@ def _render_entry_list(
     # owner's calendar does not hold it" is not a state a purchase list may
     # render past.
     #
-    # **What that costs is balance finding N-358, and the honest statement
-    # names the door rather than arguing the state away.**  A first draft of
-    # this comment said the calendar is read AFTER the row so no concurrent
-    # write can remove the period it needs -- which argues only about
-    # APPENDS, and appends are not the reachable case (adversarial review,
-    # 2026-08-31).  A concurrent ``POST /pay-periods/{reset,regenerate,
-    # truncate}`` DELETES paydays, and under ``READ COMMITTED`` it can commit
-    # between the row read and the payday read: the identity-mapped
-    # ``txn.pay_period`` still answers while this calendar no longer holds
-    # the id, and ``require_period`` raises.  Four routes reach here and
-    # THREE of them render after committing their own write, which is
-    # N-358's own shape.
+    # **The READ ORDER: the row first, the paydays second, and no door that
+    # deletes paydays can commit between them.**  Four routes reach here.
+    # The GET (:func:`list_entries`) is a query, so one ``REPEATABLE READ``
+    # snapshot holds both reads (``app.db_transaction``).  The three writes
+    # draw the list in the command transaction their commit or rollback
+    # opens, which takes the owner's write lock before its first read (plan
+    # step ``balance:X-bn``); every door that deletes paydays, ``POST
+    # /pay-periods/{reset,regenerate,truncate}`` among them, is a command too
+    # and takes the same lock.  What is reachable is the gap BEFORE that
+    # transaction: a door queued on the lock commits between the write's
+    # commit or rollback and this redraw (finding **BAL-565**, ruled to ship
+    # so, **R-BAL156**); plan step ``balance:X-dc`` makes each save one
+    # transaction.
     #
-    # It is documented rather than coped with, for the reason
-    # ``require_period``'s docstring gives: the three quieter answers each
-    # cope with an inconsistent picture instead of preventing one.  The
-    # remedy that PREVENTS it is `balance:X-i5`, which makes a request one
-    # snapshot until it declares a write; the remedy `C4-a-2` used -- scope
-    # the query by the calendar's own period ids -- is not available here,
-    # because the row arrives from ``get_accessible_transaction``, the
-    # canonical route-boundary door, and reordering that door is not this
-    # leaf's to do.
+    # *Until plan step ``balance:X-bn`` such a door could commit between the
+    # row read and the payday read under ``READ COMMITTED`` (balance finding
+    # **N-358**): the identity-mapped ``txn.pay_period`` still answered while
+    # this calendar no longer held the id, and ``require_period`` raised.
+    # This comment named that door rather than coping with it, for the reason
+    # ``require_period``'s docstring gives.  A first draft had said the
+    # calendar is read AFTER the row so no concurrent write can remove the
+    # period it needs, which argued only about APPENDS (adversarial review,
+    # 2026-08-31).*
     period = calendar_for(txn.user_id).require_period(
         FiledRow.for_row(txn),
     )
@@ -262,6 +268,39 @@ def _error_entry_response(
     )
 
 
+def _gone_entry_list_response(
+    txn_id: int, host: str, message: str,
+) -> ResponseReturnValue:
+    """Render the purchase list of a row that is GONE: the red banner alone.
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC103** (developer
+    2026-09-23, "Banner only, both kinds"): *"For recurring and one-off rows
+    alike, the list and its Add form are replaced by the red banner alone"*
+    (``grid/_transaction_entries_gone.html``).  Keyed by the id in the URL,
+    the only thing left of a one-off row its delete removed; the root keeps
+    the list's id, so the request's outerHTML swap lands.  Designed and a
+    404: the door answers the row "not found" (ruling **R-CC89**), and the
+    body says why rather than being dropped.
+
+    Args:
+        txn_id: The row id the request named.
+        host: The validated host prefix from :func:`_request_host`.
+        message: The sentence -- the purchase refusal naming the row, or
+            :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+
+    Returns:
+        A designed-fragment Flask response tuple at 404.
+    """
+    return designed_error(
+        render_template(
+            "grid/_transaction_entries_gone.html",
+            entry_list_host_id=_entry_list_host_id(txn_id, host),
+            error=message,
+        ),
+        404,
+    )
+
+
 def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue:
     """Build the shared success response for an entries mutation.
 
@@ -312,10 +351,11 @@ def _credit_payback_idempotent_response(
 
     Shared between :func:`create_entry`, :func:`update_entry`, and
     :func:`delete_entry`.  All three routes funnel through
-    ``entry_credit_workflow.sync_entry_payback`` (commit C-19) where
-    a SELECT FOR NO KEY UPDATE on the parent transaction prevents
-    the duplicate-payback race in normal flow.  This helper is the
-    backstop for any future caller that bypasses the lock: the
+    ``entry_credit_workflow.sync_entry_payback`` (commit C-19), and the
+    request's owner write lock (plan step ``balance:X-bn``, which replaced
+    C-19's lock on the parent row) prevents the duplicate-payback race in
+    normal flow.  This helper is the backstop for a writer that holds no
+    owner lock: the
     partial unique index ``uq_transactions_credit_payback_unique``
     rejects the duplicate INSERT, the calling route catches the
     resulting :class:`IntegrityError`, and this helper either returns
@@ -451,11 +491,38 @@ def create_entry(txn_id):
     Returns the refreshed entry list with a balanceChanged trigger
     (plus, on the desktop popover surface, the OOB grid-cell
     re-render -- see :func:`_entry_mutation_response`).
+
+    **A row that is gone gets the banner alone** (plan step
+    ``credit_card:CC-5-4a-4``, rulings **R-CC101**, **R-CC103**,
+    **R-CC104**): a purchase on a row deleted in another tab answers
+    "Groceries was deleted: a purchase cannot be recorded under it.  Reload
+    the page." where the list stood -- "Groceries was archived: ..." where
+    its recurring item is (ruling **R-CC107**) --
+    :func:`_gone_entry_list_response`, before the door serves the row.  That
+    answers a Delete that committed BEFORE the request.  Since plan step
+    ``balance:X-bn`` (ruling **R-CC106**) the request's transaction takes its
+    owner's write lock before the door reads the row, so a Delete either
+    committed before that read or waits for THAT TRANSACTION to end -- which
+    is not the request's end: the success path commits and then draws the
+    list, and a refusal rolls back and then redraws it, each in a second
+    transaction, and a queued Delete commits in between (finding BAL-565).
+    A one-off row then answers a server error, and a recurring row's answer,
+    a refusal or a success, draws the list and its Add form under the deleted
+    row.  The answer for
+    that moment (the race ruling **R-CC96** let a door see) was deleted with
+    the row lock at that step and stays deleted (**R-BAL156**); plan step
+    ``balance:X-dc`` makes each save one transaction.
     """
-    txn = get_accessible_transaction(txn_id)
-    if txn is None:
-        return "Not found", 404
     host = _request_host()
+    answer = get_accessible_transaction_or_deleted(txn_id)
+    if not isinstance(answer, Transaction):
+        return _gone_entry_list_response(
+            txn_id, host,
+            refusal_for_a_gone_row(
+                answer, entry_service.deleted_row_purchase_refusal,
+            ),
+        )
+    txn = answer
 
     errors = _create_schema.validate(request.form)
     if errors:
@@ -722,6 +789,21 @@ def delete_entry(txn_id, entry_id):
     delete button; the SQLAlchemy ``version_id_col`` lock catches
     concurrent races at flush time and the handler converts
     ``StaleDataError`` into a 409 + conflict entry list.
+
+    **A refused removal is the list's banner** (finding **CC-376**, plan step
+    ``credit_card:CC-5-4a-4``): the door's ``ValidationError`` had no arm
+    here, so each was a 500 (measured by the step's lane probe on a settled
+    envelope holding one purchase).  The arm answers every refusal the door
+    raises, as the purchase list's other refusals are answered, where the
+    delete button stood: a purchase under a settled row whose close records a
+    fixed figure (``entry_service._refusals.removal_refusal``); a card
+    purchase whose payback has already settled, or whose removal would leave
+    the row's card refunds larger than its card purchases
+    (``entry_credit_workflow.sync_entry_payback``) -- the first reached in an
+    ordinary flow, paying the card and then removing a card purchase; and a
+    row's own payment record, reached only by a crafted id
+    (``_refusals._reject_settlement_record``).  Each names its row and prints
+    its dollars (ruling **R-CC98**; review 6, M3).
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:
@@ -739,8 +821,8 @@ def delete_entry(txn_id, entry_id):
         return _stale_entry_response(txn, host)
     except IntegrityError as exc:
         # Defensive backstop for commit C-19 -- ``delete_entry``
-        # also calls ``sync_entry_payback``, so the same race window
-        # exists if a future caller bypasses the row lock.  See
+        # also calls ``sync_entry_payback``, so a writer that holds no
+        # owner lock could race it the same way.  See
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(
             exc, txn.id, f"delete_entry id={entry_id}", host,
@@ -748,5 +830,7 @@ def delete_entry(txn_id, entry_id):
     except NotFoundError as exc:
         db.session.rollback()
         return str(exc), 404
+    except ValidationError as exc:
+        return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)

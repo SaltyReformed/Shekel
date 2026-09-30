@@ -160,36 +160,52 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     here, and that is ruling R-ES** (plan step X-f1e2).  This function built the
     ``AccountAnchorHistory`` row itself until then, which made it the table's
     SECOND writer -- and the two differed in every rule that is not the row's
-    columns: the stager takes the owner's write lock, applies ruling R-EQ's
-    did-this-change compare, and logs the resolved day in the one line both
-    doors share.  With one writer those rules cannot be true on one path and
+    columns: the stager applies ruling R-EQ's did-this-change compare and logs
+    the resolved day in the one line both doors share (and took the owner's
+    write lock, until plan step ``balance:X-bn`` made that lock the
+    transaction's).  With one writer those rules cannot be true on one path and
     absent on the other.  **The books OPENING goes through its own single
     writer for the identical reason since plan step X-f3c-2b-2a**
     (:func:`app.services.opening_service.stage_account_opening`), which is what
     lets an owner restate it later without this function becoming that table's
     second writer.
 
-    The order is also better than it was, and the improvement is MEASURED
-    rather than argued: the advisory lock used to appear at statement 7, five
+    **This function takes no lock, and it has two callers that differ in
+    whether one is held** (plan step ``balance:X-bn``).  From
+    ``routes/accounts/crud.create_account`` the signed-in request's command
+    transaction took the owner's write lock before the route ran
+    (:mod:`app.db_transaction`), so it precedes the ``INSERT INTO
+    budget.accounts`` below and that INSERT's index lock on
+    ``uq_accounts_user_name`` -- which leaves finding **N-202**'s
+    create-versus-rename cycle no opposite order to take, the rename's
+    transaction taking the same lock first.  From
+    ``registration_service.register_user`` (which ``scripts/seed_user.py``
+    also reaches) no lock is taken at all, and none is needed: the owner is
+    not committed, so no other transaction can see the account, rename one
+    beside it or post against it.
+
+    *The statement order before that step, MEASURED and kept as history.*  The
+    order was better than it had been, and the improvement was measured rather
+    than argued: the advisory lock used to appear at statement 7, five
     statements after the assertion INSERT at statement 2.  **Re-measured
     2026-08-31 on a production clone, on both sides of X-f3c-2b-2a, because that
-    step changed which function takes the lock**: it is statement 3 either way
-    -- ``opening_service`` now takes it where ``anchor_service`` used to, and
-    the wire position is unchanged -- while the assertion INSERT moved from 6
+    step changed which function took the lock**: it was statement 3 either way
+    -- ``opening_service`` took it where ``anchor_service`` used to, and
+    the wire position was unchanged -- while the assertion INSERT moved from 6
     to 8, the two added statements being the opening door's own governing read
     and its re-entrant re-acquisition.  *The figure this sentence quoted for
     that INSERT was 5, and it had decayed silently: it was measured at X-f1e2,
-    before ``budget.account_openings`` existed to be written at all.*  **None
-    of this puts the path outside finding N-193's class** -- ``INSERT INTO
+    before ``budget.account_openings`` existed to be written at all.*  None
+    of this put the path outside finding N-193's class -- ``INSERT INTO
     budget.accounts``
-    still runs first and takes an index lock on ``uq_accounts_user_name``, so
-    the advisory lock is not the transaction's FIRST lock.  An adversarial
-    review traced the cycles: none exists against N-193's named antagonists
+    still ran first and took an index lock on ``uq_accounts_user_name``, so
+    the advisory lock was not the transaction's FIRST lock.  An adversarial
+    review traced the cycles: none existed against N-193's named antagonists
     (a pay-period truncate / reset / regenerate CASCADEs to
     ``journal_entries``, ``transfers``, ``transactions`` and
     ``recurrence_rules``, never to ``accounts``), and the one it did reproduce
-    -- create versus a same-name rename -- is pre-existing and made LESS likely
-    by this change.  Recorded as finding **N-202**.
+    -- create versus a same-name rename -- was pre-existing and made LESS
+    likely by plan step X-f1e2.  Recorded as finding **N-202**.
 
     **It no longer resolves an anchor PERIOD.**  It used to derive one from
     ``observed_on`` (``resolve_anchor_period_id``, deleted as callerless in the

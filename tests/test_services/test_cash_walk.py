@@ -42,7 +42,7 @@ from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services import transaction_service
 from app.services.row_valuation import purchases_total, settled_figure
 from app.enums import StatusEnum
-from app.exceptions import UndatedSettleError, ValidationError
+from app.exceptions import ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
     account_never_asserted,
@@ -596,7 +596,7 @@ class TestSourceFactValuation:
         step A3 removed from the loan walk.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -643,11 +643,7 @@ class TestSourceFactValuation:
         owner finished the envelope to the day the money actually left, which
         is the whole point of the step.
         """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services import (  # pylint: disable=import-outside-toplevel
-            entry_service, posting_service, status_seam,
-        )
+        from app.services import posting_service  # pylint: disable=import-outside-toplevel
         from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
         from tests._test_helpers import create_envelope_txn  # pylint: disable=import-outside-toplevel
 
@@ -821,46 +817,59 @@ class TestTheWalkSeesOnlyItsOwnRows:
     def test_a_non_contributing_row_is_excluded_whatever_it_carries(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A soft-deleted settled envelope must not reach the walk.
+        """A soft-deleted transfer's settled leg must not reach the walk.
 
         The guard that matters most for money: every valuation is TOTAL over
         the contributing gate -- a movement under a non-contributing parent
         moves nothing (``movement_cash_leg``, ruling **R-FM**) and the row is
         worth nothing (``covered_cash_leg``, ruling **R-BAL81**) -- but without
-        the SQL exclusion the row would still enter the stream, and a deleted
-        envelope carrying an $80.00 credit entry is precisely the shape that
-        used to value at a fabricated ``+$80.00`` inflow through the row's own
-        leg (``settled_cash_leg``, deleted at R-BAL81).  Both defences are
-        pinned: the row is absent, AND every valuation of it is zero.
+        the SQL exclusion the row would still enter the stream.  Both defences
+        are pinned: the row is absent, AND every valuation of it is zero.
+
+        **The hidden row is a transfer's leg because no other can hold a
+        movement** (ruling **R-CC92**, plan step ``credit_card:CC-5-4a-4``):
+        the database refuses a commit that leaves any other row hidden holding
+        one.  This was a deleted envelope carrying an $80.00 credit entry, the
+        shape that once valued at a fabricated ``+$80.00`` inflow through the
+        row's own leg (``settled_cash_leg``, deleted at R-BAL81).  A settled
+        transfer's soft delete still hides its legs holding their dated
+        payments (finding **balance:BAL-532**), so that is the state staged,
+        through the door; plan step ``balance:X-bi-6-4`` closes it, and this
+        staging with it.  Re-expressed under rule 5, developer-confirmed
+        2026-09-23.
         """
-        from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
-        from app.services.cash_ledger import movement_cash_leg  # pylint: disable=import-outside-toplevel
-        from app.services.status_seam import covered_cash_leg  # pylint: disable=import-outside-toplevel
+        # pylint: disable=import-outside-toplevel
+        from app.models.transaction import Transaction
+        from app.services import transfer_service
+        from app.services.cash_ledger import movement_cash_leg
+        from app.services.status_seam import covered_cash_leg
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
         _opened_at(account, _instant(2026, 1, 1))
-        txn = create_settled_cash_transaction(
-            seed_user, db.session, period, Decimal("80.00"),
-            settled_on=date(2026, 2, 1), name="deleted envelope",
+        savings = create_savings_account(
+            seed_user, db.session, "Savings", Decimal("0.00"),
         )
-        db.session.add(TransactionEntry(
-            **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
-            user_id=seed_user["user"].id,
-            amount=Decimal("80.00"),
-            description="credit purchase",
-            purchased_on=date(2026, 2, 1),
-            is_credit=True,
-            **settle_day_columns(date(2026, 2, 1)),
-        ))
-        txn.is_deleted = True
+        xfer = create_settled_transfer(
+            seed_user, db.session, account, savings, period,
+            amount=Decimal("80.00"), settled_on=date(2026, 2, 1),
+        )
         db.session.commit()
+        assert [fact.delta for fact in settled_cash_facts(
+            account.id, scenario.id,
+        )] == [Decimal("-80.00")], "the leg must reach the walk while it counts"
 
+        transfer_service.delete_transfer(xfer.id, seed_user["user"].id, soft=True)
+        db.session.commit()
+        leg = db.session.query(Transaction).filter_by(
+            transfer_id=xfer.id, account_id=account.id,
+        ).one()
+
+        assert leg.is_deleted is True
         assert settled_cash_facts(account.id, scenario.id) == []
-        assert covered_cash_leg(txn, txn.account_id) == Decimal("0.00")
-        assert txn.entries, "the row must carry movements or this grades nothing"
-        assert {movement_cash_leg(txn, entry) for entry in txn.entries} == {
+        assert covered_cash_leg(leg, leg.account_id) == Decimal("0.00")
+        assert leg.entries, "the leg must carry its payment or this grades nothing"
+        assert {movement_cash_leg(leg, entry) for entry in leg.entries} == {
             Decimal("0.00"),
         }
         assert _running_balance(account, scenario) == Decimal("1000.00")

@@ -4,7 +4,7 @@ Shekel Budget App -- Status Seam: the refusals
 The invariants of a settlement stated as GUARDS, so every caller of the seam
 inherits them rather than each door remembering one.  They are gathered here
 because they are one subject -- what a row may and may not assert about its own
-money -- and because :func:`._seam.apply_status_change` runs four of them
+money -- and because :func:`._seam.apply_status_change` runs five of them
 ahead of any mutation, so a refused call leaves the row untouched; the two
 form readings beside it (``figure_for_status``, ``tender_for_status``) run
 the other two for the edit doors, ahead of the seam.
@@ -12,18 +12,23 @@ the other two for the edit doors, ahead of the seam.
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Five of the six are this project's answer to a rule that cannot be a CHECK
+Five of the seven are this project's answer to a rule that cannot be a CHECK
 constraint, and each says so in its own docstring: the settled-status
 questions need ``ref.statuses.is_settled``, which a constraint on
 ``budget.transactions`` cannot see, and the ref convention keeps status ids out
 of a schema; the stated-figure-over-purchases question is a count over
-another table (:func:`reject_stated_figure_over_purchases`).  (A seventh,
+another table (:func:`reject_stated_figure_over_purchases`).  One is the
+WORDS of a trigger: :func:`reject_settlement_on_a_deleted_row` says what
+:mod:`app.deleted_row_infrastructure` refuses.  (An eighth,
 ``reject_settle_day_without_a_record``, was the one that MIRRORED a CHECK --
 ``ck_transactions_settle_day_needs_a_record`` said in words -- and went with
 that CHECK and the row's figure columns at plan step ``balance:X-bi-4b-2``.)
 
-Pure: reads columns and the settled-status predicate, raises or returns.  No
-session, no mutation, no Flask.
+Pure but for one read: each reads columns and the settled-status predicate,
+raises or returns.  No mutation, no Flask, and one session read, in the
+deleted-row refusal's words -- whether the row's recurring item is archived
+(:meth:`app.utils.hidden_row.HiddenRow.of`, ruling **R-CC107**), asked only of
+a row it is refusing.
 """
 
 from datetime import date
@@ -36,6 +41,7 @@ from app.services.settle_day import SettleDay
 from app.services.status_seam._record import Settlement
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
+from app.utils.hidden_row import HiddenRow
 
 
 #: The rows this seam accepts.  ``Transfer`` carries no ``settled_on`` column --
@@ -274,6 +280,98 @@ def reject_stated_figure_over_purchases(
         f"Transaction {row.id} records its money as purchases, so a figure "
         "cannot be stated over them: what it cost is what its purchases say. "
         "To change the total, correct or add a purchase."
+    )
+
+
+def reject_settlement_on_a_deleted_row(
+    row: StatusBearingRow, settlement: Optional[Settlement],
+) -> None:
+    """Refuse a settlement record on a deleted row: a deleted row takes no money.
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89** (developer
+    2026-09-23: *"The two code paths that write money under a row refuse first,
+    with a readable sentence."*).  A record is what the seam's covering writer
+    (:func:`._covering.sync_covering_movement`) turns into a payment record
+    under the row, so refusing the record here is refusing that write, ahead of
+    any mutation.  The other path is ``entry_service.create_entry``'s refusal of
+    a purchase.  Measured by the step's third review: the popover's Actual
+    correction on a deleted Paid $120.00 Hotel reached the covering writer
+    through ``transaction_service.apply_requested_status``'s correction arm,
+    which the settle verbs' ``reject_unsettleable`` does not guard, and wrote a
+    dated $125.00 payment record under the hidden row.
+
+    **The words of a trigger**: :mod:`app.deleted_row_infrastructure` refuses
+    the same write in the database, for a writer that never reaches this door.
+    A record of ``None`` writes nothing and passes: a revert of a deleted row,
+    and a settle-day correction, move no money.
+
+    **A ``Transfer`` is asked too, and today it cannot arrive with a record: it
+    is the words plan step ``balance:X-bi-6-4`` owes its own arrival arm.**
+    The one caller that hands this seam a ``Transfer``
+    (``transfer_service._status``) hands it no record: a transfer's money is
+    recorded on its two shadows, each a ``Transaction`` that comes through
+    here on its own.  X-bi-6-4 re-parents a transfer's movements onto the
+    transfer itself, and :mod:`app.deleted_row_infrastructure` states what the
+    database must then refuse (a movement arriving under a deleted TRANSFER);
+    a transfer carrying its own record would meet this refusal, by its name.
+    A ``Transaction`` is told "was archived" where its recurring item is
+    archived and "was deleted" otherwise, whichever act hid it (ruling
+    **R-CC107**), and a ``Transfer``, which cannot arrive here with a record
+    today, is named as deleted.
+
+    Args:
+        row: The row being written.
+        settlement: The record this call writes, or ``None``.
+
+    Raises:
+        ValidationError: When *settlement* is not ``None`` and *row* is
+            soft-deleted.  A 400.  The route's ownership door answers a
+            deleted row "not found", and since plan step ``balance:X-bn`` no
+            Delete can commit between that door's read and this one (both
+            follow the request's owner lock), so only a service caller that
+            skipped the door reaches it.
+    """
+    if settlement is None or not row.is_deleted:
+        return
+    raise ValidationError(deleted_row_payment_refusal(
+        HiddenRow.of(row) if isinstance(row, Transaction)
+        else HiddenRow(row.name),
+    ))
+
+
+def deleted_row_payment_refusal(gone: HiddenRow) -> str:
+    """Return the sentence a payment on a hidden row is refused with.
+
+    **One sentence for the three places that refuse it** -- this seam's
+    :func:`reject_settlement_on_a_deleted_row`, the settle verbs'
+    ``transaction_service`` ``reject_unsettleable`` (what a service caller's
+    Mark Paid on a deleted row meets), and the Mark
+    Paid route, which shows it on the cell or the card for a row that is gone
+    (rulings **R-CC101**, **R-CC104**) -- so the owner reads one answer
+    whichever of them refused.  It names the row and never its id (ruling
+    **R-CC98**, developer 2026-09-23: *"never show a user a system ID. A user
+    will not know what that is and only be confused. Use the name of the
+    transaction"*), in the words ruling R-CC96 quotes for the purchase door's
+    twin: *"Groceries was deleted: a purchase cannot be recorded under it"*
+    -- or "was archived" where the row's recurring item is (ruling
+    **R-CC107**, developer 2026-09-24: *"Gym was archived: a payment cannot
+    be recorded under it.  Reload the page."*).
+
+    It takes a :class:`~app.utils.hidden_row.HiddenRow` rather than the row
+    because a one-off row's delete removes the row from the table: the route
+    read the name while the row was live, and after the delete there is no row
+    left to hand over.
+
+    Args:
+        gone: The hidden row's name, and whether its recurring item is
+            archived.
+
+    Returns:
+        The refusal, naming the row.
+    """
+    return (
+        f"{gone.name} {gone.went}: a payment cannot be recorded under it.  "
+        "Reload the page."
     )
 
 

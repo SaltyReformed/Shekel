@@ -1118,11 +1118,18 @@ class TestDeleteReversesPostings:
             resp = auth_client.delete(f"/transactions/{txn_id}")
             assert resp.status_code == 200
 
-            # Soft delete: the row survives, the link stays, the pair nets zero.
+            # Soft delete: the row survives holding nothing, and the pair nets
+            # zero.  Its purchase goes with the delete since ruling R-CC75, so
+            # the pair's link to it is blanked exactly as on a hard delete --
+            # rule-5 re-expression, developer-confirmed 2026-09-23 (this read
+            # "the link stays", 2 entries linked through the purchase).
             survivor = db.session.get(Transaction, txn_id)
             assert survivor is not None
             assert survivor.is_deleted is True
-            assert len(_entries_for_transaction(txn_id)) == 2
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn_id,
+            ).count() == 0
+            assert _entries_for_transaction(txn_id) == []
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,

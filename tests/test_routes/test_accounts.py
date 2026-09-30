@@ -22,11 +22,11 @@ from app.enums import (
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.utils import archive_helpers
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
@@ -111,7 +111,7 @@ def _create_other_user_account():
     # before any test's typical 2026 range so it does not collide with periods
     # generated later by the test body.
     # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
-    bootstrap = open_owner_calendar(other_user.id, date(2024, 1, 5))[0]
+    open_owner_calendar(other_user.id, date(2024, 1, 5))
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
@@ -1379,8 +1379,12 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
     DELETE as a 500.  **A stated behaviour change**: such an account archives,
     as every other kind of history does.  The arm counts exactly the movements
     the cleanup cannot reach -- under a row neither on the account nor under
-    one of its definitions -- so a card whose only movements sit under its
-    OWN ghost row still deletes, as it did.
+    one of its definitions -- and a movement under the account's OWN row, or
+    under a row of its own definition, is not one, which the two controls
+    below grade directly.  Since plan step ``credit_card:CC-5-4a-4`` no hidden
+    row outside a transfer holds a movement (ruling **R-CC92**), so the rows
+    this arm can meet are live ones and transfers' legs; the controls are
+    live.
     """
 
     @staticmethod
@@ -1437,47 +1441,20 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             db.session.expire_all()
             assert db.session.get(TransactionEntry, swipe.id).account_id == card.id
 
-    def test_a_soft_deleted_envelopes_swipe_archives_too(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A ghost on CHECKING is not the card's to hard-delete; its swipe still names the card.
-
-        The row arm reads live rows only and the cleanup deletes ghosts ON
-        the account, so a movement under a soft-deleted row elsewhere is the
-        one shape neither reaches -- and the key would refuse the DELETE.
-        """
-        with app.app_context():
-            card = self._card(seed_user)
-            row = self._checking_envelope(seed_user, seed_periods_today[0])
-            swipe = self._swipe(row, seed_user, card)
-            db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transaction, row.id).is_deleted is True
-
-            response = auth_client.post(
-                f"/accounts/{card.id}/hard-delete", follow_redirects=True,
-            )
-
-            assert response.status_code == 200
-            assert b"purchases recorded on it from other accounts" in response.data
-            archived = db.session.get(Account, card.id)
-            assert archived is not None and archived.is_active is False
-            assert db.session.get(TransactionEntry, swipe.id) is not None
-
-    def test_a_ghost_ON_the_card_holding_its_own_swipe_still_deletes(
+    def test_a_row_ON_the_card_holding_its_own_swipe_is_not_another_rows(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """CONTROL for the arm's first exclusion: a movement under the card's OWN row.
 
         A recurring checking definition's row moved onto the card, a swipe on
-        the card under it, then soft-deleted (a recurring row's delete is a
-        tombstone).  The row arm reads live rows only; step 2 deletes every
-        row ON the card and the movement cascades with it
-        (``fk_transaction_entries_owner_transaction``), so the arm must not
-        count it -- deleting ``Transaction.account_id != account_id`` from the
-        arm makes this case ARCHIVE, which is the mutation this exists to catch.
+        the card under it.  The other-rows arm answers No -- deleting
+        ``Transaction.account_id != account_id`` from that arm makes it count
+        this swipe, which is the mutation this exists to catch -- and the card
+        archives under the row arm's sentence, the row being its own.
+        **The row is LIVE since plan step** ``credit_card:CC-5-4a-4``: it was
+        hidden with the swipe inside, which the database now refuses (ruling
+        **R-CC92**), and the arm's exclusion is the same question of a live
+        row.  Re-expressed under rule 5 twice, developer-confirmed 2026-09-23.
         """
         with app.app_context():
             card = self._card(seed_user)
@@ -1486,37 +1463,35 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             db.session.commit()
             swipe = self._swipe(row, seed_user, card)
             db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
-            db.session.commit()
-            db.session.expire_all()
-            assert db.session.get(Transaction, row.id).is_deleted is True
-            assert db.session.get(TransactionEntry, swipe.id) is not None
-            # Ids read BEFORE the delete: afterwards the identity map holds
-            # expired instances whose refresh raises rather than answering.
             card_id, swipe_id = card.id, swipe.id
+            assert archive_helpers.account_holds_other_rows_movements(card_id) is False
 
             response = auth_client.post(
                 f"/accounts/{card_id}/hard-delete", follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert db.session.query(Account).filter_by(id=card_id).count() == 0
-            assert db.session.query(TransactionEntry).filter_by(
-                id=swipe_id,
-            ).count() == 0
+            assert b"has transaction history" in response.data
+            assert b"purchases recorded on it from other accounts" not in response.data
+            db.session.expire_all()
+            archived = db.session.get(Account, card_id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionEntry, swipe_id) is not None
 
-    def test_a_ghost_under_the_cards_rule_less_definition_still_deletes(
+    def test_a_row_of_the_cards_rule_less_definition_is_not_another_rows(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """CONTROL for the arm's second exclusion: a movement under a row of the card's OWN definition.
 
-        A checking row, soft-deleted while its definition still recurred,
-        holding a swipe on the card; then the definition's rule is cleared and
-        the definition itself moves onto the card.  Guard 3 lets a rule-less
-        definition through and step 2b disposes of it with every non-settled
-        row it names, the ghost on checking included, so the movement cascades
-        and the arm must not count it -- deleting the ``TransactionTemplate``
-        clause from the arm makes this case ARCHIVE.
+        A checking row holding a swipe on the card; then the definition's rule
+        is cleared and the definition itself moves onto the card.  The
+        other-rows arm answers No -- deleting the ``TransactionTemplate``
+        clause from that arm makes it count this swipe -- and the card
+        archives under the row arm's sentence, the row being its definition's.
+        **The row is LIVE since plan step** ``credit_card:CC-5-4a-4``: it was
+        hidden with the swipe inside, which the database now refuses (ruling
+        **R-CC92**), and the arm's exclusion is the same question of a live
+        row.  Re-expressed under rule 5 twice, developer-confirmed 2026-09-23.
         """
         with app.app_context():
             card = self._card(seed_user)
@@ -1524,29 +1499,30 @@ class TestHardDeleteAndTheMovementsOnAnAccount:
             db.session.commit()
             swipe = self._swipe(row, seed_user, card)
             db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
-            db.session.commit()
             template = row.template
             template.recurrence_rule = None
             template.account_id = card.id
             db.session.commit()
             db.session.expire_all()
-            ghost = db.session.get(Transaction, row.id)
-            assert ghost.is_deleted is True
-            assert ghost.account_id == seed_user["account"].id
-            assert ghost.template.account_id == card.id
+            live = db.session.get(Transaction, row.id)
+            assert live.is_deleted is False
+            assert live.account_id == seed_user["account"].id
+            assert live.template.account_id == card.id
             card_id, swipe_id, row_id = card.id, swipe.id, row.id
+            assert archive_helpers.account_holds_other_rows_movements(card_id) is False
 
             response = auth_client.post(
                 f"/accounts/{card_id}/hard-delete", follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert db.session.query(Account).filter_by(id=card_id).count() == 0
-            assert db.session.query(TransactionEntry).filter_by(
-                id=swipe_id,
-            ).count() == 0
-            assert db.session.query(Transaction).filter_by(id=row_id).count() == 0
+            assert b"has transaction history" in response.data
+            assert b"purchases recorded on it from other accounts" not in response.data
+            db.session.expire_all()
+            archived = db.session.get(Account, card_id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionEntry, swipe_id) is not None
+            assert db.session.get(Transaction, row_id) is not None
 
 
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
@@ -3670,50 +3646,54 @@ class TestTheReconcileRoutesUngradedBranches:
             assert b"had already been settled elsewhere" not in response.data
 
     def test_a_stale_settle_re_renders_the_panel_as_a_designed_400(
-        self, app, auth_client, seed_user, seed_periods_today,
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):
         """A concurrent commit mid-reconcile is a designed refusal, not a 500.
 
-        The race is engineered the way ``test_optimistic_locking_c18`` does it:
-        a ``before_update`` mapper event bumps the row's version from a
-        separate connection during the UPDATE, defeating the version-pinned
-        WHERE.  The response carries ``Shekel-Designed-Fragment`` because htmx
+        The race is engineered the way ``test_optimistic_locking_c18``'s
+        mark-done case does it: another writer's commit lands as the settle
+        verb begins, after the reconcile read the row, where the verb took the
+        row's lock until plan step ``balance:X-bn`` (the developer placed it
+        just before that lock, Round 12 Q1, 2026-09-23, "Move the change
+        earlier"; plan step ``credit_card:CC-5-4a-4``, ruling **R-CC96**).
+        Since X-bn no request of the owner's can land there (ruling
+        **R-CC106**), so the writer is a separate connection holding no owner
+        lock.  The version moves, and the version-pinned WHERE fails.  The
+        response carries ``Shekel-Designed-Fragment`` because htmx
         leaves a 4xx non-swapping, so a refusal without it renders NOTHING and
         the button reads as broken -- worse than the error it reports.  Shown
         to FIRE: deleting the route's ``except StaleDataError`` arm turns this
         into a 500.
         """
-        from sqlalchemy import event
-
         with app.app_context():
             bill = self._bill(seed_user, seed_periods_today[0])
             bill_id = bill.id
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             fired = {"flag": False}
+            real_settle = transaction_service.settle_transaction
 
-            def make_stale(_mapper, _connection, target):
-                if fired["flag"] or target.id != bill_id:
-                    return
-                fired["flag"] = True
-                with db.engine.connect() as conn:
-                    conn.execute(
-                        text(
-                            "UPDATE budget.transactions "
-                            "SET version_id = version_id + 1 WHERE id = :id"
-                        ),
-                        {"id": bill_id},
-                    )
-                    conn.commit()
+            def make_stale_then_settle(row, *args, **kwargs):
+                if not fired["flag"] and row.id == bill_id:
+                    fired["flag"] = True
+                    with db.engine.connect() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE budget.transactions "
+                                "SET version_id = version_id + 1 WHERE id = :id"
+                            ),
+                            {"id": bill_id},
+                        )
+                        conn.commit()
+                return real_settle(row, *args, **kwargs)
 
-            event.listen(Transaction, "before_update", make_stale)
-            try:
-                response = auth_client.post(
-                    f"/accounts/{seed_user['account'].id}/reconcile",
-                    data={"transaction_ids": [str(bill_id)]},
-                )
-            finally:
-                event.remove(Transaction, "before_update", make_stale)
+            monkeypatch.setattr(
+                transaction_service, "settle_transaction", make_stale_then_settle,
+            )
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(bill_id)]},
+            )
 
             assert response.status_code == 400, response.data
             assert response.headers.get("Shekel-Designed-Fragment") == "1"

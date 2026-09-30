@@ -25,6 +25,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
 )
+from app.services.owned_transaction import load_owned_transaction
 from app.services.pay_calendar import DerivedPeriod, FiledRow, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
@@ -41,86 +42,6 @@ logger = logging.getLogger(__name__)
 # The category used for auto-generated credit card payback expenses.
 CC_PAYBACK_GROUP = "Credit Card"
 CC_PAYBACK_ITEM = "Payback"
-
-
-def lock_source_transaction_for_payback(
-    transaction_id: int, owner_id: int,
-) -> Transaction:
-    """Acquire ``SELECT ... FOR NO KEY UPDATE`` on a source transaction.
-
-    Shared by :func:`mark_as_credit` and
-    :func:`entry_credit_workflow.sync_entry_payback` to bracket each
-    one's read-then-insert sequence with a row-level write lock.
-    PostgreSQL serialises any concurrent ``FOR NO KEY UPDATE`` /
-    ``FOR UPDATE`` request on the same row, so two concurrent
-    payback-creating callers serialise instead of both falling
-    through their idempotency check and double-inserting.
-
-    Three SQLAlchemy options are load-bearing:
-
-      * ``of=Transaction`` -- ``Transaction.account``, ``.status``,
-        ``.category``, and ``.transaction_type`` are
-        ``lazy="joined"`` so the default query emits LEFT OUTER
-        JOINs.  PostgreSQL rejects ``FOR UPDATE`` whose target
-        spans the nullable side of an outer join
-        (``FeatureNotSupported``).  Restricting the lock to the
-        transactions table with ``OF`` keeps the syntax legal
-        while still locking the row we care about.
-
-      * ``key_share=True`` -- selects ``FOR NO KEY UPDATE`` rather
-        than the stricter ``FOR UPDATE``.  Both lock modes
-        serialise concurrent FOR-NO-KEY-UPDATE / FOR-UPDATE
-        requests on the same row, but FOR-NO-KEY-UPDATE does NOT
-        conflict with the FOR-KEY-SHARE locks PostgreSQL takes
-        automatically while validating an inbound foreign key
-        (e.g. the payback INSERT downstream of this call, or a
-        concurrent transaction_entries INSERT against the same
-        parent).  The stricter FOR UPDATE would deadlock with
-        those FK-validation locks under load.
-
-      * ``populate_existing()`` -- forces the locking SELECT to
-        overwrite any cached attributes already in the session's
-        identity map.  Without it a serialised second request
-        would observe its own pre-lock cached attributes
-        (``status_id`` in particular) and skip the post-lock
-        idempotency short-circuit, falling through to a duplicate
-        INSERT that the partial unique index would only catch as
-        an ``IntegrityError``.
-
-    The lock is released at the next session ``commit()`` /
-    ``rollback()`` -- the caller's route handler always performs
-    one.  Audit reference: F-008 (High) / commit C-19.
-
-    Args:
-        transaction_id: Primary key of the row to lock.
-        owner_id: Resolved owner user ID; the loaded txn's
-            pay-period user must match this so an attacker probing
-            for valid IDs cannot tell "row exists but belongs to
-            someone else" from "row does not exist."
-
-    Returns:
-        The locked Transaction with refreshed column attributes.
-
-    Raises:
-        NotFoundError: If the row does not exist or does not belong to
-            ``owner_id``.
-    """
-    txn = (
-        db.session.query(Transaction)
-        .filter_by(id=transaction_id)
-        .populate_existing()
-        .with_for_update(of=Transaction, key_share=True)
-        .one_or_none()
-    )
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership on the row's own owner column
-    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
-    # Performed after the lock is acquired so an attacker probing for valid
-    # IDs cannot race the lock window to confirm existence.
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    return txn
 
 
 def get_active_payback(source_txn_id: int) -> Transaction | None:
@@ -255,16 +176,23 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     where that helper cleans up after a Credit row returning to
     Projected, this one cleans up after the source transaction being
     deleted outright (soft or hard) -- the strongest possible withdrawal
-    of the credit assertion.  Without it the projected payback survives
-    its source (``credit_payback_for_id`` is ``ondelete="SET NULL"``)
-    and silently inflates the next period with no offsetting credit row.
+    of the credit assertion.  Without it a SOFT delete, which never fires
+    ``credit_payback_for_id``, leaves the projected payback surviving its
+    hidden source and silently inflating the next period with no offsetting
+    credit row; a HARD delete would be REFUSED by that key, which is
+    ``ondelete="RESTRICT"`` since plan step ``balance:X-bi-7d-2`` (finding
+    **CC-352**).
 
     Keyed on :func:`get_active_payback` rather than Credit status
     because entry-level credit sources carry a live payback while their
     own ``status_id`` is NOT Credit -- a status guard would miss them.
-    Entry links (``TransactionEntry.credit_payback_id``) are severed
-    before the delete: a template-linked source soft-deletes, so its
-    entries outlive it and must not point at a vanished payback.  No-op
+    **It severs no entry link, because none is left to sever**: the one
+    caller has taken every movement of the source and of each level off
+    the books through the one removal act first, on both of its arms
+    (plan step ``credit_card:CC-5-4a-4``; ruling **R-CC75**: a soft-deleted
+    source no longer keeps its entries).  A link a direct caller leaves
+    in place is ``TransactionEntry.credit_payback_id``'s ``ON DELETE SET
+    NULL`` to clear.  No-op
     (and no log event) when no live payback exists -- the common case for
     every ordinary delete.
 
@@ -300,14 +228,6 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     for depth in range(len(chain) - 1, -1, -1):
         payback = chain[depth]
         parent = txn if depth == 0 else chain[depth - 1]
-        # Sever entry links before the delete.  On a hard-deleted ad-hoc
-        # source the entries cascade away anyway; on a soft-deleted
-        # template-linked source they survive as rows and must not keep a
-        # pointer to the deleted payback (mirrors sync_entry_payback's
-        # delete branch).
-        for entry in parent.entries:
-            if entry.credit_payback_id == payback.id:
-                entry.credit_payback_id = None
         # Reverse this level's postings while ``journal_entries.transaction_id``
         # still links them.  Idempotent no-op for a still-Projected payback.
         posting_service.reverse_postings_before_delete(payback)
@@ -326,56 +246,57 @@ def mark_as_credit(transaction_id, user_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
 
     Steps:
-      1. Acquire a row-level write lock on the source transaction
-         with ``SELECT ... FOR NO KEY UPDATE`` so two concurrent
-         POSTs serialise instead of both falling through the
-         idempotency check.
-      2. Verify ownership via the transaction's pay period.
-      3. Set the transaction's status to 'credit'.
-      4. Find or create the CC payback category.
-      5. Find the next pay period.
-      6. Create a payback expense in the next period linked to the original.
+      1. Load the source transaction, refusing it unless *user_id* owns it.
+      2. Set the transaction's status to 'credit'.
+      3. Find or create the CC payback category.
+      4. Find the next pay period.
+      5. Create a payback expense in the next period linked to the original.
 
-    Concurrency model: the row lock acquired in step 1 (``SELECT
-    ... FOR NO KEY UPDATE``) is held until the caller commits or
-    rolls back the SQLAlchemy session.  When a second request races
-    with the first, the second's locking SELECT blocks until the
-    first commits; PostgreSQL then returns the post-commit row to
-    the second request, whose idempotency check (status already
-    ``credit``, payback already exists) returns the existing
-    payback without inserting a duplicate.  ``FOR NO KEY UPDATE``
-    rather than the stricter ``FOR UPDATE`` is required so the
-    payback INSERT later in this function (which takes
-    ``FOR KEY SHARE`` on the source row to validate its FK) does
-    not deadlock with the lock acquired here -- see PostgreSQL's
-    row-lock conflict matrix.  ``budget.transactions`` carries
-    ``uq_transactions_credit_payback_unique`` as a database-level
-    backstop -- if any future caller reaches the INSERT without
-    this lock, the unique-index violation surfaces as an
-    ``IntegrityError`` that the route layer converts to idempotent
-    success.  Audit reference: F-008 (High) / commit C-19.
+    Concurrency model (plan step ``balance:X-bn``, ruling **R-CC106**): the
+    request's transaction took its owner's write lock before it read any of
+    the owner's data (:mod:`app.db_transaction`), so a second Mark Credit on
+    the same row -- a double click, or another tab -- waits for the first to
+    commit and then reads the row as Credit with its payback, and the
+    idempotency check below returns that payback without inserting a
+    duplicate.  Until that step this door took the row's own
+    ``FOR NO KEY UPDATE`` lock for the same serialisation (audit F-008 /
+    commit C-19).  ``budget.transactions`` carries
+    ``uq_transactions_credit_payback_unique`` as the database-level backstop
+    for a writer that holds no request: a duplicate payback surfaces as an
+    ``IntegrityError`` that the route layer converts to idempotent success.
 
     Args:
         transaction_id: The ID of the transaction to mark as credit.
         user_id: The ID of the user who owns the transaction.
-            Defense-in-depth: ownership is verified via the
-            transaction's pay period even if the caller already
-            checked at the route level.
+            Defense-in-depth: ownership is verified against the row's own
+            ``user_id`` column even if the caller already checked at the
+            route level.
 
     Returns:
         The newly created payback Transaction, or the existing
         payback if the transaction is already in ``credit`` status.
 
     Raises:
-        NotFoundError:  If the transaction doesn't exist or doesn't
-            belong to *user_id*.
+        NotFoundError:  If the transaction doesn't exist, doesn't
+            belong to *user_id*, or was deleted (ruling **R-CC99** (b)).
         ValidationError: If the transaction is income (can't credit income),
             is a transfer shadow, uses entry tracking, has a status
             other than projected, or has no following pay period.
     """
-    # See ``lock_source_transaction_for_payback`` for the full
-    # rationale behind FOR NO KEY UPDATE + populate_existing().
-    txn = lock_source_transaction_for_payback(transaction_id, user_id)
+    txn = load_owned_transaction(transaction_id, user_id)
+    # **A deleted row is "not found"** (plan step ``credit_card:CC-5-4a-4``,
+    # ruling **R-CC99** (b), extending **R-CC89**: "the stale Mark Credit gets
+    # 'not found', exactly as for another user's row").  The route's ownership
+    # door already answers a deleted row so, and since plan step
+    # ``balance:X-bn`` a Delete from another tab can no longer land between
+    # that door's read and this one: both run after the request's owner lock,
+    # and the Delete either committed before it or waits behind it.  Measured
+    # 2026-09-23, before either lock: a Delete landing between them left this
+    # door turning the hidden $80.00 Dinner Credit and creating a live $80.00
+    # payback in the next period with no visible source.  Kept for a service
+    # caller that skips the route's door.
+    if txn.is_deleted:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
     if txn.transfer_id is not None:
@@ -435,11 +356,17 @@ def mark_as_credit(transaction_id, user_id):
     # second read of a span the derivation on this line already holds.
     #
     # **The READ ORDER, stated because ``require_period`` requires every caller
-    # to state its own**: the ROW is read first, the paydays second, so a
-    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
-    # -- committing between them raises rather than answering off a stale
-    # picture.  That is balance finding **N-358**, whose remedy is
-    # `balance:X-i5`.
+    # to state its own**: the ROW is read first, the paydays second, and since
+    # plan step ``balance:X-bn`` no DESTRUCTIVE pay-period door -- reset,
+    # regenerate, truncate or remove-earlier -- can commit between them.  Each
+    # is reached only from a route, so its request takes the owner's write lock
+    # before it reads any of the owner's data, and this door's request took
+    # that lock before it read the row: such a door committed before both
+    # reads or waits for this one.
+    # *Until that step the order decided how this door lost the race: a door
+    # committing between the reads raised here rather than answering off a
+    # stale picture (balance finding **N-358**, whose remedy is
+    # ``balance:X-i5``).*
     calendar = calendar_for(user_id)
     next_period = calendar.period_starting_after(
         calendar.require_period(FiledRow.for_row(txn)).start_date,
@@ -532,13 +459,8 @@ def unmark_credit(transaction_id, user_id):
             case the bespoke guard is bypassed) is not allowed by
             the state machine.
     """
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership on the row's own owner column
-    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
-    if txn.user_id != user_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # Defense-in-depth: ownership on the row's own owner column.
+    txn = load_owned_transaction(transaction_id, user_id)
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 

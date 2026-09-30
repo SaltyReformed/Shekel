@@ -469,8 +469,12 @@ def governing_account_opening(account_id: int) -> CashOpeningFact | None:
     the ``now()`` fact for the loan twin; this door never carried it across.
 
     ``id`` is a sequence value allocated when the INSERT executes, and
-    :func:`app.services.opening_service.stage_account_opening` holds
-    ``lock_user_writes`` across its compare-and-append, so within one account
+    :func:`app.services.opening_service.stage_account_opening` runs under the
+    owner's write lock across its compare-and-append wherever another
+    transaction could reach the account (a signed-in request's transaction
+    takes it before reading any of the owner's data, plan step
+    ``balance:X-bn``; at registration the account is uncommitted and no
+    other transaction can see it), so within one account
     the id order IS the order the owner made the statements.  The SQL tier
     orders identically from one stated constant
     (:data:`app.opening_infrastructure.GOVERNING_ORDER_SQL`), so the Python

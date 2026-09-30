@@ -29,6 +29,7 @@ from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.dates import display_today
+from app.utils.hidden_row import HiddenRow
 
 #: The purchase facts that change what its PARENT ROW COST, named by what
 #: actually reads them.
@@ -226,7 +227,7 @@ def _reject_settled_parent(
     if not changing & _COST_BEARING_FIELDS:
         return
     raise ValidationError(
-        f"Transaction {txn.id} has settled; its purchases are closed and "
+        f"{txn.name} has settled; its purchases are closed and "
         "cannot be removed or re-priced. Doing so would change what "
         "the row cost after its money moved -- and a carry-forward has "
         "already rolled its leftover into a later period, so the same dollars "
@@ -283,6 +284,18 @@ def _reject_settled_addition(txn: Transaction) -> None:
     also refuses a stated figure over purchases at the seam, and the seam
     WITHDRAWS a kept movement when a ``purchases`` record lands) and
     ``carry_forward``'s direct call writes that record unconditionally.
+    **That held one click at a time, and not under a race** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC99** (a), measured 2026-09-23): a
+    purchase and Mark Paid racing on one empty $300.00 Groceries envelope
+    ended Paid holding the $300.00 payment AND the $12.34 purchase in either
+    order -- Mark Paid chose its figure from a read taken before the purchase
+    committed, and this refusal read a ``status`` the locking read handed back
+    as ``None`` after its wait.  Since plan step ``balance:X-bn`` (ruling
+    **R-CC106**) both clicks' transactions take the owner's write lock before
+    they read any of the owner's data (:mod:`app.db_transaction`), so they
+    run one after the other and the second click either settles at the
+    purchases or meets this sentence, naming the row (ruling **R-CC98**).
+    Until that step each door locked the row itself before it read it.
     It read the row's ``settled_basis_id`` through ``X-bi-4a``; that column
     is the movement's stale cache, deleted at ``X-bi-4b-2``.
 
@@ -332,7 +345,7 @@ def _reject_settled_addition(txn: Transaction) -> None:
     if not txn.covering_movements:
         return
     raise ValidationError(
-        f"Transaction {txn.id} has settled and records a fixed figure, so a "
+        f"{txn.name} has settled and records a fixed figure, so a "
         "new purchase cannot be added to it: the row's cost would not grow by "
         "the purchase, and the purchase's own cash would be counted beside a "
         "figure that already covers it. Set the row back to Projected, add "
@@ -455,7 +468,7 @@ def removal_refusal(txn: Transaction) -> "str | None":
     # from every status a row can hold when it gets here.
     if txn.covering_movements:
         return (
-            f"Transaction {txn.id} has settled and records a fixed figure, so "
+            f"{txn.name} has settled and records a fixed figure, so "
             "a purchase cannot be removed from it: the row's cost would not "
             "fall by the purchase, and the figure it records would go on "
             "counting cash the purchase no longer explains. Set the "
@@ -483,6 +496,38 @@ def _reject_settled_removal(txn: Transaction) -> None:
     refusal = removal_refusal(txn)
     if refusal is not None:
         raise ValidationError(refusal)
+
+
+def deleted_row_purchase_refusal(gone: HiddenRow) -> str:
+    """Return the sentence a purchase on a hidden row is refused with.
+
+    **One sentence for the two places that refuse it**: the purchase door
+    (:func:`app.services.entry_service.create_entry`, ruling **R-CC89**'s
+    third layer), and the add-purchase route, which shows it where the
+    purchase list stood for a row that is gone (rulings **R-CC101**,
+    **R-CC103**, **R-CC104**).  The status seam's
+    ``deleted_row_payment_refusal`` is its twin for a payment.  Named, never
+    numbered (ruling **R-CC98**), in the words ruling **R-CC96** quotes:
+    *"Groceries was deleted: a purchase cannot be recorded under it"* -- or
+    "was archived" where the row's recurring item is (ruling **R-CC107**).
+
+    It takes a :class:`~app.utils.hidden_row.HiddenRow` rather than the row
+    because a one-off row's delete removes the row from the table: the route
+    read the name while the row was live, and after the delete there is no row
+    left to hand over.  Whoever builds the value asks the one read it needs;
+    this module reads nothing.
+
+    Args:
+        gone: The hidden row's name, and whether its recurring item is
+            archived.
+
+    Returns:
+        The refusal, naming the row.
+    """
+    return (
+        f"{gone.name} {gone.went}: a purchase cannot be recorded under it.  "
+        "Reload the page."
+    )
 
 
 def _reject_zero_amount(amount: Decimal | None) -> None:
@@ -731,8 +776,8 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     """
     if entry.covers_settlement:
         raise ValidationError(
-            f"Entry {entry.id} is the payment record of transaction "
-            f"{entry.transaction_id}, written when that row was marked paid. "
+            f"This is the payment record of {entry.transaction.name}, "
+            "written when that row was marked paid. "
             "It is not a purchase: to change the day its money moved, edit "
             "the row's settle day; to change the figure, correct the row's "
             "actual or revert it and mark it paid again. It is withdrawn "

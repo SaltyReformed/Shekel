@@ -5,8 +5,8 @@ pushed that module past ``max-module-lines``.  The cut is by what each function
 DECIDES rather than by size, which is this package's own rule (see the package
 docstring), and it is the same seam :mod:`app.services.status_seam._refusals`
 was cut on at plan step X-au-c3 -- *"they are gathered here because they are
-one subject"*.  Nothing here settles anything, resolves an amount or touches
-the session.  Each answers
+one subject"*.  Nothing here settles anything, resolves an amount or writes
+(two arms read; see below).  Each answers
 one question about a row that constrains what a door may then do with it.
 
 **Shaving prose to stay under the cap was the alternative and this package has
@@ -26,17 +26,24 @@ refusal here that RAISES rather than returning its sentence, because no screen
 asks it.
 
 Boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a bool or a
-raise out; no Flask import, no writes.  **One arm READS** since plan step
-``balance:X-bi-7b``: :func:`deletion_refusal`'s merchant-rule refusal asks two
+raise out; no Flask import, no writes.  **Two arms READ.**  Since plan step
+``balance:X-bi-7b``, :func:`deletion_refusal`'s merchant-rule refusal asks two
 small reads (is this a one-off's last row -- indexed; does a standing rule
 name its definition -- a scan of the owner's few merchant rules, which carry
 no index on ``template_id``), issued only for a rule-less definition's row.
+Since plan step ``credit_card:CC-5-4a-4``, :func:`reject_unsettleable`'s
+deleted-row refusal asks one by primary key -- whether the row's recurring
+item is archived, for its sentence (ruling **R-CC107**) -- issued only for a
+row it is refusing, and flushing nothing.
 """
 
 from app.exceptions import ValidationError
+from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
+from app.services.status_seam import deleted_row_payment_refusal
 from app.utils.archive_helpers import template_has_standing_rule
+from app.utils.hidden_row import HiddenRow
 
 
 def settles_from_entries(txn: Transaction) -> bool:
@@ -314,16 +321,32 @@ def reject_unsettleable(txn: Transaction) -> None:
     books nothing while stamping the row Paid and dated: a row that reads
     settled and is worth nothing.  The envelope branch refused this from the
     beginning and the MANUAL branch never did, and the gap was REACHABLE --
-    ``get_accessible_transaction`` does not filter ``is_deleted``, so
+    ``get_accessible_transaction`` did not filter ``is_deleted``, so
     ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
     flipped it into the settled band.  Measured on production: 102 soft-deleted
     rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
-    cost is to the data.
+    cost is to the data.  (The ownership doors answer a deleted row "not
+    found" since plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89**, and
+    since plan step ``balance:X-bn`` no Delete can commit between the door's
+    read and this one -- both follow the request's owner lock -- so a route
+    that passed the door never reaches this arm; a service caller that skips
+    the door still can.  The words
+    are the seam's own for the same refusal, one sentence naming the row,
+    ruling **R-CC98**, and saying "was archived" where its recurring item is,
+    ruling **R-CC107**.)
 
     Ordered shadow-then-deleted so a row that is both reports the rule that
     routes it somewhere else rather than the one that refuses it outright.  Both
-    are column reads, so neither triggers the relationship lazy-load
-    :func:`settles_from_entries`' cheap-first precondition ordering avoids.
+    tests are column reads, so neither triggers the relationship lazy-load
+    :func:`settles_from_entries`' cheap-first precondition ordering avoids; the
+    deleted row's sentence adds one read, on the refusal alone
+    (:meth:`~app.utils.hidden_row.HiddenRow.of`).  **None of it flushes**:
+    the two columns are read under ``no_autoflush`` -- a row the caller's
+    commit expired refreshes them by a statement, which would otherwise write
+    the caller's staged state first (review 8 of plan step
+    ``credit_card:CC-5-4a-4``, measured 2026-09-24) -- and the sentence's
+    read is guarded the same way, so a call refused here writes none of a
+    caller's staged state.
 
     Args:
         txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.
@@ -331,14 +354,14 @@ def reject_unsettleable(txn: Transaction) -> None:
     Raises:
         ValidationError: When *txn* is a transfer shadow or is soft-deleted.
     """
-    if txn.transfer_id is not None:
+    with db.session.no_autoflush:
+        is_shadow = txn.transfer_id is not None
+        is_deleted = txn.is_deleted
+    if is_shadow:
         raise ValidationError(
             f"Transaction {txn.id} is a transfer shadow; "
             "transfers settle via transfer_service.update_transfer so both "
             "legs and the parent move together.",
         )
-    if txn.is_deleted:
-        raise ValidationError(
-            f"Transaction {txn.id} is soft-deleted; a settle cannot "
-            "resurrect a deleted row.",
-        )
+    if is_deleted:
+        raise ValidationError(deleted_row_payment_refusal(HiddenRow.of(txn)))

@@ -157,10 +157,32 @@ def card_dom_id(item: GridItem, prefix: str = "") -> str:
     Returns:
         The wrapper id.
     """
-    namespace = f"{prefix}-" if prefix else ""
     if isinstance(item, TransferLeg):
+        namespace = f"{prefix}-" if prefix else ""
         return f"card-{namespace}xfer-{item.transfer.id}-{item.account_id}"
-    return f"card-{namespace}{item.id}"
+    return row_card_dom_id(item.id, prefix)
+
+
+def row_card_dom_id(row_id: int, prefix: str = "") -> str:
+    """Return the DOM id of a ROW's mobile card wrapper, from its id alone.
+
+    :func:`card_dom_id`'s row arm, the way :func:`leg_dom_id` is
+    :func:`cell_dom_id`'s leg arm: a caller holding no item can still target
+    the card that asked.  That caller is the Mark Paid route answering a row
+    that is GONE (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC101** and
+    **R-CC104**): a one-off row's delete removes it from the table, so only
+    the id in the URL is left to name the card the refusal swaps into.
+
+    Args:
+        row_id: The row's ``budget.transactions.id``.
+        prefix: The tab namespace (``"tp"`` for This Period), or ``""``.
+
+    Returns:
+        The wrapper id: ``card-<prefix->-<id>``, the empty prefix omitting
+        its segment.
+    """
+    namespace = f"{prefix}-" if prefix else ""
+    return f"card-{namespace}{row_id}"
 
 
 def build_row_keys(

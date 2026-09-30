@@ -802,7 +802,8 @@ def render_transfer_leg_card(
     if not row_keys:
         return render_template(
             "grid/_mobile_card_error.html",
-            txn=leg, id_prefix=card_prefix, error=error,
+            card_id=grid_view_service.card_dom_id(leg, card_prefix),
+            error=error,
         )
     amounts = leg_fragment_amounts(leg)
     return render_template(

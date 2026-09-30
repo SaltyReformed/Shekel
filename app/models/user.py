@@ -9,6 +9,8 @@ from decimal import Decimal
 
 from flask_login import UserMixin
 
+from app import ref_cache
+from app.enums import RoleEnum
 from app.extensions import db
 from app.models.mixins import TimestampMixin
 
@@ -176,6 +178,32 @@ class User(UserMixin, TimestampMixin, db.Model):
         "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
     role = db.relationship("UserRole", lazy="joined")
+
+    @property
+    def data_owner_id(self) -> int | None:
+        """Return the id of the user whose budget data this user acts on.
+
+        **The one statement of that rule.**  An owner acts on their own data; a
+        companion acts on the data of the owner they are linked to
+        (``linked_owner_id``), which is ``None`` when that owner was deleted
+        (the FK is ``ON DELETE SET NULL``) -- or when the companion was
+        written without one, which no constraint forbids and which
+        :func:`app.services.entry_service.resolve_owner_id` refuses as a
+        data-integrity fault.  Read off columns already
+        loaded, so it issues no statement on a loaded row -- which is why it is
+        a property of the row rather than a lookup by id: plan step
+        ``balance:X-bn`` needs the owner inside a logging hook that must not
+        open a transaction (:func:`app.db_transaction.bind_request_actor`).
+        :func:`app.services.entry_service.resolve_owner_id` answers the same
+        question by id and delegates here.
+
+        Returns:
+            The owning user's id, or ``None`` for a companion with no linked
+            owner.
+        """
+        if self.role_id == ref_cache.role_id(RoleEnum.COMPANION):
+            return self.linked_owner_id
+        return self.id
 
     def __repr__(self):
         return f"<User {self.email}>"

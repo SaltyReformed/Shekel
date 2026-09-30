@@ -571,7 +571,9 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     reversal entry for whatever the ledger currently holds.  Running it before
     the delete is load-bearing for a HARD delete: ``journal_entries``'
     ``transaction_id`` and ``transaction_entry_id`` are both ``ON DELETE SET
-    NULL`` (and ``transaction_entries`` CASCADE from their parent), so once the
+    NULL`` (and a row's ``transaction_entries`` are deleted just before it, by
+    the one removal act -- their keys are NO ACTION since migration
+    ``c4a4e7d1b9f2``), so once the
     rows are gone the links are severed and the original legs would be stranded
     on their ledger accounts with no offsetting reversal -- breaking per-account
     reconciliation.  Reversing first leaves each original entry and its reversal
@@ -701,9 +703,10 @@ def resync_all_cash_postings() -> tuple[int, int]:
     entries the first 6-3 deploy wrote on its rehearsal over the 2026-09-22
     production dump.  So both arms run the doors' re-book halves
     (:func:`_rebook_transaction_family`, :func:`_rebook_transfer_family`) and
-    the one re-check per scenario (one owner; the self-heal locks the owner
-    off the entries) reads the finished ledger.  The union's earliest day can
-    only make the re-check run where one source alone would skip it.
+    the one re-check per scenario (one owner's; the self-heal takes no lock,
+    and this function took every owner's at its start) reads the finished
+    ledger.  The union's earliest day can only make the re-check run where
+    one source alone would skip it.
 
     **Until ``X-bi-6-5`` it REFUSES to finish while any transfer still holds a
     nonzero legacy net** (ruling **R-BAL104**, amended by **R-BAL105**): a
@@ -776,9 +779,15 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     **It is the THIRD multi-owner transaction, and it takes every per-user
     write lock up front** (plan step X-f1c3c, finding N-193).  It iterates every
-    owner's settled rows in ID order, and each one can reach the anchor
-    self-heal and so ``lock_user_writes(owner)`` -- an unordered multi-key
-    acquisition, which is exactly what two concurrent sweeps deadlock on.  A
+    owner's settled rows in ID order, and each one reached the anchor
+    self-heal and so, until plan step ``balance:X-bn`` deleted the per-service
+    acquisitions, that owner's lock -- an unordered multi-key acquisition,
+    which is exactly what two concurrent sweeps deadlock on.  "Up front" is
+    this FUNCTION's start, not the transaction's: the deploy runs the release's
+    migrations and reference seed earlier in the same transaction
+    (``scripts/init_database.py``), before any owner's lock is held.  Taking
+    every owner's lock ascending here is what now covers every write this
+    reconcile makes, since no service below takes one.  A
     first version of the lock's docstring called the two backfill functions
     "the only multi-owner transactions" and missed this one, which is the FIRST
     of the three deploy hooks to run.

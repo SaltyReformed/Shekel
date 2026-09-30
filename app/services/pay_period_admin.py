@@ -97,7 +97,6 @@ from app.services import (
     pay_period_gates,
     pay_period_locks,
     pay_period_write,
-    user_write_lock,
 )
 from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import classify_schedule_locks
@@ -131,7 +130,12 @@ def extend_pay_periods(user_id, num_periods):
 
     **It STATES nothing, since plan step ``pay_calendar:C17-c-2b``** (rulings
     **R-PC75**, **R-PC78**; ledger rows **PC-509** and **N-494** closed).
-    This door is the lock and one call: the writer's CONTINUE door records
+    This door is one call, under the owner's write lock.  Every caller runs
+    in a signed-in request's command transaction -- the extend and generate
+    POSTs, and the ``write_transaction`` block ``/grid`` and ``/dashboard``
+    run the rolling top-up in -- which takes the lock before it reads
+    anything of the owner's (plan step ``balance:X-bn``,
+    :mod:`app.db_transaction`).  The writer's CONTINUE door records
     the next paydays the owner's own plan projects
     (:func:`~app.services.pay_calendar.planned_paydays_after`), reading the
     eras and the record itself.  Until then this door computed the batch --
@@ -172,12 +176,12 @@ def extend_pay_periods(user_id, num_periods):
             surface for "this owner has no derivable calendar" and the wrong
             one for "that date is not allowed".
     """
-    # Serialize against concurrent structural mutations for this user so the
-    # record is read under the lock and the append cannot race another
-    # extend / top-up into a duplicate payday.  ``uq_pay_periods_user_start``
-    # is the hard guard; the lock keeps the racing loser from hitting it as a
-    # 500.
-    user_write_lock.lock_user_writes(user_id)
+    # The record is read under the owner's write lock, which every caller's
+    # command transaction takes before it reads anything of the owner's (the
+    # docstring names the callers; plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so the append cannot race another extend /
+    # top-up into a duplicate payday.  ``uq_pay_periods_user_start`` is the
+    # hard guard; the lock keeps the racing loser from hitting it as a 500.
     return pay_period_write.continue_paydays(user_id, num_periods)
 
 
@@ -186,8 +190,8 @@ def add_earlier_pay_periods(user_id, num_periods):
 
     **"Add earlier paychecks"** (plan step ``pay_calendar:C18-b``, ruling
     **R-PC87**): :func:`extend_pay_periods`' twin at the other end of the
-    schedule, and the same shape -- the lock, then one call to the writer's
-    door, :func:`~app.services.pay_period_write.prepend_paydays`, which
+    schedule, and the same shape -- one call to the writer's door,
+    :func:`~app.services.pay_period_write.prepend_paydays`, which
     records the paydays the owner's earliest rhythm projects just before
     their first and moves that rhythm's phase down to the grid day of the
     earliest of them (ruling **R-PC105**).  It states nothing and retires
@@ -214,10 +218,11 @@ def add_earlier_pay_periods(user_id, num_periods):
         PayCalendarError: The owner holds no ``budget.pay_schedule`` row or
             no era, as at :func:`extend_pay_periods`.
     """
-    # The same serialisation as extend: the record is read under the lock, so
-    # a concurrent add or reset cannot move the first payday this batch is
-    # placed below.
-    user_write_lock.lock_user_writes(user_id)
+    # The same serialisation as extend: the record is read under the owner's
+    # write lock, which a signed-in request's command transaction takes before
+    # its view reads anything of the owner's (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so a concurrent add or reset cannot move the
+    # first payday this batch is placed below.
     return pay_period_write.prepend_paydays(user_id, num_periods)
 
 
@@ -227,8 +232,8 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
     **"Remove earlier paychecks"** (plan step ``pay_calendar:C21``, rulings
     **R-PC108** to **R-PC111**): the undo of :func:`add_earlier_pay_periods`,
     as :func:`truncate_pay_periods` is :func:`extend_pay_periods`'.  Its shape
-    is truncate's at the schedule's other end -- the lock, one read of the
-    calendar, an id the owner picked resolved against their OWN periods, a
+    is truncate's at the schedule's other end -- one read of the calendar,
+    an id the owner picked resolved against their OWN periods, a
     gate that decides, the writer that deletes -- and each difference is a
     ruling:
 
@@ -288,9 +293,10 @@ def remove_earlier_pay_periods(user_id: int, start_from_period_id: int) -> int:
             re-syncs do not rebuild (**R-PC114**).  Nothing is left behind.
     """
     # The same serialisation as add-earlier: the calendar is read under the
-    # lock, so a concurrent add, truncate or reset cannot move the head this
-    # removal was gated on.
-    user_write_lock.lock_user_writes(user_id)
+    # owner's write lock, which a signed-in request's command transaction
+    # takes before its view reads anything of the owner's (plan step
+    # ``balance:X-bn``, :mod:`app.db_transaction`), so a concurrent add,
+    # truncate or reset cannot move the head this removal was gated on.
     calendar = calendar_for(user_id)
     first_kept = calendar.period_by_id(start_from_period_id)
     if first_kept is None:
@@ -432,11 +438,13 @@ def truncate_pay_periods(
         PayPeriodDiscardRequired: A to-delete period holds unrecoverable
             rows and ``confirm_discard`` is False.
     """
-    # Serialize against concurrent structural mutations so the resolve, the
-    # classify and the bulk DELETE see one consistent set -- closes the
-    # classify-then-DELETE TOCTOU against another extend / top-up /
-    # truncate for this user.
-    user_write_lock.lock_user_writes(user_id)
+    # The resolve, the classify and the bulk DELETE run under the owner's
+    # write lock, which this door's one caller (``POST /pay-periods/truncate``,
+    # a signed-in request) took on its command transaction before its view
+    # read anything of the owner's (plan step ``balance:X-bn``,
+    # :mod:`app.db_transaction`), so they see one consistent set -- the
+    # classify-then-DELETE TOCTOU against another extend / top-up / truncate
+    # for this user stays closed.
 
     # The OWNER's calendar, so the resolve below is owner-scoped by
     # construction rather than by a comparison this function has to remember to
@@ -547,11 +555,11 @@ def regenerate_pay_periods(
             floor or at or past the plan's second projected payday
             (``record_paydays``' two bounds).
     """
-    # Serialize the whole rebuild -- boundary computation through the
-    # truncate + regenerate -- for this user; re-entrant with the lock
-    # ``truncate_pay_periods`` used to take before plan step C3-a split the
-    # resolve off the delete, and which the generate below still relies on.
-    user_write_lock.lock_user_writes(user_id)
+    # The whole rebuild -- boundary computation through the truncate +
+    # regenerate -- runs under the owner's write lock, which this door's one
+    # caller (``POST /pay-periods/regenerate``, a signed-in request) took on
+    # its command transaction before its view read anything of the owner's
+    # (plan step ``balance:X-bn``, :mod:`app.db_transaction`).
 
     # The schedule is read ONCE, under the lock, and threaded into both the
     # boundary computation and the delete.  Before plan step C3-a each of
@@ -603,6 +611,14 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     Bounded for safety: it refuses if the user has ANY settled
     transaction.  Once a paycheck has settled, rewriting the schedule
     under it would corrupt history, so those users use regenerate instead.
+    **And it refuses while ANY row holds a payment or a purchase** (plan
+    step ``credit_card:CC-5-4a-4``, ruling **R-CC65**), whatever its status:
+    the wipe deletes every row through ``transactions.pay_period_id``'s
+    cascade, and a movement is money that moved -- a Projected envelope
+    holding a purchase recorded from the bank is history exactly as a Paid
+    bill is.  Until that step the settled gate alone let the wipe destroy
+    such a purchase; its key now refuses the delete, and this makes the
+    refusal a designed one.
 
     The whole operation is ONE transaction the route commits.
 
@@ -619,9 +635,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
     Steps, all in one transaction:
 
-      1. Refuse if any settled transaction exists (delete nothing).
-      2. Take the per-user advisory lock (a structural mutation, like
-         extend / truncate / regenerate).
+      1. Refuse if any settled transaction exists, or any row holds a
+         payment or purchase (delete nothing).
+      2. (The owner's write lock is already held, so step 1's gates read
+         under it: the one caller, ``POST /pay-periods/reset``, is a
+         signed-in request, whose command transaction takes the lock before
+         its view reads anything of the owner's -- plan step
+         ``balance:X-bn``, :mod:`app.db_transaction`.)
       3. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
          pass: transactions and transfers (+ both shadows, preserving the
          transfer invariant) go; audit triggers still fire.  Anchor history is
@@ -712,7 +732,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
     Raises:
         PayPeriodResetBlocked: The user has at least one settled
-            transaction; nothing is changed.
+            transaction, or a row holding a payment or purchase; nothing is
+            changed.
         ValidationError: ``record_paydays`` rejects the batch (an invalid
             start date or cadence).
     """
@@ -736,10 +757,20 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     # schedule in this same transaction (review M2 / R7).
     settled = pay_period_gates.settled_transaction_count(user_id)
     if settled > 0:
-        raise PayPeriodResetBlocked(settled)
+        raise PayPeriodResetBlocked(settled_count=settled)
+    # The second gate (plan step credit_card:CC-5-4a-4, ruling R-CC65): a row
+    # holding a movement, whatever its status, is history the wipe below
+    # would take with it -- and fk_transaction_entries_transaction_id refuses.
+    holding = pay_period_gates.movement_holding_row_count(user_id)
+    if holding > 0:
+        raise PayPeriodResetBlocked(holding_count=holding)
 
-    # Serialize against concurrent structural mutations for this user.
-    user_write_lock.lock_user_writes(user_id)
+    # Under the owner's write lock, which this door's one caller (``POST
+    # /pay-periods/reset``, a signed-in request) took on its command
+    # transaction before its view read anything of the owner's (plan step
+    # ``balance:X-bn``, :mod:`app.db_transaction`) -- so the two gates above
+    # read under it too, where they used to run before this door's own
+    # acquisition.
 
     # Wipe ALL the user's periods (the cascade handles the dependents) and
     # build the new schedule in ONE write, so the writer derives and

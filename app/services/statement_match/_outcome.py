@@ -2,11 +2,12 @@
 
 Plan step ``bank_import:X-gt``, finding **BI-491**: a PURE MOVE out of
 :mod:`._batch`, which stood at 998 of pylint's 1000-line ceiling after plan
-step ``bank_import:X-gi-5``, with ``balance:X-bn`` still to put an advisory
-lock into it.  The cut was presented as a fork and ruled by the developer on
-2026-09-12 (ruling **bank_import:R-BI7**, in **R-PC71**'s shape, the
-placement his as **R-PC60** and **R-PC69** were): the receipt WHOLE leaves,
-and the pass stays.
+step ``bank_import:X-gi-5``, with ``balance:X-bn`` then expected to put an
+advisory lock into it.  *X-bn put none there: the lock is the request's
+(:mod:`app.db_transaction`).*  The cut was presented as a fork and ruled by
+the developer on 2026-09-12 (ruling **bank_import:R-BI7**, in **R-PC71**'s
+shape, the placement his as **R-PC60** and **R-PC69** were): the receipt
+WHOLE leaves, and the pass stays.
 
 **The seam is the one** :mod:`._batch`'s **own first line draws** -- *apply
 everything the owner reviewed in ONE pass, and say what each item did* -- so

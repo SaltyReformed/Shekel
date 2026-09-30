@@ -98,7 +98,8 @@ class TestTheEraDoors:
 
             pay_schedule_service.ensure_schedule_row(user_id)
 
-            again = pay_schedule_service.reread_schedule(user_id)
+            db.session.expire_all()
+            again = pay_schedule_service.get_schedule(user_id)
             assert again.id == schedule.id
             assert again.rolling_enabled is True
             assert again.rolling_target_periods == 30
@@ -147,10 +148,10 @@ class TestTheEraDoors:
 
         Since plan step ``C17-b-2`` the door takes the standing set rather
         than a boundary day, so the decision is made once, in cash days, by
-        ``pay_era_write.eras_describing``.  Re-read through
-        ``reread_schedule`` after each delete, because the bulk delete
-        synchronises nothing and the collection is view-only (the module
-        docstring's own warning).
+        ``pay_era_write.eras_describing``.  Re-read after each delete, the
+        session expired first, because the bulk delete synchronises nothing
+        and the collection is view-only (the module docstring's own
+        warning).
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -165,16 +166,18 @@ class TestTheEraDoors:
             assert pay_era_write.retire_eras(
                 user_id, (date(2026, 1, 2), date(2026, 2, 20)),
             ) == 1
+            db.session.expire_all()
             assert [
                 e.effective_from
                 for e in pay_schedule_service.ScheduleFacts.of(
-                    pay_schedule_service.reread_schedule(user_id),
+                    pay_schedule_service.get_schedule(user_id),
                 ).eras
             ] == [date(2026, 1, 2), date(2026, 2, 20)]
 
             assert pay_era_write.retire_eras(user_id, ()) == 2
+            db.session.expire_all()
             assert pay_schedule_service.ScheduleFacts.of(
-                pay_schedule_service.reread_schedule(user_id),
+                pay_schedule_service.get_schedule(user_id),
             ) is None
             assert pay_schedule_service.get_schedule(user_id) is not None
 
@@ -280,7 +283,7 @@ class TestSetRolling:
                     bare_user["user"].id, enabled=True, target_periods=10,
                 )
 
-    def test_a_later_era_never_resets_the_rolling_config(self, app, bare_user):
+    def test_a_later_era_never_resets_the_rolling_config(self, app, db, bare_user):
         """A later era mint never resets the user's rolling settings.
 
         set_rolling turns rolling on; a subsequent era (e.g. regenerate
@@ -294,7 +297,8 @@ class TestSetRolling:
                 user_id, enabled=True, target_periods=40,
             )
             pay_era_write.mint_era(user_id, era_of(date(2026, 3, 6), 7))
-            updated = pay_schedule_service.reread_schedule(user_id)
+            db.session.expire_all()
+            updated = pay_schedule_service.get_schedule(user_id)
             assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
             assert updated.rolling_enabled is True
             assert updated.rolling_target_periods == 40
@@ -516,7 +520,7 @@ class TestResolveSchedule:
                 history_opens_on=impossible.history_opens_on,
             )
 
-    def test_the_facts_value_names_the_CALENDAR_columns(self, app, bare_user):
+    def test_the_facts_value_names_the_CALENDAR_columns(self, app, db, bare_user):
         """``ScheduleFacts.of`` is where "which columns" is stated.
 
         The rolling configuration lives on the same row and is deliberately
@@ -530,7 +534,8 @@ class TestResolveSchedule:
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=7,
             )
-            row = pay_schedule_service.reread_schedule(user_id)
+            db.session.expire_all()
+            row = pay_schedule_service.get_schedule(user_id)
 
             facts = pay_schedule_service.ScheduleFacts.of(row)
 

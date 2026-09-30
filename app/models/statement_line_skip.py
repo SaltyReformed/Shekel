@@ -12,11 +12,15 @@ lines with none yet.  Three of the four already have a record --
 recorded purchase both leave behind, and a bank line that BECOMES a transfer
 will be matched against that transfer's own shadow row when the card arc ships
 (finding **N-337**).  SKIP is the one verb that names no app row at all, and
-that is exactly why it cannot reuse that table: :func:`~app.services
-.statement_match._candidates.act_still_names_a_row` deliberately treats an act
-with no app-side member as NOT A CLAIM, so a match holding a line and nothing
-else leaves the line reading unexplained forever.  The disposition therefore
-needs a store of its own.
+that is exactly why it cannot reuse that table: an act there asserts that a
+bank line IS a movement, and one naming a line and no movement is
+UNREPRESENTABLE -- the accept door refuses to write one, and since plan step
+``credit_card:CC-5-4a-4`` nothing can empty one either (ruling **R-CC54**: the
+member's movement key is NO ACTION, and the one act that takes a movement off
+the books withdraws an act it leaves naming none).  *Until that step a read
+predicate, ``act_still_names_a_row``, treated such an act as NOT A CLAIM, so a
+match holding a line alone left the line reading unexplained forever.*  The
+disposition therefore needs a store of its own.
 
 **Why it is not a column on the line** (ruling **R-JG**).  Every column on
 :class:`~app.models.statement_import.BankStatementLine` is the BANK's fact
