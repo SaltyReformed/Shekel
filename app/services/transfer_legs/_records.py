@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Query, contains_eager, joinedload
 from sqlalchemy.sql.expression import ColumnElement, Exists
 
@@ -378,23 +378,6 @@ def transfer_movement_rows(*filters):
         .filter(*filters)
         .order_by(TransactionEntry.id)
     )
-
-
-def planned_record_clause():
-    """Return the SQL truth of "this covering movement's side is still PLANNED".
-
-    :func:`leg_is_planned`'s twin over a row of :func:`transfer_movement_rows`'
-    join (leaf ``X-bi-6-4c-1``): the movement's transfer is Projected and the
-    movement is un-dated -- ruling **R-BAL79** per record, the complement of
-    which is "this record is the side's subject" (statement match's
-    leg-payment arm).  Stated here, beside the join, so the rule has one home
-    per form and ``X-bi-6-4d`` finds it with the join.
-
-    Returns:
-        A SQLAlchemy boolean over ``TransactionEntry`` and the joined
-        ``Transfer``.
-    """
-    return and_(is_projected_clause(Transfer), TransactionEntry.settled_on.is_(None))
 
 
 def recorded_transfer_legs(*filters) -> list[TransferLeg]:

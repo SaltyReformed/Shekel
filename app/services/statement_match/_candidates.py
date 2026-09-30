@@ -103,7 +103,6 @@ from ._leg_valuation import leg_candidate, leg_loads, leg_price
 from ._subjects import CandidateRow, Candidates, RowKind
 from ._valuation import (
     leg_settlement_candidate,
-    leg_settlement_price,
     purchase_candidate,
     settlement_candidate,
     settlement_price,
@@ -660,8 +659,7 @@ def _leg_candidates(
 def _leg_settlement_candidates(
     account_id: int, calendar: "PayCalendar",
     period_ids: "Collection[int]",
-    basis: "cash_ledger.AmountBasis",
-) -> "tuple[list[CandidateRow], list[tuple[RowKind, int]]]":
+) -> "list[CandidateRow]":
     """Return the paid transfer legs' covering movements on *account_id*.
 
     :func:`_settlement_candidates`' LEG twin (leaf ``balance:X-bi-6-4c-1``):
@@ -674,45 +672,38 @@ def _leg_settlement_candidates(
     * the MOVEMENT is on this account (a transfer's is on its own side's);
     * the transfer CONTRIBUTES and is live, and is filed in one of the
       OWNER's saved periods;
-    * its side is NOT still planned -- the complement of
-      ``transfer_legs.planned_record_clause`` (a Projected transfer whose
-      side's movement is un-dated, a revert's kept record, ruling
-      **R-BAL61**), the per-record form of the rule
-      :func:`_leg_candidates`' loader applies per transfer, so one side is
-      offered once; ``transfer_legs.leg_is_planned`` is the same rule in
-      Python, re-asked by :func:`~._valuation.repriced`.  Both forms live in
-      ``transfer_legs`` beside the join, never spelled here.
+    * the movement is DATED -- a settled leg is its dated covering movement
+      (ruling **R-BAL80**), and a side whose money has not moved is on the
+      plan (:func:`_leg_candidates`, ruling **R-BAL79**), so one side is
+      offered once.  An un-dated record under a transfer that is no longer
+      Projected -- a state no door writes -- is offered by neither arm;
+      :func:`~._valuation.leg_settlement_candidate` carries why, and re-asks
+      the day in Python for :func:`~._valuation.repriced`'s sake.
+
+    No leg payment is ever unpriceable: its figure is the movement's own
+    (``cash_ledger.movement_cash_leg``), which no amount model can refuse.
 
     Args:
         account_id: The cash account the statement is for.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
         period_ids: The owner's saved pay-period ids.
-        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`, for
-            an un-dated record's price.
 
     Returns:
-        ``(candidates, unpriceable)`` as :func:`_settlement_candidates`
-        returns them.
+        One :class:`~._subjects.CandidateRow` per offerable movement,
+        UNORDERED (:func:`candidates_for` sorts it with the row payments).
     """
     candidates = []
-    unpriceable = []
     for leg in transfer_legs.recorded_transfer_legs(
         TransactionEntry.account_id == account_id,
         Transfer.user_id == calendar.user_id,
         balance_contributing_clause(Transfer),
         Transfer.pay_period_id.in_(period_ids),
-        ~transfer_legs.planned_record_clause(),
+        TransactionEntry.settled_on.isnot(None),
     ):
-        amount = leg_settlement_price(leg, basis)
-        if amount is None:
-            unpriceable.append((RowKind.SETTLEMENT, leg.record.id))
-            continue
-        candidate = leg_settlement_candidate(
-            leg, calendar, amount, account_id,
-        )
+        candidate = leg_settlement_candidate(leg, calendar, account_id)
         if candidate is not None:
             candidates.append(candidate)
-    return candidates, unpriceable
+    return candidates
 
 
 def _purchase_candidates(
@@ -867,8 +858,8 @@ def candidates_for(
     settlements, unpriceable_settlements = _settlement_candidates(
         account_id, calendar, period_ids, basis,
     )
-    leg_settlements, unpriceable_leg_settlements = _leg_settlement_candidates(
-        account_id, calendar, period_ids, basis,
+    leg_settlements = _leg_settlement_candidates(
+        account_id, calendar, period_ids,
     )
     transactions, unpriceable_transactions = _transaction_candidates(
         account_id, calendar, period_ids, basis,
@@ -883,7 +874,7 @@ def candidates_for(
             + _purchase_candidates(account_id, calendar, period_ids)
         ),
         unpriceable=(
-            *unpriceable_settlements, *unpriceable_leg_settlements,
-            *unpriceable_transactions, *unpriceable_legs,
+            *unpriceable_settlements, *unpriceable_transactions,
+            *unpriceable_legs,
         ),
     )

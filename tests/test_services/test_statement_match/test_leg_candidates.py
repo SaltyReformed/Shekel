@@ -34,6 +34,8 @@ from app.services import (
     transfer_service,
 )
 from app.services.statement_match import (
+    CandidateRow,
+    Candidates,
     MatchSubmission,
     ReviewedRow,
     RowKind,
@@ -42,7 +44,10 @@ from app.services.statement_match import (
     candidates_for,
     matched_subjects,
 )
-from app.services.statement_match._candidates import unmatched_rows
+from app.services.statement_match._candidates import (
+    MatchedSubjects,
+    unmatched_rows,
+)
 from app.services.statement_match._valuation import repriced
 from tests._test_helpers import (
     an_entered_day,
@@ -53,6 +58,7 @@ from tests._test_helpers import (
 from ._builders import (
     a_bank_line,
     a_basis,
+    a_later_period,
     a_scope,
     a_submission,
     a_transaction,
@@ -168,27 +174,57 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
     def test_several_legs_are_offered_in_transfer_id_order(
         self, app, db, seed_user,
     ):
-        """The leg run's order is a function of the data: the transfer's id."""
+        """The leg run's order is a function of the data: the transfer's id.
+
+        The LOWER id is moved to a later paycheck through its door, so its
+        row is written again at the heap's end and indexed after the other
+        (a non-HOT update: ``pay_period_id`` is an indexed column) -- a
+        loader returning physical or index order returns it SECOND, and only
+        the arm's own sort by transfer id puts it first.
+        """
         savings = _savings(seed_user)
         first = _a_transfer(seed_user, savings, amount=Decimal("400.00"))
         second = _a_transfer(seed_user, savings)
+        assert first.id < second.id
+        transfer_service.update_transfer(
+            first.id, seed_user["user"].id,
+            pay_period_id=a_later_period(seed_user).id,
+        )
+        db.session.flush()
 
         legs = [
             row for row in _offered(seed_user, seed_user["account"].id).rows
             if row.kind is RowKind.LEG
         ]
 
-        assert [row.row_id for row in legs] == sorted([first.id, second.id])
-        assert [row.cash_amount for row in legs] == [
-            Decimal("-400.00"), -_AMOUNT,
-        ] if first.id < second.id else [-_AMOUNT, Decimal("-400.00")]
+        assert [(row.row_id, row.cash_amount) for row in legs] == [
+            (first.id, Decimal("-400.00")), (second.id, -_AMOUNT),
+        ]
 
-    def test_a_leg_names_no_entry(self, app, db, seed_user):
-        """A LEG is never claimed by an entry id: only the two entry kinds are."""
-        assert RowKind.LEG.names_an_entry is False
-        assert RowKind.TRANSACTION.names_an_entry is False
-        assert RowKind.PURCHASE.names_an_entry is True
-        assert RowKind.SETTLEMENT.names_an_entry is True
+    def test_a_leg_is_not_claimed_by_an_entry_sharing_its_id(self):
+        """A transfer's id and a movement's are separate sequences, so N names both.
+
+        An act on this account naming entry 7 claims entry 7 -- never transfer
+        7's leg, which only :attr:`MatchedSubjects.legs` claims.
+        """
+        leg = CandidateRow(
+            kind=RowKind.LEG, row_id=7, label="Transfer to Savings (transfer leg)",
+            cash_amount=-_AMOUNT, settled_on=None, is_settled=False,
+            states_own_figure=True, version_id=1, transfer_id=7,
+        )
+        offered = Candidates(rows=[leg], unpriceable=())
+
+        entry_seven = MatchedSubjects(
+            lines=frozenset(), transactions=frozenset(),
+            entries=frozenset({7}), legs=frozenset(),
+        )
+        leg_seven = MatchedSubjects(
+            lines=frozenset(), transactions=frozenset(),
+            entries=frozenset(), legs=frozenset({7}),
+        )
+
+        assert unmatched_rows(offered, entry_seven) == [leg]
+        assert unmatched_rows(offered, leg_seven) == []
 
     def test_no_shadow_row_is_ever_a_candidate(self, app, db, seed_user):
         """Neither arm that reads a ROW offers a shadow: the leg is the transfer's only subject."""
@@ -470,9 +506,46 @@ class TestADamagedTransferIsSkippedAndCounted:
         review = statement_match.review_set(a_scope(seed_user))
         assert review.bounds.unpriceable_count == 1
 
+    def test_a_damaged_reverted_transfer_is_counted_once(
+        self, app, db, seed_user,
+    ):
+        """Its kept, un-dated record is never priced, so the note counts ONE transfer, not two."""
+        savings = _savings(seed_user)
+        transfer = _a_transfer(seed_user, savings)
+        _settle(seed_user, transfer)
+        _revert(seed_user, transfer)
+        _shadow(transfer, savings.id).is_deleted = True
+        db.session.flush()
+
+        offered = _offered(seed_user, seed_user["account"].id)
+
+        assert offered.unpriceable == ((RowKind.LEG, transfer.id),)
+        assert _of_transfer(offered.rows, transfer) == []
+        review = statement_match.review_set(a_scope(seed_user))
+        assert review.bounds.unpriceable_count == 1
+
 
 class TestTheParentDecidesADriftedSide:
-    """DECLARED, both states unwritable by any door (ruling **R-JM**; R-BAL79 per side)."""
+    """DECLARED, all three states unwritable by any door (ruling **R-JM**; R-BAL79 per side, R-BAL80)."""
+
+    def test_a_settled_transfer_over_an_undated_kept_record_offers_nothing(
+        self, app, db, seed_user,
+    ):
+        """No LEG (not Projected) and no payment (its record is not dated): Invariant 5's "neither half".
+
+        Through leaf ``X-bi-6-4c-2`` the Projected shadow was offered as a row
+        and an Apply of it raised after the transfer's no-op settle; a match
+        could not date the kept record either way.
+        """
+        transfer = _a_transfer(seed_user)
+        _settle(seed_user, transfer)
+        _revert(seed_user, transfer)
+        transfer.status_id = ref_cache.status_id(StatusEnum.DONE)
+        db.session.flush()
+
+        rows = _offered(seed_user, seed_user["account"].id).rows
+
+        assert _of_transfer(rows, transfer) == []
 
     def test_a_projected_transfer_whose_side_is_dated_offers_the_movement(
         self, app, db, seed_user,

@@ -71,7 +71,6 @@ from app.utils.balance_predicates import is_projected
 
 from ._leg_valuation import (
     leg_candidate,
-    leg_price,
     repriced_leg,
 )
 from ._subjects import CandidateRow, RowKind
@@ -575,78 +574,65 @@ def settlement_candidate(
     )
 
 
-def leg_settlement_price(
-    leg: TransferLeg, basis: "cash_ledger.AmountBasis",
-) -> "Decimal | None":
-    """Return what a paid leg's covering movement is worth to a statement, or ``None``.
-
-    :func:`settlement_price`'s LEG twin (leaf ``balance:X-bi-6-4c-1``), over
-    the movement the leg carries as its ``record``: DATED, the movement's
-    figure in the leg's direction (``cash_ledger.movement_cash_leg``, which
-    takes a leg as a parent, ``0.00`` under a transfer that no longer
-    contributes); UN-DATED -- a leg-payment candidate only under a transfer
-    that is no longer Projected, a state no door writes -- what the
-    transfer's settle would book (:func:`~._leg_valuation.leg_price`), as a row's kept record
-    is worth its re-settle.
-
-    Args:
-        leg: The leg, carrying its covering movement as ``record``.
-        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`.
-
-    Returns:
-        Its signed cash effect on the leg's account, or ``None`` when it
-        cannot be priced.
-    """
-    if leg.settled_on is not None:
-        return cash_ledger.movement_cash_leg(leg, leg.record)
-    return leg_price(leg, basis)
-
-
 def leg_settlement_candidate(
-    leg: TransferLeg, calendar: "PayCalendar", amount: Decimal,
-    account_id: int,
+    leg: TransferLeg, calendar: "PayCalendar", account_id: int,
 ) -> "CandidateRow | None":
-    """Return a transfer leg's covering movement as the candidate value every consumer shares.
+    """Return a transfer leg's DATED covering movement as the candidate every consumer shares.
 
     :func:`settlement_candidate`'s LEG twin (leaf ``balance:X-bi-6-4c-1``):
     **a SETTLEMENT whose parent is a transfer's leg rather than a row** --
-    the member names the movement (``row_id``), the price is the leg's
-    record (*amount*, from :func:`leg_settlement_price`), the window is the
-    transfer's paycheck, the door is the transfer's (``transfer_id``; no
-    ``parent_id``, since it pays no row), and the REVISION is the movement's
-    counter plus the TRANSFER's, for :func:`settlement_candidate`'s reason
-    one row over.  Until this leaf it was built off the SHADOW the movement
-    hangs off, which the transfer's doors write in step with the transfer.
+    the member names the movement (``row_id``), the figure is what the
+    movement moves on its account (``cash_ledger.movement_cash_leg``, which
+    takes a leg as a parent: its direction and contributing gate are the
+    transfer's and side's), the window is the transfer's paycheck, the door
+    is the transfer's (``transfer_id``; no ``parent_id``, since it pays no
+    row), and the REVISION is the movement's counter plus the TRANSFER's,
+    for :func:`settlement_candidate`'s reason one row over.  Until this leaf
+    it was built off the SHADOW the movement hangs off.
+
+    **Only a DATED record is a leg's payment** (ruling **R-BAL80**: a
+    settled leg is its dated covering movement; the per-side rule R-BAL79
+    puts every other side on the plan).  So a side is a LEG while its
+    transfer is Projected and its money has not moved
+    (``transfer_legs.offerable_transfer_legs``), its payment once the money
+    has moved, and NEITHER in the one state between them, an un-dated
+    record under a transfer that is no longer Projected -- which no door
+    writes, which ``CLAUDE.md``'s Transfer Invariant 5 counts in neither
+    half of the cash fold, and which a match could not date anyway (the
+    transfer's settle is a no-op on a settled parent).  A row's un-dated
+    kept movement is a candidate where a leg's is not because the row's is
+    a door-written state (ruling **R-CC42**: a reverted card-tendered row)
+    that its own door re-settles.  So a leg's payment is never priced by a
+    derivation that can refuse, and no leg payment is ever unpriceable.
 
     Args:
         leg: The leg, carrying the movement as its ``record``
             (``transfer_legs.recorded_transfer_legs``).
         calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar`.
-        amount: Its signed cash effect, already resolved by
-            :func:`leg_settlement_price`.
         account_id: The screen's account.
 
     Returns:
-        Its :class:`~._subjects.CandidateRow`, or ``None`` when the movement is
-        worth nothing, is not on this screen's account, the leg is this
-        screen's candidate as a LEG (its side is still planned,
-        ``transfer_legs.leg_is_planned``), or the
-        transfer's pay period is not one this calendar carries -- none is
-        offerable, and none is an error.
+        Its :class:`~._subjects.CandidateRow`, or ``None`` when the leg has
+        no DATED record on this screen's account, the movement is worth
+        nothing, or the transfer's pay period is not one this calendar
+        carries -- none is offerable, and none is an error.
     """
     record = leg.record
-    if record is None or record.account_id != account_id:
+    if (
+        record is None or record.settled_on is None
+        or record.account_id != account_id
+    ):
         return None
-    if transfer_legs.leg_is_planned(leg):
-        return None
-    # **The leg's own candidate, re-keyed onto its record**: the figure, the
-    # label, the transfer and the paycheck are the LEG's (one construction,
+    # **The leg's own candidate, re-keyed onto its record**: the label, the
+    # transfer and the paycheck are the LEG's (one construction,
     # :func:`~._leg_valuation.leg_candidate`, which also declines a zero
     # figure and a period the calendar lacks), and the movement contributes
-    # exactly its identity, its day and how that day is known, and its
+    # its figure, its identity, its day and how that day is known, and its
     # counter -- which is what a SETTLEMENT is (``RowKind``: the movement's
     # identity with its parent's record).
-    candidate = leg_candidate(leg, calendar, amount)
+    candidate = leg_candidate(
+        leg, calendar, cash_ledger.movement_cash_leg(leg, record),
+    )
     if candidate is None:
         return None
     return replace(
@@ -654,7 +640,7 @@ def leg_settlement_candidate(
         kind=RowKind.SETTLEMENT,
         row_id=record.id,
         settled_on=record.settled_on,
-        is_settled=record.settled_on is not None,
+        is_settled=True,
         version_id=record.version_id + leg.transfer.version_id,
         settle_day_basis=_day_basis(record),
     )
@@ -735,7 +721,7 @@ def repriced(
         # arm that offered it (``RowKind``'s rule: tagged, never derived
         # downstream), and a movement never changes parent.
         if row.transfer_id is not None:
-            return _repriced_leg_settlement(row, calendar, basis, account_id)
+            return _repriced_leg_settlement(row, calendar, account_id)
         return _repriced_settlement(row, calendar, basis, account_id)
     return _repriced_transaction(row, calendar, basis)
 
@@ -794,27 +780,27 @@ def _repriced_transaction(
 
 
 def _repriced_leg_settlement(
-    row: CandidateRow, calendar: "PayCalendar",
-    basis: "cash_ledger.AmountBasis", account_id: int,
+    row: CandidateRow, calendar: "PayCalendar", account_id: int,
 ) -> "CandidateRow | None":
     """Return :func:`repriced`'s leg-payment arm: the paid leg's movement as it stands now.
 
     :func:`_repriced_settlement`'s LEG twin: re-read by the movement's id as
     its leg's record (``transfer_legs.recorded_transfer_legs``), which a
     movement that is no longer a covering movement, or hangs off a dead
-    shadow, is not -- ``None`` then, as there.
+    shadow, is not -- ``None`` then, as there, and so is one a revert has
+    un-dated since (:func:`leg_settlement_candidate` offers a dated record
+    only: the side is its LEG again).
     """
     return _leg_payment(
         transfer_legs.recorded_transfer_legs(
             TransactionEntry.id == row.row_id,
         ),
-        calendar, basis, account_id,
+        calendar, account_id,
     )
 
 
 def recorded_leg_payment(
-    transfer_id: int, calendar: "PayCalendar",
-    basis: "cash_ledger.AmountBasis", account_id: int,
+    transfer_id: int, calendar: "PayCalendar", account_id: int,
 ) -> "CandidateRow | None":
     """Return *transfer_id*'s side on *account_id* as its payment's candidate, or ``None``.
 
@@ -830,7 +816,6 @@ def recorded_leg_payment(
     Args:
         transfer_id: The transfer the ticked leg is a side of.
         calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar`.
-        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`.
         account_id: The screen's account, the leg's.
 
     Returns:
@@ -843,13 +828,12 @@ def recorded_leg_payment(
             Transfer.id == transfer_id,
             TransactionEntry.account_id == account_id,
         ),
-        calendar, basis, account_id,
+        calendar, account_id,
     )
 
 
 def _leg_payment(
-    legs: "list[TransferLeg]", calendar: "PayCalendar",
-    basis: "cash_ledger.AmountBasis", account_id: int,
+    legs: "list[TransferLeg]", calendar: "PayCalendar", account_id: int,
 ) -> "CandidateRow | None":
     """Return the one paid leg a lookup found as its payment's candidate, or ``None``.
 
@@ -861,7 +845,4 @@ def _leg_payment(
     if not legs:
         return None
     (leg,) = legs
-    amount = leg_settlement_price(leg, basis)
-    if amount is None:
-        return None
-    return leg_settlement_candidate(leg, calendar, amount, account_id)
+    return leg_settlement_candidate(leg, calendar, account_id)

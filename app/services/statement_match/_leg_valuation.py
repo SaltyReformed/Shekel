@@ -10,9 +10,10 @@ subject joined it (ruling **balance:R-IR**: the session that breaks a module
 splits it, by SUBJECT); the seam is the KIND.  What a leg is worth
 (:func:`leg_price`), what it is called (:func:`leg_candidate_label`), the one
 construction the offer set and the re-price share (:func:`leg_candidate`) and
-the re-price's LEG arm (:func:`repriced_leg`) live here; which of a side's two
-subjects is offered is ``transfer_legs.leg_is_planned``'s (ruling **R-BAL79**
-per side), never spelled here.  A PAID leg is a
+the re-price's LEG arm (:func:`repriced_leg`) live here.  Which side is a LEG
+is the loader's (``transfer_legs.offerable_transfer_legs``, ruling
+**R-BAL79**: Projected, and this side's money not yet moved); a side whose
+money has moved is its dated record, a SETTLEMENT (ruling **R-BAL80**).  A PAID leg is a
 SETTLEMENT -- a payment, whose parent is a leg rather than a row -- so its
 constructor stays with the other SETTLEMENT's in :mod:`._valuation`, and that
 module imports this one, never the reverse.

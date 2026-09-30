@@ -561,7 +561,7 @@ def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
     db.session.flush()
     if row.kind is RowKind.LEG:
         recorded = recorded_leg_payment(
-            row.transfer_id, scope.calendar, scope.basis, scope.account_id,
+            row.transfer_id, scope.calendar, scope.account_id,
         )
         if recorded is None:
             raise RuntimeError(

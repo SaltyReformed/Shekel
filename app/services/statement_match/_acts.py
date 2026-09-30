@@ -124,10 +124,18 @@ def named_rows(match: StatementMatch) -> "tuple[set[int], set[int]]":
     **A transfer's payment member adds its movement's ``transaction_id`` too**
     -- through the interval the id of the shadow row it hangs off, and
     ``None`` once ``balance:X-bi-6-4d`` re-parents it onto the transfer.
-    Neither can meet what the set is compared with: a creation is always a
-    plan row or a purchase (a match never creates a transfer), so the id is
-    inert here, and the register names and values a transfer member through
-    its LEG (``_accepted_view._accepted_row``) rather than through this set.
+    Its two readers get the right answer from either value, for two
+    different reasons.  The undo (``_release.planned_removals``) probes the
+    set with a creation's row id, and no creation is a transfer's (a match
+    never creates one), so the value never matches.  The register
+    (``_accepted_view``) compares the WHOLE set with the act's creations
+    (``created_every_row``), and there the value's presence is what makes the
+    answer right: an act naming a transfer's payment did not create
+    everything it names.  That is moot today -- a group holding a transfer
+    refuses the residual that would be its only creation
+    (``test_residual``'s transfer-in-a-group case) -- and holds either way.
+    The register names and values a transfer member through its LEG
+    (``_accepted_view._accepted_row``), never through this set.
 
     Args:
         match: The act, with its members and their subjects loaded.
