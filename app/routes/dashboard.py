@@ -222,7 +222,9 @@ def page():
     principal-paid fraction to a percent.
     """
     # Continuous rolling window: top up on dashboard entry (a future-period
-    # consumer).  A no-op (one count, no lock) when rolling is disabled.
+    # consumer).  It writes nothing when rolling is disabled (one schedule
+    # read), but the block below is a COMMAND transaction and takes the
+    # owner's write lock at that read either way -- ``grid.index`` says why.
     #
     # **In its own COMMAND transaction** (plan step X-i3), for the reason
     # ``grid.index`` states at its own call: this render is a query and its

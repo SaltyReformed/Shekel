@@ -303,9 +303,11 @@ class TestCreditWorkflow:
 
         An entry-tracking source's own status is NOT Credit, so a
         status-based guard would miss it -- the helper keys on
-        ``get_active_payback`` instead.  The surviving entries (a
-        soft-deleted source keeps its entries as rows) must not point
-        at the vanished payback.
+        ``get_active_payback`` instead.  An entry a direct call leaves in
+        place must not point at the vanished payback: the delete verb
+        takes every entry off first (plan step ``credit_card:CC-5-4a-4``,
+        ruling R-CC75), and for this direct call the link's ``ON DELETE
+        SET NULL`` severs it.
         """
         with app.app_context():
             from app.models.transaction_entry import TransactionEntry

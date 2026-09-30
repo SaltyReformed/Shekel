@@ -1309,6 +1309,9 @@ class TestRestoreTransfer:
             # covered by ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
             record_settle_day(drifted, None)
             for movement in drifted.covering_movements:
+                # Deleted, THEN out of the list: the list no longer deletes (R-CC64;
+                # rule-5 re-expression, developer-confirmed 2026-09-23).
+                db.session.delete(movement)
                 drifted.entries.remove(movement)
             db.session.flush()
             assert sibling.settled_on == real_settle
@@ -1430,10 +1433,13 @@ class TestRestoreTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
 
             # Parent stays Projected; drift ONE shadow up to Paid with a time.
+            # Drifted BEFORE the soft delete: the database refuses a payment
+            # written under a hidden row (ruling R-CC89), and the state the
+            # restore meets -- a hidden shadow drifted to Paid, holding its
+            # payment -- is the same.  Rule-5 re-expression,
+            # developer-confirmed 2026-09-23.
             drifted = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
@@ -1444,6 +1450,9 @@ class TestRestoreTransfer:
             record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
             db.session.flush()
             cover_bare_settled_row(db.session, drifted, shadow_amount(drifted))
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+            assert drifted.is_deleted is True and len(drifted.entries) == 1
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
             db.session.flush()

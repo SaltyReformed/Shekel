@@ -17,7 +17,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-cy `75a80208` -- THE AUDIT TRIGGER'S WORK IS THE REQUIRED CHECK, ITS TIME ONLY A REPORT** (**R-BAL144**, **R-BAL149**..**R-BAL154**; no app code, no migration): an ordinary-suite test counts one audit row per changed row for five workloads and pins the sha256 of the trigger's cost surface, the timings print in CI's serial step and fail it only on a crash or a hang, and the fingerprint sees the module's trigger as the test template installs it, not a migration's (**BAL-556**); **recurrence:REC-533** closed. The previous landing, **X-bi-6-4c-2 `1c26f05e`** -- the reconcile panel and carry-forward walk transfers. | Section 5, X-cy; ../../plans/rulings.md R-BAL144, R-BAL149 to R-BAL154 |
+| **just landed** | **X-bn `cdc67086` -- EVERY SAVE TAKES THE OWNER'S WRITE LOCK WHERE ITS TRANSACTION BEGINS**, shipping with `credit_card:CC-5-4a-4` (`1d7a1174`) in one release (**R-CC120**, **R-BAL156**): `app/db_transaction.py` takes it after the form-token check and the rate limit (**R-CC122**), sign-in included (**R-CC121**), and the older calls and 4a-4's row locks are deleted (**R-CC115**). A save's answer is still drawn outside the locked transaction (**BAL-565**), which `X-dc` fixes. | `steps.md` carries the order |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` was re-pointed at the DEFINITION's `is_envelope` (DISSOLVED 2026-09-20, **R-BAL85**: the kind stays). Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
 | **blocked on you** | **The first SECU import LANDED 2026-09-15** (on the 2026-09-19 07:21 restore: 1 statement import, 306 bank lines, 163 matches; the observation records are the coordinator's `N-368-observation-2026-09-15.md` / `-18.md`, their rows BAL-497 / BAL-498 / BI-499 / BI-500). That first import was **N-368**'s, and it alone closed THE FLIP's data gate (`56111c3e`); two more CSV imports since, made 2026-09-20 and 2026-09-22 (all three dates EDT), extend Checking's declared windows to cover 2026-01-02 through 2026-09-21 (measured read-only on production 2026-09-24), and none of it waits on a bank feed. What gates this arc now is the developer's file-or-not BATCH the coordinator holds; this document's room is a MEASUREMENT, `wc -l` against the gate's cap and its 20-line headroom, and a tick archives a completed span only when that room runs out (rule 5). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md BAL-497, BAL-498; ../../plans/steps.md |
@@ -183,7 +183,7 @@ group the same work by SUBJECT; this groups it by CAUSE.**
 |---|---|---|
 | 1 | **the anchor half** | The only remaining work that moves a figure the developer reads, and since 2026-08-13 it ABSORBS block 5: the cutover's residual is meaningless until clearing is a fact and the dates are the bank's, so the importer's first leaf runs inside this block rather than after the card arc |
 | 2 | **the pay-calendar door** | Its gate CLEARED 2026-08-05 when the X-f1 cluster reached production (`8d812662`): `accounts.current_anchor_period_id` is GONE rather than going, which is the fact X-ad's trace turned on. The "ONE PR" pairing with X-x ENDED at **R-EY** -- X-x is held behind the writer (**R-DE**) and behind the pay-calendar arc's `C3`, which owns the repair its refusals point at |
-| 3 | **the posting restructure** | `X-ai-s` is held until the cutover, which deletes the correction family it would buy attribution for; `X-d` is PARKED on **N-155**, whose fix is X-ai's own placement; `X-bn` carries **N-193**, a reproducible unhandled 500 on a money route, split out of `X-ak` 2026-09-03 |
+| 3 | **the posting restructure** | `X-ai-s` is held until the cutover, which deletes the correction family it would buy attribution for; `X-d` is PARKED on **N-155**, whose fix is X-ai's own placement; `X-bn` closed **N-193**, a reproducible unhandled 500 on a money route split out of `X-ak` 2026-09-03, at `cdc67086` |
 | 4 | **the credit-card arc** (own document) | DISCHARGED 2026-09-18 by the per-leaf trace (`credit_card:R-CC13`): `CC1b` dissolved (`R-CC14`) and `CC3b` re-specified on the movement shape (`R-CC15`); what each card leaf waits on is `steps.md`'s cell. Was: `CC1b`'s fold against the reset semantics **R-EB** deletes at the cutover, and `CC3b`'s settle from `paid_at`, which X-f1b deleted |
 | 5 | **the bank import** | ABSORBED INTO BLOCK 1 on 2026-08-13. Its 2026-08-03 position -- after the card arc, so one matching rule covers checking and card rows -- rested on the cutover not needing it; measurement refuted that, and the developer's exports carry both accounts anyway, so the one-rule argument survives inside block 1 |
 | 6 | **the read-path residue** | Nothing blocks on it and its footprint is disjoint from the write path: tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26, **zero overlap**, measured. UNGATED, which is what lets `X-l` run early -- and it must, because it is block 10's `C2` and recurrence `R-F12` as well |
@@ -392,7 +392,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * **X-bi-6-2 is ABSORBED into X-bi-6-4c** (**R-BAL106**, 2026-09-22): statement match and the reconcile panel offer legs at 6-4c-1 and 6-4c-2 (`statement_match/{_candidates,_offers,_moving,_variance,_destinations}`, `reconcile_service/{_transfers,_rows,_assemble,_transactions}`); its wait on `bank_import:X-f6b-2` lifted, and the held bank-import branch resolves the conflict at its own merge.
     * [ ] **X-bi-6-5** the ROWS go: the migration deletes the 354 rows, drops `transactions.transfer_id`,
       `idx_transactions_transfer`, `uq_transactions_transfer_type_active`, the pricing-link term,
-      `AmountOwnershipEnum.PARENT_TRANSFER` and `Transaction.transfer`; the branches (the marker on its `steps.md` row), the exclusions (census 13 code lines `Transaction\.transfer_id\.is_\(None\)` in `app/**/*.py`), the inverted guards (census 5 code lines `transfer_id is None` in `app/**/*.py`), the two Jinja branches (`grid/_transaction_full_edit.html:74`, `:83`), the `is_transfer_shadow` fence and the `EVT_*` shadow events die with them; `journal_entries.transaction_id` and `transfer_id` drop with `idx_journal_entries_transaction` / `idx_journal_entries_transfer`, since after 6-3's resync only zero-net reversed pairs carry either (**R-BAL102**), and the `JournalEntry` link guards in `account_posting_service/_walk` and `ledger_report_service/_attribution` with them; `app/services/_posting_legacy.py` (the legacy one-entry source and the resync's refusal, **R-BAL104**) is deleted whole with its ledger-model fence entry, and DC-12 (`scripts/integrity_check.py`, Transfer Invariant 1's detector since 6-3) with the rows; the leg twins (eight producers, three routers; **BAL-527**) fold into one valuation seam; CLAUDE.md's Transfer Invariants and the reviewer mirror rewritten. Graded byte-identical on both baselines. Closes **BAL-475**, **BAL-526**, **BAL-527**.
+      `AmountOwnershipEnum.PARENT_TRANSFER` and `Transaction.transfer`; the branches (the marker on its `steps.md` row), the exclusions (census 13 code lines `Transaction\.transfer_id\.is_\(None\)` in `app/**/*.py`), the inverted guards (census 7 code lines `transfer_id is None` in `app/**/*.py`), the two Jinja branches (`grid/_transaction_full_edit.html:74`, `:83`), the `is_transfer_shadow` fence and the `EVT_*` shadow events die with them; `journal_entries.transaction_id` and `transfer_id` drop with `idx_journal_entries_transaction` / `idx_journal_entries_transfer`, since after 6-3's resync only zero-net reversed pairs carry either (**R-BAL102**), and the `JournalEntry` link guards in `account_posting_service/_walk` and `ledger_report_service/_attribution` with them; `app/services/_posting_legacy.py` (the legacy one-entry source and the resync's refusal, **R-BAL104**) is deleted whole with its ledger-model fence entry, and DC-12 (`scripts/integrity_check.py`, Transfer Invariant 1's detector since 6-3) with the rows; the leg twins (eight producers, three routers; **BAL-527**) fold into one valuation seam; CLAUDE.md's Transfer Invariants and the reviewer mirror rewritten. Graded byte-identical on both baselines. Closes **BAL-475**, **BAL-526**, **BAL-527**.
   * **X-bi-5 is DISSOLVED** (**R-BAL85**, 2026-09-20): a plan item's KIND is a constitutive input
     with ONE home (the definition's `is_envelope`) and ONE reader (`tracks_purchases`), which
     carry-forward needs before any purchase exists; the cumulative envelope is `bank_import:X-gg`'s.
@@ -565,14 +565,29 @@ in SILENCE where a refused DELETE is loud.
   the loan payment context, the render helpers). It bit at `X-au-e`: an unguarded caller pricing 926
   rows went **146 -> 260** statements while a guarded one stayed at **8 and 8**, per DEFINITION, live
   on every render of those surfaces. Pure loader work; before `X-au-f`, which inherits guarded ones.
-* [ ] **X-bn** `fix(locks): the user write lock is the FIRST lock a transaction takes` -- closes
-  **N-193**, **N-202**, split out of `X-ak` because their subject is the LOCK and X-ak's is the
-  mirror. Both are deadlocks REPRODUCED on a real PostgreSQL: a settle takes row locks first and
-  reaches `lock_user_writes` afterwards while a schedule rebuild locks first and CASCADE-deletes the
-  rows the settle holds; `create_account` INSERTs before it locks while a rename locks first. The fix
-  is the invariant `user_write_lock`'s docstring states -- acquisition at the write-SERVICE entry (the
-  status seam, `update_transfer`, delete, restore, `create_account`); `X-f1c4b` moved the anchor
-  doors, this moves the rest. Own review pass: a behaviour change on every write path.
+* [x] **X-bn** `cdc67086` -- every signed-in save, sign-in included, takes the owner's write lock where its database transaction begins (`app/db_transaction.py`'s `after_begin` listener), after the form-token check and the rate limit (**R-CC114**, **R-CC121**, **R-CC122**); the older lock calls and `credit_card:CC-5-4a-4`'s row locks are deleted (**R-CC115**), a save request's teardown rolls back what it left open (**R-CC123**, test fidelity only), and half 2 is `X-da` (**R-CC120**). Closed **N-193**, **N-202**, **BI-492**'s (b) and `pay_calendar:P71`; the race **BAL-565** names stays reachable until `X-dc` (**R-BAL156**).
+* [ ] **X-cz** `fix(pages): a page load never writes` -- owns **BAL-553** (**R-CC114**). The grid's
+  and dashboard's pay-period top-up and the two-factor setup's pending secret move into real saves,
+  so a page load stops waiting behind a save while holding one of two workers (**R-CC122**'s cost).
+* [ ] **X-dc** `fix(db): a save is ONE transaction` -- owns **BAL-565** and **BAL-567**
+  (**R-BAL156**; ranked by **R-CC124**). A save now spans several transactions (a refusal rolls back
+  and re-reads, a committed save renders after its commit), each end releasing the owner's lock. The
+  lane's proposed fix, confirmed at its design round: the request boundary owns one transaction per
+  save, the lock taken at its start, a refusal rolled back to a SAVEPOINT that keeps it, the answer
+  drawn inside, the commit last, routes no longer committing. It amends `X-i5`'s render clause, its
+  design round owes a ruling on **R-CC123** (the teardown rollback X-bn added), and it covers
+  `recurrence:R16-c-2`'s two loan doors; unmeasured spike diffs wait in the card lane's
+  `xbn/spike_partial/`. Its design round decides whether that render, inside the save's transaction
+  under the owner's lock, meets **N-358**'s one-snapshot requirement or needs a stronger isolation
+  (REPEATABLE READ on the save's transaction, say): whether any lock-free writer touches rows a
+  render reads (**BAL-560**'s four scripts are the known lock-free writers of an existing owner's
+  rows).
+* [ ] **X-da** `fix(locks): every button sends its page's version` -- X-bn's half 2 (**R-CC120**;
+  ranked by **R-CC124**): a click on an out-of-date page answers 'this changed, reload' instead of
+  saving over, or deleting, another tab's change. **Its mechanism is its first question for the
+  developer**: of about 93 kinds of save, 12 check a version and 49 change rows that carry none,
+  some moving money (X-bn's census, 2026-09-25); drafts and a review in the card lane's
+  `xbn/layer2_*.md`.
 * [ ] **X-bo** `perf(postings): a purchase CREATE re-emits only its own legs` -- closes **N-406**.
   `sync_transaction_postings` reconciles the parent's whole purchase FAMILY on every entry change,
   which **R-FM** needs for a re-category -- but on a CREATE no sibling changed, so filing N purchases
@@ -847,6 +862,9 @@ section 4, under their unchanged ids.*
     not cover; it also keeps `X-i3-b` a NARROWING rather than a deletion. The shape is the one
     `/grid` already has, and the trace owed is WHICH routes render rather than redirect. **X-i4 made
     it load-bearing**: such a render now reads the pre-write FOLD, not merely an older snapshot.
+    **Its render clause follows `X-dc`'s design round** (**R-BAL156**). `write_transaction()` rolls
+    the query snapshot back first, releasing a lock taken before the block; X-bn locks per COMMAND
+    transaction, so a handler's reads that decide its write must sit INSIDE the block.
   * [ ] **X-i6 THE READS A PASS DOES NOT MEMOIZE** -- **N-362**, whose row carries the census. A
     pass binds what it MEMOIZES: seven entries early-out before the funnel, the contribution feed
     scopes its payroll loaders off the ACCOUNT's owner, and `bank_agreement` walks the account
@@ -983,6 +1001,10 @@ section 4, under their unchanged ids.*
   context per request, as production does; the outer context stays for `db.session`. A test-only hook
   clearing the login cache was rejected (developer 2026-09-18): it leaves every other `g`-cached value
   shared. First upkeep row below the horizon by the developer's word.
+  **BAL-495** is merged into **BAL-521**. Measured 2026-09-29 on X-bn's rewritten top-up race: the
+  concurrent helper's client B (`test_race_conditions.py::_make_auth_client`) is signed out in a
+  worker thread, so that race raced nothing; its three other sites were not re-measured. **R-CC123
+  adds a deletion**: X-bn's save-side teardown rollback, test fidelity only.
 * [ ] **X-cs** `refactor(schemas): the two shared bounds have one spelling` -- closes **BAL-522**: CC-2
   declared `_RATE_FRACTION_RANGE` and `_DAY_OF_MONTH_RANGE` in `schemas/validation/_helpers.py` and
   re-pointed only its own fields; 19 inline `[0, 1]` and 3 inline `1..31` spellings remain across seven

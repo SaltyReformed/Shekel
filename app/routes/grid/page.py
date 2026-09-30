@@ -702,8 +702,13 @@ def index():
     user_id = current_user.id
 
     # Continuous rolling window: top up before resolving the grid so any
-    # newly generated periods are visible this request.  A no-op (one count,
-    # no lock) when rolling is disabled.
+    # newly generated periods are visible this request.  It writes nothing
+    # when rolling is disabled (one schedule read) -- but the block below is a
+    # COMMAND transaction, so it takes the owner's write lock at that first
+    # read whether or not rolling is enabled (plan step ``balance:X-bn``,
+    # ruling R-CC114: a page load's write takes the lock like any save).
+    # *Until that step this said "one count, no lock": the top-up took the
+    # lock only on a deficit.*
     #
     # **In its own COMMAND transaction** (plan step X-i3): this render is a
     # query, so its transaction is one read-only snapshot and cannot hold the

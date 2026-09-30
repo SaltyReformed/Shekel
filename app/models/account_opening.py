@@ -123,7 +123,7 @@ that was false.**  ``created_at`` comes from :class:`CreatedAtMixin`'s
 restatements made in two tabs can carry instants in the opposite order to their
 commits, and the later statement then sorts BELOW the one it supersedes.  See
 :data:`app.opening_infrastructure.GOVERNING_ORDER_SQL` for the worked failure
-and why ``id`` alone is monotone under the write door's lock.
+and why ``id`` alone is monotone under the owner's write lock.
 
 Reads: :func:`app.services.cash_ledger.account_opening_fact`, and its
 non-raising twin :func:`app.services.cash_ledger.governing_account_opening` for
@@ -132,9 +132,12 @@ the write door.  **Writes: ONE function in ``app/``**,
 ``account_service.create_account`` for the origination and by
 ``opening_service.apply_opening_restatement`` for an owner correcting the
 figure, both ``user_declared``.  That single-writer shape is ruling **R-ES**
-applied to this table (plan step X-f3c-2b-2a): the owner's write lock, the
-did-this-change compare and the audit line are properties of the TABLE rather
-than of whichever event did the INSERT.
+applied to this table (plan step X-f3c-2b-2a): the did-this-change compare and
+the audit line are properties of the TABLE rather than of whichever event did
+the INSERT.  *The owner's write lock was one of them until plan step
+``balance:X-bn`` made it the signed-in request's transaction's; an origination
+at registration takes none, its account being invisible to every other
+transaction.*
 
 **TWO migrations also write here, and the first statement of this census named
 only one** (adversarial review, 2026-08-31).  ``a7c41f9d2b60`` seeds every

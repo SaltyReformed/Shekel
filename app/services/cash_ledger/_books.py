@@ -173,12 +173,17 @@ def reject_movement_before_books_open(account_id: int, day: date) -> None:
     # cannot hide a pending opening from this read, and the reason is stated
     # precisely because the whole paragraph is about autoflush: the ONE writer
     # (``opening_service.stage_account_opening``) only ever stages, and BOTH
-    # of its entrances emit the row before returning -- a restatement through
-    # the posting reconcile's first query, an origination through
-    # ``stage_anchor_true_up``'s advisory-lock statement (measured 2026-08-31:
-    # the opening INSERT lands at statement 6 of ``create_account``).  Neither
-    # leaves an unflushed opening for a settle in the same transaction to
-    # race, and the migration writes through ``op.execute`` outside the ORM
+    # of its entrances emit the row before returning, each through the
+    # autoflush of the first query after it (measured 2026-09-29, statement by
+    # statement): a restatement's opening INSERT is statement 9 of
+    # ``apply_opening_restatement``, sent by the posting reconcile's first
+    # query at 10, and an origination's is statement 4 of ``create_account``,
+    # sent by ``stage_anchor_true_up``'s first read,
+    # ``cash_ledger.governing_anchor``, at 5.  *That read sends it since plan
+    # step ``balance:X-bn`` deleted ``stage_anchor_true_up``'s advisory-lock
+    # statement, which sent it before (measured 2026-08-31 at statement 6).*
+    # Neither leaves an unflushed opening for a settle in the same transaction
+    # to race, and the migration writes through ``op.execute`` outside the ORM
     # entirely.
     with db.session.no_autoflush:
         opening = account_opening_fact(account_id)

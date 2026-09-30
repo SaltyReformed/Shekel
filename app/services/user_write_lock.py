@@ -1,10 +1,38 @@
 """
 Shekel Budget App -- The per-user write lock
 
-ONE transaction-scoped PostgreSQL advisory lock, keyed on the owning user,
-serialising every write whose correctness depends on reading state it is about
-to change.  Two families of write need it, and they need the SAME lock because
-the second reads the first's output:
+ONE transaction-scoped PostgreSQL advisory lock, keyed on the owning user, so
+two writes of one user's data that both take it never overlap (the writers
+that take none are named below).  **Since plan step
+``balance:X-bn`` it is taken from exactly two modules** (rulings **R-CC106**,
+**R-CC114**, **R-CC115**, **R-CC121**): :mod:`app.db_transaction`, at the
+start of every command transaction a signed-in request opens -- before it
+reads any of the owner's data; the signed-in user's own row and the role row
+joined to it, read to sign the request in, are the only rows read first, and
+the user's row is re-read under the lock -- and at a sign-in right after the
+account is found; and this module's :func:`lock_every_user_writes`, at the
+start of each deploy reconcile.  No service takes it for itself any more, and
+``tests/test_arch/test_the_owner_lock_has_one_home.py`` refuses one that
+tries.  **The writers that take none, each named so it is not mistaken for
+covered**: registration (``/register`` and ``scripts/seed_user.py``) writes a
+user that is not committed, so no other transaction can reach it; and every
+script that writes an EXISTING user's rows holds no request, so nothing takes
+the lock for it.  The deploy reconciles take every owner's at their own start.
+Four operator scripts write rows the lock covers and take none --
+``scripts/reset_mfa.py`` (``mfa_configs``), ``scripts/rotate_totp_key.py``
+(every ``totp_secret_encrypted``), ``scripts/rotate_sessions.py`` (every
+``users.session_invalidated_at``) and ``scripts/seed_companion.py``'s
+existing-user branch (``role_id`` and ``linked_owner_id``, the lock's key) --
+so each can race a sign-in or an MFA door that holds the lock (reported at
+plan step ``balance:X-bn``'s checkpoint 4 review, 2026-09-29).  *It was
+taken by sixteen calls in nine modules inside the write paths that needed it
+most, plus three that plan step ``credit_card:CC-5-4a-4`` put inside
+``row_write_lock`` (the row locks' module, deleted with them at plan step
+``balance:X-bn``), each taking it at its own point in the transaction, which
+is what made the deadlock below reachable.*
+
+Two families of write are why the lock exists at all, and they need the SAME
+lock because the second reads the first's output:
 
 * **The structural pay-period mutations** -- top-up / extend / truncate, and so
   regenerate and reset, which are compositions of those.  Each counts or
@@ -28,33 +56,51 @@ no transaction has to order two of them against each other.
 
 **Deadlock: what one key does and does not buy, corrected on evidence.**  An
 earlier version of this docstring said deadlock was "structurally impossible on
-every request path".  **That is FALSE, and a neutral adversarial review
+every request path".  **That was FALSE, and a neutral adversarial review
 reproduced the cycle**, because the argument considered only
-advisory-vs-advisory ordering while this lock is taken in transactions that also
-hold ROW locks:
+advisory-vs-advisory ordering while this lock was taken in transactions that
+also held ROW locks.  The cycle, as it stood until plan step ``balance:X-bn``:
 
-* A settle takes row locks FIRST.  ``update_transfer`` UPDATEs the transfer and
-  both shadow transactions, those flush, and only then does the posting sync
-  reach ``lock_user_writes`` -- measured at statements 2-4 and 19 of one
-  loan-payment settle.
-* A truncate or reset takes this lock first and then bulk-DELETEs pay periods,
-  which CASCADEs to ``budget.transactions`` and so takes row locks on exactly
-  the rows a concurrent settle may hold.
+* A settle took row locks FIRST.  ``update_transfer`` UPDATEd the transfer and
+  both shadow transactions, those flushed, and only then did the posting sync
+  reach this lock -- measured at statements 2-4 and 19 of one loan-payment
+  settle.
+* A truncate or reset took this lock first and then bulk-DELETEd pay periods,
+  which CASCADE to ``budget.transactions`` and so took row locks on exactly
+  the rows a concurrent settle might hold.
 
-Two such transactions, same user, opposite orders: PostgreSQL detects it and
-aborts one with ``DeadlockDetected``.  **No money is corrupted** -- the loser
-rolls back atomically -- but the victim is an unhandled 500 on a money route.
-It needs a settle and a schedule rebuild for one user to overlap, which is two
+Two such transactions, same user, opposite orders: PostgreSQL detected it and
+aborted one with ``DeadlockDetected``.  **No money was corrupted** -- the loser
+rolled back atomically -- but the victim was an unhandled 500 on a money route.
+It needed a settle and a schedule rebuild for one user to overlap, which is two
 browser tabs, and it did not exist before this lock did.
 
 **The real invariant, stated so the next author can hold it: this lock must be
-the FIRST lock a transaction takes.**  The pay-period paths already satisfy it.
-The settle paths do not, and closing that means acquiring at the write-service
-entry rather than inside the reconcile -- a change with its own blast radius,
-recorded as finding **N-193** rather than smuggled in here.  Shipping the lock
-with a detected-and-rolled-back deadlock is strictly better than shipping the
-silent ledger divergence it replaces; shipping it with a docstring claiming the
-deadlock is impossible is not.
+the FIRST lock a transaction takes.**  *Until plan step ``balance:X-bn`` it was
+a property each write door had to hold for itself, and most did not: the
+settle paths took row locks first (finding **N-193**), plan step
+``credit_card:CC-5-4a-4`` (ruling **R-CC100**) added the lock ahead of the row
+locks it introduced, and a census over the whole suite (2026-09-24) still
+found 27 endpoints that locked a row and then asked for this lock in the same
+request -- the popover's Save, a purchase's edit and delete, carry-forward and
+the reconcile tick among them.*  **It is now structural on every request
+path**: the lock is taken where each command transaction a signed-in request
+opens begins (:mod:`app.db_transaction`), so the only earlier statement is
+the signed-in user's own row, and no row lock rides on it.  **The deploy is the
+one place it is not first, and what keeps that safe is an ORDER, not this
+module**: the deploy reconciles take every owner's lock, ascending, at the
+start of each reconcile FUNCTION, but ``scripts/init_database.py`` runs them
+in the one transaction that has already run the migrations and the
+infrastructure DDL, with their table locks.  That is safe because
+``entrypoint.sh`` runs ``init_database.py`` before it hands over to gunicorn,
+so no request can hold an owner's lock while the deploy waits.  If that
+order ever changes, a request could take owner A's lock, block on a migrated
+table, and deadlock against the deploy waiting on A.
+
+Shipping the lock with a detected-and-rolled-back deadlock was strictly better
+than shipping the silent ledger divergence it replaced; shipping it with a
+docstring claiming the deadlock impossible was not, which is why this
+paragraph said so until the step that made it so.
 
 **Why a lock at all, rather than a constraint.**  A reconcile emits the
 DIFFERENCE between target and posted, and repeated deltas under one key are the
@@ -80,16 +126,19 @@ append-only event table, so it has carried the same race since Commit 16, and
 ruling R-EN cited it as the precedent to copy.
 
 Transaction-scoped: PostgreSQL releases the lock at COMMIT or ROLLBACK, so it
-cannot leak.  Re-entrant, so a nested caller (a reset that resyncs, an
-all-scenarios sync that loops the per-scenario one) takes it harmlessly more
-than once.
+cannot leak -- and a request that commits and goes on writing takes it again
+in its next transaction (:mod:`app.db_transaction`).  Re-entrant, and one
+caller relies on that: ``scripts/init_database.py`` runs the three deploy
+reconciles in ONE transaction, and each takes every owner's lock again.  A
+request's transaction takes it once: at its start, or, at a sign-in, right
+after the account is found.
 
 Flask-isolated -- takes and returns plain data, never imports ``request`` /
 ``session``.  Takes no transaction of its own: the caller owns the boundary,
 and the lock lives exactly as long as that transaction.
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import Connection, func, select
 
 from app.extensions import db
 from app.models.user import User
@@ -113,32 +162,39 @@ _USER_WRITE_LOCK_NAMESPACE = 0x53484B4C  # 1397246796
 # [.., 1397246796, ..]), so only the comment was ever wrong.
 
 
-def lock_user_writes(user_id: int) -> None:
-    """Take the user's write lock for the remainder of this transaction.
+def take_owner_write_lock(connection: Connection, owner_id: int) -> None:
+    """Take *owner_id*'s write lock on *connection* for the rest of its transaction.
 
-    See the module docstring for what it serialises and why it is one lock.
-    Blocks until any other transaction holding the same key commits or rolls
-    back; PostgreSQL releases it automatically at this transaction's end.
+    The one statement of the lock, taken by exactly two callers:
+    :mod:`app.db_transaction` at the start of every command transaction a
+    signed-in request opens and at a sign-in, and
+    :func:`lock_every_user_writes` for the deploy reconciles (the module
+    docstring).  Blocks until any other transaction
+    holding the same key commits or rolls back; PostgreSQL releases it
+    automatically at this transaction's end.
+
+    **On a CONNECTION, never through the session**: a session statement
+    autoflushes, so a transaction begun with rows already staged would write
+    them -- and take their row locks -- before this one, which is the order
+    the module docstring's invariant forbids.  *It was
+    ``lock_user_writes(user_id)``, a session statement, until plan step
+    ``balance:X-bn``; that step deleted every caller it had.*
 
     The lock is not a substitute for the constraints underneath it: a duplicate
-    PAYDAY is still forbidden by ``uq_pay_periods_user_start``.  *This sentence
-    named ``UNIQUE(user_id, period_index)`` until plan step
-    ``pay_calendar:C4-c`` dropped that constraint with the ordinal column it
-    bounded; the point it illustrates is unchanged, and the remaining key is
-    the one that makes it.*
-    The lock is what a caller has instead of such a constraint when the quantity
-    it must protect is something it READ rather than a row it is about to write
-    -- a posted SUM for the reconciles, and since ruling **R-EQ** (plan step
+    PAYDAY is still forbidden by ``uq_pay_periods_user_start``.  The lock is
+    what a writer has instead of such a constraint when the quantity it must
+    protect is something it READ rather than a row it is about to write -- a
+    posted SUM for the reconciles, and since ruling **R-EQ** (plan step
     X-f1c4b) the governing assertion for the two anchor doors, whose duplicate
-    rule moved out of a unique index for exactly that reason.  Those doors take
-    it BEFORE their read, which is the ordering invariant this module's docstring
-    states.
+    rule moved out of a unique index for exactly that reason.
 
     Args:
-        user_id: The owning user's id, used as the lock's second key.
+        connection: The connection whose transaction takes the lock.
+        owner_id: The id of the user whose data the transaction writes, used
+            as the lock's second key.
     """
-    db.session.execute(
-        select(func.pg_advisory_xact_lock(_USER_WRITE_LOCK_NAMESPACE, user_id))
+    connection.execute(
+        select(func.pg_advisory_xact_lock(_USER_WRITE_LOCK_NAMESPACE, owner_id))
     )
 
 
@@ -173,6 +229,7 @@ def lock_every_user_writes() -> list[int]:
         user_id
         for (user_id,) in db.session.query(User.id).order_by(User.id).all()
     ]
+    connection = db.session.connection()
     for user_id in user_ids:
-        lock_user_writes(user_id)
+        take_owner_write_lock(connection, user_id)
     return user_ids

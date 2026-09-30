@@ -485,8 +485,10 @@ class TestDeleteAndRestore:
         """Hard-delete reverses, then the immutable pairs survive, links nulled.
 
         Arithmetic: settle +100 (2 entries, one per side); hard-delete first
-        reverses -100 (2 more), then removes the transfer row -- its shadows
-        CASCADE, their covering movements CASCADE, and
+        reverses -100 (2 more), then removes the transfer row -- the removal
+        act deletes the shadows' covering movements first (a shadow's key no
+        longer cascades to them since plan step ``credit_card:CC-5-4a-4``),
+        the shadows CASCADE with the transfer, and
         ``journal_entries.transaction_entry_id`` is SET NULL on all four
         entries.  The immutable legs survive and the transfer row is gone.
         This is the append-only correction proven through a hard delete,

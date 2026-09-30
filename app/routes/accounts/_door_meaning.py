@@ -21,11 +21,17 @@ preview, which says the save would be refused instead of pricing the figure.
 The create form is R-CC61's stated exception -- its type is picked in the same
 submission (see :func:`app.routes.accounts.crud.create_account`).
 
-**What "refused before anything is staged" covers, precisely.**  The account's
-type is read when the route runs, before the write door takes the owner's write
-lock; a re-type that commits in the sub-second between the two is not seen.
-The amortizing-kind refusal (N-199) has had the same window all along.  The
-guard closes the race a person can produce with two tabs, not a scheduler's.
+**What "refused before anything is staged" covers, precisely.**  Since plan
+step ``balance:X-bn`` a signed-in save takes the owner's write lock before its
+view reads the account (:mod:`app.db_transaction`), and so does the save that
+re-types an account or edits a custom type's category, so no re-type commits
+between the view's read of the type and the write: on a request path the
+refusal sees every re-type, and so does the amortizing-kind refusal (N-199).
+The difference preview is a page load, which takes no lock, so its caption can
+trail a re-type that commits after it renders; the save it previews checks
+again.  *Until that step the write door took the lock after the view had read
+the type, and a re-type committing in the sub-second between the two was not
+seen.*
 
 Its own module because three route modules share it and ``anchor`` sits near
 the 1000-line module ceiling, where findings N-152 / N-156 / N-201 rule a split

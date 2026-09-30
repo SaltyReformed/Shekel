@@ -114,7 +114,7 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
     ``period_view``), ``routes/entries``' four entry-list doors, and
     ``transactions.mark_done``.  The conclusion survives, for a different and
     better reason: each of those resolves the owner from DATA
-    (``user.linked_owner_id``, ``txn.user_id`` -- ``txn.pay_period.user_id``
+    (``User.data_owner_id``, ``txn.user_id`` -- ``txn.pay_period.user_id``
     until plan step ``pay_calendar:C13-b``) and so builds the
     LINKED OWNER's calendar, never the requester's -- and an owner who has a
     transaction or a linked companion has a schedule row.  **A new

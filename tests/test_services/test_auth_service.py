@@ -75,7 +75,7 @@ class TestAuthenticate:
     ):
         """authenticate() returns the User object for valid email + password."""
         with app.app_context():
-            user = auth_service.authenticate("test@shekel.local", "testpass")
+            user = auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
 
             assert user.id == seed_user["user"].id
             assert user.email == "test@shekel.local"
@@ -86,7 +86,7 @@ class TestAuthenticate:
         """authenticate() raises AuthError when the email does not exist."""
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("nobody@shekel.local", "testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user("nobody@shekel.local"), "testpass")
 
     def test_authenticate_raises_auth_error_on_wrong_password(
         self, app, db, seed_user
@@ -94,7 +94,7 @@ class TestAuthenticate:
         """authenticate() raises AuthError when the password is wrong."""
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("test@shekel.local", "wrongpass")
+                auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "wrongpass")
 
     def test_authenticate_unknown_email_runs_timing_equalization_bcrypt(
         self, app, db, seed_user, monkeypatch
@@ -122,7 +122,7 @@ class TestAuthenticate:
             with pytest.raises(
                 AuthError, match="Invalid email or password"
             ):
-                auth_service.authenticate("nobody@shekel.local", "anypw")
+                auth_service.authenticate(auth_service.find_sign_in_user("nobody@shekel.local"), "anypw")
 
             # Exactly one dummy verification ran, using the fixed
             # timing-equalization hash and the submitted password.
@@ -158,7 +158,7 @@ class TestAuthenticate:
             db.session.flush()
 
             with pytest.raises(AuthError, match="Account is disabled"):
-                auth_service.authenticate("test@shekel.local", "testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
 
 
 class TestChangePassword:
@@ -1250,7 +1250,7 @@ class TestNegativeAndBoundaryPaths:
         """
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate(None, "testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user(None), "testpass")
 
     def test_authenticate_none_password(self, app, db, seed_user):
         """Authenticating with None password raises AuthError, not AttributeError.
@@ -1260,7 +1260,7 @@ class TestNegativeAndBoundaryPaths:
         """
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("test@shekel.local", None)
+                auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), None)
 
     def test_change_password_new_equals_old(self, app, db, seed_user):
         """Changing to the same password succeeds -- no password-history enforcement.
@@ -1317,7 +1317,7 @@ class TestNegativeAndBoundaryPaths:
         """
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("", "testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user(""), "testpass")
 
 
 # ---------------------------------------------------------------------------
@@ -1400,7 +1400,7 @@ class TestAccountLockoutBehaviour:
         with app.app_context():
             with pytest.raises(AuthError):
                 auth_service.authenticate(
-                    "test@shekel.local", "wrong-password",
+                    auth_service.find_sign_in_user("test@shekel.local"), "wrong-password",
                 )
 
             user = db.session.get(User, user_id)
@@ -1422,7 +1422,7 @@ class TestAccountLockoutBehaviour:
             for _ in range(3):
                 with pytest.raises(AuthError):
                     auth_service.authenticate(
-                        "test@shekel.local", "wrong-password",
+                        auth_service.find_sign_in_user("test@shekel.local"), "wrong-password",
                     )
             user = db.session.get(User, user_id)
             assert user.failed_login_count == 3
@@ -1446,7 +1446,7 @@ class TestAccountLockoutBehaviour:
             for _ in range(3):
                 with pytest.raises(AuthError):
                     auth_service.authenticate(
-                        "test@shekel.local", "wrong-password",
+                        auth_service.find_sign_in_user("test@shekel.local"), "wrong-password",
                     )
             user = db.session.get(User, user_id)
             assert user.failed_login_count == 0
@@ -1478,7 +1478,7 @@ class TestAccountLockoutBehaviour:
             db.session.commit()
 
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("test@shekel.local", "testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
 
     def test_locked_account_does_not_increment_counter(
         self, app, db, seed_user,
@@ -1502,7 +1502,7 @@ class TestAccountLockoutBehaviour:
             for _ in range(5):
                 with pytest.raises(AuthError):
                     auth_service.authenticate(
-                        "test@shekel.local", "anything",
+                        auth_service.find_sign_in_user("test@shekel.local"), "anything",
                     )
             user = db.session.get(User, user_id)
             assert user.failed_login_count == 0
@@ -1526,7 +1526,7 @@ class TestAccountLockoutBehaviour:
             user.failed_login_count = 0
             db.session.commit()
 
-            result = auth_service.authenticate("test@shekel.local", "testpass")
+            result = auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
             assert result.id == user_id
 
             user = db.session.get(User, user_id)
@@ -1546,12 +1546,12 @@ class TestAccountLockoutBehaviour:
             for _ in range(3):
                 with pytest.raises(AuthError):
                     auth_service.authenticate(
-                        "test@shekel.local", "wrong-password",
+                        auth_service.find_sign_in_user("test@shekel.local"), "wrong-password",
                     )
             user = db.session.get(User, user_id)
             assert user.failed_login_count == 3
 
-            auth_service.authenticate("test@shekel.local", "testpass")
+            auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
             user = db.session.get(User, user_id)
             assert user.failed_login_count == 0
             assert user.locked_until is None
@@ -1575,7 +1575,7 @@ class TestAccountLockoutBehaviour:
             original_updated_at = user_before.updated_at
             db.session.expunge(user_before)
 
-            auth_service.authenticate("test@shekel.local", "testpass")
+            auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), "testpass")
 
             user_after = db.session.get(User, user_id)
             assert user_after.updated_at == original_updated_at
@@ -1595,7 +1595,7 @@ class TestAccountLockoutBehaviour:
         with app.app_context():
             with pytest.raises(AuthError):
                 auth_service.authenticate(
-                    "test@shekel.local", "wrong-password",
+                    auth_service.find_sign_in_user("test@shekel.local"), "wrong-password",
                 )
             user = db.session.get(User, user_id)
             assert user.locked_until is not None
@@ -2112,7 +2112,7 @@ class TestVerifyPasswordC44Hardening:
         """
         with app.app_context():
             with pytest.raises(AuthError, match="Invalid email or password"):
-                auth_service.authenticate("test@shekel.local", b"testpass")
+                auth_service.authenticate(auth_service.find_sign_in_user("test@shekel.local"), b"testpass")
 
     def test_failure_modes_are_indistinguishable(self):
         """Every failure mode returns the same ``False`` value, not a tagged sentinel.

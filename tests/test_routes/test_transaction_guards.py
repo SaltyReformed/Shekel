@@ -212,21 +212,27 @@ class TestATransactionDoorRefusesAShadowRow:
 class TestASoftDeletedRowCannotBeSettled:
     """Finding **N-233** at the door that made it reachable.
 
-    ``get_accessible_transaction`` does not filter ``is_deleted``, so the
+    ``get_accessible_transaction`` did not filter ``is_deleted``, so the
     mark-done route accepted a soft-deleted row: the verb's MANUAL branch had
     no deleted-row refusal (its envelope branch always had one), so the row
     flipped into the settled band and was stamped with a settle day while
     ``effective_amount`` valued it at ``Decimal("0")``.  Production carries 102
-    soft-deleted rows.
+    soft-deleted rows.  The verb refuses it since N-233 (graded at the service
+    tier, ``test_transaction_service``), and since plan step
+    ``credit_card:CC-5-4a-4`` the ownership door answers "not found" first
+    (ruling **R-CC89**: "every page and button treats a deleted row as not
+    found").
     """
 
-    def test_mark_done_on_a_soft_deleted_row_is_a_designed_400(
+    def test_mark_done_on_a_soft_deleted_row_is_not_found(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """The route refuses it, and the row is left exactly as it was.
+        """The route answers 404, and the row is left exactly as it was.
 
-        Shown to FIRE: without the refusal the response is a 200 and the row
-        comes back Paid with today's settle day.
+        It answered a designed 400 ("soft-deleted") until ruling R-CC89 put
+        the ownership door in front of the verb's refusal.  Re-expressed under
+        rule 5, developer-confirmed 2026-09-23.  Without either guard the
+        response is a 200 and the row comes back Paid with today's settle day.
         """
         with app.app_context():
             txn = _create_regular_txn(seed_user, seed_periods_today)
@@ -236,8 +242,7 @@ class TestASoftDeletedRowCannotBeSettled:
 
             resp = auth_client.post(f"/transactions/{txn_id}/mark-done")
 
-            assert resp.status_code == 400
-            assert b"soft-deleted" in resp.data
+            assert resp.status_code == 404
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.status.name == "Projected"
