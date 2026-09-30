@@ -23,7 +23,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -78,12 +78,12 @@ def _savings(seed_user):
     return savings
 
 
-def _a_transfer(seed_user, savings=None):
-    """Return a Projected ``$250.00`` transfer from the seeded checking account to *savings*."""
+def _a_transfer(seed_user, savings=None, amount=_AMOUNT):
+    """Return a Projected transfer (``$250.00`` by default) from the seeded checking account to *savings*."""
     savings = savings or _savings(seed_user)
     transfer = create_transfer(
         seed_user, db.session, seed_user["account"], savings,
-        seed_user["bootstrap_period"], amount=_AMOUNT,
+        seed_user["bootstrap_period"], amount=amount,
     )
     db.session.flush()
     return transfer
@@ -165,6 +165,31 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
             # One side of a transfer is never corrected alone (invariant 3).
             assert leg.figure_is_correctable is False
 
+    def test_several_legs_are_offered_in_transfer_id_order(
+        self, app, db, seed_user,
+    ):
+        """The leg run's order is a function of the data: the transfer's id."""
+        savings = _savings(seed_user)
+        first = _a_transfer(seed_user, savings, amount=Decimal("400.00"))
+        second = _a_transfer(seed_user, savings)
+
+        legs = [
+            row for row in _offered(seed_user, seed_user["account"].id).rows
+            if row.kind is RowKind.LEG
+        ]
+
+        assert [row.row_id for row in legs] == sorted([first.id, second.id])
+        assert [row.cash_amount for row in legs] == [
+            Decimal("-400.00"), -_AMOUNT,
+        ] if first.id < second.id else [-_AMOUNT, Decimal("-400.00")]
+
+    def test_a_leg_names_no_entry(self, app, db, seed_user):
+        """A LEG is never claimed by an entry id: only the two entry kinds are."""
+        assert RowKind.LEG.names_an_entry is False
+        assert RowKind.TRANSACTION.names_an_entry is False
+        assert RowKind.PURCHASE.names_an_entry is True
+        assert RowKind.SETTLEMENT.names_an_entry is True
+
     def test_no_shadow_row_is_ever_a_candidate(self, app, db, seed_user):
         """Neither arm that reads a ROW offers a shadow: the leg is the transfer's only subject."""
         transfer = _a_transfer(seed_user)
@@ -243,8 +268,37 @@ class TestAPaidSideIsItsLegsRecord:
             assert side.parent_id is None
             assert side.transaction_id is None
             assert side.settled_on == movement.settled_on
+            assert side.settle_day_basis is SettledDayBasisEnum.ENTERED
             assert side.is_settled
             assert side.version_id == movement.version_id + transfer.version_id
+
+    def test_row_and_leg_payments_are_one_run_by_recorded_day(
+        self, app, db, seed_user,
+    ):
+        """A leg's payment takes its day's place among the rows' payments."""
+        start = seed_user["bootstrap_period"].start_date
+        savings = _savings(seed_user)
+        early = _a_transfer(seed_user, savings)
+        _settle(seed_user, early, days_in=2)
+        bill = a_transaction(
+            seed_user, name="Power", amount="80.00",
+            status=StatusEnum.DONE, settled_on=start + timedelta(days=5),
+        )
+        late = _a_transfer(seed_user, savings, amount=Decimal("90.00"))
+        _settle(seed_user, late, days_in=7)
+        db.session.flush()
+
+        payments = [
+            (row.transfer_id, row.settled_on) for row in
+            _offered(seed_user, seed_user["account"].id).rows
+            if row.kind is RowKind.SETTLEMENT
+        ]
+
+        assert payments == [
+            (early.id, start + timedelta(days=2)),
+            (None, bill.settled_on),
+            (late.id, start + timedelta(days=7)),
+        ]
 
     def test_a_reverted_transfer_is_a_leg_again_and_its_kept_movement_is_not_offered(
         self, app, db, seed_user,
@@ -261,6 +315,7 @@ class TestAPaidSideIsItsLegsRecord:
         )
 
         assert (only.kind, only.row_id) == (RowKind.LEG, transfer.id)
+        assert only.cash_amount == -_AMOUNT
 
 
 class TestAcceptingALeg:
@@ -290,7 +345,28 @@ class TestAcceptingALeg:
         into = _shadow(transfer, savings.id).covering_movements[0]
         assert out.settled_on == bank_day
         assert into.settled_on == bank_day
+        assert out.amount == _AMOUNT and into.amount == _AMOUNT
         assert matched_subjects(seed_user["account"].id).entries == {out.id}
+
+    def test_one_of_several_legs_is_accepted_alone(self, app, db, seed_user):
+        """The re-price narrows to the named transfer: its sibling stays planned."""
+        savings = _savings(seed_user)
+        other = _a_transfer(seed_user, savings, amount=Decimal("400.00"))
+        named = _a_transfer(seed_user, savings)
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-250.00",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        scope = a_scope(seed_user)
+
+        accepted = statement_match.accept_match(
+            a_submission(scope, lines=[line], transfers=[named]), scope,
+        )
+        db.session.flush()
+
+        assert accepted.settled_count == 1
+        assert named.status.is_settled
+        assert not other.status.is_settled
 
     def test_the_register_values_and_names_the_member_through_its_leg(
         self, app, db, seed_user,

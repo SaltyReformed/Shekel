@@ -597,7 +597,6 @@ def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
     return recorded
 
 
-
 @dataclass(frozen=True)
 class MatchContent:
     """What ONE act is MADE OF, as the writer takes it.

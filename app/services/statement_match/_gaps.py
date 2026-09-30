@@ -207,7 +207,9 @@ class ReviewBounds:
         crowded_days: Days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
-            could not price, so they could not be offered
+            could not price, and of its transfers' still-planned sides the app
+            could not price because the transfer is damaged (ruling
+            **R-BAL158**), so they could not be offered
             (:class:`~._subjects.Candidates`).
 
     **The near tier's bound is NOT here, and that is plan step

@@ -233,6 +233,13 @@ def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
     read in the query rather than taken as a second parameter that could name
     someone else.
 
+    **A transfer's payment named by an act adds its shadow's id through the
+    interval** (``None`` from ``balance:X-bi-6-4d``), which no candidate's
+    :attr:`~._subjects.CandidateRow.transaction_id` can equal: a transfer's
+    side is a LEG or a leg's payment, whose ``transaction_id`` is ``None``,
+    and it is claimed through :attr:`MatchedSubjects.legs` and its
+    movement's id instead (leaf ``balance:X-bi-6-4c-1``).
+
     Args:
         account_id: The account whose owner's claims to read.
 
@@ -537,9 +544,10 @@ def _settlement_candidates(
 
     Returns:
         ``(candidates, unpriceable)`` -- one :class:`~._subjects.CandidateRow`
-        per offerable movement, in :func:`_by_recorded_day` order, and the
-        ``(kind, id)`` of the movements whose ROW the amount model could not
-        price a re-settle for.
+        per offerable movement, UNORDERED (:func:`candidates_for` sorts the
+        row payments and the leg payments together, :func:`_by_recorded_day`),
+        and the ``(kind, id)`` of the movements whose ROW the amount model
+        could not price a re-settle for.
     """
     rows = (
         db.session.query(TransactionEntry)
@@ -617,8 +625,8 @@ def _leg_candidates(
     the row arm offered (a Projected parent's two shadows are Projected, live
     and filed in its period -- Transfer Invariants 1, 3 and 4).  Priced by
     :func:`~._leg_valuation.leg_price`; a DAMAGED transfer, whose shadow pair
-    the price refuses, is reported among the unpriceable and not offered
-    (ruling **R-BAL158**).  Not scoped by scenario, for
+    the price refuses, is reported among the unpriceable and its still-planned
+    side is not offered (ruling **R-BAL158**).  Not scoped by scenario, for
     :func:`_transaction_candidates`' reason.
 
     Args:
@@ -666,12 +674,14 @@ def _leg_settlement_candidates(
     * the MOVEMENT is on this account (a transfer's is on its own side's);
     * the transfer CONTRIBUTES and is live, and is filed in one of the
       OWNER's saved periods;
-    * it is NOT this screen's candidate as a LEG -- the complement of
-      :func:`_leg_candidates`' rule, a Projected transfer whose side's
-      movement is un-dated (a revert's kept record, ruling **R-BAL61**) --
-      so one side is offered once;
-      :func:`~._leg_valuation.leg_is_offered_here` is the same partition in
-      Python, re-asked by :func:`~._valuation.repriced`.
+    * its side is NOT still planned -- the complement of
+      ``transfer_legs.planned_record_clause`` (a Projected transfer whose
+      side's movement is un-dated, a revert's kept record, ruling
+      **R-BAL61**), the per-record form of the rule
+      :func:`_leg_candidates`' loader applies per transfer, so one side is
+      offered once; ``transfer_legs.leg_is_planned`` is the same rule in
+      Python, re-asked by :func:`~._valuation.repriced`.  Both forms live in
+      ``transfer_legs`` beside the join, never spelled here.
 
     Args:
         account_id: The cash account the statement is for.
@@ -691,10 +701,7 @@ def _leg_settlement_candidates(
         Transfer.user_id == calendar.user_id,
         balance_contributing_clause(Transfer),
         Transfer.pay_period_id.in_(period_ids),
-        ~db.and_(
-            is_projected_clause(Transfer),
-            TransactionEntry.settled_on.is_(None),
-        ),
+        ~transfer_legs.planned_record_clause(),
     ):
         amount = leg_settlement_price(leg, basis)
         if amount is None:

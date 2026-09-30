@@ -235,7 +235,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             paycheck, a rename); both only rise, so the sum rises on any
             change to either.  A LEG carries its TRANSFER's counter, and a
             leg's payment the movement's plus the transfer's
-            (:func:`~._valuation.leg_candidate`,
+            (:func:`~._leg_valuation.leg_candidate`,
             :func:`~._valuation.leg_settlement_candidate`): the transfer row
             is where a leg's period, status and figure are edited.
 
@@ -563,9 +563,10 @@ class Candidates:
 
     Attributes:
         rows: The offerable candidates: the settled records (SETTLEMENT --
-            rows' payments, then legs' payments), then the Projected rows
-            (TRANSACTION), then the still-planned transfer legs (LEG), then
-            the purchases (:func:`~._candidates.candidates_for`).
+            rows' and legs' payments together, by recorded day), then the
+            Projected rows (TRANSACTION), then the still-planned transfer
+            legs (LEG), then the purchases
+            (:func:`~._candidates.candidates_for`).
         unpriceable: The ``(kind, row_id)`` of every subject that could not
             be priced -- a row the amount model had no rule for, and since
             leaf ``balance:X-bi-6-4c-1`` a leg whose transfer is damaged

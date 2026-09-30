@@ -220,11 +220,12 @@ def covering_clause():
 def covered_cash_leg(row: PlanItem, account_id: int) -> Decimal:
     """Return what a settled *row* is WORTH on *account_id*: its covering movement's cash there.
 
-    **The one valuation of a settled row**, for the reader that asks what
+    **The one valuation of a settled row**, for every reader that asks what
     the row moves rather than what its movements do: the statement matcher's
     accepted register (``_accepted_view``, for a member naming a payment --
     the one app-side member shape since plan step
-    ``credit_card:CC-5-4a-2``).  **A transfer's LEG is asked the same
+    ``credit_card:CC-5-4a-2``) and its undo dialog
+    (``_release``, for a row an act created).  **A transfer's LEG is asked the same
     question since leaf ``balance:X-bi-6-4c-1``**: the register values a
     member through the movement's parent
     (``transfer_legs.movement_parent``), a plan row or the leg whose record

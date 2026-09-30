@@ -71,7 +71,6 @@ from app.utils.balance_predicates import is_projected
 
 from ._leg_valuation import (
     leg_candidate,
-    leg_is_offered_here,
     leg_price,
     repriced_leg,
 )
@@ -630,14 +629,15 @@ def leg_settlement_candidate(
     Returns:
         Its :class:`~._subjects.CandidateRow`, or ``None`` when the movement is
         worth nothing, is not on this screen's account, the leg is this
-        screen's candidate as a LEG (:func:`~._leg_valuation.leg_is_offered_here`), or the
+        screen's candidate as a LEG (its side is still planned,
+        ``transfer_legs.leg_is_planned``), or the
         transfer's pay period is not one this calendar carries -- none is
         offerable, and none is an error.
     """
     record = leg.record
     if record is None or record.account_id != account_id:
         return None
-    if leg_is_offered_here(leg):
+    if transfer_legs.leg_is_planned(leg):
         return None
     # **The leg's own candidate, re-keyed onto its record**: the figure, the
     # label, the transfer and the paycheck are the LEG's (one construction,

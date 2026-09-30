@@ -28,6 +28,7 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
+from app.utils.balance_predicates import is_projected
 from app.utils.dates import days_paid_before_due
 
 
@@ -373,6 +374,30 @@ def expense_legs(legs: Iterable[TransferLeg]) -> list[TransferLeg]:
         Those with :attr:`TransferLeg.is_expense`, in the order given.
     """
     return [leg for leg in legs if leg.is_expense]
+
+
+def leg_is_planned(leg: TransferLeg) -> bool:
+    """Return whether *leg* is still PLANNED: its transfer Projected and its money not moved.
+
+    Ruling **R-BAL79** asked of ONE leg carrying its record (leaf
+    ``X-bi-6-4c-1``): a side is planned exactly while its transfer is
+    Projected and its own DATED movement does not exist -- the movement, not
+    the parent's status, decides a side, so a reverted side whose kept record
+    is un-dated is planned again and a side whose record is dated is not,
+    whatever the parent says.  The per-RECORD form of the rule
+    :func:`_still_planned_legs` states per TRANSFER (no dated record on this
+    account); a side holds at most one record, so the two agree.
+    :func:`planned_record_clause` is its SQL twin, and statement match
+    partitions a side between the LEG it offers and the payment it offers
+    by these two alone.
+
+    Args:
+        leg: The leg, carrying its record when it has one.
+
+    Returns:
+        ``True`` while the side is planned.
+    """
+    return is_projected(leg.transfer) and leg.settled_on is None
 
 
 def leg_of(

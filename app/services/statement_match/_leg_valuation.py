@@ -9,9 +9,10 @@ module because :mod:`._valuation` crossed the 1,000-line bound when this
 subject joined it (ruling **balance:R-IR**: the session that breaks a module
 splits it, by SUBJECT); the seam is the KIND.  What a leg is worth
 (:func:`leg_price`), what it is called (:func:`leg_candidate_label`), the one
-construction the offer set and the re-price share (:func:`leg_candidate`), the
-partition against its own paid record (:func:`leg_is_offered_here`) and the
-re-price's LEG arm (:func:`repriced_leg`) live here.  A PAID leg is a
+construction the offer set and the re-price share (:func:`leg_candidate`) and
+the re-price's LEG arm (:func:`repriced_leg`) live here; which of a side's two
+subjects is offered is ``transfer_legs.leg_is_planned``'s (ruling **R-BAL79**
+per side), never spelled here.  A PAID leg is a
 SETTLEMENT -- a payment, whose parent is a leg rather than a row -- so its
 constructor stays with the other SETTLEMENT's in :mod:`._valuation`, and that
 module imports this one, never the reverse.
@@ -35,7 +36,6 @@ from app.exceptions import AmountUnresolvable, ValidationError
 from app.services import cash_ledger, transfer_legs, transfer_service
 from app.services.transfer_legs import TransferLeg
 from app.utils.amount_relationships import transfer_pricing_load_options
-from app.utils.balance_predicates import is_projected
 
 from ._subjects import CandidateRow, RowKind
 
@@ -186,30 +186,6 @@ def leg_candidate(
         version_id=leg.transfer.version_id,
         settle_day_basis=None,
     )
-
-
-def leg_is_offered_here(leg: TransferLeg) -> bool:
-    """Return whether *leg* is a candidate AS A LEG on its own account's screen.
-
-    :func:`~._valuation.row_is_offered_here`'s LEG twin (leaf ``balance:X-bi-6-4c-1``):
-    the partition between the leg arm and the leg-payment arm, in Python, for
-    :func:`~._valuation.repriced`'s re-read.  A leg is offered as itself exactly while its
-    transfer is Projected and this side's money has not moved -- its record,
-    if it holds one, is the un-dated movement a revert kept -- which is
-    ``transfer_legs.offerable_transfer_legs``' SQL rule (ruling **R-BAL79**:
-    the movement, not the parent's status, decides a side); otherwise its
-    record is the subject, as a SETTLEMENT.  One subject per leg per screen.
-    The account half of the row partition has no twin here: a leg's movement
-    is on its own leg's account (``transfer_service`` names no tender), and
-    :func:`~._valuation.leg_settlement_candidate` refuses a movement on any other.
-
-    Args:
-        leg: The leg, its record loaded.
-
-    Returns:
-        ``True`` when the leg itself is its screen's candidate.
-    """
-    return is_projected(leg.transfer) and leg.settled_on is None
 
 
 def repriced_leg(
