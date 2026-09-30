@@ -172,7 +172,9 @@ transaction, which takes it (R-CC114: a page load's write takes the lock
 like any save); and a save that commits and then draws its answer, or a
 refusal that rolls back and then redraws, does that drawing in a new
 transaction, so another request queued on the lock commits BETWEEN the two
--- a Delete there makes the answer a server error or a bare "not found",
+-- a Delete there makes the answer a server error where it re-reads a one-off
+row the Delete removed, a bare "not found" for a refused Mark Paid, or, on a
+recurring row, its cell or purchase list drawn as if the row were live,
 money correct (finding BAL-565, ruled to ship so, **R-BAL156**; plan step
 ``balance:X-dc`` makes each save one transaction).  A lock taken at the
 REQUEST's start would not survive

@@ -1208,13 +1208,18 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
                 observed_on=opened,
             )
 
-            # ONE rollback, the door's, so the check below measured the moment
-            # it names; a door that stopped rolling back would leave this empty.
+            assert report.outcome is AnchorTrueUpOutcome.UNCHANGED
+            # ONE rollback, the door's, so the lock check below measured the
+            # moment it names.
+            assert len(held_at_rollback) == 1, (
+                f"the UNCHANGED save rolled back {len(held_at_rollback)} times "
+                f"through the session, where the door rolls back once; the "
+                f"lock check below grades nothing unless it is exactly one"
+            )
             assert held_at_rollback == [False], (
                 "the owner's write lock was held at the UNCHANGED save's "
                 "rollback, so a service took it again"
             )
-            assert report.outcome is AnchorTrueUpOutcome.UNCHANGED
             assert report.governing_after is report.governing_before
             assert (
                 report.governing_before.balance,

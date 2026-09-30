@@ -14,9 +14,10 @@ reads any of that owner's data (:mod:`app.db_transaction`), so two of one
 owner's writing transactions never overlap and a door's first read already
 sees the other click's committed work.  Per TRANSACTION, not per click: what a
 click does after its own commit or rollback -- drawing its answer, a refusal's
-re-read -- runs outside the lock, and a Delete queued behind it can commit
-there (finding BAL-565; plan step ``balance:X-dc`` makes each save one
-transaction).  What was left of the locking function was this load, so it has
+re-read -- runs in a second transaction, which takes the lock again only after
+a Delete queued behind the first may have committed (finding BAL-565; plan
+step ``balance:X-dc`` makes each save one transaction).  What was left of the
+locking function was this load, so it has
 one home, below every door that asks it.
 
 Services take plain values and import no Flask (``CLAUDE.md`` Architecture).

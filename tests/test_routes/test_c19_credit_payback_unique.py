@@ -27,7 +27,7 @@ Closes audit finding F-008.  Three load-bearing layers are exercised:
 
 Concurrent-thread tests use ``threading.Barrier`` -- the same
 pattern as ``tests/test_concurrent/test_race_conditions.py`` -- so
-both requests reach the owner's lock at the same instant.  Each
+the two requests start together and race for the owner's lock.  Each
 thread runs in its own Flask app context with its own SQLAlchemy
 session so the session-scoped identity map does not mask the race we
 are trying to verify.
@@ -642,10 +642,18 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         Each thread inserts a credit entry on the same parent
         envelope transaction.  Unserialised, the two
         ``sync_entry_payback`` calls would both find no existing
-        payback and both insert one; the request's owner lock (plan
-        step ``balance:X-bn``; C-19's row lock until then) makes the
-        second wait and find the first's payback, so the database ends
-        up with one payback whose amount equals the sum of both entries.
+        payback and both insert one.  **This grades the OUTCOME, not a
+        lock**: two locks each serialise the pair -- the request's owner
+        lock (plan step ``balance:X-bn``; C-19's row lock until then) and
+        the parent row's ``FOR NO KEY UPDATE`` that the arrival trigger
+        takes on every purchase INSERT (:mod:`app.deleted_row_infrastructure`,
+        ruling **R-CC96**) -- so it passes with the owner lock removed
+        (measured 2026-09-29, 3 of 3 runs, while the Mark Credit race above
+        failed 3 of 3).  The owner lock's order on the purchase route is
+        graded by ``tests/test_services/test_cc5_4a4_row_lock_races.py``'s
+        ``TestTheOwnersLockComesFirst::test_the_purchase_door``.  The
+        database ends up with one payback whose amount equals the sum of
+        both entries.
         """
         data = _create_concurrent_user(db.session)
         # The threaded owner's envelope definition and its engine-generated

@@ -647,7 +647,9 @@ def _door_naming_a_gone_row(refusal):
     commits and then draws its answer, or rolls back and then redraws its
     refusal, opens a second transaction, and a queued Delete commits between
     the two (finding BAL-565): a one-off row's answer is then a server error,
-    a refusal's the bare "not found" of :class:`_RowGone`.  The answer this
+    a refusal's the bare "not found" of :class:`_RowGone`, and a recurring
+    row's successful save draws its cell as if the row were live.  The
+    answer this
     decorator gave that moment (ruling **R-CC96**'s row-lock race) was
     deleted with the row lock at that step and stays deleted (**R-BAL156**);
     plan step ``balance:X-dc`` makes each save one transaction.  A row the

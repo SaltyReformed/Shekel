@@ -506,8 +506,9 @@ def create_entry(txn_id):
     is not the request's end: the success path commits and then draws the
     list, and a refusal rolls back and then redraws it, each in a second
     transaction, and a queued Delete commits in between (finding BAL-565).
-    A one-off row then answers a server error, and a recurring row's refusal
-    draws the list and its Add form under the deleted row.  The answer for
+    A one-off row then answers a server error, and a recurring row's answer,
+    a refusal or a success, draws the list and its Add form under the deleted
+    row.  The answer for
     that moment (the race ruling **R-CC96** let a door see) was deleted with
     the row lock at that step and stays deleted (**R-BAL156**); plan step
     ``balance:X-dc`` makes each save one transaction.
