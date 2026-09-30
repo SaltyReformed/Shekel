@@ -622,10 +622,15 @@ def parent_entries(movement: TransactionEntry) -> list[TransactionEntry]:
     shadow outside this module.  Through the interval every movement's list
     is its row's ``entries``, a plain row's and a shadow's alike, so the one
     expression answers both; at ``X-bi-6-4d`` a transfer's movement has no
-    row, and this answers from its side links with whatever list the
-    transfer then loads it into -- the act's contract is only a list holding
-    it, and the act's "deleted AND removed emits the ``DELETE`` alone" must
-    be measured again on that relationship.
+    row, and this answers from its side links with the collection the
+    transfer then loads it into.  The act's contract is THAT collection,
+    never a copy and never a union built over two of them: a list the parent
+    did not load would take the movement out of itself and leave it in the
+    parent's, which is the stale walk this act exists to prevent
+    (``test_cc5_4a3_movement_removal``'s
+    ``TestTheRemovedMovementLeavesItsParentsLoadedList``).  The act's
+    "deleted AND removed emits the ``DELETE`` alone" must be measured again
+    on that relationship.
 
     Reading it LOADS the collection (``lazy="select"``, which may autoflush),
     and that is the order the act needs: the list is read before the
@@ -637,7 +642,9 @@ def parent_entries(movement: TransactionEntry) -> list[TransactionEntry]:
             reachable (``movement.transaction``).
 
     Returns:
-        The parent's loaded ``entries`` list -- the same object on every call.
+        The parent's loaded ``entries`` collection itself, not a copy -- the
+        same object on every call while it stays loaded (an expire, such as
+        a commit's, discards it, and the next read loads a new one).
     """
     return movement.transaction.entries
 

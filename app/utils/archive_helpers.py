@@ -545,12 +545,16 @@ def account_has_history(account_id: int) -> bool:
     (plan step ``balance:X-bi-6-4c-4``, finding **BAL-539**).  Until then it
     counted only through its shadow row on the account, which ``X-bi-6-4d``
     stops writing for new transfers and ``X-bi-6-5`` deletes; without this
-    arm the door would then permanently delete an account a live transfer
-    WITH NO DEFINITION names -- one the ad-hoc door made, until plan step
-    ``balance:X-ci-2`` retires that door -- where today it archives it.
-    (Guard 2 already refuses any account a transfer definition names,
-    one-time and archived ones included, and a definition's own permanent
-    delete leaves no transfer of it behind.)  Byte-identical while the
+    arm the door would then permanently delete, where today it archives, an
+    account a live transfer names that guard 2 does not see.  Guard 2 asks
+    only whether a transfer definition names the account NOW (one-time and
+    archived ones included), so on an account none names it lets through
+    every transfer from or to the account: one that names no definition,
+    such as an ad-hoc transfer (until plan step ``balance:X-ci-3`` makes
+    every transfer name one), or one whose definition names other accounts,
+    such as one its definition's endpoint edit did not move.  This arm
+    counts every live transfer from or to the account, so it needs no list
+    of how a transfer comes to be one of those.  Byte-identical while the
     shadows exist: a live transfer's two live shadows sit on its two
     endpoints (the create door writes them there and an endpoint move
     re-points both), and a soft delete flags all three rows, so the shadow

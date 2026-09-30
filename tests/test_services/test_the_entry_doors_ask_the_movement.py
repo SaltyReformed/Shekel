@@ -80,7 +80,6 @@ class TestOwnershipIsTheMovementsOwn:
         db.session.execute(db.text(
             "SET session_replication_role = 'origin'"
         ))
-        db.session.flush()
         db.session.expire_all()
 
     def _call(self, door, movement_id, user_id):
@@ -125,6 +124,11 @@ class TestOwnershipIsTheMovementsOwn:
             self._plant(
                 "UPDATE budget.transactions SET user_id = :owner WHERE id = :id",
                 {"owner": seed_second_user["user"].id, "id": row.id},
+            )
+            # The plant landed: the refusal below is the same one the
+            # unplanted state gives, so only this says the row moved away.
+            assert db.session.get(Transaction, row.id).user_id == (
+                seed_second_user["user"].id
             )
 
             with pytest.raises(ValidationError) as refused:
