@@ -445,7 +445,7 @@ docker run -d --rm --name "$_run_container" \
 
 # THE SETTINGS ABOVE ARE A CENSUS OF THE DELETED SHARED CLUSTER'S, not a
 # selection from it, and saying so is the point: the compose service that
-# ``balance:X-br-4`` removed ran with NINE ``-c`` flags and the per-run branch
+# ``balance:X-br-4`` removed ran with TEN ``-c`` flags and the per-run branch
 # was written with THREE.  That was survivable while this path was opt-in and
 # is not now that it is the only one, so the census was taken.  Three flags
 # above are not from it: the two socket flags are this run's own mechanics
@@ -465,7 +465,11 @@ docker run -d --rm --name "$_run_container" \
 # The three ``tcp_keepalives_*`` flags are DELIBERATELY NOT carried, and this
 # is the one place that says so: they configure TCP sockets, and this cluster
 # has none -- ``--network=none``, ``listen_addresses=''`` and a unix socket.
-# They would be inert rather than wrong.
+# They would be inert rather than wrong.  So would the tenth,
+# ``file_copy_method=clone``, which is not carried either: it chooses how
+# ``CREATE DATABASE ... STRATEGY FILE_COPY`` copies a template's files (the
+# deleted service paired it with a btrfs PGDATA for reflinks), and every
+# clone the suite makes is ``STRATEGY WAL_LOG`` (tests/conftest.py).
 #
 # THE NON-DURABLE KNOBS ARE WHAT MAKE THIS AFFORDABLE, and leaving them off
 # is the difference between a design that pays for itself and one that does
