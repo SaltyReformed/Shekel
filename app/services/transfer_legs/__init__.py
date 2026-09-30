@@ -115,11 +115,17 @@ statement match, which offers a still-planned transfer as its LEG
 (:func:`offerable_transfer_legs`), a paid one's movement as its leg's record
 (:func:`transfer_movement_rows` / :func:`recorded_transfer_legs`) and values
 an accepted member through :func:`movement_parent` (loaded by
-:func:`movement_parent_loads`).  **Other readers still reach it themselves
-until their leaf moves them** and ``X-bi-6-4d`` must find each -- among them
-DC-11's raw-SQL leg arm (``scripts/integrity_check.py``) and "Remove earlier
-paychecks"' dated-money arm, which reads a transfer's settle DAY off its
-shadows (``pay_period_gates._settled_transaction``, finding **BAL-568**).
+:func:`movement_parent_loads`), and since leaf ``X-bi-6-4c-4`` (ruling
+**R-BAL160**) for the purchase doors' payment-record refusal and the match
+withdrawal's event, which name a movement's parent through
+:func:`movement_parent`, and for the one removal act, which takes a movement
+out of the list :func:`parent_entries` answers.  **Other readers still reach
+it themselves until their leaf moves them** and ``X-bi-6-4d`` must find each
+-- among them the integrity sweep's one raw-SQL leg join
+(``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which DC-11's and
+BA-06's leg arms read) and "Remove earlier paychecks"' dated-money arm, which
+reads a transfer's settle DAY off its shadows
+(``pay_period_gates._settled_transaction``, finding **BAL-568**).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -166,6 +172,7 @@ from app.services.transfer_legs._records import (
     movement_parent,
     movement_parent_loads,
     offerable_transfer_legs,
+    parent_entries,
     planned_transfer_legs,
     recorded_transfer_legs,
     transfer_family_movements,
@@ -192,6 +199,7 @@ __all__ = [
     "movement_parent",
     "movement_parent_loads",
     "offerable_transfer_legs",
+    "parent_entries",
     "planned_transfer_legs",
     "recorded_transfer_legs",
     "transfer_family_movements",

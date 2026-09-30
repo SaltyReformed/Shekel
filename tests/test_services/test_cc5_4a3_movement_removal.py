@@ -510,8 +510,10 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
     def _a_matched_transfer(self, seed_user):
         """A $500.00 transfer checking -> savings, its checking leg matched.
 
-        The accept pays the Projected transfer (ruling **R-BAL89**), so the
-        act names the checking leg's covering movement.
+        Ticked as its LEG on the scope's account (leaf
+        ``balance:X-bi-6-4c-1``); the accept pays the Projected transfer
+        (ruling **R-BAL89**), so the act names the checking leg's covering
+        movement.
 
         Returns:
             ``(transfer, expense_shadow_id)``.
@@ -531,7 +533,10 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
             .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
             .one()
         )
-        _match(seed_user, _line(seed_user, "-500.00", "TRANSFER"), shadow)
+        _match(
+            seed_user, _line(seed_user, "-500.00", "TRANSFER"),
+            transfers=[xfer],
+        )
         return xfer, shadow.id
 
     def test_a_zero_figure_files_the_payment_under_the_transfer_alone(
@@ -585,10 +590,12 @@ class TestTheRemovedMovementLeavesItsParentsLoadedList:
     A reconcile later in the same request walks that list -- the settle verbs',
     the entry door's re-derivation -- so a movement deleted but left in it is
     one the walk still meets.  Pinned for a row's payment and for a
-    transfer's, whose list is its shadow's through the interval, before plan
-    step ``balance:X-bi-6-4c-4`` moves the act's reach for that list into
-    ``transfer_legs`` (the list the act reads must stay the one the parent
-    loaded).  Nothing is expired between the act and the assertion.
+    transfer's, whose list is its shadow's through the interval: plan step
+    ``balance:X-bi-6-4c-4`` moved the act's reach for that list into
+    ``transfer_legs.parent_entries``, and the list it answers must stay the
+    one the parent loaded (a copy would leave the movement in the parent's).
+    ``X-bi-6-4d`` rewrites the transfer case onto the side links.  Nothing is
+    expired between the act and the assertion.
     """
 
     def test_a_rows_payment_leaves_the_rows_entries(self, app, seed_user):
