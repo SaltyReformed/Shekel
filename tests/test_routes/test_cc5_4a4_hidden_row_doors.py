@@ -41,11 +41,23 @@ name keep R-CC89's bare "not found" (:class:`TestTheOtherDoorsStillSayNotFound`)
 *Until plan step ``balance:X-bn`` a second class,
 ``TestADeleteThatWinsTheRaceIsNamed``, pinned the same words for a Delete
 that committed WHILE the request ran, after its door read the row and before
-the row's lock.  The request's owner write lock (ruling **R-CC106**) now
-precedes the door's first read, so that moment cannot occur; the class, the
-two archive races in :class:`TestAnArchivedItemsRowSaysArchived` and Mark
-Credit's in :class:`TestTheOtherDoorsStillSayNotFound` were deleted with the
-row lock, and the lock that makes the moment impossible is graded by
+the row's lock.  That step deleted the row lock and the answer those words
+were; the class, the two archive races in
+:class:`TestAnArchivedItemsRowSaysArchived` and Mark Credit's in
+:class:`TestTheOtherDoorsStillSayNotFound` -- twelve cases -- went with
+them.  The moment is still REACHABLE: the request's owner write lock (ruling
+**R-CC106**) precedes the door's first read, but it belongs to the
+TRANSACTION, and a request that commits and then draws its answer, or rolls
+back and then redraws its refusal, does that in a second transaction, so a
+Delete queued on the lock commits in between (finding **BAL-565**, measured
+by review A of the step's ninth checkpoint: a server error where the answer
+re-reads a one-off row the Delete removed, a bare "not found" for a refused
+Mark Paid, and a refused purchase's list drawn under a deleted recurring
+row).
+The developer ruled to ship it so, money correct (**R-BAL156**), so the
+twelve cases stay deleted because the answers they graded stay deleted;
+plan step ``balance:X-dc`` makes each save one transaction.  That the second
+click waits on the owner's lock is graded by
 ``tests/test_services/test_cc5_4a4_row_lock_races.py``.*
 Finding **CC-376** -- a refused purchase removal was a 500 -- is
 :class:`TestARefusedRemovalIsTheListsBanner`.

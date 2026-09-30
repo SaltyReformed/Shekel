@@ -8,23 +8,29 @@ Closes audit finding F-008.  Three load-bearing layers are exercised:
    ``credit_payback_for_id IS NOT NULL AND is_deleted = FALSE``.  We
    assert the index exists and verify its predicate by attempting
    raw INSERTs that should and should not violate it.
-2. **Service-level lock** --
-   ``credit_workflow.mark_as_credit`` and
-   ``entry_credit_workflow.sync_entry_payback`` both wrap their
-   read-then-insert sequence in ``SELECT ... FOR UPDATE`` against
-   the source transaction row, so concurrent requests serialise.
-3. **Route-level idempotency** -- if any future caller bypasses the
-   service layer, the partial index converts the duplicate INSERT
-   into an ``IntegrityError`` that the route layer catches and
-   converts into the same 200 response the user would have seen
-   from a serialised request.
+2. **Serialisation** -- since plan step ``balance:X-bn`` (ruling
+   **R-CC106**) the request's owner write lock
+   (:mod:`app.db_transaction`) makes two concurrent requests wait for
+   each other: every command transaction a signed-in request opens
+   takes it before it reads any of the owner's data, so the second Mark
+   Credit or credit purchase reads the first's committed payback.
+   *Until that step* ``credit_workflow.mark_as_credit`` *and*
+   ``entry_credit_workflow.sync_entry_payback`` *each wrapped their
+   read-then-insert in* ``SELECT ... FOR NO KEY UPDATE`` *on the source
+   row, and two tests here searched the SQL for that clause; they were
+   deleted with it (the developer's rule-5 answer, 2026-09-29).*
+3. **Route-level idempotency** -- for a writer that holds no request,
+   and so no owner lock, the partial index converts the duplicate
+   INSERT into an ``IntegrityError`` that the route layer catches and
+   converts into the same 200 response the user would have seen from a
+   serialised request.
 
 Concurrent-thread tests use ``threading.Barrier`` -- the same
-pattern as ``tests/test_concurrent/test_race_conditions.py`` -- to
-ensure both threads hit the FOR UPDATE acquisition at the same
-instant.  Each thread runs in its own Flask app context with its own
-SQLAlchemy session so the session-scoped identity map does not mask
-the race we are trying to verify.
+pattern as ``tests/test_concurrent/test_race_conditions.py`` -- so
+both requests reach the owner's lock at the same instant.  Each
+thread runs in its own Flask app context with its own SQLAlchemy
+session so the session-scoped identity map does not mask the race we
+are trying to verify.
 """
 
 from __future__ import annotations
@@ -100,9 +106,9 @@ def _insert_payback_directly(
     """Insert a payback row that bypasses the credit_workflow service.
 
     Used for tests that exercise the database-level partial unique
-    index in isolation -- the service layer's SELECT FOR UPDATE is
-    intentionally skipped so the index becomes the only safeguard
-    being asserted.
+    index in isolation -- the service layer is intentionally skipped,
+    and a direct insert outside any request takes no owner lock, so the
+    index becomes the only safeguard being asserted.
     """
     projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = (
@@ -447,7 +453,7 @@ class TestPartialUniqueIndexEnforcement:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: SELECT FOR UPDATE serialisation in mark_as_credit
+# Layer 2: the owner lock's serialisation of mark_as_credit
 # ---------------------------------------------------------------------------
 
 
@@ -526,11 +532,13 @@ class TestMarkAsCreditTOCTOUPrevention:
     def test_concurrent_mark_credit_yields_one_payback(self, app, db):
         """Two simultaneous /mark-credit POSTs end with exactly one payback.
 
-        The SELECT FOR UPDATE inside ``mark_as_credit`` serialises the
-        threads at the database level.  The losing thread sees the
-        winner's CREDIT status (refreshed via ``populate_existing()``)
-        and short-circuits to "return existing payback" without
-        inserting a duplicate.
+        The request's owner write lock serialises the threads at the
+        database level: the losing request's transaction waits for it
+        before reading the row, then reads the winner's committed CREDIT
+        status and short-circuits to "return existing payback" without
+        inserting a duplicate.  *Until plan step ``balance:X-bn`` a
+        ``FOR NO KEY UPDATE`` inside ``mark_as_credit`` did this, and
+        ``populate_existing()`` refreshed the row.*
         """
         data = _create_concurrent_user(db.session)
         source = _make_projected_expense(
@@ -567,8 +575,8 @@ class TestMarkAsCreditTOCTOUPrevention:
             f"Thread B 500'd: {resp_b.data[:200]!r}"
         )
         # Both threads must observe a successful 200 -- the loser
-        # gets idempotent success (either via the post-FOR-UPDATE
-        # idempotency check or via the route's IntegrityError catch).
+        # gets idempotent success from the idempotency check it reaches
+        # after waiting on the owner's lock.
         assert resp_a.status_code == 200, (
             f"Thread A status {resp_a.status_code}: {resp_a.data[:200]!r}"
         )
@@ -589,58 +597,9 @@ class TestMarkAsCreditTOCTOUPrevention:
             f"Expected 1 active payback, found {active_paybacks}"
         )
 
-    def test_mark_credit_acquires_row_lock(self, app, db, seed_user, seed_periods):
-        """``mark_as_credit`` issues a row-level lock on the source txn.
-
-        Captures the statement stream via SQLAlchemy event hooks so
-        the test fails loudly if a future refactor accidentally drops
-        the lock clause -- the unit-level evidence that the
-        TOCTOU window is closed.
-
-        We accept either ``FOR UPDATE`` or ``FOR NO KEY UPDATE`` as
-        valid: both serialise concurrent lockers on the same row,
-        which is what closes the TOCTOU window.  The current
-        implementation chooses ``FOR NO KEY UPDATE`` to avoid
-        deadlocking with the FK-validation ``FOR KEY SHARE`` locks
-        the payback INSERT acquires later in the same transaction.
-        """
-        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
-
-        statements: list[str] = []
-
-        def _capture(_conn, _cursor, statement, *_args, **_kwargs):
-            statements.append(statement)
-
-        with app.app_context():
-            source = _make_projected_expense(seed_user, seed_periods)
-            db.session.commit()
-            source_id = source.id
-
-            event.listen(db.engine, "before_cursor_execute", _capture)
-            try:
-                credit_workflow.mark_as_credit(
-                    source_id, seed_user["user"].id,
-                )
-                db.session.commit()
-            finally:
-                event.remove(db.engine, "before_cursor_execute", _capture)
-
-            # Either ``FOR UPDATE`` or ``FOR NO KEY UPDATE`` against the
-            # transactions table satisfies the contract.
-            lock_statements = [
-                s for s in statements
-                if ("FOR UPDATE" in s.upper() or "FOR NO KEY UPDATE" in s.upper())
-                and "transactions" in s.lower()
-            ]
-            assert lock_statements, (
-                "mark_as_credit issued no row-level lock against "
-                "budget.transactions -- the C-19 row lock is missing. "
-                f"Captured statements: {statements!r}"
-            )
-
 
 # ---------------------------------------------------------------------------
-# Layer 2: SELECT FOR UPDATE serialisation in sync_entry_payback
+# Layer 2: the owner lock's serialisation of sync_entry_payback
 # ---------------------------------------------------------------------------
 
 
@@ -655,45 +614,6 @@ class TestSyncEntryPaybackTOCTOUPrevention:
             category_key="Groceries", is_envelope=True,
         )
         return generate_row_of(template, seed_periods[0])
-
-    def test_sync_acquires_row_lock(self, app, db, seed_user, seed_periods):
-        """``sync_entry_payback`` issues a row-level lock on the parent txn.
-
-        ``FOR NO KEY UPDATE`` is required (not ``FOR UPDATE``) here
-        because ``entry_service.create_entry`` already inserted a
-        TransactionEntry referencing this row before delegating to
-        ``sync_entry_payback``, taking ``FOR KEY SHARE`` for the FK
-        validation.  ``FOR UPDATE`` would deadlock; ``FOR NO KEY
-        UPDATE`` is compatible with ``FOR KEY SHARE``.
-        """
-        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
-
-        statements: list[str] = []
-
-        def _capture(_conn, _cursor, statement, *_args, **_kwargs):
-            statements.append(statement)
-
-        with app.app_context():
-            txn = self._make_envelope_template_and_txn(seed_user, seed_periods)
-            db.session.commit()
-
-            event.listen(db.engine, "before_cursor_execute", _capture)
-            try:
-                sync_entry_payback(txn.id, seed_user["user"].id)
-                db.session.commit()
-            finally:
-                event.remove(db.engine, "before_cursor_execute", _capture)
-
-            lock_statements = [
-                s for s in statements
-                if ("FOR UPDATE" in s.upper() or "FOR NO KEY UPDATE" in s.upper())
-                and "transactions" in s.lower()
-            ]
-            assert lock_statements, (
-                "sync_entry_payback issued no row-level lock against "
-                "budget.transactions -- the C-19 row lock is missing. "
-                f"Captured statements: {statements!r}"
-            )
 
     def test_double_sync_with_no_credit_entries_is_noop(
         self, app, db, seed_user, seed_periods,
@@ -720,11 +640,12 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         """Two concurrent credit-flagged entry POSTs leave exactly one payback.
 
         Each thread inserts a credit entry on the same parent
-        envelope transaction.  Without the C-19 lock the two
+        envelope transaction.  Unserialised, the two
         ``sync_entry_payback`` calls would both find no existing
-        payback and both insert one; with the lock plus the partial
-        unique index, the database ends up with one payback whose
-        amount equals the sum of both entries.
+        payback and both insert one; the request's owner lock (plan
+        step ``balance:X-bn``; C-19's row lock until then) makes the
+        second wait and find the first's payback, so the database ends
+        up with one payback whose amount equals the sum of both entries.
         """
         data = _create_concurrent_user(db.session)
         # The threaded owner's envelope definition and its engine-generated
@@ -1004,9 +925,9 @@ class TestMarkCreditRouteIntegrityErrorCatch:
     ):
         """Pre-seed a payback so the route's own INSERT collides.
 
-        Bypasses the service-layer FOR UPDATE by manually inserting
-        an active payback for the source row before the route is
-        called.  The route's call to ``mark_as_credit`` then runs the
+        Inserts an active payback for the source row outside any
+        request, so no owner lock orders it against the route that
+        follows.  The route's call to ``mark_as_credit`` then runs the
         normal flow but sees ``status_id == projected`` (we leave the
         source row's status alone), so the idempotency check does
         not short-circuit; the eventual ``db.session.add(payback)``

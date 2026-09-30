@@ -251,17 +251,21 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     # 2026-08-31.
     #
     # **The READ ORDER, stated here because ``require_period`` requires every
-    # caller to state its own**: the ROW is read first (the ownership door
-    # above), the paydays second.  So this is exposed to a concurrent
-    # DESTRUCTIVE pay-period door -- reset, regenerate or truncate -- landing
-    # between the two under ``READ COMMITTED``: the identity-mapped
-    # ``txn.pay_period`` still answers while the fresh payday read no longer
-    # holds the id.  That is balance finding **N-358**, and this is a
-    # render-after-commit path, which is the half of it that has no snapshot.
-    # `balance:X-i5` is the remedy; `C4-a-2`'s -- scope the query by the
-    # calendar's own ids -- is unavailable here, because the row arrives from
-    # ``get_accessible_transaction`` and reordering that door is not this
-    # leaf's to do.
+    # caller to state its own**: the ROW is read first (the refresh after Mark
+    # Paid's commit, or the re-fetch after its rollback), the paydays second,
+    # and both in ONE transaction holding the owner's write lock.  Every
+    # caller is Mark Paid's answer, drawn in the command transaction its
+    # commit or rollback opens, which takes that lock before its first read
+    # (plan step ``balance:X-bn``, ``app.db_transaction``); a door that
+    # DELETES paydays -- reset, regenerate and truncate among them -- is a
+    # command too and takes the same lock, so it cannot land between the two
+    # reads.  What is reachable is the gap
+    # BEFORE this transaction: a door queued on the lock commits between Mark
+    # Paid's commit or rollback and this read (finding **BAL-565**, ruled to
+    # ship so, **R-BAL156**); plan step ``balance:X-dc`` makes each save one
+    # transaction.  *Until plan step ``balance:X-bn`` this said such a door
+    # could land between the two reads under ``READ COMMITTED`` (balance
+    # finding **N-358**), a render-after-commit path with no snapshot.*
     period = (
         calendar_for(owner_id).require_period(FiledRow.for_row(txn))
         if txn.tracks_purchases

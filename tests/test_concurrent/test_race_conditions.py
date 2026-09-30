@@ -148,8 +148,8 @@ def _create_user_with_data(db_session):
     db_session.add(settings)
 
     # Pay periods must exist before the account so the E-19 factory
-    # has an anchor to assign.  Three periods: past, current
-    # (containing today), and future.
+    # has an anchor to assign.  Two periods: past, and current
+    # (containing today).
     #
     # **The APP's civil day, never the process's.**  ``pay_period_admin
     # .top_up_rolling_window`` defaults ``as_of`` to ``display_today()``, so a

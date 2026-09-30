@@ -179,28 +179,29 @@ def _render_entry_list(
     # owner's calendar does not hold it" is not a state a purchase list may
     # render past.
     #
-    # **What that costs is balance finding N-358, and the honest statement
-    # names the door rather than arguing the state away.**  A first draft of
-    # this comment said the calendar is read AFTER the row so no concurrent
-    # write can remove the period it needs -- which argues only about
-    # APPENDS, and appends are not the reachable case (adversarial review,
-    # 2026-08-31).  A concurrent ``POST /pay-periods/{reset,regenerate,
-    # truncate}`` DELETES paydays, and under ``READ COMMITTED`` it can commit
-    # between the row read and the payday read: the identity-mapped
-    # ``txn.pay_period`` still answers while this calendar no longer holds
-    # the id, and ``require_period`` raises.  Four routes reach here and
-    # THREE of them render after committing their own write, which is
-    # N-358's own shape.
+    # **The READ ORDER: the row first, the paydays second, and no door that
+    # deletes paydays can commit between them.**  Four routes reach here.
+    # The GET (:func:`list_entries`) is a query, so one ``REPEATABLE READ``
+    # snapshot holds both reads (``app.db_transaction``).  The three writes
+    # draw the list in the command transaction their commit or rollback
+    # opens, which takes the owner's write lock before its first read (plan
+    # step ``balance:X-bn``); every door that deletes paydays, ``POST
+    # /pay-periods/{reset,regenerate,truncate}`` among them, is a command too
+    # and takes the same lock.  What is reachable is the gap BEFORE that
+    # transaction: a door queued on the lock commits between the write's
+    # commit or rollback and this redraw (finding **BAL-565**, ruled to ship
+    # so, **R-BAL156**); plan step ``balance:X-dc`` makes each save one
+    # transaction.
     #
-    # It is documented rather than coped with, for the reason
-    # ``require_period``'s docstring gives: the three quieter answers each
-    # cope with an inconsistent picture instead of preventing one.  The
-    # remedy that PREVENTS it is `balance:X-i5`, which makes a request one
-    # snapshot until it declares a write; the remedy `C4-a-2` used -- scope
-    # the query by the calendar's own period ids -- is not available here,
-    # because the row arrives from ``get_accessible_transaction``, the
-    # canonical route-boundary door, and reordering that door is not this
-    # leaf's to do.
+    # *Until plan step ``balance:X-bn`` such a door could commit between the
+    # row read and the payday read under ``READ COMMITTED`` (balance finding
+    # **N-358**): the identity-mapped ``txn.pay_period`` still answered while
+    # this calendar no longer held the id, and ``require_period`` raised.
+    # This comment named that door rather than coping with it, for the reason
+    # ``require_period``'s docstring gives.  A first draft had said the
+    # calendar is read AFTER the row so no concurrent write can remove the
+    # period it needs, which argued only about APPENDS (adversarial review,
+    # 2026-08-31).*
     period = calendar_for(txn.user_id).require_period(
         FiledRow.for_row(txn),
     )

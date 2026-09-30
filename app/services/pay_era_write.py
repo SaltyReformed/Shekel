@@ -436,7 +436,11 @@ def rephase_earliest_era(user_id: int, rephase: EarliestRephase) -> None:
     first-schedule generate route included, which ledger row **P71** recorded
     as taking none -- or in ``registration_service.register_user``'s (from
     ``/register`` and ``scripts/seed_user.py``), whose new user no other
-    transaction can see until it commits.  *Until that step a first-schedule
+    transaction can see until it commits.  Two migrations write the table
+    too -- ``6fc77e86d76f`` inserts the eras and ``3ec5291ca4e2`` updates
+    them -- and ``entrypoint.sh`` runs them (``scripts/init_database.py``)
+    before it hands over to gunicorn, so before the app serves a request.
+    *Until that step a first-schedule
     generate that read an empty record before a first schedule committed,
     and retired every era after this door's read, would have left the UPDATE
     matching nothing: the earlier door's paydays below an unmoved phase --

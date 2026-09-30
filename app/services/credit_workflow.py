@@ -176,9 +176,12 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     where that helper cleans up after a Credit row returning to
     Projected, this one cleans up after the source transaction being
     deleted outright (soft or hard) -- the strongest possible withdrawal
-    of the credit assertion.  Without it the projected payback survives
-    its source (``credit_payback_for_id`` is ``ondelete="SET NULL"``)
-    and silently inflates the next period with no offsetting credit row.
+    of the credit assertion.  Without it a SOFT delete, which never fires
+    ``credit_payback_for_id``, leaves the projected payback surviving its
+    hidden source and silently inflating the next period with no offsetting
+    credit row; a HARD delete would be REFUSED by that key, which is
+    ``ondelete="RESTRICT"`` since plan step ``balance:X-bi-7d-2`` (finding
+    **CC-352**).
 
     Keyed on :func:`get_active_payback` rather than Credit status
     because entry-level credit sources carry a live payback while their

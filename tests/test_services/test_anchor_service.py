@@ -1170,13 +1170,16 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
         dated on the submitted day and so IS the record governing it (ruling
         R-CC85).  It was two until then, the door reading today's before
         itself.  A second read now would be the day's record re-asked for, or
-        an after the door re-read after writing nothing.  And this session
-        holds no owner's lock once the call returns -- which, since plan step
-        ``balance:X-bn`` took the lock out of every service, CANNOT go red:
-        UNCHANGED answers with a rollback, which would release a lock the call
-        had taken too (measured 2026-09-29 with one re-added at the door's
-        top).  It is on the rule-5 list for the developer.  *Until that step
-        this said the rollback is what releases the lock the stager took.*
+        an after the door re-read after writing nothing.  And the session
+        holds no owner's lock at the door's rollback, asked just before it
+        runs: since plan step ``balance:X-bn`` no service takes the lock (the
+        request's transaction does), so one re-added in the door or the stager
+        turns this red.  Asked after the call, as it was until the developer's
+        rule-5 answer (2026-09-29, "Move inside the step"), it could not: the
+        rollback releases every lock its transaction took (measured
+        2026-09-29 with one re-added at the door's top).  *Until plan step
+        ``balance:X-bn`` this said the rollback is what releases the lock the
+        stager took.*
         """
         with app.app_context():
             (opened,) = self._days_back(seed_user, 10)
@@ -1190,12 +1193,27 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
             # Read BEFORE the call: its rollback expires the account.
             user_id = account.user_id
             reads = _spy_governing_reads(monkeypatch)
+            held_at_rollback = []
+            rollback = type(db.session).rollback
+
+            def probed_rollback(session):
+                """Ask whether the owner's key is held, then roll back."""
+                held_at_rollback.append(_holds_owner_lock(user_id))
+                return rollback(session)
+
+            monkeypatch.setattr(type(db.session), "rollback", probed_rollback)
 
             report = apply_anchor_true_up(
                 account=account, new_balance=Decimal("1000.00"),
                 observed_on=opened,
             )
 
+            # ONE rollback, the door's, so the check below measured the moment
+            # it names; a door that stopped rolling back would leave this empty.
+            assert held_at_rollback == [False], (
+                "the owner's write lock was held at the UNCHANGED save's "
+                "rollback, so a service took it again"
+            )
             assert report.outcome is AnchorTrueUpOutcome.UNCHANGED
             assert report.governing_after is report.governing_before
             assert (
@@ -1208,9 +1226,6 @@ class TestTheCashDoorReportsWhatGovernsEitherSide:
             assert db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
             ).count() == rows
-            assert not _holds_owner_lock(user_id), (
-                "the owner's write lock outlived an UNCHANGED save"
-            )
 
     def test_a_back_dated_save_writes_but_leaves_today_as_it_was(
         self, app, db, seed_user, seed_periods_today,
@@ -1331,12 +1346,15 @@ class TestTheStagerReadsTheDaysRecordOnlyBeforeTheLatest:
           the door).
 
         Each call is rolled back, so nothing is written and the second arm
-        reads what the first did.  The closing no-lock assertion CANNOT go red
-        since plan step ``balance:X-bn`` took the lock out of every service:
-        the rollbacks would release a lock the stager had taken too (measured
-        2026-09-29 with one re-added at the stager's top).  It is on the rule-5
-        list for the developer.  *Until that step this said each rollback
-        releases the lock the stager took.*
+        reads what the first did.  Before each rollback, inside the stager's
+        transaction, the session holds no owner's lock: since plan step
+        ``balance:X-bn`` no service takes it, so one re-added in the stager
+        turns this red.  The check followed the last rollback until the
+        developer's rule-5 answer (2026-09-29, "Move inside the step"), where
+        it could not: the rollbacks release every lock their transaction took
+        (measured 2026-09-29 with one re-added at the stager's top).  *Until
+        plan step ``balance:X-bn`` this said each rollback releases the lock
+        the stager took.*
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1378,6 +1396,10 @@ class TestTheStagerReadsTheDaysRecordOnlyBeforeTheLatest:
                     for row in db.session.new
                     if isinstance(row, AccountAnchorHistory)
                 ]
+                assert not _holds_owner_lock(user_id), (
+                    "the owner's write lock was held before the stage's "
+                    "rollback, so the stager took it again"
+                )
                 db.session.rollback()
                 return staging, staged_rows
 
@@ -1405,7 +1427,6 @@ class TestTheStagerReadsTheDaysRecordOnlyBeforeTheLatest:
             assert db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
             ).count() == rows
-            assert not _holds_owner_lock(user_id)
 
 
 class TestAGridSaveReadsTheGoverningAssertionOncePerFact:

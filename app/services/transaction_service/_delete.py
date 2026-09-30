@@ -62,11 +62,14 @@ door's own precondition, asked before the sequence starts.
    hidden before this release refuses the release's migration
    (``c4a4e7d1b9f2``, ruling **R-CC82**), and a transfer leg the TRANSFER's
    soft delete hides may still hold its kept payment (finding **BAL-532**).
-3. **Take down the live CC payback chain** (``credit_workflow``), because
-   ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
-   this a projected payback survives its source and inflates the next period
-   with no offsetting credit row.  Step 2 has already taken the chain's
-   movements off, so that helper takes down rows holding none.
+3. **Take down the live CC payback chain** (``credit_workflow``), on either
+   arm and for a different reason on each.  A SOFT delete never fires
+   ``transactions.credit_payback_for_id``, so without this a projected
+   payback survives its hidden source and inflates the next period with no
+   offsetting credit row; a HARD delete would be REFUSED by that key, which
+   is ``ON DELETE RESTRICT`` since plan step ``balance:X-bi-7d-2`` (finding
+   **CC-352**).  Step 2 has already taken the chain's movements off, so that
+   helper takes down rows holding none.
 4. **Remove the row**, soft or hard by whether its definition RECURS.
 5. **Dispose of the definition the row was the LAST of** (plan step
    ``balance:X-bi-7b``, rulings **R-BAL23** / **R-BAL27**): a one-off is a
