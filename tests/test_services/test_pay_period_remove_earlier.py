@@ -91,16 +91,22 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     create_loan_account,
     create_loan_with_trueup,
+    an_entered_day,
+    an_observed_day,
     create_savings_account,
+    create_transfer,
     make_balanced_entry,
     make_cadence_rule,
     make_salary_profile,
+    on_both_sides,
+    open_books_before_the_first_assertion,
     populate_in_a_fresh_pass,
     reassert_balance_on,
     restate_account_opening,
     rhythm_of,
     settle_cash_row,
     state_template_price,
+    typed,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 
@@ -1206,6 +1212,93 @@ class TestMoneyDatedInsideTheHead:
             assert _held(user_id, seed_periods[0]) == self._refusal(
                 "The purchase Market is marked paid on",
             )
+
+    def _transfer_to_savings(self, seed_user, seed_periods):
+        """A Projected Checking -> Savings transfer in the 01-02 paycheck.
+
+        Savings' books open before :attr:`DAY`, so the only thing that can
+        refuse a day there is the floor under test.
+        """
+        savings = create_savings_account(
+            seed_user, _db.session, "Savings", Decimal("0.00"),
+        )
+        open_books_before_the_first_assertion(_db.session, savings)
+        xfer = create_transfer(
+            seed_user, _db.session, seed_user["account"], savings,
+            seed_periods[0], amount=Decimal("300.00"),
+        )
+        _db.session.commit()
+        return xfer
+
+    def test_a_transfer_side_paid_inside_is_refused_by_ITS_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each side's own day is money dated: the gate names the side that is inside.
+
+        Plan step ``balance:X-bi-6-4c-3``: a transfer's sides keep their own
+        days (ruling **R-BAL142**), and the gate reads each side's record
+        (ledger row **BAL-568**).  Checking's statement shows the money leave
+        on the new first payday, which the removal admits; Savings' own day is
+        :attr:`DAY`, inside the span -- so the refusal names SAVINGS' side,
+        the only one holding money there.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _added_head(user_id, 2)
+            xfer = self._transfer_to_savings(seed_user, seed_periods)
+            transfer_service.settle_transfer(
+                xfer.id, user_id,
+                side_days=(
+                    transfer_service.SideDay(
+                        xfer.from_account_id,
+                        an_observed_day(seed_periods[0].start_date),
+                    ),
+                    transfer_service.SideDay(
+                        xfer.to_account_id, an_entered_day(self.DAY),
+                    ),
+                ),
+            )
+            db.session.commit()
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+
+            assert _held(user_id, seed_periods[0]) == self._refusal(
+                "Transfer from Checking is marked paid on",
+            )
+            _unchanged(user_id, paydays, eras)
+
+    def test_a_transfer_closed_at_zero_inside_does_not_hold_the_removal(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A ``$0.00`` close moved no money, so it dates nothing (ledger row BAL-568).
+
+        Its shadows still carry :attr:`DAY`, and the gate read the shadows
+        until plan step ``balance:X-bi-6-4c-3`` -- so this removal was REFUSED
+        then.  It records no covering movement (ruling **R-BAL90**: a close of
+        nothing has no day of money), and R-PC109 names money dated inside the
+        span, so it no longer holds the removal back.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _added_head(user_id, 2)
+            xfer = self._transfer_to_savings(seed_user, seed_periods)
+            transfer_service.settle_transfer(
+                xfer.id, user_id, submitted=typed(Decimal("0.00")),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(self.DAY),
+                ),
+            )
+            db.session.commit()
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ).all()
+            # The plant's own tell: the shape is the $0.00 close this case is
+            # about -- dated shadows, no covering movement -- or the admit
+            # below would pass for a different reason.
+            assert {shadow.settled_on for shadow in shadows} == {self.DAY}
+            assert all(not shadow.covering_movements for shadow in shadows)
+
+            pay_period_admin.remove_earlier_pay_periods(user_id, seed_periods[0].id)
 
     def test_a_balance_recorded_inside_is_refused(
         self, app, db, seed_user, seed_periods,

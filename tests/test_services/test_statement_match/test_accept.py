@@ -48,6 +48,7 @@ from app.services.row_valuation import settled_figure
 from app.services.statement_match import MatchSubmission
 
 from tests._test_helpers import (
+    an_observed_day,
     observed,
     on_both_sides,
     typed,
@@ -1105,6 +1106,99 @@ class TestATransferShadowIsMatchedThroughItsService:
         assert accepted.corrected_count == 1
         assert accepted.settled_count == 0
         assert shadow.settled_on == bank_day
+
+    @staticmethod
+    def _sibling(db, shadow):
+        """Return *shadow*'s other side, the one on the account no statement read."""
+        from app.models.transaction import Transaction  # local: this class only
+
+        return (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id == shadow.transfer_id,
+                Transaction.id != shadow.id,
+            )
+            .one()
+        )
+
+    def test_a_match_states_ITS_side_and_the_far_side_borrows(
+        self, app, db, seed_user,
+    ):
+        """The bank showed Checking; Savings' side borrows that day (ruling R-BAL89).
+
+        Plan step ``balance:X-bi-6-4c-3`` (design D5): the matcher states
+        ``observed`` for the side on the statement's account only.  It stated it
+        for BOTH until then, which is how every far side of a matched transfer
+        came to claim a bank line it never had.
+        """
+        shadow = self._a_transfer_shadow(db, seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-75.00",
+            posted_on=bank_day,
+        )
+
+        _submit(seed_user, lines=[line], transfers=[shadow.transfer])
+
+        assert recorded_settle_day(shadow) == an_observed_day(bank_day)
+        assert recorded_settle_day(self._sibling(db, shadow)) == SettleDay(
+            day=bank_day, basis=SettledDayBasisEnum.BORROWED,
+        )
+
+    def test_a_correction_moves_a_side_that_only_borrowed_its_day(
+        self, app, db, seed_user,
+    ):
+        """Paid pressed, then the statement: BOTH sides land on the bank's day.
+
+        Ruling **R-BAL163**'s worked example: a Paid press leaves both sides
+        borrowing the press day, so a Checking statement showing another day
+        moves Checking (its own now) and Savings (still borrowing) together.
+        """
+        from app.services import transfer_service  # local: this class only
+
+        shadow = self._a_transfer_shadow(db, seed_user)
+        transfer_service.settle_transfer(shadow.transfer_id, seed_user["user"].id)
+        db.session.flush()
+        bank_day = seed_user["bootstrap_period"].start_date
+        assert shadow.settled_on != bank_day
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-75.00",
+            posted_on=bank_day,
+        )
+
+        accepted = _submit(seed_user, lines=[line], transactions=[shadow])
+
+        assert accepted.corrected_count == 1
+        assert recorded_settle_day(shadow) == an_observed_day(bank_day)
+        assert recorded_settle_day(self._sibling(db, shadow)) == SettleDay(
+            day=bank_day, basis=SettledDayBasisEnum.BORROWED,
+        )
+
+    def test_a_correction_leaves_a_far_side_with_its_own_day(
+        self, app, db, seed_user,
+    ):
+        """A far side the owner TYPED keeps its day when Checking's statement moves Checking.
+
+        Declared change 2 of plan step ``balance:X-bi-6-4c-3``: a statement
+        re-dates only its own side, and a side with evidence of its own does not
+        follow (ruling **R-BAL142**).  The ``settled`` fixture states one day
+        typed on both sides, the one-box popover's meaning (ruling R-BAL165).
+        """
+        shadow = self._a_transfer_shadow(db, seed_user, settled=True)
+        sibling = self._sibling(db, shadow)
+        typed_day = recorded_settle_day(sibling)
+        assert typed_day.basis is SettledDayBasisEnum.ENTERED
+        bank_day = seed_user["bootstrap_period"].start_date
+        assert typed_day.day != bank_day
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-75.00",
+            posted_on=bank_day,
+        )
+
+        _submit(seed_user, lines=[line], transactions=[shadow])
+
+        assert recorded_settle_day(shadow) == an_observed_day(bank_day)
+        assert recorded_settle_day(sibling) == typed_day
 
     def test_a_shadow_whose_PARENT_is_gone_is_not_matchable(
         self, app, db, seed_user,

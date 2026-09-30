@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     MovementFigureSourceEnum,
+    SettledDayBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -65,6 +66,7 @@ from tests._test_helpers import (
 )
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import (
+    SettleDay,
     record_settle_day,
     recorded_settle_day,
 )
@@ -838,9 +840,7 @@ class TestTemplateUpdate:
         transfer shows the conflict chooser (the shared flow, transfer kind)
         and does not commit the pending edit."""
         with app.app_context():
-            from app.services import (
-                pay_period_service, transfer_recurrence, transfer_service,
-            )
+            from app.services import transfer_recurrence, transfer_service
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
@@ -887,9 +887,7 @@ class TestTemplateUpdate:
         transactions to the new amount, preserving transfer invariant 3
         (shadow amounts always equal the parent's)."""
         with app.app_context():
-            from app.services import (
-                pay_period_service, transfer_recurrence, transfer_service,
-            )
+            from app.services import transfer_recurrence, transfer_service
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
@@ -3096,6 +3094,114 @@ class TestTheTransferSideBoxes:
             for box in self._boxes(xfer.id):
                 assert box.prefill is None
                 assert box.caption is None
+
+
+class TestThePatchGradesEachBoxOnItsOwn:
+    """The transfer PATCH grades each day box against what THAT box showed.
+
+    Plan step ``balance:X-bi-6-4c-3`` (rulings **R-BAL108**, **R-BAL164**).
+    The popover renders a side holding its own day PREFILLED and a side
+    borrowing the other's EMPTY, and posts both on every Save.  So an untouched
+    Save states nothing for either side, and any day typed into an empty box --
+    the borrowed day included -- is that side's own, ``entered``.
+    """
+
+    @staticmethod
+    def _checking_observed(seed_user, seed_periods_today, day):
+        """A settled transfer: Checking bank-shown on *day*, Savings borrowing it."""
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        transfer_service.settle_transfer(
+            xfer.id, seed_user["user"].id,
+            side_days=(transfer_service.SideDay(
+                xfer.from_account_id, an_observed_day(day),
+            ),),
+        )
+        db.session.commit()
+        return xfer
+
+    @staticmethod
+    def _days(xfer):
+        """Return ``(from side, to side)`` recorded days, freshly read."""
+        db.session.expire_all()
+        shadows = db.session.query(Transaction).filter_by(
+            transfer_id=xfer.id, is_deleted=False,
+        ).all()
+        by_account = {s.account_id: recorded_settle_day(s) for s in shadows}
+        return by_account[xfer.from_account_id], by_account[xfer.to_account_id]
+
+    def test_an_untouched_save_states_nothing_for_either_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Checking's box echoes its day; Savings' box posts empty: nothing moves."""
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+            before = self._days(xfer)
+            assert before == (
+                an_observed_day(day),
+                SettleDay(day=day, basis=SettledDayBasisEnum.BORROWED),
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on_from": day.isoformat(), "settled_on_to": ""},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == before
+
+    def test_the_borrowed_day_typed_into_its_empty_box_is_the_sides_own(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Typing Savings' guessed day CONFIRMS it: ``entered``, the day unchanged.
+
+        Ruling R-BAL164's reason for rendering the box empty: prefilled, an
+        unchanged day would be an echo and confirming the guess would have no
+        spelling.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on_from": day.isoformat(),
+                    "settled_on_to": day.isoformat(),
+                },
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == (an_observed_day(day), an_entered_day(day))
+
+    def test_another_day_typed_into_the_empty_box_moves_that_side_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Savings received it later: its side moves; Checking's bank day stays."""
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            arrived = day + timedelta(days=2)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on_from": day.isoformat(),
+                    "settled_on_to": arrived.isoformat(),
+                },
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == (
+                an_observed_day(day), an_entered_day(arrived),
+            )
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────

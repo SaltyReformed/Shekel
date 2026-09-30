@@ -601,7 +601,10 @@ def _settled_transfer_side(user_id, low, high):
     on door-written data is a transfer closed at ``$0.00``: it records no
     movement and so no day (ruling **R-BAL90**), and it no longer holds a
     removal back (R-PC109 names money dated inside the span).  The loader's
-    own ``ORDER BY`` is cleared first, since SQLAlchemy APPENDS a second.
+    own ``ORDER BY`` (the movement's id) is cleared first, since SQLAlchemy
+    APPENDS a second, and restated as the tiebreak: a transfer's two sides
+    usually share their day, and the refusal must name the same side every
+    time -- the gate's own rule for a tie between its arms.
     """
     row = (
         transfer_legs.transfer_movement_rows(
@@ -611,7 +614,7 @@ def _settled_transfer_side(user_id, low, high):
             TransactionEntry.settled_on < high,
         )
         .order_by(None)
-        .order_by(TransactionEntry.settled_on)
+        .order_by(TransactionEntry.settled_on, TransactionEntry.id)
         .first()
     )
     if row is None:
