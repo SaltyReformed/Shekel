@@ -68,6 +68,7 @@ from tests._test_helpers import (
     ledger_net,
     linked_ledger_account,
     make_expense_template,
+    on_both_sides,
     payback_row_of,
     state_template_price,
     typed,
@@ -696,7 +697,11 @@ class TestTheRowsRefusalsApplyToItsPayment:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             transfer_service.settle_transfer(
-                transfer.id, seed_user["user"].id, settle_day=_entered(bank_day),
+                transfer.id, seed_user["user"].id,
+                side_days=on_both_sides(
+                    transfer.from_account_id, transfer.to_account_id,
+                    _entered(bank_day),
+                ),
             )
             db.session.commit()
             shadow = (

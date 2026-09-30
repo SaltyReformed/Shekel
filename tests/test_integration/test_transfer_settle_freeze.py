@@ -68,6 +68,7 @@ from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    on_both_sides,
     typed,
     amount_basis_for,
     an_entered_day,
@@ -672,7 +673,11 @@ class TestTheNamedVerbItself:
             first_day = display_today() - timedelta(days=3)
 
             transfer_service.settle_transfer(
-                xfer.id, owner, settle_day=an_entered_day(first_day),
+                xfer.id, owner,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(first_day),
+                ),
             )
             db.session.commit()
             db.session.expire_all()
@@ -682,7 +687,10 @@ class TestTheNamedVerbItself:
             assert transfer_service.settle_transfer(
                 xfer.id, owner,
                 submitted=typed(Decimal("999.99")),
-                settle_day=an_entered_day(display_today()),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(display_today()),
+                ),
             ) is False
             db.session.commit()
 

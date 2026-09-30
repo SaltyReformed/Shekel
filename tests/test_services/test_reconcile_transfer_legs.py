@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import text
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -43,6 +43,7 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
+from app.services.settle_day import SettleDay, recorded_settle_day
 from tests._test_helpers import (
     cover_bare_settled_row,
     create_transfer,
@@ -366,6 +367,44 @@ class TestTheOfferableLegLoader:
                 savings.id, owner, window, options=(),
             )
             assert leg.transfer.id == transfer.id
+
+
+class TestATickStatesItsOwnSide:
+    """The reconcile tick states the day for the side on ITS account only.
+
+    Plan step ``balance:X-bi-6-4c-3`` (design D5, ruling **R-BAL142**): the
+    tick asserted a balance for the seed account, so the side on that account
+    takes the statement day as ``asserted`` and its clearing link; the other
+    side, on an account whose statement nobody reconciled, BORROWS that day and
+    holds no link.  The tick stated the day for BOTH sides until that step.
+    """
+
+    def test_the_ticked_side_is_asserted_and_linked_and_the_far_side_borrows(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Checking asserted on the statement day with its link; Savings borrowed, unlinked."""
+        with app.app_context():
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("75.00"),
+            )
+            db.session.commit()
+
+            assert _settle(seed_user, transfer_ids=[transfer.id]) == 1
+            db.session.commit()
+            db.session.expire_all()
+
+            ticked = _shadow_on(transfer, seed_user["account"])
+            far = _shadow_on(transfer, savings)
+            assert recorded_settle_day(ticked) == SettleDay(
+                day=_OBSERVED_ON, basis=SettledDayBasisEnum.ASSERTED,
+            )
+            assert ticked.reconciled_by_id is not None
+            assert recorded_settle_day(far) == SettleDay(
+                day=_OBSERVED_ON, basis=SettledDayBasisEnum.BORROWED,
+            )
+            assert far.reconciled_by_id is None
 
 
 class TestTheBlockReadsTheLeg:

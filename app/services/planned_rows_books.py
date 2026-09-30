@@ -795,8 +795,8 @@ def reject_revert_below_the_books(row, new_status_id: int) -> None:
     before its due day.  (What a settled row records is corrected in place
     and is untouched: a transaction's actual figure and the account it was
     paid from, ``transaction_service._door._correction_for_status``, and a
-    transfer's settle day,
-    ``transfer_service._status.apply_settle_day_correction``.)  Production
+    transfer's settle day per side, an identity pass through
+    ``transfer_service._status.apply_status_to_all_three``.)  Production
     held SIX such recurring rows on 2026-09-23, measured by this refusal
     itself over every settled templated row: four transactions (one of them
     CANCELLED, so it cannot be reactivated) and two transfers, every one

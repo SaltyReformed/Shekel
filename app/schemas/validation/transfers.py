@@ -241,30 +241,33 @@ class TransferUpdateSchema(BaseSchema):
     category_id = RowId(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
-    # The civil day the money moved, for BOTH shadows (ruling R-ED, plan step
-    # X-f1c).  Editable on a finalised transfer for the reason
-    # ``routes/transactions/_helpers._LOCKED_EDIT_FIELDS`` carries: the locked
-    # fields are budget decisions, and this is an observed fact about the bank.
+    # The civil day the money moved, ONE BOX PER SIDE (ruling R-BAL108; plan
+    # step balance:X-bi-6-4c-3, where it was one ``settled_on`` for both
+    # shadows, ruling R-ED / plan step X-f1c).  ``settled_on_from`` is the
+    # side the money leaves, ``settled_on_to`` the side it arrives at; the
+    # route grades each against what THAT box was prefilled from, and a box
+    # for a side borrowing the other's day renders EMPTY (ruling R-BAL164), so
+    # any day typed there is that side's own.  Editable on a finalised
+    # transfer for the reason ``routes/transactions/_helpers._LOCKED_EDIT_FIELDS``
+    # carries: the locked fields are budget decisions, and this is an observed
+    # fact about the bank.
     #
-    # This door is not a convenience twin of the transaction one -- it is the
-    # ONLY door onto the rows finding **N-181** names.  All 8 settled rows whose
-    # day the X-f1b backfill had to invent from a pay period's start are
-    # transfer SHADOWS (four pairs), and a shadow's full-edit popover is THIS
-    # form: ``routes/transactions/forms.get_full_edit`` redirects a shadow here
-    # rather than rendering the transaction popover.
+    # This door is the ONLY door onto the rows finding **N-181** names: all 8
+    # settled rows whose day the X-f1b backfill had to invent from a pay
+    # period's start are transfer SHADOWS (four pairs).
     #
     # Deliberately NOT ``allow_none``: an empty input loads as ABSENT ("leave
-    # the day alone"), never as a request to clear it.  Clearing it on a settled
-    # transfer is refused by ``transfer_service._status.apply_settle_day_correction`` --
-    # the balance walk REFUSES a settled row with no day -- and the way to
-    # remove one is to revert the transfer to Projected.
-    settled_on = fields.Date()
+    # the day alone"), never as a request to clear it -- the service's stated
+    # day cannot wrap ``None`` -- and the way to remove a day is to revert the
+    # transfer to Projected.
+    settled_on_from = fields.Date()
+    settled_on_to = fields.Date()
 
     # WHAT MOVED, for BOTH shadows (developer ruling, 2026-08-17).  The Actual
     # box: what the bank really took, which is a DIFFERENT fact from the
     # ``amount`` above and gets its own input rather than overwriting the plan.
     #
-    # Editable on a finalised transfer for the reason ``settled_on`` above is,
+    # Editable on a finalised transfer for the reason the day boxes above are,
     # and the two are one assertion's two halves: the #26 lock protects BUDGET
     # DECISIONS from being rewritten, and what the bank took is an OBSERVED
     # FACT, corrected when the statement disagrees.  Until this field existed a

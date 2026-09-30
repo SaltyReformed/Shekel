@@ -53,9 +53,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
-from app.utils.dates import display_today
 from tests._test_helpers import (
-    an_entered_day,
     create_account_of_type,
     linked_ledger_account,
     transfer_family_journal_filter,
@@ -146,14 +144,15 @@ def _create_projected_transfer(seed_user, from_account, to_account, amount):
 def _settle(transfer, user_id, **extra):
     """Settle a transfer (Projected -> Done) through the service chokepoint.
 
-    Mirrors the ``transfers.mark_done`` route: status -> Done with a concrete
-    the settle day.  Extra kwargs (e.g. ``actual_amount``) are forwarded so a test
-    can settle and set an actual amount in one call.
+    Mirrors the ``transfers.mark_done`` route: status -> Done, stating no day,
+    so both sides borrow the owner's today (plan step ``balance:X-bi-6-4c-3``,
+    ruling **R-BAL163**; it stated today as ``entered``, what the press
+    recorded, until then).  Extra kwargs (e.g. ``figure``) are forwarded so a
+    test can settle and state what moved in one call.
     """
     transfer_service.update_transfer(
         transfer.id, user_id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
-        settle_day=an_entered_day(display_today()),
         **extra,
     )
 

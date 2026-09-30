@@ -37,8 +37,6 @@ from app.models.transfer import Transfer
 from app.services import posting_service
 from app.services.amount_ownership import declare_derived
 from app.services import status_seam
-from app.services.settle_day import SettleDay
-from app.services.status_seam import reject_settle_day_without_settled_status
 from app.services.transfer_legs import leg_label
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
@@ -51,7 +49,11 @@ from app.services.transfer_service._ownership import (
     _get_owned_scenario,
     _get_owned_transfer_template,
 )
-from app.services.transfer_service._status import apply_settle_day_to_pair
+from app.services.transfer_service._side_days import SideDay, stated_by_side
+from app.services.transfer_service._status import (
+    date_born_settled_pair,
+    reject_stated_days_without_settle,
+)
 from app.services.transfer_service._validation import (
     _reject_unmodeled_source,
     _validate_positive_amount,
@@ -174,8 +176,8 @@ def _build_shadow(
         category_id=xfer.category_id,
         transaction_type_id=transaction_type_id,
         # The settle DAY and its basis are the ASSERTION, and a shadow is
-        # born asserting nothing: a born-SETTLED transfer's day is written
-        # by ``apply_settle_day_to_pair`` below, through the seam, so this
+        # born asserting nothing: a born-SETTLED transfer's days are written
+        # by ``date_born_settled_pair`` below, through the seam, so this
         # constructor never states one (plan step **X-az**).
         settled_on=None,
         settled_day_basis_id=None,
@@ -238,16 +240,17 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             account names.
         due_date: Optional due date stored on the transfer and mirrored
             to both shadow transactions.
-        settle_day: Optional settle DAY, and HOW that day is known
-            (:class:`app.services.settle_day.SettleDay`), for a transfer
-            created ALREADY settled (plan step E1a): mirrored to both shadows
-            exactly as the update path's explicit day is, with the same
-            default -- a born-settled transfer without one settled TODAY on
-            the ``entered`` basis (the F-048 / C-22 rule, on the user's clock
-            and on nobody's word but theirs).  Meaningless for an unsettled
-            status, so :func:`create_transfer` rejects that combination loudly
-            rather than recording a settle day for a payment that has not
-            happened.
+        side_days: The day the money moved on each account the caller knows,
+            and HOW (:class:`~app.services.transfer_service._side_days.SideDay`,
+            at most one per endpoint), for a transfer created ALREADY settled
+            (plan step E1a; per side since ``balance:X-bi-6-4c-3``, ruling
+            **R-BAL142**).  Resolved exactly as the update path's stated days
+            are: a side nobody states for borrows the other's, and with none
+            stated both sides borrow the owner's TODAY, as a Paid press does
+            (the F-048 / C-22 rule, on the user's clock).  Meaningless for an
+            unsettled status, so :func:`create_transfer` rejects that
+            combination loudly rather than recording a settle day for a
+            payment that has not happened.
         occurs_on: WHICH OCCURRENCE this transfer answers: the day its
             template's cadence named (the transfer recurrence engine), or its
             own due date for a ONE-TIME transfer (the one-time branch of
@@ -271,7 +274,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
-    settle_day: SettleDay | None = None
+    side_days: "tuple[SideDay, ...]" = ()
     occurs_on: date | None = None
 
 
@@ -299,6 +302,8 @@ def create_transfer(spec: TransferSpec) -> Transfer:
             is violated.
         NotFoundError: If any referenced entity does not exist or
             does not belong to user_id.
+        ValueError: If a stated side's day names an account on neither side,
+            or two name one side (:func:`~._side_days.stated_by_side`).
     """
     # ── Validate inputs ────────────────────────────────────────────
     # A stated figure is still refused when it is not positive; a spec that
@@ -392,8 +397,13 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # finding **N-183**): the seam cannot answer this case itself, because the
     # born-settled branch below is gated on the status being settled, so an
     # unsettled create carrying a day never reaches it and the day would be
-    # dropped in silence.  One rule, two moments.
-    reject_settle_day_without_settled_status(spec.status_id, spec.settle_day)
+    # dropped in silence.  One rule, two moments.  Each stated day is placed on
+    # its side first, which refuses an account on neither side
+    # (:func:`~._side_days.stated_by_side`) -- also before any row exists.
+    stated = stated_by_side(
+        spec.side_days, spec.from_account_id, spec.to_account_id,
+    )
+    reject_stated_days_without_settle(spec.status_id, stated)
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -443,8 +453,9 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # A transfer BORN settled used to book NO cash entry and carry no settle
     # day -- a settled effect the ledger never saw, which the
     # checked-projection assert refuses the moment the loan syncs.  So the
-    # create chokepoint applies update_transfer's two settle rules:
-    # ``settled_on`` is the caller's explicit day or the user's today (the
+    # create chokepoint applies update_transfer's two settle rules: each side's
+    # ``settled_on`` is resolved from the caller's stated days, a side with
+    # none borrowing, and both borrow the user's today when none is stated (the
     # F-048 / C-22 defense -- a transfer created settled settled at creation),
     # and the posting reconcile runs (the cash entry + the loan genesis
     # reconcile).  ``created_status`` was loaded in the validation block, which
@@ -465,8 +476,8 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         # ``resolved`` -- the app priced it from the row rather than anyone
         # stating what the bank took (the source is the stated field since
         # X-bi-3e-1).
-        apply_settle_day_to_pair(
-            expense_shadow, income_shadow, spec.settle_day,
+        date_born_settled_pair(
+            expense_shadow, income_shadow, stated,
             settlement=status_seam.Settlement(
                 amount=amount, source=MovementFigureSourceEnum.RESOLVED,
             ),

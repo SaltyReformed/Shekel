@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     MovementFigureSourceEnum,
+    SettledDayBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -28,7 +29,8 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, Status
-from app.services import balance_at, pay_period_write, status_seam
+from app.routes._render_helpers import transfer_side_boxes
+from app.services import balance_at, status_seam, transfer_legs
 from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
@@ -50,6 +52,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
+    on_both_sides,
     open_books_before_the_first_assertion,
     override_anchor,
     pay_periods_hydrated,
@@ -63,6 +66,7 @@ from tests._test_helpers import (
 )
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import (
+    SettleDay,
     record_settle_day,
     recorded_settle_day,
 )
@@ -836,9 +840,7 @@ class TestTemplateUpdate:
         transfer shows the conflict chooser (the shared flow, transfer kind)
         and does not commit the pending edit."""
         with app.app_context():
-            from app.services import (
-                pay_period_service, transfer_recurrence, transfer_service,
-            )
+            from app.services import transfer_recurrence, transfer_service
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
@@ -885,9 +887,7 @@ class TestTemplateUpdate:
         transactions to the new amount, preserving transfer invariant 3
         (shadow amounts always equal the parent's)."""
         with app.app_context():
-            from app.services import (
-                pay_period_service, transfer_recurrence, transfer_service,
-            )
+            from app.services import transfer_recurrence, transfer_service
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
@@ -1294,7 +1294,11 @@ class TestTransferInstance:
             settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, settle_day=an_entered_day(settled_at),
+                status_id=done_id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(settled_at),
+                ),
             )
             db.session.commit()
 
@@ -2258,7 +2262,11 @@ class TestAdHoc:
             # a genuinely week-old settle is really in.
             settled_a_week_ago = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_a_week_ago),
+                xfer.id, seed_user["user"].id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(settled_a_week_ago),
+                ),
             )
             db.session.commit()
 
@@ -2323,7 +2331,9 @@ class TestTransferSettleDayEditDoor:
         Settled and then back-dated THROUGH the service, so the fixture's own
         journal entry carries *day*.  A bare attribute write would leave the
         ledger at today and let a "the ledger followed" assertion pass on a
-        stale comparison instead of on the edit under test.
+        stale comparison instead of on the edit under test.  Back-dated as ONE
+        day TYPED for both sides -- what the one-box popover wrote before plan
+        step ``balance:X-bi-6-4c-3`` -- so each side holds *day* as its own.
         """
         savings = _create_savings_account(seed_user)
         xfer = _create_transfer(seed_user, seed_periods_today, savings)
@@ -2332,10 +2342,44 @@ class TestTransferSettleDayEditDoor:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
+            xfer.id, seed_user["user"].id,
+            side_days=on_both_sides(
+                xfer.from_account_id, xfer.to_account_id, an_entered_day(day),
+            ),
         )
         db.session.commit()
         return xfer
+
+    @staticmethod
+    def _both_boxes(day):
+        """Return the popover's two day boxes, both carrying *day*.
+
+        The form posts every control it renders, and a settled transfer's
+        popover renders one box per side (plan step ``balance:X-bi-6-4c-3``,
+        ruling **R-BAL108**) -- so an untouched Save posts both, and a day
+        the owner means for the whole transfer is typed into both.
+        """
+        return {
+            "settled_on_from": day.isoformat(),
+            "settled_on_to": day.isoformat(),
+        }
+
+    @staticmethod
+    def _state_both(xfer, owner_id, settle_day):
+        """Record *settle_day* on both sides through the service.
+
+        Through the service rather than a bare write, so each leg's COVERING
+        MOVEMENT -- what the popover prefills each box from
+        (``transfer_side_boxes``) -- carries the basis as well as its shadow.
+        A bare write to the shadows alone would leave the box prefilled with
+        the movement's own label, and the echo rule would grade nothing.
+        """
+        transfer_service.update_transfer(
+            xfer.id, owner_id,
+            side_days=on_both_sides(
+                xfer.from_account_id, xfer.to_account_id, settle_day,
+            ),
+        )
 
     @staticmethod
     def _net_by_day(xfer_id):
@@ -2365,14 +2409,16 @@ class TestTransferSettleDayEditDoor:
     ):
         """Plan step **X-az**: the ECHO rule at the TRANSFER PATCH.
 
-        This form prefills the settle-day box and posts it on Save, so an
-        untouched Save re-submits the day the pair already carries.  Stamping
-        that ``entered`` rewrites what the legs knew about their own day -- a
+        This form prefills each side's day box and posts both on Save, so an
+        untouched Save re-submits the days the sides already carry.  Stamping
+        those ``entered`` rewrites what the legs knew about their own day -- a
         reconcile-panel BOUND, or a day the bank stated, becomes the owner's own
         typing, with the day unchanged so nothing releases the clearing link.
 
-        A transfer carries neither settle column, so the rule needs the pair off
-        the INCOME shadow (``Transfer.settle_day_columns``, ONE read of both).
+        A transfer carries neither settle column, so the rule grades each box
+        against what THAT box was prefilled from, read off its leg's record
+        (``transfer_side_boxes``; one box per side since plan step
+        ``balance:X-bi-6-4c-3``, where it read the pair off the income shadow).
         Drop the ``recorded`` argument at this route's ``settle_day_for_status``
         call and this fails.
         """
@@ -2381,15 +2427,12 @@ class TestTransferSettleDayEditDoor:
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, day,
             )
-            for shadow in db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, is_deleted=False,
-            ):
-                record_settle_day(shadow, an_asserted_day(day))
+            self._state_both(xfer, seed_user["user"].id, an_asserted_day(day))
             db.session.commit()
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"settled_on": day.isoformat()},
+                data=self._both_boxes(day),
             )
             assert response.status_code == 200, response.get_data(
                 as_text=True,
@@ -2417,15 +2460,12 @@ class TestTransferSettleDayEditDoor:
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, day,
             )
-            for shadow in db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id, is_deleted=False,
-            ):
-                record_settle_day(shadow, an_asserted_day(day))
+            self._state_both(xfer, seed_user["user"].id, an_asserted_day(day))
             db.session.commit()
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"settled_on": corrected.isoformat()},
+                data=self._both_boxes(corrected),
             )
             assert response.status_code == 200, response.get_data(
                 as_text=True,
@@ -2460,18 +2500,17 @@ class TestTransferSettleDayEditDoor:
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, day,
             )
+            self._state_both(xfer, seed_user["user"].id, an_observed_day(day))
+            db.session.commit()
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer.id, is_deleted=False,
             ).all()
-            for shadow in shadows:
-                record_settle_day(shadow, an_observed_day(day))
-            db.session.commit()
             shadow_id = shadows[0].id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "settled_on": day.isoformat(),
+                    **self._both_boxes(day),
                     "leg_account_id": str(shadows[0].account_id),
                 },
             )
@@ -2490,7 +2529,7 @@ class TestTransferSettleDayEditDoor:
     def test_correcting_the_day_moves_both_shadows_and_the_ledger(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """PATCH ``settled_on`` re-dates the pair and its postings (R-ED).
+        """PATCHing both sides' day boxes re-dates the pair and its postings (R-ED).
 
         The gate ruling R-ED names for this half in terms: a test that EDITS a
         settled row's day and asserts the LEDGER followed.  Both shadows take
@@ -2512,7 +2551,7 @@ class TestTransferSettleDayEditDoor:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"settled_on": corrected.isoformat()},
+                data=self._both_boxes(corrected),
             )
             assert response.status_code == 200, response.get_data(as_text=True)[:300]
 
@@ -2532,12 +2571,12 @@ class TestTransferSettleDayEditDoor:
     ):
         """The unlock path survives the form re-submitting the transfer's day.
 
-        Ruling **R-EG**, the transfer half.  ``apply_settle_day_correction``
-        raises ``ValidationError`` for a day supplied on an unsettled transfer,
-        and the full-edit form re-submits the day the row already carries when
-        the user sets Status to Projected to unlock the amount -- so without
-        the route dropping it, the documented unlock path would 400 on every
-        settled transfer.  Graded on the 400 NOT happening, on both shadows
+        Ruling **R-EG**, the transfer half.  The service raises
+        ``ValidationError`` for a day stated on an unsettled transfer, and the
+        full-edit form re-submits the days its boxes carry when the user sets
+        Status to Projected to unlock the amount -- so without the route
+        dropping them, the documented unlock path would 400 on every settled
+        transfer.  Graded on the 400 NOT happening, on both shadows
         being undated, AND on the ledger being reversed.
 
         **That last clause was a docstring overclaim until a neutral review
@@ -2557,7 +2596,7 @@ class TestTransferSettleDayEditDoor:
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
-                    "settled_on": settled_day.isoformat(),
+                    **self._both_boxes(settled_day),
                 },
             )
             assert response.status_code == 200, (
@@ -2610,7 +2649,10 @@ class TestTransferSettleDayEditDoor:
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "settled_on": (display_today() + timedelta(days=400)).isoformat(),
+                    "settled_on_from": (
+                        display_today() + timedelta(days=400)
+                    ).isoformat(),
+                    "settled_on_to": settled_day.isoformat(),
                 },
             )
             assert response.status_code == 400, (
@@ -2660,9 +2702,10 @@ class TestTransferSettleDayEditDoor:
                     "assertion below without the condition holding"
                 )
                 body = response.get_data(as_text=True)
-                assert 'name="settled_on"' not in body, (
-                    f"{url} offered a settle day on a Projected transfer"
-                )
+                for field in ("settled_on_from", "settled_on_to"):
+                    assert f'name="{field}"' not in body, (
+                        f"{url} offered a settle day on a Projected transfer"
+                    )
 
             settled_day = display_today() - timedelta(days=2)
             transfer_service.update_transfer(
@@ -2670,7 +2713,11 @@ class TestTransferSettleDayEditDoor:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_day),
+                xfer.id, seed_user["user"].id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(settled_day),
+                ),
             )
             db.session.commit()
 
@@ -2681,9 +2728,10 @@ class TestTransferSettleDayEditDoor:
                 response = auth_client.get(url)
                 assert response.status_code == 200, f"{url} did not render"
                 body = response.get_data(as_text=True)
-                assert 'name="settled_on"' in body, (
-                    f"{url} offered no settle day on a settled transfer"
-                )
+                for field in ("settled_on_from", "settled_on_to"):
+                    assert f'name="{field}"' in body, (
+                        f"{url} offered no settle day on a settled transfer"
+                    )
                 assert f'value="{settled_day.isoformat()}"' in body, (
                     f"{url} did not pre-fill the stored settle day"
                 )
@@ -2694,10 +2742,11 @@ class TestTransferSettleDayEditDoor:
                 assert f'max="{display_today().isoformat()}"' in body, (
                     f"{url} did not bound the settle day at the user's today"
                 )
-                assert not field_is_disabled(body, "settled_on"), (
-                    f"{url} locked the settle day on a finalised transfer, so "
-                    "the correction R-ED exists for is unreachable"
-                )
+                for field in ("settled_on_from", "settled_on_to"):
+                    assert not field_is_disabled(body, field), (
+                        f"{url} locked the settle day on a finalised transfer, "
+                        "so the correction R-ED exists for is unreachable"
+                    )
 
     def test_an_undated_settled_transfer_still_offers_the_repair_box(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2705,7 +2754,7 @@ class TestTransferSettleDayEditDoor:
         """A settled transfer carrying NO day still gets a correction input.
 
         The shape the template's condition is written for, and the reason it
-        keys on the STATUS rather than on ``xfer.settled_on``: an undated
+        keys on the STATUS rather than on a side's day: an undated
         settled transfer made the posting writer before plan step
         ``balance:X-bi-6-3`` raise ``UndatedSettleError`` (a 500 on the grid),
         and the one movement writer now posts nothing for an undated movement,
@@ -2736,17 +2785,23 @@ class TestTransferSettleDayEditDoor:
             )
             # The legacy shape, reproduced the only way it can be: straight at
             # the day pair, behind the seam's back -- a settled row with no
-            # day.  Its record (the covering movement) stands; the day alone
-            # is what this case is about.
+            # day.  Its record (the covering movement) stands, un-dated with
+            # its row as the seam keeps every movement (each box reads its
+            # side's day off that record since plan step
+            # ``balance:X-bi-6-4c-3``); the day alone is what this case is
+            # about.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
                 record_settle_day(row, None)
+                for movement in row.entries:
+                    if movement.covers_settlement:
+                        record_settle_day(movement, None)
             db.session.commit()
             db.session.expire_all()
-            assert db.session.get(Transfer, xfer.id).settled_on is None
+            assert self._shadow_days(xfer.id) == {None}
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
@@ -2758,10 +2813,11 @@ class TestTransferSettleDayEditDoor:
                     "that most needs the repair box"
                 )
                 body = response.get_data(as_text=True)
-                assert 'name="settled_on"' in body, (
-                    f"{url} hid the correction box from an UNDATED settled "
-                    "transfer, leaving it no way to state the real day"
-                )
+                for field in ("settled_on_from", "settled_on_to"):
+                    assert f'name="{field}"' in body, (
+                        f"{url} hid the correction box from an UNDATED settled "
+                        "transfer, leaving it no way to state the real day"
+                    )
                 assert 'value=""' in body, (
                     f"{url} pre-filled a day onto a row that carries none"
                 )
@@ -2795,7 +2851,7 @@ class TestTransferSettleDayEditDoor:
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "settled_on": corrected.isoformat(),
+                    **self._both_boxes(corrected),
                     "leg_account_id": str(shadow.account_id),
                 },
             )
@@ -2822,8 +2878,8 @@ class TestTransferSettleDayEditDoor:
         door is the transfer PATCH carrying ``leg_account_id``, and the claim
         is graded there, with the response the LEG's cell.
         Ruling **R-EG** through the grid's door.  Without the drop this request
-        reaches ``apply_settle_day_correction`` with a day for a Projected
-        transfer and raises.  What is graded here is the drop, and that the
+        reaches the service with a day stated for a Projected transfer and
+        raises.  What is graded here is the drop, and that the
         refusal-free response is the leg's cell.
         """
         with app.app_context():
@@ -2842,7 +2898,7 @@ class TestTransferSettleDayEditDoor:
                 data={
                     "leg_account_id": str(shadow.account_id),
                     "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
-                    "settled_on": settled_day.isoformat(),
+                    **self._both_boxes(settled_day),
                 },
             )
             assert response.status_code == 200, (
@@ -2856,6 +2912,295 @@ class TestTransferSettleDayEditDoor:
             assert self._shadow_days(xfer.id) == {None}
             assert self._net_by_day(xfer.id) == {}, (
                 "the revert through the leg door left the effect posted"
+            )
+
+
+class TestTheTransferSideBoxes:
+    """The popover's two day boxes, one per side (ruling **R-BAL108**).
+
+    ``_render_helpers.transfer_side_boxes`` is the ONE producer the popover
+    renders its boxes from AND the PATCH grades a submission against, so what
+    a box shows and what an untouched Save states cannot part.  Each box reads
+    ITS side's day off that side's leg record (plan step
+    ``balance:X-bi-6-4c-3``; ``Transfer.settled_on`` read one day for the pair
+    off the income shadow until then, and these cases replace that property's
+    tests).  A side holding its own day shows it with how it is known; a side
+    borrowing the other's renders EMPTY with the borrowed day in its caption
+    (ruling **R-BAL164**).
+    """
+
+    @staticmethod
+    def _boxes(xfer_id):
+        """Return both boxes for *xfer_id*, drawn from a fresh load."""
+        db.session.expire_all()
+        xfer = db.session.get(Transfer, xfer_id)
+        return transfer_side_boxes(
+            xfer, transfer_legs.covering_movements_by_leg([xfer_id]),
+        )
+
+    @staticmethod
+    def _transfer(seed_user, seed_periods_today):
+        """Return a Projected Checking -> Savings transfer, committed."""
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        db.session.commit()
+        return xfer
+
+    def test_a_projected_transfer_offers_no_day_on_either_side(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """No money moved, so neither box holds a day or a caption."""
+        with app.app_context():
+            xfer = self._transfer(seed_user, seed_periods_today)
+
+            from_box, to_box = self._boxes(xfer.id)
+
+            assert (from_box.field, to_box.field) == (
+                "settled_on_from", "settled_on_to",
+            )
+            assert (from_box.account_id, to_box.account_id) == (
+                xfer.from_account_id, xfer.to_account_id,
+            )
+            for box in (from_box, to_box):
+                assert box.prefill is None
+                assert box.caption is None
+
+    def test_a_paid_press_leaves_both_boxes_empty_and_names_the_guess(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Neither side has a day of its own after Paid: both boxes empty.
+
+        Both sides borrow the day Paid was pressed (ruling **R-BAL163**), so
+        neither box is prefilled -- a day typed into either is that side's own
+        -- and each caption says the day is a guess.
+        """
+        with app.app_context():
+            xfer = self._transfer(seed_user, seed_periods_today)
+            transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
+            db.session.commit()
+
+            from_box, to_box = self._boxes(xfer.id)
+
+            guess = f"{display_today():%m-%d} (a guess)"
+            assert (from_box.prefill, from_box.caption) == (None, guess)
+            assert (to_box.prefill, to_box.caption) == (None, guess)
+
+    def test_a_side_with_its_own_day_shows_it_and_the_other_borrows(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """The bank showed Checking's side; Savings' box is empty and says whose day it has."""
+        with app.app_context():
+            xfer = self._transfer(seed_user, seed_periods_today)
+            day = display_today() - timedelta(days=4)
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id,
+                side_days=(transfer_service.SideDay(
+                    xfer.from_account_id, an_observed_day(day),
+                ),),
+            )
+            db.session.commit()
+
+            from_box, to_box = self._boxes(xfer.id)
+
+            assert from_box.prefill == an_observed_day(day)
+            assert from_box.caption == "bank-shown"
+            assert to_box.prefill is None
+            assert to_box.caption == (
+                f"same as {from_box.account_name}, {day:%m-%d} (a guess)"
+            )
+
+    def test_each_box_reads_its_OWN_side(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Two sides on two days, each box answering for its own, both ways round.
+
+        The per-side successor of ``Transfer.settled_on``'s "it reads the
+        income shadow": a box that read the OTHER side, or one fixed side for
+        both, shows the wrong day in one of the two arrangements.  The days are
+        swapped between the arrangements, so a box that answered with a value
+        the fixture happened to write last cannot pass both.
+        """
+        with app.app_context():
+            xfer = self._transfer(seed_user, seed_periods_today)
+            early = display_today() - timedelta(days=6)
+            late = display_today() - timedelta(days=4)
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id,
+                side_days=(
+                    transfer_service.SideDay(
+                        xfer.from_account_id, an_observed_day(early),
+                    ),
+                    transfer_service.SideDay(
+                        xfer.to_account_id, an_entered_day(late),
+                    ),
+                ),
+            )
+            db.session.commit()
+
+            from_box, to_box = self._boxes(xfer.id)
+            assert (from_box.prefill, from_box.caption) == (
+                an_observed_day(early), "bank-shown",
+            )
+            assert (to_box.prefill, to_box.caption) == (
+                an_entered_day(late), "you typed it",
+            )
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                side_days=(
+                    transfer_service.SideDay(
+                        xfer.from_account_id, an_entered_day(late),
+                    ),
+                    transfer_service.SideDay(
+                        xfer.to_account_id, an_entered_day(early),
+                    ),
+                ),
+            )
+            db.session.commit()
+
+            from_box, to_box = self._boxes(xfer.id)
+            assert from_box.prefill == an_entered_day(late)
+            assert to_box.prefill == an_entered_day(early)
+
+    def test_a_soft_deleted_transfer_offers_no_day(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A deleted transfer moves no money, so neither box answers for it.
+
+        The successor of ``Transfer.settled_on``'s soft-deleted-shadow case:
+        each box reads its leg's record through the grid's loader, and a
+        transfer whose shadows are gone holds none.
+        """
+        with app.app_context():
+            xfer = self._transfer(seed_user, seed_periods_today)
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(display_today() - timedelta(days=3)),
+                ),
+            )
+            db.session.commit()
+            assert self._boxes(xfer.id)[0].prefill is not None, (
+                "the fixture's transfer showed no day before the delete, so "
+                "the assertion below would pass on nothing"
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id,
+            ):
+                shadow.is_deleted = True
+            db.session.commit()
+
+            for box in self._boxes(xfer.id):
+                assert box.prefill is None
+                assert box.caption is None
+
+
+class TestThePatchGradesEachBoxOnItsOwn:
+    """The transfer PATCH grades each day box against what THAT box showed.
+
+    Plan step ``balance:X-bi-6-4c-3`` (rulings **R-BAL108**, **R-BAL164**).
+    The popover renders a side holding its own day PREFILLED and a side
+    borrowing the other's EMPTY, and posts both on every Save.  So an untouched
+    Save states nothing for either side, and any day typed into an empty box --
+    the borrowed day included -- is that side's own, ``entered``.
+    """
+
+    @staticmethod
+    def _checking_observed(seed_user, seed_periods_today, day):
+        """A settled transfer: Checking bank-shown on *day*, Savings borrowing it."""
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        transfer_service.settle_transfer(
+            xfer.id, seed_user["user"].id,
+            side_days=(transfer_service.SideDay(
+                xfer.from_account_id, an_observed_day(day),
+            ),),
+        )
+        db.session.commit()
+        return xfer
+
+    @staticmethod
+    def _days(xfer):
+        """Return ``(from side, to side)`` recorded days, freshly read."""
+        db.session.expire_all()
+        shadows = db.session.query(Transaction).filter_by(
+            transfer_id=xfer.id, is_deleted=False,
+        ).all()
+        by_account = {s.account_id: recorded_settle_day(s) for s in shadows}
+        return by_account[xfer.from_account_id], by_account[xfer.to_account_id]
+
+    def test_an_untouched_save_states_nothing_for_either_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Checking's box echoes its day; Savings' box posts empty: nothing moves."""
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+            before = self._days(xfer)
+            assert before == (
+                an_observed_day(day),
+                SettleDay(day=day, basis=SettledDayBasisEnum.BORROWED),
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on_from": day.isoformat(), "settled_on_to": ""},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == before
+
+    def test_the_borrowed_day_typed_into_its_empty_box_is_the_sides_own(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Typing Savings' guessed day CONFIRMS it: ``entered``, the day unchanged.
+
+        Ruling R-BAL164's reason for rendering the box empty: prefilled, an
+        unchanged day would be an echo and confirming the guess would have no
+        spelling.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on_from": day.isoformat(),
+                    "settled_on_to": day.isoformat(),
+                },
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == (an_observed_day(day), an_entered_day(day))
+
+    def test_another_day_typed_into_the_empty_box_moves_that_side_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Savings received it later: its side moves; Checking's bank day stays."""
+        with app.app_context():
+            day = display_today() - timedelta(days=5)
+            arrived = day + timedelta(days=2)
+            xfer = self._checking_observed(seed_user, seed_periods_today, day)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on_from": day.isoformat(),
+                    "settled_on_to": arrived.isoformat(),
+                },
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(xfer) == (
+                an_observed_day(day), an_entered_day(arrived),
             )
 
 
@@ -3903,7 +4248,6 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.settle_transfer(
                 xfer.id, seed_user["user"].id, submitted=typed(Decimal("412.90")),
-                settle_day=an_entered_day(display_today()),
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -4910,7 +5254,10 @@ class TestTransferActualBox:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
+            xfer.id, seed_user["user"].id,
+            side_days=on_both_sides(
+                xfer.from_account_id, xfer.to_account_id, an_entered_day(day),
+            ),
         )
         db.session.commit()
         return xfer
@@ -5257,7 +5604,11 @@ class TestTransferActualBox:
             day_only = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "settled_on": display_today().isoformat(),
+                    # What the popover posts when the owner types the day
+                    # into ONE box: the other is empty (neither side holds a
+                    # day), so it borrows the typed one.
+                    "settled_on_from": display_today().isoformat(),
+                    "settled_on_to": "",
                     "version_id": str(version),
                 },
             )
@@ -5276,7 +5627,10 @@ class TestTransferActualBox:
             repair = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "settled_on": display_today().isoformat(),
+                    # The boxes as the popover now renders them: the typed
+                    # side prefilled, the borrowing side empty.
+                    "settled_on_from": display_today().isoformat(),
+                    "settled_on_to": "",
                     "settled_amount": "200.00",
                     "version_id": str(version),
                 },
@@ -5437,7 +5791,8 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
 
             assert auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"settled_on": _THREE_DAYS_AGO().isoformat(),
+                data={"settled_on_from": _THREE_DAYS_AGO().isoformat(),
+                      "settled_on_to": "",
                       "version_id": str(shared_pin)},
             ).status_code == 200
             db.session.expire_all()
