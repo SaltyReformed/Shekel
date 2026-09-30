@@ -43,7 +43,7 @@ rows, so ``X-bi-6-4d`` moves the answer in one place.
 
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Query
+from sqlalchemy.orm import InstrumentedAttribute, Query
 from sqlalchemy.sql.expression import ColumnElement
 
 from app.extensions import db
@@ -206,7 +206,7 @@ def rows_holding_movements(*row_scope: ColumnElement) -> HeldMovements:
 
 
 def _held(
-    entries: Query, *, unit: ColumnElement, live: ColumnElement,
+    entries: Query, *, unit: InstrumentedAttribute, live: ColumnElement,
 ) -> HeldMovements:
     """Return the :class:`HeldMovements` of *entries*, in ONE statement.
 
@@ -324,10 +324,14 @@ def account_holding_movements(account_id: int) -> HeldMovements:
     both), so the transfer arm asks everything the row arm dropped.  On the
     ACCOUNT drift no door writes -- a shadow on this account under a
     transfer that names neither end here -- its movement is asked by
-    neither arm, and the door's step-2 delete of the rows ON the account
-    meets ``fk_transaction_entries_transaction_id``'s refusal (an error
-    page, nothing lost) instead of this designed one.  0 of 358 shadows on
-    the 2026-09-30 00:11 production dump.
+    neither arm here.  A LIVE such shadow still archives the account
+    through :func:`account_has_history`, and one whose postings reached
+    this account's ledger through :func:`account_has_ledger_postings`; a
+    hidden one with neither, at worst, reaches the door's step-2 delete of
+    the rows ON the account and meets
+    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
+    nothing lost) instead of this designed one.  0 of 358 shadows on the
+    2026-09-30 00:11 production dump.
 
     Args:
         account_id: The Account.id to check.

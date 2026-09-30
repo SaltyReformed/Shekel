@@ -314,7 +314,7 @@ def _leg_is_record():
 def _leg_transfer_id():
     """Return the column naming an entry's TRANSFER, over the join.
 
-    The first of the two things :func:`_entries_under_shadows`' join is for:
+    The first of the three things :func:`_entries_under_shadows`' join is for:
     which transfer an entry -- a covering movement, or anything else a
     shadow holds -- belongs to.  Through the interval it is
     the shadow's ``transfer_id``; at ``X-bi-6-4d`` it is whichever of the
@@ -451,9 +451,9 @@ def transfer_holds_a_movement() -> Exists:
     :func:`held_transfer_entries`, the same join).  Until that leaf each of
     those six doors walked the shadows itself, so ``X-bi-6-4d``, which moves
     a transfer's movements off the shadows onto the transfer, had six places
-    to find; for them it has one module, this one --
-    :func:`_entries_under_shadows` and :func:`_leg_transfer_id`, the join's
-    link and its transfer.
+    to find; for them it has one module, this one -- the join
+    (:func:`_entries_under_shadows`), its link (:func:`_movement_link`) and
+    its transfer (:func:`_leg_transfer_id`).
 
     **Any entry under any shadow of the transfer, live or dead, covering or
     not** (:func:`_entries_under_shadows`): the scope of the key it

@@ -260,8 +260,11 @@ class TestTheParentDecidesADrift:
                 ref_cache.status_id(StatusEnum.DONE)
             )
             db.session.commit()
+            db.session.expire_all()
             legs = _legs(xfer)
-            assert all(is_projected(leg) for leg in legs) and not any(
+            assert not is_projected(db.session.get(Transfer, xfer.id)) and all(
+                is_projected(leg) for leg in legs
+            ) and not any(
                 leg.entries for leg in legs
             ), "the plant: a Paid transfer over two Projected, empty legs"
             user_id = seed_user["user"].id
@@ -300,9 +303,13 @@ class TestTheParentDecidesADrift:
             db.session.flush()
             cover_bare_settled_row(db.session, leg, Decimal("500.00"))
             db.session.commit()
+            db.session.expire_all()
+            leg = db.session.get(Transaction, leg.id)
             assert is_projected(db.session.get(Transfer, xfer.id)) and (
-                leg.entries
-            ), "the plant: a Projected transfer over a Paid leg holding $500.00"
+                leg.status_id == ref_cache.status_id(StatusEnum.DONE)
+            ) and leg.entries, (
+                "the plant: a Projected transfer over a Paid leg holding $500.00"
+            )
             user_id = seed_user["user"].id
 
             locks = classify_schedule_locks(

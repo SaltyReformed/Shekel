@@ -343,19 +343,22 @@ def _items(
     (``Query.count``); one that needs more of each item swaps the columns
     with ``with_entities``, keeping the scope.
 
-    **Two premises the DOORS hold and no key does** (the reason
-    :func:`settled_items` gives for status drift, for the other two
-    columns a shadow mirrors).  A shadow's ``pay_period_id`` is its
-    transfer's (Transfer Invariant 3: ``transfer_service`` moves both
-    together, a restore re-aligns them, carry-forward's bulk moves exclude
-    shadows), so the row query's ``transfer_id IS NULL`` drops nothing the
-    transfer query does not ask.  On the PERIOD drift no door writes -- a
-    shadow in a period its transfer is not in -- that shadow is no item of
-    its period here, where the shadow read counted it: a period delete then
-    meets ``fk_transaction_entries_transaction_id``'s refusal (an error
-    page, nothing lost) instead of this designed one, and the reverse
-    drift, missed before, is caught.  0 of 358 shadows on the 2026-09-30
-    00:11 production dump.
+    **One premise the DOORS hold and no key does** (the reason
+    :func:`settled_items` gives for status drift, for the period a shadow
+    mirrors; the account a shadow mirrors is
+    ``archive_helpers.account_holding_movements``' premise).  A shadow's
+    ``pay_period_id`` is its transfer's (Transfer Invariant 3:
+    ``transfer_service`` moves both together, a restore re-aligns them,
+    carry-forward's bulk moves exclude shadows), so the row query's
+    ``transfer_id IS NULL`` drops nothing the transfer query does not ask.
+    On the PERIOD drift no door writes -- a shadow filed in period B while
+    its transfer is in period A -- each read misses one of the two: the
+    shadow read locked B and missed A, whose delete takes the transfer and
+    its shadows by cascade; this one locks A and misses B.  Deleting the
+    missed period then, at worst, meets
+    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
+    nothing lost) instead of this designed one.  0 of 358 shadows on the
+    2026-09-30 00:11 production dump.
 
     Args:
         periods: The pay-period ids to look in -- a list or a query of ids.
