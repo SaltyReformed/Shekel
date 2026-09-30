@@ -199,7 +199,10 @@ start in the same way -- four operator scripts do not yet
 
 **What this module does NOT do**, said here because the boundary is worth
 knowing rather than discovering: a COMMAND's own re-render still reads at
-``READ COMMITTED``, because it rides the transaction its writes are in.  That is
+``READ COMMITTED`` -- in the transaction its writes are in when it draws before
+committing, and in a NEW command transaction when it draws after its commit or
+rollback, which takes the owner's lock again at its start (the Per TRANSACTION
+paragraph above).  That is
 finding **N-358** and it has its own owner; closing it means the mutation routes
 adopting :func:`write_transaction` so their render falls outside the command,
 which moves the transaction boundary of every write door in the application and

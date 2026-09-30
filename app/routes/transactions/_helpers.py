@@ -217,11 +217,15 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     row_keys = grid_view_service.build_row_keys(
         [txn], categories, is_income_section=txn.is_income,
     )
-    # A just-settled transaction is neither cancelled nor deleted, so
-    # the SUCCESS path always yields a row key; the guard degrades to
-    # the desktop cell rather than raising IndexError.  The ERROR path
-    # can genuinely land here: the card lists filter cancelled rows
-    # out, so a stale card's rejected action (e.g. Mark Paid after
+    # A just-settled transaction is neither cancelled nor deleted, so the
+    # SUCCESS path yields a row key -- except in finding BAL-565's race: the
+    # answer is drawn in a transaction of its own after Mark Paid's commit,
+    # a Delete queued behind it can hide a recurring row first, and
+    # ``build_row_keys`` skips a deleted row, so the phone card can receive
+    # the desktop cell below (plan step ``balance:X-dc`` owns it).  The
+    # guard degrades to that cell rather than raising IndexError.  The
+    # ERROR path can genuinely land here: the card lists filter cancelled
+    # rows out, so a stale card's rejected action (e.g. Mark Paid after
     # another device cancelled) has no card to re-render -- swap in a
     # banner-only wrapper that keeps the requesting card's id and says
     # why the action was refused.
