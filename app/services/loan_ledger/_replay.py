@@ -29,12 +29,19 @@ one each time: put the rule at the tier every walk can reach.
 balance := seed
 standing := (interest 0.00, escrow 0.00, extra 0.00)
 
-CHARGE   (a period began)  balance <= 0  -> nothing accrues, nothing impounds
+CHARGE   (a period began)  on or before the loan's first tracking start,
+                                            clear standing first (R-R117)
+                           balance <= 0  -> nothing accrues, nothing impounds
                            otherwise     -> standing += (accrue(balance, rate),
                                                          escrow, extra_per_period)
 PAYMENT  (cash arrived)    allocate cash + standing.extra against standing,
                            advance the balance, and clear standing
-RESET    (an assertion)    record the balance just before, then overwrite it
+RESET    (an assertion)    record the balance just before, overwrite it, and
+                           clear standing (R-R72 part (2)) -- save the loan's
+                           first tracking start, with no Record balance on
+                           its day and the standing installment's own payment
+                           still to walk, which charges that installment
+                           again on the balance it states (R-R118)
 ```
 
 **Fused, the CHARGE and the PAYMENT made the payment COUNT the clock** (plan step
@@ -63,14 +70,39 @@ payment walks first, by its due date, and paid every unrecorded month since
 origination, arrears first, as its interest.  So when the loan's first
 balance after its opening is a tracking start, each charge dated on or before
 it REPLACES what stands (:func:`_first_tracking_start`): a month before the
-start is paid for only by a payment of its own walked before the start, and
-the months after it are charged as ever.  A month before the start whose own
-payment walks AFTER it -- one due off the contractual day, after the start
-but inside that month's interval -- meets the start's own clearing, as it
-meets any balance's, and that payment pays pure principal (finding
-**REC-555**; R-R72 part (2), not this rule).  A true-up (a Record balance), and
-a tracking start dated after another balance, keep the reset's own clearing
-alone.
+start is paid for only by a payment of its own, and the months after it are
+charged as ever.  A true-up (a Record balance), and a tracking start dated
+after another balance, keep the reset's own clearing alone.
+
+**That start charges the month it lands in on its OWN figure when that
+month's payment walks after it** (ruling **R-R118**).  A payment due off the
+contractual day, after the start but inside the interval of the installment
+standing when the start walks, walks after the start; the start's own
+clearing alone would leave it nothing to pay, so it would pay pure principal
+(finding **REC-555**).  The ruling's "lender's day" design (the REC-552
+study's option A*) walks the start before that installment's charge, so the
+installment accrues on the start's figure.  So when no payment has walked
+since the standing charge, and the next event after the start that is a
+charge or a payment is a payment (:func:`_flag_recharging_starts`), the
+start re-charges that installment on the balance it states
+(:func:`_accrued`, the charge arm's own accrual).  The start's displaced
+balance does not move, since a charge never touches the balance.  A second
+payment inside the interval, after one walked before the start, clears
+nothing fresh and pays pure principal, as any second payment does.  Any
+other balance keeps R-R72 part (2) ("a Record balance in the same place
+keeps your Sept 11 rule", in the ruling's words), and the start re-charges
+nothing when a true-up shares its day, whichever of the two the loader
+orders first: the design walks a Record balance at its own date, after the
+standing charge, so it clears what stands, and the interval's payment
+after it pays pure principal, as the ruling's "as the 'lender's day'
+design does" requires.  **One residual on that day, not this ruling's:**
+the design also walks the start BEFORE the charge, so the Record balance
+always closes the day, where the loader closes it on whichever statement
+was recorded later (plan step X-an-b's chronology, finding N-196,
+:func:`~app.services.loan_loaders.load_loan_anchor_facts`; unchanged).  A
+Record balance of $25,000.00 recorded before a start of $24,604.17 on the
+same day leaves $24,104.17 after the example's $500.00; the design would
+leave $24,500.00.
 
 **One stream, PAST and FUTURE** (plan step **recurrence:R16-c-1**, rulings
 **R-R90** and **R-R72**).  The stream carries the loan's recorded FACTS -- its
@@ -119,6 +151,37 @@ from ._charges import AccrualCharge, LoanCalendar, contract_charges
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
+
+
+@dataclass(frozen=True)
+class _Due:
+    """What stands against the loan until cash clears it.
+
+    The rule's ``standing`` triple (see the module docstring); in
+    :func:`replay_loan_events` the name ``standing`` is the CHARGE the
+    triple stands under, and this value is ``due``.
+
+    Attributes:
+        interest: The interest charged and not yet cleared.
+        escrow: The escrow impounded and not yet cleared.
+        extra: The hypothetical ``extra_per_period`` joined so far, which the
+            next payment's cash carries (never a real charge).
+    """
+
+    interest: Decimal
+    escrow: Decimal
+    extra: Decimal
+
+    def plus(self, other: "_Due") -> "_Due":
+        """Return this standing with *other* added to it, part by part."""
+        return _Due(
+            self.interest + other.interest,
+            self.escrow + other.escrow,
+            self.extra + other.extra,
+        )
+
+
+_NOTHING_DUE = _Due(_ZERO_MONEY, _ZERO_MONEY, _ZERO_MONEY)
 
 # The kind order applied WITHIN one date, and the whole of what this module
 # decides about ordering.  A CHARGE lands before the payments that clear it,
@@ -585,6 +648,138 @@ def _first_tracking_start(resets: Sequence[LoanResetEvent]) -> date | None:
     return first
 
 
+def _flag_recharging_starts(
+    order: list[tuple[int, object]], first_start: date | None,
+) -> list[tuple[int, object, bool]]:
+    """Return *order* with each event flagged ``True`` where its reset re-charges.
+
+    The whole of ruling **R-R118**'s trigger, decided over the walk order
+    before the walk: a reset re-charges the installment standing when it walks
+    (:func:`replay_loan_events`) when ALL of these hold --
+
+    * it is a tracking start on the loan's first tracking start's date
+      (*first_start*, :func:`_first_tracking_start`), so a true-up and a
+      later start keep ruling R-R72 part (2)'s clearing;
+    * no true-up (a Record balance) shares that date.  The ruling's design
+      walks a Record balance at its own date, after the standing charge, so
+      it clears the installment whichever of the two the loader orders
+      first.  The day's closing FIGURE still follows the loader's order (the
+      later statement's), as it did before the ruling, where the design
+      would close the day on the Record balance: the residual the module
+      docstring states.  R-R117's clearing is not disqualified by such a
+      true-up (:func:`_first_tracking_start`); this re-charge is;
+    * a charge has walked before it and no payment has walked since that
+      charge -- the standing installment has had no payment of its own, so a
+      payment after the start is that installment's FIRST, not a second one
+      that pays pure principal; and
+    * the next event after it that is a charge or a payment is a payment,
+      recorded or projected (:func:`_cash_before_the_next_charge`), so the
+      installment's own payment walks after the start.  Without one, the
+      start clears the installment as it always has: nothing pays it, and a
+      charge left standing would be paid first by the NEXT installment's
+      payment, as arrears.
+
+    A reset leaves "no payment since the charge" as it was, so two tracking
+    starts sharing *first_start* both re-charge, the later on its own
+    figure.
+
+    Args:
+        order: The walk order (:func:`_ordered`).
+        first_start: The loan's first tracking start's date, or ``None``.
+
+    Returns:
+        ``[(kind, event, recharges), ...]`` in *order*'s order.
+    """
+    recharge_on = None if any(
+        kind == _RESET
+        and not event.is_opening
+        and not event.is_tracking_start
+        and event.on_date == first_start
+        for kind, event in order
+    ) else first_start
+    flagged: list[tuple[int, object, bool]] = []
+    unpaid_charge = False
+    for index, (kind, event) in enumerate(order):
+        if kind == _CHARGE:
+            unpaid_charge = True
+        elif kind in (_PAYMENT, _PROJECTION):
+            unpaid_charge = False
+        flagged.append((
+            kind,
+            event,
+            kind == _RESET
+            and unpaid_charge
+            and event.is_tracking_start
+            and event.on_date == recharge_on
+            and _cash_before_the_next_charge(order, index),
+        ))
+    return flagged
+
+
+def _cash_before_the_next_charge(
+    order: list[tuple[int, object]], index: int,
+) -> bool:
+    """Return whether a payment walks after ``order[index]`` before any charge.
+
+    Resets between are passed over: one after the start clears what stands
+    by its own arm whatever the start did.
+
+    Args:
+        order: The walk order (:func:`_ordered`).
+        index: The position to look past.
+
+    Returns:
+        ``True`` when the first charge or payment after *index* is a payment
+        (recorded or projected); ``False`` when it is a charge or there is
+        none.
+    """
+    for kind, _event in order[index + 1:]:
+        if kind == _CHARGE:
+            return False
+        if kind in (_PAYMENT, _PROJECTION):
+            return True
+    return False
+
+
+def _accrued(
+    charge: AccrualCharge,
+    balance: Decimal,
+    extra_per_period: Decimal,
+    boundary: date | None,
+) -> _Due:
+    """Return what *charge* adds to what stands, accrued on *balance*.
+
+    **The ONE accrual of an installment in the replay**: the CHARGE arm adds
+    it to what stands, and the loan's first tracking start re-charges its
+    standing installment with it on the balance it states (ruling
+    **R-R118**), so one installment cannot be accrued two ways.  A CLOSED
+    loan (``balance <= 0``) accrues nothing and impounds nothing (see
+    :func:`replay_loan_events` for why that skip is kept); the hypothetical
+    *extra_per_period* joins at a charge on or after the projection
+    *boundary* only.
+
+    Args:
+        charge: The installment.
+        balance: The balance its interest accrues on.
+        extra_per_period: The what-if extra (``0.00`` for every real read).
+        boundary: The stream's :func:`projection_boundary`.
+
+    Returns:
+        The :class:`_Due` the installment adds.
+    """
+    if balance <= _ZERO_MONEY:
+        return _NOTHING_DUE
+    return _Due(
+        interest=accrue_monthly_interest(balance, charge.period.annual_rate),
+        escrow=charge.escrow,
+        extra=(
+            extra_per_period
+            if boundary is None or charge.on_date >= boundary
+            else _ZERO_MONEY
+        ),
+    )
+
+
 def replay_loan_events(
     seed: Decimal,
     stream: LoanEventStream,
@@ -600,19 +795,21 @@ def replay_loan_events(
     (:func:`~app.utils.money.apply_payment_cash`, the ONE allocation, over
     :func:`~app.utils.money.accrue_monthly_interest`, the ONE accrual).
 
-    A CLOSED loan (``balance <= 0``) accrues nothing and impounds nothing, so its
-    charge arm is skipped entirely; a payment that follows is a refund in full,
-    which the allocator's own closed-loan arm answers.
+    A CLOSED loan (``balance <= 0``) accrues nothing and impounds nothing
+    (:func:`_accrued`), so its charge adds nothing to what stands; a payment
+    that follows is a refund in full, which the allocator's own closed-loan
+    arm answers.
 
     **That skip is a TRANSCRIPTION of the fold it replaced, and no current test
-    distinguishes it** -- an adversarial review deleted the two lines and all 101
+    distinguishes it** -- an adversarial review deleted the skip and all 101
     tests in the loan files stayed green, which is worth recording rather than
     hiding.  The reason it cannot be observed today: a balance reaches ``<= 0``
     only at exactly ``0.00`` (principal caps at the balance), ``accrue_monthly_
     interest(0, r)`` is ``0.00`` anyway, and whatever escrow the arm would
-    accumulate is discarded by the allocator's own closed-loan arm at the payment
-    that always shares the charge's date.  It is kept because it is not
-    unobservable in PRINCIPLE: without it, ``extra_per_period`` would join a
+    accumulate is discarded by the allocator's own closed-loan arm at the next
+    payment, or cleared by the next balance statement first.  It is kept
+    because it is not unobservable in PRINCIPLE: without it,
+    ``extra_per_period`` would join a
     closed loan's refund, so a what-if search would report an ``excess`` inflated
     by money the owner never pays.  No reader consumes ``excess`` on the forward
     path today, which is the whole of why no test can see it.
@@ -640,13 +837,15 @@ def replay_loan_events(
         The :class:`LoanReplay`.
     """
     balance = seed
-    interest_due = escrow_due = extra_due = _ZERO_MONEY
+    due = _NOTHING_DUE
     standing: AccrualCharge | None = None
     payments: list[PaymentOutcome] = []
     resets: list[ResetOutcome] = []
     boundary = projection_boundary(stream)
     first_start = _first_tracking_start(stream.resets)
-    for kind, event in _ordered(stream, boundary):
+    for kind, event, recharges in _flag_recharging_starts(
+        _ordered(stream, boundary), first_start,
+    ):
         if kind == _CHARGE:
             # Recorded BEFORE the closed-loan test, so a payment always carries
             # its own accrual period's charge -- what governs its rate is a fact
@@ -661,21 +860,14 @@ def replay_loan_events(
                 # On or before, not before: a payment due on the start's own
                 # day walks between that day's charge and the start, and it
                 # pays that month alone.
-                interest_due = escrow_due = extra_due = _ZERO_MONEY
-            if balance <= _ZERO_MONEY:
-                continue
-            interest_due += accrue_monthly_interest(
-                balance, event.period.annual_rate,
-            )
-            escrow_due += event.escrow
-            if boundary is None or event.on_date >= boundary:
-                extra_due += extra_per_period
+                due = _NOTHING_DUE
+            due = due.plus(_accrued(event, balance, extra_per_period, boundary))
         elif kind in (_PAYMENT, _PROJECTION):
             split = apply_payment_cash(
-                event.cash + extra_due, balance, interest_due, escrow_due,
+                event.cash + due.extra, balance, due.interest, due.escrow,
             )
             balance = split.balance_after
-            interest_due = escrow_due = extra_due = _ZERO_MONEY
+            due = _NOTHING_DUE
             payments.append(PaymentOutcome(
                 event=event,
                 charge=standing,
@@ -694,9 +886,15 @@ def replay_loan_events(
             resets.append(
                 ResetOutcome(event=event, balance_before=balance)
             )
+            balance = event.balance
             # The assertion supersedes every charge standing before it
             # (ruling R-R72 part (2); reachable since plan step
-            # recurrence:R16-c-2 -- see the module docstring).
-            balance = event.balance
-            interest_due = escrow_due = extra_due = _ZERO_MONEY
+            # recurrence:R16-c-2 -- see the module docstring) -- save the
+            # loan's first tracking start when the standing installment's
+            # own payment walks after it: that installment is charged again
+            # on the balance the start states (ruling R-R118).
+            due = (
+                _accrued(standing, balance, extra_per_period, boundary)
+                if recharges else _NOTHING_DUE
+            )
     return LoanReplay(payments=payments, resets=resets)

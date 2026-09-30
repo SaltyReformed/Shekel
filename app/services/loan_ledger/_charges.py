@@ -42,6 +42,10 @@ An assertion clears every charge standing before it (R-R72 part (2)), so a
 mid-life loan's months before its tracking start are charged and cleared: by
 that statement, and month by month when it is the loan's first balance
 (ruling **R-R117**), so a payment the start holds pays its own month alone.
+That first start charges the installment it lands in again, on its own
+figure, when that installment's own payment walks after it and no Record
+balance shares its day (ruling **R-R118**,
+:func:`._replay.replay_loan_events`).
 
 Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
 """
@@ -164,7 +168,10 @@ def contract_charges(calendar: LoanCalendar, through: date) -> list[AccrualCharg
     it reaches principal (ruling **R-R72**, finding **D53**) -- except a month
     on or before the loan's first balance when that balance is a tracking
     start, which the replay drops (ruling **R-R117**,
-    :func:`.._replay.replay_loan_events`).  Each charge
+    :func:`.._replay.replay_loan_events`), save the installment that start
+    lands in, charged again on its figure when that installment's own
+    payment follows it and no Record balance shares its day (ruling
+    **R-R118**).  Each charge
     resolves its rate period and its escrow on its own installment date -- the
     contract's day, ruling D5 -- so a later rate or escrow change never
     re-prices an earlier month.

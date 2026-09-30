@@ -143,9 +143,13 @@ settles -- it walks the payment and then resets at the anchor
 reaches the post-assertion balance; an adversarial review of R16-b-2 measured
 the plan folding projected rows a true-up had already subsumed, money that
 vanished the day they settled.  The same assertion clears every charge
-standing before it (R-R72 part (2)), which is what lets the calendar run from
-origination: a loan configured mid-life has its pre-tracking months charged
-and cleared by the balance stated at setup, which plan step ``R20`` records as
+standing before it (R-R72 part (2); the loan's first tracking start charges
+the installment it lands in again, on its own figure, when that
+installment's own payment walks after it and no Record balance shares its
+day, ruling **R-R118**), which is what
+lets the calendar run from origination: a loan configured mid-life has its
+pre-tracking months charged and cleared by the balance stated at setup,
+which plan step ``R20`` records as
 the assertion it is (a ``tracking_start``, finding **REC-519**).  A loan
 configured before R20 without one reads as unpaid since origination -- which
 is what its records say, and not a bound this module guesses around.
@@ -658,7 +662,9 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     # before it contributes nothing to the post-assertion balance once it
     # settles -- and a plan that folded it would move by its whole cash the
     # day it did.  The same assertion clears every charge standing before it
-    # in the replay (R-R72 part (2)).
+    # in the replay (R-R72 part (2)), save the loan's first tracking start's
+    # re-charge of the installment it lands in (ruling R-R118; the replay
+    # states when it applies).
     payments = sorted(
         (
             payment for payment in planned + estimated

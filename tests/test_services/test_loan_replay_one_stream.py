@@ -20,11 +20,17 @@ step that first makes it reachable on live data:
 * **A loan's FIRST tracking start clears the months before it one by one**
   (ruling **R-R117**), so a payment the start holds pays its own month alone
   -- in every shape pinned here, exactly as the app splits it where only the
-  months holding a payment are charged (not in every shape: an off-day
-  payment walked after a balance is finding REC-555's, and an early extra
+  months holding a payment are charged (not in every shape: an early extra
   before the first installment differs by step R16-c-2's own pairing); a
   true-up, and a start dated after another balance, keep the reset's own
   clearing.
+* **That start charges the month it lands in on its own figure when that
+  month's payment walks after it** (ruling **R-R118**): a payment due off
+  the contractual day, after the start but inside the standing installment's
+  interval, pays that month's interest on the start's balance, recorded or
+  planned, where a Record balance in the same place still clears it (R-R72
+  part (2)) and the payment pays pure principal -- in the ruling's words,
+  "$102.52 less interest than today's app", by design.
 
 Pure: no database, no app context.  Every figure is stated by hand and checked
 against :func:`~app.utils.money.accrue_monthly_interest` /
@@ -141,8 +147,10 @@ def _example_charges(through: date, escrow: str = "0.00"):
     ]
 
 
-def _example_walk(payments, *assertions, through: date, escrow: str = "0.00"):
-    """Replay the example loan: its opening, then *assertions* and *payments*."""
+def _example_walk(
+    payments, *assertions, through: date, escrow: str = "0.00", projections=(),
+):
+    """Replay the example loan: its opening, then *assertions*, *payments* and *projections*."""
     return replay_loan_stream(LoanEventStream(
         charges=_example_charges(through, escrow),
         payments=payments,
@@ -150,6 +158,7 @@ def _example_walk(payments, *assertions, through: date, escrow: str = "0.00"):
             _reset(_EXAMPLE_ORIGINATION, "30000.00", is_opening=True),
             *assertions,
         ],
+        projections=projections,
     ))
 
 
@@ -305,7 +314,7 @@ class TestTheFirstTrackingStartClearsMonthByMonth:
         15.  The start's own reset already cleared every month before it, so
         marking it a tracking start changes no figure: the walk is the one a
         true-up on the same day gives, Mar 15 paying round(24,604.17 x 0.05
-        / 12) = $102.52 (102.5173) and $397.48 of principal.
+        / 12) = $102.52 (102.5174) and $397.48 of principal.
         """
         payments = [_payment(date(2026, 3, 15), "500.00")]
         as_start = _example_walk(
@@ -407,6 +416,227 @@ class TestTheRuleReachesOnlyTheLoansFirstBalance:
         [feb] = walk.payment_splits
         assert (feb.interest, feb.principal) == (
             Decimal("1625.00"), Decimal("-1125.00"),
+        )
+
+
+#: Ruling R-R118's worked example: tracking from Feb 20 at $24,604.17, and a
+#: $500.00 payment due Mar 1, off the loan's 15th, so inside the interval of
+#: the Feb 15 installment (Feb 15 - Mar 14) standing when the start walks.
+_STRADDLE_START = date(2026, 2, 20)
+_STRADDLE_DUE = date(2026, 3, 1)
+_STRADDLE_MONTH = date(2026, 2, 15)
+
+
+class TestTheFirstTrackingStartChargesTheMonthItLandsIn:
+    """Ruling R-R118: the start re-charges its month when that month's payment follows.
+
+    "A loan's first tracking start charges a month whose own payment comes
+    after it on the start's figure, as the 'lender's day' design does, so the
+    example books $102.52 / $397.48, as today.  A Record balance in the same
+    place keeps your Sept 11 rule: that payment books $0.00 / $500.00."  The
+    start's own clearing (R-R72 part (2)) left the Mar 1 payment nothing to
+    pay; the start now charges February's installment again on the balance
+    it states: round(24,604.17 x 0.05 / 12) = $102.52 (102.5174).
+    """
+
+    @pytest.mark.parametrize("projected", [False, True], ids=["recorded", "planned"])
+    def test_the_months_payment_after_the_start_pays_it_on_the_starts_figure(
+        self, projected,
+    ):
+        """Mar 1's $500.00 pays $102.52 of interest and $397.48 of principal.
+
+        Recorded or still planned alike: $24,604.17 - $397.48 = $24,206.69.
+        It pays February's installment, the one its date falls in.  The
+        start's displaced balance is unmoved -- the opening held flat,
+        $30,000.00 -- since a charge never touches the balance; the reads are
+        $24,604.17 on Feb 20 and, recorded, $24,206.69 from Mar 1.
+        """
+        start = _reset(_STRADDLE_START, "24604.17", is_tracking_start=True)
+        payment = _payment(_STRADDLE_DUE, "500.00")
+        walk = _example_walk(
+            [] if projected else [payment], start,
+            through=_STRADDLE_DUE, projections=[payment] if projected else [],
+        )
+        [mar] = walk.payment_splits
+        assert mar.is_projected is projected
+        assert (mar.interest, mar.principal, mar.balance_after) == (
+            Decimal("102.52"), Decimal("397.48"), Decimal("24206.69"),
+        )
+        assert mar.charge_date == _STRADDLE_MONTH
+        assert [c.owed_before for c in walk.anchor_corrections] == [
+            _ZERO, Decimal("30000.00"),
+        ]
+        if not projected:
+            assert [
+                _owed_on(walk, on) for on in (_STRADDLE_START, _STRADDLE_DUE)
+            ] == [Decimal("24604.17"), Decimal("24206.69")]
+        # The what-if extra joins at a charge on or after the projection
+        # boundary only -- the day after the latest recorded fact, Mar 2 with
+        # the payment recorded, Feb 21 with it planned; February's
+        # installment is before it either way, so the re-charge carries none
+        # and "an extra $100 a month" leaves Mar 1's split as it is.
+        topped = replay_loan_stream(walk.stream, extra_per_period=Decimal("100.00"))
+        assert topped.payment_splits == walk.payment_splits
+
+    def test_a_start_on_an_installment_day_charges_that_installment(self):
+        """Tracking from Feb 15 itself, no payment due that day; Mar 1's follows.
+
+        The start lands on February's installment day, after its charge, so
+        February is the installment standing when it walks, and Mar 1 is its
+        own payment: $102.52 / $397.48, as with a start on Feb 20.
+        """
+        walk = _example_walk(
+            [_payment(_STRADDLE_DUE, "500.00")],
+            _reset(_STRADDLE_MONTH, "24604.17", is_tracking_start=True),
+            through=_STRADDLE_DUE,
+        )
+        [mar] = walk.payment_splits
+        assert (mar.interest, mar.principal, mar.charge_date) == (
+            Decimal("102.52"), Decimal("397.48"), _STRADDLE_MONTH,
+        )
+
+    def test_the_months_escrow_is_charged_again_with_its_interest(self):
+        """The example with $100.00 of escrow a month.
+
+        Mar 1 clears $102.52 of interest and $100.00 of escrow, and $297.48
+        is principal, leaving $24,306.69.
+        """
+        walk = _example_walk(
+            [_payment(_STRADDLE_DUE, "500.00")],
+            _reset(_STRADDLE_START, "24604.17", is_tracking_start=True),
+            through=_STRADDLE_DUE, escrow="100.00",
+        )
+        [mar] = walk.payment_splits
+        assert (mar.interest, mar.escrow, mar.principal, mar.balance_after) == (
+            Decimal("102.52"), Decimal("100.00"), Decimal("297.48"),
+            Decimal("24306.69"),
+        )
+
+    @pytest.mark.parametrize(
+        "assertions",
+        [
+            (_reset(date(2026, 2, 20), "24604.17"),),
+            (
+                _reset(date(2026, 2, 20), "25000.00", is_tracking_start=True),
+                _reset(date(2026, 2, 20), "24604.17"),
+            ),
+            (
+                _reset(date(2026, 2, 20), "25000.00"),
+                _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+            ),
+            (
+                _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+                _reset(date(2026, 2, 25), "24604.17"),
+            ),
+            (
+                _reset(date(2026, 1, 20), "25000.00"),
+                _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+            ),
+            (
+                _reset(date(2026, 1, 20), "25000.00", is_tracking_start=True),
+                _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+            ),
+        ],
+        ids=[
+            "record-balance-alone",
+            "record-balance-after-the-start-on-its-day",
+            "record-balance-before-the-start-on-its-day",
+            "record-balance-later-in-the-month",
+            "start-after-a-record-balance",
+            "start-after-an-earlier-start",
+        ],
+    )
+    def test_any_other_balance_keeps_its_clearing(self, assertions):
+        """A Record balance in the same place, or a start that is not the loan's first.
+
+        A Record balance clears what stands: alone, on the start's own day
+        whichever of the two the loader orders first (the design walks a
+        Record balance at its own date, after February's charge), or later in
+        the month.  A start dated after another balance is not the loan's
+        first.  Each keeps R-R72 part (2): Mar 1 pays $0.00 / $500.00,
+        leaving $24,104.17.  On the start's own day the loader closes the day
+        on the later statement, $24,604.17 in both orders here, where the
+        design would close it on the Record balance: the residual the
+        replay's module docstring states, which in the Record-balance-first
+        case here would leave $24,500.00 instead.
+        """
+        walk = _example_walk(
+            [_payment(_STRADDLE_DUE, "500.00")], *assertions,
+            through=_STRADDLE_DUE,
+        )
+        [mar] = walk.payment_splits
+        assert (mar.interest, mar.principal, mar.balance_after) == (
+            _ZERO, Decimal("500.00"), Decimal("24104.17"),
+        )
+
+    def test_two_starts_on_the_first_day_charge_on_the_later_ones_figure(self):
+        """Two tracking starts on Feb 20, at $25,000.00 and then $24,604.17.
+
+        Both are the loan's first tracking start and no Record balance shares
+        their day, so each re-charges February and the later, the day's
+        closing balance, stands: Mar 1 pays $102.52 / $397.48, not
+        round(25,000.00 x 0.05 / 12) = $104.17.
+        """
+        walk = _example_walk(
+            [_payment(_STRADDLE_DUE, "500.00")],
+            _reset(_STRADDLE_START, "25000.00", is_tracking_start=True),
+            _reset(_STRADDLE_START, "24604.17", is_tracking_start=True),
+            through=_STRADDLE_DUE,
+        )
+        [mar] = walk.payment_splits
+        assert (mar.interest, mar.principal) == (
+            Decimal("102.52"), Decimal("397.48"),
+        )
+
+    def test_a_second_payment_in_the_month_pays_pure_principal(self):
+        """Feb 15's own payment walks before the start; Mar 1's is the month's second.
+
+        Feb 15 pays its own month, $125.00 / $375.00 on $30,000.00 (R-R117),
+        so nothing of February is left for Mar 1: it pays $0.00 / $500.00,
+        leaving $24,104.17, as a second payment inside one interval always
+        does.
+        """
+        walk = _example_walk(
+            [
+                _payment(_STRADDLE_MONTH, "500.00"),
+                _payment(_STRADDLE_DUE, "500.00"),
+            ],
+            _reset(_STRADDLE_START, "24604.17", is_tracking_start=True),
+            through=_STRADDLE_DUE,
+        )
+        feb, mar = walk.payment_splits
+        assert (feb.interest, feb.principal) == (
+            Decimal("125.00"), Decimal("375.00"),
+        )
+        assert (mar.interest, mar.principal, mar.balance_after) == (
+            _ZERO, Decimal("500.00"), Decimal("24104.17"),
+        )
+
+    def test_an_overdue_plan_pushed_past_the_next_charge_is_outside_the_month(self):
+        """Mar 15's $500.00 recorded; Mar 1's still planned, so pushed to Mar 16.
+
+        Walked behind the facts, the planned payment follows the Mar 15
+        charge, so no payment of February's walks between the start and the
+        next charge: the start clears February, Mar 15 pays its own month on
+        the start's figure, $102.52 / $397.48, and the pushed catch-up pays
+        what then stands, nothing: $0.00 / $500.00, leaving $23,706.69.
+        Re-charging February would have made Mar 15 pay two months, $205.04.
+        """
+        walk = _example_walk(
+            [_payment(date(2026, 3, 15), "500.00")],
+            _reset(_STRADDLE_START, "24604.17", is_tracking_start=True),
+            through=date(2026, 3, 15),
+            projections=[
+                _payment(_STRADDLE_DUE, "500.00", visible_on=date(2026, 3, 16)),
+            ],
+        )
+        mar_15, mar_1 = walk.payment_splits
+        assert (mar_15.interest, mar_15.principal) == (
+            Decimal("102.52"), Decimal("397.48"),
+        )
+        assert mar_1.is_projected
+        assert (mar_1.interest, mar_1.principal, mar_1.balance_after) == (
+            _ZERO, Decimal("500.00"), Decimal("23706.69"),
         )
 
 

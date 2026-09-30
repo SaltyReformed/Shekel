@@ -159,7 +159,10 @@ def loan_event_stream(
     charged, and the next payment clears those arrears before it reaches
     principal -- except a month on or before the loan's first balance when
     that balance is a tracking start, which the replay drops (ruling
-    **R-R117**).  A period holding two payments is charged once, and the second
+    **R-R117**), save the installment that start lands in, which it charges
+    again on its own figure when that installment's own payment walks after
+    it and no Record balance shares its day (ruling **R-R118**).  A period
+    holding two payments is charged once, and the second
     payment clears nothing fresh and pays pure principal.
 
     **EVERY input arrives PRE-ORDERED by its own loader, and nothing here or in
