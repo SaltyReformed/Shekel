@@ -28,6 +28,7 @@ from app.enums import MovementFigureSourceEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import transfer_legs
 from app.utils.dates import display_today
 from app.utils.hidden_row import HiddenRow
 
@@ -768,6 +769,17 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     ROW's to state (its settle day), and the figure is the settle's.
     Refused by name, with the door that owns the act.
 
+    **The name is the movement's PARENT's, asked of**
+    :func:`app.services.transfer_legs.movement_parent` **since plan step
+    ``balance:X-bi-6-4c-4``** (ruling **R-BAL160**): a plan row's own name,
+    or for a transfer's payment its LEG's label -- the one the grid shows,
+    composed from the endpoints' current names -- where it read the shadow
+    row's stored copy of that label.  Byte-identical wherever no account was
+    renamed since its transfer was written (0 of 40 transfer payments differ
+    on the 2026-09-30 00:11 production dump), and the one read of a
+    movement's parent ``X-bi-6-4d`` re-points when a transfer's payment has
+    no row at all.
+
     Args:
         entry: The purchase the door was asked to write.
 
@@ -776,7 +788,8 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     """
     if entry.covers_settlement:
         raise ValidationError(
-            f"This is the payment record of {entry.transaction.name}, "
+            "This is the payment record of "
+            f"{transfer_legs.movement_parent(entry).name}, "
             "written when that row was marked paid. "
             "It is not a purchase: to change the day its money moved, edit "
             "the row's settle day; to change the figure, correct the row's "
