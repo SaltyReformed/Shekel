@@ -81,7 +81,7 @@ from app.models.amount_ownership import AmountOwnership
 
 def _submit(
     seed_user, lines=(), transactions=(), entries=(), residual=None,
-    attributed=None,
+    attributed=None, transfers=(),
 ):
     """Accept a match naming exactly these subjects.
 
@@ -97,6 +97,8 @@ def _submit(
         residual: The difference the screen showed and the owner ticked.
         attributed: Which member carries that difference, as a
             ``(kind, orm_row)`` pair, or ``None``.
+        transfers: Transfer rows, each ticked as its leg on this account
+            (leaf ``balance:X-bi-6-4c-1``).
 
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
@@ -105,7 +107,7 @@ def _submit(
     return statement_match.accept_match(
         a_submission(
             scope, lines=lines, transactions=transactions, entries=entries,
-            residual=residual, attributed=attributed,
+            residual=residual, attributed=attributed, transfers=transfers,
         ),
         scope,
     )
@@ -1193,8 +1195,8 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
 
         with pytest.raises(ValidationError) as caught:
             _submit(
-                seed_user, lines=[line], transactions=[shadow, other],
-                residual="-0.06",
+                seed_user, lines=[line], transactions=[other],
+                transfers=[shadow.transfer], residual="-0.06",
             )
 
         assert "one half of a transfer" in str(caught.value)

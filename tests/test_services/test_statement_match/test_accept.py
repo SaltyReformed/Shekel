@@ -132,6 +132,7 @@ def _posted_cash_by_day(db, txn, account):
 
 def _submit(
     seed_user, lines=(), transactions=(), entries=(), residual=None,
+    transfers=(),
 ):
     """Accept a match naming exactly these subjects.
 
@@ -142,6 +143,8 @@ def _submit(
         entries: Purchase rows.
         residual: The difference the screen showed and the owner agreed to
             record, or ``None`` (plan step ``bank_import:X-f6d-4``).
+        transfers: Transfer rows, each ticked as its leg on this account
+            (leaf ``balance:X-bi-6-4c-1``).
 
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
@@ -155,7 +158,7 @@ def _submit(
     return statement_match.accept_match(
         a_submission(
             scope, lines=lines, transactions=transactions, entries=entries,
-            residual=residual,
+            residual=residual, transfers=transfers,
         ),
         scope,
     )
@@ -1059,7 +1062,7 @@ class TestATransferShadowIsMatchedThroughItsService:
             posted_on=bank_day,
         )
 
-        accepted = _submit(seed_user, lines=[line], transactions=[shadow])
+        accepted = _submit(seed_user, lines=[line], transfers=[shadow.transfer])
 
         assert accepted.settled_count == 1
         assert shadow.settled_on == bank_day
@@ -1119,7 +1122,7 @@ class TestATransferShadowIsMatchedThroughItsService:
         )
 
         with pytest.raises(ValidationError, match="no longer available"):
-            _submit(seed_user, lines=[line], transactions=[shadow])
+            _submit(seed_user, lines=[line], transfers=[parent])
 
 
 class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:

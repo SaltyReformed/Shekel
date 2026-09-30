@@ -66,11 +66,16 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.orm import Query
+from sqlalchemy.sql.expression import ColumnElement
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
+from app.services import transfer_legs
 from app.services.pay_calendar import PayCalendar
 from app.utils import archive_helpers
 from app.utils.balance_predicates import settled_status_ids
@@ -98,14 +103,20 @@ class PeriodLockReason(enum.Enum):
 
     **``HOLDS_MOVEMENT`` joined at plan step ``credit_card:CC-5-4a-4``**
     (rulings **R-CC54**: "truncate/regenerate lock its period", and
-    **R-CC66**'s badge): a period holding a row -- any status, soft-deleted
-    or not -- that holds a payment or a purchase, dated or not.  A movement
-    is money that moved, so a row holding one is history, and deleting the
-    period deleted it through ``transactions.pay_period_id``'s cascade;
+    **R-CC66**'s badge): a period holding a row or a transfer -- any status,
+    soft-deleted or not -- that holds a payment or a purchase, dated or not.
+    A movement is money that moved, so an item holding one is history, and
+    deleting the period deleted it through the ``pay_period_id`` cascades;
     the movement's key refuses that now, and this makes the refusal a
-    designed one.  It outranks ``LEDGER_POSTINGS`` because it is the truer
-    sentence where both hold: a dated purchase's own legs are what make a
-    period's ledger non-zero.
+    designed one.  It outranks ``LEDGER_POSTINGS`` because it is
+    the truer sentence where both hold: a dated purchase's own legs are
+    what make a period's ledger non-zero.
+
+    **A TRANSFER answers ``SETTLED_TXN`` and ``HOLDS_MOVEMENT`` for itself
+    since plan step ``balance:X-bi-6-4a-3``** (rulings **R-BAL125**,
+    **R-BAL157**): by its own status, and by the one ``transfer_legs``
+    question, never through its shadow rows (:func:`settled_items`,
+    :func:`items_holding_a_movement`).
     """
 
     HISTORICAL = "historical"
@@ -147,9 +158,10 @@ def _resolve_lock(
     Args:
         is_historical: The period has already ended (``end_date`` is
             before the reference date).
-        has_settled: The period holds a non-deleted settled transaction.
-        holds_movement: A row in the period holds a payment or a purchase
-            (see :func:`_period_ids_holding_movement`).
+        has_settled: The period holds a non-deleted settled row or transfer
+            (see :func:`settled_items`).
+        holds_movement: A row or a transfer in the period holds a payment or
+            a purchase (see :func:`items_holding_a_movement`).
         has_unbalanced_ledger: The period's journal entries do NOT net to
             zero per ledger account -- posted financial state a CASCADE
             delete would mis-state (see
@@ -227,8 +239,8 @@ def classify_schedule_locks(
     if not period_ids:
         return {}
 
-    settled = _period_ids_with_settled_transaction(period_ids)
-    holding = _period_ids_holding_movement(period_ids)
+    settled = _period_ids_of(settled_items(period_ids))
+    holding = _period_ids_of(items_holding_a_movement(period_ids))
     unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
 
     return {
@@ -242,38 +254,136 @@ def classify_schedule_locks(
     }
 
 
-def _period_ids_holding_movement(period_ids: list[int]) -> set[int]:
-    """Return the ``period_ids`` holding a row that holds a payment or purchase.
+def items_holding_a_movement(periods: "list[int] | Query") -> "tuple[Query, Query]":
+    """Return the ITEMS filed in *periods* that hold a payment or purchase.
 
-    **Every row, soft-deleted or not, and every status** (plan step
+    **Every item, soft-deleted or not, and every status** (plan step
     ``credit_card:CC-5-4a-4``, ruling **R-CC54**): the period's delete takes
-    every row filed under it through ``transactions.pay_period_id``'s
-    cascade, hidden ones and transfer shadows included (a shadow's period
-    is its transfer's, Transfer Invariant 3), so any of them holding a
-    movement is one the database now refuses to lose.  Dated or not: an
-    un-dated purchase is money in flight, as recorded as a dated one.
+    every row and transfer filed under it through the ``pay_period_id``
+    cascades, hidden ones included, so any of them holding a movement is
+    one the database now refuses to lose.  Dated or not: an un-dated
+    purchase is money in flight, as recorded as a dated one.  A transfer is
+    asked the ONE ``transfer_legs`` question (rulings **R-BAL125**,
+    **R-BAL157**), which reaches a DEAD shadow's kept payment too (finding
+    **BAL-532**); the cascade takes those.
+
+    The pay-period doors' one reading of it: the lock classifier's
+    ``HOLDS_MOVEMENT`` (per period), the reset gate's second count
+    (``pay_period_gates.movement_holding_row_count``) and "Remove earlier
+    paychecks"' refusal naming each item (``pay_period_gates``,
+    ruling **R-PC115**).
 
     Args:
-        period_ids: The pay-period ids being classified.
+        periods: The pay-period ids to look in -- a list, or a query of
+            ids (the reset gate's: every period of one owner).
 
     Returns:
-        The subset holding such a row.
+        :func:`_items`' pair of queries.
     """
-    rows = db.session.query(Transaction.pay_period_id).filter(
-        Transaction.pay_period_id.in_(period_ids),
-        archive_helpers.holds_a_movement(),
-    ).distinct().all()
-    return {row[0] for row in rows}
+    return _items(
+        periods,
+        rows=(archive_helpers.holds_a_movement(),),
+        transfers=(transfer_legs.transfer_holds_a_movement(),),
+    )
 
 
-def _period_ids_with_settled_transaction(period_ids: list[int]) -> set[int]:
-    """Return the subset of ``period_ids`` holding a non-deleted settled txn."""
-    rows = db.session.query(Transaction.pay_period_id).filter(
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.status_id.in_(settled_status_ids()),
-        Transaction.is_deleted.is_(False),
-    ).distinct().all()
-    return {row[0] for row in rows}
+def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
+    """Return the non-deleted SETTLED items filed in *periods*.
+
+    "Settled" is the canonical ``balance_predicates.settled_status_ids``
+    (Paid or Received), asked of a row's status and of a transfer's OWN
+    status (plan step ``balance:X-bi-6-4a-3``): a transfer's legs carry its
+    status (Transfer Invariant 3), and ``X-bi-6``'s end is status in one
+    row.  The lock classifier's ``SETTLED_TXN`` and the reset gate's first
+    count (``pay_period_gates.settled_transaction_count``) both read this,
+    so a row that does not lock a period cannot block a reset.
+
+    **On the drift Transfer Invariant 3 forbids, the parent decides**
+    (ruling **R-JM**): a settled parent over Projected shadows is settled
+    here, where the shadow read said it was not, and a Projected parent
+    over a settled shadow is not -- though any movement that shadow holds
+    still holds its period, through :func:`items_holding_a_movement`.  No
+    door writes either state; production held neither on the 2026-09-30
+    00:11 dump (0 shadows whose status differs from their parent's).
+
+    Args:
+        periods: As :func:`items_holding_a_movement`.
+
+    Returns:
+        :func:`_items`' pair of queries.
+    """
+    settled = settled_status_ids()
+    return _items(
+        periods,
+        rows=(
+            Transaction.status_id.in_(settled),
+            Transaction.is_deleted.is_(False),
+        ),
+        transfers=(
+            Transfer.status_id.in_(settled),
+            Transfer.is_deleted.is_(False),
+        ),
+    )
+
+
+def _items(
+    periods: "list[int] | Query",
+    *,
+    rows: "tuple[ColumnElement, ...]",
+    transfers: "tuple[ColumnElement, ...]",
+) -> "tuple[Query, Query]":
+    """Return ``(rows, transfers)``: one query per KIND of item, each yielding its period.
+
+    **An item is what the owner sees in a pay period**: a plan row, or a
+    TRANSFER once for its two legs.  A shadow row is never one -- it is its
+    transfer's -- so the row query excludes them (``transfer_id IS NULL``,
+    the discard gate's idiom) and the transfer query asks the transfer.
+    Each query yields one ``(pay_period_id,)`` per item, so a caller reads
+    the set of periods (:func:`_period_ids_of`) or counts the items
+    (``Query.count``); one that needs more of each item swaps the columns
+    with ``with_entities``, keeping the scope.
+
+    **One premise the DOORS hold and no key does** (the reason
+    :func:`settled_items` gives for status drift, for the period a shadow
+    mirrors; the account a shadow mirrors is
+    ``archive_helpers.account_holding_movements``' premise).  A shadow's
+    ``pay_period_id`` is its transfer's (Transfer Invariant 3:
+    ``transfer_service`` moves both together, a restore re-aligns them,
+    carry-forward's bulk moves exclude shadows), so the row query's
+    ``transfer_id IS NULL`` drops nothing the transfer query does not ask.
+    On the PERIOD drift no door writes -- a shadow filed in period B while
+    its transfer is in period A -- each read misses one of the two: the
+    shadow read locked B and missed A, whose delete takes the transfer and
+    its shadows by cascade; this one locks A and misses B.  Deleting the
+    missed period then, at worst, meets
+    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
+    nothing lost) instead of this designed one.  0 of 358 shadows on the
+    2026-09-30 00:11 production dump.
+
+    Args:
+        periods: The pay-period ids to look in -- a list or a query of ids.
+        rows: Clauses over ``Transaction`` selecting the row items.
+        transfers: Clauses over ``Transfer`` selecting the transfer items.
+
+    Returns:
+        ``(row query, transfer query)``, unexecuted.
+    """
+    return (
+        db.session.query(Transaction.pay_period_id).filter(
+            Transaction.pay_period_id.in_(periods),
+            Transaction.transfer_id.is_(None),
+            *rows,
+        ),
+        db.session.query(Transfer.pay_period_id).filter(
+            Transfer.pay_period_id.in_(periods), *transfers,
+        ),
+    )
+
+
+def _period_ids_of(items: "tuple[Query, Query]") -> set[int]:
+    """Return the periods holding any of *items* (a pair from :func:`_items`)."""
+    rows, transfers = items
+    return {period_id for (period_id,) in rows.union(transfers)}
 
 
 def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:

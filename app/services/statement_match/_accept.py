@@ -172,7 +172,12 @@ from ._variance import (
 from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
 from ._submission import MatchSubmission
-from ._valuation import repriced, settlement_price, settlement_candidate
+from ._valuation import (
+    recorded_leg_payment,
+    repriced,
+    settlement_candidate,
+    settlement_price,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -514,7 +519,11 @@ def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
     """Return *row* as the act will RECORD it: a ticked row as its movement.
 
     Plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**.  A PURCHASE and
-    a SETTLEMENT are movements already and pass through.  A TRANSACTION was
+    a SETTLEMENT are movements already and pass through.  A LEG is read back
+    the same way through its TRANSFER, whose door settled both sides: this
+    side's covering movement, reached as the leg's record and never through
+    the shadow it hangs off (:func:`~._valuation.recorded_leg_payment`, leaf
+    ``balance:X-bi-6-4c-1``).  A TRANSACTION was
     a Projected row when the screen offered it and
     :func:`~._moving.move_members` has since settled it through its own
     door, so it now holds exactly one covering movement carrying what the
@@ -526,9 +535,9 @@ def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
     **It reads back rather than assumes**, and it cannot fail to find the
     movement on any path this door admits: a row the offer set prices at
     ``0`` (one that settles from its purchases, or whose settle books
-    nothing) is never a candidate, the bank's figure for a member is refused
-    at ``0`` before any settle runs (:func:`~._variance.reject_unrecordable`),
-    and a transfer shadow's settle covers both legs.  A row settled with no
+    nothing) is never a candidate, and the bank's figure for a member is
+    refused at ``0`` before any settle runs
+    (:func:`~._variance.reject_unrecordable`).  A row settled with no
     movement would be a broken seam invariant, so it raises rather than
     records a member that names nothing.
 
@@ -545,11 +554,23 @@ def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
             movement is not a candidate of this screen -- both broken
             invariants rather than owner-reachable states.
     """
-    if row.kind is not RowKind.TRANSACTION:
+    if row.kind not in (RowKind.TRANSACTION, RowKind.LEG):
         return row
     # The movements a settle wrote are staged and need their ids: the member
     # names one by id, and the drift check re-reads it by id.
     db.session.flush()
+    if row.kind is RowKind.LEG:
+        recorded = recorded_leg_payment(
+            row.transfer_id, scope.calendar, scope.account_id,
+        )
+        if recorded is None:
+            raise RuntimeError(
+                f"Transfer {row.transfer_id} settled through the matcher and "
+                f"its side on account {scope.account_id} is not a payment "
+                "candidate here: the leg was offered here and its record must "
+                "be here too."
+            )
+        return recorded
     txn = db.session.get(Transaction, row.row_id)
     movement = status_seam.covering_movement_of(txn)
     if movement is None:

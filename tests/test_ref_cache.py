@@ -127,16 +127,20 @@ class TestRefCacheStatuses:
         (``app/__init__.py``).
         """
         with app.app_context():
-            real_query = db.session.query
+            # Patched on the proxy's CLASS (finding BAL-569): monkeypatch on
+            # the process-lived ``db.session`` INSTANCE restores by writing
+            # the bound method onto it, shadowing any later class-level
+            # patch (``test_commit_helpers._spy_rollback`` says how).
+            real_query = type(db.session).query
 
-            def fake_query(model):
+            def fake_query(session, model):
                 if model.__name__ == "LoanAnchorSource":
                     raise sqlalchemy.exc.ProgrammingError(
                         "SELECT", {}, Exception("relation does not exist")
                     )
-                return real_query(model)
+                return real_query(session, model)
 
-            monkeypatch.setattr(db.session, "query", fake_query)
+            monkeypatch.setattr(type(db.session), "query", fake_query)
             unavailable = ref_cache.init(db.session)
 
             # Only the failed table is reported unavailable.

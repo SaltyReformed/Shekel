@@ -1,4 +1,4 @@
-"""The app's three matchable SUBJECTS, as one value the whole package passes.
+"""The app's four matchable SUBJECTS, as one value the whole package passes.
 
 Split out of :mod:`._offers` at plan step ``credit_card:CC-5-4a-1``, when
 that module crossed the 1,000-line bound (ruling **balance:R-IR**: the
@@ -7,7 +7,8 @@ session that breaks a module splits it, by SUBJECT).  The seam is the one
 correspondence the app OFFERS between what the bank recorded and what the app
 already holds -- and what the app holds is THIS module's value.  A
 :class:`CandidateRow` is one app-side subject priced and dated as the app
-holds it, :class:`RowKind` says which of the three subjects it is, and
+holds it, :class:`RowKind` says which of the four subjects it is (the
+fourth, a transfer's LEG, since leaf ``balance:X-bi-6-4c-1``), and
 :class:`Candidates` is an account's whole offerable set.  Nothing here knows
 a bank line.
 
@@ -35,7 +36,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
 
 
 class RowKind(enum.Enum):
-    """Which of the app's three matchable subjects a candidate is.
+    """Which of the app's four matchable subjects a candidate is.
 
     **Two facts are tagged by one kind, and a third member is what made
     them two** (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**).
@@ -51,6 +52,24 @@ class RowKind(enum.Enum):
     door are its ROW's: the member names the movement, on the account the
     money moved through; the price is the row's record; the window is the
     row's paycheck; a match dates it by re-settling the row.
+
+    **A LEG is one side of a still-planned TRANSFER, on the screen's
+    account** (leaf ``balance:X-bi-6-4c-1``, rulings **R-BAL87**,
+    **R-BAL159**): its figure is what settling the transfer would book on
+    this account (``transfer_service.leg_settle_amount``), its clock is the
+    transfer's paycheck, and its door is the transfer's
+    (``settle_transfer``).  It is keyed by the TRANSFER's id, not by the
+    hidden shadow row the transfer service still writes on this account:
+    R-BAL87 makes a leg's identity ``(transfer, account)``, and on ONE
+    account's screen the account is the scope's, so the transfer names the
+    leg and the kind says it is one (R-BAL159) -- no identity test is asked
+    of the id's shape.  It names no entry: the member an accepted match
+    records is the covering movement the settle writes, a SETTLEMENT (ruling
+    **R-CC43**).  Until this leaf a transfer was offered as its shadow, a
+    TRANSACTION, which ``X-bi-6-4d`` would have left with nothing to offer.
+    A PAID transfer's side is a SETTLEMENT whose parent is the transfer's
+    leg rather than a row (:attr:`CandidateRow.transfer_id` set,
+    :attr:`CandidateRow.parent_id` ``None``).
 
     **The MOVEMENT is the subject of every settled match** (ruling
     **R-CC43**, developer 2026-09-21): a settled row is offered as its
@@ -77,19 +96,23 @@ class RowKind(enum.Enum):
     TRANSACTION = "transaction"
     PURCHASE = "purchase"
     SETTLEMENT = "settlement"
+    LEG = "leg"
 
     @property
     def names_an_entry(self) -> bool:
-        """Return whether a member of this kind names a ``transaction_entries`` row.
+        """Return whether a candidate of this kind names a ``transaction_entries`` row.
 
         The member table's column, asked of the kind rather than spelled at
         each writer and reader: ``transaction_entry_id`` for a PURCHASE and a
-        SETTLEMENT, ``transaction_id`` for a TRANSACTION.
+        SETTLEMENT.  A TRANSACTION names a ``transactions`` row and a LEG a
+        ``transfers`` row, and neither is ever a MEMBER: the accept door reads
+        each back as the covering movement its settle wrote before it records
+        the act (``_accept._as_recorded``), so every member names an entry.
 
         Returns:
             ``True`` for the two entry kinds.
         """
-        return self is not RowKind.TRANSACTION
+        return self in (RowKind.PURCHASE, RowKind.SETTLEMENT)
 
 
 @dataclass(frozen=True)
@@ -111,11 +134,13 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     facts it was a copy of.
 
     Attributes:
-        kind: Which of the three subjects it is (:class:`RowKind`): the
+        kind: Which of the four subjects it is (:class:`RowKind`): the
             table :attr:`row_id` indexes, and whose record the figure, the
             clock and the door are.
         row_id: Its primary key within that table -- the movement's for a
-            SETTLEMENT, whose row is :attr:`transaction_id`.
+            SETTLEMENT, whose row is :attr:`transaction_id`, and the
+            TRANSFER's for a LEG, whose account is the screen's (ruling
+            **R-BAL159**).
         label: What to call it on screen.
         cash_amount: Its SIGNED cash effect on this account -- positive INTO,
             the same convention ``bank_statement_lines.amount`` uses, so the
@@ -145,14 +170,17 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             two derivations that can disagree.  See
             :attr:`figure_is_correctable`, which is the question those two
             modules actually ask.
-        transfer_id: The parent transfer when this row is a shadow leg, else
-            ``None``.  Carried because a shadow settles through
-            ``transfer_service`` and not through the transaction verb, and a
-            writer that had to re-derive that would be a second place for the
-            partition to be stated.
+        transfer_id: The transfer when this candidate is one side of one --
+            a LEG, or a SETTLEMENT that is a leg's payment -- else ``None``.
+            Carried because a transfer settles through ``transfer_service``
+            and not through the transaction verb, and a writer that had to
+            re-derive that would be a second place for the partition to be
+            stated.  For a LEG it is :attr:`row_id` again, the one value the
+            leg's constructor reads both from.
         parent_id: The envelope a PURCHASE belongs to, or the row a
             SETTLEMENT is the payment of, else ``None`` -- a transaction IS a
-            parent and names no other.  Carried so the proposer can decline
+            parent and names no other, and a leg's payment pays no row (its
+            parent is the transfer, :attr:`transfer_id`).  Carried so the proposer can decline
             to offer a group holding an envelope AND a purchase inside it,
             which the accept door always refuses because the envelope's
             figure already covers its own purchases; without it the screen
@@ -205,7 +233,11 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             row's assertion onto the movement, and the row's counter sees
             what the mirror does not (a reverted row moved to another
             paycheck, a rename); both only rise, so the sum rises on any
-            change to either.
+            change to either.  A LEG carries its TRANSFER's counter, and a
+            leg's payment the movement's plus the transfer's
+            (:func:`~._leg_valuation.leg_candidate`,
+            :func:`~._valuation.leg_settlement_candidate`): the transfer row
+            is where a leg's period, status and figure are edited.
 
             **It is carried for the same reason** :attr:`states_own_figure`
             **is: a second module needs the fact and cannot ask for it.**  A
@@ -242,10 +274,12 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         candidate itself for a TRANSACTION, its row for a SETTLEMENT (plan
         step ``credit_card:CC-5-4a-1``).  ``None`` for a PURCHASE, whose
         record is its own and whose parent is a container rather than the
-        subject -- a reader that wants the container reads :attr:`parent_id`.
+        subject -- a reader that wants the container reads :attr:`parent_id`
+        -- and for a LEG and a leg's payment, whose record is a transfer's
+        (:attr:`transfer_id`; leaf ``balance:X-bi-6-4c-1``).
 
         Returns:
-            The row id, or ``None`` for a purchase.
+            The row id, or ``None`` for a purchase or a transfer's side.
         """
         if self.kind is RowKind.TRANSACTION:
             return self.row_id
@@ -448,9 +482,10 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
 
         The two facts it reads are the row's own, and each is stated once:
 
-        * a transfer SHADOW cannot be corrected alone -- ``CLAUDE.md`` transfer
-          invariant 3 holds its amount equal to its parent's, so the correction
-          is to the TRANSFER.  :attr:`transfer_id` is that fact;
+        * one side of a TRANSFER cannot be corrected alone -- ``CLAUDE.md``
+          transfer invariant 3 holds both sides equal to the parent, so the
+          correction is to the TRANSFER.  :attr:`transfer_id` is that fact,
+          for a LEG and a leg's payment alike;
         * a row whose figure is not its own to state cannot be corrected at
           all, because the next sibling write reverts it (finding **N-252**).
           :attr:`states_own_figure` is that fact, and it is TWO published
@@ -527,15 +562,22 @@ class Candidates:
     the "no silent caps" discipline applied to a money screen.
 
     Attributes:
-        rows: The offerable candidates: the settled records (SETTLEMENT),
-            then the Projected rows (TRANSACTION), then the purchases
+        rows: The offerable candidates: the settled records (SETTLEMENT --
+            rows' and legs' payments together, by recorded day), then the
+            Projected rows (TRANSACTION), then the still-planned transfer
+            legs (LEG), then the purchases
             (:func:`~._candidates.candidates_for`).
-        unpriceable_ids: The transactions the amount model had no rule for.
-            Empty on today's data -- every production row still owns its
-            figure -- and live from the first per-kind cutover (plan step
-            ``balance:X-au-d``).  They are NOT candidates: a matcher that
-            offered a row it could not price would be guessing.
+        unpriceable: The ``(kind, row_id)`` of every subject that could not
+            be priced -- a row the amount model had no rule for, and since
+            leaf ``balance:X-bi-6-4c-1`` a leg whose transfer is damaged
+            (ruling **R-BAL158**: not offered, and counted in the screen's
+            "could not be priced" note).  Keyed by subject rather than by a
+            bare id because two tables' ids now share it.  Empty on today's
+            data -- every production row still owns its figure and no
+            transfer is damaged -- and live from the first per-kind cutover
+            (plan step ``balance:X-au-d``).  They are NOT candidates: a
+            matcher that offered a row it could not price would be guessing.
     """
 
     rows: "list[CandidateRow]"
-    unpriceable_ids: "tuple[int, ...]"
+    unpriceable: "tuple[tuple[RowKind, int], ...]"
