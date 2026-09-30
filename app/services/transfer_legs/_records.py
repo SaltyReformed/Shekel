@@ -2,10 +2,11 @@
 Shekel Budget App -- A leg's RECORD: the one join to its covering movement.
 
 The half of :mod:`app.services.transfer_legs` that reaches a leg's covering
-MOVEMENT.  :func:`_movements_under_shadows` is the ONE join through the
-interval (a movement still hangs off the transfer's shadow row, by
-:func:`_movement_link`), :func:`_covering_movements_query` that join narrowed
-to leg RECORDS by :func:`_leg_is_record`, and :func:`_leg_transfer_id` and
+MOVEMENT.  :func:`_entries_under_shadows` is the ONE join through the
+interval (an entry still hangs off the transfer's shadow row, by
+:func:`_movement_link`), :func:`_movements_under_shadows` that join narrowed
+to covering movements, :func:`_covering_movements_query` narrowed further to
+leg RECORDS by :func:`_leg_is_record`, and :func:`_leg_transfer_id` and
 :func:`_leg_is_income` say which transfer and which side over them.  Every
 loader in this package that asks the join lives here -- the plan half's
 :func:`planned_transfer_legs` and the reconcile panel's
@@ -32,7 +33,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sqlalchemy import or_
-from sqlalchemy.orm import contains_eager
+from sqlalchemy.orm import Query, contains_eager
+from sqlalchemy.sql.expression import ColumnElement, Exists
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -233,7 +235,7 @@ def _covering_movements_query():
 
 
 def _movements_under_shadows():
-    """Return the ONE join WITHOUT its record test: covering movements under any row, live or dead.
+    """Return the covering movements under any row, live or dead: the join WITHOUT its record test.
 
     :func:`_covering_movements_query` is this narrowed to leg RECORDS; the
     ledger writer's family (:func:`transfer_family_movements`) needs the
@@ -250,7 +252,7 @@ def _movements_under_shadows():
     return _entries_under_shadows().filter(_is_covering())
 
 
-def _entries_under_shadows():
+def _entries_under_shadows() -> Query:
     """Return the ONE join BARE: every entry under any row, covering or not, live or dead.
 
     :func:`_movements_under_shadows` is this narrowed to covering movements
@@ -310,10 +312,11 @@ def _leg_is_record():
 
 
 def _leg_transfer_id():
-    """Return the column naming a covering movement's TRANSFER, over the join.
+    """Return the column naming an entry's TRANSFER, over the join.
 
-    The first of the two things :func:`_covering_movements_query`'s join is
-    for: which transfer a movement is one leg of.  Through the interval it is
+    The first of the two things :func:`_entries_under_shadows`' join is for:
+    which transfer an entry -- a covering movement, or anything else a
+    shadow holds -- belongs to.  Through the interval it is
     the shadow's ``transfer_id``; at ``X-bi-6-4d`` it is whichever of the
     movement's two side links is set (ruling **R-BAL88**).
     """
@@ -435,7 +438,7 @@ def dated_leg_exists_clause(*filters):
     )
 
 
-def transfer_holds_a_movement():
+def transfer_holds_a_movement() -> Exists:
     """Return the SQL truth of "this transfer holds a payment or purchase".
 
     **The ONE spelling of the question for a TRANSFER** (leaf
@@ -448,7 +451,9 @@ def transfer_holds_a_movement():
     :func:`held_transfer_entries`, the same join).  Until that leaf each of
     those six doors walked the shadows itself, so ``X-bi-6-4d``, which moves
     a transfer's movements off the shadows onto the transfer, had six places
-    to find; for them it has one, :func:`_entries_under_shadows`.
+    to find; for them it has one module, this one --
+    :func:`_entries_under_shadows` and :func:`_leg_transfer_id`, the join's
+    link and its transfer.
 
     **Any entry under any shadow of the transfer, live or dead, covering or
     not** (:func:`_entries_under_shadows`): the scope of the key it
@@ -471,7 +476,7 @@ def transfer_holds_a_movement():
     )
 
 
-def held_transfer_entries(*filters):
+def held_transfer_entries(*filters: ColumnElement) -> Query:
     """Return every entry the transfers matching *filters* hold, each with its transfer.
 
     :func:`transfer_holds_a_movement` as rows rather than a test: the

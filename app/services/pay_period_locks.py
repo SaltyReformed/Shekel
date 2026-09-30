@@ -66,6 +66,9 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.orm import Query
+from sqlalchemy.sql.expression import ColumnElement
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
@@ -251,7 +254,7 @@ def classify_schedule_locks(
     }
 
 
-def items_holding_a_movement(periods) -> "tuple":
+def items_holding_a_movement(periods: "list[int] | Query") -> "tuple[Query, Query]":
     """Return the ITEMS filed in *periods* that hold a payment or purchase.
 
     **Every item, soft-deleted or not, and every status** (plan step
@@ -284,7 +287,7 @@ def items_holding_a_movement(periods) -> "tuple":
     )
 
 
-def settled_items(periods) -> "tuple":
+def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
     """Return the non-deleted SETTLED items filed in *periods*.
 
     "Settled" is the canonical ``balance_predicates.settled_status_ids``
@@ -323,7 +326,12 @@ def settled_items(periods) -> "tuple":
     )
 
 
-def _items(periods, *, rows, transfers) -> "tuple":
+def _items(
+    periods: "list[int] | Query",
+    *,
+    rows: "tuple[ColumnElement, ...]",
+    transfers: "tuple[ColumnElement, ...]",
+) -> "tuple[Query, Query]":
     """Return ``(rows, transfers)``: one query per KIND of item, each yielding its period.
 
     **An item is what the owner sees in a pay period**: a plan row, or a
@@ -334,6 +342,20 @@ def _items(periods, *, rows, transfers) -> "tuple":
     the set of periods (:func:`_period_ids_of`) or counts the items
     (``Query.count``); one that needs more of each item swaps the columns
     with ``with_entities``, keeping the scope.
+
+    **Two premises the DOORS hold and no key does** (the reason
+    :func:`settled_items` gives for status drift, for the other two
+    columns a shadow mirrors).  A shadow's ``pay_period_id`` is its
+    transfer's (Transfer Invariant 3: ``transfer_service`` moves both
+    together, a restore re-aligns them, carry-forward's bulk moves exclude
+    shadows), so the row query's ``transfer_id IS NULL`` drops nothing the
+    transfer query does not ask.  On the PERIOD drift no door writes -- a
+    shadow in a period its transfer is not in -- that shadow is no item of
+    its period here, where the shadow read counted it: a period delete then
+    meets ``fk_transaction_entries_transaction_id``'s refusal (an error
+    page, nothing lost) instead of this designed one, and the reverse
+    drift, missed before, is caught.  0 of 358 shadows on the 2026-09-30
+    00:11 production dump.
 
     Args:
         periods: The pay-period ids to look in -- a list or a query of ids.
@@ -355,7 +377,7 @@ def _items(periods, *, rows, transfers) -> "tuple":
     )
 
 
-def _period_ids_of(items) -> set[int]:
+def _period_ids_of(items: "tuple[Query, Query]") -> set[int]:
     """Return the periods holding any of *items* (a pair from :func:`_items`)."""
     rows, transfers = items
     return {period_id for (period_id,) in rows.union(transfers)}

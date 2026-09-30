@@ -111,8 +111,10 @@ whether a transfer holds a payment or purchase -- the pay-period lock, the
 reset gate, "Remove earlier paychecks" and the three archive or delete doors
 (:func:`transfer_holds_a_movement`, :func:`held_transfer_entries`).  **Other
 readers still reach it themselves until their leaf moves them** and
-``X-bi-6-4d`` must find each -- among them statement match (6-4c-1) and
-DC-11's raw-SQL leg arm (``scripts/integrity_check.py``).
+``X-bi-6-4d`` must find each -- among them statement match (6-4c-1),
+DC-11's raw-SQL leg arm (``scripts/integrity_check.py``) and "Remove earlier
+paychecks"' dated-money arm, which reads a transfer's settle DAY off its
+shadows (``pay_period_gates._settled_transaction``, finding **BAL-568**).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair

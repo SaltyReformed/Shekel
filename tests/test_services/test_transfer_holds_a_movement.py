@@ -38,14 +38,17 @@ from app.services.pay_period_locks import (
     classify_schedule_locks,
 )
 from app.services.transfer_legs import transfer_holds_a_movement
+from app.utils.balance_predicates import is_projected
 from app.utils.dates import display_today
 from tests._test_helpers import (
     add_entry,
     add_txn,
+    cover_bare_settled_row,
     create_account_of_type,
     create_settled_transfer,
     create_transfer,
     rhythm_of,
+    settle_day_columns,
 )
 
 
@@ -186,10 +189,15 @@ class TestTheOneClause:
 class TestThePeriodLock:
     """The classifier reads a transfer's own status and the one clause."""
 
-    def test_a_paid_transfer_locks_its_period_by_its_own_status(
+    def test_a_paid_transfer_alone_locks_its_period(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """No row of the period is settled; the $500.00 transfer is."""
+        """No row of the period is settled; the $500.00 transfer is.
+
+        On this door-written state the transfer and its legs share one
+        status, so this cannot tell which of them the lock read:
+        :class:`TestTheParentDecidesADrift` can.
+        """
         with app.app_context():
             period = seed_periods_today[4]
             _paid_500(seed_user, seed_periods_today)
@@ -217,6 +225,93 @@ class TestThePeriodLock:
             )
 
             assert locks[period.id] is PeriodLockReason.HOLDS_MOVEMENT
+
+
+class TestTheParentDecidesADrift:
+    """On the status drift Transfer Invariant 3 forbids, the TRANSFER's status is read.
+
+    Ruling **R-JM** (a transfer's leg reads its parent), as
+    ``pay_period_locks.settled_items`` states it.  No door writes either
+    state -- every status change goes through ``apply_status_to_all_three``
+    -- and production held neither on the 2026-09-30 00:11 dump; each is
+    planted around the service, as ``test_transfer_legs``' drift class
+    does, because on every door-written state the transfer and its legs
+    share one status, so a lock still reading the LEGS' status passes every
+    test above.  These are the states that tell the two apart.
+    """
+
+    def test_a_paid_transfer_over_projected_legs_is_settled(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Drift B: the $500.00 transfer set Paid alone; its legs say Projected.
+
+        The legs' status read no settled item here (the period unlocked,
+        a settled count of 0); the transfer's reads one.
+        """
+        with app.app_context():
+            period = seed_periods_today[4]
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"],
+                _savings(seed_user, seed_periods_today), period,
+                amount=Decimal("500.00"),
+            )
+            db.session.commit()
+            db.session.get(Transfer, xfer.id).status_id = (
+                ref_cache.status_id(StatusEnum.DONE)
+            )
+            db.session.commit()
+            legs = _legs(xfer)
+            assert all(is_projected(leg) for leg in legs) and not any(
+                leg.entries for leg in legs
+            ), "the plant: a Paid transfer over two Projected, empty legs"
+            user_id = seed_user["user"].id
+
+            locks = classify_schedule_locks(
+                calendar_for(user_id), as_of=display_today(),
+            )
+
+            assert locks[period.id] is PeriodLockReason.SETTLED_TXN
+            assert pay_period_gates.settled_transaction_count(user_id) == 1
+
+    def test_a_projected_transfer_over_a_paid_leg_holds_by_its_movement(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Drift A: one leg set Paid alone, its $500.00 payment recorded under it.
+
+        The transfer is Projected, so it is no SETTLED item -- the legs'
+        status read made it one -- and the payment its leg holds still locks
+        the period, as ``settled_items``' docstring says.
+        """
+        with app.app_context():
+            period = seed_periods_today[4]
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"],
+                _savings(seed_user, seed_periods_today), period,
+                amount=Decimal("500.00"),
+            )
+            db.session.commit()
+            leg = next(
+                leg for leg in _legs(xfer)
+                if leg.account_id == seed_user["account"].id
+            )
+            for column, value in settle_day_columns(display_today()).items():
+                setattr(leg, column, value)
+            leg.status_id = ref_cache.status_id(StatusEnum.DONE)
+            db.session.flush()
+            cover_bare_settled_row(db.session, leg, Decimal("500.00"))
+            db.session.commit()
+            assert is_projected(db.session.get(Transfer, xfer.id)) and (
+                leg.entries
+            ), "the plant: a Projected transfer over a Paid leg holding $500.00"
+            user_id = seed_user["user"].id
+
+            locks = classify_schedule_locks(
+                calendar_for(user_id), as_of=display_today(),
+            )
+
+            assert locks[period.id] is PeriodLockReason.HOLDS_MOVEMENT
+            assert pay_period_gates.settled_transaction_count(user_id) == 0
+            assert pay_period_gates.movement_holding_row_count(user_id) == 1
 
 
 class TestTheResetCounts:

@@ -43,6 +43,9 @@ rows, so ``X-bi-6-4d`` moves the answer in one place.
 
 from dataclasses import dataclass
 
+from sqlalchemy.orm import Query
+from sqlalchemy.sql.expression import ColumnElement
+
 from app.extensions import db
 from app.models.journal_entry import Posting
 from app.models.ledger_account import LedgerAccount
@@ -178,7 +181,7 @@ class HeldMovements:
         )
 
 
-def rows_holding_movements(*row_scope) -> HeldMovements:
+def rows_holding_movements(*row_scope: ColumnElement) -> HeldMovements:
     """Return what the rows matching *row_scope* hold, in ONE statement.
 
     The row body of the ``*_holding_movements`` family, and the archives'
@@ -202,7 +205,9 @@ def rows_holding_movements(*row_scope) -> HeldMovements:
     )
 
 
-def _held(entries, *, unit, live) -> HeldMovements:
+def _held(
+    entries: Query, *, unit: ColumnElement, live: ColumnElement,
+) -> HeldMovements:
     """Return the :class:`HeldMovements` of *entries*, in ONE statement.
 
     One aggregate, so the three facts come back together.  ``bool_or`` over
@@ -265,7 +270,7 @@ def transfer_template_holding_movements(template_id: int) -> HeldMovements:
     )
 
 
-def transfers_holding_movements(*transfer_scope) -> HeldMovements:
+def transfers_holding_movements(*transfer_scope: ColumnElement) -> HeldMovements:
     """Return what the legs of the transfers matching *transfer_scope* hold.
 
     The recurring-transfer permanent delete's refusal
@@ -311,6 +316,18 @@ def account_holding_movements(account_id: int) -> HeldMovements:
     transfers together, as the owner sees them; the one caller
     (``routes/accounts/crud._history_refusal``) reads only whether anything
     is held and :attr:`HeldMovements.noun`.
+
+    **The row arm drops the shadows on a premise the DOORS hold and no key
+    does**: a shadow on this account is a leg of a transfer from or to it
+    (``transfer_service`` writes the expense shadow on the from-account and
+    the income shadow on the to-account, and an endpoint move re-points
+    both), so the transfer arm asks everything the row arm dropped.  On the
+    ACCOUNT drift no door writes -- a shadow on this account under a
+    transfer that names neither end here -- its movement is asked by
+    neither arm, and the door's step-2 delete of the rows ON the account
+    meets ``fk_transaction_entries_transaction_id``'s refusal (an error
+    page, nothing lost) instead of this designed one.  0 of 358 shadows on
+    the 2026-09-30 00:11 production dump.
 
     Args:
         account_id: The Account.id to check.
