@@ -482,7 +482,9 @@ def search_gap(
         crowded_days: The days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
-            could not price (:attr:`~._subjects.Candidates.unpriceable_ids`).
+            could not price, and of its transfers' sides the app could not
+            price because the transfer is damaged (ruling **R-BAL158**)
+            (:attr:`~._subjects.Candidates.unpriceable`).
 
     Returns:
         One sentence naming the gap, for the receipt that has to say what it

@@ -28,6 +28,7 @@ from app.models.statement_match import (
 )
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import transfer_legs
 
 _WHOLE_ACT = (
     selectinload(StatementMatch.members).selectinload(
@@ -43,6 +44,14 @@ _WHOLE_ACT = (
     ).joinedload(TransactionEntry.transaction).selectinload(
         Transaction.entries,
     ),
+    # And what ``transfer_legs.movement_parent`` reads to resolve a payment
+    # member's parent -- a transfer movement's transfer (leaf
+    # ``balance:X-bi-6-4c-1``: the register values a transfer's payment
+    # through its LEG) -- published by ``transfer_legs`` because the chain
+    # walks the shadow, which is that package's to name.
+    selectinload(StatementMatch.members).selectinload(
+        StatementMatchMember.entry,
+    ).options(*transfer_legs.movement_parent_loads()),
     selectinload(StatementMatch.creations).selectinload(
         StatementMatchCreation.transaction,
     ).selectinload(Transaction.entries),

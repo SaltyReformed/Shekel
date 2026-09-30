@@ -721,7 +721,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         # one-to-one proposal claimed -- a superset, so the screen could name a
         # day too crowded to search that had been searched.
         crowded_days=proposed.crowded_days,
-        unpriceable_count=len(candidates.unpriceable_ids),
+        unpriceable_count=len(candidates.unpriceable),
         books=lines.books,
     )
     # **ONE derivation, read twice below** -- by the set's own field and by the

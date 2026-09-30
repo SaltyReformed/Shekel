@@ -40,6 +40,8 @@ from ._builders import (
     an_assertion,
 )
 from tests._test_helpers import (
+    create_account_of_type,
+    create_transfer,
     last_covered_day,
     payback_row_of,
     rhythm_of,
@@ -630,6 +632,17 @@ class TestEveryOFFEREDRowCanCarryItsOwnTokenBack:
             seed_user, name="Electricity", amount="148.32",
             status=StatusEnum.DONE,
             settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        # The fourth kind (leaf ``balance:X-bi-6-4c-1``): a still-planned
+        # transfer is offered as its LEG, keyed by the transfer.
+        create_transfer(
+            seed_user, db.session, seed_user["account"],
+            create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("100.00"),
+                observed_on=seed_user["bootstrap_period"].start_date,
+            ),
+            seed_user["bootstrap_period"], amount=Decimal("250.00"),
         )
         db.session.flush()
         calendar = pay_calendar.calendar_for(seed_user["user"].id)

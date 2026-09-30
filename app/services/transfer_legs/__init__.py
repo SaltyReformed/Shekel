@@ -109,9 +109,14 @@ predicate (:func:`transfers_holding_records`), and since leaf
 ``X-bi-6-4a-3`` (rulings **R-BAL125**, **R-BAL157**) for every door that asks
 whether a transfer holds a payment or purchase -- the pay-period lock, the
 reset gate, "Remove earlier paychecks" and the three archive or delete doors
-(:func:`transfer_holds_a_movement`, :func:`held_transfer_entries`).  **Other
-readers still reach it themselves until their leaf moves them** and
-``X-bi-6-4d`` must find each -- among them statement match (6-4c-1),
+(:func:`transfer_holds_a_movement`, :func:`held_transfer_entries`), and
+since leaf ``X-bi-6-4c-1`` (rulings **R-BAL158**, **R-BAL159**) for
+statement match, which offers a still-planned transfer as its LEG
+(:func:`offerable_transfer_legs`), a paid one's movement as its leg's record
+(:func:`transfer_movement_rows` / :func:`recorded_transfer_legs`) and values
+an accepted member through :func:`movement_parent` (loaded by
+:func:`movement_parent_loads`).  **Other readers still reach it themselves
+until their leaf moves them** and ``X-bi-6-4d`` must find each -- among them
 DC-11's raw-SQL leg arm (``scripts/integrity_check.py``) and "Remove earlier
 paychecks"' dated-money arm, which reads a transfer's settle DAY off its
 shadows (``pay_period_gates._settled_transaction``, finding **BAL-568**).
@@ -159,6 +164,7 @@ from app.services.transfer_legs._records import (
     grid_transfer_legs,
     held_transfer_entries,
     movement_parent,
+    movement_parent_loads,
     offerable_transfer_legs,
     planned_transfer_legs,
     recorded_transfer_legs,
@@ -184,6 +190,7 @@ __all__ = [
     "leg_label",
     "leg_of",
     "movement_parent",
+    "movement_parent_loads",
     "offerable_transfer_legs",
     "planned_transfer_legs",
     "recorded_transfer_legs",

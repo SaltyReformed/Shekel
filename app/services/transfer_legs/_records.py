@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Query, contains_eager
+from sqlalchemy.orm import Query, contains_eager, joinedload
 from sqlalchemy.sql.expression import ColumnElement, Exists
 
 from app import ref_cache
@@ -543,6 +543,30 @@ def movement_parent(movement: TransactionEntry) -> PlanItem:
     return _leg_on_side(
         row.transfer, is_income=row.is_income,
         record=movement if is_record else None,
+    )
+
+
+def movement_parent_loads() -> tuple:
+    """Return the loader options :func:`movement_parent` reads, rooted at ``TransactionEntry``.
+
+    For a reader that resolves MANY loaded movements' parents -- the
+    statement register folds every act on an account (leaf
+    ``X-bi-6-4c-1``) -- and must not lazy-load one transfer per member:
+    the movement's parent row and, for a transfer movement, that row's
+    transfer, whose endpoints and status ride it (``lazy="joined"``).
+    Published HERE rather than spelled by the reader because the chain
+    walks the shadow (``Transaction.transfer``), which is this module's
+    to name; ``X-bi-6-4d`` rewrites it with :func:`movement_parent`, onto
+    the movement's side links.  Chain it under the caller's path with
+    ``Load.options``.
+
+    Returns:
+        A tuple of loader options.
+    """
+    return (
+        joinedload(TransactionEntry.transaction).joinedload(
+            Transaction.transfer,
+        ),
     )
 
 

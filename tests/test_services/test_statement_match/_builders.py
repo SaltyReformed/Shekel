@@ -1084,7 +1084,7 @@ def a_basis(seed_user):
 
 def a_submission(
     scope, *, lines=(), transactions=(), entries=(), residual=None,
-    attributed=None,
+    attributed=None, transfers=(),
 ):
     """Return the submission a screen rendered from *scope* would post back.
 
@@ -1116,6 +1116,14 @@ def a_submission(
     R-CC43 -- the member names the payment; a day moves through the seam that mirrors it; a settled
     row is ticked as its payment."
 
+    **A still-planned TRANSFER is ticked as its LEG on the scope's account**
+    (leaf ``balance:X-bi-6-4c-1``, rulings **R-BAL87**, **R-BAL159**): each
+    of *transfers* names ``(LEG, transfer id)``, the key the screen offers,
+    where a case handed the transfer's shadow row in *transactions* before
+    that leaf.  A transfer the scope does not offer as a leg takes the same
+    not-offerable fallback, keyed by the transfer and revised by its counter.
+    Developer approval 2026-09-30 (rule 5): "Yes, inputs only (Recommended)".
+
     Args:
         scope: The pass being submitted against
             (:func:`a_scope`).
@@ -1123,6 +1131,8 @@ def a_submission(
         transactions: Transaction rows, each resolved to the subject the
             screen offers for it.
         entries: Purchase rows.
+        transfers: Transfer rows, each ticked as its leg on the scope's
+            account (leaf ``balance:X-bi-6-4c-1``).
         residual: The difference the screen showed and the owner ticked, as a
             string or a ``Decimal``; ``None`` for the ordinary case where they
             accepted none (plan step ``bank_import:X-f6d-4``).  **Stated by the
@@ -1164,6 +1174,7 @@ def a_submission(
     wanted = (
         [(RowKind.TRANSACTION, txn) for txn in transactions]
         + [(RowKind.PURCHASE, entry) for entry in entries]
+        + [(RowKind.LEG, transfer) for transfer in transfers]
     )
     rows = set()
     for kind, orm_row in wanted:
