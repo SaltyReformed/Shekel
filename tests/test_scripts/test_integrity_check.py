@@ -21,9 +21,11 @@ from tests._test_helpers import (
     cover_bare_settled_row,
     create_account_of_type,
     create_settled_transfer,
+    create_transfer,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_expense_template,
+    make_transfer_template,
     moved_by_the_owner,
     one_off_row_of,
     open_books_before_the_first_assertion,
@@ -91,8 +93,10 @@ class TestReferentialIntegrity:
             f"Failed checks: {[r.check_id for r in results if not r.passed]}"
         )
         # 12 since plan step X-f1c3c: FK-03 ("accounts pointing to a
-        # nonexistent anchor period") went with the column it queried.
-        assert len(results) == 12
+        # nonexistent anchor period") went with the column it queried; 15
+        # since balance:X-bi-6-4c-4 added FK-05..07's transfer twins FK-14..16
+        # (ruling R-BAL160).
+        assert len(results) == 15
 
     def test_fk01_detects_orphaned_account(self, app, db, seed_user):
         """FK-01 detects an account whose user_id references a nonexistent user."""
@@ -195,6 +199,99 @@ class TestReferentialIntegrity:
             "SET session_replication_role = 'origin'"
         ))
 
+    def test_fk10_accepts_a_template_with_NO_category(self, app, db, seed_user):
+        """A category-less definition is legal, so FK-10 passes it.
+
+        Finding **BAL-574** (fixed at plan step ``balance:X-bi-6-4c-4``,
+        ruling **R-BAL162**): ``transaction_templates.category_id`` went
+        nullable at ``balance:X-bi-7b`` (ruling **R-BAL24**) for the
+        definitions statement matching mints for money the app cannot name,
+        and FK-10 kept reporting each one as a dangling key -- a CRITICAL on
+        every sweep of a production holding eight.  The dangling case above
+        is the firing control: the check narrows, it does not go quiet.
+        """
+        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+        db.session.add(TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=None,
+            transaction_type_id=txn_type.id,
+            name="Dividend Earned",
+            default_amount=Decimal("4.12"),
+        ))
+        db.session.flush()
+
+        results = check_referential_integrity(db.session)
+        fk10 = next(r for r in results if r.check_id == "FK-10")
+        assert fk10.passed, fk10.details
+
+    def test_fk14_to_16_grade_a_transfers_OWN_keys(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """FK-14..16 read ``budget.transfers``; FK-05..07 read its shadows.
+
+        Plan step ``balance:X-bi-6-4c-4`` (ruling **R-BAL160**): a transfer's
+        pay period, scenario and category were graded only through the
+        copies its two shadow rows carry, which ``X-bi-6-4d`` stops writing
+        for new transfers.  The transfer's three keys are pointed at nothing
+        with the referential triggers off, its shadows left pointing at real
+        rows: each twin names the transfer once, and FK-05..07 -- which grade
+        the rows of ``budget.transactions`` -- stay clean, so neither family
+        is answering for the other.  The transfer carries a REAL category
+        first, so a clean FK-16 is graded on a key it resolves rather than on
+        a NULL it skips.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app.services import transfer_service
+
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "FK Twin Savings",
+        )
+        db.session.commit()
+        transfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods[0],
+        )
+        transfer_service.update_transfer(
+            transfer.id, seed_user["user"].id,
+            category_id=seed_user["categories"]["Rent"].id,
+        )
+        db.session.commit()
+        clean = {
+            r.check_id: r.passed
+            for r in check_referential_integrity(db.session)
+        }
+        assert clean["FK-14"] and clean["FK-15"] and clean["FK-16"]
+
+        db.session.execute(db.text(
+            "SET session_replication_role = 'replica'"
+        ))
+        try:
+            db.session.execute(db.text(
+                "UPDATE budget.transfers SET pay_period_id = 99991, "
+                "scenario_id = 99992, category_id = 99993 WHERE id = :id"
+            ), {"id": transfer.id})
+            db.session.flush()
+
+            by_id = {
+                r.check_id: r for r in check_referential_integrity(db.session)
+            }
+            assert [row["id"] for row in by_id["FK-14"].details] == [transfer.id]
+            assert by_id["FK-14"].details[0]["pay_period_id"] == 99991
+            assert [row["id"] for row in by_id["FK-15"].details] == [transfer.id]
+            assert by_id["FK-15"].details[0]["scenario_id"] == 99992
+            assert [row["id"] for row in by_id["FK-16"].details] == [transfer.id]
+            assert by_id["FK-16"].details[0]["category_id"] == 99993
+            assert all(by_id[cid].severity == "critical"
+                       for cid in ("FK-14", "FK-15", "FK-16"))
+            assert by_id["FK-05"].passed
+            assert by_id["FK-06"].passed
+            assert by_id["FK-07"].passed
+        finally:
+            db.session.execute(db.text(
+                "SET session_replication_role = 'origin'"
+            ))
+
     def test_fk02_detects_account_with_invalid_type(self, app, db, seed_user):
         """FK-02: Accounts with invalid account_type_id."""
         db.session.execute(db.text(
@@ -274,6 +371,61 @@ class TestOrphanDetection:
         # seed_user creates 5 categories (Salary, Rent, Car Payment, Groceries, Payback)
         # none referenced by any template or transaction
         assert or03.detail_count == 5
+
+    def test_or03_counts_a_transfer_and_a_transfer_definition_as_use(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A category a transfer or a recurring transfer names is not unused.
+
+        Plan step ``balance:X-bi-6-4c-4`` (ruling **R-BAL160**, the report's
+        twin of finding **BAL-545**).  One category is named only by a
+        transfer DEFINITION that generated nothing; the other only by a
+        transfer whose shadows were re-categorised around the service -- the
+        state a shadowless transfer presents.  Neither is listed; a category
+        nothing names still is.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app.models.category import Category
+        from app.services import transfer_service
+
+        def fresh(name):
+            category = Category(
+                user_id=seed_user["user"].id, group_name="Temp", item_name=name,
+            )
+            db.session.add(category)
+            db.session.flush()
+            return category
+
+        by_definition = fresh("Only A Transfer Rule")
+        by_transfer = fresh("Only A Transfer")
+        unused = fresh("Nothing")
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "OR-03 Savings",
+        )
+        make_transfer_template(
+            db.session, seed_user, savings,
+        ).category_id = by_definition.id
+        db.session.commit()
+        transfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods[0],
+        )
+        transfer_service.update_transfer(
+            transfer.id, seed_user["user"].id, category_id=by_transfer.id,
+        )
+        db.session.execute(db.text(
+            "UPDATE budget.transactions SET category_id = NULL "
+            "WHERE transfer_id = :id"
+        ), {"id": transfer.id})
+        db.session.commit()
+
+        or03 = next(
+            r for r in check_orphaned_records(db.session) if r.check_id == "OR-03"
+        )
+        listed = {row["id"] for row in or03.details}
+        assert unused.id in listed
+        assert by_definition.id not in listed
+        assert by_transfer.id not in listed
 
     def test_or01_detects_orphaned_template(self, app, db, seed_user):
         """OR-01: Template with no recurrence rule and no transactions."""
@@ -562,6 +714,71 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba06 = next(r for r in results if r.check_id == "BA-06")
         assert ba06.passed, ba06.details
+
+    def test_ba06_grades_a_settled_transfer_by_its_LEGS(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One row per leg, naming the transfer, dated by the leg's MOVEMENT.
+
+        Plan step ``balance:X-bi-6-4c-4`` (ruling **R-BAL160**): the shape
+        DC-11's leg arm has.  A transfer settled one day past the horizon is
+        two legs outside every paycheck -- reported once each under the
+        transfer and that leg's account, and not again as its two shadow
+        rows.  Then the shadows' own day is moved inside the schedule while
+        their movements keep theirs: still reported, because the money is the
+        movement (ruling **R-BAL80**).  A transfer hidden around the service
+        is not reported, and hidden shadows leave no leg record (the
+        live-shadow term of the one join), so nothing is reported either.
+        """
+        _first, horizon = self._schedule_bounds(seed_user["user"].id)
+        beyond = horizon + timedelta(days=1)
+        checking = seed_user["account"]
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "BA-06 Savings",
+        )
+        db.session.commit()
+        transfer = create_settled_transfer(
+            seed_user, db.session, checking, savings, seed_periods[-1],
+            settled_on=beyond,
+        )
+        db.session.commit()
+        expected = sorted(
+            [(None, transfer.id, checking.id, beyond),
+             (None, transfer.id, savings.id, beyond)],
+            key=lambda row: row[2],
+        )
+
+        def reported():
+            return [
+                (row["transaction_id"], row["transfer_id"], row["account_id"],
+                 row["settled_on"])
+                for row in self._ba06(db.session).details
+            ]
+
+        assert reported() == expected
+
+        db.session.execute(db.text(
+            "UPDATE budget.transactions SET settled_on = :day "
+            "WHERE transfer_id = :id"
+        ), {"day": horizon, "id": transfer.id})
+        assert reported() == expected
+
+        # The TRANSFER's own soft delete ends it, even with its shadows live
+        # (a drift no door writes: a soft delete flags all three rows).
+        db.session.execute(db.text(
+            "UPDATE budget.transfers SET is_deleted = :gone WHERE id = :id"
+        ), {"gone": True, "id": transfer.id})
+        assert reported() == []
+        db.session.execute(db.text(
+            "UPDATE budget.transfers SET is_deleted = :gone WHERE id = :id"
+        ), {"gone": False, "id": transfer.id})
+        assert reported() == expected
+
+        db.session.execute(db.text(
+            "UPDATE budget.transactions SET is_deleted = TRUE "
+            "WHERE transfer_id = :id"
+        ), {"id": transfer.id})
+        assert reported() == []
 
 # ── Data Consistency ─────────────────────────────────────────────
 
@@ -1364,8 +1581,9 @@ class TestRunAllChecks:
         results = run_all_checks(db.session, categories=["referential"])
         assert all(r.category == "referential" for r in results)
         # 12 since plan step X-f1c3c: FK-03 ("accounts pointing to a
-        # nonexistent anchor period") went with the column it queried.
-        assert len(results) == 12
+        # nonexistent anchor period") went with the column it queried; 15
+        # since balance:X-bi-6-4c-4's transfer twins FK-14..16 (R-BAL160).
+        assert len(results) == 15
 
     def test_returns_check_result_objects(
         self, app, db, seed_user, seed_periods
@@ -1422,5 +1640,6 @@ class TestRunAllChecks:
         # all unexpressible once a period is one payday.  It rose to 29 at
         # balance:X-bi-3e-2 (DC-10), to 30 at balance:X-bi-4a (DC-11) and to
         # 31 at balance:X-bi-6-3 (DC-12, Transfer Invariant 1, the alarm the
-        # posting writer stopped raising).
-        assert len(results) == 31
+        # posting writer stopped raising), and to 34 at balance:X-bi-6-4c-4
+        # (FK-14..16, FK-05..07's transfer twins, ruling R-BAL160).
+        assert len(results) == 34

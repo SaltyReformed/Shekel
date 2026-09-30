@@ -497,6 +497,13 @@ class TestDockerignoreCoverage:
         "scripts/seed_ref_tables.py",
         "scripts/audit_cleanup.py",
         "scripts/integrity_check.py",
+        # Its check families and their shared types (ruling R-BAL161):
+        # the sweep imports every one of them at startup.
+        "scripts/_integrity_core.py",
+        "scripts/_integrity_referential.py",
+        "scripts/_integrity_orphan.py",
+        "scripts/_integrity_balance.py",
+        "scripts/_integrity_consistency.py",
         "scripts/reset_mfa.py",
         "scripts/rotate_sessions.py",
         "scripts/rotate_totp_key.py",
