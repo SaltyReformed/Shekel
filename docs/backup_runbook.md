@@ -262,10 +262,10 @@ touched.
 
 **Integrity checks** (via `integrity_check.py`):
 
-- 13 referential integrity checks (FK violations)
-- 6 orphan detection checks
-- 6 balance anomaly checks
-- 9 data consistency checks
+- 15 referential integrity checks (FK violations)
+- 5 orphan detection checks
+- 3 balance anomaly checks
+- 11 data consistency checks
 
 ### Expected Output
 
@@ -302,10 +302,10 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 
 | Category | Checks | Severity | What It Detects |
 |----------|--------|----------|-----------------|
-| `referential` | FK-01 to FK-13 | Critical | Foreign key references to nonexistent rows |
-| `orphan` | OR-01 to OR-06 | Warning | Records disconnected from the data model |
-| `balance` | BA-01 to BA-07 | Mixed | Anchor balance and pay period anomalies |
-| `consistency` | DC-01 to DC-09 | Mixed | Cross-table logical inconsistencies |
+| `referential` | FK-01 to FK-16 (no FK-03) | Critical | Foreign key references to nonexistent rows |
+| `orphan` | OR-01, OR-03 to OR-06 | Warning | Records disconnected from the data model |
+| `balance` | BA-01, BA-05, BA-06 | Mixed | Anchor balance and pay period anomalies |
+| `consistency` | DC-02 to DC-12 | Mixed | Cross-table logical inconsistencies |
 
 ### Exit Codes
 
