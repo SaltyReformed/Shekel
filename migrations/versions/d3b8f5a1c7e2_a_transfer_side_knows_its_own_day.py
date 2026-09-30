@@ -60,13 +60,19 @@ of them a day backfilled onto a Paid pressed before the column existed, and 2
 pairs Paid STAMPS) -- and the 14 Checking sides stay ``observed``.  0 refused.  The migration prints its own counts so the
 operator compares them with the rehearsal's.
 
-**The downgrade is the exact inverse for every relabelled side**: a ``borrowed``
-side takes its sibling's basis when the sibling's is evidence, else ``entered``
--- the pre-step pair shape the upgrade read -- and each covering movement follows
-its shadow; then the ref row goes.  What it cannot restore is a distinction the
-older code had no reader for, and two sides holding two DIFFERENT evidenced days
-(which only post-step code writes) stay as they are: the older code reads the
-income side's day for the pair, as it always did.
+**The downgrade inverts the upgrade wherever one side of a pair kept its
+evidence**: a ``borrowed`` side takes its sibling's basis when the sibling's is
+evidence, else ``entered`` -- the pre-step pair shape the upgrade read -- and each
+covering movement follows its shadow; then the ref row goes.  That is every pair
+on the 2026-09-30 dump (each of its 14 ``observed`` pairs has a member on the
+Checking side, M3).  **A pair BOTH of whose sides relabel comes back ``entered``
+on both**, since nothing left on the rows says which label it carried: both
+``observed`` with no member ever naming either side (the matcher records a
+member for the side it matched), or both ``asserted`` with neither side linked.
+The dump holds neither.  What the downgrade also cannot restore is a
+distinction the older code had no reader for, and two sides holding two
+DIFFERENT evidenced days (which only post-step code writes) stay as they are:
+the older code reads the income side's day for the pair, as it always did.
 
 **Not audited catalogue.**  ``ref.settled_day_bases`` stays outside
 ``AUDITED_TABLES``; the relabel UPDATEs are recorded by the existing triggers on
