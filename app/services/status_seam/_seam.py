@@ -542,7 +542,9 @@ def apply_status_change(
     # ``balance:X-bn``, ruling **R-CC106**): the popover's Actual correction
     # and another tab's Delete of its row run one after the other, so a Delete
     # that came first is committed before the request read the row, and the
-    # correction meets this refusal in words.  Until that step this line was
+    # route's door answers it in the Save's words (ruling **R-CC105**) before
+    # the view runs; only a service caller that skipped that door meets this
+    # refusal (:func:`reject_settlement_on_a_deleted_row`).  Until that step this line was
     # preceded by the row's own lock (ruling **R-CC96**), without which the
     # correction read the row as live and met the delete's moved version as a
     # ``StaleDataError`` (measured 2026-09-23).
