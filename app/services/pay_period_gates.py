@@ -304,8 +304,9 @@ def gate_removable_head(
     2. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
        the app holds (**R-SAL49**), and this would leave it on none.
     3. Money DATED inside the removed paychecks anywhere in the budget -- a
-       settle day on any row (a transfer's shadows included) or purchase, or
-       a balance recorded for an account or a loan -- because the removal
+       settle day on a plain row, on a transfer side's own record (its
+       covering movement, ruling **R-BAL142**) or on a purchase, or a
+       balance recorded for an account or a loan -- because the removal
        raises the recordable floor (``pay_period_service.recordable_floor``)
        over it.  A settle day under that floor is refused on every save that
        keeps its row paid (``status_seam``), and an assertion under it is the
@@ -630,8 +631,9 @@ def _settled_purchase(user_id, low, high):
     """The earliest settle day in ``[low, high)`` on a purchase under a live row.
 
     Purchases only (``status_seam.covering_clause``, negated): a settled
-    row's covering movement carries its parent's settle day, which
-    :func:`_settled_transaction` already asks.  Scoped by the purchase's
+    plain row's covering movement carries its row's settle day, which
+    :func:`_settled_transaction` already asks, and a transfer side's is
+    :func:`_settled_transfer_side`'s own read.  Scoped by the purchase's
     OWNER, never ``user_id`` -- that is its AUTHOR, a companion's id when a
     companion recorded it (review 1 of C21 measured one slipping through).
     """
