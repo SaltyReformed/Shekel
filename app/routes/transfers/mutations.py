@@ -679,9 +679,11 @@ def _grade_submitted_side_days(xfer, data):
 
     Returns:
         A designed 400 error-fragment response when a submitted day precedes
-        the budget's schedule (ruling **R-EL**) or has not happened yet (ruling
-        **R-EJ**), or ``None`` when the edit may proceed -- the shape this
-        handler's other gates use, so they can share one error exit.
+        the budget's schedule (ruling **R-EL**), or ``None`` when the edit may
+        proceed -- the shape this handler's other gates use, so they can share
+        one error exit.  A day that has not happened yet (ruling **R-EJ**) is
+        the seam's refusal, raised inside the service call and answered by
+        :func:`_execute_transfer_update`.
     """
     boxes = [
         box for box in transfer_side_boxes(

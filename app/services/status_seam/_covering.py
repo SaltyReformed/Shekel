@@ -348,11 +348,17 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       basis over a movement holding no evidence of its own
       (:func:`~app.services.settle_day.is_evidence`); the three evidence
       members are separated by provenance and not ranked, so nothing else
-      moves.  **The movement's own evidence is never lowered**: the statement
-      matcher writes a covering movement directly when its row is not what the
-      statement shows (a bill charged to a card, whose own leg is zero), and
-      an untouched Save of that row must not relabel the bank's day as the
-      owner's.  One rule for every row, not a transfer branch;
+      moves.  **The movement's own evidence is never lowered**, the contract
+      ``TestTheMirrorNeverLowersEvidence``
+      (``tests/test_services/test_covering_movement.py``) holds the seam to
+      with a bank-observed movement planted under an ``entered`` row.  No
+      door on this tree writes that state -- the statement matcher and the
+      reconcile tick settle the ROW, a card tender only re-points its
+      movement (:func:`_re_point`), and the entry doors refuse a payment
+      record -- so on door-written data this arm and a copy of any differing
+      basis agree, and the planted case is the one that tells them apart
+      (measured at this leaf's review).  One rule for every row, not a
+      transfer branch;
     * the days are EQUAL otherwise: the pair stands, and the movement takes
       the row's link only where it holds none -- the reconcile panel ticked
       the row on an asserted day, and the movement sits inside that assertion

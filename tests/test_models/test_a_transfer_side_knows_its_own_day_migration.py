@@ -25,6 +25,7 @@ INSERT the member's trigger would have written.
 import json
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 import pytest
 from sqlalchemy import text
@@ -282,16 +283,50 @@ class TestTheArms:
 
             assert _arms(xfer) == ("borrowed_kept", "borrowed_kept")
 
+    def test_an_entered_day_no_audit_row_wrote_stays_typed(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A day the audit log never saw written is kept as TYPED (R-BAL143's H3).
+
+        The log starts 2026-05-06 and keeps 365 days, so a side can carry a day
+        no audit row wrote.  The doubt lands on "typed": a typed day relabelled
+        ``borrowed`` would be moved by the next statement.  Planted by deleting
+        the day-writing audit rows the press left.
+        """
+        with app.app_context():
+            xfer = _transfer(seed_user, seed_periods_today[3], "Unlogged")
+            _paid_press_before_the_step(seed_user, xfer)
+            db.session.execute(text(
+                "DELETE FROM system.audit_log "
+                "WHERE table_schema = 'budget' AND table_name = 'transactions' "
+                "AND 'settled_on' = ANY(changed_fields) "
+                "AND row_id IN (SELECT id FROM budget.transactions "
+                "WHERE transfer_id = :t)"
+            ), {"t": xfer.id})
+            db.session.commit()
+
+            assert _arms(xfer) == ("entered_unwritten", "entered_unwritten")
+
+            run_migration_callable(_MIGRATION.upgrade, db.session)
+            bases = _bases_by_name()
+            for shadow in _shadows(xfer):
+                (movement,) = [m for m in shadow.entries if m.covers_settlement]
+                assert bases[("t", shadow.id)] == "entered"
+                assert bases[("e", movement.id)] == "entered"
+
 
 class TestTheRefusal:
     """A relabel the day function would never produce is refused, naming the transfer."""
 
-    def test_a_side_whose_day_is_not_its_siblings_is_refused_before_any_write(
+    def test_a_side_whose_day_is_not_its_siblings_is_refused_before_any_relabel(
         self, app, seed_user, seed_periods_today,
     ):
         """Two copied bank days that differ: neither can BORROW the other's.
 
-        So the upgrade stops before any write.
+        So the upgrade stops before it relabels a side.  Graded by a spy on
+        :func:`relabel_borrowed` rather than by reading the rows after the
+        refusal: the rollback that follows would undo a relabel written before
+        it, so the rows cannot tell the order.
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Parted")
@@ -313,13 +348,50 @@ class TestTheRefusal:
             db.session.commit()
             assert _arms(xfer) == ("observed_relabel", "observed_relabel")
 
-            with pytest.raises(RuntimeError, match=f"First transfer ids: {xfer.id}"):
+            with mock.patch.object(
+                _MIGRATION, "relabel_borrowed",
+                wraps=_MIGRATION.relabel_borrowed,
+            ) as relabel, pytest.raises(
+                RuntimeError, match=f"First transfer ids: {xfer.id}",
+            ):
                 run_migration_callable(_MIGRATION.upgrade, db.session)
             db.session.rollback()
 
-            assert _arms(xfer) == ("observed_relabel", "observed_relabel"), (
-                "the refusal relabelled a side before it refused"
+            assert relabel.call_count == 0, (
+                "the upgrade relabelled before it refused"
             )
+
+    def test_a_movement_not_mirroring_its_side_is_refused(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A movement holding a label its shadow does not: the relabel would lower it.
+
+        :func:`relabel_borrowed` writes each covering movement with its shadow,
+        so a movement carrying evidence of its own would lose it.  No door
+        writes that state (every movement mirrors its shadow, the design's M4);
+        it is planted behind the seam's back.
+        """
+        with app.app_context():
+            xfer = _transfer(seed_user, seed_periods_today[3], "Unmirrored")
+            day = display_today() - timedelta(days=4)
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_observed_day(day),
+                ),
+            )
+            db.session.commit()
+            income = _shadows(xfer)[1]
+            (movement,) = [m for m in income.entries if m.covers_settlement]
+            record_settle_day(movement, an_entered_day(day))
+            db.session.commit()
+            assert _arms(xfer) == ("observed_relabel", "observed_relabel")
+
+            with pytest.raises(RuntimeError, match=f"First transfer ids: {xfer.id}"):
+                _MIGRATION.refuse_unborrowable(
+                    db.session.connection(), [income.id],
+                )
 
     def test_sides_on_one_day_pass(self, app, seed_user, seed_periods_today):
         """The control: the same copied day on both sides relabels without a refusal."""

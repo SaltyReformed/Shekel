@@ -1298,7 +1298,9 @@ class TestMoneyDatedInsideTheHead:
             assert {shadow.settled_on for shadow in shadows} == {self.DAY}
             assert all(not shadow.covering_movements for shadow in shadows)
 
-            pay_period_admin.remove_earlier_pay_periods(user_id, seed_periods[0].id)
+            assert pay_period_admin.remove_earlier_pay_periods(
+                user_id, seed_periods[0].id,
+            ) == 2
 
     def test_a_balance_recorded_inside_is_refused(
         self, app, db, seed_user, seed_periods,

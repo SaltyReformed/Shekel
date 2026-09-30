@@ -45,12 +45,15 @@ metadata ABOUT a day, and every balance, fold and posting reads the day itself.
 **A relabel the day function would never produce is REFUSED** (the coordinator's
 ruling, 2026-09-30, fail-closed).  A borrowed side's day IS its lender's
 (``transfer_service._side_days.borrowed_day``), and this SQL cannot call that
-function, so before any write it counts every side it would relabel that either
-sits out of the settled band (a day the seam never leaves there) or differs from
-a sibling that holds a day in the band.  Every settled pair any door writes is on
-ONE day (the design's M1: 20 of 20 on the 2026-09-30 production dump), so the
-count is 0 there; a non-zero count names the transfers and stops, so the release
-rehearsal on a same-day dump surfaces it before production does.
+function, so before it relabels anything it counts every side it would relabel
+that sits out of the settled band (a day the seam never leaves there), differs
+from a sibling that holds a day in the band, or has a covering movement not
+carrying exactly the side's own day and basis (the relabel writes the two
+together, and must not lower a movement's own evidence).  Every settled pair any
+door writes is on ONE day and every movement mirrors its shadow (the design's M1
+and M4: 20 of 20 pairs and 40 of 40 movements on the 2026-09-30 production
+dump), so the count is 0 there; a non-zero count names the transfers and stops,
+so the release rehearsal on a same-day dump surfaces it before production does.
 
 **Measured on the 2026-09-30 00:11 production dump** (migrated to
 ``c4a4e7d1b9f2``): 20 settled live transfers, 40 sides.  26 relabel to
@@ -72,8 +75,11 @@ on both**, since nothing left on the rows says which label it carried: both
 member for the side it matched), or both ``asserted`` with neither side linked.
 The dump holds neither.  What the downgrade also cannot restore is a
 distinction the older code had no reader for, and two sides holding two
-DIFFERENT evidenced days (which only post-step code writes) stay as they are:
-the older code reads the income side's day for the pair, as it always did.
+DIFFERENT evidenced days (which only post-step code writes) stay as they are.
+The older code reads the income side's day for the pair, and its one-box
+popover prefills that day: an untouched Save echoes it and the older
+correction writes it onto BOTH sides, so the from-side's day, and the money it
+dates, move onto the income side's (traced at this step's review).
 
 **Not audited catalogue.**  ``ref.settled_day_bases`` stays outside
 ``AUDITED_TABLES``; the relabel UPDATEs are recorded by the existing triggers on
@@ -234,7 +240,11 @@ def refuse_unborrowable(bind, relabel: "list[int]") -> None:
     A side about to read ``borrowed`` must sit in the settled band, and its day
     must equal any sibling's day held in the band -- the other side's day when
     that side keeps its evidence, and the one day two borrowing sides share.
-    Asked BEFORE any write.
+    Each covering movement under it must carry exactly its day and basis:
+    :func:`relabel_borrowed` writes the movement with its shadow, and a movement
+    holding a day or evidence of its own would be lowered.  Asked BEFORE any
+    side is relabelled (the ``borrowed`` ref row is seeded first, and the
+    migration's one transaction rolls it back with everything else).
 
     Args:
         bind: A SQLAlchemy connection.
@@ -242,7 +252,7 @@ def refuse_unborrowable(bind, relabel: "list[int]") -> None:
 
     Raises:
         RuntimeError: Naming the count and the first transfers, when any side
-            fails.  Nothing has been written.
+            fails.  No side has been relabelled.
     """
     if not relabel:
         return
@@ -256,16 +266,24 @@ def refuse_unborrowable(bind, relabel: "list[int]") -> None:
                    WHERE t.transfer_id = s.transfer_id AND t.id <> s.id
                      AND t.status_id IN ({_SETTLED})
                      AND t.settled_on IS NOT NULL
-                     AND t.settled_on <> s.settled_on))
+                     AND t.settled_on <> s.settled_on)
+               OR EXISTS (
+                   SELECT 1 FROM budget.transaction_entries e
+                   WHERE e.transaction_id = s.id AND e.covers_settlement
+                     AND (e.settled_on IS DISTINCT FROM s.settled_on
+                          OR e.settled_day_basis_id
+                             IS DISTINCT FROM s.settled_day_basis_id)))
         ORDER BY s.transfer_id
     """), {"ids": relabel}).scalars().all()
     if rows:
         raise RuntimeError(
             f"X-bi-6-4c-3 refuses to relabel: {len(rows)} transfer(s) have a "
             "side this migration would mark 'borrowed' whose day is not its "
-            "other side's (or which carries a day outside the settled band), "
-            "a state no settle door writes and the day function would never "
-            f"produce. First transfer ids: {', '.join(map(str, rows[:20]))}. "
+            "other side's (or which carries a day outside the settled band, "
+            "or whose payment record does not carry the side's own day and "
+            "label), a state no settle door writes and the day function would "
+            "never produce. First transfer ids: "
+            f"{', '.join(map(str, rows[:20]))}. "
             "Repair each transfer's days through its popover (or revert and "
             "re-settle it) on the pre-step release, then re-run. Diagnostic: "
             "SELECT id, transfer_id, status_id, settled_on, "

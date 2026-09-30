@@ -79,7 +79,7 @@ class SideDay:
                 "A SideDay states a day for one side, so it cannot wrap None. "
                 "A door that states no day passes no SideDay at all."
             )
-        if self.day.basis is SettledDayBasisEnum.BORROWED:
+        if not is_evidence(self.day):
             raise ValueError(
                 "A borrowed day is derived from the other side, never stated: "
                 "a door states what it KNOWS (observed, asserted or entered), "

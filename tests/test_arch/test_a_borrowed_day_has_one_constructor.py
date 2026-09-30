@@ -17,11 +17,16 @@ For every Python file under ``app/``: a call to ``SettleDay`` whose basis --
 the ``basis=`` keyword or the second positional argument -- is the attribute
 ``BORROWED`` appears only inside ``borrowed_day``.
 
-**What it does not see, stated rather than implied**: a basis reached through a
-variable (``SettleDay(day=d, basis=b)`` with ``b`` bound to ``BORROWED``
-elsewhere), and a stored borrowed day READ back (``settle_day_from_columns``
-maps a row's id to its member, which is a read, not a derivation).  Neither
-builds a guess, and no module writes the first.
+**What it does not see, stated rather than implied** (each measured by planting
+it in ``app/`` at this step's review, the census still passing): a basis reached
+through a variable (``b = SettledDayBasisEnum.BORROWED`` then
+``SettleDay(day=d, basis=b)``); the class under another name
+(``from app.services.settle_day import SettleDay as SD``); a copy re-labelled by
+``dataclasses.replace(day, basis=SettledDayBasisEnum.BORROWED)``; the member by
+value (``SettledDayBasisEnum("borrowed")``); and a day built from a stored basis
+id (``settle_day_from_columns(d, <the borrowed id>)``, which is how a stored day
+is READ back).  No module on this step's tree writes any of them; a reviewer
+reading a new construction of a guess checks these five by hand.
 
 Why AST, not grep
 -----------------
