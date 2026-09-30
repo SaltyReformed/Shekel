@@ -42,9 +42,10 @@
          before it.  It replaced a "Current Principal" field the form
          required and nothing read.  The balance prefills from the account's
          latest cash assertion (plan step X-f1c3a) and the date from today,
-         the setup date; both are the route's.  A day on or after the day a
-         payment into the account moved money is refused, as the dashboard's
-         tracking-start door refuses one (ruling R-R115). #}
+         the setup date; both are the route's.  For a loan that originated
+         before the stated day, a day on or after the day a payment into the
+         account moved money is refused, as the dashboard's tracking-start
+         door refuses one (ruling R-R115). #}
       <div class="row mb-3">
         <div class="col-6">
           <label for="anchor_balance" class="form-label">Balance today</label>
@@ -64,7 +65,8 @@
             The lender's balance on this date. Started tracking mid-life?
             Enter the balance from your latest statement and its date, on or
             after the origination date. If you have already paid into this
-            account here, the date must come before your first payment.
+            account here, a date after the origination date must come before
+            your first payment.
           </div>
         </div>
       </div>

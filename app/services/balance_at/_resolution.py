@@ -139,8 +139,10 @@ class ResolvedLoan:
             Before it the app's record of the loan has not started: the
             ledger carries the origination principal forward, moved only by
             what is dated there -- a true-up, a ``$0.00`` close, or a payment
-            recorded after the tracking start but settled on an earlier day
-            -- so the readers that ask "since when is this loan's balance
+            whose money moved there (one recorded after the tracking start
+            with an earlier day, or one already held when a tracking start
+            was written before plan step recurrence:R16-c-2 made its doors
+            refuse) -- so the readers that ask "since when is this loan's balance
             real?" -- the property chart's pre-tracking estimate, the net-worth
             trend's honest start and the loan chart's first month -- read it
             here.  They read the FIRST confirmed schedule row's date until

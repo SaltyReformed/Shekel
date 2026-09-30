@@ -1168,8 +1168,11 @@ class TestLoanSetup:
     ):
         """Ruling R-BAL155 at setup: a $0.00 close moved no money and refuses nothing.
 
-        The account's Feb 27 payment is closed at $0.00 before setup; a
-        balance stated for Mar 1 is recorded as the tracking start it is.
+        The account's payment due Mar 15 (the loan's own day, so also the
+        installment it would skip) is closed at $0.00 on Feb 27, before
+        setup.  A balance stated for Mar 16 -- after the close's settle day,
+        its due date and its installment alike -- is recorded as the tracking
+        start it is, so no day of the close is counted.
         """
         account = self._unconfigured_auto_loan(
             seed_user, db, "Closed Empty Before Setup", opened_on=date(2026, 1, 2),
@@ -1178,40 +1181,50 @@ class TestLoanSetup:
             seed_user, db.session, seed_user["account"], account,
             seed_periods[4], amount=Decimal("500.00"),
             settled_amount=Decimal("0.00"), settled_on=date(2026, 2, 27),
+            due_date=date(2026, 3, 15),
         )
         db.session.commit()
 
         resp = auth_client.post(
             f"/accounts/{account.id}/loan/setup",
-            data=self._setup_form("2026-03-01"),
+            data=self._setup_form("2026-03-16"),
         )
         assert resp.status_code == 302
         assert [
             (anchor_date, balance)
             for anchor_date, balance, _ in self._stored_anchors(db, account)
-        ] == [(date(2026, 3, 1), Decimal("25000.00"))]
+        ] == [(date(2026, 3, 16), Decimal("25000.00"))]
 
+    @pytest.mark.parametrize(("paid_on", "period_index"), [
+        (date(2026, 2, 19), 3),  # before the Feb 27 origination
+        (date(2026, 2, 27), 4),  # ON the origination day
+        (date(2026, 2, 28), 4),  # the day after: no day falls between them
+    ])
     def test_setup_asks_for_the_origination_day_when_no_later_day_comes_before_the_payment(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, seed_periods, paid_on, period_index,
     ):
         """A payment before the origination leaves the origination day as the only answer.
 
-        $500 moves into the account on Feb 19, 2026, before its loan is set
-        up with an origination of Feb 27 (the payment guard, ruling R-C, has
-        no loan terms to compare against until then).  Every stated day after
-        the origination is on or after the payment, and one before it is
-        refused as pre-origination, so the sentence asks for the origination
-        day itself -- which states nothing beyond the original amount -- and
-        names Record balance for the correction.  Following it configures the
-        loan with no tracking start.
+        $500 moves into the account before its loan is set up with an
+        origination of Feb 27 (the payment guard, ruling R-C, has no loan
+        terms to compare against until then): on Feb 19, on Feb 27 itself, or
+        on Feb 28.  In each case no day falls strictly between the
+        origination and the payment, so every stated day that would record a
+        tracking start is on or after the payment, and one before the
+        origination is refused as pre-origination: the sentence asks for the
+        origination day itself -- which states nothing beyond the original
+        amount -- and names Record balance for the correction, rather than
+        asking for "a date before" the payment, which would send the owner
+        to the origination day without saying the stated balance is then
+        dropped.  Following it configures the loan with no tracking start.
         """
         account = self._unconfigured_auto_loan(
-            seed_user, db, "Paid Before It Originated", opened_on=date(2026, 1, 2),
+            seed_user, db, "Paid Around Its Origination", opened_on=date(2026, 1, 2),
         )
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
-            seed_periods[3], amount=Decimal("500.00"),
-            settled_on=date(2026, 2, 19),
+            seed_periods[period_index], amount=Decimal("500.00"),
+            settled_on=paid_on,
         )
         db.session.commit()
 
@@ -8734,25 +8747,45 @@ class TestRecordTrackingStartRoute:
             (e.anchor_date, e.anchor_balance) for e in events
         }
 
+    @pytest.mark.parametrize(("paid_on", "period_index", "offered", "absent"), [
+        # Before the Feb 27 origination, and ON it: no date this door accepts
+        # comes before the payment.
+        (date(2026, 2, 19), 3,
+         b"No tracking start can come before that payment, since the loan "
+         b"originated on Feb 27, 2026; use Record balance",
+         b"Choose a date before"),
+        (date(2026, 2, 27), 4,
+         b"No tracking start can come before that payment, since the loan "
+         b"originated on Feb 27, 2026; use Record balance",
+         b"Choose a date before"),
+        # The day after: this door records a tracking start ON the origination
+        # day, so Feb 27 is still a date it accepts (the setup door's gap is
+        # its own: there the origination day states nothing).
+        (date(2026, 2, 28), 4,
+         b"Choose a date before Feb 28, 2026, or use Record balance",
+         b"No tracking start can come before that payment"),
+    ])
     def test_offers_record_balance_alone_when_no_date_comes_before_the_payment(
         self, auth_client, seed_user, db, seed_periods,
+        paid_on, period_index, offered, absent,
     ):
-        """A payment before the origination leaves no date this door accepts.
+        """A payment on or before the origination leaves no date this door accepts.
 
         The door accepts dates from the origination on, so where the
         payment's money moved on or before the origination the flash cannot
         ask for an earlier date: it offers Record balance alone.  $500 moves
-        into an account on Feb 19, 2026, before its loan is set up with an
-        origination of Feb 27 and no stated balance (the payment guard, ruling
-        R-C, has no loan terms to compare against until then); a Mar 1
-        tracking start is refused that way and appends nothing.
+        into an account before its loan is set up with an origination of Feb
+        27 and no stated balance (the payment guard, ruling R-C, has no loan
+        terms to compare against until then); a Mar 1 tracking start is
+        refused and appends nothing.  A payment the day after the origination
+        still leaves the origination day, so that flash offers it.
         """
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         acct = account_service.create_account(
             account_service.AccountSpec(
                 user_id=seed_user["user"].id,
                 account_type_id=loan_type.id,
-                name="Paid Before It Originated",
+                name="Paid Around Its Origination",
                 anchor_balance=Decimal("0"),
                 observed_on=date(2026, 1, 2),
             ),
@@ -8761,8 +8794,8 @@ class TestRecordTrackingStartRoute:
         db.session.flush()
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
-            seed_periods[3], amount=Decimal("500.00"),
-            settled_on=date(2026, 2, 19),
+            seed_periods[period_index], amount=Decimal("500.00"),
+            settled_on=paid_on,
         )
         db.session.commit()
         configured = auth_client.post(
@@ -8786,11 +8819,8 @@ class TestRecordTrackingStartRoute:
             follow_redirects=True,
         )
         assert resp.status_code == 200
-        assert (
-            b"No tracking start can come before that payment, since the "
-            b"loan originated on Feb 27, 2026; use Record balance" in resp.data
-        )
-        assert b"Choose a date before" not in resp.data
+        assert offered in resp.data
+        assert absent not in resp.data
         db.session.expire_all()
         assert self._tracking_start_events(db.session, acct) == []
 

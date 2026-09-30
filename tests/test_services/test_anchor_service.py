@@ -1923,6 +1923,20 @@ def _loan_with_open_books(seed_user):
     return account
 
 
+def _anchor_rows(account):
+    """Return ``[(date, balance, source id)]`` for every stored anchor row, by id.
+
+    A query, so it autoflushes the session first: a row the code under test
+    staged is counted whether or not it was flushed.
+    """
+    return [
+        (row.anchor_date, row.anchor_balance, row.source_id)
+        for row in db.session.query(LoanAnchorEvent)
+        .filter_by(account_id=account.id)
+        .order_by(LoanAnchorEvent.id)
+    ]
+
+
 class TestRecordLoanTrackingStart:
     """The tracking-start opening flow appends a tracking_start event and re-syncs."""
 
@@ -2079,6 +2093,7 @@ class TestRecordLoanTrackingStart:
                 settled_on=paid_on,
             )
             db.session.commit()
+            stored = _anchor_rows(account)
 
             for asked in (paid_on, paid_on + timedelta(days=10)):
                 with pytest.raises(TrackingStartRefused) as refused:
@@ -2090,6 +2105,9 @@ class TestRecordLoanTrackingStart:
                 assert (refused.value.asked, refused.value.moved_on) == (
                     asked, paid_on,
                 )
+                # Counted in the refused transaction, BEFORE any rollback: the
+                # query autoflushes, so a row staged ahead of the raise shows.
+                assert _anchor_rows(account) == stored
                 db.session.rollback()
             assert record_loan_tracking_start(
                 account=account,
@@ -2250,6 +2268,7 @@ class TestRecordLoanTrackingStart:
                 settled_on=paid_on,
             )
             db.session.commit()
+            stored = _anchor_rows(account)
 
             with pytest.raises(TrackingStartRefused) as refused:
                 stage_loan_tracking_start(
@@ -2258,10 +2277,11 @@ class TestRecordLoanTrackingStart:
                     anchor_date=paid_on,
                 )
             assert refused.value.moved_on == paid_on
-            assert not [
-                row for row in db.session.new
-                if isinstance(row, LoanAnchorEvent)
-            ]
+            # Counted in the refused transaction, BEFORE the rollback: the
+            # query autoflushes, so a row staged (or staged and flushed) ahead
+            # of the raise shows, which ``session.new`` alone cannot see once
+            # it is flushed.
+            assert _anchor_rows(account) == stored
             db.session.rollback()
 
             assert stage_loan_tracking_start(

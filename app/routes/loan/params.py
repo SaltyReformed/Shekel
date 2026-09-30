@@ -11,6 +11,7 @@ handlers that flash and return to the dashboard.
 """
 
 import logging
+from datetime import date, timedelta
 from decimal import Decimal
 
 from flask import abort, flash, redirect, request, url_for
@@ -81,11 +82,12 @@ def create_params(account_id):
     IS the assertion (``original_principal`` on ``origination_date``), and a
     second row saying so would be the synthesized opening's twin.
 
-    **A stated day on or after the day a payment into the account moved money
-    is refused whole** (ruling **R-R115**, "Same rule at setup": the dashboard
-    door's R-R114 at this door, and R-BAL155's day): payments can be recorded
-    into an account before its loan is set up, and the form re-renders asking
-    for an earlier day (:func:`_stage_stated_balance_or_refuse`).  That
+    **For a loan that originated before the stated day, a stated day on or
+    after the day a payment into the account moved money is refused whole**
+    (ruling **R-R115**, "Same rule at setup": the dashboard door's R-R114 at
+    this door, and R-BAL155's day): payments can be recorded into an account
+    before its loan is set up, and the form re-renders asking for an earlier
+    day (:func:`_stage_stated_balance_or_refuse`).  That
     refusal rolls the write back and THEN re-renders, as the schedule doors
     do (``routes/pay_periods.py``).
     """
@@ -192,8 +194,12 @@ def create_params(account_id):
 
 
 def _stage_stated_balance_or_refuse(
-    account, account_type, params, anchor_balance, anchor_date,
-):
+    account: Account,
+    account_type: AccountType,
+    params: LoanParams,
+    anchor_balance: Decimal,
+    anchor_date: date,
+) -> str | None:
     """Stage the balance stated at setup as a tracking start, or refuse the setup whole.
 
     The loan is asserted from the stated day only when it originated BEFORE
@@ -207,11 +213,17 @@ def _stage_stated_balance_or_refuse(
     back, the params and their rate row included, and the form re-renders
     asking for an earlier day.
 
-    **Where the loan originated on or after that payment's day, no stated day
-    both follows the origination and precedes the payment**, so the sentence
-    asks for the origination day itself -- which this door accepts and which
-    asserts nothing beyond the loan's original amount -- and names Record
-    balance for the correction once the loan is set up.
+    **Where no day falls strictly between the origination and that payment's
+    day, no stated day both follows the origination and precedes the
+    payment** -- the payment moved money on the origination day, on the day
+    after it, or before it -- so the sentence asks for the origination day
+    itself, which this door accepts and which asserts nothing beyond the
+    loan's original amount, and names Record balance for the correction once
+    the loan is set up.  (Asking for "a date before" the payment's day there
+    would send the owner to the origination day without saying that the
+    stated balance is then dropped.)  The dashboard's door has no such gap:
+    it records a tracking start ON the origination day, so any payment day
+    after the origination leaves a date it accepts.
 
     Args:
         account: The loan :class:`Account` being configured.
@@ -238,7 +250,8 @@ def _stage_stated_balance_or_refuse(
         origination = params.origination_date.strftime("%b %-d, %Y")
         remedy = (
             f"Enter the balance as of a date before {moved_on}."
-            if refused.moved_on > params.origination_date else
+            if refused.moved_on > params.origination_date + timedelta(days=1)
+            else
             f"No date after the loan's origination ({origination}) comes "
             f"before that payment: enter {origination} as the date, which "
             f"states only the loan's original amount, then correct the "

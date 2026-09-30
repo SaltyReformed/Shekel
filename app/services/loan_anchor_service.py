@@ -413,9 +413,9 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
 
     * WHICH payments: the loan walk's own set of the payments that have
       happened, :func:`app.services.loan_loaders.settled_income_shadows`, so
-      this refusal and the walk agree on every exclusion -- a deleted or
-      balance-excluded transfer, and ruling R-BAL140's status drift, counted
-      once, by its movement;
+      this refusal and the walk agree on WHICH payments count -- a deleted or
+      balance-excluded transfer is out, and ruling R-BAL140's status drift is
+      counted once, by its movement;
     * WHETHER and WHEN its money moved:
       :attr:`app.services.transfer_legs.TransferLeg.settled_on`, the stored
       day of the leg's covering movement.  A ``$0.00`` close holds no movement
@@ -431,6 +431,17 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
     dates a ``$0.00`` close by the installment it skips (ruling R-R107), so a
     close named a day on which nothing was paid.
 
+    **It does NOT agree with the walk on WHEN a payment counts against a
+    statement** (finding **REC-552**).  The walk orders a statement against a
+    payment by the payment's DUE date (contract order, ruling R-A), while this
+    reads the day its money moved, so a payment whose due date and money day
+    fall on opposite sides of a statement is mis-walked whatever this door
+    decides: due on or before it but paid after, the statement subsumes it
+    and its principal is lost; due after it but paid on or before, the
+    statement already holds it and the walk applies it again.  The second
+    case is one this door refuses and sends to Record balance, which walks
+    it the same way.  That is the walk's boundary to fix, not this read's.
+
     **One refusal moved downstream with that read.**  A settled payment whose
     movement carries no day (ruling R-BAL147's drift, which no door writes)
     answers ``None`` here, where the walk-day read raised
@@ -444,9 +455,11 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
     :func:`app.services.loan_posting_service.scenarios_with_loan_payments`, the
     same enumeration the all-scenario re-sync walks: a tracking start is a fact
     of the loan ACCOUNT and re-bases the walk in each of them, so a payment in
-    any one of them contradicts it.  Read for the days alone, so no
-    relationship is eagerly loaded (``options=()``) and no loan term is read:
-    the answer does not depend on the params the setup door is still writing.
+    any one of them contradicts it.  Read for the days alone: the caller adds
+    no load (``options=()``; the producer still loads each transfer's pay
+    period, its sort key, and each leg's covering movement), and no loan term
+    is read, so the answer does not depend on the params the setup door is
+    still writing.
 
     Args:
         account: The loan account, configured or being configured.

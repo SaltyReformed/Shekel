@@ -428,8 +428,10 @@ def _loan_record_start_index(
     Before a loan's record starts, its balance map carries the origination
     principal forward from its origination to that day, moved only by what
     the ledger holds dated there -- a true-up, a ``$0.00`` close, or a payment
-    recorded after the tracking start but settled on an earlier day -- not
-    the balance the loan really had then.  So a loan is "honest" only from
+    whose money moved there (recorded after the tracking start with an
+    earlier day, or already held when a tracking start was written before
+    plan step recurrence:R16-c-2 made its doors refuse) -- not the balance
+    the loan really had then.  So a loan is "honest" only from
     the first period whose ``end_date`` reaches the day its record starts;
     before that the trend would draw a past the app never recorded.
 

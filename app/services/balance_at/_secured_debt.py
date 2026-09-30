@@ -151,7 +151,9 @@ def _back_projection_by_month(
     its tracking-start assertion, so across the origination-to-tracking-start
     months the fold carries the origination principal forward, moved only by
     what the ledger holds dated there (a true-up, a ``$0.00`` close, or a
-    payment recorded after the tracking start but settled on an earlier day).
+    payment whose money moved there: recorded after the tracking start with
+    an earlier day, or already held when a tracking start was written before
+    plan step recurrence:R16-c-2 made its doors refuse).
     This supplies the honest contractual estimate for those months instead
     -- the
     :func:`~app.services.balance_at._resolution.contractual_schedule_from_origination`
