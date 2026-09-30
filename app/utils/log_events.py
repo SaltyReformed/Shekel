@@ -495,7 +495,10 @@ EVT_STATEMENT_MATCH_WITHDRAWN = _register(
     "legs itself, and a moved movement keeps its money -- and rows the "
     "withdrawn acts had CREATED are LEFT standing, which kept_row_count "
     "reports.  transaction_ids names the "
-    "rows involved, transaction_entry_ids the movements, freed_line_ids the "
+    "rows involved, transfer_ids the transfers whose payments left (since "
+    "balance:X-bi-6-4c-4; a transfer's payment was listed under its shadow "
+    "row's id in transaction_ids until then), transaction_entry_ids the "
+    "movements, freed_line_ids the "
     "lines (transaction_entry_id, singular, until CC-5-4a-3).",
 )
 

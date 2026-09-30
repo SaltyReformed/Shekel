@@ -576,7 +576,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     """Update an existing entry.
 
     Allowed fields: figure, description, purchased_on, settle_day, is_credit.
-    Re-validates ownership through the entry's parent transaction.
+    Re-validates ownership on the entry's own owner column.
 
     **``figure`` is the figure AND who wrote it** (plan step **X-bi-3e-1**,
     ruling **R-BAL69**): a :class:`~app.services.stated_figure.StatedFigure`,
@@ -615,7 +615,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     Raises:
         NotFoundError: Entry not found or not accessible.
         ValidationError: If no valid fields provided, unknown fields are
-            passed, or the parent row has SETTLED and this update touches
+            passed, the entry is a row's or a transfer's payment record
+            rather than a purchase (:func:`~._refusals._reject_settlement_record`,
+            asked first), or the parent row has SETTLED and this update touches
             anything that changes what the row cost
             (:func:`_reject_settled_parent`).  An update touching only
             ``settle_day`` is admitted on a settled parent: it records when
@@ -638,20 +640,34 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     if entry is None:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # Re-validate ownership on the parent transaction's OWN owner column
-    # (plan step ``pay_calendar:C13-b``; it walked
-    # ``entry.transaction.pay_period.user_id`` until then).
+    # Re-validate ownership on the MOVEMENT's own owner column (plan step
+    # ``balance:X-bi-6-4c-4``).  It read the parent row's ``user_id`` from
+    # plan step ``pay_calendar:C13-b``, and walked
+    # ``entry.transaction.pay_period.user_id`` before that; the two columns
+    # are one value by key (``fk_transaction_entries_owner_transaction``), and
+    # the movement's is the one a transfer's movement keeps once
+    # ``X-bi-6-4d`` re-parents it onto the transfer and it has no row.
     owner_id = resolve_owner_id(user_id)
-    if entry.transaction.user_id != owner_id:
+    if entry.owner_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
+    # The row's own payment record is the status seam's to write (plan step
+    # **X-bi-3a**); checked after ownership for the 404 reason below, and
+    # FIRST among the refusals, as the delete door always has, so the refusal
+    # names the act that owns it (plan step ``balance:X-bi-6-4c-4``, ruling
+    # **R-BAL160**).  It stood after the settled-row refusal until then, so a
+    # crafted request re-pricing a Paid row's payment record was told the
+    # row's purchases are closed -- and that refusal reads the parent ROW,
+    # which a transfer's payment record will not have.
+    _reject_settlement_record(entry)
     # A settled row's purchases are closed to RE-PRICING (finding **N-229**),
     # and this is the door that passes what it was actually asked to write:
     # a submission touching only ``settle_day`` records when the bank took the
     # purchase and is admitted, where anything cost-bearing is refused.
     # Checked after ownership so a non-owner still gets the 404 rather than a
     # message confirming the row exists, exactly as the create door orders its
-    # guards.
+    # guards.  Only a PURCHASE reaches it, and the one door that writes a
+    # purchase (:func:`create_entry`) writes it under a row, never a shadow.
     # **Ruling R-GE**: a statement's evidence may re-cost a settled
     # purchase, and what bounds the permission is the FIGURE's own stated
     # source rather than a flag (it was the settle day's basis beside the
@@ -660,9 +676,6 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     _reject_settled_parent(
         entry.transaction, cost_fields_changing(valid_updates),
     )
-    # The row's own payment record is the status seam's to write (plan step
-    # **X-bi-3a**); checked after ownership for the same 404 reason.
-    _reject_settlement_record(entry)
     # **Does this write flip the flag ON?**  Stated ONCE for its two readers
     # (the refusal here and ``releases_the_link`` below): a submission that
     # sets ``is_credit`` True on a purchase that did not carry it.
@@ -855,11 +868,10 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     if entry is None:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # Re-validate ownership on the parent transaction's OWN owner column
-    # (plan step ``pay_calendar:C13-b``; it walked
-    # ``entry.transaction.pay_period.user_id`` until then).
+    # Re-validate ownership on the MOVEMENT's own owner column, for the
+    # reason :func:`update_entry` gives (plan step ``balance:X-bi-6-4c-4``).
     owner_id = resolve_owner_id(user_id)
-    if entry.transaction.user_id != owner_id:
+    if entry.owner_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
     # **A settled row's close may not be re-priced by a removal, and whether

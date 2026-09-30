@@ -43,10 +43,15 @@ out of every match, delete.
    another row loses this member and turns amber on the register.  Reversing
    first changes nothing it reads -- a reversal writes journal entries and
    touches neither a movement nor a member.
-3. **Delete it** -- ``db.session.delete`` on the movement, then out of its
-   row's ``entries`` so a reconcile that walks ``txn.entries`` after the act
-   returns (the settle verbs', the entry door's re-derivation) never meets a
-   movement that is gone.  **This is the ONLY delete of a movement there is**
+3. **Delete it** -- ``db.session.delete`` on the movement, then out of the
+   list its parent loaded it into, so a reconcile that walks that list after
+   the act returns (the settle verbs', the entry door's re-derivation) never
+   meets a movement that is gone.  The list is asked of
+   :func:`app.services.transfer_legs.parent_entries` since plan step
+   ``balance:X-bi-6-4c-4``: its row's ``entries``, which for a transfer's
+   payment is its SHADOW's until ``X-bi-6-4d`` re-parents the movement onto
+   the transfer, so this act names no parent row itself and 6-4d re-points
+   that one function.  **This is the ONLY delete of a movement there is**
    (plan step ``CC-5-4a-4``, ruling **R-CC64**): the row's ``entries``
    relationship carries no delete cascade and its database keys are
    ``NO ACTION``, so no row delete -- through the ORM or in bulk -- can take
@@ -95,7 +100,7 @@ step 2's match writes need.
 from __future__ import annotations
 
 from app.extensions import db
-from app.services import match_withdrawal, posting_service
+from app.services import match_withdrawal, posting_service, transfer_legs
 from app.services.match_withdrawal import MatchWithdrawal
 
 
@@ -112,8 +117,7 @@ def remove_movements(
         movements: The ``TransactionEntry`` rows leaving -- the WHOLE set one
             press removes, so a group act naming two of them is withdrawn once
             and the receipt is the one derivation the dialog printed.  Each
-            must still be flushed (``id`` set) with its ``transaction``
-            reachable.
+            must still be flushed (``id`` set) with its parent reachable.
         owner_id: The owner the caller proved owns them -- the OWNER, not
             necessarily the requester, so a companion's delete is filed under
             the books it changed.
@@ -142,7 +146,7 @@ def remove_movements(
         # which is how a MATCHED purchase met that).  Then deleted AND out of
         # the collection -- removed without the delete, the flush would NULL
         # its ``transaction_id`` (the module docstring's step 3).
-        family = movement.transaction.entries
+        family = transfer_legs.parent_entries(movement)
         db.session.delete(movement)
         family.remove(movement)
     return withdrawn

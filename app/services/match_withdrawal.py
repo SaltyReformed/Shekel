@@ -111,7 +111,9 @@ withdraw and log with no caption until plan step ``credit_card:CC-5-4a-5``
 That package imports ``entry_service``, ``credit_workflow`` and
 ``transaction_service`` -- three of the doors whose act calls this -- so a rule
 living there could not be reached from any of them.  It imports the two match
-MODELS and nothing else in ``app.services``, which is what lets the act and the
+MODELS and, of ``app.services``, only :mod:`app.services.transfer_legs` -- the
+leaf below every service, which names a movement's parent for the event
+(plan step ``balance:X-bi-6-4c-4``) -- which is what lets the act and the
 seam's move above it call one rule instead of a spelling each.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a
@@ -131,6 +133,8 @@ from sqlalchemy.orm import selectinload
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.services import transfer_legs
+from app.services.transfer_legs import TransferLeg
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCH_WITHDRAWN,
@@ -455,7 +459,8 @@ def _withdraw(
             re-record and a re-point withdraw for different reasons and the
             log is read.
         **fields: Subject coordinates for the event (``transaction_ids``,
-            ``transaction_entry_ids`` and ``freed_line_ids``).
+            ``transfer_ids``, ``transaction_entry_ids`` and
+            ``freed_line_ids``).
     """
     for act in acts:
         db.session.delete(act)
@@ -531,6 +536,39 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     return _summarise(_acts_emptied_by(entry_ids), set(), entry_ids)
 
 
+def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
+    """Return the withdrawal event's parent coordinates for *entries*.
+
+    What each movement was recorded FOR, asked of the one resolution of a
+    movement's parent (:func:`app.services.transfer_legs.movement_parent`,
+    plan step ``balance:X-bi-6-4c-4``, ruling **R-BAL160**) and split in one
+    pass: a plan row under ``transaction_ids``, with the rows the press
+    deletes beside it, and a transfer's payment under ``transfer_ids``.  It
+    read the shadow row's id off a transfer's payment until that step -- an
+    id ``X-bi-6-4d`` leaves unset, and one ``sorted`` could not have ordered
+    beside the others.  The rows a transfer delete hands over as leaving are
+    its shadows, so that delete still lists them until the shadows go.
+
+    Args:
+        entries: The movements leaving their matches.
+        leaving_ids: The ids of the rows the press deletes, soft or hard.
+
+    Returns:
+        ``{"transaction_ids": [...], "transfer_ids": [...]}``, each sorted.
+    """
+    row_ids, transfer_ids = set(leaving_ids), set()
+    for entry in entries:
+        parent = transfer_legs.movement_parent(entry)
+        if isinstance(parent, TransferLeg):
+            transfer_ids.add(parent.transfer.id)
+        else:
+            row_ids.add(parent.id)
+    return {
+        "transaction_ids": sorted(row_ids),
+        "transfer_ids": sorted(transfer_ids),
+    }
+
+
 def take_out_of_matches(
     entries, owner_id: int, *, because: str, rows_leaving=(),
 ) -> MatchWithdrawal:
@@ -587,12 +625,10 @@ def take_out_of_matches(
     if emptied:
         _withdraw(
             emptied, planned, owner_id, because=because,
-            # The ROWS the movements were under, whether or not they leave
+            # The PARENTS the movements were under, whether or not they leave
             # too -- a re-record's row stays, and the event is the only record
             # of which row a no-caption door (the grid's Mark Paid) touched.
-            transaction_ids=sorted(
-                leaving_ids | {entry.transaction_id for entry in entries},
-            ),
+            **_parent_ids(entries, leaving_ids),
             transaction_entry_ids=sorted(entry_ids),
             freed_line_ids=[line.line_id for line in planned.lines],
         )

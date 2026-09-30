@@ -56,6 +56,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.services import transfer_legs
 
 
@@ -540,24 +541,53 @@ def account_has_history(account_id: int) -> bool:
     that loads it; the key is ``RESTRICT`` now, so the database refuses the
     delete and this count is what makes the refusal a designed one.
 
+    **A live TRANSFER from or to this account counts in its own right**
+    (plan step ``balance:X-bi-6-4c-4``, finding **BAL-539**).  Until then it
+    counted only through its shadow row on the account, which ``X-bi-6-4d``
+    stops writing for new transfers and ``X-bi-6-5`` deletes; without this
+    arm the door would then permanently delete, where today it archives, an
+    account a live transfer names that guard 2 does not see.  Guard 2 asks
+    only whether a transfer definition names the account NOW (one-time and
+    archived ones included), so on an account none names it lets through
+    every transfer from or to the account: one that names no definition,
+    such as an ad-hoc transfer (until plan step ``balance:X-ci-3`` makes
+    every transfer name one), or one whose definition names other accounts,
+    such as one its definition's endpoint edit did not move.  This arm
+    counts every live transfer from or to the account, so it needs no list
+    of how a transfer comes to be one of those.  Byte-identical while the
+    shadows exist: a live transfer's two live shadows sit on its two
+    endpoints (the create door writes them there and an endpoint move
+    re-points both), and a soft delete flags all three rows, so the shadow
+    arm and this one answer alike for every account -- 0 accounts differ on
+    the 2026-09-30 00:11 production dump.
+
     Args:
         account_id: The Account.id to check.
 
     Returns:
         True if the account has any non-deleted transaction history, on it or
-        under one of its definitions.
+        under one of its definitions, or any live transfer from or to it.
     """
 
     return db.session.query(
-        db.session.query(Transaction)
-        .outerjoin(Transaction.template)
-        .filter(
-            db.or_(
-                Transaction.account_id == account_id,
-                TransactionTemplate.account_id == account_id,
-            ),
-            Transaction.is_deleted.is_(False),
-        ).exists()
+        db.or_(
+            db.session.query(Transaction)
+            .outerjoin(Transaction.template)
+            .filter(
+                db.or_(
+                    Transaction.account_id == account_id,
+                    TransactionTemplate.account_id == account_id,
+                ),
+                Transaction.is_deleted.is_(False),
+            ).exists(),
+            db.session.query(Transfer).filter(
+                db.or_(
+                    Transfer.from_account_id == account_id,
+                    Transfer.to_account_id == account_id,
+                ),
+                Transfer.is_deleted.is_(False),
+            ).exists(),
+        )
     ).scalar()
 
 
@@ -660,21 +690,40 @@ def account_has_ledger_postings(account_id: int) -> bool:
 
 
 def category_has_usage(category_id: int, user_id: int) -> bool:
-    """Check if a category is in use by templates, transactions or rules.
+    """Check if a category is in use by templates, transfers, transactions or rules.
 
-    Performs a three-part check, short-circuiting in the order it runs them:
+    Performs a four-part check, short-circuiting in the order it runs them:
     (1) any TransactionTemplate with matching category_id and user_id, (2) any
     standing merchant rule that names it -- as the category a *new envelope*
     answer creates under, OR as the income category a deposit from that
-    merchant is filed under (plan step ``bank_import:X-gj-2a``) -- and (3) any
-    Transaction with matching category_id joined to PayPeriod filtered by
-    user_id.  The join is last because it is the only one of the three that
-    needs one; none of the three has an index on ``category_id``, so all three
-    are sequential scans over small tables and the ordering buys the JOIN
-    rather than a lookup.
+    merchant is filed under (plan step ``bank_import:X-gj-2a``) -- (3) any
+    TransferTemplate or Transfer with matching category_id and user_id, in
+    one statement, and (4) any Transaction with matching category_id joined
+    to PayPeriod filtered by user_id.  The join is last because it is the
+    only one of the four that needs one; none of the five tables has an index
+    on ``category_id``, so every part is a sequential scan over a small table
+    and the ordering buys the JOIN rather than a lookup.
 
-    The user_id scoping is critical for (1) and (3) -- categories are
+    The user_id scoping is critical for (1), (3) and (4) -- categories are
     user-scoped, and the check must not cross user boundaries.
+
+    **The transfer part was added at plan step ``balance:X-bi-6-4c-4``**
+    (finding **BAL-545**).  Until then a transfer counted only through its
+    shadow rows in (4), and a recurring transfer DEFINITION not at all: a
+    category that only a transfer definition named read as unused, and a
+    permanent delete set ``transfer_templates.category_id`` to NULL
+    (``ON DELETE SET NULL``) under a flash that said nothing about it.  That
+    is the one change this makes today.  The ``Transfer`` arm adds nothing
+    yet, because each transfer's expense shadow carries the transfer's own
+    category (0 of 179 differ on the 2026-09-30 00:11 production dump), but
+    ``X-bi-6-4d`` stops writing shadows for new transfers and ``X-bi-6-5``
+    deletes the rest, and from then on a transfer's category is protected
+    here or nowhere.  Soft-deleted transfers count, as soft-deleted
+    transactions always have in (4).  (4) still reads the shadows until they
+    go, and that includes a category no transfer names: 74 income shadows
+    written before the create door mirrored the parent's category carry the
+    user's "Transfers: Incoming" category instead, which (4) counts as usage
+    until ``X-bi-6-5`` deletes them.
 
     **The merchant-rule part was added at plan step ``bank_import:X-gd-2``, and
     it is about what ``delete_category`` does with the answer.**  A "no" here is what
@@ -713,8 +762,9 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
         user_id: The user who owns the category (for ownership scoping).
 
     Returns:
-        True if any templates, transactions or standing merchant rules
-        reference this category for the given user.
+        True if any templates, transfers, transfer definitions, transactions
+        or standing merchant rules reference this category for the given
+        user.
     """
 
     # Check templates first -- cheap query with direct user_id column.
@@ -756,6 +806,24 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
     ).scalar()
 
     if has_rules:
+        return True
+
+    # ...then the transfers and their definitions, both scoped by their own
+    # ``user_id``: ``transfers.category_id`` and
+    # ``transfer_templates.category_id`` are single-column keys, so either can
+    # name another owner's category and the reader is what stops it.
+    has_transfers = db.session.query(
+        db.or_(
+            db.session.query(TransferTemplate).filter_by(
+                category_id=category_id, user_id=user_id,
+            ).exists(),
+            db.session.query(Transfer).filter_by(
+                category_id=category_id, user_id=user_id,
+            ).exists(),
+        )
+    ).scalar()
+
+    if has_transfers:
         return True
 
     # Check transactions -- requires join through PayPeriod for user scoping.
