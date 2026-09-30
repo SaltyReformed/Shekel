@@ -119,6 +119,29 @@ class SettleDay:
         return ref_cache.settled_day_basis_id(self.basis)
 
 
+def is_evidence(day: SettleDay) -> bool:
+    """Return whether *day* is its row's OWN, rather than borrowed.
+
+    ``observed``, ``asserted`` and ``entered`` are evidence -- the bank, a
+    balance assertion, or the owner said so -- and ``borrowed`` is the one
+    member that is not (:class:`~app.enums.SettledDayBasisEnum`; only a
+    transfer side is ever borrowed).  The ONE statement of that partition in
+    ``app/`` (the REC-552 study's seam S1): a transfer side's day function
+    (``transfer_service._side_days``), the popover's day boxes and the status
+    seam's mirror all ask it.  It lives beside :class:`SettleDay` rather than
+    in ``transfer_service`` because the seam, which ``transfer_service``
+    calls, asks it too.  The relabel migration's frozen SQL states it for
+    itself, because a migration may not import the application.
+
+    Args:
+        day: A stored or stated day.
+
+    Returns:
+        ``True`` unless *day* is borrowed.
+    """
+    return day.basis is not SettledDayBasisEnum.BORROWED
+
+
 def submitted_settle_day(
     submitted_day: date, recorded: "SettleDay | None",
 ) -> "SettleDay":
@@ -241,25 +264,15 @@ def settle_day_from_columns(
 ) -> Optional[SettleDay]:
     """Return the :class:`SettleDay` a stored PAIR of values means.
 
-    **The ONE decode, over VALUES rather than over a row**, so the two callers
-    that hold the pair different ways share it: :func:`recorded_settle_day` for a
-    row that carries the columns, and the transfer PATCH for a
-    :class:`~app.models.transfer.Transfer`, which carries neither -- its pair
-    lives on the income shadow and it reads both in ONE query.
-
-    **Taking values is what makes the second caller SAFE, not merely tidy.**  A
-    row-shaped reader forces a caller with no columns to fake them, and a
-    ``Transfer`` faking them with two properties would issue a SELECT per
-    attribute ACCESS -- five for one call of this function, over a query whose
-    ``limit(1)`` deliberately carries no ``ORDER BY`` (``Transfer.settled_on``
-    states why).  With duplicate income shadows, or across a concurrent commit
-    under READ COMMITTED, those reads can straddle two rows and hand this
-    function a day from one and a basis from the other, which it correctly
-    refuses -- as a ``ValueError`` naming a phantom writer, i.e. a 500 on the
-    transfer PATCH.  One read of two columns cannot straddle anything.  Found by
-    adversarial review 2026-08-22.  The second cause is a COMMAND's since plan
-    step balance:X-i3 -- a PATCH stays at READ COMMITTED so its lock-then-reread
-    works -- and the first was never about the isolation level.
+    **The ONE decode, over VALUES rather than over a row.**  It had a second
+    caller holding the pair as values -- the transfer PATCH, which read the
+    pair off the income shadow in ONE query because a ``Transfer`` carries
+    neither column, and two property reads could straddle two rows and hand
+    this a half-pair (adversarial review 2026-08-22).  Plan step
+    ``balance:X-bi-6-4c-3`` gave each side its own day, read off the side's
+    own movement, which is a row (:func:`recorded_settle_day`); the values
+    shape stays because it is where the decode and its refusals live, and
+    three modules cite it as the pattern for a caller holding values.
 
     Args:
         settled_on: The stored day, or ``None``.
@@ -305,16 +318,14 @@ def recorded_settle_day(row: SettleDatedMixin) -> Optional[SettleDay]:
 
     The read half of the pair, and :func:`record_settle_day`'s inverse, for a
     row that CARRIES the two columns.  Its callers are the ones that must carry
-    a row's day forward without inventing either term: the transfer pair's
-    repair, which takes the day its sibling leg already holds (Transfer
-    Invariant 3); the statement matcher's candidate construction, which needs to
-    know whether the day it is about to bound a bank line against is a point or
-    an upper bound; and the three form doors, which need it to tell a prefill
-    from a retype (:func:`submitted_settle_day`).
-
-    A caller holding the pair as VALUES rather than as a row -- the transfer
-    PATCH -- calls :func:`settle_day_from_columns` directly, which is where the
-    decode and its refusals live.
+    a row's day forward without inventing either term: the transfer writer,
+    which reads each side's current day and borrows a sibling's for a side
+    with no evidence (``transfer_service._status``, ruling **R-BAL142**); the
+    statement matcher's candidate construction, which needs to know whether
+    the day it is about to bound a bank line against is a point or an upper
+    bound; and the three form doors, which need it to tell a prefill from a
+    retype (:func:`submitted_settle_day`) -- the transfer popover's per side,
+    off each leg's movement.
 
     Args:
         row: The transaction or purchase to read.

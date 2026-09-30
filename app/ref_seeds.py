@@ -300,8 +300,11 @@ _REF_TABLE_SEEDS = (
     # settled row's ``settled_on`` is known: ``observed`` is a day a bank
     # statement showed the money posting on, ``asserted`` is the day the owner
     # asserted a BALANCE for -- an UPPER BOUND on the true posting day, not a
-    # point -- and ``entered`` is the app's own record with no bank document
-    # behind it.  A row that carries no settle day carries no basis, so there is
+    # point -- ``entered`` is the owner's own word with no bank document behind
+    # it, and ``borrowed`` (plan step X-bi-6-4c-3) is a transfer side's day with
+    # no evidence of its own: its other side's, or the day Paid was pressed.
+    # Migration ``d3b8f5a1c7e2`` inline-seeds that fourth row the same way.
+    # A row that carries no settle day carries no basis, so there is
     # deliberately no ``not_settled`` row here; each table's pairing CHECK is a
     # BICONDITIONAL over the two NULL-nesses -- see
     # :class:`app.enums.SettledDayBasisEnum`.  The migration ``c7d31f9a45e8``
@@ -309,7 +312,7 @@ _REF_TABLE_SEEDS = (
     # before this idempotent reseed runs -- the same dual-seed pattern the
     # settlement-record, amount-model, posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
-    ("SettledDayBasis", ["observed", "asserted", "entered"]),
+    ("SettledDayBasis", ["observed", "asserted", "entered", "borrowed"]),
     # WHO WROTE a movement's FIGURE (balance arc, plan step X-bi-3a, ruling
     # R-BAL39): ``resolved`` is the settle pricing it from the plan, ``typed``
     # a person stating it, ``observed`` the bank's own line stating it.  The

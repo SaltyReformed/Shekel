@@ -9,12 +9,16 @@ carries in ``journal_entries.entry_date``:
 * a **PAYMENT** is visible from its **settled date** -- the STORED
   ``settled_on`` of the loan-side covering movement its leg carries as its
   record (plan step ``balance:X-bi-6-4b``; the shadow's own column until
-  then, which the pair applier keeps equal), read through the
+  then, which the status seam keeps equal to its movement), read through the
   :func:`app.utils.balance_predicates.settled_day` accessor.  It is the day
   the posting writer files the loan-side entry under (plan step
-  ``balance:X-bi-6-3``), the day the cash walk folds that movement on, and
-  the SAME date the checking outflow moves on, so the loan and checking move
-  together (ruling R-A).  A payment that moved NO money -- a ``$0.00``
+  ``balance:X-bi-6-3``) and the day the cash walk folds that movement on.  It
+  is the LOAN side's own day (plan step ``balance:X-bi-6-4c-3``, ruling
+  **R-BAL142**): the same date the checking outflow moves on while the loan
+  side borrows checking's day, which is every payment with no evidence of its
+  own on the loan side, so the loan and checking move together (ruling R-A);
+  a loan side that holds its own day moves on that day, and the ledger holds
+  the difference in Transfers-in-transit.  A payment that moved NO money -- a ``$0.00``
   close, whose leg carries no record -- is visible from the installment it
   skips (ruling **R-BAL139**): its INTERVAL's installment (ruling
   **R-R107**), the one the replay charges it against.
@@ -126,11 +130,12 @@ def payment_visible_on(
     what the cash fold counts AND what the posting writer files the loan-side
     entry under (plan step ``balance:X-bi-6-3``), so the day the fold counts
     this payment and the day the sum-of-postings reader counts it cannot
-    drift; and it is the day the checking outflow moves, so the loan and
-    checking move together.  It read the SHADOW's ``settled_on`` until plan
-    step balance:X-bi-6-4b; the pair applier keeps the two equal (measured
-    equal on all 20 settled income shadows of the 2026-09-23 21:17 production
-    dump).
+    drift.  It is the LOAN side's own day (plan step ``balance:X-bi-6-4c-3``,
+    ruling **R-BAL142**) -- the checking outflow's day while the loan side
+    borrows it, its own day when it holds one.  It read the SHADOW's
+    ``settled_on`` until plan step balance:X-bi-6-4b; the status seam keeps
+    each shadow equal to its own movement (measured equal on all 20 settled
+    income shadows of the 2026-09-23 21:17 production dump).
 
     **A leg with NO record is a ``$0.00`` close, and it is dated by the
     installment it skips** (ruling **R-BAL139**, extending **R-BAL90**: no

@@ -64,7 +64,12 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
-from app.services import pay_period_locks, pay_period_service, status_seam
+from app.services import (
+    pay_period_locks,
+    pay_period_service,
+    status_seam,
+    transfer_legs,
+)
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.loan_loaders import load_standing_loan_assertions
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
@@ -299,8 +304,9 @@ def gate_removable_head(
     2. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
        the app holds (**R-SAL49**), and this would leave it on none.
     3. Money DATED inside the removed paychecks anywhere in the budget -- a
-       settle day on any row (a transfer's shadows included) or purchase, or
-       a balance recorded for an account or a loan -- because the removal
+       settle day on a plain row, on a transfer side's own record (its
+       covering movement, ruling **R-BAL142**) or on a purchase, or a
+       balance recorded for an account or a loan -- because the removal
        raises the recordable floor (``pay_period_service.recordable_floor``)
        over it.  A settle day under that floor is refused on every save that
        keeps its row paid (``status_seam``), and an assertion under it is the
@@ -570,12 +576,13 @@ def _earliest(query, describe) -> "tuple[date, str] | None":
 def _settled_transaction(user_id, low, high):
     """The earliest settle day in ``[low, high)`` on a live row of the owner's.
 
-    Transfer shadows included: they are how a transfer's settle day is stored.
+    Plain rows only: a transfer's sides are :func:`_settled_transfer_side`'s.
     """
     return _earliest(
         db.session.query(Transaction.settled_on, Transaction.name)
         .filter(
             Transaction.user_id == user_id,
+            Transaction.transfer_id.is_(None),
             Transaction.is_deleted.is_(False),
             Transaction.settled_on >= low,
             Transaction.settled_on < high,
@@ -585,12 +592,48 @@ def _settled_transaction(user_id, low, high):
     )
 
 
+def _settled_transfer_side(user_id, low, high):
+    """The earliest day in ``[low, high)`` a live transfer's side RECORDS.
+
+    Read off each side's own record -- its covering movement, through
+    ``transfer_legs``' one loader -- since plan step ``balance:X-bi-6-4c-3``
+    (ledger row **BAL-568**), where the two sides' days part (ruling
+    **R-BAL142**).  It read the shadow rows until then.  The one difference
+    on door-written data is a transfer closed at ``$0.00``: it records no
+    movement and so no day (ruling **R-BAL90**), and it no longer holds a
+    removal back (R-PC109 names money dated inside the span).  The loader's
+    own ``ORDER BY`` (the movement's id) is cleared first, since SQLAlchemy
+    APPENDS a second, and restated as the tiebreak: a transfer's two sides
+    usually share their day, and the refusal must name the same side every
+    time -- the gate's own rule for a tie between its arms.
+    """
+    row = (
+        transfer_legs.transfer_movement_rows(
+            Transfer.user_id == user_id,
+            Transfer.is_deleted.is_(False),
+            TransactionEntry.settled_on >= low,
+            TransactionEntry.settled_on < high,
+        )
+        .order_by(None)
+        .order_by(TransactionEntry.settled_on, TransactionEntry.id)
+        .first()
+    )
+    if row is None:
+        return None
+    movement, transfer, is_income = row
+    name = transfer_legs.leg_label(transfer.from_account, transfer.to_account)[
+        1 if is_income else 0
+    ]
+    return movement.settled_on, f"{name} is marked paid on"
+
+
 def _settled_purchase(user_id, low, high):
     """The earliest settle day in ``[low, high)`` on a purchase under a live row.
 
     Purchases only (``status_seam.covering_clause``, negated): a settled
-    row's covering movement carries its parent's settle day, which
-    :func:`_settled_transaction` already asks.  Scoped by the purchase's
+    plain row's covering movement carries its row's settle day, which
+    :func:`_settled_transaction` already asks, and a transfer side's is
+    :func:`_settled_transfer_side`'s own read.  Scoped by the purchase's
     OWNER, never ``user_id`` -- that is its AUTHOR, a companion's id when a
     companion recorded it (review 1 of C21 measured one slipping through).
     """
@@ -656,12 +699,13 @@ def _recorded_loan_balance(user_id, low, high):
 #: included, the conservative side: whether a withdrawn level may sit below
 #: the floor is the bank-import arc's question, and its one narrowing
 #: (``statement_import._balance.standing_bank_levels``) is not exported.  A
-#: transfer is here through its two shadows, which are rows and
-#: carry its settle days (``Transfer.settled_on`` is a property over them, not
-#: a column).  A loan's ORIGINATION is not here: it is the loan's opening,
+#: transfer is here through each side's own record, which carries that side's
+#: day (plan step ``balance:X-bi-6-4c-3``; it was the shadow rows, ledger row
+#: BAL-568).  A loan's ORIGINATION is not here: it is the loan's opening,
 #: legal before any schedule, as an account's books opening is.
 _DATED_MONEY = (
     _settled_transaction,
+    _settled_transfer_side,
     _settled_purchase,
     _recorded_balance,
     _recorded_loan_balance,

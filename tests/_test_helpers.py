@@ -3658,7 +3658,7 @@ def create_transfer(
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), settled_amount=None,
-    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None, due_date=None,
+    settled_on=None, name=None, scenario=None, due_date=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
@@ -3671,13 +3671,31 @@ def create_settled_transfer(
     Projected, then transitioned to Paid via ``update_transfer`` (the same
     ``mark_done`` chokepoint the route uses).
 
+    **It PRESSES Paid, and a Paid press states no day** (ruling **R-BAL163**,
+    plan step ``balance:X-bi-6-4c-3``): both sides BORROW the day it was
+    pressed, so both read ``borrowed`` on *settled_on*.  It stated that day as
+    ``entered`` on the pair until that step, which is what the one-box popover
+    recorded; a test whose subject is a day the owner TYPED states it per side
+    through the verb (``side_days``) rather than through this builder.
+
+    **The press lands on *settled_on* by pinning the writer's ONE clock read**
+    -- the day a pair with no evidence borrows
+    (``transfer_service._status``'s ``display_today``) -- for the length of the
+    settle, and nothing else.  Not ``time_machine``: a suite running under
+    :func:`freeze_today` has replaced every module's ``datetime`` with a class
+    whose ``now`` a traveller cannot reach, and those are exactly the loan
+    suites that pin a past day.  So the build CHECKS its own result: both sides
+    must read ``borrowed`` on *settled_on* afterwards, and a pin that stopped
+    reaching the writer (the read moved) fails here, naming itself, instead of
+    settling every fixture on today in silence.
+
     Flushes via the service; the caller commits.
 
     Args:
         seed_user: The ``seed_user`` fixture dict (supplies ``user_id`` and
             the baseline scenario).
-        db_session: The test ``db.session`` (unused directly -- the service
-            owns the session -- but accepted so call sites read uniformly).
+        db_session: The test ``db.session``.  The service owns the writes;
+            this reads the two sides back for the check above.
         from_account: The :class:`~app.models.account.Account` money leaves
             (the expense shadow lands here).
         to_account: The account money enters (the income shadow lands here).
@@ -3685,26 +3703,22 @@ def create_settled_transfer(
             transfer (and both shadows) in.
         amount: The transfer amount (Decimal); also the shadows'
             ``estimated_amount``.  Defaults to ``Decimal("100.00")``.
-        actual_amount: When not ``None``, the settled actual amount mirrored
-            to both shadows (so their ``effective_amount`` becomes this, not
-            ``amount``).  Defaults to ``None`` (effective == estimated ==
-            amount).
-        settled_on: The civil DAY written to both shadows.  Defaults to the
-            user's today (what the seam derives, and the realistic ``mark_done``
-            value).  A loan test reading a PAST balance must pin this to the day
-            it wants the payment visible from -- balance step C2 keys visibility
+        settled_amount: When not ``None``, the figure the owner typed as what
+            moved, recorded on both legs (so their ``effective_amount`` becomes
+            this, not ``amount``).  Defaults to ``None`` (effective ==
+            estimated == amount).
+        settled_on: The civil DAY Paid is pressed on, which both sides then
+            borrow.  ``None`` (the default) presses it on the owner's today.
+            A loan test reading a PAST balance must pin this to the day it
+            wants the payment visible from -- balance step C2 keys visibility
             on the SETTLED date -- typically the period's ``start_date``.  It
-            took an INSTANT until plan step X-f1 and callers wrapped their day in
-            ``settle_instant_on``; the column stores the day now, so the day is
-            passed directly.  **Passing ``None`` EXPLICITLY is now REFUSED**, and
-            this paragraph promised the opposite until a neutral review caught
-            it: the sentinel is ``_UNSET_SETTLED_ON``, not ``None``, so an
-            explicit ``None`` reaches ``update_transfer`` and, since finding
-            **N-183** routed that write through the status seam, raises
-            ``ValidationError`` ("the settle day cannot be cleared") rather than
-            NULLing a settled pair.  A fixture that genuinely needs the broken
-            settled-with-no-day row builds it with the bare :func:`add_txn`
-            instead, which is what that builder is for.
+            took an INSTANT until plan step X-f1 and callers wrapped their day
+            in ``settle_instant_on``; the column stores the day now, so the
+            day is passed directly.  A fixture that genuinely needs the broken
+            settled-with-no-day row builds it with the bare :func:`add_txn`,
+            which is what that builder is for: no door writes one (a
+            :class:`~app.services.transfer_service.SideDay` cannot wrap
+            ``None``).
         name: Optional transfer display name.
         due_date: Optional due date stored on the transfer and mirrored to both
             shadows, passed straight through to :func:`create_transfer`.
@@ -3724,28 +3738,20 @@ def create_settled_transfer(
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
+    from unittest import mock
+
     from app import ref_cache
     from app.enums import SettledDayBasisEnum, StatusEnum
+    from app.models.transaction import Transaction
     from app.services import transfer_service
-    from app.services.settle_day import SettleDay
+    from app.services.settle_day import SettleDay, recorded_settle_day
+    from app.services.transfer_service import _status as transfer_status
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
         amount=amount, name=name, scenario=scenario, due_date=due_date,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
-    if settled_on is not _UNSET_SETTLED_ON:
-        # The service's kwarg is the PAIR, not the column (plan step **X-az**):
-        # a day and the basis that says how it is known.  ``entered`` is what
-        # this builder means -- it stands in for the mark-done route, where the
-        # day is the owner's own and no bank document backs it.  An explicit
-        # ``None`` still reaches ``apply_settle_day_correction`` and is still
-        # refused there, which is the behaviour this parameter's docstring
-        # promises.
-        update_kwargs["settle_day"] = (
-            None if settled_on is None
-            else SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED)
-        )
     if settled_amount is not None:
         # The service's key is the VALUE -- the figure and who wrote it, a
         # person's here as the popover's would be (plan step X-bi-3e-1) --
@@ -3753,8 +3759,28 @@ def create_settled_transfer(
         # does not know, so the old column-named key would settle at the plan
         # and say nothing.
         update_kwargs["figure"] = typed(settled_amount)
-    transfer_service.update_transfer(
-        transfer.id, seed_user["user"].id, **update_kwargs
+    if settled_on is None:
+        transfer_service.update_transfer(
+            transfer.id, seed_user["user"].id, **update_kwargs
+        )
+        return transfer
+    with mock.patch.object(
+        transfer_status, "display_today", return_value=settled_on,
+    ):
+        transfer_service.update_transfer(
+            transfer.id, seed_user["user"].id, **update_kwargs
+        )
+    pressed = SettleDay(day=settled_on, basis=SettledDayBasisEnum.BORROWED)
+    sides = [
+        recorded_settle_day(shadow)
+        for shadow in db_session.query(Transaction).filter_by(
+            transfer_id=transfer.id, is_deleted=False,
+        )
+    ]
+    assert sides == [pressed, pressed], (
+        f"create_settled_transfer pressed Paid on {settled_on} but the sides "
+        f"read {sides}: the pin on the writer's clock read no longer reaches "
+        "it (see this builder's docstring)"
     )
     return transfer
 
@@ -4512,9 +4538,11 @@ def an_entered_day(day):
     so the BASIS is visible at the site -- which is the whole subject of the
     step, and would be invisible if a helper defaulted it.
 
-    ``entered`` is what a manual Mark Paid, a full-edit date box and every
-    fixture standing in for one records: the owner's own day, with no bank
-    document behind it.
+    ``entered`` is what a manual Mark Paid on an ordinary row, a full-edit date
+    box and every fixture standing in for one records: the owner's own day,
+    with no bank document behind it.  (A Paid press on a TRANSFER records
+    ``borrowed`` on both sides since plan step ``balance:X-bi-6-4c-3``: it
+    states no day, see :func:`create_settled_transfer`.)
 
     Args:
         day: The civil ``date``.
@@ -4528,6 +4556,36 @@ def an_entered_day(day):
     from app.services.settle_day import SettleDay
 
     return SettleDay(day=day, basis=SettledDayBasisEnum.ENTERED)
+
+
+def on_both_sides(from_account_id, to_account_id, settle_day):
+    """Return ``side_days`` stating ONE day for BOTH sides of a transfer.
+
+    What the one-box transfer popover meant before plan step
+    ``balance:X-bi-6-4c-3``: one day, stated for the whole transfer, on one
+    basis (ruling **R-BAL165** reads a pre-step typed day as "typed on both
+    ends").  A test written against that door re-expresses its pair day
+    through this, and so leaves every stored row exactly as the old door wrote
+    it; a test whose subject is ONE side's day states a single
+    :class:`~app.services.transfer_service.SideDay` instead, and the other side
+    borrows it.
+
+    Args:
+        from_account_id: The account the money leaves (the expense side).
+        to_account_id: The account it arrives at (the income side).
+        settle_day: The :class:`~app.services.settle_day.SettleDay` both sides
+            state -- :func:`an_entered_day` and its two siblings build one.
+
+    Returns:
+        A two-item tuple for a transfer verb's ``side_days``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.services.transfer_service import SideDay
+
+    return (
+        SideDay(from_account_id, settle_day), SideDay(to_account_id, settle_day),
+    )
 
 
 def an_asserted_day(day):

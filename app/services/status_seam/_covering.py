@@ -124,8 +124,9 @@ nothing is mirrored between them.  Through ``X-bi-6-1b`` the ledger booked
 the pair as ONE entry off the income shadow's record and every
 purchase-posting door returned for a shadow's entries -- the interval ruling
 **R-BAL45** accepted, closed when that step gave the writer its per-movement
-shape.  The pair applier still keeps the two days equal (Transfer Invariant
-3) until ``X-bi-6-4`` deletes the mirror; the writer no longer depends on it.
+shape.  The two sides' days part since ``X-bi-6-4c-3`` (ruling **R-BAL142**:
+each side keeps its own day, a side with no evidence borrows the other's), and
+each movement follows its own shadow through :func:`_mirror_assertion`.
 Posting a shadow's movement through the purchase source with a CATEGORY
 counter was rejected at R-BAL45: a transfer between two of the owner's
 accounts is neither income nor expense, which is what the transit counter
@@ -190,7 +191,11 @@ from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
 )
-from app.services.settle_day import record_settle_day, recorded_settle_day
+from app.services.settle_day import (
+    is_evidence,
+    record_settle_day,
+    recorded_settle_day,
+)
 from app.services.status_seam._record import (
     Settlement,
     covering_movement_of,
@@ -334,10 +339,26 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       release logic already decided that link for this move).  A covering
       movement's purchase day IS its settle day (ruling R-BAL39), so the
       correction moves both;
-    * the days are EQUAL and the row's basis rose to ``observed`` -- a bank
+    * the days are EQUAL and the row's basis RAISES the movement's -- a bank
       line confirmed the day the panel had only bounded (``_moving``, finding
-      **N-332**): the movement's basis rises with it and the link stands, the
-      same strengthening the row itself records;
+      **N-332**), or a transfer side that was borrowing its day took it as its
+      own (ruling **R-BAL164**; plan step ``balance:X-bi-6-4c-3``): the
+      movement takes the row's pair and the link stands, the same change of
+      basis the row itself records.  A raise is the row's ``observed``, or any
+      basis over a movement holding no evidence of its own
+      (:func:`~app.services.settle_day.is_evidence`); the three evidence
+      members are separated by provenance and not ranked, so nothing else
+      moves.  **The movement's own evidence is never lowered**, the contract
+      ``TestTheMirrorNeverLowersEvidence``
+      (``tests/test_services/test_covering_movement.py``) holds the seam to
+      with a bank-observed movement planted under an ``entered`` row.  No
+      door on this tree writes that state -- the statement matcher and the
+      reconcile tick settle the ROW, a card tender only re-points its
+      movement (:func:`_re_point`), and the entry doors refuse a payment
+      record -- so on door-written data this arm and a copy of any differing
+      basis agree, and the planted case is the one that tells them apart
+      (measured at this leaf's review).  One rule for every row, not a
+      transfer branch;
     * the days are EQUAL otherwise: the pair stands, and the movement takes
       the row's link only where it holds none -- the reconcile panel ticked
       the row on an asserted day, and the movement sits inside that assertion
@@ -374,12 +395,12 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
             row.reconciled_by_id if _links_the_row(row, movement) else None
         )
         return
-    observed = ref_cache.settled_day_basis_id(SettledDayBasisEnum.OBSERVED)
-    if (
-        row.settled_day_basis_id == observed
-        and movement.settled_day_basis_id != observed
+    row_day, movement_day = recorded_settle_day(row), recorded_settle_day(movement)
+    if row_day != movement_day and (
+        row_day.basis is SettledDayBasisEnum.OBSERVED
+        or not is_evidence(movement_day)
     ):
-        record_settle_day(movement, recorded_settle_day(row))
+        record_settle_day(movement, row_day)
     if movement.reconciled_by_id is None and _links_the_row(row, movement):
         movement.reconciled_by_id = row.reconciled_by_id
 

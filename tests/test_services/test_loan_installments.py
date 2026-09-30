@@ -50,6 +50,7 @@ from tests._test_helpers import (
     generate_transfer_of,
     loan_params_for,
     make_transfer_template,
+    on_both_sides,
     settle_day_columns,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -86,7 +87,12 @@ def _transfer_to_loan(
             amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(status_enum),
             category_id=seed_user["categories"]["Rent"].id,
-            settle_day=None if settled_on is None else an_entered_day(settled_on),
+            side_days=(
+                () if settled_on is None
+                else on_both_sides(
+                    seed_user["account"].id, loan.id, an_entered_day(settled_on),
+                )
+            ),
         ),
     )
 

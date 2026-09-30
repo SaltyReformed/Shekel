@@ -35,6 +35,7 @@ from app.services.amortization_engine import PaymentDates, PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
     loan_params_for,
+    on_both_sides,
     one_off_row_of,
     open_books_before_the_first_assertion,
     typed,
@@ -174,7 +175,13 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(status_enum),
             category_id=seed_user["categories"]["Rent"].id,
-            settle_day=None if settled_on is None else an_entered_day(settled_on),
+            side_days=(
+                () if settled_on is None
+                else on_both_sides(
+                    seed_user["account"].id, loan_account.id,
+                    an_entered_day(settled_on),
+                )
+            ),
         ),
     )
 

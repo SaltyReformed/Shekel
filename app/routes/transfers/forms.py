@@ -26,6 +26,7 @@ from app.routes._render_helpers import (
     render_transfer_cell,
     transfer_budgets,
     transfer_settlement_amounts,
+    transfer_side_boxes,
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
@@ -101,18 +102,26 @@ def get_full_edit(xfer_id):
     periods = period_move_options(
         calendar_for(current_user.id), xfer.pay_period_id,
     )
+    # The legs' records, loaded ONCE for everything below that reads them --
+    # the figures, both day boxes and the withdrawal caption (ledger row
+    # **BAL-530**: the figures and the caption each loaded them).
+    records = transfer_legs.covering_movements_by_leg([xfer.id])
     # What the pair RECORDED and what a re-settle would RE-BOOK (plan step
     # X-au-c3), through the one helper, so the popover opened from the
     # transfers page and the one opened from a grid leg's cell cannot show
     # different figures for the same transfer.
-    amounts = transfer_settlement_amounts(xfer, current_user.id)
+    amounts = transfer_settlement_amounts(xfer, current_user.id, records)
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
         leg_account_id=leg_account_id,
         budgets=transfer_budgets(xfer),
         settled=amounts.settled, retained=amounts.retained,
-        # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
+        # One date box per side (ruling **R-BAL108**), each prefilled with
+        # its side's OWN day or left empty for a side borrowing the other's
+        # (ruling **R-BAL164**) -- the same producer the PATCH grades by.
+        side_boxes=transfer_side_boxes(xfer, records),
+        # The settle-day corrections' bounds -- ``max`` from ruling R-EJ,
         # ``min`` from ruling R-EL.  The USER's today via ``display_today()``,
         # never the process's UTC day: the input must not refuse a day
         # ``status_seam.reject_future_settle_day`` accepts.  The floor calls the
@@ -128,11 +137,11 @@ def get_full_edit(xfer_id):
         # **What a $0.00 Actual would WITHDRAW** (plan step
         # ``credit_card:CC-5-4a-3``, ruling **R-CC59**): the caption under
         # the Actual box, read through the same twin the seam's write uses.
-        payment_withdraws=_payment_withdrawal(xfer),
+        payment_withdraws=_payment_withdrawal(records),
     )
 
 
-def _payment_withdrawal(xfer):
+def _payment_withdrawal(records):
     """Return what taking BOTH legs' payments out of their matches would withdraw.
 
     The read twin of the seam's write on a transfer's ``$0.00`` record: the
@@ -142,22 +151,19 @@ def _payment_withdrawal(xfer):
     act names ONE leg's movement -- a member is held to its movement's
     account, and the legs are on two -- so the two legs' acts are disjoint
     and one read over both movements is what the two per-leg writes
-    withdraw.  The movements come through
-    ``transfer_legs.covering_movements_by_leg``, the ONE join from a
-    transfer to its legs' records that this popover's figures read too
-    (``transfer_settlement_amounts`` through ``grid_transfer_leg``) -- a
-    second CALL of that join in the same render, one indexed query, where
-    threading one load through both reads would change the leg producers'
-    signatures (reported, not done here).
+    withdraw.  The movements are the popover's ONE load of the legs'
+    records (``transfer_legs.covering_movements_by_leg``), which its figures
+    and day boxes read too (ledger row **BAL-530**, closed at plan step
+    ``balance:X-bi-6-4c-3``: this read made a second call of that join).
 
     Args:
-        xfer: The owned, live transfer the popover is drawn for.
+        records: The legs' records, ``{(transfer id, account id): movement}``.
 
     Returns:
         A :class:`~app.services.match_withdrawal.MatchWithdrawal`, or
         ``None`` when neither leg holds a payment.
     """
-    movements = list(transfer_legs.covering_movements_by_leg([xfer.id]).values())
+    movements = list(records.values())
     if not movements:
         return None
     return match_withdrawal.pending_for_movements(movements)

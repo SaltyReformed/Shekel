@@ -59,6 +59,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_loan_payment_template,
     make_transfer_template,
+    on_both_sides,
     posted_loan_balance_at,
     select_option_values,
     state_template_price,
@@ -4052,7 +4053,13 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount_ownership=AmountOwnership.own(amount),
             status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
-            settle_day=an_entered_day(period.start_date) if settled else None,
+            side_days=(
+                on_both_sides(
+                    seed_user["account"].id, loan_account.id,
+                    an_entered_day(period.start_date),
+                )
+                if settled else ()
+            ),
         ),
     )
 

@@ -124,6 +124,7 @@ from tests._test_helpers import (
     make_expense_template,
     make_income_template,
     observed,
+    on_both_sides,
     one_off_row_of,
     planted_basis,
     posted_loan_balance_at,
@@ -1355,7 +1356,10 @@ class TestATransferIsCoveredOnBothLegs:
             corrected = expense.settled_on - timedelta(days=3)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settle_day=SettleDay(day=corrected, basis=SettledDayBasisEnum.ENTERED),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    SettleDay(day=corrected, basis=SettledDayBasisEnum.ENTERED),
+                ),
             )
             db.session.flush()
             for leg in (expense, income):

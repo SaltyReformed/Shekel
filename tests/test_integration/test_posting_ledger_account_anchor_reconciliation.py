@@ -121,6 +121,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     load_migration_module,
     observed_day_of,
+    on_both_sides,
     reassert_balance_on,
     restate_account_opening,
 )
@@ -1978,7 +1979,10 @@ class TestSettledTransferAttributionMutation:
             # Move the settle day BEFORE both origination anchors (server-now 2026).
             transfer_service.update_transfer(
                 transfer.id, user_id,
-                settle_day=an_entered_day(date(2024, 1, 5)),
+                side_days=on_both_sides(
+                    transfer.from_account_id, transfer.to_account_id,
+                    an_entered_day(date(2024, 1, 5)),
+                ),
             )
             db.session.commit()
 

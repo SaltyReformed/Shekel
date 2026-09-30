@@ -61,7 +61,7 @@ from app.services.transfer_service._loan_posting import (
 # writes nothing, so listing it costs one idempotent no-op round-trip.
 #
 # The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
-# move none of these, so they raise no reconcile.  ``settle_day`` is deliberately
+# move none of these, so they raise no reconcile.  ``side_days`` is deliberately
 # NOT here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
 # re-date, so the set stays the cheap always-on pre-filter.  A SETTLED
 # settle-day edit IS posting-relevant since step E1a -- it moves the day every
@@ -185,7 +185,11 @@ def _reconcile_postings_after_update(
     # implication is stated here instead, where the set it rests on is three
     # definitions up and visible.
     needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
-    settle_day_edited = "settle_day" in updates
+    # A stated side's day, by the key that states one since plan step
+    # ``balance:X-bi-6-4c-3`` (it was ``settle_day``, the pair's one day).  A
+    # side's day moves the postings of BOTH sides when the other borrows it,
+    # which the whole-transfer sync below already covers.
+    settle_day_edited = bool(updates.get("side_days"))
     if not (needs_reconcile or settle_day_edited):
         return
     current_status = db.session.get(Status, xfer.status_id)
