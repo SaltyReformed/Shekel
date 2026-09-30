@@ -20,7 +20,8 @@ the settled half's :func:`transfer_movement_rows` /
 payment or purchase" (:func:`transfer_holds_a_movement` /
 :func:`held_transfer_entries`, over the join BARE, :func:`_entries_under_shadows`)
 -- beside :func:`movement_parent`, the join's Python twin over one loaded
-movement.  Plan step ``balance:X-bi-6-4d`` moves the join off the shadows
+movement, and :func:`parent_entries`, the list that movement's parent loaded
+it into.  Plan step ``balance:X-bi-6-4d`` moves the join off the shadows
 HERE, once, for every reader built on it.
 
 **"The module docstring" in the definitions below means the PACKAGE's**
@@ -606,6 +607,46 @@ def transfer_family_movements(
         .all()
     )
     return [(movement, movement_parent(movement)) for movement in movements]
+
+
+def parent_entries(movement: TransactionEntry) -> list[TransactionEntry]:
+    """Return the loaded list of movements *movement*'s parent holds, it among them.
+
+    The list the one removal act takes a movement out of after deleting it
+    (``movement_removal.remove_movements``, its step 3), so a reconcile that
+    walks the parent's movements later in the same request -- the settle
+    verbs', the entry door's re-derivation -- never meets one that is gone.
+    **Asked here since leaf ``X-bi-6-4c-4``** because for a transfer's
+    payment the list is its SHADOW's: the act read
+    ``movement.transaction.entries`` itself until then, a reach through a
+    shadow outside this module.  Through the interval every movement's list
+    is its row's ``entries``, a plain row's and a shadow's alike, so the one
+    expression answers both; at ``X-bi-6-4d`` a transfer's movement has no
+    row, and this answers from its side links with the collection the
+    transfer then loads it into.  The act's contract is THAT collection,
+    never a copy and never a union built over two of them: a list the parent
+    did not load would take the movement out of itself and leave it in the
+    parent's, which is the stale walk this act exists to prevent
+    (``test_cc5_4a3_movement_removal``'s
+    ``TestTheRemovedMovementLeavesItsParentsLoadedList``).  The act's
+    "deleted AND removed emits the ``DELETE`` alone" must be measured again
+    on that relationship.
+
+    Reading it LOADS the collection (``lazy="select"``, which may autoflush),
+    and that is the order the act needs: the list is read before the
+    movement's ``DELETE`` is staged, so a lazy load cannot land the delete
+    first and load a list the movement is no longer in.
+
+    Args:
+        movement: A ``budget.transaction_entries`` row with its parent
+            reachable (``movement.transaction``).
+
+    Returns:
+        The parent's loaded ``entries`` collection itself, not a copy -- the
+        same object on every call while it stays loaded (an expire, such as
+        a commit's, discards it, and the next read loads a new one).
+    """
+    return movement.transaction.entries
 
 
 def covering_movements_by_leg(
