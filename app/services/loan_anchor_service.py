@@ -197,6 +197,13 @@ def _append_loan_anchor_and_sync(
         ``COMMITTED`` when the event was written and committed; ``UNCHANGED``
         when the submission matched the governing event of its own source, in
         which case nothing was written and the session was rolled back.
+
+    Raises:
+        TrackingStartRefused: From :func:`_stage_loan_anchor`, for a
+            ``TRACKING_START`` on or after the day a payment into the loan
+            moved money (rulings R-R114, R-R115, R-BAL155).  Nothing is staged
+            and nothing is committed; the transaction is the caller's to roll
+            back.
     """
     if not _stage_loan_anchor(
         account=account, anchor_balance=anchor_balance,
@@ -261,6 +268,13 @@ def _stage_loan_anchor(
         ``True`` when a row was added to the session; ``False`` when the
         governing event of this source already asserts exactly
         ``(anchor_date, anchor_balance)``, in which case nothing was staged.
+
+    Raises:
+        TrackingStartRefused: For a ``TRACKING_START`` on or after the day a
+            payment into the loan moved money (rulings R-R114, R-R115,
+            R-BAL155; :func:`_earliest_payment_moved_on`), decided before the
+            duplicate rule.  Nothing is staged; the transaction is the
+            caller's to roll back.
     """
     # Ruling R-EQ: the lock precedes the read the decision is made from.  For
     # the two committing doors it is also the transaction's first lock
