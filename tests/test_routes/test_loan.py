@@ -1308,10 +1308,13 @@ class TestLoanSetup:
 
     @staticmethod
     def _inputs(page):
-        """Return ``({name: value}, {checked names})`` for every ``<input>`` on *page*.
+        """Return ``({name: [values]}, {checked names})`` for every ``<input>`` on *page*.
 
         Each value is read off its OWN input, so a value that came back in
-        the wrong box does not count as coming back.
+        the wrong box does not count as coming back; and EVERY input of a
+        name is kept, in page order, because a browser posts them all and
+        the server reads the FIRST (review 7e: keeping only the last let a
+        hidden duplicate ahead of the real box pass).
         """
         class _Inputs(HTMLParser):
             """Collect every input's name, value and checked flag."""
@@ -1326,7 +1329,9 @@ class TestLoanSetup:
                     return
                 named = dict(attrs)
                 if "name" in named:
-                    self.values[named["name"]] = named.get("value", "")
+                    self.values.setdefault(named["name"], []).append(
+                        named.get("value", ""),
+                    )
                     if "checked" in named:
                         self.checked.add(named["name"])
 
@@ -1381,8 +1386,9 @@ class TestLoanSetup:
         assert resp.status_code == 200
         assert refusal in resp.data
         values, checked = self._inputs(resp.data)
-        assert {field: values.get(field) for field in typed if field != "is_arm"} == {
-            field: value for field, value in typed.items() if field != "is_arm"
+        assert {field: values.get(field) for field in typed} == {
+            **{field: [value] for field, value in typed.items()},
+            "is_arm": ["true"],
         }
         assert "is_arm" in checked
         assert db.session.query(LoanParams).filter_by(
@@ -1406,7 +1412,9 @@ class TestLoanSetup:
             data={**self._setup_form("2026-03-21"), "is_arm": "false"},
         )
         assert resp.status_code == 200
-        _, checked = self._inputs(resp.data)
+        assert b"Please correct the highlighted errors" in resp.data
+        values, checked = self._inputs(resp.data)
+        assert values.get("is_arm") == ["true"]
         assert "is_arm" not in checked
 
 

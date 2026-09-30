@@ -108,8 +108,10 @@ def _load_loan_account(account_id):
 
 
 def render_loan_setup(
-    account, account_type, submitted: Mapping[str, str] | None = None,
-):
+    account: Account,
+    account_type: AccountType,
+    submitted: Mapping[str, str] | None = None,
+) -> str:
     """Render the loan setup form for an account that has no ``LoanParams`` yet.
 
     **A refused POST the form itself can remedy comes back exactly as typed**
@@ -120,11 +122,14 @@ def render_loan_setup(
     defaults below over a blank form, so an owner who followed a refusal by
     changing only the date re-submitted the prefilled balance instead of the
     one typed -- measured: a prefilled ``0.00`` configured a loan owing
-    $0.00.  The defaults serve the form's FIRST showing only.  The one
-    refusal that does not come back here is the standing payment's
-    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`):
-    its remedy is the recurring transfer's, not the form's, so it redirects
-    to the dashboard, which shows the first showing.
+    $0.00.  The defaults serve the form's FIRST showing only.  The answers
+    that redirect instead come back to the first showing: an account that is
+    not a loan type, a loan already configured, and the standing payment's
+    two refusals
+    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`),
+    whose remedy is the recurring transfer's while the typed contract is
+    right -- a mistyped origination can meet them too, and their redirect
+    loses what was typed.
 
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
