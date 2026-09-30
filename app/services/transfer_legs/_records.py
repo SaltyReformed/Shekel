@@ -2,10 +2,11 @@
 Shekel Budget App -- A leg's RECORD: the one join to its covering movement.
 
 The half of :mod:`app.services.transfer_legs` that reaches a leg's covering
-MOVEMENT.  :func:`_movements_under_shadows` is the ONE join through the
-interval (a movement still hangs off the transfer's shadow row, by
-:func:`_movement_link`), :func:`_covering_movements_query` that join narrowed
-to leg RECORDS by :func:`_leg_is_record`, and :func:`_leg_transfer_id` and
+MOVEMENT.  :func:`_entries_under_shadows` is the ONE join through the
+interval (an entry still hangs off the transfer's shadow row, by
+:func:`_movement_link`), :func:`_movements_under_shadows` that join narrowed
+to covering movements, :func:`_covering_movements_query` narrowed further to
+leg RECORDS by :func:`_leg_is_record`, and :func:`_leg_transfer_id` and
 :func:`_leg_is_income` say which transfer and which side over them.  Every
 loader in this package that asks the join lives here -- the plan half's
 :func:`planned_transfer_legs` and the reconcile panel's
@@ -14,10 +15,13 @@ the settled half's :func:`transfer_movement_rows` /
 :func:`recorded_transfer_legs`, the posting writer's
 :func:`transfer_family_movements`, the grid's
 :func:`covering_movements_by_leg` / :func:`grid_transfer_leg` /
-:func:`grid_transfer_legs`, and the recurrence engine's
-:func:`transfers_holding_records` -- beside :func:`movement_parent`, the join's
-Python twin over one loaded movement.  Plan step ``balance:X-bi-6-4d`` moves
-the join off the shadows HERE, once, for every reader built on it.
+:func:`grid_transfer_legs`, the recurrence engine's
+:func:`transfers_holding_records`, and every door's "this transfer holds a
+payment or purchase" (:func:`transfer_holds_a_movement` /
+:func:`held_transfer_entries`, over the join BARE, :func:`_entries_under_shadows`)
+-- beside :func:`movement_parent`, the join's Python twin over one loaded
+movement.  Plan step ``balance:X-bi-6-4d`` moves the join off the shadows
+HERE, once, for every reader built on it.
 
 **"The module docstring" in the definitions below means the PACKAGE's**
 (:mod:`app.services.transfer_legs`): they were written when this was one
@@ -29,7 +33,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sqlalchemy import or_
-from sqlalchemy.orm import contains_eager
+from sqlalchemy.orm import Query, contains_eager
+from sqlalchemy.sql.expression import ColumnElement, Exists
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -230,7 +235,7 @@ def _covering_movements_query():
 
 
 def _movements_under_shadows():
-    """Return the ONE join WITHOUT its record test: covering movements under any row, live or dead.
+    """Return the covering movements under any row, live or dead: the join WITHOUT its record test.
 
     :func:`_covering_movements_query` is this narrowed to leg RECORDS; the
     ledger writer's family (:func:`transfer_family_movements`) needs the
@@ -244,11 +249,30 @@ def _movements_under_shadows():
         The unexecuted query of covering movements with their parent row
         joined, not yet narrowed to any transfer.
     """
-    return (
-        db.session.query(TransactionEntry)
-        .join(Transaction, _movement_link())
-        .filter(_is_covering())
-    )
+    return _entries_under_shadows().filter(_is_covering())
+
+
+def _entries_under_shadows() -> Query:
+    """Return the ONE join BARE: every entry under any row, covering or not, live or dead.
+
+    :func:`_movements_under_shadows` is this narrowed to covering movements
+    (the writer's family); :func:`transfer_holds_a_movement` and
+    :func:`held_transfer_entries` ask it whole (leaf ``X-bi-6-4a-3``, ruling
+    **R-BAL125**), because the question they answer is the one
+    ``fk_transaction_entries_transaction_id`` asks before it refuses a
+    delete: does ANY entry hang here.  Every door refuses a purchase on a
+    shadow (``Transaction.tracks_purchases``), so on a door-written state
+    the two scopes hold the same entries -- 0 non-covering of 40 under a
+    shadow on the 2026-09-30 00:11 production dump -- but a key that
+    refuses for any entry is answered by a question over any entry, not
+    by a premise about which entries doors write.  The caller narrows it
+    to a transfer (:func:`_leg_transfer_id`).
+
+    Returns:
+        The unexecuted query of entries with their parent row joined, not
+        yet narrowed to any transfer.
+    """
+    return db.session.query(TransactionEntry).join(Transaction, _movement_link())
 
 
 def _movement_link():
@@ -288,10 +312,11 @@ def _leg_is_record():
 
 
 def _leg_transfer_id():
-    """Return the column naming a covering movement's TRANSFER, over the join.
+    """Return the column naming an entry's TRANSFER, over the join.
 
-    The first of the two things :func:`_covering_movements_query`'s join is
-    for: which transfer a movement is one leg of.  Through the interval it is
+    The first of the three things :func:`_entries_under_shadows`' join is for:
+    which transfer an entry -- a covering movement, or anything else a
+    shadow holds -- belongs to.  Through the interval it is
     the shadow's ``transfer_id``; at ``X-bi-6-4d`` it is whichever of the
     movement's two side links is set (ruling **R-BAL88**).
     """
@@ -410,6 +435,69 @@ def dated_leg_exists_clause(*filters):
         .with_entities(TransactionEntry.id)
         .correlate(Transfer)
         .exists()
+    )
+
+
+def transfer_holds_a_movement() -> Exists:
+    """Return the SQL truth of "this transfer holds a payment or purchase".
+
+    **The ONE spelling of the question for a TRANSFER** (leaf
+    ``X-bi-6-4a-3``, rulings **R-BAL125** and **R-BAL157**): every door
+    that must not remove a transfer holding money asks it -- the pay-period
+    lock and the reset gate (``pay_period_locks.items_holding_a_movement``),
+    "Remove earlier paychecks" through the same items, and the transfer
+    archive, the recurring transfer's delete and the account's delete
+    (``archive_helpers``, whose aggregate reads
+    :func:`held_transfer_entries`, the same join).  Until that leaf each of
+    those six doors walked the shadows itself, so ``X-bi-6-4d``, which moves
+    a transfer's movements off the shadows onto the transfer, had six places
+    to find; for them it has one module, this one -- the join
+    (:func:`_entries_under_shadows`), its link (:func:`_movement_link`) and
+    its transfer (:func:`_leg_transfer_id`).
+
+    **Any entry under any shadow of the transfer, live or dead, covering or
+    not** (:func:`_entries_under_shadows`): the scope of the key it
+    pre-empts, which refuses the cascade for any entry.  A DEAD shadow
+    holds one when an occurrence delete hid a transfer whose reverted leg
+    kept its payment (finding **BAL-532**), and a period delete or a
+    permanent delete would still take it.  So it is NOT
+    :func:`_covering_movements_query`, whose record test drops a dead
+    shadow's movement.
+
+    Returns:
+        A SQLAlchemy ``EXISTS`` clause, correlated to ``Transfer``.
+    """
+    return (
+        _entries_under_shadows()
+        .filter(_leg_transfer_id() == Transfer.id)
+        .with_entities(TransactionEntry.id)
+        .correlate(Transfer)
+        .exists()
+    )
+
+
+def held_transfer_entries(*filters: ColumnElement) -> Query:
+    """Return every entry the transfers matching *filters* hold, each with its transfer.
+
+    :func:`transfer_holds_a_movement` as rows rather than a test: the
+    archive aggregate (``archive_helpers.transfers_holding_movements``)
+    reads WHICH kind each held entry is and counts the transfers holding
+    them, over the same scope -- any entry under any shadow.  Unordered,
+    because its one reader aggregates it.
+
+    Args:
+        *filters: Clauses over ``Transfer`` -- never the shadow's columns,
+            for :func:`transfer_movement_rows`' reason.
+
+    Returns:
+        An unexecuted ``Query`` of
+        :class:`~app.models.transaction_entry.TransactionEntry` with its
+        transfer joined as :class:`~app.models.transfer.Transfer`.
+    """
+    return (
+        _entries_under_shadows()
+        .join(Transfer, _leg_transfer_id() == Transfer.id)
+        .filter(*filters)
     )
 
 

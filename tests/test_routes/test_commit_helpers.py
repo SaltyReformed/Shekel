@@ -54,17 +54,31 @@ def _spy_rollback(monkeypatch):
     the wrapper records, then delegates, keeping the session's actual
     behavior intact.
 
+    **Patched on the proxy's CLASS, never on the ``db.session`` instance**
+    (finding **BAL-569**).  That instance is built once by ``SQLAlchemy()``
+    and lives for the whole worker process, and ``monkeypatch.setattr`` on
+    an INSTANCE whose attribute lives on its class restores it by writing
+    the bound method it read back ONTO the instance (``_pytest/monkeypatch.py``:
+    ``setattr`` saves ``getattr(target, name)``, ``undo`` puts it back with
+    ``setattr``; only a CLASS target saves its own ``__dict__`` entry).  The
+    instance spelling this replaced left
+    ``rollback`` in ``vars(db.session)`` for the rest of the process, where it
+    shadowed every later class-level patch of it:
+    ``TestTheCashDoorReportsWhatGovernsEitherSide`` counted 0 rollbacks
+    whenever one of these three tests had run before it on the same worker.
+    A class attribute is restored exactly (pytest records ``__dict__[name]``).
+
     Returns:
         The list the wrapper appends to -- one element per rollback.
     """
     calls = []
-    real_rollback = db.session.rollback
+    real_rollback = type(db.session).rollback
 
-    def _wrapper():
+    def _wrapper(session):
         calls.append(True)
-        real_rollback()
+        real_rollback(session)
 
-    monkeypatch.setattr(db.session, "rollback", _wrapper)
+    monkeypatch.setattr(type(db.session), "rollback", _wrapper)
     return calls
 
 

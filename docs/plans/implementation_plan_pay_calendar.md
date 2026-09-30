@@ -302,8 +302,8 @@ their only live specimen from them, which both `_staging` docstrings predict and
       envelope. Each door REFUSES a paycheck holding ANY live row with a payment or purchase,
       whatever `_regenerable` says: a hard refusal separate from the discard count, naming the rows
       and deleting nothing ("Paycheck 03-13 holds 1 purchase you entered (Kroger, $87.43). Remove or
-      move it first."), through the one question every door asks (**R-PC115**),
-      `archive_helpers.holds_a_movement`, re-measuring **PC-524** first. A purchase's one reading is
+      move it first."), through the doors' one question, `pay_period_locks.items_holding_a_movement`
+      (**R-PC115**, **R-BAL157**), re-measuring **PC-524** first. A purchase's one reading is
       `Transaction.purchases` (**R-BAL68**), whose query-side twin is `status_seam.covering_clause`.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
       2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per
