@@ -21,7 +21,10 @@ from app.models.category import Category
 from app.models.ref import TransactionType
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
+from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import transaction_service, transfer_service
@@ -34,6 +37,7 @@ from app.utils.archive_helpers import (
 from tests._test_helpers import (
     create_account_of_type,
     create_savings_account,
+    create_transfer,
     current_pay_period,
     generate_row_of,
     generate_transfer_of,
@@ -1835,3 +1839,229 @@ class TestACategoryAStandingMERCHANTRULEFilesUnderIsInUse:
             assert category_has_usage(
                 category.id, seed_user["user"].id,
             ) is True
+
+
+class TestATransferAnswersForItsOwnCategoryAndAccounts:
+    """Plan step ``balance:X-bi-6-4c-4``: a transfer is asked, not its shadows.
+
+    ``category_has_usage`` and ``account_has_history`` saw a transfer only
+    through its shadow rows in ``budget.transactions`` -- the category a shadow
+    carries, the account a shadow sits on -- and a recurring transfer
+    DEFINITION not at all.  ``X-bi-6-4d`` stops writing shadows for new
+    transfers and ``X-bi-6-5`` deletes the rest, so each predicate now asks
+    ``budget.transfers`` (and ``budget.transfer_templates``) itself.  The
+    shadows-away cases below PLANT the state 6-4d produces -- a live transfer
+    no shadow row speaks for -- by moving or hiding the shadows around the
+    service; each is red against the predicate as it stood.  The definition
+    case is finding **BAL-545**'s declared change.
+    """
+
+    def _a_category(self, owner, name):
+        """Stage a fresh category of *owner*'s that nothing references yet.
+
+        Args:
+            owner: The seeded user bundle that owns it.
+            name: Its item name.
+
+        Returns:
+            The flushed :class:`~app.models.category.Category`.
+        """
+        category = Category(
+            user_id=owner["user"].id, group_name="Temp", item_name=name,
+        )
+        db.session.add(category)
+        db.session.flush()
+        return category
+
+    def _a_projected_transfer(self, owner, name):
+        """Create a one-time Projected transfer between two fresh accounts.
+
+        Args:
+            owner: The seeded user bundle that owns it.
+            name: A prefix for the two accounts' names.
+
+        Returns:
+            ``(transfer, source, destination)``, committed.
+        """
+        source = create_account_of_type(
+            owner, db.session, "Checking", f"{name} Source",
+        )
+        destination = create_account_of_type(
+            owner, db.session, "Savings", f"{name} Destination",
+        )
+        db.session.commit()
+        transfer = create_transfer(
+            owner, db.session, source, destination,
+            owner["bootstrap_period"],
+        )
+        db.session.commit()
+        return transfer, source, destination
+
+    def test_a_category_only_a_transfer_DEFINITION_names_is_in_use(
+        self, app, auth_client, db, seed_user,
+    ):
+        """BAL-545: the definition alone archives the category at the door.
+
+        No transfer is generated from it, so no shadow names the category and
+        the predicate as it stood answered "unused" -- the door then deleted
+        the category and ``transfer_templates.category_id``'s ``SET NULL``
+        took the definition's category with it, under a flash saying only
+        that the category was deleted.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Definition Savings", Decimal("0.00"),
+            )
+            category = self._a_category(seed_user, "Only A Transfer Rule")
+            template = make_transfer_template(db.session, seed_user, savings)
+            template.category_id = category.id
+            db.session.commit()
+            category_id, template_id = category.id, template.id
+
+            assert category_has_usage(
+                category_id, seed_user["user"].id,
+            ) is True
+
+            response = auth_client.post(
+                f"/categories/{category_id}/delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"archived instead" in response.data
+            surviving = db.session.get(Category, category_id)
+            assert surviving is not None and surviving.is_active is False
+            assert db.session.get(
+                TransferTemplate, template_id,
+            ).category_id == category_id
+
+    def test_a_transfers_category_counts_without_its_shadows(
+        self, app, db, seed_user,
+    ):
+        """The Transfer arm answers when no shadow carries the category.
+
+        The category goes on through the transfer service, which mirrors it
+        to both shadows; the shadows are then re-categorised around it, the
+        state a shadowless transfer presents.  Soft-deleting the transfer
+        keeps the answer, as a soft-deleted ROW's category always has.
+        """
+        with app.app_context():
+            category = self._a_category(seed_user, "Only A Transfer")
+            elsewhere = seed_user["categories"]["Rent"]
+            transfer, _source, _destination = self._a_projected_transfer(
+                seed_user, "Categorised",
+            )
+            transfer_service.update_transfer(
+                transfer.id, seed_user["user"].id, category_id=category.id,
+            )
+            db.session.commit()
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ).all()
+            assert [s.category_id for s in shadows] == [category.id] * 2
+            for shadow in shadows:
+                shadow.category_id = elsewhere.id
+            db.session.commit()
+
+            assert category_has_usage(
+                category.id, seed_user["user"].id,
+            ) is True
+
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            assert category_has_usage(
+                category.id, seed_user["user"].id,
+            ) is True
+
+    def test_a_STRANGERS_transfer_or_definition_does_not_count(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """Both transfer clauses are scoped by the OWNER's ``user_id``.
+
+        ``transfers.category_id`` and ``transfer_templates.category_id`` are
+        single-column keys, so a stranger's rows CAN name this owner's
+        category (planted here around the doors, which refuse it); the reader
+        is what stops the stranger's use from counting as the owner's.  Each
+        ``user_id`` term dropped alone turns this red.
+        """
+        with app.app_context():
+            category = self._a_category(seed_user, "Mine Alone")
+            savings = create_savings_account(
+                seed_second_user, db.session, "Their Savings", Decimal("0.00"),
+            )
+            template = make_transfer_template(
+                db.session, seed_second_user, savings,
+            )
+            template.category_id = category.id
+            db.session.commit()
+            transfer = create_transfer(
+                seed_second_user, db.session, seed_second_user["account"],
+                savings, seed_second_user["bootstrap_period"],
+            )
+            transfer.category_id = category.id
+            db.session.commit()
+
+            assert category_has_usage(
+                category.id, seed_user["user"].id,
+            ) is False
+
+    def test_a_live_transfer_is_its_accounts_history_without_its_shadows(
+        self, app, db, seed_user,
+    ):
+        """BAL-539: both endpoints hold history while the transfer is live.
+
+        The shadows are hidden around the service, the state a shadowless
+        transfer presents; the transfer itself stays live.  Its own soft
+        delete is what ends the history, as a row's does.
+        """
+        with app.app_context():
+            transfer, source, destination = self._a_projected_transfer(
+                seed_user, "History",
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ):
+                shadow.is_deleted = True
+            db.session.commit()
+
+            assert account_has_history(source.id) is True
+            assert account_has_history(destination.id) is True
+
+            transfer.is_deleted = True
+            db.session.commit()
+
+            assert account_has_history(source.id) is False
+            assert account_has_history(destination.id) is False
+
+    def test_the_account_door_archives_an_account_a_live_transfer_names(
+        self, app, auth_client, db, seed_user,
+    ):
+        """BAL-539's consequence, at the door: archived, the transfer kept.
+
+        With the shadows hidden and the predicate as it stood, the door found
+        no history, deleted the transfer in its cleanup and the account with
+        it.
+        """
+        with app.app_context():
+            transfer, _source, destination = self._a_projected_transfer(
+                seed_user, "Door",
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ):
+                shadow.is_deleted = True
+            db.session.commit()
+            transfer_id, destination_id = transfer.id, destination.id
+
+            response = auth_client.post(
+                f"/accounts/{destination_id}/hard-delete",
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"has transaction history" in response.data
+            archived = db.session.get(Account, destination_id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(Transfer, transfer_id) is not None
