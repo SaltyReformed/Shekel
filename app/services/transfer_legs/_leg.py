@@ -66,12 +66,13 @@ def leg_label(from_account: Account, to_account: Account) -> tuple[str, str]:
 class TransferLeg:  # pylint: disable=too-many-public-methods
     """One side of a transfer, as the account on that side sees it.
 
-    Pylint: ``too-many-public-methods`` (21/20) -- each answers a question a
-    plan ROW answers (the grid's, the dashboard's, the fold's, and since
-    leaf ``X-bi-6-4a`` the ledger writer's ``user_id``), derived from the
-    parent, its endpoints or the leg's record, so every reader asks a row
-    and a leg the same question.  Fewer would put a shape branch back at
-    each reader's site, the thing :attr:`tracks_purchases` says this class
+    Pylint: ``too-many-public-methods`` (22/20) -- each answers a question a
+    plan ROW answers (the grid's, the dashboard's, the fold's, since leaf
+    ``X-bi-6-4a`` the ledger writer's ``user_id``, and since leaf
+    ``X-bi-6-4c-1`` the statement register's ``covering_movements``), derived
+    from the parent, its endpoints or the leg's record, so every reader asks
+    a row and a leg the same question.  Fewer would put a shape branch back
+    at each reader's site, the thing :attr:`tracks_purchases` says this class
     exists to stop.
 
     The value every plan reader folds in place of the shadow row it used to
@@ -245,6 +246,24 @@ class TransferLeg:  # pylint: disable=too-many-public-methods
         this first, so a leg needs no ``purchases`` of its own.
         """
         return False
+
+    @property
+    def covering_movements(self) -> tuple[TransactionEntry, ...]:
+        """The leg's covering movement as a row answers the question: ``(record,)`` or ``()``.
+
+        What ``Transaction.covering_movements`` answers for a plan row --
+        the status seam's movements, dated or kept un-dated across a revert
+        (ruling **R-BAL61**) -- asked of a leg, whose one possible movement
+        is its :attr:`record` (a leg holds no purchase, :attr:`tracks_purchases`).
+        So ``status_seam.covered_cash_leg`` values a row's payment and a leg's
+        through ONE producer with no shape branch (leaf ``X-bi-6-4c-1``: the
+        statement register values every member by what the movement's
+        parent moves on the act's account).  Empty for a leg carrying no
+        record -- a planned one, or the leg :func:`movement_parent` gives a
+        movement under a dead shadow, which is no leg's record and is worth
+        nothing there, as it is to the fold.
+        """
+        return () if self.record is None else (self.record,)
 
     @property
     def settled_on(self) -> date | None:

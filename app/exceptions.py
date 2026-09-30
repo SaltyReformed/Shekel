@@ -438,10 +438,10 @@ class PayPeriodResetBlocked(ShekelError):
     blocks, so exactly one of the two counts is non-zero.
 
     Attributes:
-        settled_count: The number of settled transactions blocking the
-            reset (0 when a held movement is the reason).
-        holding_count: The number of rows holding a payment or purchase
-            blocking the reset (0 when a settled row is the reason).
+        settled_count: The settled rows and transfers blocking the reset,
+            a transfer once (**R-BAL126**); 0 when a held movement blocks.
+        holding_count: The rows and transfers holding a payment or purchase
+            blocking the reset, a transfer once; 0 when a settled one blocks.
     """
 
     def __init__(self, settled_count=0, holding_count=0):

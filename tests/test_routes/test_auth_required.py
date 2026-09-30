@@ -180,17 +180,21 @@ def gate_decisions(monkeypatch):
         A list the wrapper appends ``(path, endpoint)`` to on every refusal.
     """
     refused = []
-    original = login_manager.unauthorized
+    # Patched on the CLASS (finding BAL-569): monkeypatch on the
+    # process-lived ``login_manager`` INSTANCE restores by writing the bound
+    # method onto it, shadowing any later class-level patch of
+    # ``unauthorized`` (``test_commit_helpers._spy_rollback`` says how).
+    original = type(login_manager).unauthorized
 
-    def counting():
+    def counting(manager):
         """Record the refusal, then answer exactly as the original does."""
         # Pylint: ``import-outside-toplevel`` -- ``request`` is read inside
         # the wrapper because the path is only known during a request.
         from flask import request  # pylint: disable=import-outside-toplevel
         refused.append((request.path, request.endpoint))
-        return original()
+        return original(manager)
 
-    monkeypatch.setattr(login_manager, "unauthorized", counting)
+    monkeypatch.setattr(type(login_manager), "unauthorized", counting)
     yield refused
 
 

@@ -91,11 +91,19 @@ def _line(seed_user, amount, description):
     return line
 
 
-def _match(seed_user, line, *txns):
-    """Accept *line* against *txns* -- the act names each settled row's payment."""
+def _match(seed_user, line, *txns, transfers=()):
+    """Accept *line* against *txns* -- the act names each settled row's payment.
+
+    *transfers* are ticked as their legs on the scope's account (leaf
+    ``balance:X-bi-6-4c-1``).
+    """
     scope = a_scope(seed_user)
     accepted = accept_match(
-        a_submission(scope, lines=[line], transactions=list(txns)), scope,
+        a_submission(
+            scope, lines=[line], transactions=list(txns),
+            transfers=list(transfers),
+        ),
+        scope,
     )
     db.session.commit()
     return accepted
@@ -430,7 +438,7 @@ class TestEveryDoorWithdrawsTheActItself:
                 .one()
             )
             line = _line(seed_user, "-500.00", "TRANSFER")
-            accepted = _match(seed_user, line, shadow)
+            accepted = _match(seed_user, line, transfers=[shadow.transfer])
 
             transfer_service.delete_transfer(
                 xfer.id, seed_user["user"].id, soft=False,
@@ -484,3 +492,159 @@ class TestEveryDoorWithdrawsTheActItself:
             assert credit_workflow.get_active_payback(envelope.id) is None
             assert db.session.get(StatementMatch, accepted.match_id) is None
             assert db.session.query(StatementMatchMember).count() == 0
+
+
+class TestTheEventFilesATransfersPaymentUnderItsTransfer:
+    """Plan step ``balance:X-bi-6-4c-4`` (ruling **R-BAL160**): the event's parents.
+
+    The withdrawal event recorded "the rows the movements were under" by
+    reading each movement's ``transaction_id`` -- for a transfer's payment,
+    the id of the shadow it hangs off, which ``X-bi-6-4d`` leaves unset when
+    it re-parents the movement onto the transfer.  It asks
+    ``transfer_legs.movement_parent`` now: a plan row by its id, a transfer's
+    payment under ``transfer_ids``.  Both transfer doors that take a matched
+    payment off the books are graded; a ROW's case is
+    :class:`TestAZeroFigureTakesThePaymentOutOfItsMatch`' own.
+    """
+
+    def _a_matched_transfer(self, seed_user):
+        """A $500.00 transfer checking -> savings, its checking leg matched.
+
+        Ticked as its LEG on the scope's account (leaf
+        ``balance:X-bi-6-4c-1``); the accept pays the Projected transfer
+        (ruling **R-BAL89**), so the act names the checking leg's covering
+        movement.
+
+        Returns:
+            ``(transfer, expense_shadow_id)``.
+        """
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings",
+            anchor_balance=Decimal("2000.00"),
+            observed_on=seed_user["bootstrap_period"].start_date,
+        )
+        xfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_user["bootstrap_period"], Decimal("500.00"),
+        )
+        db.session.commit()
+        shadow = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
+            .one()
+        )
+        _match(
+            seed_user, _line(seed_user, "-500.00", "TRANSFER"),
+            transfers=[xfer],
+        )
+        return xfer, shadow.id
+
+    def test_a_zero_figure_files_the_payment_under_the_transfer_alone(
+        self, app, seed_user,
+    ):
+        """The transfer popover's ``$0.00``: no row leaves, so no row is named."""
+        with app.app_context():
+            xfer, shadow_id = self._a_matched_transfer(seed_user)
+
+            with _Events() as events:
+                transfer_service.update_transfer(
+                    xfer.id, seed_user["user"].id,
+                    figure=typed(Decimal("0.00")),
+                )
+                db.session.commit()
+
+            (record,) = events.withdrawn()
+            assert record.getMessage() == match_withdrawal.RE_RECORDED
+            assert record.transfer_ids == [xfer.id]
+            assert record.transaction_ids == [], (
+                f"the shadow {shadow_id} is no parent the owner sees"
+            )
+
+    def test_a_hard_delete_names_the_transfer_beside_its_leaving_shadows(
+        self, app, seed_user,
+    ):
+        """The delete hands its shadows over as leaving rows until they go."""
+        with app.app_context():
+            xfer, _shadow_id = self._a_matched_transfer(seed_user)
+            shadow_ids = sorted(
+                row.id for row in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id,
+                )
+            )
+
+            with _Events() as events:
+                transfer_service.delete_transfer(
+                    xfer.id, seed_user["user"].id, soft=False,
+                )
+                db.session.commit()
+
+            (record,) = events.withdrawn()
+            assert record.getMessage() == match_withdrawal.LEFT_THE_BOOKS
+            assert record.transfer_ids == [xfer.id]
+            assert record.transaction_ids == shadow_ids
+
+
+class TestTheRemovedMovementLeavesItsParentsLoadedList:
+    """The act's step 3: deleted, AND out of the list its parent loaded.
+
+    A reconcile later in the same request walks that list -- the settle verbs',
+    the entry door's re-derivation -- so a movement deleted but left in it is
+    one the walk still meets.  Pinned for a row's payment and for a
+    transfer's, whose list is its shadow's through the interval: plan step
+    ``balance:X-bi-6-4c-4`` moved the act's reach for that list into
+    ``transfer_legs.parent_entries``, and the list it answers must stay the
+    one the parent loaded (a copy would leave the movement in the parent's).
+    ``X-bi-6-4d`` rewrites the transfer case onto the side links.  Nothing is
+    expired between the act and the assertion.
+    """
+
+    def test_a_rows_payment_leaves_the_rows_entries(self, app, seed_user):
+        """A Paid $120.00 Hotel's payment, taken off by the act."""
+        with app.app_context():
+            hotel = _settled(seed_user, "Hotel", "120.00")
+            family = hotel.entries
+            (payment,) = hotel.covering_movements
+            assert payment in family
+
+            movement_removal.remove_movements(
+                [payment], seed_user["user"].id,
+                because=match_withdrawal.RE_RECORDED,
+            )
+
+            assert payment not in hotel.entries
+            assert hotel.entries is family
+
+    def test_a_transfers_payment_leaves_its_shadows_entries(self, app, seed_user):
+        """A Paid $500.00 transfer's checking-side payment, taken off by the act."""
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("2000.00"),
+                observed_on=seed_user["bootstrap_period"].start_date,
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_user["bootstrap_period"], Decimal("500.00"),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
+                .one()
+            )
+            family = shadow.entries
+            (payment,) = shadow.covering_movements
+            assert payment in family
+
+            movement_removal.remove_movements(
+                [payment], seed_user["user"].id,
+                because=match_withdrawal.RE_RECORDED,
+            )
+
+            assert payment not in shadow.entries
+            assert shadow.entries is family

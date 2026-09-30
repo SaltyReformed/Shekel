@@ -197,9 +197,10 @@ def delete_category(category_id):
     """Permanently delete a category, or archive if in use.
 
     Uses archive_helpers.category_has_usage() to check whether any
-    templates, standing merchant rules or transactions reference this
-    category for the current user.  If in use, the category is archived
-    instead of deleted.  If not in use, it is permanently removed.
+    templates, standing merchant rules, transfers, transfer definitions or
+    transactions reference this category for the current user.  If in use,
+    the category is archived instead of deleted.  If not in use, it is
+    permanently removed.
 
     **The merchant-rule predicate joined that check at plan step
     ``bank_import:X-gd-2``**, and it is this door it is about: a "no" here

@@ -105,10 +105,39 @@ LEG (:func:`movement_parent`, :func:`transfer_family_movements`,
 module is the one place a movement is reached through a shadow row, and so
 it is since leaf ``X-bi-6-4c-2`` for the reconcile panel
 (:func:`offerable_transfer_legs`) and the recurrence engine's records
-predicate (:func:`transfers_holding_records`).  **Other readers still reach
+predicate (:func:`transfers_holding_records`), and since leaf
+``X-bi-6-4a-3`` (rulings **R-BAL125**, **R-BAL157**) for every door that asks
+whether a transfer holds a payment or purchase -- the pay-period lock, the
+reset gate, "Remove earlier paychecks" and the three archive or delete doors
+(:func:`transfer_holds_a_movement`, :func:`held_transfer_entries`), and
+since leaf ``X-bi-6-4c-1`` (rulings **R-BAL158**, **R-BAL159**) for
+statement match, which offers a still-planned transfer as its LEG
+(:func:`offerable_transfer_legs`), a paid one's movement as its leg's record
+(:func:`transfer_movement_rows` / :func:`recorded_transfer_legs`) and values
+an accepted member through :func:`movement_parent` (loaded by
+:func:`movement_parent_loads`) -- statement match's own reads of a payment's
+ROW excepted, named below -- and since leaf ``X-bi-6-4c-4`` (ruling
+**R-BAL160**) for the purchase doors' payment-record refusal and the match
+withdrawal's event, which name a movement's parent through
+:func:`movement_parent`, and for the one removal act, which takes a movement
+out of the list :func:`parent_entries` answers.  **Other readers still reach
 it themselves until their leaf moves them** and ``X-bi-6-4d`` must find each
--- among them statement match (6-4c-1) and DC-11's raw-SQL leg arm
-(``scripts/integrity_check.py``).
+-- among them the integrity sweep's one raw-SQL leg join
+(``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which DC-11's and
+BA-06's leg arms read); "Remove earlier paychecks"' dated-money arm, which
+reads a transfer's settle DAY off its shadows
+(``pay_period_gates._settled_transaction``, finding **BAL-568**); statement
+match's own reads of a payment member's row -- ``_acts.named_rows``,
+``_candidates._claimed_rows_of_the_owner`` and
+``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
+``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
+id, and ``_acts._WHOLE_ACT`` loads a payment member's row and its
+``entries``, for a transfer's payment its shadow; the loan walk's refusal
+of an un-dated settle (``loan_ledger._visible.payment_visible_on``), which
+names the movement's ``transaction_id``, the shadow's, in
+``UndatedSettleError``; and the loan posting probe
+(``loan_posting_service._sync``), which spells the chain
+:func:`movement_parent_loads` publishes inline.
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -126,13 +155,21 @@ knows a movement hangs off a shadow row: the one join from a transfer to a
 leg's covering movement, its three expressions, every loader in this package
 built on it (:func:`planned_transfer_legs` and the grid's
 :func:`grid_transfer_legs` included, since each reads the join), and
-:func:`movement_parent`, the join's Python twin over one loaded movement -- the
-half of this package whose code ``X-bi-6-4d`` rewrites when the join moves off
-the shadows.  ``_records`` imports ``_leg`` and never the reverse.  Every
-public name is re-exported here, so no import statement changed.
+:func:`movement_parent`, the join's Python twin over one loaded movement, with
+the two added after the split that read the same parent,
+:func:`movement_parent_loads` (its loader options) and :func:`parent_entries`
+(the list its parent loaded it into) -- the half of this package whose code
+``X-bi-6-4d`` rewrites when the join moves off the shadows.  ``_records``
+imports ``_leg`` and never the reverse.  Every public name is re-exported
+here, so no import statement changed.
 
-Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
-in, frozen dataclasses out; no Flask symbol, no writes, no clock.
+Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01): no Flask
+symbol, no writes, no clock.  It takes and hands back ORM rows, queries and
+frozen dataclasses, and one export hands back a live COLLECTION a caller
+edits: :func:`parent_entries` returns the parent's loaded list, which the
+removal act takes a movement out of.  That edit is the act's; this package
+stages no write of its own (a query or lazy load it runs may autoflush
+writes the session already holds).
 """
 
 from app.services.transfer_legs._leg import (
@@ -151,11 +188,15 @@ from app.services.transfer_legs._records import (
     dated_leg_exists_clause,
     grid_transfer_leg,
     grid_transfer_legs,
+    held_transfer_entries,
     movement_parent,
+    movement_parent_loads,
     offerable_transfer_legs,
+    parent_entries,
     planned_transfer_legs,
     recorded_transfer_legs,
     transfer_family_movements,
+    transfer_holds_a_movement,
     transfer_movement_rows,
     transfers_holding_records,
 )
@@ -171,14 +212,18 @@ __all__ = [
     "expense_legs",
     "grid_transfer_leg",
     "grid_transfer_legs",
+    "held_transfer_entries",
     "key_order",
     "leg_label",
     "leg_of",
     "movement_parent",
+    "movement_parent_loads",
     "offerable_transfer_legs",
+    "parent_entries",
     "planned_transfer_legs",
     "recorded_transfer_legs",
     "transfer_family_movements",
+    "transfer_holds_a_movement",
     "transfer_movement_rows",
     "transfers_holding_records",
 ]

@@ -18,6 +18,7 @@
 #   - scripts/seed_companion.py     Seed companion user (docker exec)
 #   - scripts/audit_cleanup.py  Audit log retention (docker exec)
 #   - scripts/integrity_check.py    Integrity sweep (docker exec)
+#   - scripts/_integrity_*.py   Its check families + shared types
 #   - scripts/reset_mfa.py      Operator MFA reset (docker exec)
 #   - scripts/rotate_sessions.py    Session invalidation (docker exec)
 #   - scripts/rotate_totp_key.py    Key rotation (docker exec)
