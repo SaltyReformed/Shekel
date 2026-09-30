@@ -569,3 +569,67 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
             assert record.getMessage() == match_withdrawal.LEFT_THE_BOOKS
             assert record.transfer_ids == [xfer.id]
             assert record.transaction_ids == shadow_ids
+
+
+class TestTheRemovedMovementLeavesItsParentsLoadedList:
+    """The act's step 3: deleted, AND out of the list its parent loaded.
+
+    A reconcile later in the same request walks that list -- the settle verbs',
+    the entry door's re-derivation -- so a movement deleted but left in it is
+    one the walk still meets.  Pinned for a row's payment and for a
+    transfer's, whose list is its shadow's through the interval, before plan
+    step ``balance:X-bi-6-4c-4`` moves the act's reach for that list into
+    ``transfer_legs`` (the list the act reads must stay the one the parent
+    loaded).  Nothing is expired between the act and the assertion.
+    """
+
+    def test_a_rows_payment_leaves_the_rows_entries(self, app, seed_user):
+        """A Paid $120.00 Hotel's payment, taken off by the act."""
+        with app.app_context():
+            hotel = _settled(seed_user, "Hotel", "120.00")
+            family = hotel.entries
+            (payment,) = hotel.covering_movements
+            assert payment in family
+
+            movement_removal.remove_movements(
+                [payment], seed_user["user"].id,
+                because=match_withdrawal.RE_RECORDED,
+            )
+
+            assert payment not in hotel.entries
+            assert hotel.entries is family
+
+    def test_a_transfers_payment_leaves_its_shadows_entries(self, app, seed_user):
+        """A Paid $500.00 transfer's checking-side payment, taken off by the act."""
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("2000.00"),
+                observed_on=seed_user["bootstrap_period"].start_date,
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_user["bootstrap_period"], Decimal("500.00"),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
+                .one()
+            )
+            family = shadow.entries
+            (payment,) = shadow.covering_movements
+            assert payment in family
+
+            movement_removal.remove_movements(
+                [payment], seed_user["user"].id,
+                because=match_withdrawal.RE_RECORDED,
+            )
+
+            assert payment not in shadow.entries
+            assert shadow.entries is family
