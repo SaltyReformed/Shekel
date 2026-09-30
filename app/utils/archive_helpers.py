@@ -36,9 +36,15 @@ destroyed the purchase with its row (finding **CC-363**, measured 2026-09-22
 on a copy of production: one recorded purchase under one definition).  The keys
 refuse such a delete now (``fk_transaction_entries_transaction_id``, NO
 ACTION), so these predicates are what turn the refusal into a designed one.
+**A TRANSFER is asked the one ``transfer_legs`` question** (plan step
+``balance:X-bi-6-4a-3``, ruling **R-BAL125**), never through its shadow
+rows, so ``X-bi-6-4d`` moves the answer in one place.
 """
 
 from dataclasses import dataclass
+
+from sqlalchemy.orm import InstrumentedAttribute, Query
+from sqlalchemy.sql.expression import ColumnElement
 
 from app.extensions import db
 from app.models.journal_entry import Posting
@@ -50,6 +56,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
+from app.services import transfer_legs
 
 
 def holds_a_movement():
@@ -57,10 +64,9 @@ def holds_a_movement():
 
     **The ONE spelling of the FILTER "does this row hold a movement"**
     (CC-5-4a-4's first review, L4): the archives' :func:`holds_nothing`
-    negates it, the transfer archive's :func:`transfer_holds_nothing` asks it
-    of each leg, and the pay-period lock and reset gate
-    (``pay_period_locks``, ``pay_period_gates``) filter on it.  Two readers
-    ask more than it and join the movements themselves:
+    negates it, and the pay-period doors
+    (``pay_period_locks.items_holding_a_movement``) filter their row items
+    on it.  Two readers ask more than it and join the movements themselves:
     :func:`rows_holding_movements` aggregates WHICH kind they are, and
     ``recurrence_engine._maintain``'s retire asks a wider question (an entry
     OR a note).  The
@@ -68,6 +74,11 @@ def holds_a_movement():
     rows included -- a row's ``is_deleted`` does not change what it holds.  A
     function rather than a module constant: building a relationship's clause
     configures the mappers, which an import must not.
+
+    **A ROW's question, not a transfer's** (plan step
+    ``balance:X-bi-6-4a-3``, ruling **R-BAL125**): a door whose row scope
+    could reach a transfer's shadow excludes the shadows and asks
+    ``transfer_legs.transfer_holds_a_movement`` of the transfer instead.
 
     Returns:
         An ``EXISTS`` clause correlated to ``Transaction``.
@@ -91,14 +102,15 @@ def holds_nothing():
 def transfer_holds_nothing():
     """Return :func:`holds_nothing` asked of a TRANSFER: neither leg holds one.
 
-    A transfer's money is its two shadows' movements, so the transfer archive
-    keeps a transfer either of whose legs holds a payment (ruling **R-CC65**)
-    -- :func:`holds_a_movement`, reached through the shadows.
+    The transfer archive keeps a transfer either of whose legs holds a
+    payment (ruling **R-CC65**): the one ``transfer_legs`` question
+    (:func:`~app.services.transfer_legs.transfer_holds_a_movement`, ruling
+    **R-BAL125**), negated.
 
     Returns:
         A ``NOT EXISTS`` clause correlated to ``Transfer``.
     """
-    return ~Transfer.shadow_transactions.any(holds_a_movement())
+    return ~transfer_legs.transfer_holds_a_movement()
 
 
 @dataclass(frozen=True)
@@ -118,8 +130,9 @@ class HeldMovements:
         purchase: Any held movement is a purchase.
         live_rows: How many of the holding rows are NOT soft-deleted -- the
             rows a fallback archive leaves on the owner's budget -- counted
-            as the owner sees them: TRANSFERS for a transfer's legs, so a
-            transfer whose two legs each hold its payment is one.
+            as the owner sees them: a TRANSFER once for its two legs, live
+            by its own ``is_deleted``, so a transfer whose two legs each
+            hold its payment is one.
     """
 
     payment: bool
@@ -168,39 +181,53 @@ class HeldMovements:
         )
 
 
-def rows_holding_movements(*row_scope, counted_by=None) -> HeldMovements:
+def rows_holding_movements(*row_scope: ColumnElement) -> HeldMovements:
     """Return what the rows matching *row_scope* hold, in ONE statement.
 
-    The shared body of the ``*_holding_movements`` family, and the archives'
-    own receipt (what :func:`holds_nothing` kept): one aggregate over
-    every movement under a matching row, so the three facts
-    :class:`HeldMovements` carries come back together.  ``bool_or`` over no
-    movements is NULL, read as ``False``.
+    The row body of the ``*_holding_movements`` family, and the archives'
+    own receipt (what :func:`holds_nothing` kept): :func:`_held` over every
+    movement under a matching row.
 
     Args:
         *row_scope: Clauses over ``Transaction`` selecting the rows the door
             would remove -- soft-deleted ones included, because a delete
             takes those too.
-        counted_by: The column whose distinct values ``live_rows`` counts --
-            ``Transaction.id`` (the default), or ``Transaction.transfer_id``
-            where the owner's unit is the transfer, not its two legs.
 
     Returns:
         The rows' :class:`HeldMovements`.
     """
-    unit = Transaction.id if counted_by is None else counted_by
-    payment, purchase, live_rows = (
-        db.session.query(
-            db.func.bool_or(TransactionEntry.covers_settlement),
-            db.func.bool_or(TransactionEntry.covers_settlement.is_(False)),
-            db.func.count(db.distinct(unit)).filter(
-                Transaction.is_deleted.is_(False),
-            ),
-        )
+    return _held(
+        db.session.query(TransactionEntry)
         .join(TransactionEntry.transaction)
-        .filter(*row_scope)
-        .one()
+        .filter(*row_scope),
+        unit=Transaction.id,
+        live=Transaction.is_deleted.is_(False),
     )
+
+
+def _held(
+    entries: Query, *, unit: InstrumentedAttribute, live: ColumnElement,
+) -> HeldMovements:
+    """Return the :class:`HeldMovements` of *entries*, in ONE statement.
+
+    One aggregate, so the three facts come back together.  ``bool_or`` over
+    no movements is NULL, read as ``False``.
+
+    Args:
+        entries: An unexecuted query of ``TransactionEntry`` joined to the
+            unit that holds them.
+        unit: The column whose distinct values ``live_rows`` counts -- a
+            row's id, or a transfer's.
+        live: The clause saying a unit is not soft-deleted.
+
+    Returns:
+        The entries' :class:`HeldMovements`.
+    """
+    payment, purchase, live_rows = entries.with_entities(
+        db.func.bool_or(TransactionEntry.covers_settlement),
+        db.func.bool_or(TransactionEntry.covers_settlement.is_(False)),
+        db.func.count(db.distinct(unit)).filter(live),
+    ).one()
     return HeldMovements(
         payment=bool(payment), purchase=bool(purchase), live_rows=live_rows,
     )
@@ -227,11 +254,10 @@ def template_holding_movements(template_id: int) -> HeldMovements:
 def transfer_template_holding_movements(template_id: int) -> HeldMovements:
     """Return what a recurring transfer's legs hold -- any transfer, soft-deleted too.
 
-    A transfer's money is its two shadows' movements; a Projected transfer
-    holds one only as a reverted settle's KEPT payment, which may still be
-    matched to the bank's line.  Its permanent delete removes every
-    non-settled transfer through the transfer service, so one holding a
-    payment is archived instead (ruling **R-CC65**).
+    A Projected transfer holds a movement only as a reverted settle's KEPT
+    payment, which may still be matched to the bank's line.  Its permanent
+    delete removes every non-settled transfer through the transfer service,
+    so one holding a payment is archived instead (ruling **R-CC65**).
 
     Args:
         template_id: The TransferTemplate.id to check.
@@ -244,34 +270,17 @@ def transfer_template_holding_movements(template_id: int) -> HeldMovements:
     )
 
 
-def legs_of_transfers(*transfer_scope):
-    """Return the clause selecting the shadow rows of the transfers matching *transfer_scope*.
-
-    **This module's one spelling of a transfer's legs as a row scope**
-    (CC-5-4a-4's reviews, L4): :func:`transfers_holding_movements` and
-    :func:`account_holding_movements`' transfer arm both ask it.  Not the
-    application's: ``reconcile_service/_transfers.py`` and
-    ``statement_match/_candidates.py`` spell the same ``IN`` inline.
-
-    Args:
-        *transfer_scope: ``Transfer`` filter clauses.
-
-    Returns:
-        An ``IN`` clause on ``Transaction.transfer_id``.
-    """
-    return Transaction.transfer_id.in_(
-        db.session.query(Transfer.id).filter(*transfer_scope)
-    )
-
-
-def transfers_holding_movements(*transfer_scope) -> HeldMovements:
+def transfers_holding_movements(*transfer_scope: ColumnElement) -> HeldMovements:
     """Return what the legs of the transfers matching *transfer_scope* hold.
 
     The recurring-transfer permanent delete's refusal
-    (:func:`transfer_template_holding_movements`) and the transfer archive's
-    receipt (``routes/transfers/lifecycle._archive``) both ask it.  Counted by
-    TRANSFER, so a transfer whose two legs each hold its payment is one kept
-    transfer to the owner.
+    (:func:`transfer_template_holding_movements`), the transfer archive's
+    receipt (``routes/transfers/lifecycle._archive``) and the account
+    delete's transfer arm (:func:`account_holding_movements`) ask it.  Over
+    the one ``transfer_legs`` join the pay-period doors' question reads
+    (:func:`~app.services.transfer_legs.held_transfer_entries`, ruling
+    **R-BAL125**), and counted by TRANSFER, so a transfer whose two legs
+    each hold its payment is one kept transfer to the owner.
 
     Args:
         *transfer_scope: ``Transfer`` filter clauses.
@@ -279,9 +288,10 @@ def transfers_holding_movements(*transfer_scope) -> HeldMovements:
     Returns:
         The legs' :class:`HeldMovements`; falsy when none holds one.
     """
-    return rows_holding_movements(
-        legs_of_transfers(*transfer_scope),
-        counted_by=Transaction.transfer_id,
+    return _held(
+        transfer_legs.held_transfer_entries(*transfer_scope),
+        unit=Transfer.id,
+        live=Transfer.is_deleted.is_(False),
     )
 
 
@@ -298,13 +308,38 @@ def account_holding_movements(account_id: int) -> HeldMovements:
     :func:`account_holds_other_rows_movements` asks that, with its own
     sentence.
 
+    **Two statements, rows then transfers** (plan step
+    ``balance:X-bi-6-4a-3``): the row arm excludes the shadows, whose
+    ``account_id`` put a transfer's leg on this account in its scope, and
+    the transfer arm asks :func:`transfers_holding_movements` of every
+    transfer from or to the account.  ``live_rows`` then counts rows and
+    transfers together, as the owner sees them; the one caller
+    (``routes/accounts/crud._history_refusal``) reads only whether anything
+    is held and :attr:`HeldMovements.noun`.
+
+    **The row arm drops the shadows on a premise the DOORS hold and no key
+    does**: a shadow on this account is a leg of a transfer from or to it
+    (``transfer_service`` writes the expense shadow on the from-account and
+    the income shadow on the to-account, and an endpoint move re-points
+    both), so the transfer arm asks everything the row arm dropped.  On the
+    ACCOUNT drift no door writes -- a shadow on this account under a
+    transfer that names neither end here -- its movement is asked by
+    neither arm here.  A LIVE such shadow still archives the account
+    through :func:`account_has_history`, and one whose postings reached
+    this account's ledger through :func:`account_has_ledger_postings`; a
+    hidden one with neither, at worst, reaches the door's step-2 delete of
+    the rows ON the account and meets
+    ``fk_transaction_entries_transaction_id``'s refusal (an error page,
+    nothing lost) instead of this designed one.  0 of 358 shadows on the
+    2026-09-30 00:11 production dump.
+
     Args:
         account_id: The Account.id to check.
 
     Returns:
         The removable rows' :class:`HeldMovements`; falsy when none holds one.
     """
-    return rows_holding_movements(
+    rows = rows_holding_movements(
         db.or_(
             Transaction.account_id == account_id,
             Transaction.template_id.in_(
@@ -312,13 +347,19 @@ def account_holding_movements(account_id: int) -> HeldMovements:
                     TransactionTemplate.account_id == account_id,
                 )
             ),
-            legs_of_transfers(
-                db.or_(
-                    Transfer.from_account_id == account_id,
-                    Transfer.to_account_id == account_id,
-                ),
-            ),
         ),
+        Transaction.transfer_id.is_(None),
+    )
+    transfers = transfers_holding_movements(
+        db.or_(
+            Transfer.from_account_id == account_id,
+            Transfer.to_account_id == account_id,
+        ),
+    )
+    return HeldMovements(
+        payment=rows.payment or transfers.payment,
+        purchase=rows.purchase or transfers.purchase,
+        live_rows=rows.live_rows + transfers.live_rows,
     )
 
 
