@@ -439,14 +439,18 @@ docker run -d --rm --name "$_run_container" \
     -c fsync=off \
     -c synchronous_commit=off \
     -c full_page_writes=off \
+    -c max_locks_per_transaction=256 \
     -c listen_addresses='' \
     -c unix_socket_directories=/sockets >/dev/null
 
 # THE SETTINGS ABOVE ARE A CENSUS OF THE DELETED SHARED CLUSTER'S, not a
 # selection from it, and saying so is the point: the compose service that
-# ``balance:X-br-4`` removed ran with NINE ``-c`` flags and the per-run branch
+# ``balance:X-br-4`` removed ran with TEN ``-c`` flags and the per-run branch
 # was written with THREE.  That was survivable while this path was opt-in and
-# is not now that it is the only one, so the census was taken.
+# is not now that it is the only one, so the census was taken.  Three flags
+# above are not from it: the two socket flags are this run's own mechanics
+# (see above the run), and the lock table's size, which that cluster never
+# set, has its own paragraph below.
 #
 # The three TIMEOUTS are carried because the suite QUOTES one of them as a
 # mechanism.  ``tests/_test_helpers.py`` (twice) and three migration tests
@@ -461,7 +465,11 @@ docker run -d --rm --name "$_run_container" \
 # The three ``tcp_keepalives_*`` flags are DELIBERATELY NOT carried, and this
 # is the one place that says so: they configure TCP sockets, and this cluster
 # has none -- ``--network=none``, ``listen_addresses=''`` and a unix socket.
-# They would be inert rather than wrong.
+# They would be inert rather than wrong.  So would the tenth,
+# ``file_copy_method=clone``, which is not carried either: it chooses how
+# ``CREATE DATABASE ... STRATEGY FILE_COPY`` copies a template's files (the
+# deleted service paired it with a btrfs PGDATA for reflinks), and every
+# clone the suite makes is ``STRATEGY WAL_LOG`` (tests/conftest.py).
 #
 # THE NON-DURABLE KNOBS ARE WHAT MAKE THIS AFFORDABLE, and leaving them off
 # is the difference between a design that pays for itself and one that does
@@ -475,6 +483,46 @@ docker run -d --rm --name "$_run_container" \
 # run, so a crash losing its last transactions costs a re-run and nothing
 # else -- exactly the argument the compose file already makes, which is why
 # these three are copied from it rather than invented here.
+#
+# THE LOCK TABLE IS SIZED FOR THIS SUITE rather than left at PostgreSQL's
+# default of 64 (finding BAL-570).  The table is shared by the whole cluster
+# and a lock keeps its slot until its transaction ends, so what has to fit is
+# every worker's open transaction at the same moment.  Two transactions in the
+# suite lock the whole schema at once, and both grow with every migration:
+# ``_empty_the_database`` in
+# tests/test_scripts/test_init_database_one_transaction.py drops the five
+# application schemas, and the first boot it then runs
+# (``init_fresh_database``) creates them again.  Five tests run that pair and
+# they sit side by side in collection order, so ``-n 12`` can hand all five
+# to five workers at once.  Measured 2026-09-30 on dev at 337341152 (image
+# shekel-test-db:0aa2eb4287c5, PostgreSQL 18.6), from ``pg_locks`` inside
+# each transaction and from a sampler reading the whole cluster's
+# ``pg_locks`` through a run (a sampled peak is a floor, not the peak):
+#
+#   the DROP's transaction              2,829 locks
+#   the first boot, at its commit       1,519 locks
+#   heaviest single backend, full run   2,827 (that DROP; none heavier seen)
+#   cluster peak, a run of that file   13,052 (four DROPs, one boot)
+#   cluster peak, full run             10,869 (three DROPs, one boot)
+#   one transaction can hold, at 64    14,912 before "out of shared memory"
+#   one transaction can hold, at 256   55,760
+#
+# Five of those DROPs in flight are 14,145 of the 14,912 before any other
+# worker holds a lock.  That is what the full run that surfaced BAL-570 hit:
+# four of the five failed on the DROP with "out of shared memory ... increase
+# max_locks_per_transaction".  At 256, all twelve of pytest.ini's workers
+# inside a 2,829-lock transaction at the same moment would hold 33,948, so the
+# heaviest transaction can grow to ~4,600 locks (64% more) before even that
+# schedule overflows.  It costs 11 MB of shared memory (161 MB against 150).
+# On PostgreSQL 18 the same setting also sizes each backend's fast-path slots
+# (64 to 256), which only moves weak locks off the shared table; the DROP's
+# AccessExclusive locks never take that path.
+#
+# This sizes the suite's CONCURRENCY, not the application's need.  Neither
+# production compose file sets it, so as far as this repository says
+# production runs 64, where one transaction tops out near the 14,912 above
+# (the first boot holds 1,519).  At 256 the suite no longer fails when one
+# transaction outgrows that ceiling, so it is no alarm for one.
 #
 # Asking over the socket is safe HERE and would not be in the builder.  The
 # entrypoint answers on a socket during its initdb window before the real
