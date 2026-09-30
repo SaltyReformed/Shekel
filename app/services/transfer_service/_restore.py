@@ -58,9 +58,11 @@ def restore_transfer(transfer_id, user_id):
     it** (plan step X-aj1).  Repairing a status through the one seam brings
     the seam's dating rule with it, so a shadow repaired INTO a settled
     status must carry a day and one repaired out of it must not.  The day
-    comes from the SIBLING shadow -- Transfer Invariant 3 says the pair is
-    equal, and the sibling already records when the money moved.  Taking it
-    from there rather than from today is what stops a repair from inventing a
+    comes from the SIBLING shadow, as a ``borrowed`` day (ruling
+    **R-BAL142**; the sibling's own basis travelled with it until plan step
+    ``balance:X-bi-6-4c-3``): the sibling already records when the money
+    moved, and a repaired side has no evidence of its own.  Taking it from
+    there rather than from today is what stops a repair from inventing a
     settle day: since plan step E1a that civil day is the ``entry_date`` the
     re-posted entry below is filed under, so a fabricated day would move money
     on what is supposed to be a repair.
@@ -199,9 +201,9 @@ def restore_transfer(transfer_id, user_id):
     # settle day for a shadow that has none -- and since plan step E1a that day
     # is the ``entry_date`` the re-posted entry below is filed under, so the
     # repair would move money.  Going through the pair-aware applier makes the
-    # SIBLING's recorded instant the answer, which is what Transfer Invariant 3
-    # says it is.  The transfer itself is already at this status, so its own
-    # transition is the identity and legal by construction; the shadows'
+    # SIBLING's recorded day the answer, borrowed (ruling **R-BAL142**).  The
+    # transfer itself is already at this status, so its own transition is the
+    # identity and legal by construction; the shadows'
     # transitions were proved repairable by ``assert_restorable`` above, so
     # neither verification can raise here.
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)

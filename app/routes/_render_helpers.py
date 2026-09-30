@@ -20,6 +20,7 @@ from flask import render_template, request
 from flask_login import current_user
 from werkzeug.datastructures import MultiDict
 
+from app.enums import SettledDayBasisEnum
 from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.account import Account
@@ -40,13 +41,19 @@ from app.services.account_resolver import (
 )
 from app.services.cash_flow_set import CashFlowSet
 from app.services.entry_service import build_entry_sums_dict
+from app.services.settle_day import SettleDay, is_evidence, recorded_settle_day
 from app.services import grid_view_service
 from app.services.grid_view_service import due_captions_by_key
 from app.services.transaction_service import (
     leg_retained_amounts_by_key,
     retained_settle_amounts_by_id,
 )
-from app.services.transfer_legs import TransferLeg, grid_transfer_leg
+from app.services.transfer_legs import (
+    TransferLeg,
+    covering_movements_by_leg,
+    grid_transfer_leg,
+    leg_of,
+)
 from app.utils.dates import display_today
 
 
@@ -206,14 +213,12 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
     `X-bm`.  It says nothing about this.  The argument above needs no
     citation.*
 
-    **SINGLE-ROW reads only**, the boundary :attr:`Transfer.settled_on`
-    documents, and the leaf that stated that boundary in advance has arrived.
-    Plan step X-au-f-2 gave a loan payment's PARENT its producer (ruling
-    **R-BAL10**), so this now builds a read pass and one call per row is what
-    an N+1 would look like.  A transfer that owns its figure or reads its
-    definition's series still costs no query -- the basis resolves nothing
-    until a rule asks it -- and only a DERIVE-mode loan payment reaches the
-    loan.  The one batch surface -- the grid, which since leaf ``X-bi-6-1``
+    **SINGLE-ROW reads only.**  Plan step X-au-f-2 gave a loan payment's PARENT
+    its producer (ruling **R-BAL10**), so this now builds a read pass and one
+    call per row is what an N+1 would look like.  A transfer that owns its
+    figure or reads its definition's series still costs no query -- the basis
+    resolves nothing until a rule asks it -- and only a DERIVE-mode loan
+    payment reaches the loan.  The one batch surface -- the grid, which since leaf ``X-bi-6-1``
     draws a transfer's LEGS off the parent -- prices them through
     :func:`~app.services.cash_ledger.leg_amounts_by_key` with the page's
     own basis (``routes/grid/_items.build_amount_maps``), the same resolver
@@ -269,8 +274,7 @@ class TransferSettlementAmounts:
     **Both are keyed by the TRANSFER's id, not the shadow's.**  The template's
     subject is the transfer, and a map keyed by something the template does not
     have would be a second lookup for it to get wrong.  The re-key is safe
-    because a pair carries ONE record (Transfer Invariant 3), which is the same
-    fact ``Transfer.settled_on`` reads for the day.
+    because a pair carries ONE record (Transfer Invariant 3).
 
     **They are maps rather than scalars for the reason ``fragment_amounts``
     states**: a missing scalar renders ``value=""`` in silence while a missing
@@ -289,7 +293,7 @@ class TransferSettlementAmounts:
 
 
 def transfer_settlement_amounts(
-    xfer: Transfer, user_id: int,
+    xfer: Transfer, user_id: int, records: dict,
 ) -> TransferSettlementAmounts:
     """Return the pair's recorded and retained figures, keyed by transfer id.
 
@@ -318,10 +322,13 @@ def transfer_settlement_amounts(
     ``transfer_service._settle.settle`` resolves its figures from and the leg
     the correction door writes first.  Either would answer the same (Transfer
     Invariant 3 -- both legs carry the same record), and naming one means the
-    choice is not made twice.  It is deliberately NOT the income leg
-    ``Transfer.settled_on`` reads: that one is a fact about the DAY, and
-    pinning each read to the function it must agree with is what keeps either
-    from silently becoming "whichever row came back first".
+    choice is not made twice.  (A DAY is per side since plan step
+    ``balance:X-bi-6-4c-3``; :func:`transfer_side_boxes` draws each.)
+
+    **The legs' records are the CALLER's one load** (ledger row **BAL-530**):
+    the popover reads its figures, both day boxes and its withdrawal caption
+    off one :func:`~app.services.transfer_legs.covering_movements_by_leg`,
+    where it loaded the records twice.
 
     **It answers for a SOFT-DELETED transfer**, where the pair loader it used
     to call refused one: the transfers page's cell reaches here on the stale
@@ -334,6 +341,8 @@ def transfer_settlement_amounts(
         user_id: The owner, a defense-in-depth ownership check the loader used
             to make and this keeps: a transfer that is not *user_id*'s is
             refused as not found.
+        records: ``covering_movements_by_leg([xfer.id])``, loaded once by the
+            caller.
 
     Returns:
         A :class:`TransferSettlementAmounts` whose two maps hold one entry each.
@@ -343,11 +352,97 @@ def transfer_settlement_amounts(
     """
     if xfer.user_id != user_id:
         raise NotFoundError(f"Transfer {xfer.id} not found.")
-    leg = grid_transfer_leg(xfer, xfer.from_account_id)
+    leg = leg_of(
+        xfer, xfer.from_account_id,
+        record=records.get((xfer.id, xfer.from_account_id)),
+    )
     return TransferSettlementAmounts(
         settled={xfer.id: leg_settled_amounts_by_key([leg])[leg.cell_key]},
         retained={xfer.id: leg_retained_amounts_by_key([leg])[leg.cell_key]},
     )
+
+
+#: How an EVIDENCED side's day is known, in the popover's words (ruling
+#: **R-BAL142**'s own wording: the bank showed it, you reconciled it, you typed
+#: it).  A ``borrowed`` side has no entry: its caption names what it borrows.
+_KNOWN_AS = {
+    SettledDayBasisEnum.OBSERVED: "bank-shown",
+    SettledDayBasisEnum.ASSERTED: "reconciled",
+    SettledDayBasisEnum.ENTERED: "you typed it",
+}
+
+
+@dataclass(frozen=True)
+class TransferSideBox:
+    """One side's date box on the transfer popover (ruling **R-BAL108**).
+
+    Attributes:
+        field: The form field the box posts (``TransferUpdateSchema``):
+            ``settled_on_from`` for the side the money leaves,
+            ``settled_on_to`` for the side it arrives at.
+        account_id: The account the side is on.
+        account_name: Its display name.
+        prefill: What the box is prefilled with and what the PATCH grades its
+            submission against: the side's OWN day when it has evidence, else
+            ``None`` -- a borrowed side's box renders EMPTY (ruling
+            **R-BAL164**), so any day typed there, the borrowed one included,
+            is that side's own.
+        caption: How the side's day is known, in plain words, or ``None`` for
+            a side holding no day (a ``$0.00`` close records no movement, so
+            nothing moved on any day).
+    """
+
+    field: str
+    account_id: int
+    account_name: str
+    prefill: SettleDay | None
+    caption: "str | None"
+
+
+def transfer_side_boxes(
+    xfer: Transfer, records: dict,
+) -> "tuple[TransferSideBox, TransferSideBox]":
+    """Return the popover's two date boxes, from-side then to-side.
+
+    Each side's day is read off its leg's RECORD -- its covering movement,
+    which the status seam keeps equal to its shadow -- in the caller's ONE
+    load (ledger row **BAL-530**).  The ONE producer both the popover's render
+    and the PATCH's grading read, so what a box was prefilled with and what
+    its submission is graded against cannot part.
+
+    Args:
+        xfer: The transfer.
+        records: ``covering_movements_by_leg([xfer.id])``.
+
+    Returns:
+        The two boxes.
+    """
+    days = {}
+    for account_id in (xfer.from_account_id, xfer.to_account_id):
+        record = records.get((xfer.id, account_id))
+        days[account_id] = (
+            None if record is None else recorded_settle_day(record)
+        )
+    boxes = []
+    for field, account, other in (
+        ("settled_on_from", xfer.from_account, xfer.to_account),
+        ("settled_on_to", xfer.to_account, xfer.from_account),
+    ):
+        day, other_day = days[account.id], days[other.id]
+        if day is None:
+            prefill, caption = None, None
+        elif is_evidence(day):
+            prefill, caption = day, _KNOWN_AS[day.basis]
+        elif other_day is not None and is_evidence(other_day):
+            prefill = None
+            caption = f"same as {other.name}, {day.day:%m-%d} (a guess)"
+        else:
+            prefill, caption = None, f"{day.day:%m-%d} (a guess)"
+        boxes.append(TransferSideBox(
+            field=field, account_id=account.id, account_name=account.name,
+            prefill=prefill, caption=caption,
+        ))
+    return boxes[0], boxes[1]
 
 
 def _page_account_override() -> int | None:
@@ -558,7 +653,9 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
             rule cannot answer.  Unreachable while every transfer owns its
             figure; the leaves after this one are what give it a population.
     """
-    amounts = transfer_settlement_amounts(xfer, current_user.id)
+    amounts = transfer_settlement_amounts(
+        xfer, current_user.id, covering_movements_by_leg([xfer.id]),
+    )
     return render_template(
         "transfers/_transfer_cell.html",
         xfer=xfer,

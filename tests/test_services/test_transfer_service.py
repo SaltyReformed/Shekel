@@ -29,7 +29,6 @@ from app.services import (
     account_posting_service,
     account_service,
     loan_posting_service,
-    pay_period_write,
     transfer_service,
     status_seam,
 )
@@ -42,6 +41,7 @@ from tests._test_helpers import (
     cover_bare_settled_row,
     create_loan_account,
     generate_transfer_of,
+    on_both_sides,
     record_paydays_across_a_hole,
     rhythm_of,
     shadow_amount,
@@ -51,7 +51,6 @@ from tests._test_helpers import (
 )
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
-from app.services.amount_ownership import state_own_amount
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -805,7 +804,11 @@ class TestUpdateTransfer:
             explicit = display_today() - timedelta(days=5)
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                status_id=done_status.id, settle_day=an_entered_day(explicit),
+                status_id=done_status.id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(explicit),
+                ),
             )
             db.session.flush()
             shadows = (
@@ -1290,7 +1293,11 @@ class TestRestoreTransfer:
             paid_id = ref_cache.status_id(StatusEnum.DONE)
             real_settle = date(2026, 3, 20)
             transfer_service.update_transfer(
-                xfer_id, td["user"].id, status_id=paid_id, settle_day=an_entered_day(real_settle),
+                xfer_id, td["user"].id, status_id=paid_id,
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(real_settle),
+                ),
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -1366,7 +1373,10 @@ class TestRestoreTransfer:
             paid_id = ref_cache.status_id(StatusEnum.DONE)
             transfer_service.update_transfer(
                 xfer_id, td["user"].id, status_id=paid_id,
-                settle_day=an_entered_day(date(2026, 3, 20)),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(date(2026, 3, 20)),
+                ),
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -2058,12 +2068,14 @@ class TestDueDateAndSettleDayShadows:
     def test_a_settle_day_correction_lands_on_both_shadows(
         self, app, db, transfer_data,
     ):
-        """A corrected settle day is mirrored to both shadows (Invariant 3).
+        """A day corrected on ONE side reaches both shadows: the other borrows it.
 
-        The ``settled_on`` edit door (ruling **R-ED**): the user read their
-        statement and the money moved on a day other than the one the settle
-        was recorded on.  Both shadows take the SAME day (Transfer Invariant
-        3, until ``X-bi-6-4`` lets the two days part); since plan step
+        The correction door (ruling **R-ED**, per side since plan step
+        ``balance:X-bi-6-4c-3``, ruling **R-BAL142**): the user read their
+        statement and the money left the source account on a day other than
+        the one Paid was pressed on.  They correct that side; the other side
+        holds no day of its own -- a Paid press states none -- so it BORROWS
+        the corrected day, and both shadows land on it.  Since plan step
         ``balance:X-bi-6-3`` the posting writer files each side's entry under
         that side's own covering movement's day, so the two land together.
         """
@@ -2079,7 +2091,10 @@ class TestDueDateAndSettleDayShadows:
 
             corrected = display_today() - timedelta(days=3)
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settle_day=an_entered_day(corrected),
+                xfer.id, td["user"].id,
+                side_days=(transfer_service.SideDay(
+                    xfer.from_account_id, an_entered_day(corrected),
+                ),),
             )
             db.session.flush()
 
@@ -2112,7 +2127,10 @@ class TestDueDateAndSettleDayShadows:
 
             with pytest.raises(ValidationError) as exc:
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                    xfer.id, td["user"].id,
+                    side_days=(transfer_service.SideDay(
+                        xfer.from_account_id, an_entered_day(display_today()),
+                    ),),
                 )
             assert "not a settled status" in str(exc.value)
 
@@ -2126,15 +2144,20 @@ class TestDueDateAndSettleDayShadows:
     def test_a_settled_transfer_refuses_to_have_its_day_CLEARED(
         self, app, db, transfer_data,
     ):
-        """Clearing a settled transfer's day raises; reverting it is the way.
+        """Clearing a settled transfer's day cannot be asked; reverting is the way.
 
         The other half of finding **N-183**.  A settled row with no day is the
         state ``balance_predicates.settled_day`` REFUSES, so letting an edit
         produce one would turn a form submission into a 500 on every balance
-        surface that folds the row.  The legitimate way to remove the day is to
-        move the transfer out of the settled band, which the seam does as part
-        of the status change -- asserted below so the refusal is not mistaken
-        for "the day can never be removed".
+        surface that folds the row.  The service refused ``settle_day=None``
+        with a ``ValidationError`` ("cannot be cleared") until plan step
+        ``balance:X-bi-6-4c-3``; since then a door states a day PER SIDE as a
+        :class:`~app.services.transfer_service.SideDay`, which cannot wrap
+        ``None``, so the request has no spelling and the refusal moved to the
+        value's construction.  The legitimate way to remove the day is to move
+        the transfer out of the settled band, which the seam does as part of
+        the status change -- asserted below so the refusal is not mistaken for
+        "the day can never be removed".
         """
         with app.app_context():
             td = transfer_data
@@ -2146,11 +2169,9 @@ class TestDueDateAndSettleDayShadows:
             )
             db.session.flush()
 
-            with pytest.raises(ValidationError) as exc:
-                transfer_service.update_transfer(
-                    xfer.id, td["user"].id, settle_day=None,
-                )
-            assert "cannot be cleared" in str(exc.value)
+            with pytest.raises(ValueError) as exc:
+                transfer_service.SideDay(xfer.from_account_id, None)
+            assert "cannot wrap None" in str(exc.value)
 
             # The day survived the refusal.
             for s in (
@@ -2174,7 +2195,7 @@ class TestDueDateAndSettleDayShadows:
                 assert s.settled_on is None
 
     def test_an_undated_projected_transfer_stays_undated(self, app, db, transfer_data):
-        """``settled_on=None`` on a PROJECTED transfer leaves both shadows None.
+        """Stating NO day on a PROJECTED transfer leaves both shadows None.
 
         A no-op rather than a refusal: the submitted value agrees with the row's
         state (no money has moved, so there is no day), and refusing an edit
@@ -2187,7 +2208,7 @@ class TestDueDateAndSettleDayShadows:
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settle_day=None
+                xfer.id, td["user"].id, side_days=(),
             )
             db.session.flush()
 
@@ -2907,7 +2928,7 @@ class TestMovingATransferBetweenAccounts:
                 ),
             )
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                xfer.id, td["user"].id,
             )
             db.session.flush()
             posted = _ledger_nets_for_transfer(xfer.id)
@@ -2979,7 +3000,7 @@ class TestMovingATransferBetweenAccounts:
             )
             xfer = _create_basic_transfer(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                xfer.id, td["user"].id,
             )
             db.session.flush()
 
@@ -3042,7 +3063,7 @@ class TestMovingATransferBetweenAccounts:
                     ),
                 )
                 transfer_service.settle_transfer(
-                    payment.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                    payment.id, td["user"].id,
                 )
                 payments.append(payment)
             db.session.flush()
@@ -3084,7 +3105,7 @@ class TestMovingATransferBetweenAccounts:
             elsewhere = self._other_savings(td, name="Third Savings")
             xfer = _create_basic_transfer(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                xfer.id, td["user"].id,
             )
             db.session.flush()
             add_anchor_history(
@@ -3182,7 +3203,7 @@ class TestMovingATransferBetweenAccounts:
             xfer = _create_basic_transfer(td)
             elsewhere = self._other_savings(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
+                xfer.id, td["user"].id,
             )
             db.session.flush()
             vacated = _ledger_nets_for_transfer(xfer.id)

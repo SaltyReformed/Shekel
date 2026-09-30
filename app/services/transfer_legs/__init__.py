@@ -120,14 +120,16 @@ ROW excepted, named below -- and since leaf ``X-bi-6-4c-4`` (ruling
 **R-BAL160**) for the purchase doors' payment-record refusal and the match
 withdrawal's event, which name a movement's parent through
 :func:`movement_parent`, and for the one removal act, which takes a movement
-out of the list :func:`parent_entries` answers.  **Other readers still reach
-it themselves until their leaf moves them** and ``X-bi-6-4d`` must find each
--- among them the integrity sweep's one raw-SQL leg join
-(``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which DC-11's and
-BA-06's leg arms read); "Remove earlier paychecks"' dated-money arm, which
-reads a transfer's settle DAY off its shadows
-(``pay_period_gates._settled_transaction``, finding **BAL-568**); statement
-match's own reads of a payment member's row -- ``_acts.named_rows``,
+out of the list :func:`parent_entries` answers, and since leaf
+``X-bi-6-4c-3`` (ruling **R-BAL142**, ledger row **BAL-568**) for "Remove
+earlier paychecks"' dated-money arm and the transfer popover's two day boxes,
+which read each side's own day off its movement
+(:func:`transfer_movement_rows`, :func:`covering_movements_by_leg`).
+**Other readers still reach it themselves until their leaf moves them** and
+``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
+leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which
+DC-11's and BA-06's leg arms read); statement match's own reads of a
+payment member's row -- ``_acts.named_rows``,
 ``_candidates._claimed_rows_of_the_owner`` and
 ``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
 ``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row

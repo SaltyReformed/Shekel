@@ -252,8 +252,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     # carries the day its money moved, and the seam underneath writes both in
     # the same statement.  The status is the SUBMITTED one when the PATCH
     # carried one, else the row's own -- a day-only edit is an identity
-    # transition, exactly as the transfer side's
-    # :func:`transfer_service._status.apply_settle_day_to_pair` does it.
+    # transition, exactly as the transfer side's day correction is
+    # (:func:`transfer_service._status.apply_status_to_all_three`).
     # ``settle_day_for_status`` drops a day submitted alongside a revert out of
     # the settled band (ruling **R-EG**), so the documented unlock path (set
     # Status to Projected to edit the amounts) is not broken by the form

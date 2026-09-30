@@ -53,7 +53,7 @@ through the grid and another through the transfers page, which is finding
 
 * :func:`settle_transfer` is the VERB -- "this transfer reached the bank" --
   and it is what a door that means only that calls.  Its rules are
-  :mod:`._settle`'s: the amount, the pair's settle day, and whether a submitted
+  :mod:`._settle`'s: the amount, each side's settle day, and whether a submitted
   figure is a human's CORRECTION or the panel's own prefill echoed back.
 * :func:`update_transfer` takes an arbitrary field bag and DISPATCHES to the
   same act when one of those fields settles the row, so a fifth door cannot be
@@ -90,6 +90,7 @@ from app.services.transfer_service._create import (
 )
 from app.services.transfer_service._delete import delete_transfer
 from app.services.transfer_service._restore import restore_transfer
+from app.services.transfer_service._side_days import SideDay
 from app.services.transfer_service._settle import (
     leg_settle_amount,
     record_clearing,
@@ -106,6 +107,7 @@ from app.services.transfer_service._validation import (
 )
 
 __all__ = [
+    "SideDay",
     "TransferRows",
     "TransferSpec",
     "create_transfer",
