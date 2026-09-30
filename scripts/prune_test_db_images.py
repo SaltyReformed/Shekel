@@ -19,34 +19,53 @@ build actually ran.  Three decisions carry it:
    edits included: the image its next suite would use.  The key function is
    code on a branch, so computing another tree's key with THIS tree's code
    would name the wrong image the day the two differ; each worktree's own
-   builder is asked instead (``--print-tag``, run in that worktree).  A
-   worktree git marks ``prunable`` has lost its directory and has no current
-   image, so it is skipped.  Any other worktree whose tag cannot be obtained
-   stops the prune before anything is removed.  That includes a LOCKED
+   builder is asked instead (``--print-tag``, run in that worktree).  The
+   keep set covers only the checkouts git KNOWS about: a worktree moved with
+   a plain ``mv``, or a separate clone, is invisible to it.
+
+   Git marks a worktree ``prunable`` when its administrative files no longer
+   lead to a checkout, for example when ``<worktree>/.git`` is gone; that
+   does not mean the DIRECTORY is gone.  So a prunable record is skipped only
+   when its directory does not exist.  One whose directory still exists
+   stops the prune, naming it, because whether that is a live checkout
+   cannot be told.  Any other worktree whose tag cannot be obtained stops the
+   prune the same way, before anything is removed.  That includes a LOCKED
    worktree whose directory was deleted: git never marks a locked worktree
    prunable (``git-worktree(1)``, ``lock``), so it stops every prune, naming
    its path, until ``git worktree unlock`` and ``git worktree prune`` clear it.
 
-2. ONLY IMAGES DOCKER ITSELF CALLS OLD ARE CANDIDATES.  ``--filter
-   until=24h`` compares each image's creation time on the daemon, so no clock
-   or timestamp is parsed here.
+2. ONLY IMAGES DOCKER ITSELF CALLS OLD ARE CANDIDATES, through ``--filter
+   until=24h``, so no clock or timestamp is parsed here.  This host's
+   ``docker-image-ls(1)`` does not document ``until`` (only
+   ``docker-image-prune(1)`` does), so its behaviour here is MEASURED, not
+   cited.  Measured 2026-09-29 at 21:18 EDT on this host's rootless daemon:
+   ``docker image ls --filter reference=shekel-test-db --filter until=24h``
+   exited 0 and listed exactly the 3 of 108 images created more than 24
+   hours earlier, and none of the 105 younger ones.  The nearest unlisted
+   image was about 14 hours old, so its precision AT the 24-hour boundary was
+   not measured.
 
 3. REMOVAL IS A PLAIN ``docker rmi``, ONE TAG AT A TIME, NEVER ``-f``.
    Docker's own manual (``docker-image-rm(1)``): "You cannot remove an image of
-   a running container unless you use the -f option."  That refusal is what
-   leaves a running suite's image in place, so a refused tag is counted and
-   passed over, never forced.  It is docker's DOCUMENTED contract; it was not
-   measured on this host's rootless daemon, which uses the containerd image
-   store.  One call per tag lets the exit status alone say which tags went and
-   which were refused.
+   a running container unless you use the -f option."  Measured 2026-09-29
+   shortly after 21:00 EDT on this host's rootless daemon, which uses the
+   containerd image store: with a container running from a one-tag throwaway
+   image, a plain ``docker rmi`` of that tag exited 1 with "conflict: unable
+   to delete ... (must be forced) - container ... is using its referenced
+   image", and the image stayed.  That refusal is what leaves a running
+   suite's image in place, so a refused tag is counted and passed over, never
+   forced.  One call per tag lets the exit status alone say which tags went
+   and which were refused.
 
 A prune problem never fails the build or the test run: whatever goes wrong,
 a hang included, is reported in one line and the caller carries on.
 
-One window stays open.  ``scripts/test.sh`` resolves its tag before it starts
-its container, so a worktree whose inputs change in between can have its
-previous image, if over 24 hours old, removed by another worktree's prune in
-that window; its ``docker run`` then fails loudly and a re-run rebuilds.
+One window stays open.  ``scripts/test.sh`` resolves its tag, and only then
+runs the builder, which computes the tag again, builds, and prunes; its
+container starts after that.  So a worktree whose inputs change in between
+can have the image ``test.sh`` resolved, if it is over 24 hours old, removed
+by ANY prune in that window, this run's own included.  Its ``docker run``
+then fails loudly, and a re-run resolves the tag again.
 """
 from __future__ import annotations
 
@@ -140,7 +159,7 @@ def _is_tag(image_repo: str, reference: str) -> bool:
 
 
 def live_worktrees(repo_root: Path) -> list[Path]:
-    """Return every worktree of this repository that git does not mark prunable.
+    """Return every worktree of this repository except prunable ones that are gone.
 
     Args:
         repo_root: Any worktree of the repository.
@@ -149,8 +168,9 @@ def live_worktrees(repo_root: Path) -> list[Path]:
         The worktrees' directories, in git's order.
 
     Raises:
-        PruneRefused: When git cannot list the worktrees, or lists a record
-            that does not start with its ``worktree`` line.
+        PruneRefused: When git cannot list the worktrees, lists a record that
+            does not start with its ``worktree`` line, or marks prunable a
+            worktree whose directory still exists.
         OSError: When git cannot be started at all.
         subprocess.TimeoutExpired: When git hangs.
     """
@@ -167,9 +187,18 @@ def live_worktrees(repo_root: Path) -> list[Path]:
         lines = record.splitlines()
         if not lines or not lines[0].startswith("worktree "):
             raise PruneRefused(f"git worktree list printed {record!r}")
-        if any(line == "prunable" or line.startswith("prunable ") for line in lines):
-            continue
-        worktrees.append(Path(lines[0].removeprefix("worktree ")))
+        worktree = Path(lines[0].removeprefix("worktree "))
+        # ``prunable`` says git lost track of the checkout (its ``.git`` gone,
+        # say), not that the directory is gone, so only a missing directory
+        # is skipped (point 1 of the module docstring).
+        marks = [line for line in lines if line == "prunable" or line.startswith("prunable ")]
+        if not marks:
+            worktrees.append(worktree)
+        elif worktree.exists():
+            raise PruneRefused(
+                f"git marks {worktree} {marks[0]!r} but the directory is still "
+                "there, so whether it is a live checkout cannot be told"
+            )
     return worktrees
 
 

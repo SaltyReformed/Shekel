@@ -62,8 +62,9 @@ Usage::
 Exit codes: 0 on success (image present and verified), 1 on a build or
 verification failure, 2 on a usage or environment problem.
 
-A build, never a cache hit or ``--print-tag``, ends by removing stale images
-of earlier keys (:mod:`scripts.prune_test_db_images`); that never fails it.
+A build, never a cache hit or ``--print-tag``, ends by removing stale images of
+earlier keys (:mod:`scripts.prune_test_db_images`, imported only then, so
+``--print-tag`` is standard-library only); nothing the prune meets fails it.
 """
 from __future__ import annotations
 
@@ -83,10 +84,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # path when this runs as ``python scripts/build_test_db_image.py``.
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-# Pylint: ``wrong-import-position`` -- it needs the repo root added just above.
-from scripts.prune_test_db_images import (  # pylint: disable=wrong-import-position
-    prune_stale_images,
-)
 
 # The exact postgres build the suite's template is made against.  Kept
 # identical to docker-compose.dev.yml's test-db service: a template built on
@@ -924,6 +921,16 @@ def build(tag: str) -> None:
         raise
 
 
+def _prune_stale_images() -> None:
+    """Remove the stale images of earlier keys; ``main`` calls this only after a build.
+
+    Imported here so ``--print-tag``, which other worktrees' prunes run, is stdlib-only.
+    """
+    # Pylint: ``import-outside-toplevel`` -- deferred on purpose; see the docstring.
+    import scripts.prune_test_db_images as _prune  # pylint: disable=import-outside-toplevel
+    _prune.prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Ensure the template image exists for the current tree.
 
@@ -973,12 +980,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("  discarding it and rebuilding")
                 _run(["docker", "rmi", "-f", tag], check=False)
                 build(tag)
-                prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
+                _prune_stale_images()
             print(f"DONE: {tag} ready.")
         else:
             print(f"Building {tag}")
             build(tag)
-            prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
+            _prune_stale_images()
             print(f"DONE: {tag} ready.")
         if args.json:
             print(json.dumps({"tag": tag, "rebuilt": not present or args.force}))

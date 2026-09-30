@@ -198,16 +198,46 @@ class TestTheKeepSet:
     def test_a_prunable_worktree_is_skipped_rather_than_aborting(
         self, host: _FakeHost, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A worktree whose directory is gone has no image, so it cannot block.
+        """A prunable worktree whose directory is gone has no image to keep.
 
         ``/wt/gone`` has no scripted tag: asking for one would raise
         ``KeyError`` in the fake, so passing proves it was never asked.
         """
+        assert not Path("/wt/gone").exists(), "this test needs /wt/gone to be absent"
+
         _MODULE.prune_stale_images(_REPO, _ROOT)
 
         assert not any(cwd == Path("/wt/gone") for _command, cwd in host.calls)
         assert host.removals(), "a prunable worktree stopped the prune"
         assert "removed 2" in capsys.readouterr().out
+
+    def test_a_prunable_worktree_whose_directory_exists_stops_the_prune(
+        self, host: _FakeHost, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """``prunable`` means git lost the checkout's ``.git``, not its directory.
+
+        A directory that is still there may be a live checkout whose link to
+        git broke, so nothing is removed and the one line names it.
+
+        Args:
+            host: The scripted host.
+            capsys: Captures the one line the prune reports.
+            tmp_path: A directory that exists, standing in for the worktree.
+        """
+        host.worktrees = _done(
+            _PORCELAIN
+            + f"worktree {tmp_path}\n"
+            "HEAD 4444444444444444444444444444444444444444\n"
+            "detached\n"
+            "prunable gitdir file points to non-existent location\n"
+        )
+
+        _MODULE.prune_stale_images(_REPO, _ROOT)
+
+        assert [command[0] for command, _cwd in host.calls] == ["git"]
+        err = capsys.readouterr().err
+        assert f"removed nothing: git marks {tmp_path} 'prunable gitdir" in err
+        assert "the directory is still there" in err
 
     @pytest.mark.parametrize(
         ("answer", "reported"),
