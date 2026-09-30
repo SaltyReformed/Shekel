@@ -57,8 +57,9 @@ rehearsal on a same-day dump surfaces it before production does.
 ``borrowed`` -- 14 far sides ``observed`` with no member ever (their accounts had
 no statement line ever) and 12 ``entered`` sides (4 pairs backfill GUESSES, one
 of them a day backfilled onto a Paid pressed before the column existed, and 2
-pairs Paid STAMPS) -- and the 14 Checking sides stay ``observed``.  0 refused.  The migration prints its own counts so the
-operator compares them with the rehearsal's.
+pairs Paid STAMPS) -- and the 14 Checking sides stay ``observed``.  0 refused.
+The migration prints its own counts so the operator compares them with the
+rehearsal's.
 
 **The downgrade inverts the upgrade wherever one side of a pair kept its
 evidence**: a ``borrowed`` side takes its sibling's basis when the sibling's is

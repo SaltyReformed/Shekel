@@ -273,7 +273,10 @@ class TestAFigureCorrection:
 
 
 class TestASettleOverADriftedSide:
-    """Ledger row BAL-578: a settle over a settled parent dates a drifted side on ITS stated day."""
+    """Ledger row BAL-578: a settle over a settled parent dates a drifted side on ITS day.
+
+    The day stated for that side, not the owner's today.
+    """
 
     def test_the_drifted_side_takes_the_stated_day_and_the_other_keeps_its_own(
         self, app, seed_user, seed_periods_today,

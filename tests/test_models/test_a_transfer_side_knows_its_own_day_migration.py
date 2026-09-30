@@ -289,7 +289,10 @@ class TestTheRefusal:
     def test_a_side_whose_day_is_not_its_siblings_is_refused_before_any_write(
         self, app, seed_user, seed_periods_today,
     ):
-        """Two copied bank days that differ: neither can BORROW the other's, so the upgrade stops."""
+        """Two copied bank days that differ: neither can BORROW the other's.
+
+        So the upgrade stops before any write.
+        """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Parted")
             owner = seed_user["user"].id
@@ -351,7 +354,13 @@ def _bases_by_name():
 
 
 class TestTheRoundTrip:
-    """``downgrade`` is the exact inverse of ``upgrade`` on the pre-step shapes."""
+    """``downgrade`` inverts ``upgrade`` on the pre-step pairs, save one shape.
+
+    A pair BOTH of whose sides relabel comes back ``entered`` on both, which
+    inverts a pair that was ``entered`` (the press below) and not one that
+    was ``observed`` or ``asserted`` on both sides: that shape is pinned last,
+    as the migration's docstring states it.
+    """
 
     def test_up_then_down_restores_every_label_and_the_ref_row(
         self, app, seed_user, seed_periods_today,
