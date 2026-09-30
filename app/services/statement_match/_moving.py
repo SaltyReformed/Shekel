@@ -66,9 +66,12 @@ def _apply_day(
       recorded purchase day is refuted (ruling **R-FW**, see
       :func:`~._offers.corrected_purchase_day`), and the bank's own figure
       where the difference is this row's;
-    * a transfer SHADOW goes through ``transfer_service`` -- ``settle_transfer``
-      when it is still Projected, ``update_transfer`` when only the day moves,
-      because a settled transfer is an idempotent no-op for the first;
+    * one side of a TRANSFER -- a still-planned LEG, or a paid leg's payment
+      (:attr:`~._subjects.CandidateRow.transfer_id`; leaf
+      ``balance:X-bi-6-4c-1``, where it was the transfer's shadow row) --
+      goes through ``transfer_service`` on the TRANSFER: ``settle_transfer``
+      when it is still Projected, ``update_transfer`` when only the day
+      moves, because a settled transfer is an idempotent no-op for the first;
     * every other member -- a Projected TRANSACTION, or a SETTLEMENT, which
       is a row's covering movement matched on the ROW's terms (plan step
       ``credit_card:CC-5-4a-1``, ruling **R-CC43**) -- goes through

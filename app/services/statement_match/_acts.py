@@ -28,6 +28,7 @@ from app.models.statement_match import (
 )
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import transfer_legs
 
 _WHOLE_ACT = (
     selectinload(StatementMatch.members).selectinload(
@@ -43,6 +44,14 @@ _WHOLE_ACT = (
     ).joinedload(TransactionEntry.transaction).selectinload(
         Transaction.entries,
     ),
+    # And what ``transfer_legs.movement_parent`` reads to resolve a payment
+    # member's parent -- a transfer movement's transfer (leaf
+    # ``balance:X-bi-6-4c-1``: the register values a transfer's payment
+    # through its LEG) -- published by ``transfer_legs`` because the chain
+    # walks the shadow, which is that package's to name.
+    selectinload(StatementMatch.members).selectinload(
+        StatementMatchMember.entry,
+    ).options(*transfer_legs.movement_parent_loads()),
     selectinload(StatementMatch.creations).selectinload(
         StatementMatchCreation.transaction,
     ).selectinload(Transaction.entries),
@@ -111,6 +120,22 @@ def named_rows(match: StatementMatch) -> "tuple[set[int], set[int]]":
     purchase named.  The same rule :func:`~._candidates.matched_subjects`
     applies in SQL to an owner's claims.  Public because
     :mod:`._accepted_view` asks the same question of the same act.
+
+    **A transfer's payment member adds its movement's ``transaction_id`` too**
+    -- through the interval the id of the shadow row it hangs off, and
+    ``None`` once ``balance:X-bi-6-4d`` re-parents it onto the transfer.
+    Its two readers get the right answer from either value, for two
+    different reasons.  The undo (``_release.planned_removals``) probes the
+    set with a creation's row id, and no creation is a transfer's (a match
+    never creates one), so the value never matches.  The register
+    (``_accepted_view``) compares the WHOLE set with the act's creations
+    (``created_every_row``), and there the value's presence is what makes the
+    answer right: an act naming a transfer's payment did not create
+    everything it names.  That is moot today -- a group holding a transfer
+    refuses the residual that would be its only creation
+    (``test_residual``'s transfer-in-a-group case) -- and holds either way.
+    The register names and values a transfer member through its LEG
+    (``_accepted_view._accepted_row``), never through this set.
 
     Args:
         match: The act, with its members and their subjects loaded.

@@ -91,11 +91,19 @@ def _line(seed_user, amount, description):
     return line
 
 
-def _match(seed_user, line, *txns):
-    """Accept *line* against *txns* -- the act names each settled row's payment."""
+def _match(seed_user, line, *txns, transfers=()):
+    """Accept *line* against *txns* -- the act names each settled row's payment.
+
+    *transfers* are ticked as their legs on the scope's account (leaf
+    ``balance:X-bi-6-4c-1``).
+    """
     scope = a_scope(seed_user)
     accepted = accept_match(
-        a_submission(scope, lines=[line], transactions=list(txns)), scope,
+        a_submission(
+            scope, lines=[line], transactions=list(txns),
+            transfers=list(transfers),
+        ),
+        scope,
     )
     db.session.commit()
     return accepted
@@ -430,7 +438,7 @@ class TestEveryDoorWithdrawsTheActItself:
                 .one()
             )
             line = _line(seed_user, "-500.00", "TRANSFER")
-            accepted = _match(seed_user, line, shadow)
+            accepted = _match(seed_user, line, transfers=[shadow.transfer])
 
             transfer_service.delete_transfer(
                 xfer.id, seed_user["user"].id, soft=False,

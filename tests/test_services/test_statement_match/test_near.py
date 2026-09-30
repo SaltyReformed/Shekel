@@ -393,7 +393,8 @@ class TestItOffersNothingTheDoorWouldREFUSE:
         so the pairing is never put in front of the owner as an accept.
         """
         proposals, _ = _offered(
-            [_line(1, "-178.29")], [_row(1, "-178.32", transfer_id=77)],
+            [_line(1, "-178.29")],
+            [_row(1, "-178.32", transfer_id=77, kind=RowKind.LEG)],
         )
 
         assert proposals == []
@@ -454,7 +455,7 @@ class TestTheCorrectableAccessorItself:
     def test_a_TRANSFER_SHADOW_is_not(self):
         """Transfer invariant 3 holds the two halves equal."""
         assert _row(
-            1, "-25.00", transfer_id=77,
+            1, "-25.00", transfer_id=77, kind=RowKind.LEG,
         ).figure_is_correctable is False
 
 

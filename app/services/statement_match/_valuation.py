@@ -7,7 +7,7 @@ splits it, by SUBJECT).  The seam is the one :func:`repriced`'s own docstring
 has drawn since plan step ``bank_import:X-f6a-3c-2``: *the scope answers WHICH
 rows an act may reach; this answers what one of them is WORTH, and the two
 must be asked at different moments.*  :mod:`._candidates` keeps the scope --
-the three arms that decide which rows exist and may be offered, and the claims
+the arms that decide which rows exist and may be offered, and the claims
 that say which are already spoken for -- and calls the constructors here once
 per row; the write doors call :func:`repriced` once per act.
 
@@ -16,20 +16,37 @@ writes money with it** (plan step ``bank_import:X-f6a-3c-2``): the offer set
 builds a candidate for every row the account holds, and the accept door
 re-builds the one to four rows an act names -- through the same function, so
 what a row is worth and when the app believes it moved come from one read on
-both sides of the money gate.  Three constructors for the three subjects of
-:class:`~._subjects.RowKind`: a PURCHASE (:func:`purchase_candidate`), a
-Projected TRANSACTION (:func:`transaction_candidate`), and a SETTLEMENT --
-a settled row's covering movement, the subject of every settled match since
-ruling **R-CC43** (:func:`settlement_candidate`).
+both sides of the money gate.  One constructor per subject of
+:class:`~._subjects.RowKind`, and two for the SETTLEMENT because a payment has
+two kinds of parent: a PURCHASE (:func:`purchase_candidate`), a Projected
+TRANSACTION (:func:`transaction_candidate`), a still-planned transfer LEG
+(:func:`~._leg_valuation.leg_candidate`, leaf ``balance:X-bi-6-4c-1``, in its
+own module since that leaf took this one past the 1,000-line bound, ruling
+**balance:R-IR**: the seam is the kind), and a SETTLEMENT -- a
+settled row's covering movement, the subject of every settled match since
+ruling **R-CC43** (:func:`settlement_candidate`), or a paid transfer leg's
+(:func:`leg_settlement_candidate`).
 
-**Pricing is the cash ledger's, never restated here.**  A purchase and a
-DATED covering movement are worth ``cash_ledger.movement_cash_leg`` (ruling
-**R-BAL35**), the one valuation the fold and the ledger book for a movement;
-a Projected row -- and an UN-DATED covering movement, a reverted row's kept
-record that a match re-settles through the row's door -- is worth
-``cash_ledger.cash_leg_of`` over what its own settle verb says it would book
-(:func:`transaction_price`).  A matcher that computed its own figure could offer a line
-against a number no door would book.
+**Pricing is the cash ledger's and the settle verbs', never restated here.**
+A purchase and a DATED covering movement are worth
+``cash_ledger.movement_cash_leg`` (ruling **R-BAL35**), the one valuation
+the fold and the ledger book for a movement, over its parent -- a row, or
+the transfer LEG the movement is the record of; a Projected row -- and an
+UN-DATED covering movement, a reverted row's kept record that a match
+re-settles through the row's door -- is worth ``cash_ledger.cash_leg_of``
+over what its own settle verb says it would book (:func:`transaction_price`),
+and a still-planned leg over what the TRANSFER's would
+(:func:`~._leg_valuation.leg_price`, ``transfer_service.leg_settle_amount``).  A matcher that
+computed its own figure could offer a line against a number no door would
+book.
+
+**No site here reaches a transfer through its shadow row** (leaf
+``balance:X-bi-6-4c-1``, ruling **R-BAL106**): a leg arrives as a
+``transfer_legs.TransferLeg`` from the offer set's leg loaders, and every
+figure is asked of the leg (``transfer_service``'s leg-shaped price, whose
+interval body is the one shadow reach, and the cash ledger's producers, which
+take a leg as a row).  ``X-bi-6-4d`` moves those bodies once, and nothing here
+changes.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): reads only, plain
 data in, frozen dataclasses out, no Flask import, no clock read.
@@ -37,6 +54,7 @@ data in, frozen dataclasses out, no Flask import, no clock read.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -45,14 +63,16 @@ from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import (
-    cash_ledger,
-    transaction_service,
-    transfer_service,
-)
+from app.models.transfer import Transfer
+from app.services import cash_ledger, transaction_service, transfer_legs
 from app.services.settle_day import recorded_settle_day
+from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import is_projected
 
+from ._leg_valuation import (
+    leg_candidate,
+    repriced_leg,
+)
 from ._subjects import CandidateRow, RowKind
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -64,20 +84,25 @@ def transaction_price(
 ) -> "Decimal | None":
     """Return what settling the PROJECTED *txn* would book, signed, or ``None``.
 
-    The one branch in this module, and it is the verb's own partition rather
+    The one branch in this function, and it is the verb's own partition rather
     than a money rule of its own:
 
     * a row that settles from its purchases
       (``transaction_service.settles_from_entries``, the verb's own
       predicate) is worth ``0`` to the offer: the bank line it could be is one
       of its purchases, each a candidate of its own (ruling **R-BAL78**);
-    * any other row is worth what settling it would book, which is its own
-      arm's ``settle_amount`` -- the transfer service's for a shadow leg and
-      the transaction service's for its complement -- signed by
+    * any other row is worth what settling it would book,
+      ``transaction_service.settle_amount``, signed by
       :func:`~app.services.cash_ledger.cash_leg_of`.  A retained STATED
       record (a reverted row's kept figure, ruling **R-BAL61**) is honoured
       there, so a kept movement's candidate is priced at what its re-settle
       books and not at a stale column.
+
+    **It prices a ROW, never a transfer's shadow** (leaf
+    ``balance:X-bi-6-4c-1``): until that leaf a shadow was offered as a
+    TRANSACTION and priced here through ``transfer_service.settle_amount``;
+    both row arms now exclude shadows in SQL and a still-planned transfer is
+    its LEG, priced by :func:`~._leg_valuation.leg_price`.
 
     **It prices a PROJECTED row only** (plan step ``credit_card:CC-5-4a-1``,
     ruling **R-CC43**).  Through ``CC-5-3`` it carried a settled arm --
@@ -93,13 +118,14 @@ def transaction_price(
     movement re-settles through the row's door, so it is worth what that door
     would book.
 
-    **Neither ``settle_amount`` can refuse a row this module's scope admits**,
-    and that is why there is no guard against one here.  Both refuse exactly a
-    soft-deleted row and a row on the wrong side of the shadow partition;
+    **``settle_amount`` cannot refuse a row this module's scope admits**, and
+    that is why there is no guard against one here.  It refuses exactly a
+    soft-deleted row and a transfer's shadow;
     :func:`~._candidates._transaction_candidates` excludes the first through
-    ``balance_contributing_clause`` and the dispatch above IS the second.  A
-    ``try`` around them would be a guard nothing could ever observe, which this
-    project has twice measured as worse than none.
+    ``balance_contributing_clause`` and the second by
+    ``transfer_id IS NULL``.  A ``try`` around it would be a guard nothing
+    could ever observe, which this project has twice measured as worse than
+    none.
 
     **``AmountUnresolvable`` is a different thing and is REPORTED rather than
     swallowed or raised.**  It means the amount model had no rule for the row
@@ -129,37 +155,16 @@ def transaction_price(
         Its signed cash effect on the account its settle books on, or ``None``
         when the amount model cannot answer for it.
     """
-    settle_amount = (
-        transfer_service.settle_amount if txn.transfer_id is not None
-        else transaction_service.settle_amount
-    )
     if transaction_service.settles_from_entries(txn):
         # Its purchases ARE the figure (ruling **R-BAL78**) and each is a
         # candidate of its own, so the row is worth nothing to the offer.
         return Decimal("0")
     try:
-        return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
+        return cash_ledger.cash_leg_of(
+            txn, transaction_service.settle_amount(txn, basis),
+        )
     except AmountUnresolvable:
         return None
-
-
-def _label(txn: Transaction) -> str:
-    """Return what to call *txn* on the review screen.
-
-    The row's own name, with the parent transfer named where the row is a
-    SHADOW: two accounts hold a leg each and both are called "Transfer to
-    Mortgage", so a reviewer reading a checking statement has to be told which
-    side they are being offered.
-
-    Args:
-        txn: The row being offered.
-
-    Returns:
-        Its display label.
-    """
-    if txn.transfer_id is None:
-        return txn.name
-    return f"{txn.name} (transfer leg)"
 
 
 def _day_basis(row) -> SettledDayBasisEnum | None:
@@ -310,10 +315,13 @@ def _states_own_figure(txn: Transaction) -> bool:
     about another row.  Measured by the batch suite's own stale-price case,
     which booked `-60.00` against a payback re-derived to `50.00`.
 
-    A transfer SHADOW is the third member of that class and is NOT folded
-    in: ``transfer_id`` beside it already states it, and what the owner must
-    do about one is different (change the transfer, not a purchase), which
-    is why the accept door gives it its own sentence.
+    One side of a TRANSFER is the third member of that class and is NOT
+    folded in: the candidate's ``transfer_id`` already states it, and what
+    the owner must do about one is different (change the transfer, not a
+    purchase), which is why the accept door gives it its own sentence.  It
+    never reaches this function: a transfer's side is offered as its LEG or
+    its leg's payment (leaf ``balance:X-bi-6-4c-1``), whose constructors
+    state their own answer.
     :attr:`~._subjects.CandidateRow.figure_is_correctable` is where the two
     facts are read together.
 
@@ -358,7 +366,9 @@ def transaction_candidate(
     Returns:
         Its :class:`~._subjects.CandidateRow`, or ``None`` when the row is worth
         nothing or its pay period is not one this calendar carries -- neither
-        is offerable, and neither is an error.
+        is offerable, and neither is an error.  A transfer's shadow never
+        reaches it (both row arms exclude one, leaf ``balance:X-bi-6-4c-1``),
+        so the candidate carries no ``transfer_id``.
     """
     if not amount:
         return None
@@ -371,20 +381,18 @@ def transaction_candidate(
     return CandidateRow(
         kind=RowKind.TRANSACTION,
         row_id=txn.id,
-        label=_label(txn),
+        label=txn.name,
         cash_amount=amount,
         settled_on=txn.settled_on,
         is_settled=txn.status.is_settled,
         states_own_figure=_states_own_figure(txn),
-        transfer_id=txn.transfer_id,
         # Its own paycheck, whole: ``expected_on`` / ``expected_through`` are
         # its two ends, derived.
         period=period,
         # The same fact its twin carries, from the same column and for the same
         # reason.  A transaction settled through the reconcile panel takes the
-        # assertion's day (``reconcile_service._transactions`` for a bill,
-        # ``transfer_service._settle`` for a shadow leg), so its window opens at
-        # the period rather than closing on that day.
+        # assertion's day (``reconcile_service._transactions``), so its window
+        # opens at the period rather than closing on that day.
         # WHICH REVISION the screen is about to show (plan step
         # ``bank_import:X-f6d-3``, finding **N-336**).  Read here rather than
         # by the reader that emits it, for the reason every fact beside it is:
@@ -459,7 +467,7 @@ def row_is_offered_here(txn: Transaction, account_id: int) -> bool:
 def _settlement_label(txn: Transaction, account_id: int) -> str:
     """Return what to call *txn*'s payment on *account_id*'s review screen.
 
-    The row's own name (:func:`_label`), and where the row is budgeted on
+    The row's own name, and where the row is budgeted on
     ANOTHER account -- a checking bill paid from the card, offered on the
     card's screen -- the account it is budgeted on, so the reviewer reading
     the card's feed is told which plan this payment settles.  The same fact
@@ -474,7 +482,7 @@ def _settlement_label(txn: Transaction, account_id: int) -> str:
     Returns:
         The display label.
     """
-    label = _label(txn)
+    label = txn.name
     if txn.account_id == account_id:
         return label
     return f"{label} (budgeted on {txn.account.name})"
@@ -501,8 +509,10 @@ def settlement_candidate(
     (``parent_id`` is the row :func:`~._moving._apply_day` re-settles, with
     the movement's account as the tender -- an echo the door drops), and
     whether the bank's own figure may be written to it is the row's answer
-    (``states_own_figure``; a shadow leg's ``transfer_id`` travels for the
-    same reason it does on a TRANSACTION).  The REVISION is the movement's
+    (``states_own_figure``).  A transfer leg's payment is
+    :func:`leg_settlement_candidate`'s, and never reaches this constructor:
+    the offer set's row arm excludes a shadow's movement in SQL (leaf
+    ``balance:X-bi-6-4c-1``).  The REVISION is the movement's
     counter PLUS the row's: the seam mirrors the row's assertion onto the
     movement, so a settle, a revert, a day or figure correction and a tender
     re-point all UPDATE the movement -- but a reverted row can be moved to
@@ -557,11 +567,91 @@ def settlement_candidate(
         # The ROW's answer: the row's door refuses a figure on a row whose
         # figure is not its own to state, and this is that row's record.
         states_own_figure=_states_own_figure(txn),
-        transfer_id=txn.transfer_id,
         parent_id=txn.id,
         period=period,
         version_id=entry.version_id + txn.version_id,
         settle_day_basis=_day_basis(entry),
+    )
+
+
+def leg_settlement_candidate(
+    leg: TransferLeg, calendar: "PayCalendar", account_id: int,
+) -> "CandidateRow | None":
+    """Return a transfer leg's DATED covering movement as the candidate every consumer shares.
+
+    :func:`settlement_candidate`'s LEG twin (leaf ``balance:X-bi-6-4c-1``):
+    **a SETTLEMENT whose parent is a transfer's leg rather than a row** --
+    the member names the movement (``row_id``), the figure is what the
+    movement moves on its account (``cash_ledger.movement_cash_leg``, which
+    takes a leg as a parent: its direction and contributing gate are the
+    transfer's and side's), the window is the transfer's paycheck, the door
+    is the transfer's (``transfer_id``; no ``parent_id``, since it pays no
+    row), and the REVISION is the movement's counter plus the TRANSFER's,
+    for :func:`settlement_candidate`'s reason one row over.  Until this leaf
+    it was built off the SHADOW the movement hangs off.
+
+    **Only a DATED record is a leg's payment** (ruling **R-BAL80**: a
+    settled leg is its dated covering movement; the per-side rule R-BAL79
+    puts every other side on the plan).  So a side is a LEG while its
+    transfer is Projected and its money has not moved
+    (``transfer_legs.offerable_transfer_legs``), its payment once the money
+    has moved, and NEITHER when its record is un-dated under a transfer that
+    is no longer Projected.  Under a Cancelled transfer (a door-written
+    state: the seam keeps a cancelled row's movement) that was already
+    so -- the contributing gate offers nothing -- and under a Paid or
+    Received one it is a state no door writes, which the cash fold also
+    reads as nothing (its plan half needs a Projected parent and its record
+    half a dated movement).  Offering it there booked the WRONG day: an
+    Apply runs ``transfer_service.settle_transfer`` with the bank's day, the
+    parent is already settled so the door keeps its status and drops that
+    day, and the pair repair dates the kept record on the owner's TODAY
+    (measured 2026-09-30: bank day 2024-01-05, record dated the test
+    clock's 2026-03-20 -- ``transfer_service``, which this leaf does not
+    touch, did the same to the shadow's record on the branch base).
+    A row's un-dated kept movement is a candidate where a leg's is not
+    because the row's is a door-written state (ruling **R-CC42**: a reverted
+    card-tendered row) that its own door re-settles on the bank's day.  So
+    a leg's payment is never priced by a derivation that can refuse, and no
+    leg payment is ever unpriceable.
+
+    Args:
+        leg: The leg, carrying the movement as its ``record``
+            (``transfer_legs.recorded_transfer_legs``).
+        calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar`.
+        account_id: The screen's account.
+
+    Returns:
+        Its :class:`~._subjects.CandidateRow`, or ``None`` when the leg has
+        no DATED record on this screen's account, the movement is worth
+        nothing, or the transfer's pay period is not one this calendar
+        carries -- none is offerable, and none is an error.
+    """
+    record = leg.record
+    if (
+        record is None or record.settled_on is None
+        or record.account_id != account_id
+    ):
+        return None
+    # **The leg's own candidate, re-keyed onto its record**: the label, the
+    # transfer and the paycheck are the LEG's (one construction,
+    # :func:`~._leg_valuation.leg_candidate`, which also declines a zero
+    # figure and a period the calendar lacks), and the movement contributes
+    # its figure, its identity, its day and how that day is known, and its
+    # counter -- which is what a SETTLEMENT is (``RowKind``: the movement's
+    # identity with its parent's record).
+    candidate = leg_candidate(
+        leg, calendar, cash_ledger.movement_cash_leg(leg, record),
+    )
+    if candidate is None:
+        return None
+    return replace(
+        candidate,
+        kind=RowKind.SETTLEMENT,
+        row_id=record.id,
+        settled_on=record.settled_on,
+        is_settled=True,
+        version_id=record.version_id + leg.transfer.version_id,
+        settle_day_basis=_day_basis(record),
     )
 
 
@@ -627,11 +717,20 @@ def repriced(
         **A TRANSACTION that has SETTLED since it was offered is ``None``
         too** (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**): its
         subject is its movement now, and the act that named the row is a
-        stale form.
+        stale form -- and so is a LEG whose transfer has settled, or that is
+        no longer offerable on this screen at all (leaf
+        ``balance:X-bi-6-4c-1``).
     """
     if row.kind is RowKind.PURCHASE:
         return _repriced_purchase(row, calendar)
+    if row.kind is RowKind.LEG:
+        return repriced_leg(row, calendar, basis, account_id)
     if row.kind is RowKind.SETTLEMENT:
+        # WHICH parent the payment has is the candidate's own tag, set by the
+        # arm that offered it (``RowKind``'s rule: tagged, never derived
+        # downstream), and a movement never changes parent.
+        if row.transfer_id is not None:
+            return _repriced_leg_settlement(row, calendar, account_id)
         return _repriced_settlement(row, calendar, basis, account_id)
     return _repriced_transaction(row, calendar, basis)
 
@@ -687,3 +786,72 @@ def _repriced_transaction(
     if amount is None:
         return None
     return transaction_candidate(txn, calendar, amount)
+
+
+def _repriced_leg_settlement(
+    row: CandidateRow, calendar: "PayCalendar", account_id: int,
+) -> "CandidateRow | None":
+    """Return :func:`repriced`'s leg-payment arm: the paid leg's movement as it stands now.
+
+    :func:`_repriced_settlement`'s LEG twin: re-read by the movement's id as
+    its leg's record (``transfer_legs.recorded_transfer_legs``), which a
+    movement that is no longer a covering movement, or hangs off a dead
+    shadow, is not -- ``None`` then, as there, and so is one a revert has
+    un-dated since (:func:`leg_settlement_candidate` offers a dated record
+    only: the side is its LEG again).
+    """
+    return _leg_payment(
+        transfer_legs.recorded_transfer_legs(
+            TransactionEntry.id == row.row_id,
+        ),
+        calendar, account_id,
+    )
+
+
+def recorded_leg_payment(
+    transfer_id: int, calendar: "PayCalendar", account_id: int,
+) -> "CandidateRow | None":
+    """Return *transfer_id*'s side on *account_id* as its payment's candidate, or ``None``.
+
+    The accept door's read-back of a LEG it has just settled
+    (``_accept._as_recorded``, leaf ``balance:X-bi-6-4c-1``): the side's
+    covering movement, reached as the leg's RECORD through
+    ``transfer_legs.recorded_transfer_legs`` by the transfer and the account,
+    and priced by the same constructor the offer set prices a paid leg with
+    -- the same function on both sides of the money gate, as every candidate
+    here is.  Until that leaf a transfer was ticked as its shadow and read
+    back off the shadow row (``status_seam.covering_movement_of``).
+
+    Args:
+        transfer_id: The transfer the ticked leg is a side of.
+        calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar`.
+        account_id: The screen's account, the leg's.
+
+    Returns:
+        The SETTLEMENT, or ``None`` when that side holds no covering movement
+        or its movement is not a candidate on this screen -- after the
+        transfer's own settle, a broken invariant the caller raises on.
+    """
+    return _leg_payment(
+        transfer_legs.recorded_transfer_legs(
+            Transfer.id == transfer_id,
+            TransactionEntry.account_id == account_id,
+        ),
+        calendar, account_id,
+    )
+
+
+def _leg_payment(
+    legs: "list[TransferLeg]", calendar: "PayCalendar", account_id: int,
+) -> "CandidateRow | None":
+    """Return the one paid leg a lookup found as its payment's candidate, or ``None``.
+
+    The shared tail of the two ways a paid leg is looked up again -- by its
+    movement (:func:`_repriced_leg_settlement`) and by its transfer and
+    account (:func:`recorded_leg_payment`): at most one leg matches either,
+    since a side holds at most one covering movement.
+    """
+    if not legs:
+        return None
+    (leg,) = legs
+    return leg_settlement_candidate(leg, calendar, account_id)
