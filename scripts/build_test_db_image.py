@@ -61,6 +61,9 @@ Usage::
 
 Exit codes: 0 on success (image present and verified), 1 on a build or
 verification failure, 2 on a usage or environment problem.
+
+A build, never a cache hit or ``--print-tag``, ends by removing stale images
+of earlier keys (:mod:`scripts.prune_test_db_images`); that never fails it.
 """
 from __future__ import annotations
 
@@ -76,6 +79,14 @@ import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+# ``scripts`` and ``app`` resolve only from the repo root, which is not on the
+# path when this runs as ``python scripts/build_test_db_image.py``.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+# Pylint: ``wrong-import-position`` -- it needs the repo root added just above.
+from scripts.prune_test_db_images import (  # pylint: disable=wrong-import-position
+    prune_stale_images,
+)
 
 # The exact postgres build the suite's template is made against.  Kept
 # identical to docker-compose.dev.yml's test-db service: a template built on
@@ -521,8 +532,6 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
     Raises:
         BuildError: When the constant cannot be read.
     """
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
     try:
         triggers = getattr(importlib.import_module(module), attribute)
     except (ImportError, AttributeError) as exc:
@@ -554,8 +563,6 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
             producer moved and this verification would otherwise silently
             check the wrong number.
     """
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
     try:
         imported = importlib.import_module(module)
         value = getattr(imported, name)
@@ -966,10 +973,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("  discarding it and rebuilding")
                 _run(["docker", "rmi", "-f", tag], check=False)
                 build(tag)
+                prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
             print(f"DONE: {tag} ready.")
         else:
             print(f"Building {tag}")
             build(tag)
+            prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
             print(f"DONE: {tag} ready.")
         if args.json:
             print(json.dumps({"tag": tag, "rebuilt": not present or args.force}))
