@@ -53,7 +53,11 @@ def check_orphaned_records(session):
         # named was listed as unused.  Every transfer's category is on its
         # expense shadow too on the 2026-09-30 00:11 production dump, and
         # none of that dump's seven unused categories is a transfer
-        # definition's, so the list there does not change.
+        # definition's, so the list there does not change.  It is still NOT
+        # the predicate's whole twin: it counts no standing merchant rule,
+        # which ``category_has_usage`` does, so a category only a rule names
+        # is listed here and archived by the delete door -- two spellings of
+        # one question, older than this step (finding **BAL-577**).
         ("OR-03", "Categories not used by any template, transfer or transaction", """
             SELECT c.id, c.group_name, c.item_name
             FROM budget.categories c

@@ -536,6 +536,39 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     return _summarise(_acts_emptied_by(entry_ids), set(), entry_ids)
 
 
+def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
+    """Return the withdrawal event's parent coordinates for *entries*.
+
+    What each movement was recorded FOR, asked of the one resolution of a
+    movement's parent (:func:`app.services.transfer_legs.movement_parent`,
+    plan step ``balance:X-bi-6-4c-4``, ruling **R-BAL160**) and split in one
+    pass: a plan row under ``transaction_ids``, with the rows the press
+    deletes beside it, and a transfer's payment under ``transfer_ids``.  It
+    read the shadow row's id off a transfer's payment until that step -- an
+    id ``X-bi-6-4d`` leaves unset, and one ``sorted`` could not have ordered
+    beside the others.  The rows a transfer delete hands over as leaving are
+    its shadows, so that delete still lists them until the shadows go.
+
+    Args:
+        entries: The movements leaving their matches.
+        leaving_ids: The ids of the rows the press deletes, soft or hard.
+
+    Returns:
+        ``{"transaction_ids": [...], "transfer_ids": [...]}``, each sorted.
+    """
+    row_ids, transfer_ids = set(leaving_ids), set()
+    for entry in entries:
+        parent = transfer_legs.movement_parent(entry)
+        if isinstance(parent, TransferLeg):
+            transfer_ids.add(parent.transfer.id)
+        else:
+            row_ids.add(parent.id)
+    return {
+        "transaction_ids": sorted(row_ids),
+        "transfer_ids": sorted(transfer_ids),
+    }
+
+
 def take_out_of_matches(
     entries, owner_id: int, *, because: str, rows_leaving=(),
 ) -> MatchWithdrawal:
@@ -590,31 +623,12 @@ def take_out_of_matches(
     emptied, surviving = _partition(_acts_naming(entry_ids), entry_ids)
     planned = _summarise(emptied, leaving_ids, entry_ids)
     if emptied:
-        # What each movement was recorded FOR, asked of the one resolution
-        # of a movement's parent (plan step ``balance:X-bi-6-4c-4``, ruling
-        # **R-BAL160**): a plan row, or a transfer's LEG.
-        parents = [transfer_legs.movement_parent(entry) for entry in entries]
         _withdraw(
             emptied, planned, owner_id, because=because,
             # The PARENTS the movements were under, whether or not they leave
             # too -- a re-record's row stays, and the event is the only record
             # of which row a no-caption door (the grid's Mark Paid) touched.
-            # A transfer's payment is filed under its TRANSFER, where it read
-            # the shadow row's id off the movement until plan step
-            # ``balance:X-bi-6-4c-4`` -- an id ``X-bi-6-4d`` leaves unset, and
-            # one the sort beside it could not have ordered.  The rows a
-            # transfer delete hands over as leaving are its shadows, so that
-            # delete still lists them here until the shadows go.
-            transaction_ids=sorted(
-                leaving_ids | {
-                    parent.id for parent in parents
-                    if not isinstance(parent, TransferLeg)
-                },
-            ),
-            transfer_ids=sorted({
-                parent.transfer.id for parent in parents
-                if isinstance(parent, TransferLeg)
-            }),
+            **_parent_ids(entries, leaving_ids),
             transaction_entry_ids=sorted(entry_ids),
             freed_line_ids=[line.line_id for line in planned.lines],
         )

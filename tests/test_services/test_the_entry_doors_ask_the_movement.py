@@ -59,32 +59,40 @@ def _a_settled_bill(seed_user, period):
 
 
 class TestOwnershipIsTheMovementsOwn:
-    """Both doors read ``TransactionEntry.owner_id``, not the parent row's owner."""
+    """Both doors read ``TransactionEntry.owner_id`` -- and nothing off the row.
 
-    def _plant_another_owner(self, entry_id, owner_id):
-        """Point the movement's owner column away from its row's, around the key.
+    ``fk_transaction_entries_owner_transaction`` holds the movement's owner
+    equal to its row's on every write, so each direction is PLANTED with the
+    referential triggers off, inside the test's one transaction: the
+    movement's owner moved away (the row's owner must get the 404), and the
+    ROW's owner moved away (the movement's owner must still reach the
+    refusals).  A door reading both columns would pass the first plant and
+    fail the second; ``X-bi-6-4d`` needs the second, because a transfer's
+    movement will have no row to read.
+    """
 
-        ``fk_transaction_entries_owner_transaction`` holds the two equal on
-        every write, so the state is planted with the referential triggers
-        off -- the one way to show which column a door keys on.
-        """
+    def _plant(self, sql, params):
+        """Run *sql* with the referential triggers off, then turn them back on."""
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
-        try:
-            db.session.execute(db.text(
-                "UPDATE budget.transaction_entries SET owner_id = :owner "
-                "WHERE id = :id"
-            ), {"owner": owner_id, "id": entry_id})
-            db.session.commit()
-        finally:
-            db.session.execute(db.text(
-                "SET session_replication_role = 'origin'"
-            ))
+        db.session.execute(db.text(sql), params)
+        db.session.execute(db.text(
+            "SET session_replication_role = 'origin'"
+        ))
+        db.session.flush()
         db.session.expire_all()
 
-    def test_the_edit_door_answers_the_movements_owner(
-        self, app, seed_user, seed_second_user, seed_periods,
+    def _call(self, door, movement_id, user_id):
+        """Ask *door* ("update" or "delete") to write the movement as *user_id*."""
+        if door == "update":
+            entry_service.update_entry(movement_id, user_id, description="Power")
+        else:
+            entry_service.delete_entry(movement_id, user_id)
+
+    @pytest.mark.parametrize("door", ["update", "delete"])
+    def test_the_movements_owner_moved_away_is_a_404_for_the_rows_owner(
+        self, app, seed_user, seed_second_user, seed_periods, door,
     ):
         """The row's owner gets the 404 once the movement names someone else."""
         with app.app_context():
@@ -92,34 +100,38 @@ class TestOwnershipIsTheMovementsOwn:
             movement_id = movement.id
             with pytest.raises(ValidationError):
                 # The control: the row's owner reaches the refusals.
-                entry_service.update_entry(
-                    movement_id, seed_user["user"].id, description="Power",
-                )
+                self._call(door, movement_id, seed_user["user"].id)
             db.session.rollback()
 
-            self._plant_another_owner(movement_id, seed_second_user["user"].id)
+            self._plant(
+                "UPDATE budget.transaction_entries SET owner_id = :owner "
+                "WHERE id = :id",
+                {"owner": seed_second_user["user"].id, "id": movement_id},
+            )
 
             with pytest.raises(NotFoundError):
-                entry_service.update_entry(
-                    movement_id, seed_user["user"].id, description="Power",
-                )
-
-    def test_the_delete_door_answers_the_movements_owner(
-        self, app, seed_user, seed_second_user, seed_periods,
-    ):
-        """The same plant, the delete door."""
-        with app.app_context():
-            _row, movement = _a_settled_bill(seed_user, seed_periods[0])
-            movement_id = movement.id
-            with pytest.raises(ValidationError):
-                entry_service.delete_entry(movement_id, seed_user["user"].id)
-            db.session.rollback()
-
-            self._plant_another_owner(movement_id, seed_second_user["user"].id)
-
-            with pytest.raises(NotFoundError):
-                entry_service.delete_entry(movement_id, seed_user["user"].id)
+                self._call(door, movement_id, seed_user["user"].id)
             assert db.session.get(TransactionEntry, movement_id) is not None
+
+    @pytest.mark.parametrize("door", ["update", "delete"])
+    def test_the_rows_owner_moved_away_changes_nothing_for_the_movements_owner(
+        self, app, seed_user, seed_second_user, seed_periods, door,
+    ):
+        """The movement's owner still reaches the refusals when the ROW names another."""
+        with app.app_context():
+            row, movement = _a_settled_bill(seed_user, seed_periods[0])
+            movement_id = movement.id
+
+            self._plant(
+                "UPDATE budget.transactions SET user_id = :owner WHERE id = :id",
+                {"owner": seed_second_user["user"].id, "id": row.id},
+            )
+
+            with pytest.raises(ValidationError) as refused:
+                self._call(door, movement_id, seed_user["user"].id)
+            assert str(refused.value).startswith(
+                "This is the payment record of Electric,"
+            )
 
 
 class TestAPaymentRecordIsRefusedFirst:

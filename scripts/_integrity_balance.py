@@ -150,11 +150,14 @@ def check_balance_anomalies(session):
         # TRANSFER's status and ``is_deleted``.  The row arm drops the
         # shadows (``transfer_id IS NULL``), which it used to count as rows
         # by their own day -- ``X-bi-6-4d`` stops writing them for new
-        # transfers.  A side closed at ``$0.00`` holds no movement, moved no
-        # cash on any day, and is not listed; on the 2026-09-30 00:11
-        # production dump no settled shadow lacked its movement or differed
-        # from its day, so the change listed nothing new there.  The schedule
-        # bounds are a CTE because both arms read them.
+        # transfers.  The leg arm grades a MOVEMENT's day, so a side closed
+        # at ``$0.00``, which holds no movement, has no day to grade and is
+        # not listed -- where a ``$0.00``-closed ROW keeps the row day this
+        # arm's twin reads.  On the 2026-09-30 00:11 production dump no
+        # settled shadow lacked its movement or differed from its day, and no
+        # shadow's status or ``is_deleted`` differed from its transfer's, so
+        # the change listed nothing new there.  The schedule bounds are a CTE
+        # because both arms read them.
         ("BA-06", "warning",
          "Settled transactions and transfer legs whose settle day no pay "
          "period covers", f"""
