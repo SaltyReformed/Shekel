@@ -34,7 +34,6 @@ from app.utils.account_validation import (
     _type_update_schema,
     _validate_account_type_boundary_edit,
 )
-from app.services.user_write_lock import lock_user_writes
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -118,18 +117,6 @@ def update_account_type(type_id):
         return redirect(url_for("settings.show", section="account-types"))
 
     data = _type_update_schema.load(request.form)
-
-    # The owner's write lock, taken HERE and unconditionally, BEFORE any row of
-    # this transaction is touched -- the invariant
-    # :mod:`app.services.user_write_lock` states, held the way the sibling door
-    # ``accounts.update_account`` holds it and for the same reason.  It was not
-    # needed while this route only UPDATEd ``ref.account_types``; plan step
-    # balance:X-i3 gave it params-row INSERTs of its own, which would otherwise
-    # take table locks several statements before the advisory lock that the
-    # boundary-crossing branch below reaches through the posting re-sync.  That
-    # inversion is the class finding **N-193** records, and adding a door to it
-    # in the commit that removes one next door is not a trade worth making.
-    lock_user_writes(current_user.id)
 
     # Per-user duplicate-name guard on rename.  Identical scoping to
     # ``create_account_type`` -- the conflict universe is the

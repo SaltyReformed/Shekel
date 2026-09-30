@@ -69,6 +69,7 @@ from app.services._recurrence_common import log_resource_access_denied
 from app.services.loan_loaders import load_standing_loan_assertions
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
+from app.utils import archive_helpers
 from app.utils.balance_predicates import (
     is_projected,
     settled_status_ids,
@@ -191,7 +192,8 @@ def gate_deletable_tail(
 
     Args:
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).
         kept: The last period to KEEP, or ``None`` to delete every period in
             *periods*.  ``None`` is reachable only from regenerate, whose
             rebuildable tail can start at the very first period; it then
@@ -236,7 +238,14 @@ def gate_deletable_tail(
         # per account (a self-cancelling original + reversal pair).  Whoever
         # relaxes these locks MUST first reverse the postings
         # (posting_service.reverse_postings_before_delete / the loan sync).
-        raise PayPeriodLocked(blocking)
+        # A third layer since plan step credit_card:CC-5-4a-4: a period
+        # holding a row that holds a payment or purchase classifies
+        # HOLDS_MOVEMENT, and its refusal names the period (ruling R-CC66).
+        raise PayPeriodLocked(blocking, holding_starts=[
+            period.start_date for period in to_delete
+            if blocking.get(period.period_id)
+            is PeriodLockReason.HOLDS_MOVEMENT
+        ])
 
     if not confirm_discard:
         discardable = count_discardable_items(
@@ -268,18 +277,27 @@ def gate_removable_head(
 
     **What GOES with the paycheck**: an unpaid row its template made that the
     owner never changed (:func:`_regenerable`, the discard gate's own rule,
-    and holding no purchase), and a transfer the same way, whose two shadows
-    the CASCADE takes with it (transfer invariant 2).  They are what
+    and holding no payment or purchase), and a transfer the same way, whose
+    two shadows the CASCADE takes with it (transfer invariant 2).  They are what
     populating the paycheck wrote when it was added, so removing it takes
     back exactly that.
 
     **What STOPS it**, each asked of the whole head and named, in this order,
     the first that finds anything raising:
 
-    1. A row the owner typed, changed, paid, or marked Credit or Cancelled; a
-       row holding a purchase (:func:`transactions_holding_purchases`); a
-       transfer made by hand -- "items you entered or changed", the ruling's
-       wording, naming each.
+    1. A row the owner typed, changed, paid, or marked Credit or Cancelled;
+       any row the delete would take -- a hidden one or a transfer's leg
+       included -- that holds a payment or purchase
+       (:func:`app.utils.archive_helpers.holds_a_movement`, the one question
+       every pay-period door asks); a transfer made by hand -- "items you
+       entered or changed", the ruling's wording, naming each.  **A row paid
+       and set back to Projected is refused too** (ruling **R-PC115**): the
+       revert keeps its payment, undated, which is history no bulk door
+       deletes (**R-CC54**, **R-CC65**), and the database refuses to delete it
+       with its row.  A transfer set back this way cannot be cleared by
+       deleting it until plan step ``balance:X-bi-6-4`` ends finding
+       **BAL-532** (its delete hides the legs and keeps their payments); the
+       ruling accepted that cost.
     2. A pay stub dated on the paycheck's payday: a stub sits on a paycheck
        the app holds (**R-SAL49**), and this would leave it on none.
     3. Money DATED inside the removed paychecks anywhere in the budget -- a
@@ -302,9 +320,10 @@ def gate_removable_head(
     undo die at the first loan payment (review 1 of C21, measured on the
     developer's data).  The door re-files those entries through Reset's two
     re-syncs instead and asks :func:`reject_moved_ledger` of the result: the
-    ledger may lose nothing.  An entry of a row the head holds is refused by
-    (1) when the row is money; a paid-then-unpaid pair nets to zero and goes
-    with its paycheck.
+    ledger may lose nothing.  A row the head holds that still holds a payment
+    or purchase is refused by (1) whatever its entries net to: a
+    paid-then-unpaid pair nets to zero, but its row keeps the payment
+    (**R-PC115**).
 
     **No confirmation step**: the ruling refused one, because a Credit row is
     a real card charge and a confirmation could delete real spending.  And
@@ -314,7 +333,8 @@ def gate_removable_head(
         user_id: The owning user's id -- the dated money of (3) is the
             owner's anywhere, not only in the head.
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).
         first_kept: The period the owner chose to START FROM (ruling
             **R-PC111**); it and every later period stay.
         as_of: The owner's civil day, resolved once by the caller.
@@ -337,39 +357,34 @@ def gate_removable_head(
     return head
 
 
-def transactions_holding_purchases(transaction_ids) -> "set[int]":
-    """Return the subset of *transaction_ids* holding a purchase.
+def _rows_holding_a_movement(period_ids) -> "list[Transaction]":
+    """Return every row in *period_ids* that holds a payment or purchase.
 
-    **A set reader, not a rule of its own.**  What a purchase IS has one
-    home: ``Transaction.purchases`` (ruling **R-BAL68**, "the ONE reading of
-    what did a person record against this row") -- a row's entries less the
-    seam's covering mark -- whose query-side twin is
-    ``status_seam.covering_clause``, negated here.  The mark is NOT confined
-    to settled rows: since plan step ``balance:X-bi-3e-2`` a revert KEEPS it,
-    un-dated, under a Projected row, which is why a gate may not read "has
-    any entry" as "holds a purchase".  This asks the same question over a
-    whole head at once, where the property would load one collection per
-    row.  Plan step ``pay_calendar:C22`` (ruling **R-PC112**, ledger row
-    **PC-524**) reuses the same clause for truncate and regenerate.
+    Ruling **R-PC115**'s half of :func:`_reject_held_rows`.  The rows are the
+    ones the head's delete would take: hidden rows and transfer legs
+    included, because the ``transactions.pay_period_id`` cascade takes both
+    and ``budget.transaction_entries``' key refuses to lose what they hold
+    (**R-CC54**).  The question is :func:`app.utils.archive_helpers
+    .holds_a_movement`, the one every pay-period door asks, so a paid row set
+    back to Projected -- whose revert keeps its payment, undated (plan step
+    ``balance:X-bi-3e-2``) -- is one of them.  Each leg's transfer is loaded
+    with it, because a transfer is named by its own name, once.
 
     Args:
-        transaction_ids: ``budget.transactions.id`` values.
+        period_ids: The pay-period ids the removal would delete.
 
     Returns:
-        The ids among them with at least one purchase.
+        The rows, each with its ``transfer`` loaded.
     """
-    if not transaction_ids:
-        return set()
-    rows = (
-        db.session.query(TransactionEntry.transaction_id)
+    return (
+        db.session.query(Transaction)
+        .options(selectinload(Transaction.transfer))
         .filter(
-            TransactionEntry.transaction_id.in_(transaction_ids),
-            ~status_seam.covering_clause(),
+            Transaction.pay_period_id.in_(period_ids),
+            archive_helpers.holds_a_movement(),
         )
-        .distinct()
         .all()
     )
-    return {row[0] for row in rows}
 
 
 def _paycheck(period: DerivedPeriod) -> str:
@@ -381,33 +396,46 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     """Refuse a head holding a row that is not an untouched template row.
 
     Refusal 1 of :func:`gate_removable_head`, in the ruling's wording: one
-    sentence per paycheck naming its items, then the one remedy.
+    sentence per paycheck naming its items, then the one remedy.  An item is
+    named once however many reasons hold it: a changed row that also holds a
+    purchase, or a transfer both of whose legs keep a payment.
 
     Args:
         head: The periods the removal would take.
 
     Raises:
         PayPeriodRemovalRefused: A row or transfer in *head* is one the
-            owner entered or changed.
+            owner entered or changed, or a row there -- hidden or a
+            transfer's leg included -- holds a payment or purchase
+            (ruling **R-PC115**).
     """
     period_ids = [period.period_id for period in head]
-    transactions = _live_rows_of(
+    # Keyed per paycheck by what the owner sees -- a row, or a transfer once
+    # for both its legs -- so an item held for two reasons is named once.
+    held: "dict[int, dict[tuple[str, int], str]]" = {}
+    for row in _live_rows_of(
         Transaction, Transaction.template, period_ids,
         Transaction.transfer_id.is_(None),
-    )
-    purchased = transactions_holding_purchases([row.id for row in transactions])
-    held: "dict[int, list[str]]" = {}
-    for row in transactions:
-        if not _regenerable(row) or row.id in purchased:
-            held.setdefault(row.pay_period_id, []).append(row.name)
+    ):
+        if not _regenerable(row):
+            held.setdefault(row.pay_period_id, {})[("row", row.id)] = row.name
     for row in _live_rows_of(Transfer, Transfer.template, period_ids):
         if not _regenerable(row):
-            held.setdefault(row.pay_period_id, []).append(row.name or "a transfer")
+            held.setdefault(row.pay_period_id, {})[("transfer", row.id)] = (
+                row.name or "a transfer"
+            )
+    for row in _rows_holding_a_movement(period_ids):
+        if row.transfer_id is None:
+            held.setdefault(row.pay_period_id, {})[("row", row.id)] = row.name
+        else:
+            held.setdefault(row.pay_period_id, {})[
+                ("transfer", row.transfer_id)
+            ] = row.transfer.name or "a transfer"
     if not held:
         return
     sentences = []
     for period in head:
-        names = sorted(held.get(period.period_id, []))
+        names = sorted(held.get(period.period_id, {}).values())
         if names:
             noun = "item" if len(names) == 1 else "items"
             sentences.append(
@@ -430,14 +458,16 @@ def reject_moved_ledger(
     "Remove earlier paychecks"' ledger half, asked AFTER its write:
     ``pay_period_admin.remove_earlier_pay_periods`` reads
     :func:`~app.services.pay_period_locks.posted_totals` as they stand,
-    retires the head (whose entries the ``CASCADE`` takes), re-syncs so
+    retires the head (whose journal entries the ``CASCADE`` takes), re-syncs so
     every entry rebuilt from a surviving record is re-filed onto the kept
     paychecks, and reads the totals again -- the ruling's words, "refused
     iff a posted total would change", with no re-synced counterfactual in
     front (review 2 of C21 measured that one refusing falsely).  Equal totals mean the removal
     lost nothing booked: whatever the head held was rebuilt onto the kept
     paychecks (an opening, a true-up correction) or netted to zero with it
-    (a paid-then-unpaid pair); a total that moved is an entry no re-sync
+    (the pair of a row paid, set back and then deleted; a row still holding
+    its payment never reaches here, ruling **R-PC115**); a total that moved
+    is an entry no re-sync
     rebuilds, and the door refuses.  It is asked after the write because only the
     re-syncs can say what they rebuild -- a list of rebuildable entry kinds
     here would be a second statement of the posting modules' own rules --
@@ -667,9 +697,9 @@ def can_reset_pay_periods(user_id: int) -> bool:
     """Return whether a full reset is currently offered to the user.
 
     The read-only UI predicate: reset is offered only when the user has no
-    settled transactions, the same bound :func:`reset_pay_periods`
-    enforces.  The settings page calls this to show or hide the reset
-    control; the service's own gate (which raises
+    settled transactions and no row holding a payment or purchase, the same
+    bounds :func:`reset_pay_periods` enforces.  The settings page calls this
+    to show or hide the reset control; the service's own gate (which raises
     :class:`~app.exceptions.PayPeriodResetBlocked`) remains the
     authoritative defense, so a stale page that posts anyway is still
     refused.
@@ -678,10 +708,13 @@ def can_reset_pay_periods(user_id: int) -> bool:
         user_id: The owning user's id.
 
     Returns:
-        ``True`` when the user has zero settled (non-deleted)
-        transactions, else ``False``.
+        ``True`` when the user has zero settled (non-deleted) transactions
+        and zero rows holding a movement, else ``False``.
     """
-    return settled_transaction_count(user_id) == 0
+    return (
+        settled_transaction_count(user_id) == 0
+        and movement_holding_row_count(user_id) == 0
+    )
 
 
 
@@ -726,9 +759,10 @@ def regenerate_keep_through_period(
 
     Args:
         periods: The owner's saved periods as one window, read under the
-            caller's advisory lock.  Taken as an argument rather than
-            re-queried so the boundary and the delete that consumes it see one
-            snapshot.
+            owner's write lock the signed-in request's command transaction
+            holds (plan step ``balance:X-bn``).  Taken as an argument rather
+            than re-queried so the boundary and the delete that consumes it
+            see one snapshot.
         locks: The caller's lock classification, covering *periods*.  Taken for
             the reason :func:`gate_deletable_tail` takes it: this function and
             that one used to classify separately, against two independently
@@ -843,10 +877,11 @@ def _regenerable(row) -> bool:
     rule both destructive gates ask, stated once.  It was a nested function
     of :func:`count_discardable_items` until plan step ``pay_calendar:C21``
     lifted it, unchanged, for :func:`gate_removable_head`, which asks the
-    same question of the head.  **It does not see a purchase** -- ledger row
-    **PC-524**, whose step ``C22`` (ruling **R-PC112**) makes the discard
-    gate refuse one; the head gate already asks
-    :func:`transactions_holding_purchases` beside it.
+    same question of the head.  **It does not see a payment or purchase** --
+    ledger row **PC-524**, whose step ``C22`` (ruling **R-PC112**) makes the
+    discard gate refuse one; the head gate asks
+    :func:`app.utils.archive_helpers.holds_a_movement` beside it
+    (:func:`_rows_holding_a_movement`, ruling **R-PC115**).
 
     Args:
         row: A live ``Transaction`` (not a shadow) or ``Transfer``.
@@ -883,6 +918,36 @@ def settled_transaction_count(user_id: int) -> int:
             PayPeriod.user_id == user_id,
             Transaction.status_id.in_(settled_status_ids()),
             Transaction.is_deleted.is_(False),
+        )
+        .count()
+    )
+
+
+def movement_holding_row_count(user_id: int) -> int:
+    """Count the user's rows holding a payment or purchase (the reset's second gate).
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC65** ("Reset refuses
+    while any row holds a payment or purchase (dated or not)").  A reset
+    deletes EVERY pay period, and with it every row through
+    ``transactions.pay_period_id``'s cascade -- so any row holding a
+    movement, whatever its status and whether or not it is soft-deleted, is
+    one the reset would destroy and the movement's key now refuses to lose.
+    The lock classifier's ``HOLDS_MOVEMENT`` asks the same of one period;
+    this asks it of the whole schedule, scoped as
+    :func:`settled_transaction_count` is.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The number of the user's rows holding at least one movement.
+    """
+    return (
+        db.session.query(Transaction.id)
+        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        .filter(
+            PayPeriod.user_id == user_id,
+            archive_helpers.holds_a_movement(),
         )
         .count()
     )

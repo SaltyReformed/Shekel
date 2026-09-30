@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import pathlib
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -36,11 +37,13 @@ from app.enums import RecurrenceUnitEnum, StatusEnum
 from app.exceptions import PayPeriodLocked, ValidationError
 from app.models.pay_period import PayPeriod
 from app.services import (
+    match_withdrawal,
+    movement_removal,
     pay_period_admin,
     pay_period_gates,
     pay_period_locks,
-    pay_period_write,
     pay_schedule_service,
+    transfer_service,
 )
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from app.services.pay_period_locks import PeriodLockReason
@@ -52,6 +55,8 @@ from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
     bare_expense_template,
+    create_savings_account,
+    create_settled_transfer,
     freeze_today,
 )
 
@@ -186,11 +191,60 @@ class TestClassifyPeriodLock:
         """A soft-deleted settled row does not lock -- the user removed it."""
         with app.app_context():
             periods = _make_future_periods(db.session, seed_user)
-            add_txn(
+            deleted = add_txn(
                 db.session, seed_user, periods[1], "Rent", "1200.00",
-                status_enum=StatusEnum.DONE, is_deleted=True,
+                status_enum=StatusEnum.DONE,
             )
+            # The state the delete door leaves (ruling R-CC75): its payment
+            # taken off through the one removal act, then the row hidden --
+            # in that order, because the database refuses a payment written
+            # under a hidden row (R-CC89) and a row hidden holding one
+            # (R-CC92).  Rule-5 re-expressions, developer-confirmed 2026-09-23.
+            movement_removal.remove_movements(
+                list(deleted.entries), seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            deleted.is_deleted = True
             assert _lock(periods[1], display_today()) is None
+
+    def test_a_hidden_row_still_holding_its_payment_locks(
+        self, app, db, seed_user,
+    ):
+        """The other side: a hidden row that still HOLDS money locks its period.
+
+        No door leaves one since ruling **R-CC75**, but the transfer's soft
+        delete does (ledger row **BAL-532**) and an archive did before plan
+        step ``credit_card:CC-5-4a-4`` -- and the period's delete would take
+        the payment with the row, which its key now refuses.  So the
+        classifier counts EVERY row, hidden or not (ruling **R-CC54**:
+        "truncate/regenerate lock its period").
+
+        **Staged as that transfer, through its door**: the database refuses
+        a commit leaving any other row hidden holding one (ruling
+        **R-CC92**); this was a Paid Rent row flagged hidden with its payment
+        inside.  Plan step ``balance:X-bi-6-4`` closes BAL-532, and this
+        staging with it.  Re-expressed under rule 5, developer-confirmed
+        2026-09-23.
+        """
+        with app.app_context():
+            periods = _make_future_periods(db.session, seed_user)
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                periods[1], amount=Decimal("1200.00"),
+            )
+            db.session.commit()
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            assert xfer.is_deleted is True
+            assert (
+                _lock(periods[1], display_today())
+                is PeriodLockReason.HOLDS_MOVEMENT
+            )
 
     def test_cancelled_transaction_not_settled_lock(self, app, db, seed_user):
         """A Cancelled txn is not settled, so it does not SETTLED_TXN-lock.

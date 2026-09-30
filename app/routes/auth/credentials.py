@@ -27,6 +27,7 @@ from flask_login import current_user, login_user, logout_user
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
+from app.db_transaction import bind_sign_in_owner
 from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig
@@ -109,7 +110,14 @@ def login():
             email = login_data["email"]
             password = login_data["password"]
             remember = login_data["remember"]
-            user = auth_service.authenticate(email, password)
+            # Find the account, take its owner's lock, THEN check it (ruling
+            # R-CC121, "Lock, then check"): the check reads the lockout
+            # columns and writes the failed-attempt count, and a signed-in
+            # door writes the same row under that lock.
+            user = auth_service.find_sign_in_user(email)
+            if user is not None:
+                bind_sign_in_owner(user.id, user.data_owner_id)
+            user = auth_service.authenticate(user, password)
 
             # Check if MFA is enabled for this user.
             mfa_config = (

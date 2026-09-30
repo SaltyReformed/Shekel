@@ -25,11 +25,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, movement_removal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.movement_account import admitted_movement_account_id
+from app.services.owned_transaction import load_owned_transaction
 from app.services.settle_day import (
     SettleDay,
     record_settle_day,
@@ -47,8 +47,10 @@ from app.services.entry_service._refusals import (
     _reject_settled_removal,
     _reject_settlement_record,
     cost_fields_changing,
+    deleted_row_purchase_refusal,
 )
 from app.utils.balance_predicates import is_cancelled
+from app.utils.hidden_row import HiddenRow
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -170,15 +172,13 @@ def resolve_owner_id(user_id: int) -> int:
     user = db.session.get(User, user_id)
     if user is None:
         raise NotFoundError("User not found.")
-    companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
-    if user.role_id == companion_role_id:
-        if user.linked_owner_id is None:
-            raise ValidationError(
-                f"Companion user {user_id} has no linked owner. "
-                "This is a data integrity issue -- contact the administrator."
-            )
-        return user.linked_owner_id
-    return user.id
+    owner_id = user.data_owner_id
+    if owner_id is None:
+        raise ValidationError(
+            f"Companion user {user_id} has no linked owner. "
+            "This is a data integrity issue -- contact the administrator."
+        )
+    return owner_id
 
 
 # Backward-compatible alias -- existing tests reference the private name.
@@ -337,8 +337,8 @@ def create_entry(
         NotFoundError: Transaction not found or not accessible by this
             user; or ``details.account_id`` names no account of the ROW's
             owner (:func:`_purchase_account_id`).
-        ValidationError: Transaction not entry-capable, is a transfer, is
-            income, or has a blocked status (Cancelled, Credit, the archive, or
+        ValidationError: Transaction deleted, not entry-capable, is a
+            transfer, is income, or has a blocked status (Cancelled, Credit, the archive, or
             a settled row whose figure is not its purchases -- see
             :func:`_reject_settled_addition`); the account is archived or a
             loan, or the ``CC`` flag is set beside an account other than the
@@ -347,15 +347,41 @@ def create_entry(
     """
     owner_id = resolve_owner_id(user_id)
 
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # **Every refusal below reads the row as it stands after the request's
+    # owner lock** (plan step ``balance:X-bn``, ruling **R-CC106**, which ended
+    # the class ruling **R-CC96** closed door by door: "whichever click lands
+    # second gets a sentence").  A purchase added while the same row's delete
+    # was open read the row as live, waited at the payback sync's row lock
+    # until the delete committed, and then committed under the hidden row --
+    # measured by plan step ``credit_card:CC-5-4a-4``'s fourth review.  The
+    # request's transaction now takes its owner's write lock before it reads
+    # any of the owner's data (:mod:`app.db_transaction`), so another tab's
+    # Delete either committed before this read or waits for this purchase to
+    # commit, and a Delete that came first meets the refusal below in words.
+    # Ownership is the row's own owner column (security response rule: 404).
+    txn = load_owned_transaction(transaction_id, owner_id)
 
-    # Ownership: the row's own owner column (security response rule: 404).
-    # It was ``txn.pay_period.user_id`` until plan step
-    # ``pay_calendar:C13-b``.
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # **A DELETED row takes no purchase** (plan step ``credit_card:CC-5-4a-4``,
+    # its second review, H1).  Deleting a recurring occurrence empties it and
+    # keeps it as a tombstone (ruling **R-CC75**: "A hidden row then never
+    # holds money"), and ``get_accessible_transaction`` did not filter
+    # ``is_deleted`` -- so a stale grid (a companion's open page) posting here
+    # put a purchase back under a row no screen shows, which locked its pay
+    # period with no row to delete it from.  The settle doors' own refusal of
+    # the same row (``transaction_service._row_rules.reject_unsettleable``).
+    # One of the three layers of ruling **R-CC89** ("a deleted row takes no
+    # money"): the ownership doors now answer a deleted row "not found", and
+    # since plan step ``balance:X-bn`` no Delete can commit between their read
+    # and this one (both follow the request's owner lock), so a route that
+    # passed them hands this line a live row; a service caller that skipped
+    # them still could hand it a deleted one, and
+    # :mod:`app.deleted_row_infrastructure` refuses the write in the database
+    # for one that skips this line too.
+    if txn.is_deleted:
+        # Named, never numbered (ruling **R-CC98**), and "was archived" where
+        # its recurring item is (ruling **R-CC107**); the one sentence the
+        # add-purchase route also shows for a row that is gone.
+        raise ValidationError(deleted_row_purchase_refusal(HiddenRow.of(txn)))
 
     # Entry-capable: purchase tracking must be enabled on the row's
     # DEFINITION (its ``is_envelope``).  Resolved by
@@ -914,11 +940,7 @@ def get_entries_for_transaction(
     """
     owner_id = resolve_owner_id(user_id)
 
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    txn = load_owned_transaction(transaction_id, owner_id)
 
     # The entries relationship is ordered by ``purchased_on`` via the
     # ``order_by`` on ``Transaction.entries`` -- the BUDGET clock, which is

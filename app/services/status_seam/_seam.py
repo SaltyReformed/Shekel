@@ -48,6 +48,7 @@ from app.services.status_seam._refusals import (
     reject_figure_without_settled_status,
     reject_future_settle_day,
     reject_settle_day_without_settled_status,
+    reject_settlement_on_a_deleted_row,
     reject_settlement_without_settled_status,
     reject_stated_figure_over_purchases,
     reject_tender_without_settled_status,
@@ -484,9 +485,11 @@ def apply_status_change(
             supplied for a *new_status_id* that is not settled (propagated from
             :func:`reject_settle_day_without_settled_status`), if
             *settlement* is (propagated from
-            :func:`reject_settlement_without_settled_status`), or if a
-            ``Transaction``'s revert to Projected lands inside its books
-            (propagated from
+            :func:`reject_settlement_without_settled_status`), if *row* is a
+            deleted ``Transaction`` and *settlement* would record money under
+            it (:func:`reject_settlement_on_a_deleted_row`, ruling
+            **R-CC89**), or if a ``Transaction``'s revert to Projected lands
+            inside its books (propagated from
             :func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
             ruling **R-PC97**).
         ValueError: If a ``Transaction`` ENTERS the settled band with no
@@ -531,6 +534,21 @@ def apply_status_change(
     # X-au-c3): a row records what moved only while it is settled.  Ordered with
     # the refusals above, and for the identical reason.
     reject_settlement_without_settled_status(new_status_id, settlement)
+
+    # A deleted row takes no money (ruling **R-CC89**): the record is what the
+    # covering writer below turns into a payment under the row, so it is
+    # refused here, ahead of any mutation like the three above.  **It reads
+    # ``is_deleted`` as the request's owner lock left it** (plan step
+    # ``balance:X-bn``, ruling **R-CC106**): the popover's Actual correction
+    # and another tab's Delete of its row run one after the other, so a Delete
+    # that came first is committed before the request read the row, and the
+    # route's door answers it in the Save's words (ruling **R-CC105**) before
+    # the view runs; only a service caller that skipped that door meets this
+    # refusal (:func:`reject_settlement_on_a_deleted_row`).  Until that step this line was
+    # preceded by the row's own lock (ruling **R-CC96**), without which the
+    # correction read the row as live and met the delete's moved version as a
+    # ``StaleDataError`` (measured 2026-09-23).
+    reject_settlement_on_a_deleted_row(row, settlement)
 
     # (``reject_settle_day_without_a_record`` stood here through plan step
     # ``balance:X-bi-4b-1`` -- ``ck_transactions_settle_day_needs_a_record``

@@ -319,69 +319,6 @@ def get_schedule(user_id: int) -> PaySchedule | None:
     )
 
 
-def reread_schedule(user_id: int) -> PaySchedule:
-    """Return the user's schedule row, RE-READ rather than remembered.
-
-    **For a caller that has taken the per-user advisory lock after loading the
-    row and must not trust what it loaded** (plan step **C4**).  Every writer
-    of an era takes that lock, so a batch committing between a caller's first
-    read and its lock acquisition leaves the caller's instance stale by
-    exactly one write -- which matters wherever the rhythm decides a figure,
-    because it dictates the LAST pay period's derived end.
-
-    **A second :func:`get_schedule` would NOT fix that, and would read as
-    though it had.**  The query runs, but SQLAlchemy returns the
-    identity-mapped instance with its ORIGINAL attribute values; taking an
-    advisory lock through the session expires nothing either.  Naming the
-    re-read is what keeps the next caller from writing the version that
-    silently does nothing.  ``populate_existing`` reaches the joined eras
-    too, so the collection is re-read with the row.
-
-    Args:
-        user_id: The owning user's id.
-
-    Returns:
-        The user's :class:`PaySchedule`, with every attribute re-read.
-
-    Raises:
-        ValidationError: The user has no schedule row.  Refused rather than
-            answered ``None`` because this door's callers have ALREADY
-            established that a row exists and hold the lock that protects it;
-            no ``app/`` door deletes one, so absence here is a broken
-            invariant rather than a state to branch on.  **Since plan step
-            C4-b-2 the database narrows it**: ``fk_pay_periods_schedule`` is
-            ``ON DELETE RESTRICT``, so the row cannot be removed while the
-            owner holds a payday.
-
-            **It does NOT make the refusal unreachable, and a first draft of
-            this paragraph claimed it did** -- on the reasoning that a
-            constraint "cannot speak for" a row removed outside the
-            application, which is backwards: a foreign key is enforced by
-            PostgreSQL and an out-of-application delete is exactly what it
-            does speak for.  What the key is silent about is an owner holding
-            this row and ZERO pay periods, which is ordinary --
-            ``pay_period_admin.reset_pay_periods`` passes through it and
-            ``pay_period_rolling`` reads such an owner.  Their row is
-            deletable, so the refusal names a state that is still reachable.
-    """
-    schedule = (
-        db.session.query(PaySchedule)
-        .options(joinedload(PaySchedule.eras))
-        .filter_by(user_id=user_id)
-        .populate_existing()
-        .one_or_none()
-    )
-    if schedule is None:
-        raise ValidationError(
-            f"user {user_id} has no budget.pay_schedule row to re-read.  This "
-            f"door is called under the per-user write lock by a caller that "
-            f"has already read one, and no door in app/ deletes a schedule "
-            f"row, so reaching this means the row was removed outside the "
-            f"application."
-        )
-    return schedule
-
-
 def _reject_out_of_range_fixed_days(cadence: FixedDays) -> None:
     """Refuse a day count ``ck_pay_eras_cadence_range`` would refuse.
 

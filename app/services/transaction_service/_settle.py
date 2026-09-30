@@ -516,7 +516,28 @@ def settle_transaction(
     """
     # Checked FIRST and before any mutation, so a refused call leaves the row
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
-    # its own three refusals, and for the same reason.
+    # its own three refusals, and for the same reason.  Nothing it reads
+    # flushes (two of the row's columns, and for a deleted row's sentence one
+    # more read, all under ``no_autoflush``), so a call refused here writes
+    # none of a caller's staged state.  It also precedes the identity no-op
+    # below, which answered first for a row already Paid: a replayed Mark Paid
+    # on a row another tab had deleted returned quietly and the grid redrew
+    # the deleted row as a live Paid chip (plan step ``credit_card:CC-5-4a-4``,
+    # its review 9, measured 2026-09-24).
+    #
+    # **Everything below decides from the row as the request's owner lock
+    # left it** (plan step ``balance:X-bn``, ruling **R-CC106**): whether it
+    # settles from its purchases, and at what figure.  Decided from a read
+    # taken before a racing purchase committed, a Groceries envelope with
+    # nothing spent settled at its $300.00 plan while the companion's $12.34
+    # purchase landed beside it -- $312.34 recorded against a $300.00
+    # envelope, measured 2026-09-23.  The request's transaction took its
+    # owner's write lock before it read any of the owner's data
+    # (:mod:`app.db_transaction`), so the companion's purchase either
+    # committed before this read, and the row settles at the purchases, or
+    # waits and meets the purchase door's settled-row refusal.  Until that
+    # step the row's own lock did it here (rulings **R-CC96**, **R-CC99**
+    # (a)), and re-read ``is_deleted`` and the movements under it.
     reject_unsettleable(txn)
     # The tender's reading and its gate, before any mutation for the same
     # reason and ahead of the identity no-op below: a bad REFERENCE is refused
@@ -773,7 +794,8 @@ def settle_from_entries(
     # triggers an autoflush of pending mutations on the txn.  Column
     # checks come before relationship accesses (which lazy-load and
     # therefore autoflush) to keep the failure path side-effect-free.
-    # The shared pair reads two columns, so it belongs at the front.
+    # The shared pair reads two columns (and, for a deleted row's sentence,
+    # one more read), none of which flushes, so it belongs at the front.
     reject_unsettleable(txn)
     # Resolved purchase-tracking check: the DEFINITION's ``is_envelope``
     # (``tracks_purchases`` accesses the template exactly as the prior guard

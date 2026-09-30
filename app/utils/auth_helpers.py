@@ -48,6 +48,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.utils.hidden_row import HiddenRow
 from app.utils.log_events import (
     ACCESS,
     EVT_ACCESS_DENIED_CROSS_USER,
@@ -377,12 +378,11 @@ def get_owned_via_parent(model, pk, parent_attr,
 def is_transfer_shadow(txn) -> bool:
     """Return whether *txn* is a transfer shadow row, logging the refusal.
 
-    The ONE predicate behind the interval fence :func:`get_accessible_transaction`
-    and ``routes/transactions/_helpers._get_owned_transaction`` share (leaf
-    ``balance:X-bi-6-1``): a shadow names its transfer, and a transaction
-    door refuses it as "not found".  Logged at INFO under the not-found
-    event -- the request named a row this door does not serve, which is
-    what a missing primary key is to the caller.
+    The interval fence (leaf ``balance:X-bi-6-1``): a shadow names its
+    transfer, and a transaction door refuses it as "not found".  One of the
+    two rows :func:`is_not_found_to_transaction_doors` refuses.  Logged at
+    INFO under the not-found event -- the request named a row this door does
+    not serve, which is what a missing primary key is to the caller.
 
     Args:
         txn: A loaded :class:`Transaction`.
@@ -401,6 +401,60 @@ def is_transfer_shadow(txn) -> bool:
         model=Transaction.__name__,
         pk=txn.id,
         transfer_id=txn.transfer_id,
+        path=request.path,
+    )
+    return True
+
+
+def is_not_found_to_transaction_doors(txn) -> bool:
+    """Return whether a transaction door answers *txn* as "not found", logging why.
+
+    **The ONE predicate behind both transaction ownership doors**,
+    :func:`get_accessible_transaction` and
+    ``routes/transactions/_helpers._get_owned_transaction``: each asks it once,
+    after its own access check, so the two cannot drift on which rows they
+    serve.  Two rows are refused:
+
+    * **a transfer shadow** (:func:`is_transfer_shadow`, ruling **R-BAL87**);
+    * **a deleted row** (plan step ``credit_card:CC-5-4a-4``, ruling
+      **R-CC89**, developer 2026-09-23: *"Every page and button treats a
+      deleted row as not found: the stale tab's save and the stale Mark Credit
+      get 'not found', exactly as for another user's row."*).  Measured by the
+      step's third review: a stale second tab's popover on a deleted Paid
+      $120.00 Hotel saved an Actual of $125.00 into a payment record under the
+      hidden row, and a stale Mark Credit on a deleted $80.00 occurrence turned
+      it Credit and created a live $80.00 card payback the owner could never
+      trace.  No route serves a deleted row on purpose: a deleted row leaves
+      the grid, and the un-archive that brings one back is a template door.
+      What the page is TOLD at three doors is ruling **R-CC104**'s amendment
+      (developer 2026-09-23): Mark Paid, the popover's Save and add purchase
+      name the row -- "Hotel was deleted: ..." -- through
+      :func:`get_accessible_transaction_or_deleted`, and say "was archived"
+      where its recurring item is (ruling **R-CC107**); every other door still
+      answers "not found".
+
+    Ordered shadow-then-deleted, so a deleted shadow logs as the fence it met
+    first -- and is never named for it (review 6, L2).  Both are column
+    reads.
+
+    Args:
+        txn: A loaded :class:`Transaction` the requester may otherwise access.
+
+    Returns:
+        ``True`` when the door must answer 404.
+    """
+    if is_transfer_shadow(txn):
+        return True
+    if not txn.is_deleted:
+        return False
+    log_event(
+        logger, logging.INFO,
+        EVT_RESOURCE_NOT_FOUND, ACCESS,
+        "Transaction door asked about a deleted row; a deleted row takes no "
+        "money and leaves the grid",
+        user_id=_safe_user_id(),
+        model=Transaction.__name__,
+        pk=txn.id,
         path=request.path,
     )
     return True
@@ -438,22 +492,68 @@ def get_accessible_transaction(txn_id):
     -- a stale page, a bookmark, a probe -- is refused rather than admitted
     to a door that would write past the transfer's invariants.  This is the
     interval's fence: ``X-bi-6``'s last leaf deletes the shadow rows, after
-    which the predicate has nothing to match and goes with them.
+    which the predicate has nothing to match and goes with them.  **So is a
+    DELETED row** (ruling **R-CC89**): a deleted row takes no money, and a
+    stale page naming one is refused rather than admitted to a door that
+    would write a payment or a card payback under a row no screen shows.
+    Both rules are :func:`is_not_found_to_transaction_doors`, the one
+    predicate this door and ``_get_owned_transaction`` share.
 
     Mirrors :func:`get_or_404`'s F-144 logging contract (deep-hunt #85):
     a missing PK emits ``resource_not_found`` at INFO; an ownership or
     companion-visibility denial emits ``access_denied_cross_user`` at
     WARNING.  The requesting user's id is read through
-    :func:`_safe_user_id` and the role / linked-owner reads use
+    :func:`_safe_user_id` and the role / data-owner reads use
     ``getattr`` fallbacks, so an anonymous or misordered-decorator call
     denies-and-logs (``user_id`` ``None`` => "anonymous probe") rather
     than raising ``AttributeError`` -- exactly like the sibling helpers.
+
+    **Its body is :func:`get_accessible_transaction_or_deleted`**, and this is
+    that door's answer for every caller that serves a live row alone: the row,
+    or ``None`` for everything else, a deleted row included.  One walk, so the
+    two cannot come to disagree about which rows they serve.
 
     Args:
         txn_id: Integer primary key of the transaction.
 
     Returns:
         The :class:`Transaction` if found and accessible, else ``None``.
+    """
+    answer = get_accessible_transaction_or_deleted(txn_id)
+    return answer if isinstance(answer, Transaction) else None
+
+
+def get_accessible_transaction_or_deleted(txn_id):
+    """The transaction door, telling a deleted row the requester could reach by its NAME.
+
+    :func:`get_accessible_transaction`'s access rules, logging and "not found"
+    predicate exactly (its docstring states them); what differs is the answer
+    for a row the predicate refuses because it is DELETED.  That row is a
+    :class:`~app.utils.hidden_row.HiddenRow` rather than ``None``, so the
+    three doors ruling **R-CC101** names -- Mark Paid, the popover's Save, add
+    purchase -- can say "Hotel was deleted: ..." where the page acted on a row
+    deleted minutes ago (plan step ``credit_card:CC-5-4a-4``, ruling
+    **R-CC104**, developer 2026-09-23: *"Case (2) shows the same sentence in
+    the same place. A recurring row is only hidden, so its name is known"*),
+    or "Gym was archived: ..." where the row's recurring item is archived
+    (ruling **R-CC107**).  It carries the row's name and whether its
+    recurring item is archived, and no row, so a door holding one has no row
+    to write money under.
+    Every other refusal stays ``None``: a missing id, another user's row, a
+    companion's hidden row, a transfer shadow, live or deleted -- the shadow
+    fence is the one it met first (review 6, L2) -- and a one-off row whose
+    delete removed it from the table, which is a missing id by then.  That
+    is what keeps the uniform 404 uniform: only a row the requester may
+    already reach is ever named, and the rest share
+    :data:`app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`.
+
+    Args:
+        txn_id: Integer primary key of the transaction.
+
+    Returns:
+        The :class:`Transaction` when found, accessible and served; a
+        :class:`~app.utils.hidden_row.HiddenRow` when found and accessible
+        but deleted, and not a transfer shadow; else ``None``.
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
@@ -469,12 +569,18 @@ def get_accessible_transaction(txn_id):
         return None
     requester_id = _safe_user_id()
     owner_id = txn.user_id
+    # Whose data the requester acts on, read ONCE for both branches off the one
+    # statement of that rule, :attr:`app.models.user.User.data_owner_id` (plan
+    # step ``balance:X-bn``): an owner's own id, a companion's linked owner.
+    # The ``getattr`` is for the anonymous principal alone, which has no such
+    # attribute and reads ``None`` -- never a row's owner, since
+    # ``transactions.user_id`` is NOT NULL -- so both branches refuse it.
+    acts_on = getattr(current_user, "data_owner_id", None)
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
     if getattr(current_user, "role_id", None) == companion_role_id:
         # Companion path: linked owner's data + companion-visible
         # (resolved from the template, or the row's own flag for ad-hoc).
-        if (owner_id != getattr(current_user, "linked_owner_id", None)
-                or not txn.visible_to_companion):
+        if owner_id != acts_on or not txn.visible_to_companion:
             log_event(
                 logger, logging.WARNING,
                 EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
@@ -487,8 +593,8 @@ def get_accessible_transaction(txn_id):
             )
             return None
     else:
-        # Owner path: standard pay-period ownership check.
-        if owner_id != requester_id:
+        # Owner path: the owner's own data.
+        if owner_id != acts_on:
             log_event(
                 logger, logging.WARNING,
                 EVT_ACCESS_DENIED_CROSS_USER, ACCESS,
@@ -501,10 +607,16 @@ def get_accessible_transaction(txn_id):
             )
             return None
     # AFTER both access branches, deliberately: a stranger's or a companion's
-    # probe naming another owner's shadow row is an access denial first
-    # (WARNING, the F-144 contract above) and "not found" second, exactly as
-    # ``routes/transactions/_helpers._get_owned_transaction`` orders it.
-    if is_transfer_shadow(txn):
+    # probe naming another owner's shadow or deleted row is an access denial
+    # first (WARNING, the F-144 contract above) and "not found" second, exactly
+    # as ``routes/transactions/_helpers._get_owned_transaction`` orders it --
+    # which is also why a HiddenRow is only ever handed to a requester who
+    # may reach the row.  A shadow is refused as a shadow, deleted or not: it
+    # met that fence first, and "a payment cannot be recorded under it" is
+    # the wrong door's sentence for a transfer's leg.
+    if is_not_found_to_transaction_doors(txn):
+        if txn.transfer_id is None and txn.is_deleted:
+            return HiddenRow.of(txn)
         return None
     return txn
 

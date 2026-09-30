@@ -823,6 +823,39 @@ class TestAccessDeniedLogging:
             f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
         )
 
+    def test_get_accessible_transaction_denies_an_anonymous_principal(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No session: the door answers ``None`` and logs the probe, never raising.
+
+        Plan step ``balance:X-bn`` reads both access branches off ONE
+        ``User.data_owner_id``, through a ``getattr`` whose only purpose is
+        this principal: Flask-Login's ``AnonymousUserMixin`` has no such
+        attribute and reads ``None``, and ``transactions.user_id`` is NOT
+        NULL, so no row's owner equals it.  Reachable only where the login
+        gate is off, which is where a second layer must hold.
+        ``current_user`` is asserted anonymous BEFORE the call, for the reason
+        :class:`TestRequireOwnerFailsClosed` gives: a login earlier in the
+        same app context would leave the case measuring an owner.
+        """
+        with app.test_request_context("/some/path"):
+            txn = self._make_owned_txn(db, seed_user, seed_periods[0])
+            assert not current_user.is_authenticated
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(txn.id)
+
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None, (
+            "An anonymous principal's denial did not emit "
+            "``access_denied_cross_user``; "
+            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.user_id is None
+        assert record.pk == txn.id
+        assert record.owner_id == seed_user["user"].id
+
 
 class TestATransferShadowRowAtTheTransactionDoor:
     """Plan step balance:X-bi-6-1's interval fence, and WHERE in the door it sits.

@@ -21,10 +21,10 @@ and delegates the database mutation to the shared service.
 (ruling R-EN, plan step X-f1c3c): a true-up UPDATEs no column on
 ``accounts``, so ``version_id`` cannot fire, and this module no longer
 carries a pre-flush version check or a 409.  What serialises two
-concurrent true-ups is the per-owner write lock the reconcile itself
-takes (:mod:`app.services.user_write_lock`) -- the reconcile is the
-read-modify-write, so the lock belongs to it rather than to any one of
-its callers.
+concurrent true-ups is the per-owner write lock
+(:mod:`app.services.user_write_lock`), which the PATCH's transaction takes
+before the route runs (:mod:`app.db_transaction`); *until plan step
+``balance:X-bn`` the reconcile, the read-modify-write, took it itself.*
 
 The editor opens from five surfaces -- the grid cell, the dashboard
 balance card, the cockpit per-card cell, the investment / retirement
@@ -773,11 +773,12 @@ def true_up(account_id):
     tabs submitting the SAME balance for the same day are still idempotent --
     the write door compares against the governing assertion under the owner's
     lock and writes nothing (ruling R-EQ), and the route reports success.  The
-    LEDGER those assertions reconcile into is a different question, answered a
-    layer down by the per-owner write lock
-    (:mod:`app.services.user_write_lock`) rather than here: a lock at this door
-    would leave the settle self-heal, the direct anchor edit and the
-    pay-period resync reaching the same window unguarded.
+    LEDGER those assertions reconcile into is serialised by the same lock,
+    which this PATCH's transaction took before the route ran, as every
+    signed-in save's does (plan step ``balance:X-bn``), so the settle
+    self-heal and the pay-period resync reaching that window hold it too.
+    *It was taken inside the reconcile until then: a lock at this door would
+    have left those doors, and the direct anchor edit X-f1e deleted, unguarded.*
     """
     account = get_or_404(Account, account_id)
     if account is None:
@@ -817,10 +818,10 @@ def true_up(account_id):
     # every later one agree about which days are assertable.  (It was shared
     # with the account-edit door too, until plan step X-f1e deleted that door --
     # this is now the only place a balance is RE-asserted.)  Raised BEFORE
-    # anything is staged and
-    # before the owner's write lock is taken, so there is no transaction to roll
-    # back here -- and it is a 400 rather than a 500 because the date box makes
-    # it ordinary user input.
+    # anything is staged, so nothing needs rolling back here: the open
+    # transaction holds the owner's lock (taken before this route ran, plan
+    # step ``balance:X-bn``) but has written nothing, and teardown ends it.  It
+    # is a 400, not a 500, because the date box makes it ordinary user input.
     try:
         report = anchor_service.apply_anchor_true_up(
             account=account,

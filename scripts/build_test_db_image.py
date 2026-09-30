@@ -61,6 +61,10 @@ Usage::
 
 Exit codes: 0 on success (image present and verified), 1 on a build or
 verification failure, 2 on a usage or environment problem.
+
+A build, never a cache hit or ``--print-tag``, ends by pruning stale images of earlier keys
+(:mod:`scripts.prune_test_db_images`, imported only then). At run time nothing the prune meets
+fails the build; a prune module that cannot import fails that one invocation, after the bake.
 """
 from __future__ import annotations
 
@@ -76,6 +80,10 @@ import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+# ``scripts`` and ``app`` resolve only from the repo root, which is not on the
+# path when this runs as ``python scripts/build_test_db_image.py``.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # The exact postgres build the suite's template is made against.  Kept
 # identical to docker-compose.dev.yml's test-db service: a template built on
@@ -504,11 +512,11 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
 
     One attachment per entry in the named ``(trigger name, table)`` constant:
     ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``),
-    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
-    ``bank_import:X-f6b-1``) and ``app.pay_stub_infrastructure.PAY_STUB_TRIGGERS``
-    (plan step ``salary:S11-a``).  BOTH halves come from that one constant -- the
-    names the query looks for and the number it must find -- so the check
-    cannot count a trigger the module renamed, nor accept a template missing
+    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step ``bank_import:X-f6b-1``),
+    ``app.pay_stub_infrastructure.PAY_STUB_TRIGGERS`` (plan step ``salary:S11-a``) and
+    ``app.deleted_row_infrastructure.DELETED_ROW_TRIGGERS`` (plan step ``credit_card:CC-5-4a-4``).
+    BOTH halves come from that one constant -- the names the query looks for and the number it must
+    find -- so the check cannot count a trigger the module renamed, nor accept a template missing
     one.
 
     Args:
@@ -521,8 +529,6 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
     Raises:
         BuildError: When the constant cannot be read.
     """
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
     try:
         triggers = getattr(importlib.import_module(module), attribute)
     except (ImportError, AttributeError) as exc:
@@ -554,8 +560,6 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
             producer moved and this verification would otherwise silently
             check the wrong number.
     """
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
     try:
         imported = importlib.import_module(module)
         value = getattr(imported, name)
@@ -570,14 +574,12 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
 def template_checks() -> tuple[tuple[str, str, int], ...]:
     """Return the ``(label, sql, expected)`` checks both head-build paths are graded by.
 
-    ONE list for both ways a database is built at head: :func:`_verify_image`
-    asks each of the baked template, and
-    ``tests/test_scripts/test_init_database_one_transaction.py`` of a first
-    boot (``init_fresh_database``, which applies each family itself).  A
-    family added here is graded on both paths (review L1 of the
-    ``salary:S11-a`` carry-merge).  Counts are EXACT, from each producer's
-    own constant.  Not listed: the posting and opening triggers, whose
-    modules export no constant naming their triggers (finding BAL-542).
+    ONE list for both ways a database is built at head: :func:`_verify_image` asks each of the
+    baked template, and ``tests/test_scripts/test_init_database_one_transaction.py`` of a first
+    boot (``init_fresh_database``, which applies each family itself).  A family added here is
+    graded on both paths (review L1 of the ``salary:S11-a`` carry-merge).  Counts are EXACT, from
+    each producer's own constant.  Not listed: the posting and opening triggers, whose modules
+    export no constant naming their triggers (finding BAL-542).
 
     Returns:
         One ``(label, sql, expected)`` per check.
@@ -602,6 +604,8 @@ def template_checks() -> tuple[tuple[str, str, int], ...]:
          *_trigger_family_check("app.sighting_infrastructure", "SIGHTING_TRIGGERS")),
         ("pay-stub refusal triggers",
          *_trigger_family_check("app.pay_stub_infrastructure", "PAY_STUB_TRIGGERS")),
+        ("deleted-row triggers",
+         *_trigger_family_check("app.deleted_row_infrastructure", "DELETED_ROW_TRIGGERS")),
     )
 
 
@@ -917,6 +921,16 @@ def build(tag: str) -> None:
         raise
 
 
+def _prune_stale_images() -> None:
+    """Remove the stale images of earlier keys; ``main`` calls this only after a build.
+
+    Imported here so ``--print-tag``, which other worktrees' prunes run, is stdlib-only.
+    """
+    # Pylint: ``import-outside-toplevel`` -- deferred on purpose; see the docstring.
+    import scripts.prune_test_db_images as _prune  # pylint: disable=import-outside-toplevel
+    _prune.prune_stale_images(_IMAGE_REPO, _REPO_ROOT)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Ensure the template image exists for the current tree.
 
@@ -966,10 +980,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("  discarding it and rebuilding")
                 _run(["docker", "rmi", "-f", tag], check=False)
                 build(tag)
+                _prune_stale_images()
             print(f"DONE: {tag} ready.")
         else:
             print(f"Building {tag}")
             build(tag)
+            _prune_stale_images()
             print(f"DONE: {tag} ready.")
         if args.json:
             print(json.dumps({"tag": tag, "rebuilt": not present or args.force}))

@@ -164,6 +164,7 @@ from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
 from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
+from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -256,25 +257,28 @@ def _populate_template(app) -> None:
        sighting (plan step bank_import:X-f6b-1), the same contract.
     9. ``apply_pay_stub_infrastructure``: a transcribed pay stub is never
        deleted and never moved (plan step salary:S11-a), the same
-       contract.  Steps 4-9 are each a rule a FIXTURE can trip -- steps 4-7
-       and 9 refuse a write, step 8 deletes the line its last sighting
-       leaves behind -- so the suite runs against the rules the app has.
-    10. ``apply_ledger_append_only_privileges``: idempotent
+       contract.
+    10. ``apply_deleted_row_infrastructure``: a deleted row takes no money
+        (plan step credit_card:CC-5-4a-4), the same contract.  Steps 4-10
+        are each a rule a FIXTURE can trip -- steps 4-7, 9 and 10 refuse a
+        write, step 8 deletes the line its last sighting leaves behind --
+        so the suite runs against the rules the app has.
+    11. ``apply_ledger_append_only_privileges``: idempotent
         re-application of the ledger append-only posture (review
         M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
         role happens to exist at rebuild time.
-    11. ``seed_reference_data``: populates ``ref.account_types`` (the
+    12. ``seed_reference_data``: populates ``ref.account_types`` (the
         :data:`_EXPECTED_ACCOUNT_TYPE_COUNT` built-in rows) and the other
         ref tables.  The INSERTs on ``ref.account_types`` fire the audit
         trigger attached in step 2/3 and write one row each into
         ``system.audit_log``.
-    12. ``TRUNCATE system.audit_log``: clear those seed-time audit rows
+    13. ``TRUNCATE system.audit_log``: clear those seed-time audit rows
         so the template ships with a zeroed log and every per-test clone
         of it starts from a clean slate (``tests/conftest.py``'s world
         builder truncates after its own seed for the same reason).
 
-    The audit, append-only, level, sighting and pay-stub trigger families
-    are counted by one list,
+    The audit, append-only, level, sighting, pay-stub and deleted-row
+    trigger families are counted by one list,
     :func:`scripts.build_test_db_image.template_checks`: in the baked image,
     and on a first boot by
     ``tests/test_scripts/test_init_database_one_transaction.py``.  The
@@ -354,6 +358,14 @@ def _populate_template(app) -> None:
         # salary:S11-a, ruling R-SAL44): idempotent re-application, same
         # contract, and a refusal a FIXTURE can trip.
         apply_pay_stub_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # A deleted row takes no money (plan step credit_card:CC-5-4a-4):
+        # idempotent re-application, same contract, and a rule a FIXTURE can
+        # trip -- one that stages a movement under a hidden row.
+        apply_deleted_row_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

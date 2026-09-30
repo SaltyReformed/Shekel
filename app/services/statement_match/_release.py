@@ -201,11 +201,14 @@ class PlannedRemovals:
     Attributes:
         rows: The rows the undo would remove, subjects before containers --
             which is the order they must go in, not a presentation choice: a
-            container's foreign key CASCADES to its purchases, so removing it
-            first would take a purchase away without reversing the ledger legs
-            it booked (``journal_entries.transaction_entry_id`` is ``ON DELETE
-            SET NULL``, so the legs would be stranded with nothing to offset
-            them).  **EMPTY whenever :attr:`refusal` is set**, because a
+            purchase goes through its own door (``entry_service.delete_entry``),
+            and a container's delete takes every movement it still holds off
+            the books through the one removal act first, so a container
+            removed first would leave that door a purchase that no longer
+            exists (``NotFoundError``).  Before plan step
+            ``credit_card:CC-5-4a-3`` a container's delete left its purchases
+            to the key's CASCADE, stranding the ledger legs they booked.
+            **EMPTY whenever :attr:`refusal` is set**, because a
             refused act removes nothing: the two fields are exclusive by
             construction, so a reader cannot print a destruction the press will
             not perform.

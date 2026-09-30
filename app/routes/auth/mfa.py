@@ -30,7 +30,7 @@ from cryptography.fernet import InvalidToken
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
-from app.db_transaction import write_transaction
+from app.db_transaction import bind_sign_in_owner, write_transaction
 from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
@@ -75,8 +75,12 @@ def _check_mfa_code(mfa_config, user_id, totp_code, backup_code):
 
     Checks the TOTP code if one was submitted, else the backup code (the
     backup path delegates to :func:`_consume_backup_code` so the
-    verify+remove+commit stays atomic and length-agnostic across the
-    pre-C-03 8-hex and post-C-03 28-hex code formats).  Neither code
+    verify+remove+commit stays one operation and length-agnostic across the
+    pre-C-03 8-hex and post-C-03 28-hex code formats).  What makes each check
+    and its write atomic against another sign-in or "Regenerate backup codes"
+    is the signing-in owner's lock :func:`mfa_verify` takes before
+    *mfa_config* is read (ruling **R-CC121**); without it both read-then-write
+    pairs raced, and one code signed in two devices.  Neither code
     submitted -> ``(False, False)``.  The caller wraps this in the
     decrypt try/except, so a missing/rotated encryption key (RuntimeError
     / InvalidToken, raised by the up-front decrypt or the TOTP verifier's
@@ -156,6 +160,13 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
     user = db.session.get(User, pending_user_id)
     mfa_config = None
     if user:
+        # The signing-in owner's lock BEFORE the codes are read (ruling
+        # R-CC121, "Lock, then check"): the code check rewrites
+        # ``backup_codes`` and ``last_totp_timestep``, and "Regenerate backup
+        # codes" writes the same row under this lock.  Unlocked, a backup-code
+        # sign-in racing a regenerate wrote the old codes back over the new
+        # ones, and one code signed in two devices.
+        bind_sign_in_owner(user.id, user.data_owner_id)
         mfa_config = (
             db.session.query(MfaConfig)
             .filter_by(user_id=user.id, is_enabled=True)

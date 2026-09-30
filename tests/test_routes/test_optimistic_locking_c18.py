@@ -50,7 +50,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services import account_service
+from app.services import account_service, transaction_service
 from app.utils.dates import display_today
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
@@ -727,7 +727,7 @@ class TestTransactionStaleFormPrevention:
             assert persisted.estimated_amount == amount_before
 
     def test_mark_done_catches_a_stale_settle_as_409(
-        self, app, auth_client, seed_user, seed_periods,
+        self, app, auth_client, seed_user, seed_periods, monkeypatch,
     ):
         """A race during a mark-done settle is a 409, not an unhandled 500.
 
@@ -736,12 +736,23 @@ class TestTransactionStaleFormPrevention:
         is envelope-tracked WITH an entry so the settle takes the
         ``settle_from_entries`` branch rather than the manual one.
 
-        The race is engineered exactly as
-        :meth:`test_route_catches_stale_data_error_as_409` does -- a
-        ``before_update`` mapper event bumps the row's version from a separate
-        connection during the UPDATE, defeating the version-pinned WHERE.
-        Shown to FIRE: deleting ``mark_done``'s ``except StaleDataError`` arm
-        fails it.
+        The race is engineered as another writer's commit landing as the
+        settle verb begins, after the door read the row: the row's version
+        moves from a separate connection, so the session holds the stale
+        version and the version-pinned WHERE fails.  That is where the settle
+        verb took the row's lock until plan step ``balance:X-bn``, and where
+        the developer placed the change (Round 12 Q1, 2026-09-23, "Move the
+        change earlier": just before that lock, plan step
+        ``credit_card:CC-5-4a-4``, ruling **R-CC96**).  Since X-bn no request
+        of the owner's can land there -- every one waits on the owner's write
+        lock (ruling **R-CC106**) -- so the other writer is one that holds no
+        owner lock, which the separate connection is; a stale page's version
+        is layer 2's to check (plan step ``balance:X-da``).  It was a
+        ``before_update`` mapper event bumping the version DURING the UPDATE,
+        as :meth:`test_route_catches_stale_data_error_as_409` still does,
+        until the row lock made that connection wait on this request.  Shown
+        to FIRE: deleting ``mark_done``'s ``except StaleDataError`` arm fails
+        it.
 
         **It is deliberately NOT labelled the control for that step's
         exception-topology change, because it is not one, and the measurement
@@ -764,8 +775,6 @@ class TestTransactionStaleFormPrevention:
         the move rather than merely surviving it: the read that had to be
         already-loaded is now one that cannot load.
         """
-        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
-
         with app.app_context():
             _template, txn = _make_envelope_template_and_txn(
                 seed_user, seed_periods[0],
@@ -775,22 +784,22 @@ class TestTransactionStaleFormPrevention:
             status_before = txn.status_id
 
             fired = {"flag": False}
+            real_settle = transaction_service.settle_transaction
 
-            def make_stale(_mapper, _connection, target):
-                if fired["flag"] or target.id != txn_id:
-                    return
-                fired["flag"] = True
-                _bump_version_outside_session(
-                    "budget", "transactions", txn_id,
-                )
+            def make_stale_then_settle(row, *args, **kwargs):
+                if not fired["flag"] and row.id == txn_id:
+                    fired["flag"] = True
+                    _bump_version_outside_session(
+                        "budget", "transactions", txn_id,
+                    )
+                return real_settle(row, *args, **kwargs)
 
-            event.listen(Transaction, "before_update", make_stale)
-            try:
-                response = auth_client.post(
-                    f"/transactions/{txn_id}/mark-done",
-                )
-            finally:
-                event.remove(Transaction, "before_update", make_stale)
+            monkeypatch.setattr(
+                transaction_service, "settle_transaction", make_stale_then_settle,
+            )
+            response = auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            )
 
             # The listener must have reached the row, or this is grading an
             # ordinary settle and would pass over the defect it exists for.
