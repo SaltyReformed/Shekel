@@ -11,8 +11,12 @@ comparison out for themselves.  The lock existed so a door would see a racing
 click's committed change, and since plan step ``balance:X-bn`` every writing
 transaction a signed-in request opens takes its owner's write lock before it
 reads any of that owner's data (:mod:`app.db_transaction`), so two of one
-owner's clicks never overlap and a door's first read already sees the other
-click's work.  What was left of the locking function was this load, so it has
+owner's writing transactions never overlap and a door's first read already
+sees the other click's committed work.  Per TRANSACTION, not per click: what a
+click does after its own commit or rollback -- drawing its answer, a refusal's
+re-read -- runs outside the lock, and a Delete queued behind it can commit
+there (finding BAL-565; plan step ``balance:X-dc`` makes each save one
+transaction).  What was left of the locking function was this load, so it has
 one home, below every door that asks it.
 
 Services take plain values and import no Flask (``CLAUDE.md`` Architecture).

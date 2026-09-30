@@ -57,10 +57,10 @@ transaction_table_args = (
     db.Index("idx_transactions_template", "template_id"),
     db.Index("idx_transactions_credit_payback", "credit_payback_for_id"),
     # At most one *active* CC Payback row per source transaction.
-    # Backstops the SELECT-FOR-UPDATE serialisation in
-    # ``credit_workflow.mark_as_credit`` and
-    # ``entry_credit_workflow.sync_entry_payback`` so any future
-    # caller that bypasses the service layer fails loudly with an
+    # Backstops the serialisation of ``credit_workflow.mark_as_credit``
+    # and ``entry_credit_workflow.sync_entry_payback`` -- the request's
+    # owner write lock since plan step ``balance:X-bn``, C-19's row lock
+    # before it -- so a writer that holds no request fails loudly with an
     # IntegrityError on this index instead of silently doubling the
     # user's projected debt.  ``is_deleted = FALSE`` keeps soft-
     # deleted paybacks out of the index so a re-mark of the same

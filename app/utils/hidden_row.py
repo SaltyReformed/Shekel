@@ -88,10 +88,14 @@ class HiddenRow:
         definition before a door's row lock kept it, and an archive that
         committed while the door waited for that lock (the race ruling
         **R-CC96** let a door see) would still read active -- measured by
-        Mark Paid racing the archive.  The request's owner write lock
-        (ruling **R-CC106**) now precedes every read the request makes of the
-        owner's data, so an archive from another tab committed before the
-        row and its definition were loaded or waits for the request to end.
+        Mark Paid racing the archive.  The owner's write lock (ruling
+        **R-CC106**) now precedes every read a writing transaction makes of
+        the owner's data, so an archive from another tab either committed
+        before the row and its definition were loaded in the transaction that
+        reads them, or waits for THAT TRANSACTION to end -- not the request's:
+        a commit or rollback expires both, and the next transaction re-reads
+        them under its own lock (finding BAL-565 is what a request does
+        between two of them).
 
         **Nothing it reads flushes**: the whole body is under
         ``no_autoflush``, the row's own columns included, so an EXPIRED row

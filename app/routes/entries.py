@@ -58,11 +58,12 @@ _update_schema = EntryUpdateSchema()
 # Name of the partial unique index that backstops the duplicate CC
 # Payback bug closed in commit C-19.  ``entry_service.create_entry``,
 # ``update_entry``, and ``delete_entry`` all funnel through
-# ``entry_credit_workflow.sync_entry_payback`` which acquires
-# ``SELECT ... FOR NO KEY UPDATE`` on the parent transaction; if any
-# future caller bypasses that lock, the partial index rejects the
-# duplicate INSERT and the matching catch below converts the
-# ``IntegrityError`` to idempotent success.  Mirrors the literal in
+# ``entry_credit_workflow.sync_entry_payback``, and the request's owner
+# write lock (:mod:`app.db_transaction`, plan step ``balance:X-bn``, which
+# deleted C-19's ``FOR NO KEY UPDATE`` on the parent row) serialises two
+# of them; for a writer that holds no request, and so no owner lock, the
+# partial index rejects the duplicate INSERT and the matching catch below
+# converts the ``IntegrityError`` to idempotent success.  Mirrors the literal in
 # the matching Alembic migration (b3d8f4a01c92) and the
 # ``__table_args__`` declaration on
 # ``app.models.transaction.Transaction``.
@@ -497,12 +498,18 @@ def create_entry(txn_id):
     the page." where the list stood -- "Groceries was archived: ..." where
     its recurring item is (ruling **R-CC107**) --
     :func:`_gone_entry_list_response`, before the door serves the row.  That
-    is the only moment another tab's Delete can land in: since plan step
+    answers a Delete that committed BEFORE the request.  Since plan step
     ``balance:X-bn`` (ruling **R-CC106**) the request's transaction takes its
     owner's write lock before the door reads the row, so a Delete either
-    committed before that read or waits for this purchase to commit.  The
-    answer for a Delete landing WHILE the request ran (the race ruling
-    **R-CC96** let a door see) was deleted with the row lock at that step.
+    committed before that read or waits for THAT TRANSACTION to end -- which
+    is not the request's end: the success path commits and then draws the
+    list, and a refusal rolls back and then redraws it, each in a second
+    transaction, and a queued Delete commits in between (finding BAL-565).
+    A one-off row then answers a server error, and a recurring row's refusal
+    draws the list and its Add form under the deleted row.  The answer for
+    that moment (the race ruling **R-CC96** let a door see) was deleted with
+    the row lock at that step and stays deleted (**R-BAL156**); plan step
+    ``balance:X-dc`` makes each save one transaction.
     """
     host = _request_host()
     answer = get_accessible_transaction_or_deleted(txn_id)

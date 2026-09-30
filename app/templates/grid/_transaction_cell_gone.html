@@ -14,9 +14,13 @@
    Mark Paid or the popover's Save is refused because the row is hidden --
    deleted, or its recurring item archived -- in another tab (ruling
    R-CC104).  Until plan step balance:X-bn it was also rendered for a row
-   hidden while the request waited for the row's lock (ruling R-CC101); the
-   request's owner write lock now precedes the door's read, so that moment
-   cannot occur.  It is the cell's own refusal grammar (`_transaction_cell.html`'s
+   hidden while the request waited for the row's lock (ruling R-CC101); that
+   answer was deleted with the row lock, and the moment it answered is still
+   reachable: the owner's write lock covers each TRANSACTION, not the request,
+   so a Delete queued behind a refused Mark Paid commits between the refusal's
+   rollback and its redraw, which then answers a bare "not found" (finding
+   BAL-565; plan step balance:X-dc makes each save one transaction).  It is
+   the cell's own refusal grammar (`_transaction_cell.html`'s
    `error`: the red octagon, the reason on hover and for a screen reader)
    with the amount replaced by one visible word, because a gone row has no
    amount left to draw.  No `.txn-open` opener and no Mark Paid button: the

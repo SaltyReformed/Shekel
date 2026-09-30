@@ -874,13 +874,13 @@ def mark_credit(txn_id):
     Optimistic locking (commit C-18 / F-010):
     ``StaleDataError`` -> 409 conflict cell.
 
-    TOCTOU duplicate-payback prevention (commit C-19 / F-008):
-    ``credit_workflow.mark_as_credit`` acquires
-    ``SELECT ... FOR NO KEY UPDATE`` on the source row to serialise
-    concurrent requests; the partial unique index
-    ``uq_transactions_credit_payback_unique`` backstops any future
-    caller that bypasses the lock, and the IntegrityError catch
-    below converts the violation into idempotent success.
+    TOCTOU duplicate-payback prevention (commit C-19 / F-008): the
+    request's owner write lock (:mod:`app.db_transaction`, plan step
+    ``balance:X-bn``) serialises two Mark Credits; the partial unique
+    index ``uq_transactions_credit_payback_unique`` backstops a writer
+    that holds no request, and the IntegrityError catch below converts
+    the violation into idempotent success.  (C-19's row lock, a
+    ``FOR NO KEY UPDATE`` on the source row, was deleted at that step.)
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:

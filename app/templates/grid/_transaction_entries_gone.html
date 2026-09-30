@@ -9,8 +9,13 @@
    Rendered by `routes/entries.py` when a purchase is refused because its row
    was deleted in another tab (ruling R-CC104).  Until plan step balance:X-bn
    it was also rendered for a row deleted while the request waited for the
-   row's lock (ruling R-CC101); the request's owner write lock now precedes
-   the door's read, so that moment cannot occur.  A one-off row's delete
+   row's lock (ruling R-CC101); that answer was deleted with the row lock, and
+   the moment it answered is still reachable: the owner's write lock covers
+   each TRANSACTION, not the request, so a Delete queued behind a refused
+   purchase commits between the refusal's rollback and its redraw, which then
+   answers a server error on a one-off row and the list with its Add form on a
+   recurring one (finding BAL-565; plan step balance:X-dc makes each save one
+   transaction).  A one-off row's delete
    takes its purchases with it, so there is no list left to draw; a recurring
    row's purchases are hidden with it, and drawing them would put an Add
    button under a row that takes none.  The root keeps the list's id, so the

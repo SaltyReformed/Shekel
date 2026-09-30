@@ -522,11 +522,15 @@ class _RowGone(Exception):
     *Until plan step ``balance:X-bn`` it also carried a row deleted WHILE the
     request ran -- the race ruling **R-CC96**'s row lock let a door see --
     and the doors ruling **R-CC101** names caught it to say which act the
-    delete refused.  The request's owner write lock (ruling **R-CC106**) now
-    precedes the door's first read, so a Delete from another tab either
-    committed before that read, and the door names the row before the view
-    runs, or waits for the request to end; the catch was deleted with the
-    row lock.*
+    delete refused.  The catch was deleted with the row lock, and the moment
+    it answered is STILL REACHABLE: the owner's write lock (ruling
+    **R-CC106**) precedes the door's first read, but it belongs to the
+    TRANSACTION, and both helpers roll back before they re-fetch.  A Delete
+    queued on the lock commits in between, the re-fetch finds nothing, and
+    the request answers this handler's bare "not found" (finding BAL-565,
+    measured by review A of the step's ninth checkpoint).  The developer ruled
+    to ship it so, money correct (**R-BAL156**); plan step ``balance:X-dc``
+    makes each save one transaction, which closes the moment.*
     """
 
 
@@ -631,16 +635,22 @@ def _door_naming_a_gone_row(refusal):
     :data:`~app.utils.error_fragments.ROW_NO_LONGER_EXISTS_MSG`, the same
     words whichever it was.
 
-    **That is the only moment a Delete can land in** since plan step
-    ``balance:X-bn`` (ruling **R-CC106**): the request's transaction takes
-    its owner's write lock before this door reads the row, so another tab's
-    Delete either committed before the read or waits for the request to
-    end.  A second moment, a Delete that won the race for the row's lock
-    WHILE the view ran (ruling **R-CC96**), had its own answer here until
-    that step deleted the row lock.  A row the view's refusal cannot redraw
-    for another reason (:class:`_RowGone`) is the blueprint handler's "not
-    found".  The view is called as ``view(txn, target)``: the row as the
-    door served it, and the :class:`_RenderTarget` read off the form.
+    **This is the moment a Delete that committed BEFORE the request is
+    answered.**  Since plan step ``balance:X-bn`` (ruling **R-CC106**) the
+    request's transaction takes its owner's write lock before this door reads
+    the row, so another tab's Delete either committed before the read or
+    waits for THAT TRANSACTION to end -- not the request's.  A view that
+    commits and then draws its answer, or rolls back and then redraws its
+    refusal, opens a second transaction, and a queued Delete commits between
+    the two (finding BAL-565): a one-off row's answer is then a server error,
+    a refusal's the bare "not found" of :class:`_RowGone`.  The answer this
+    decorator gave that moment (ruling **R-CC96**'s row-lock race) was
+    deleted with the row lock at that step and stays deleted (**R-BAL156**);
+    plan step ``balance:X-dc`` makes each save one transaction.  A row the
+    view's refusal cannot redraw for another reason (:class:`_RowGone`) is the
+    blueprint handler's "not found".  The view is called as
+    ``view(txn, target)``: the row as the door served it, and the
+    :class:`_RenderTarget` read off the form.
 
     Args:
         refusal: The door's sentence for its act, taking a

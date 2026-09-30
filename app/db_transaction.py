@@ -165,11 +165,17 @@ That is what makes "this lock must be the FIRST lock a transaction takes"
 where it used to be a property each write door had to hold for itself -- a
 census over the whole suite found 27 endpoints that locked a row first and
 then asked for this lock (2026-09-24).  **Per TRANSACTION, not per request**,
-which matters in two places: a route that commits and goes on writing opens a
-second command transaction, which takes the lock again; and a
+which matters in three places: a route that commits and goes on writing opens a
+second command transaction, which takes the lock again; a
 :func:`write_transaction` block inside a query request opens a command
 transaction, which takes it (R-CC114: a page load's write takes the lock
-like any save).  A lock taken at the REQUEST's start would not survive
+like any save); and a save that commits and then draws its answer, or a
+refusal that rolls back and then redraws, does that drawing in a new
+transaction, so another request queued on the lock commits BETWEEN the two
+-- a Delete there makes the answer a server error or a bare "not found",
+money correct (finding BAL-565, ruled to ship so, **R-BAL156**; plan step
+``balance:X-dc`` makes each save one transaction).  A lock taken at the
+REQUEST's start would not survive
 either: it is transaction-scoped, and :func:`write_transaction` rolls the
 query's snapshot back before its command, releasing anything taken earlier.
 So plan step ``balance:X-i5``, which moves every save into a
