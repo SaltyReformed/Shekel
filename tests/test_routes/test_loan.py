@@ -1290,6 +1290,9 @@ class TestLoanSetup:
         assert db.session.query(LoanParams).filter_by(
             account_id=account.id,
         ).count() == 0
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0
 
         resp = auth_client.post(
             f"/accounts/{account.id}/loan/setup",
@@ -8823,7 +8826,7 @@ class TestRecordTrackingStartRoute:
         self, auth_client, seed_user, db, seed_periods,
         paid_on, period_index, offered, absent, accepted_on,
     ):
-        """A payment on or before the origination leaves no date this door accepts.
+        """This door offers an earlier date only where it accepts one; else Record balance alone.
 
         The door accepts dates from the origination on, so where the
         payment's money moved on or before the origination the flash cannot

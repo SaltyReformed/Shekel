@@ -443,12 +443,17 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
     opposite sides of a statement is mis-walked whatever this door decides:
     due on or before it but paid after, the statement subsumes it and its
     principal is lost; due after it but paid on or before, the statement
-    already holds it and the walk applies it again.  This door refuses the
-    second case.  Of its remedies, an earlier tracking start removes the
-    straddle and walks correctly; Record balance -- the dashboard's other
-    remedy, and the setup form's when the payment moved within a day of the
-    origination -- writes a statement on the same side and repeats the
-    mis-walk.  That is the walk's boundary to fix, not this read's.
+    already holds it and the walk applies it again.  This door refuses a
+    date on or after the money day, and neither remedy it offers is safe for
+    every payment: an earlier tracking start clears an EARLY payment's
+    straddle (paid before its due date) but, for a LATE one (paid after it),
+    any day from the due day up to the money day puts it in the first case
+    and loses it, while Record balance on the refused day walks a late
+    payment correctly and repeats an early one's double count.  (Record
+    balance is the dashboard's other remedy, and the setup form's when the
+    payment moved on or before the day after the origination.)  The door
+    cannot pick a safe date for the owner while the walk keys the boundary on
+    the due date: that is REC-552's to fix, in the walk, not in this read.
 
     **One refusal moved downstream with that read.**  A settled payment whose
     movement carries no day (ruling R-BAL147's drift, which no door writes)
