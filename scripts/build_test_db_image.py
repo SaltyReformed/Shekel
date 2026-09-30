@@ -512,13 +512,11 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
 
     One attachment per entry in the named ``(trigger name, table)`` constant:
     ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``),
-    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
-    ``bank_import:X-f6b-1``), ``app.pay_stub_infrastructure.PAY_STUB_TRIGGERS``
-    (plan step ``salary:S11-a``) and
-    ``app.deleted_row_infrastructure.DELETED_ROW_TRIGGERS`` (plan step
-    ``credit_card:CC-5-4a-4``).  BOTH halves come from that one constant -- the
-    names the query looks for and the number it must find -- so the check
-    cannot count a trigger the module renamed, nor accept a template missing
+    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step ``bank_import:X-f6b-1``),
+    ``app.pay_stub_infrastructure.PAY_STUB_TRIGGERS`` (plan step ``salary:S11-a``) and
+    ``app.deleted_row_infrastructure.DELETED_ROW_TRIGGERS`` (plan step ``credit_card:CC-5-4a-4``).
+    BOTH halves come from that one constant -- the names the query looks for and the number it must
+    find -- so the check cannot count a trigger the module renamed, nor accept a template missing
     one.
 
     Args:
@@ -576,14 +574,12 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
 def template_checks() -> tuple[tuple[str, str, int], ...]:
     """Return the ``(label, sql, expected)`` checks both head-build paths are graded by.
 
-    ONE list for both ways a database is built at head: :func:`_verify_image`
-    asks each of the baked template, and
-    ``tests/test_scripts/test_init_database_one_transaction.py`` of a first
-    boot (``init_fresh_database``, which applies each family itself).  A
-    family added here is graded on both paths (review L1 of the
-    ``salary:S11-a`` carry-merge).  Counts are EXACT, from each producer's
-    own constant.  Not listed: the posting and opening triggers, whose
-    modules export no constant naming their triggers (finding BAL-542).
+    ONE list for both ways a database is built at head: :func:`_verify_image` asks each of the
+    baked template, and ``tests/test_scripts/test_init_database_one_transaction.py`` of a first
+    boot (``init_fresh_database``, which applies each family itself).  A family added here is
+    graded on both paths (review L1 of the ``salary:S11-a`` carry-merge).  Counts are EXACT, from
+    each producer's own constant.  Not listed: the posting and opening triggers, whose modules
+    export no constant naming their triggers (finding BAL-542).
 
     Returns:
         One ``(label, sql, expected)`` per check.
