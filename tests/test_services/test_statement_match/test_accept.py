@@ -49,6 +49,7 @@ from app.services.statement_match import MatchSubmission
 
 from tests._test_helpers import (
     observed,
+    on_both_sides,
     typed,
     family_journal_filter,
     an_entered_day,
@@ -1036,7 +1037,12 @@ class TestATransferShadowIsMatchedThroughItsService:
         if settled:
             transfer_service.settle_transfer(
                 transfer.id, seed_user["user"].id,
-                settle_day=an_entered_day(seed_user["bootstrap_period"].start_date + timedelta(days=5)),
+                side_days=on_both_sides(
+                    transfer.from_account_id, transfer.to_account_id,
+                    an_entered_day(
+                        seed_user["bootstrap_period"].start_date + timedelta(days=5),
+                    ),
+                ),
             )
         db.session.flush()
         assert isinstance(destination, Account)

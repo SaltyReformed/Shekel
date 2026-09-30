@@ -802,7 +802,7 @@ class SettledDayBasisEnum(enum.Enum):
     own word, or by nothing of its own; there is no fifth kind, so every writer
     lands in exactly one member.  The first three ARE evidence and ``borrowed``
     is the one member that is not -- the question
-    ``transfer_service._side_days.is_evidence`` answers, and the reason a
+    ``settle_day.is_evidence`` answers, and the reason a
     transfer's two sides can hold two different days.  What separates
     ``entered`` from ``observed`` is not confidence but provenance -- both are
     points, and a reader that wants to rank them can, because the column now

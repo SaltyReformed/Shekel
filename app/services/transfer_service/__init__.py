@@ -90,7 +90,7 @@ from app.services.transfer_service._create import (
 )
 from app.services.transfer_service._delete import delete_transfer
 from app.services.transfer_service._restore import restore_transfer
-from app.services.transfer_service._side_days import SideDay, is_evidence
+from app.services.transfer_service._side_days import SideDay
 from app.services.transfer_service._settle import (
     leg_settle_amount,
     record_clearing,
@@ -112,7 +112,6 @@ __all__ = [
     "TransferSpec",
     "create_transfer",
     "delete_transfer",
-    "is_evidence",
     "leg_settle_amount",
     "load_transfer_rows",
     "restore_transfer",

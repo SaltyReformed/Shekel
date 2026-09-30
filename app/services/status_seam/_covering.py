@@ -181,6 +181,7 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
@@ -190,7 +191,11 @@ from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
 )
-from app.services.settle_day import record_settle_day, recorded_settle_day
+from app.services.settle_day import (
+    is_evidence,
+    record_settle_day,
+    recorded_settle_day,
+)
 from app.services.status_seam._record import (
     Settlement,
     covering_movement_of,
@@ -334,14 +339,20 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       release logic already decided that link for this move).  A covering
       movement's purchase day IS its settle day (ruling R-BAL39), so the
       correction moves both;
-    * the days are EQUAL and the BASIS differs -- a bank line confirmed the
-      day the panel had only bounded (``_moving``, finding **N-332**), or a
-      transfer side's borrowed day became its own when the owner typed it
-      (ruling **R-BAL164**): the movement takes the row's pair and the link
-      stands, the same change of basis the row itself records.  It was the
-      rise to ``observed`` alone until plan step ``balance:X-bi-6-4c-3``;
-      for a plain row that rise is still the only same-day basis writer, and
-      the rule is one for every row rather than a transfer branch;
+    * the days are EQUAL and the row's basis RAISES the movement's -- a bank
+      line confirmed the day the panel had only bounded (``_moving``, finding
+      **N-332**), or a transfer side that was borrowing its day took it as its
+      own (ruling **R-BAL164**; plan step ``balance:X-bi-6-4c-3``): the
+      movement takes the row's pair and the link stands, the same change of
+      basis the row itself records.  A raise is the row's ``observed``, or any
+      basis over a movement holding no evidence of its own
+      (:func:`~app.services.settle_day.is_evidence`); the three evidence
+      members are separated by provenance and not ranked, so nothing else
+      moves.  **The movement's own evidence is never lowered**: the statement
+      matcher writes a covering movement directly when its row is not what the
+      statement shows (a bill charged to a card, whose own leg is zero), and
+      an untouched Save of that row must not relabel the bank's day as the
+      owner's.  One rule for every row, not a transfer branch;
     * the days are EQUAL otherwise: the pair stands, and the movement takes
       the row's link only where it holds none -- the reconcile panel ticked
       the row on an asserted day, and the movement sits inside that assertion
@@ -378,8 +389,12 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
             row.reconciled_by_id if _links_the_row(row, movement) else None
         )
         return
-    if movement.settled_day_basis_id != row.settled_day_basis_id:
-        record_settle_day(movement, recorded_settle_day(row))
+    row_day, movement_day = recorded_settle_day(row), recorded_settle_day(movement)
+    if row_day != movement_day and (
+        row_day.basis is SettledDayBasisEnum.OBSERVED
+        or not is_evidence(movement_day)
+    ):
+        record_settle_day(movement, row_day)
     if movement.reconciled_by_id is None and _links_the_row(row, movement):
         movement.reconciled_by_id = row.reconciled_by_id
 

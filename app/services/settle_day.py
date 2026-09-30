@@ -119,6 +119,29 @@ class SettleDay:
         return ref_cache.settled_day_basis_id(self.basis)
 
 
+def is_evidence(day: SettleDay) -> bool:
+    """Return whether *day* is its row's OWN, rather than borrowed.
+
+    ``observed``, ``asserted`` and ``entered`` are evidence -- the bank, a
+    balance assertion, or the owner said so -- and ``borrowed`` is the one
+    member that is not (:class:`~app.enums.SettledDayBasisEnum`; only a
+    transfer side is ever borrowed).  The ONE statement of that partition in
+    ``app/`` (the REC-552 study's seam S1): a transfer side's day function
+    (``transfer_service._side_days``), the popover's day boxes and the status
+    seam's mirror all ask it.  It lives beside :class:`SettleDay` rather than
+    in ``transfer_service`` because the seam, which ``transfer_service``
+    calls, asks it too.  The relabel migration's frozen SQL states it for
+    itself, because a migration may not import the application.
+
+    Args:
+        day: A stored or stated day.
+
+    Returns:
+        ``True`` unless *day* is borrowed.
+    """
+    return day.basis is not SettledDayBasisEnum.BORROWED
+
+
 def submitted_settle_day(
     submitted_day: date, recorded: "SettleDay | None",
 ) -> "SettleDay":

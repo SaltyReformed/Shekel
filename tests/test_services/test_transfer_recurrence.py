@@ -11,7 +11,6 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.category import Category
@@ -19,7 +18,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import AccountAnchorHistory
 from app.models.ref import TransactionType
 from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum
@@ -1857,7 +1856,6 @@ class TestTransferMaintain:
         """
         transfer_service.settle_transfer(
             xfer.id, seed_user["user"].id, submitted=typed(figure),
-            settle_day=an_entered_day(display_today()),
         )
         transfer_service.update_transfer(
             xfer.id, seed_user["user"].id,

@@ -14,8 +14,9 @@ This leaf is the whole derivation, and it is PURE: values in, values out, no
 session, no clock (the writer reads ``display_today()`` once and passes it).
 Three names carry the three rules, so each has ONE home:
 
-* :func:`is_evidence` -- whether a day is the side's own (the REC-552 study's
-  seam S1);
+* :func:`~app.services.settle_day.is_evidence` -- whether a day is the side's
+  own (the REC-552 study's seam S1; it lives beside ``SettleDay`` because the
+  status seam asks it too);
 * :func:`borrowed_day` -- the day a side with no evidence takes (seam S6: every
   writer that derives a borrowed day reaches it through :func:`resolve_pair_days`,
   never an inline computation);
@@ -39,7 +40,7 @@ from datetime import date
 from typing import Iterable, NamedTuple
 
 from app.enums import SettledDayBasisEnum
-from app.services.settle_day import SettleDay
+from app.services.settle_day import SettleDay, is_evidence
 
 
 @dataclass(frozen=True)
@@ -101,25 +102,6 @@ class PairDays(NamedTuple):
 
 #: A pair stating nothing for either side.
 NO_DAYS = PairDays(expense=None, income=None)
-
-
-def is_evidence(day: SettleDay) -> bool:
-    """Return whether *day* is its side's OWN, rather than borrowed.
-
-    ``observed``, ``asserted`` and ``entered`` are evidence -- the bank, a
-    balance assertion, or the owner said so -- and ``borrowed`` is the one
-    member that is not (:class:`~app.enums.SettledDayBasisEnum`).  The ONE
-    statement of that partition in ``app/`` (seam S1); the relabel migration's
-    frozen SQL states it for itself because a migration may not import the
-    application.
-
-    Args:
-        day: A stored or stated day.
-
-    Returns:
-        ``True`` unless *day* is borrowed.
-    """
-    return day.basis is not SettledDayBasisEnum.BORROWED
 
 
 def borrowed_day(lender: SettleDay | None, fallback: date) -> SettleDay:
@@ -226,7 +208,8 @@ def resolve_pair_days(
     """Return each side's day once this act lands (ruling **R-BAL142**).
 
     1. A side's OWN day is the day stated for it now, else its current day
-       when that day is evidence (:func:`is_evidence`).  A stated day always
+       when that day is evidence
+       (:func:`~app.services.settle_day.is_evidence`).  A stated day always
        applies to its side; the VERB decides which stated days reach here.
     2. Both own: each keeps its own.  One own: the other borrows it.  Neither:
        both borrow *fallback* (:func:`borrowed_day`).

@@ -41,7 +41,7 @@ from app.services.account_resolver import (
 )
 from app.services.cash_flow_set import CashFlowSet
 from app.services.entry_service import build_entry_sums_dict
-from app.services.settle_day import SettleDay, recorded_settle_day
+from app.services.settle_day import SettleDay, is_evidence, recorded_settle_day
 from app.services import grid_view_service
 from app.services.grid_view_service import due_captions_by_key
 from app.services.transaction_service import (
@@ -54,7 +54,6 @@ from app.services.transfer_legs import (
     grid_transfer_leg,
     leg_of,
 )
-from app.services.transfer_service import is_evidence
 from app.utils.dates import display_today
 
 
