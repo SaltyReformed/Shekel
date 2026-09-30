@@ -98,6 +98,7 @@ from app.enums import (
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
+from app.services import match_withdrawal, movement_removal
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -266,14 +267,24 @@ class TestBackfillExclusions:
 
         Its effective amount is zero (the balance calculator drops a deleted
         row), and the backfill's ``is_deleted = FALSE`` filter excludes it.
+        Built as the delete door leaves it (ruling R-CC75): settled, its
+        payment taken off through the one removal act, then hidden -- the
+        database refuses a payment under a hidden row (R-CC89) and a row
+        hidden holding one (R-CC92).  The row is still SETTLED, so the
+        existence check's ``is_deleted`` filter is what answers.  Rule-5
+        re-expression, developer-confirmed 2026-09-23.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
             txn = add_txn(
                 _db.session, seed_user, period, "Deleted", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
-                is_deleted=True,
             )
+            movement_removal.remove_movements(
+                list(txn.entries), seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            txn.is_deleted = True
             _db.session.commit()
             assert _run_backfill() == []
             assert _entry_for_transaction(txn.id) is None

@@ -196,7 +196,12 @@ def _consume_backup_code(mfa_config, plaintext):
     """Verify a backup code against stored hashes and consume on match.
 
     Single-use backup codes work as a one-time bypass for the TOTP
-    requirement.  This helper handles the verify-and-remove pair as
+    requirement.  Single-use holds only because the caller took the
+    signing-in owner's lock before *mfa_config* was read (ruling
+    **R-CC121**): this rewrites the list it was handed, so two sign-ins
+    reading it together would each spend the same code, and one racing
+    "Regenerate backup codes" would write the old list back over the new.
+    This helper handles the verify-and-remove pair as
     one operation so :func:`~app.routes.auth.mfa.mfa_verify` does not
     have to inline the list-rebuild and commit (one less branch on its
     R0912 budget, and the consume step lives next to the verify step

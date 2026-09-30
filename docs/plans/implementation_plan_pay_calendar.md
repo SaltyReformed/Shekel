@@ -297,13 +297,13 @@ their only live specimen from them, which both `_staging` docstrings predict and
       refused ONLY if a posted total moves (**R-PC114**). `$0.00`.
 - [ ] **C22 -- truncate and regenerate refuse a paycheck holding a purchase** (ruling **R-PC112**;
       after `C21`, **R-PC113**; closes **PC-524**). Both reach `gate_deletable_tail`, whose discard
-      count asks `_regenerable` alone, so a purchase goes with its row by cascade: unasked on an
-      untouched template row, after Confirm & discard on an override or rule-less envelope. Each
-      door REFUSES a paycheck holding ANY live row with a purchase the owner entered, whatever
-      `_regenerable` says: a hard refusal separate from the discard count, confirmed or not, naming
-      the purchases and deleting nothing ("Paycheck 03-13 holds 1 purchase you entered (Kroger,
-      $87.43). Remove or move it first."), through the check C21's remove-earlier reuses,
-      `pay_period_gates.transactions_holding_purchases`. A purchase's one reading is
+      count asks `_regenerable` alone, so until CC-5-4a-4 a purchase went with its row by cascade:
+      unasked on an untouched template row, after Confirm & discard on an override or rule-less
+      envelope. Each door REFUSES a paycheck holding ANY live row with a payment or purchase,
+      whatever `_regenerable` says: a hard refusal separate from the discard count, naming the rows
+      and deleting nothing ("Paycheck 03-13 holds 1 purchase you entered (Kroger, $87.43). Remove or
+      move it first."), through the one question every door asks (**R-PC115**),
+      `archive_helpers.holds_a_movement`, re-measuring **PC-524** first. A purchase's one reading is
       `Transaction.purchases` (**R-BAL68**), whose query-side twin is `status_seam.covering_clause`.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
       2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per

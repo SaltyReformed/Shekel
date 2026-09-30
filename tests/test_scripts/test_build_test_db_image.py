@@ -34,10 +34,13 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from scripts import prune_test_db_images as _PRUNE
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts/build_test_db_image.py"
@@ -58,6 +61,42 @@ def _load_module():
 
 
 _MODULE = _load_module()
+
+
+@pytest.fixture(name="events", autouse=True)
+def _events_fixture(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+    """Stand in for the stale-image prune in EVERY test here, recording each call.
+
+    ``main`` prunes after a build, and a test that drives ``main`` through a
+    stubbed build must never reach the real prune: it lists, and REMOVES,
+    images on whatever daemon ``DOCKER_HOST`` names, which under
+    ``scripts/test.sh`` is this host's.
+
+    The stand-in replaces the function ON the prune module, which is the
+    attribute the builder's deferred import reads at the call, so the
+    call-site tests below go red if ``main`` reaches any other function.  The
+    prune module's command runner is replaced too, with one that fails the
+    test, so a path that reached the real prune some other way runs nothing.
+
+    Args:
+        monkeypatch: Used to replace the prune and its command runner.
+
+    Returns:
+        The shared event log; a test's own stubs may append to it too.
+    """
+    log: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        _PRUNE,
+        "prune_stale_images",
+        lambda image_repo, repo_root: log.append(("prune", image_repo, str(repo_root))),
+    )
+
+    def _refuse(command: list[str], cwd: Path | None = None) -> None:
+        """Fail the test before the real prune can run any command."""
+        raise AssertionError(f"a builder test reached the real prune: {command} in {cwd}")
+
+    monkeypatch.setattr(_PRUNE, "_run", _refuse)
+    return log
 
 
 class TestCacheKeyCoversEveryTemplateInput:
@@ -289,6 +328,111 @@ class TestADockerFaultIsNotAVerdictAboutTheImage:
         assert rebuilt == ["shekel-test-db:deadbeef"]
 
 
+class TestStaleImagesArePrunedOnlyAfterABuild:
+    """The ruling: "After each new build, the runner removes old test images".
+
+    A new build and the rebuild of a rejected cached image are builds; a
+    cache hit and ``--print-tag`` are not, and neither may remove anything.
+    What the prune removes is ``tests/test_scripts/test_prune_test_db_images.py``'s
+    subject; this pins only WHEN ``main`` calls it, and with what.  The event
+    log records the prune module's OWN function (see the autouse fixture), so
+    the two after-a-build tests also prove ``main`` reaches that function and
+    not some other one the builder bound.
+    """
+
+    _TAG = "shekel-test-db:deadbeef"
+    _PRUNE = ("prune", "shekel-test-db", str(_REPO_ROOT))
+
+    def _stub(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, ...]], *, present: bool
+    ) -> None:
+        """Stub the tag, the existence check and the build, logging each build.
+
+        Args:
+            monkeypatch: Used to replace the builder's collaborators.
+            events: The log the autouse prune stand-in writes to.
+            present: Whether the image is already on the daemon.
+        """
+        monkeypatch.setattr(_MODULE, "image_tag", lambda: self._TAG)
+        monkeypatch.setattr(_MODULE, "image_exists", lambda tag: present)
+        monkeypatch.setattr(_MODULE, "build", lambda tag: events.append(("build", tag)))
+
+    def test_a_new_build_is_followed_by_a_prune(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, ...]]
+    ) -> None:
+        """An absent image is built, and only then are stale ones pruned."""
+        self._stub(monkeypatch, events, present=False)
+
+        assert _MODULE.main([]) == 0
+        assert events == [("build", self._TAG), self._PRUNE]
+
+    def test_a_rebuilt_rejected_image_is_followed_by_a_prune(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, ...]]
+    ) -> None:
+        """A cached image verification refuses is rebuilt, then stale ones pruned."""
+        self._stub(monkeypatch, events, present=True)
+        monkeypatch.setattr(_MODULE, "_run", lambda *a, **k: None)
+
+        def _stale(tag: str) -> None:
+            """Fail the way a genuinely stale image does."""
+            raise _MODULE.BuildError(f"{tag} has no template database (got '0')")
+
+        monkeypatch.setattr(_MODULE, "_verify_image", _stale)
+
+        assert _MODULE.main([]) == 0
+        assert events == [("build", self._TAG), self._PRUNE]
+
+    def test_a_cache_hit_prunes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, ...]]
+    ) -> None:
+        """A verified cached image is no build, so nothing is pruned."""
+        self._stub(monkeypatch, events, present=True)
+        monkeypatch.setattr(_MODULE, "_verify_image", lambda tag: None)
+
+        assert _MODULE.main([]) == 0
+        assert not events
+
+    def test_print_tag_prunes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[tuple[str, ...]]
+    ) -> None:
+        """``--print-tag`` resolves the tag and touches nothing else."""
+        self._stub(monkeypatch, events, present=False)
+
+        assert _MODULE.main(["--print-tag"]) == 0
+        assert not events
+
+    def test_print_tag_imports_nothing_beyond_the_standard_library(self) -> None:
+        """Every other worktree's prune runs THIS tree's ``--print-tag``.
+
+        So nothing outside the standard library, ``scripts`` and ``app``
+        included, may be able to stop it answering, which is why the prune
+        module is imported only after a build.  This runs the real script in
+        a fresh interpreter and requires every top-level module it newly
+        imports to be in ``sys.stdlib_module_names``; ``--print-tag`` reads
+        files and runs no command.
+        """
+        probe = (
+            "import runpy, sys\n"
+            "before = {name.split('.')[0] for name in sys.modules}\n"
+            "sys.argv = ['build_test_db_image.py', '--print-tag']\n"
+            "try:\n"
+            f"    runpy.run_path({str(_SCRIPT)!r}, run_name='__main__')\n"
+            "except SystemExit as done:\n"
+            "    assert done.code == 0, done.code\n"
+            "new = {name.split('.')[0] for name in sys.modules} - before\n"
+            "print(sorted(new - sys.stdlib_module_names))\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 0, result.stderr
+        tag, beyond_stdlib = result.stdout.splitlines()
+        assert tag.startswith("shekel-test-db:"), tag
+        assert beyond_stdlib == "[]", f"--print-tag imported {beyond_stdlib}"
+
+
 class TestTheBuilderLeavesNothingBehind:
     """Every container the builder starts is removed WITH its volume.
 
@@ -448,6 +592,10 @@ class TestAFailedTemplateBuildReportsBothStreams:
             f'{{"message": "Running upgrade r{i} -> r{i + 1}"}}'
             for i in range(100)
         )
+        # Pylint: ``protected-access`` -- ``_builder_failure`` and its line cap
+        # are the unit under test, and ``build`` reaches them only through a
+        # failed docker bake.
+        # pylint: disable=protected-access
         report = _MODULE._builder_failure(log, "Traceback: forged failure\n")
 
         tail = _MODULE._FAILED_BUILD_LOG_LINES

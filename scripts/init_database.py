@@ -101,6 +101,7 @@ from app.audit_infrastructure import (
     apply_audit_infrastructure,
     require_audit_triggers,
 )
+from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import stamp_head, upgrade_to_head
@@ -145,13 +146,14 @@ def init_fresh_database(connection):
     """Create the schema, the integrity infrastructure, and stamp Alembic.
 
     The steps below run in order -- with the append-only, level-within-file,
-    last-sighting and pay-stub blocks between 4 and 5, each documented where
-    it runs -- every one on the deploy's ONE connection and none of them
-    committing (plan step balance:X-cv): :func:`initialise_database` commits
-    them together.  A failure part-way therefore leaves the database as
-    empty as it found it, instead of a half-built schema that the next boot
-    reads as "existing" (:func:`is_fresh_database` asks only for
-    ``auth.users``) and tries to migrate from no stamp.
+    last-sighting, pay-stub and deleted-row blocks between 4 and 5, each
+    documented where it runs -- every one on the deploy's ONE connection
+    and none of them committing (plan step balance:X-cv):
+    :func:`initialise_database` commits them together.  A failure part-way
+    therefore leaves the database as empty as it found it, instead of a
+    half-built schema that the next boot reads as "existing"
+    (:func:`is_fresh_database` asks only for ``auth.users``) and tries to
+    migrate from no stamp.
 
     1. ``db.metadata.create_all`` on that connection -- materialise every
        SQLAlchemy-modeled table.  This covers the ``ref``, ``auth``,
@@ -264,6 +266,16 @@ def init_fresh_database(connection):
         lambda sql: db.session.execute(db.text(sql))
     )
     print("Pay-stub refusal ready.")
+
+    # A deleted row takes no money (plan step credit_card:CC-5-4a-4, ruling
+    # R-CC89): a payment or purchase arriving under a deleted row is refused.
+    # Same fresh-DB reason, same three-caller contract: the stamp below marks
+    # c4a4e7d1b9f2 applied without running it.
+    print("Applying deleted-row rule (payments and purchases)...")
+    apply_deleted_row_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    print("Deleted-row rule ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded
@@ -624,7 +636,7 @@ def initialise_database():
     either way.  Only a ``commit()`` after the last session statement is
     harmless, and it saves nothing this commit would not.  A rollback
     followed by Alembic rather than the session (the first-boot build's
-    stamp comes after its eight session-routed infrastructure steps) meets
+    stamp comes after its nine session-routed infrastructure steps) meets
     :func:`app.migration_runner._config`, which puts the connection back
     inside a transaction nobody commits.  ``ref_cache.init`` rolls back when a
     ref table is missing (``_load_rows``), but since ruling R-BAL122 the

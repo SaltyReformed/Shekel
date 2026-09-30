@@ -844,16 +844,20 @@ class TestWhatAPaycheckMayHold:
                 "from 2025-12-05 or earlier."
             )
 
-    def test_a_template_row_paid_then_un_paid_goes_with_the_paycheck(
+    def test_a_template_row_paid_then_set_back_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """The revert keeps the seam's covering mark on the row; it is no purchase.
+        """The revert keeps the payment on the row: history, refused (R-PC115).
 
         Since plan step balance:X-bi-3e-2 a revert keeps the settlement mark,
         un-dated, under the Projected row (``Transaction.purchases`` excludes
-        it, R-BAL68).  The posting writer reverses the paid leg in the same
-        paycheck and entry date, so the pair nets to $0.00 there and goes
-        with the paycheck (R-PC114: no posted total moves).
+        it, R-BAL68), and since credit_card:CC-5-4a-4 no row's delete takes
+        its movements (R-CC54).  Ruling **R-PC115** (developer 2026-09-29,
+        "Refuse, like every door") refuses it in the ruled words, naming the
+        row, and keeps the payment; deleting the row is the remedy.  *Until
+        that ruling this case asserted the row went with its paycheck, the
+        ledger pair netting to $0.00 -- which, once CC-5-4a-4 met C21, raised
+        the database's refusal instead (measured at X-bn's dev merge).*
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -865,7 +869,7 @@ class TestWhatAPaycheckMayHold:
             ).one()
             settle_cash_row(row, settled_on=head[1].start_date)
             db.session.commit()
-            # Un-paid as the route does it: the seam, then the posting
+            # Set back as the route does it: the seam, then the posting
             # writer, which reverses the leg in the same paycheck and day.
             status_seam.apply_status_change(
                 row, ref_cache.status_id(StatusEnum.PROJECTED),
@@ -878,10 +882,72 @@ class TestWhatAPaycheckMayHold:
             assert len(_entries_in({head[1].id})) == 2, (
                 "the paid leg and its reversal must both sit in the paycheck"
             )
+            row_id = row.id
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
 
-            assert pay_period_admin.remove_earlier_pay_periods(
-                user_id, seed_periods[0].id,
-            ) == 2
+            assert _held(user_id, seed_periods[0]) == (
+                "The 2025-12-19 paycheck holds 1 item you entered or changed "
+                "(Rent). Delete or move it first."
+            )
+            _unchanged(user_id, paydays, eras)
+            assert _db.session.get(Transaction, row_id).entries, (
+                "the refusal must keep the row's payment"
+            )
+
+    @pytest.mark.parametrize("deleted", [False, True])
+    def test_a_transfer_done_then_set_back_is_refused_once(
+        self, app, db, seed_user, seed_periods, deleted,
+    ):
+        """Both legs keep their payment; the transfer is named once (R-PC115).
+
+        Measured at X-bn's dev merge, before the ruling: after the revert
+        each leg holds one entry and no purchase, and the removal raised the
+        database's refusal.  With ``deleted`` the occurrence is then deleted
+        as the grid's delete does it (``delete_transfer(soft=True)``): its
+        legs are hidden and STILL hold their payments -- finding **BAL-532**,
+        which plan step ``balance:X-bi-6-4`` ends -- so the refusal still
+        names it; the ruling accepted that the owner cannot clear it until
+        then.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            # Savings' books must reach the added paychecks, or the books
+            # bound (pay_calendar:C18-a) keeps the transfer out of them.
+            restate_account_opening(db.session, savings, date(2023, 6, 1))
+            _monthly_transfer_from(seed_user, savings, date(2025, 12, 20))
+            db.session.commit()
+            head = _added_head(user_id, 2)
+            transfer = db.session.query(Transfer).filter_by(
+                pay_period_id=head[1].id,
+            ).one()
+            transfer_service.settle_transfer(transfer.id, user_id)
+            db.session.commit()
+            transfer_service.update_transfer(
+                transfer.id, user_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            if deleted:
+                transfer_service.delete_transfer(transfer.id, user_id, soft=True)
+                db.session.commit()
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id,
+            ).all()
+            assert [len(leg.entries) for leg in legs] == [1, 1], (
+                "each leg must keep its payment through the revert"
+            )
+            assert not any(leg.purchases for leg in legs)
+            assert all(leg.is_deleted is deleted for leg in legs)
+            paydays, eras = _paydays(user_id), _stored_eras(user_id)
+
+            assert _held(user_id, seed_periods[0]) == (
+                "The 2025-12-19 paycheck holds 1 item you entered or changed "
+                "(To Savings). Delete or move it first."
+            )
+            _unchanged(user_id, paydays, eras)
 
     def test_template_rows_alone_go_with_the_paycheck(
         self, app, db, seed_user, seed_periods,

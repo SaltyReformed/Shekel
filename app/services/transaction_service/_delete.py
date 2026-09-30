@@ -22,7 +22,13 @@ door's own precondition, asked before the sequence starts.
    and the finding was SEQUENCED behind the key for exactly that reason.
    FIRST, ahead of ``deletion_refusal``, so a caller naming the wrong owner is
    told nothing about the row -- the ordering ``entry_service._doors`` states
-   for the same pair of guards.
+   for the same pair of guards.  Nothing here locks the row: since plan step
+   ``balance:X-bn`` (ruling **R-CC106**) the request's transaction took its
+   owner's write lock before it read any of the owner's data, so a purchase
+   another tab added either committed before this delete read the row, and
+   is taken off with the rest, or waits for the delete to commit.  Until that
+   step the row's own lock did it (ruling **R-CC96**, plan step
+   ``credit_card:CC-5-4a-4``).
 1. **Reverse the postings** (``posting_service``), while
    ``journal_entries.transaction_id`` and ``.transaction_entry_id`` still link
    them.  Both are ``ON DELETE SET NULL``: reversing afterwards is impossible
@@ -41,14 +47,29 @@ door's own precondition, asked before the sequence starts.
    (developer ruling 2026-08-25): a match asserts that a bank line IS these
    rows, and when the last of them stops existing the line is unexplained
    again.  Over the WHOLE set in one call, so the dialog's figure and the
-   receipt's are one derivation.  Only the rows that LEAVE the table: a
-   soft-deleted row keeps its movements and its matches
-   (:func:`_leaves_the_table`).
-3. **Take down the live CC payback chain** (``credit_workflow``), because
-   ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
-   this a projected payback survives its source and inflates the next period
-   with no offsetting credit row.  Step 2 has already taken the chain's
-   movements off, so that helper takes down rows holding none.
+   receipt's are one derivation.  **On BOTH arms** (ruling **R-CC75**,
+   developer 2026-09-23: "Deleting the occurrence takes its payments and
+   purchases off the books through the one removal act, exactly as deleting
+   a one-off does"): the soft arm's tombstone stays in the table, but what
+   it held does not.  Until then a soft-deleted row KEPT its movements and
+   its matches, and the balance skips a hidden row's movements -- so
+   deleting one occurrence of a recurring envelope holding a bank-matched
+   `$40.00` purchase left settled cash `$40.00` above the bank while the
+   line read explained (measured 2026-09-23; ledger **N-290**'s soft-delete
+   half), and plan step ``credit_card:CC-5-4a-4``'s doors then refused to
+   remove that hidden row's period or definition with a sentence naming a
+   row the grid does not show.  A row this door hides holds nothing now; one
+   hidden before this release refuses the release's migration
+   (``c4a4e7d1b9f2``, ruling **R-CC82**), and a transfer leg the TRANSFER's
+   soft delete hides may still hold its kept payment (finding **BAL-532**).
+3. **Take down the live CC payback chain** (``credit_workflow``), on either
+   arm and for a different reason on each.  A SOFT delete never fires
+   ``transactions.credit_payback_for_id``, so without this a projected
+   payback survives its hidden source and inflates the next period with no
+   offsetting credit row; a HARD delete would be REFUSED by that key, which
+   is ``ON DELETE RESTRICT`` since plan step ``balance:X-bi-7d-2`` (finding
+   **CC-352**).  Step 2 has already taken the chain's movements off, so that
+   helper takes down rows holding none.
 4. **Remove the row**, soft or hard by whether its definition RECURS.
 5. **Dispose of the definition the row was the LAST of** (plan step
    ``balance:X-bi-7b``, rulings **R-BAL23** / **R-BAL27**): a one-off is a
@@ -98,6 +119,7 @@ from app.services import (
 )
 from app.services.match_withdrawal import MatchWithdrawal
 from app.services.transaction_service._row_rules import deletion_refusal
+from app.utils.balance_predicates import is_projected
 
 
 @dataclass(frozen=True)
@@ -134,25 +156,49 @@ class RowDeletion:
             ``balance:X-bi-7b``).  Carried so the dialog can say the ITEM
             goes and not only the row, off the same answer the press acts
             on (``definition_delete.is_last_row_of_its_definition``).
+        comes_back_on_unarchive: Whether this row is one archiving and then
+            un-archiving its item would bring back -- a soft delete of a row
+            still Projected, which is un-archive's CANDIDATE set (ruling
+            **R-CC86**, developer 2026-09-23: "Whether to show it is read from
+            the same 'not yet paid' rule un-archive uses";
+            ``balance_predicates.is_projected`` is the Python twin of the
+            ``is_projected_clause`` that set is built on,
+            ``definition_unarchive._hidden_rows``).  Un-archive restores a
+            candidate UNLESS the books have moved over it by then (rulings
+            **R-PC95**, **R-PC99**: its two checks, where the row sits and
+            where its item's schedule puts it), and the dialog states that
+            condition in words rather than computing it (ruling **R-CC112**,
+            developer 2026-09-24, "State the condition": "True whenever you
+            read it, before or after a later books move, and nothing new is
+            computed").  A check at the moment the card opens could not see a
+            books move made after the delete, which is the case the ruling
+            was asked about.
     """
 
     soft: bool
     paybacks: "tuple[str, ...]"
     withdrawn: MatchWithdrawal
     disposes_definition: bool
+    comes_back_on_unarchive: bool
 
 
-def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
-    """Return whether *txn* itself goes, and the payback chain that always does.
+def _leaves_the_books(
+    txn: Transaction,
+) -> "tuple[bool, bool, list[Transaction]]":
+    """Return *txn*'s two delete facts and every row this press takes off the books.
 
-    **The soft arm removes NOTHING from the table**, and that distinction is
-    what the match withdrawal has to see: a member's foreign key CASCADES only
-    on a real ``DELETE``, so a soft-deleted row keeps its membership and the act
-    still names it.  Withdrawing there would destroy an accepted act for a
-    change that ``templates/crud`` un-archives with a shipped button.  A first
-    build derived the going set from the row alone and withdrew on the soft arm
-    too; the control that caught it is
-    ``TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow``.
+    **ONE set, on either arm** (rulings **R-CC75**, **R-CC84**): *txn* and its
+    live CC-payback chain -- every row whose payments and purchases leave the
+    books in this press, which is what the ONE removal act runs over AND what
+    it and the dialog are told is going.  A recurring row stays in the table
+    as a tombstone holding nothing, and it is still GOING to the owner: they
+    deleted it and the grid no longer shows it, so a creation record naming it
+    is not reported as a row that stays (ruling **R-CC84**, developer
+    2026-09-23: "The hidden row counts as leaving, like any deleted row").
+    Until R-CC75 the act ran over the rows leaving the TABLE alone, so a
+    soft-deleted row kept its movements and its matches (the module
+    docstring's step 2 carries the measurement); R-CC75 made that two sets,
+    and R-CC84 made them one again.
 
     **The payback chain goes either way**, because
     :func:`~app.services.credit_workflow.delete_payback_on_source_delete` hard-
@@ -160,16 +206,29 @@ def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
     that outlived a soft-deleted source would inflate the next period with no
     offsetting credit row.
 
+    **Whether the row is one un-archiving would bring back is asked HERE,
+    once** (ruling **R-CC86**; CC-5-4a-4's third review, L2): the dialog's
+    read and the press both call this, so the value has one producer rather
+    than a copy in each.  Read before anything is written, while the row's
+    status is the one the owner saw.  It names un-archive's candidate set,
+    and the dialog's words carry the exception (ruling **R-CC112**).
+
     Args:
         txn: The row being deleted.
 
     Returns:
-        ``(soft, leaving)`` -- whether the row stays as a tombstone, and every
-        row this commit really removes from the table.
+        ``(soft, comes_back_on_unarchive, rows)`` -- whether the row stays as
+        a tombstone, whether it is one archiving and then un-archiving its
+        item would bring back unless the books have moved over it (a soft
+        delete of a row still Projected), and every row whose movements go
+        (*txn* first).
     """
     soft = txn.recurs
-    chain = credit_workflow.live_payback_chain(txn)
-    return soft, ([] if soft else [txn]) + chain
+    return (
+        soft,
+        soft and is_projected(txn),
+        [txn, *credit_workflow.live_payback_chain(txn)],
+    )
 
 
 def preview_deletion(
@@ -194,14 +253,13 @@ def preview_deletion(
     """
     if last_row_of_definition is None:
         last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
-    soft, leaving = _leaves_the_table(txn)
+    soft, comes_back, rows = _leaves_the_books(txn)
     return RowDeletion(
         soft=soft,
-        paybacks=tuple(
-            row.name for row in leaving if row.id != txn.id
-        ),
-        withdrawn=match_withdrawal.pending_for_rows(leaving),
+        paybacks=tuple(row.name for row in rows[1:]),
+        withdrawn=match_withdrawal.pending_for_rows(rows),
         disposes_definition=last_row_of_definition,
+        comes_back_on_unarchive=comes_back,
     )
 
 
@@ -258,18 +316,19 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if refusal is not None:
         raise ValidationError(refusal)
 
-    soft, leaving = _leaves_the_table(txn)
-    paybacks = tuple(row.name for row in leaving if row.id != txn.id)
+    soft, comes_back, rows = _leaves_the_books(txn)
+    paybacks = tuple(row.name for row in rows[1:])
     # The definition is read off the row BEFORE the row is deleted: the
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
     definition = txn.template if last_row_of_definition else None
-    for row in [txn, *(row for row in leaving if row is not txn)]:
+    for row in rows:
         posting_service.reverse_postings_before_delete(row)
+    # Over every row, on both arms (rulings R-CC75, R-CC84): a tombstone keeps
+    # its place in the table and nothing it held, and counts as gone.
     withdrawn = movement_removal.remove_movements(
-        [movement for row in leaving for movement in row.entries],
-        owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
-        rows_leaving=leaving,
+        [movement for row in rows for movement in row.entries],
+        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=rows,
     )
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)
 
@@ -285,4 +344,5 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     return RowDeletion(
         soft=soft, paybacks=paybacks, withdrawn=withdrawn,
         disposes_definition=last_row_of_definition,
+        comes_back_on_unarchive=comes_back,
     )

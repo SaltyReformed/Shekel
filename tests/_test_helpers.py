@@ -6499,8 +6499,8 @@ def bare_expense_template(
     ``ck_transactions_one_pricing_link`` to ``= 1``, so a bare row must name
     a definition to be storable at all.  A rule-less definition of the
     owner's is the one such a row would have had the grid mint it
-    (**R-BAL20**), and this is the shared builder of that shape (the trigger
-    benchmark keeps a local one beside its clock, ``test_trigger_overhead
+    (**R-BAL20**), and this is the shared builder of that shape (the audit
+    trigger's workloads keep a local one, ``tests._audit_trigger_workloads
     ._rule_less_definition``); each such row takes its OWN definition,
     because two undated rows of one definition in one paycheck collide on
     ``idx_transactions_template_scenario_undated`` and two dated ones on the
@@ -8011,6 +8011,105 @@ def advisory_lock_precedes(statements, *table_names):
         if read_at is not None and read_at < lock_at:
             return False
     return True
+
+
+#: How long an acquisition the test EXPECTS to be blocked waits before
+#: PostgreSQL cancels it -- long enough that the free-key controls never trip
+#: it on a loaded host, short enough that a genuinely blocked statement fails
+#: the test in under a second.
+OWNER_LOCK_BLOCK_TIMEOUT_MS = 750
+
+
+def owner_lock_key(owner_id):
+    """Return the ``(namespace, key)`` pair the owner's write lock is taken on.
+
+    Args:
+        owner_id: The owning user's id.
+
+    Returns:
+        The pair :func:`advisory_lock_keys` reports for that owner.
+    """
+    # Deferred like the imports above: this module can be imported before the
+    # app's extensions are configured.
+    # pylint: disable-next=import-outside-toplevel
+    from app.services.user_write_lock import _USER_WRITE_LOCK_NAMESPACE
+    return (_USER_WRITE_LOCK_NAMESPACE, owner_id)
+
+
+class HeldOwnerKey:
+    """A second connection holding one owner's write lock until the block ends.
+
+    The pattern every test that proves the lock SERIALISES uses: a transaction
+    on its own connection takes the owner's key, the code under test runs and
+    must wait, and leaving the block rolls the holder back -- releasing the
+    key -- even when an assertion inside it failed.  ``connection`` is open
+    for the block, so a test can also write through the holder (committed by
+    nothing; rolled back with it).
+    """
+
+    def __init__(self, owner_id):
+        """Remember whose key to hold.
+
+        Args:
+            owner_id: The owner whose write lock the connection takes.
+        """
+        self.owner_id = owner_id
+        self.connection = None
+
+    def __enter__(self):
+        """Open the connection and take the key inside its transaction."""
+        # pylint: disable-next=import-outside-toplevel
+        from sqlalchemy import text
+        # pylint: disable-next=import-outside-toplevel
+        from app.extensions import db
+        namespace, key = owner_lock_key(self.owner_id)
+        self.connection = db.engine.connect()
+        self.connection.execute(
+            text("SELECT pg_advisory_xact_lock(:ns, :owner)"),
+            {"ns": namespace, "owner": key},
+        )
+        return self
+
+    def __exit__(self, *exc_info):
+        """Release the key by ending the holder's transaction, then close."""
+        self.connection.rollback()
+        self.connection.close()
+
+
+def bound_lock_waits():
+    """Bound this session's transaction's lock waits to :data:`OWNER_LOCK_BLOCK_TIMEOUT_MS`.
+
+    Issued on the test's own session.  Under the test client a COMMAND
+    request runs in the transaction already open on that session (the app
+    context is shared, and :mod:`app.db_transaction` gives only a QUERY its
+    own transaction), so the request's acquisition inherits the bound.  It
+    only SHORTENS a wait: pair it with :func:`assert_timed_out_on_owner_key`,
+    because a timeout on any other lock reads the same.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from sqlalchemy import text
+    # pylint: disable-next=import-outside-toplevel
+    from app.extensions import db
+    db.session.execute(
+        text(f"SET LOCAL lock_timeout = '{OWNER_LOCK_BLOCK_TIMEOUT_MS}ms'"),
+    )
+
+
+def assert_timed_out_on_owner_key(error, owner_id):
+    """Assert *error* is a lock timeout on *owner_id*'s write lock, not another.
+
+    A timeout on any other lock -- a row the test holds, or the holder's own
+    acquisition -- reads the same in its message, so the statement that timed
+    out and its bound key are what is graded.
+
+    Args:
+        error: The :class:`~sqlalchemy.exc.OperationalError` raised.
+        owner_id: The owner whose key was held.
+    """
+    assert "lock timeout" in str(error).lower(), error
+    assert advisory_lock_keys([(error.statement, error.params)]) == [
+        owner_lock_key(owner_id),
+    ], error.statement
 
 
 def linked_ledger_total(account_id):

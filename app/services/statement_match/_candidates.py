@@ -69,7 +69,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import aliased, contains_eager, joinedload, selectinload
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app.extensions import db
 from app.models.account import Account
@@ -144,54 +144,6 @@ class MatchedSubjects:
     entries: "frozenset[int]"
 
 
-def act_still_names_a_row():
-    """Return the EXISTS that makes a membership a live CLAIM.
-
-    **A match asserts that these bank lines ARE these app rows, and the
-    movement key CASCADES** (``fk_statement_match_members_entry_account``,
-    ``ondelete="CASCADE"``).  So destroying the last movement an act names --
-    a purchase, or a row's payment with the row or on its own -- leaves the
-    act holding its LINE alone -- and the line went on
-    reading as explained, permanently, because "explained" was membership and
-    nothing else.  It could then never be offered or matched again, whatever
-    the review screen showed.
-
-    **This is the invariant, and the writer beside it is the cleanup.**  The
-    one act that takes a movement off the books
-    (:mod:`app.services.movement_removal`, plan step ``credit_card:CC-5-4a-3``)
-    withdraws such an act at every door that removes a movement THROUGH it,
-    so the false record goes and the press can say which lines it freed.
-    Three doors remove movements without it: ``routes/templates/crud``'s
-    permanent delete and the account delete remove rows in BULK SQL, and
-    ``pay_period_write.retire_paydays`` through a database cascade (finding
-    **CC-363**; adversarial review, 2026-08-25, measured the template
-    hard-delete reaching the state from a shipped button).  A rule enforced
-    by enumeration is a rule the next door forgets, so until plan step
-    ``credit_card:CC-5-4a-4`` this predicate in the one query that decides is
-    what holds; that step ends it at the root (ruling **R-CC54**: a row
-    holding a movement is history those doors keep, and neither of a match's
-    keys cascades) and deletes it.
-
-    **Applying it to the WHOLE member scan is exact rather than convenient.**
-    The EXISTS is true for every member of an act that holds an app row, so
-    filtering the scan changes only the LINE set -- an act with no app-side
-    member has no movement membership left to filter.
-
-    Returns:
-        A correlated ``EXISTS`` over the outer
-        :class:`~app.models.statement_match.StatementMatchMember`.
-    """
-    sibling = aliased(StatementMatchMember)
-    return (
-        db.session.query(sibling)
-        .filter(
-            sibling.match_id == StatementMatchMember.match_id,
-            sibling.transaction_entry_id.isnot(None),
-        )
-        .exists()
-    )
-
-
 def matched_subjects(account_id: int) -> MatchedSubjects:
     """Return every subject *account_id* has already matched, by kind.
 
@@ -199,9 +151,19 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
     table's rows are an exclusive arc, so a single scan of the account's
     members partitions itself.
 
-    **A member of an act that no longer names any app row is NOT a claim** --
-    see :func:`act_still_names_a_row` for the whole argument and what it costs
-    without.
+    **Every membership is a claim, with no filter** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC54**: "The screens'
+    leftover-match check is deleted").  An act that had lost its last
+    movement kept its bank line alone, and this scan filtered such an act's
+    members out (``act_still_names_a_row``) so the line would not read as
+    explained forever.  That act is unrepresentable now rather than
+    filtered: the member's movement key is NO ACTION
+    (``fk_statement_match_members_entry_account``), so no statement can
+    destroy a movement an act names, and the ONE act that takes a movement
+    off the books (:mod:`app.services.movement_removal`) takes it out of its
+    matches first, withdrawing an act it leaves naming no movement.  The
+    migration that flipped the key (``c4a4e7d1b9f2``) refused to run over
+    any act already in that state.
 
     Args:
         account_id: The account whose matches to read.
@@ -214,10 +176,7 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
             StatementMatchMember.bank_statement_line_id,
             StatementMatchMember.transaction_entry_id,
         )
-        .filter(
-            StatementMatchMember.account_id == account_id,
-            act_still_names_a_row(),
-        )
+        .filter(StatementMatchMember.account_id == account_id)
         .all()
     )
     return MatchedSubjects(

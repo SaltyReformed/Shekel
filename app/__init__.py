@@ -109,9 +109,16 @@ def create_app(config_name=None, *, init_ref_cache=True):
         user = db.session.get(User, int(user_id))
         if user is None:
             return None
-        # Flask-Login's UserMixin.is_authenticated always returns True.
-        # We must explicitly reject inactive users here so that deactivating
-        # a user immediately invalidates all of their existing sessions.
+        # Flask-Login's UserMixin.is_authenticated returns ``is_active``
+        # (0.6.3), so a deactivated user loaded here would read as signed
+        # out anyway.  Rejected explicitly all the same, so that deactivating
+        # a user invalidates all of their existing sessions by this loader's
+        # own rule rather than by a library default a mixin override or an
+        # upgrade could change.  That default still carries one guarantee:
+        # a save that waited on its owner's write lock is turned away when its
+        # user was deactivated during the wait, because the login gate re-reads
+        # ``is_active`` through it after this loader ran (plan step
+        # balance:X-bn; pinned by tests/test_routes/test_xbn_sign_in_lock.py).
         if not user.is_active:
             return None
         # Check whether this session was created before the most recent
@@ -305,16 +312,22 @@ def _bind_extensions(app):
     helpers beside it already are, so the factory reads as a list of what an
     application HAS rather than as the wiring of each.
 
-    **The boundary's position in this function decides nothing, and saying so
-    is the correction to what this paragraph used to claim.** It registered no
-    before-request hook at plan step balance:X-i3's correction: the request's
-    kind is decided by a ``request_started`` receiver, which Flask sends before
-    it runs ANY before-request hook, so no registration order here can put a
-    statement in front of it. The paragraph this replaces argued the opposite
-    -- that the position "decides only which hook opens the request's first
-    transaction" -- and that sentence is exactly what the correction refutes,
-    because that first transaction was the one running outside the render's own
-    snapshot.
+    **The boundary's position in this function decides ONE thing, and it is
+    not the request's kind.** The kind is decided by a ``request_started``
+    receiver, which Flask sends before it runs ANY before-request hook, so no
+    registration order here can put a statement in front of it (the paragraph
+    this once replaced argued the opposite, and plan step balance:X-i3's
+    correction refuted it). What the position DOES decide, since plan step
+    balance:X-bn, is that the boundary's one before-request hook -- the one
+    that takes a signed-in request's owner lock -- is registered after
+    ``csrf`` and ``limiter``'s, so Flask runs it after the form-token check and
+    the app-wide rate limit, and a request either one refuses never waits for
+    that lock or holds it (ruling R-CC122). Moving the call above
+    ``csrf.init_app``, or between it and ``limiter.init_app``, would undo that
+    silently: the hook-order list in ``tests/test_routes/test_auth_required.py``
+    fails on either move, and the form-token arm of
+    ``tests/test_routes/test_xbn_sign_in_lock.py`` on the first (``TestConfig``
+    switches the limiter off, so no behavioural arm reaches the second).
 
     ``setup_logging``'s hook still RESOLVES the acting user and hands it to
     :func:`app.db_transaction.bind_request_actor`, which tells the transaction

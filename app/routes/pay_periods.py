@@ -185,12 +185,14 @@ def _record_periods(door, num_periods, added):
         new_periods = door(current_user.id, num_periods)
         populate_new_periods(current_user.id, new_periods)
     except ValidationError as exc:
-        # Rolled back before the redirect: each door takes the per-user
-        # advisory lock, and whichever of the two calls above ran before the
-        # refusal may have flushed -- the door's own refusals run before its
-        # first durable statement, the repopulation's do not. The page this
-        # redirects to reads the owner's schedule back, so it reads committed
-        # state either way.
+        # Rolled back before the redirect: this request's command transaction
+        # holds the owner's write lock, which it took before this view read
+        # anything of the owner's (plan step ``balance:X-bn``,
+        # :mod:`app.db_transaction`; no door takes it), and whichever of the
+        # two calls above ran before the refusal may have flushed -- the
+        # door's own refusals run before its first durable statement, the
+        # repopulation's do not. The page this redirects to reads the owner's
+        # schedule back, so it reads committed state either way.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()

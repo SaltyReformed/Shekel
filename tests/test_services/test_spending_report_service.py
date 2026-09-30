@@ -31,6 +31,8 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
+    match_withdrawal,
+    movement_removal,
     spending_analysis,
     status_seam,
     transfer_service,
@@ -315,6 +317,12 @@ class TestBreakdown:
         Seeds one settled expense (included) plus a projected, a credit, a
         cancelled, a settled income, a deleted expense, and a settled expense
         in a DIFFERENT period -- all excluded.  Spent total is the one row.
+
+        The deleted expense is built as the delete door leaves it (ruling
+        R-CC75): settled, its payment taken off through the one removal act,
+        then hidden -- the database refuses a payment under a hidden row
+        (R-CC89) and a row hidden holding one (R-CC92).  Rule-5
+        re-expression, developer-confirmed 2026-09-23.
         """
         with app.app_context():
             _txn(db, seed_user, seed_periods[0], "Kept", "Rent", "500.00")
@@ -326,8 +334,13 @@ class TestBreakdown:
                  status_enum=StatusEnum.CANCELLED)
             _txn(db, seed_user, seed_periods[0], "Inc", "Salary", "999.00",
                  actual="999.00", is_income=True, status_enum=StatusEnum.RECEIVED)
-            _txn(db, seed_user, seed_periods[0], "Del", "Rent", "999.00",
-                 actual="999.00", is_deleted=True)
+            deleted = _txn(db, seed_user, seed_periods[0], "Del", "Rent",
+                           "999.00", actual="999.00")
+            movement_removal.remove_movements(
+                list(deleted.entries), seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            deleted.is_deleted = True
             _txn(db, seed_user, seed_periods[1], "Other", "Rent", "999.00")
             db.session.commit()
 

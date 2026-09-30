@@ -515,10 +515,29 @@ class Transaction(
     credit_payback_for = db.relationship(
         "Transaction", remote_side="Transaction.id", foreign_keys=[credit_payback_for_id]
     )
+    # **A ROW'S DELETE NEVER TAKES ITS MOVEMENTS, at this layer or the
+    # database's** (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC54**
+    # and **R-CC64**).  A payment or a purchase is money that moved, and a
+    # row holding one is history: the ONE act that takes a movement off the
+    # books (:mod:`app.services.movement_removal`) deletes each movement
+    # itself, and nothing else may.  So this relationship carries no
+    # ``delete`` cascade and no ``delete-orphan``, and ``passive_deletes="all"``
+    # tells the unit of work to leave the children to the database, whose
+    # ``transaction_id`` keys are ``NO ACTION``: deleting a row object still
+    # holding a movement is REFUSED at flush rather than silently emitting the
+    # movement's ``DELETE`` first, which is what ``cascade="all,
+    # delete-orphan"`` did until this step -- a second copy of the database's
+    # own cascade one tier up, so flipping the key alone would have protected
+    # only the bulk statements (measured on SQLAlchemy 2.0.54: with this shape
+    # the parent's ``DELETE`` meets the key; ``passive_deletes="all"`` cannot
+    # sit beside either delete cascade).  ``refresh-expire`` and ``expunge``
+    # are kept from ``all``: they move session state, never a row.
     entries = db.relationship(
         "TransactionEntry", back_populates="transaction",
         foreign_keys="TransactionEntry.transaction_id",
-        lazy="select", cascade="all, delete-orphan",
+        lazy="select",
+        cascade="save-update, merge, refresh-expire, expunge",
+        passive_deletes="all",
         # Ordered by the day the purchase was MADE, not the day the bank took
         # it: this list is what the user reads back as "what I spent on this
         # envelope", which is a budget-clock question.

@@ -598,16 +598,22 @@ def _still_holds(
 ) -> bool:
     """Return whether an accepted match still says what it said when accepted.
 
-    Three questions, because a CASCADE can falsify a match without touching a
-    single day:
+    Two questions, because a group can lose a member, or a member stop
+    contributing, without touching a single day:
 
-    * it still names at least one app row (``all([])`` is True, so a match that
-      lost every row would otherwise report agreement while explaining nothing,
-      and its bank line would stay off the unexplained list permanently);
     * every row still carries the day the match asserted;
     * the rows still SUM to what the bank stated -- the invariant
       :func:`~._accept.accept_match` checks before it writes, asked again of
       what survives.
+
+    **A third came first until plan step ``credit_card:CC-5-4a-4``: whether
+    the act still named ANY app row** (``all([])`` is True, so a match that
+    had lost every row -- its movements destroyed by a cascade -- reported
+    agreement while explaining nothing).  The leftover-match check is deleted
+    with that step (ruling **R-CC54**): the movement's key is NO ACTION and
+    the one act that takes a movement off the books withdraws an act it
+    empties, so an act with no app row is unrepresentable rather than caught
+    here.
 
     Args:
         rows: The act's app-row members as the screen holds them.
@@ -619,8 +625,6 @@ def _still_holds(
         SUM rather than by the day: it keeps its ``settled_on`` and contributes
         nothing to any balance, so only the total can see it has gone.
     """
-    if not rows:
-        return False
     if any(row.settled_on != posts_on for row in rows):
         return False
     # **Through the door's OWN derivation** (plan step ``bank_import:X-f6d-4``).

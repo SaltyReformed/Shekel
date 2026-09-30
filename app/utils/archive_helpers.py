@@ -22,7 +22,23 @@ That last clause has since been paid out twice.  ``Settled`` -- the terminal
 ARCHIVE -- joined the band and then LEFT it at plan step **balance:X-am**, and
 neither change touched a line in this module, because none of these predicates
 ever named a status.
+
+**A row holding a PAYMENT or a PURCHASE is history too, whatever its status**
+(plan step ``credit_card:CC-5-4a-4``, rulings **R-CC54**, **R-CC63**,
+**R-CC65**).  A movement is money that moved (ruling **R-BAL80**), and a
+Projected envelope holding a bank-confirmed purchase is exactly as much a
+record as a Paid bill.  The ``*_holding_movements`` family below asks it of a
+definition, a recurring transfer and an account, and :func:`holds_nothing` is
+the clause an archive keeps such rows OUT of; the pay-period doors ask it per
+period (``pay_period_locks``).  Until that step these doors judged "history"
+by row STATUS alone, and a permanent delete permitted on that answer
+destroyed the purchase with its row (finding **CC-363**, measured 2026-09-22
+on a copy of production: one recorded purchase under one definition).  The keys
+refuse such a delete now (``fk_transaction_entries_transaction_id``, NO
+ACTION), so these predicates are what turn the refusal into a designed one.
 """
+
+from dataclasses import dataclass
 
 from app.extensions import db
 from app.models.journal_entry import Posting
@@ -34,6 +50,276 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
+
+
+def holds_a_movement():
+    """Return the clause selecting a row that holds a payment or purchase.
+
+    **The ONE spelling of the FILTER "does this row hold a movement"**
+    (CC-5-4a-4's first review, L4): the archives' :func:`holds_nothing`
+    negates it, the transfer archive's :func:`transfer_holds_nothing` asks it
+    of each leg, and the pay-period lock and reset gate
+    (``pay_period_locks``, ``pay_period_gates``) filter on it.  Two readers
+    ask more than it and join the movements themselves:
+    :func:`rows_holding_movements` aggregates WHICH kind they are, and
+    ``recurrence_engine._maintain``'s retire asks a wider question (an entry
+    OR a note).  The
+    relationship's own ``EXISTS`` over ``budget.transaction_entries``, hidden
+    rows included -- a row's ``is_deleted`` does not change what it holds.  A
+    function rather than a module constant: building a relationship's clause
+    configures the mappers, which an import must not.
+
+    Returns:
+        An ``EXISTS`` clause correlated to ``Transaction``.
+    """
+    return Transaction.entries.any()
+
+
+def holds_nothing():
+    """Return the clause that keeps every row holding a movement OUT of a scope.
+
+    The archives' (ruling **R-CC63**: "Archive hides only rows that hold
+    nothing"), added to the ``Transaction`` query a bulk soft-delete runs
+    over: :func:`holds_a_movement`, negated.
+
+    Returns:
+        A ``NOT EXISTS`` clause correlated to ``Transaction``.
+    """
+    return ~holds_a_movement()
+
+
+def transfer_holds_nothing():
+    """Return :func:`holds_nothing` asked of a TRANSFER: neither leg holds one.
+
+    A transfer's money is its two shadows' movements, so the transfer archive
+    keeps a transfer either of whose legs holds a payment (ruling **R-CC65**)
+    -- :func:`holds_a_movement`, reached through the shadows.
+
+    Returns:
+        A ``NOT EXISTS`` clause correlated to ``Transfer``.
+    """
+    return ~Transfer.shadow_transactions.any(holds_a_movement())
+
+
+@dataclass(frozen=True)
+class HeldMovements:
+    """What a set of rows holds that makes it history: payments, purchases, or both.
+
+    The answer of the ``*_holding_movements`` family, carrying the one thing
+    each door's sentence needs beyond yes / no -- WHICH kind of movement, so
+    the flash names what the owner recorded (ruling **R-CC66**, "Name what it
+    holds") rather than calling an unpaid envelope's purchase payment history.
+    A PAYMENT is a settle's covering movement (``covers_settlement``), kept
+    un-dated across a revert (ruling **R-BAL61**); a PURCHASE is everything
+    else a person or the bank recorded.
+
+    Attributes:
+        payment: Any held movement is a payment.
+        purchase: Any held movement is a purchase.
+        live_rows: How many of the holding rows are NOT soft-deleted -- the
+            rows a fallback archive leaves on the owner's budget -- counted
+            as the owner sees them: TRANSFERS for a transfer's legs, so a
+            transfer whose two legs each hold its payment is one.
+    """
+
+    payment: bool
+    purchase: bool
+    live_rows: int
+
+    def __bool__(self) -> bool:
+        """Whether anything is held at all."""
+        return self.payment or self.purchase
+
+    @property
+    def noun(self) -> str:
+        """The sentence's object: 'a recorded purchase', payment, or both."""
+        if self.payment and self.purchase:
+            return "a recorded payment and purchase"
+        return "a recorded payment" if self.payment else "a recorded purchase"
+
+    def stays(self, thing: str, *, named: bool) -> str:
+        """The clause saying which kept rows stay: '' when none is live.
+
+        Ruling **R-CC66**'s own shape -- "the row holding it stays on your
+        budget" -- counted, and with the movement NAMED where the sentence
+        has not already named it (an archive's receipt).
+
+        Args:
+            thing: What a holding row is to the owner ("row", "transfer").
+            named: Say what it holds (``True``), or refer back with "it"
+                (``False``).  Several rows always name it, in the plural:
+                the sentence before them said "a recorded purchase", which
+                "them" cannot refer back to.
+
+        Returns:
+            The clause, without a capital or a full stop.
+        """
+        if self.live_rows == 0:
+            return ""
+        if self.live_rows == 1:
+            what = self.noun if named else "it"
+            return f"the {thing} holding {what} stays on your budget"
+        if self.payment and self.purchase:
+            what = "recorded payments and purchases"
+        else:
+            what = "recorded payments" if self.payment else "recorded purchases"
+        return (
+            f"the {self.live_rows} {thing}s holding {what} stay on your budget"
+        )
+
+
+def rows_holding_movements(*row_scope, counted_by=None) -> HeldMovements:
+    """Return what the rows matching *row_scope* hold, in ONE statement.
+
+    The shared body of the ``*_holding_movements`` family, and the archives'
+    own receipt (what :func:`holds_nothing` kept): one aggregate over
+    every movement under a matching row, so the three facts
+    :class:`HeldMovements` carries come back together.  ``bool_or`` over no
+    movements is NULL, read as ``False``.
+
+    Args:
+        *row_scope: Clauses over ``Transaction`` selecting the rows the door
+            would remove -- soft-deleted ones included, because a delete
+            takes those too.
+        counted_by: The column whose distinct values ``live_rows`` counts --
+            ``Transaction.id`` (the default), or ``Transaction.transfer_id``
+            where the owner's unit is the transfer, not its two legs.
+
+    Returns:
+        The rows' :class:`HeldMovements`.
+    """
+    unit = Transaction.id if counted_by is None else counted_by
+    payment, purchase, live_rows = (
+        db.session.query(
+            db.func.bool_or(TransactionEntry.covers_settlement),
+            db.func.bool_or(TransactionEntry.covers_settlement.is_(False)),
+            db.func.count(db.distinct(unit)).filter(
+                Transaction.is_deleted.is_(False),
+            ),
+        )
+        .join(TransactionEntry.transaction)
+        .filter(*row_scope)
+        .one()
+    )
+    return HeldMovements(
+        payment=bool(payment), purchase=bool(purchase), live_rows=live_rows,
+    )
+
+
+def template_holding_movements(template_id: int) -> HeldMovements:
+    """Return what a definition's rows hold -- any row, any status, soft-deleted too.
+
+    Asked by ``routes/templates/crud.hard_delete_template`` after
+    :func:`template_has_paid_history` and before the merchant-rule question: a
+    definition whose rows hold a payment or purchase is archived instead of
+    deleted (ruling **R-CC54**), because its permanent delete removes every
+    non-settled row it names, soft-deleted ones included.
+
+    Args:
+        template_id: The TransactionTemplate.id to check.
+
+    Returns:
+        Its rows' :class:`HeldMovements`; falsy when none holds one.
+    """
+    return rows_holding_movements(Transaction.template_id == template_id)
+
+
+def transfer_template_holding_movements(template_id: int) -> HeldMovements:
+    """Return what a recurring transfer's legs hold -- any transfer, soft-deleted too.
+
+    A transfer's money is its two shadows' movements; a Projected transfer
+    holds one only as a reverted settle's KEPT payment, which may still be
+    matched to the bank's line.  Its permanent delete removes every
+    non-settled transfer through the transfer service, so one holding a
+    payment is archived instead (ruling **R-CC65**).
+
+    Args:
+        template_id: The TransferTemplate.id to check.
+
+    Returns:
+        Its legs' :class:`HeldMovements`; falsy when none holds one.
+    """
+    return transfers_holding_movements(
+        Transfer.transfer_template_id == template_id,
+    )
+
+
+def legs_of_transfers(*transfer_scope):
+    """Return the clause selecting the shadow rows of the transfers matching *transfer_scope*.
+
+    **This module's one spelling of a transfer's legs as a row scope**
+    (CC-5-4a-4's reviews, L4): :func:`transfers_holding_movements` and
+    :func:`account_holding_movements`' transfer arm both ask it.  Not the
+    application's: ``reconcile_service/_transfers.py`` and
+    ``statement_match/_candidates.py`` spell the same ``IN`` inline.
+
+    Args:
+        *transfer_scope: ``Transfer`` filter clauses.
+
+    Returns:
+        An ``IN`` clause on ``Transaction.transfer_id``.
+    """
+    return Transaction.transfer_id.in_(
+        db.session.query(Transfer.id).filter(*transfer_scope)
+    )
+
+
+def transfers_holding_movements(*transfer_scope) -> HeldMovements:
+    """Return what the legs of the transfers matching *transfer_scope* hold.
+
+    The recurring-transfer permanent delete's refusal
+    (:func:`transfer_template_holding_movements`) and the transfer archive's
+    receipt (``routes/transfers/lifecycle._archive``) both ask it.  Counted by
+    TRANSFER, so a transfer whose two legs each hold its payment is one kept
+    transfer to the owner.
+
+    Args:
+        *transfer_scope: ``Transfer`` filter clauses.
+
+    Returns:
+        The legs' :class:`HeldMovements`; falsy when none holds one.
+    """
+    return rows_holding_movements(
+        legs_of_transfers(*transfer_scope),
+        counted_by=Transaction.transfer_id,
+    )
+
+
+def account_holding_movements(account_id: int) -> HeldMovements:
+    """Return what the rows an account's permanent delete would remove hold.
+
+    The account door's cleanup deletes every transfer from or to the account
+    (both legs), every row ON it, and every row under one of its rule-less
+    definitions (``routes/accounts/crud.hard_delete_account``, steps 1-2b).
+    Its history arm already archives the account for any LIVE such row, so
+    what this adds is the soft-deleted ones: a hidden row still holding a
+    payment or purchase (ruling **R-CC65**).  Not the movements ON this
+    account under another account's rows --
+    :func:`account_holds_other_rows_movements` asks that, with its own
+    sentence.
+
+    Args:
+        account_id: The Account.id to check.
+
+    Returns:
+        The removable rows' :class:`HeldMovements`; falsy when none holds one.
+    """
+    return rows_holding_movements(
+        db.or_(
+            Transaction.account_id == account_id,
+            Transaction.template_id.in_(
+                db.session.query(TransactionTemplate.id).filter(
+                    TransactionTemplate.account_id == account_id,
+                )
+            ),
+            legs_of_transfers(
+                db.or_(
+                    Transfer.from_account_id == account_id,
+                    Transfer.to_account_id == account_id,
+                ),
+            ),
+        ),
+    )
 
 
 def template_has_paid_history(template_id: int) -> bool:
@@ -248,20 +534,26 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     door's ``DELETE`` as a 500 rather than as the designed archive every
     other kind of history gets.
 
-    **The set is exactly what the door's cleanup cannot dispose of**, stated
-    the way the row arm states its own.  The door deletes every row ON the
-    account (step 2) and every row UNDER one of the account's rule-less
-    definitions (step 2b, ``definition_delete.permanently_delete_definition``;
-    guard 3 has already refused a recurring one), and a movement cascades
-    with its row (``fk_transaction_entries_owner_transaction``).  So a
-    movement on this account survives the cleanup exactly when its row is
-    NEITHER on the account NOR under one of its definitions -- a plan item
-    that lives elsewhere and whose money crossed here -- and that is the
-    movement this counts, whatever its row's ``is_deleted`` says: a
-    soft-deleted checking envelope keeps its card swipe, the row is not
+    **The set is the movements ON this account whose row the door's cleanup
+    does not remove**, stated the way the row arm states its own.  The door
+    deletes every row ON the account (step 2) and every row UNDER one of the
+    account's rule-less definitions (step 2b,
+    ``definition_delete.permanently_delete_definition``; guard 3 has already
+    refused a recurring one), so a movement on this account under a row that
+    is NEITHER -- a plan item that lives elsewhere and whose money crossed
+    here -- is what this counts, whatever its row's ``is_deleted`` says.  (A
+    hidden row that is not a transfer's leg holds none, which the database
+    holds: none can arrive under a hidden row, ruling **R-CC89**; no row can
+    be hidden holding one, **R-CC92**; neither in either order of a race,
+    because the arrival check locks the row, **R-CC96**; and the release's
+    migration refuses to inherit one, **R-CC82**.  A hidden leg can still hold its kept payment,
+    finding **BAL-532**.  The count relies on none of this.)  The row is not
     checking's ghost to hard-delete, and the swipe still names the card.  A
-    movement whose row IS the account's is left to the row arm: live, the
-    row already archives the account; a ghost, step 2 takes both.
+    movement under a row the cleanup DOES remove is
+    :func:`account_holding_movements`' (plan step ``credit_card:CC-5-4a-4``):
+    until that step a ghost's movement cascaded with it
+    (``fk_transaction_entries_owner_transaction``), and now a row holding
+    one archives the account instead.
 
     Args:
         account_id: The Account.id to check.

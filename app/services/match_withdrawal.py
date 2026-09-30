@@ -17,31 +17,39 @@ loss is exactly what
 :attr:`~app.services.statement_match.AcceptedGroup.agrees` is for -- it fails
 the SUM, tints the act amber and offers the Undo -- so this writer fires on the
 one case that flag cannot repair by itself: an act with nothing left to
-re-review.  The two mechanisms now split on a predicate rather than shadowing
-each other, and the predicate is ``_still_holds``' own first branch.
+re-review.  The two mechanisms split on one predicate rather than shadowing
+each other -- :func:`_loses_every_row` -- which was also ``_still_holds``' own
+first branch until plan step ``credit_card:CC-5-4a-4`` made an act naming no
+app row unrepresentable and deleted that branch.
 
-**A SOFT delete withdraws nothing, and the CALLER is what says so** -- the
-going set is the rows that really leave the table
-(``transaction_service._delete._leaves_the_table``,
-``transfer_service.delete_transfer``'s ``if not soft``).  A member's foreign
-key CASCADES only on a real ``DELETE``, so a soft-deleted row keeps its
-membership and the act still names it; withdrawing anyway would destroy an
-accepted act for a change a shipped button reverses -- ``transfers.templates``
-un-archives through ``restore_transfer`` and ``transfer_recurrence`` restores
-soft-deleted shadows during a maintain pass.  A first build asserted this fell
-out of the cascade and it did not: the going set was the row regardless of arm,
-and a soft delete withdrew.  A soft-deleted row that records nothing is still
-:attr:`~app.services.statement_match.AcceptedGroup.agrees`' case, and that flag
-covers it.
+**Whether a SOFT delete withdraws is the CALLER's to say, and the two callers
+now say different things.**  A TRANSACTION's soft delete -- one occurrence of a
+recurring definition, kept as a tombstone -- takes the row's payments and
+purchases off through the one act exactly as its hard delete does (ruling
+**R-CC75**, developer 2026-09-23: *"Deleting the occurrence takes its payments
+and purchases off the books through the one removal act, exactly as deleting
+a one-off does"*), so an act the tombstone empties is withdrawn here and its
+line is unexplained again (``transaction_service._delete._leaves_the_books``;
+the tombstone counts as leaving, ruling **R-CC84**).  Until R-CC75 it withdrew
+nothing, on the argument that a shipped button reverses a soft delete; what
+that left was a hidden row holding money the balance does not count, under a
+match that read explained.  A
+TRANSFER's soft delete still withdraws nothing
+(``transfer_service.delete_transfer``'s ``if not soft``): its restore paths
+(``transfers.templates``' un-archive through ``restore_transfer``, and
+``transfer_recurrence``'s maintain pass) put the shadows back, and the kept
+payment a reverted leg holds under a soft-deleted shadow is ledger row
+**BAL-532**'s, owned by plan step ``balance:X-bi-6-4``.
 
 **What it does NOT do is remove rows the withdrawn act CREATED**, and the
 asymmetry is deliberate.  ``release_match`` is the owner's UNDO -- *withdraw
 this act, and take back what it made* -- and it refuses where the owner has
 edited a created row since.  This is a different act: the owner asked to delete
 ONE row, not to withdraw a decision.  What survives is COUNTED
-(:attr:`MatchWithdrawal.kept_rows`), and counted over the rows that ACTUALLY
-survive: a creation whose subject is in the going set is destroyed by the same
-press, and reporting it as kept is the *"Nothing moved."* shape this arc has
+(:attr:`MatchWithdrawal.kept_rows`), and counted over the rows the owner still
+has: a subject in the going set -- deleted by the same press, or a recurring
+occurrence the press empties and hides (ruling **R-CC84**) -- is not one, and
+reporting it as kept is the *"Nothing moved."* shape this arc has
 shipped once already (finding **N-336**).  A first build counted every creation
 of every withdrawn act, and both reviews measured it promising a `-$21.68`
 residual would stay while the press destroyed it.
@@ -75,25 +83,29 @@ transfer delete, and the status seam's ``$0.00`` / ``purchases`` record
 (finding **CC-358**: until this step the seam deleted the payment itself and
 withdrew nothing, so the act kept its line alone and a re-match raised on
 ``uq_statement_match_members_line``).  The member of an act that KEEPS
-another app row is taken out explicitly, as the move always did, rather than
-left to the member key's cascade: the act is the one path a movement leaves
-by, and plan step ``credit_card:CC-5-4a-4`` stops that key cascading.
+another app row is taken out explicitly, as the move always did: the act is
+the one path a movement leaves by, and the member key does not cascade.
 
-**The claim "every door" is still NOT made here, because it is still false.**
-Three BULK doors destroy movements without the act -- ``routes/templates/
-crud``'s permanent delete (``definition_delete``), the account delete's
-ghost rows, and ``pay_period_write.retire_paydays``' cascade -- because they
-judge what they may destroy by a row's STATUS rather than by what it holds
-(finding **CC-363**, measured: a permitted template delete erased a `$25.00`
-purchase recorded from a bank line, and the act kept its line alone).  Ruling
-**R-CC54** ends that at the root in plan step ``credit_card:CC-5-4a-4``: a row
-holding a movement is history those doors keep, and neither of a match's keys
-cascades.  Until then the INVARIANT rests on
-:func:`~app.services.statement_match.matched_subjects`' own predicate, which
-stops counting a bank line as explained while its act names no app row; that
-step deletes it.  What this module adds on top is the CLEANUP and the
-DISCLOSURE at the doors the owner actually presses: the false record goes
-rather than lingering, and the dialog names the lines the press frees.
+**"Every door" is structural since plan step ``credit_card:CC-5-4a-4``**
+(rulings **R-CC54**, **R-CC63**..**R-CC65**, closing finding **CC-363**).
+Three BULK doors destroyed movements without the act -- the template and
+account permanent deletes and the pay-period retire -- because they judged
+what they may destroy by a row's STATUS rather than by what it held
+(measured: a permitted template delete erased a `$25.00` purchase recorded
+from a bank line, and the act kept its line alone).  Now a row holding a
+movement is history those doors keep, and neither the row's key to its
+movements nor the member's key to its movement cascades, so no statement can
+empty an act behind this module's back.  The read-time predicate that
+stopped counting such an act's line as explained
+(``statement_match._candidates.act_still_names_a_row``) is DELETED with it:
+an act naming no app row is unrepresentable rather than filtered.  What this
+module adds is the CLEANUP and the DISCLOSURE: the act the press empties goes,
+and a door that discloses names the lines it frees before the press -- the row
+delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
+The grid's one-click Mark Paid withdraws and logs by ruling (**R-CC56**); the
+reconcile panel, carry-forward, the purchase delete and the Credit doors
+withdraw and log with no caption until plan step ``credit_card:CC-5-4a-5``
+(**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**).
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -164,8 +176,9 @@ class MatchWithdrawal:
     Attributes:
         matches: How many accepted acts are withdrawn.
         lines: The bank lines that become unexplained again.
-        kept_rows: How many rows those acts had CREATED that ACTUALLY survive
-            the press -- reported rather than silent, because a row the owner
+        kept_rows: How many rows those acts had CREATED that the owner still
+            has after the press (a deleted occurrence's hidden tombstone is not
+            one, ruling **R-CC84**) -- reported rather than silent, because a row the owner
             did not ask for and was not told about is exactly what a receipt is
             for.  **A creation whose subject is in the going set is NOT counted
             here**, and a first build counted it: both 2026-08-25 reviews
@@ -258,9 +271,10 @@ def _acts_naming(entry_ids: "set[int]") -> "list[StatementMatch]":
     that names that payment (ruling **R-CC43**) is on the CARD's account.
     Deleting the bill takes the payment with it, and an act lookup scoped to
     checking would have left that act standing while its member cascaded
-    away -- the false record :func:`~app.services.statement_match
-    .act_still_names_a_row` stops counting but this module exists to remove,
-    and the freed card line undisclosed by the dialog.
+    away -- an act naming a line and no movement, and the freed card line
+    undisclosed by the dialog.  (Since plan step ``credit_card:CC-5-4a-4``
+    the member key refuses rather than cascades, so a wrong scope here would
+    fail loud at the flush instead.)
 
     Args:
         entry_ids: Entry ids about to leave -- a purchase's, or a row's
@@ -299,9 +313,11 @@ def _loses_every_row(act: StatementMatch, entry_ids: "set[int]") -> bool:
         entry_ids: Movement ids about to leave the table.
 
     Returns:
-        ``True`` when every app-side member is in the going set.  An act
-        holding no app-side member at all answers ``True`` -- it already
-        asserts nothing, and taking it is the repair rather than a surprise.
+        ``True`` when every app-side member is in the going set.  Every act
+        reaching here names at least one of them (:func:`_acts_naming`), and
+        since plan step ``credit_card:CC-5-4a-4`` no act can name no movement
+        at all (ruling **R-CC54**), so the empty case this once answered
+        ``True`` for has no subject.
     """
     return all(
         member.transaction_entry_id in entry_ids
@@ -319,8 +335,10 @@ def _summarise(
 
     Args:
         acts: The acts, with ``members`` and ``creations`` loaded.
-        transaction_ids: Row ids about to leave the table, so a creation that
-            names one is not reported as staying.
+        transaction_ids: Row ids the press takes from the owner -- deleted,
+            or a recurring occurrence it empties and hides (ruling
+            **R-CC84**) -- so a creation that names one is not reported as
+            staying.
         entry_ids: Purchase ids about to leave the table, likewise.
 
     Returns:
@@ -361,11 +379,12 @@ def _summarise(
 
 
 def _subject_ids(rows) -> "tuple[set[int], set[int]]":
-    """Return every row and purchase id that leaves the table with *rows*.
+    """Return the ids of *rows* and of every movement they hold.
 
-    **Its purchases go with it, and so does its PAYMENT**: a hard delete
-    takes every entry under the row -- through the act that takes a movement
-    off the books (:mod:`app.services.movement_removal`, plan step
+    **Its purchases leave the books, and so does its PAYMENT**: a delete
+    takes every entry under the row, on either arm (ruling **R-CC75**) --
+    through the act that takes a movement off the books
+    (:mod:`app.services.movement_removal`, plan step
     ``credit_card:CC-5-4a-3``) before the row itself goes -- and a match
     naming one loses that member -- a purchase's member, or the covering
     movement's that every act names for a settled row (ruling **R-CC43**:
@@ -375,10 +394,13 @@ def _subject_ids(rows) -> "tuple[set[int], set[int]]":
     :func:`_summarise`: an act's creations may name a row.
 
     Args:
-        rows: The transactions about to be deleted, each with ``entries``
-            accessible.  The delete verb passes the row AND its live CC-payback
-            chain, because those go down in the same commit and a dialog that
-            named only the first would understate the press.
+        rows: The transactions whose movements the press takes off, each with
+            ``entries`` accessible -- the row AND its live CC-payback chain,
+            because those go down in the same commit and a dialog that named
+            only the first would understate the press.  A recurring row is
+            among them though it stays in the table as an emptied tombstone
+            (ruling **R-CC75**): the owner deleted it, so it counts as
+            leaving (ruling **R-CC84**).
 
     Returns:
         ``(transaction_ids, entry_ids)``.
@@ -422,8 +444,7 @@ def _withdraw(
 
     The members go with each act through the ORM cascade and the composite
     foreign key alike, which is what puts the lines back among the unexplained:
-    ``statement_match.matched_subjects`` stops counting a line whose act names
-    no app row.
+    no member names them any more.
 
     Args:
         acts: The acts to withdraw.
@@ -456,8 +477,10 @@ def pending_for_rows(rows) -> MatchWithdrawal:
     The read half, for the confirm dialog on a delete control: what
     :func:`app.services.movement_removal.remove_movements` withdraws when
     the delete verb hands it every movement of *rows* with *rows* leaving.
-    Runs on a popover render: one member query always, and the act and line
-    queries only where an act actually names one of these subjects.
+    A recurring row's tombstone is among them and counts as leaving (ruling
+    **R-CC84**: the owner deleted it, so no creation naming it is reported
+    as kept).  Runs on a popover render: one member query always, and the act
+    and line queries only where an act actually names one of these subjects.
 
     Args:
         rows: The transactions a screen is offering to delete -- the row the
@@ -493,8 +516,10 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     Like the delete dialog it names the ACTS the removal empties and the
     lines those free; a GROUP act that keeps another row is not named here,
     and the act still takes this member out of it and turns its ``agrees``
-    flag amber on the register -- the same silence the purchase-delete
-    dialog keeps over a group, stated so it reads as a choice and not a fact.
+    flag amber on the register, stated so it reads as a choice and not a fact.
+    (The purchase X itself says nothing before its press yet -- finding
+    **CC-367**, built in plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC80**.)
 
     Args:
         entries: The movements a screen is offering to remove or re-point.
@@ -546,9 +571,11 @@ def take_out_of_matches(
         owner_id: The owner under whose books the acts are filed.
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
-        rows_leaving: The rows going in the same press, when the caller is a
-            row delete -- so a creation that names one is not reported as
-            kept (:func:`_summarise`).  Empty when only movements go.
+        rows_leaving: The rows going in the same press, soft or hard (a
+            recurring occurrence's tombstone counts as gone, ruling
+            **R-CC84**), when the caller is a row delete -- so a creation that
+            names one is not reported as kept (:func:`_summarise`).  Empty
+            when only movements go.
 
     Returns:
         What was withdrawn, as the dialog's read would have printed it.

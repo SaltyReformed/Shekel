@@ -24,23 +24,27 @@ once its subject has gone.
 Undo CC's payback teardown, a Credit source's delete taking its payback chain
 down, and the transfer delete -- each reaching the rule through the ONE act
 that takes a movement off the books since plan step ``credit_card:CC-5-4a-3``
-(``movement_removal``).  Most assert only that the LINE is unclaimed, which
-the reader's predicate answers whether or not the act ran;
+(``movement_removal``).  Most assert that the LINE is unclaimed, which since
+plan step ``credit_card:CC-5-4a-4`` is true ONLY if the act ran: the reader
+counts every membership (the leftover-match predicate
+``_candidates.act_still_names_a_row`` is deleted, ruling **R-CC54**), so a
+line reads unclaimed only once its act is gone.
 ``test_cc5_4a3_movement_removal`` grades the ACT gone at Undo CC, the transfer
 delete and the entry-level payback's delete, and the status seam's ``$0.00`` /
 ``purchases`` record.
-The rule does NOT claim to be every door and a first draft did: an adversarial
-review measured ``routes/templates/crud``'s hard-delete reaching the same state
-from a shipped button, and more bulk paths beside it (finding **CC-363**).  So
-the INVARIANT is a predicate in the reader (``_candidates.act_still_names_a_row``)
-which every door obeys without knowing it exists, and
-:class:`TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule` grades that;
-what the doors add is the CLEANUP and the DISCLOSURE.
+Until that step the rule did NOT reach every door: an adversarial review
+measured ``routes/templates/crud``'s hard-delete reaching the same state from a
+shipped button, and more bulk paths beside it (finding **CC-363**), so the
+INVARIANT was that read-time predicate.  Now a door that does not call the rule
+cannot empty an act at all -- the movement's keys refuse the delete -- and
+:class:`TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule` grades that
+refusal; what the doors add is the CLEANUP and the DISCLOSURE.
 """
 
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -53,10 +57,6 @@ from app.models.statement_match import (
 )
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services.statement_match import (
-    NewEnvelope,
-    PurchaseCreation,
-)
 from app.services import (
     account_service,
     credit_workflow,
@@ -67,22 +67,16 @@ from app.services import (
     transfer_service,
 )
 
-# Pylint: protected-access -- ``MintedEnvelopes`` is an internal collaboration
-# between two PRIVATE modules of this package and has no importer outside it;
-# a test for the module reaches into it, which is the allowance every sibling
-# here takes (see ``test_release.py``).
-from app.services.statement_match import _create  # pylint: disable=protected-access
-
 from tests._test_helpers import open_books_before_the_first_assertion, typed
 from ._builders import (
     a_bank_line,
     a_later_period,
     a_purchase,
+    a_purchase_in_a_minted_envelope,
     a_scope,
     a_submission,
     a_transaction,
     accepted_acts,
-    an_answers,
     an_import,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -482,29 +476,37 @@ class TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow:
         assert line.id not in _matched_line_ids(seed_user)
         assert not accepted_acts(seed_user)
 
-    def test_a_SOFT_delete_leaves_the_act_standing(
+    def test_a_SOFT_delete_withdraws_the_act_it_empties(
         self, app, db, seed_user,
     ):
-        """A flag change cascades no member, so the act still names its row.
+        """A recurring row's tombstone keeps its place and nothing it held.
 
-        It is also the answer the transfer archive path needs: that soft delete
-        is UNDONE by a shipped button (``transfers.templates`` un-archives
-        through ``restore_transfer``), and a withdrawal there would destroy an
-        accepted act the restore cannot put back.
+        Ruling **R-CC75** (developer 2026-09-23): "Deleting the occurrence
+        takes its payments and purchases off the books through the one removal
+        act, exactly as deleting a one-off does".  Until then this asserted the
+        act STOOD over a hidden row whose payment the balance no longer
+        counted, the line reading explained; re-expressed under rule 5,
+        developer-confirmed 2026-09-23.  The TRANSFER's soft delete still
+        withdraws nothing (ledger row **BAL-532**).
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement, amount="-178.32")
         txn = a_transaction(seed_user, name="Geico", amount="178.32")
         _submit(seed_user, lines=[line], transactions=[txn])
+        assert txn.entries, "the accepted act names the row's payment"
 
         outcome = _delete(seed_user, txn)
 
         assert outcome.soft is True
-        assert outcome.withdrawn.matches == 0
-        assert line.id in _matched_line_ids(seed_user)
-        assert accepted_acts(seed_user)[0].agrees is False, (
-            "the row contributes nothing now, so the SUM says so"
-        )
+        assert outcome.withdrawn.matches == 1
+        assert [freed.line_id for freed in outcome.withdrawn.lines] == [line.id]
+        assert line.id not in _matched_line_ids(seed_user)
+        assert not accepted_acts(seed_user)
+        tombstone = db.session.get(Transaction, txn.id)
+        assert tombstone.is_deleted is True
+        assert db.session.query(TransactionEntry).filter_by(
+            transaction_id=txn.id,
+        ).count() == 0, "the tombstone holds nothing"
 
 
 class TestTheDialogCoversEVERYTHINGThePressRemoves:
@@ -561,35 +563,11 @@ class TestKeptRowsCountsWhatSURVIVES:
     books"* while the press destroyed both.
     """
 
-    @staticmethod
-    def _recorded_into_a_new_envelope(seed_user, amount="-25.00"):
-        """Record one bank line as a purchase in an envelope the door mints."""
-        statement = an_import(seed_user)
-        line = a_bank_line(
-            seed_user, statement, amount=amount,
-            posted_on=seed_user["bootstrap_period"].start_date,
-        )
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
-        )
-        db.session.flush()
-        return line, created
-
     def test_a_created_row_the_press_destroys_is_NOT_reported_as_kept(
         self, app, db, seed_user,
     ):
         """Deleting the envelope takes its purchase too, so nothing stays."""
-        _, created = self._recorded_into_a_new_envelope(seed_user)
+        _, created = a_purchase_in_a_minted_envelope(seed_user)
         envelope = db.session.get(Transaction, created.transaction_id)
         assert db.session.query(StatementMatchCreation).count() == 2, (
             "the door records the purchase AND the container it minted"
@@ -600,7 +578,7 @@ class TestKeptRowsCountsWhatSURVIVES:
         assert preview.matches == 1
         assert preview.kept_rows == 0, (
             "both creations are in the going set -- the envelope itself and "
-            "the purchase its foreign key cascades"
+            "the purchase the delete takes off through the one removal act"
         )
 
     def test_a_created_row_that_SURVIVES_is_reported_and_STAYS(
@@ -620,7 +598,7 @@ class TestKeptRowsCountsWhatSURVIVES:
         already calls a surviving container *"an ordinary row the owner deletes
         in one click"*.  Since ``X-gb`` that click exists.
         """
-        _, created = self._recorded_into_a_new_envelope(seed_user)
+        _, created = a_purchase_in_a_minted_envelope(seed_user)
         purchase_id = created.entry_id
         envelope_id = created.transaction_id
         purchase = db.session.get(TransactionEntry, purchase_id)
@@ -643,17 +621,24 @@ class TestKeptRowsCountsWhatSURVIVES:
 
 
 class TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule:
-    """The predicate, not the five call sites, is what makes this true.
+    """The KEYS, not the call sites, are what make this true.
 
     Measured by an adversarial review 2026-08-25: ``hard_delete_template``
     removes a template's non-settled rows in ONE bulk statement, from a shipped
     button, and a matched PURCHASE settles the purchase rather than its parent
     -- so the envelope stays Projected, falls in scope, and the act it leaves
-    behind used to go on claiming its bank line forever.
+    behind used to go on claiming its bank line forever.  A read-time predicate
+    (``act_still_names_a_row``) stopped counting that line until plan step
+    ``credit_card:CC-5-4a-4``; since then the row's key to its movements is NO
+    ACTION (ruling **R-CC54**), so the bulk statement cannot empty the act at
+    all.  Re-expressed from the predicate's control under rule 5,
+    developer-confirmed 2026-09-23.
     """
 
-    def test_a_bulk_delete_still_frees_the_line(self, app, db, seed_user):
-        """No door called the withdrawal, and the line is unexplained anyway."""
+    def test_a_bulk_delete_is_refused_and_the_line_stays_explained(
+        self, app, db, seed_user,
+    ):
+        """No door called the withdrawal, and the database refuses the delete."""
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
         envelope = a_transaction(
@@ -668,18 +653,25 @@ class TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule:
         _submit(seed_user, lines=[line], entries=[purchase])
         assert line.id in _matched_line_ids(seed_user)
 
-        # The template door's own statement, verbatim in shape.
-        db.session.query(Transaction).filter(
-            Transaction.id == envelope.id,
-        ).delete(synchronize_session="fetch")
-        db.session.flush()
+        # Committed first, so the rollback below undoes the refused
+        # statement and nothing the fixture built.
+        db.session.commit()
+        purchase_id = purchase.id
 
-        assert line.id not in _matched_line_ids(seed_user), (
-            "the act names no app row, so its membership is not a claim"
+        # The template door's own statement, verbatim in shape.
+        with pytest.raises(IntegrityError) as refused:
+            db.session.query(Transaction).filter(
+                Transaction.id == envelope.id,
+            ).delete(synchronize_session="fetch")
+            db.session.flush()
+        db.session.rollback()
+
+        assert "fk_transaction_entries_transaction_id" in str(refused.value)
+        assert db.session.get(TransactionEntry, purchase_id) is not None
+        assert line.id in _matched_line_ids(seed_user), (
+            "the act still names its purchase, so the line stays explained"
         )
-        assert db.session.query(StatementMatch).count() == 1, (
-            "the act is still there -- the predicate is a READ, not a writer"
-        )
+        assert db.session.query(StatementMatch).count() == 1
 
 
 class TestReleasingAnActDoesNotWithdrawTwice:
@@ -702,25 +694,7 @@ class TestReleasingAnActDoesNotWithdrawTwice:
         self, app, db, seed_user,
     ):
         """The act minted an envelope, so releasing it takes that row back."""
-        statement = an_import(seed_user)
-        line = a_bank_line(
-            seed_user, statement, amount="-25.00",
-            posted_on=seed_user["bootstrap_period"].start_date,
-        )
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
-        )
-        db.session.flush()
+        line, created = a_purchase_in_a_minted_envelope(seed_user)
 
         released = statement_match.release_match(
             created.match_id, seed_user["user"].id, seed_user["account"].id,
@@ -754,21 +728,9 @@ class TestReleasingAnActDoesNotWithdrawTwice:
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(seed_user, statement, amount="-25.00", posted_on=day)
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
+        line, created = a_purchase_in_a_minted_envelope(
+            seed_user, statement=statement,
         )
-        db.session.flush()
         envelope = db.session.get(Transaction, created.transaction_id)
         version_before = envelope.version_id
         hand = entry_service.create_entry(
