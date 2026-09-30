@@ -105,10 +105,14 @@ LEG (:func:`movement_parent`, :func:`transfer_family_movements`,
 module is the one place a movement is reached through a shadow row, and so
 it is since leaf ``X-bi-6-4c-2`` for the reconcile panel
 (:func:`offerable_transfer_legs`) and the recurrence engine's records
-predicate (:func:`transfers_holding_records`).  **Other readers still reach
-it themselves until their leaf moves them** and ``X-bi-6-4d`` must find each
--- among them statement match (6-4c-1) and DC-11's raw-SQL leg arm
-(``scripts/integrity_check.py``).
+predicate (:func:`transfers_holding_records`), and since leaf
+``X-bi-6-4a-3`` (rulings **R-BAL125**, **R-BAL157**) for every door that asks
+whether a transfer holds a payment or purchase -- the pay-period lock, the
+reset gate, "Remove earlier paychecks" and the three archive or delete doors
+(:func:`transfer_holds_a_movement`, :func:`held_transfer_entries`).  **Other
+readers still reach it themselves until their leaf moves them** and
+``X-bi-6-4d`` must find each -- among them statement match (6-4c-1) and
+DC-11's raw-SQL leg arm (``scripts/integrity_check.py``).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -151,11 +155,13 @@ from app.services.transfer_legs._records import (
     dated_leg_exists_clause,
     grid_transfer_leg,
     grid_transfer_legs,
+    held_transfer_entries,
     movement_parent,
     offerable_transfer_legs,
     planned_transfer_legs,
     recorded_transfer_legs,
     transfer_family_movements,
+    transfer_holds_a_movement,
     transfer_movement_rows,
     transfers_holding_records,
 )
@@ -171,6 +177,7 @@ __all__ = [
     "expense_legs",
     "grid_transfer_leg",
     "grid_transfer_legs",
+    "held_transfer_entries",
     "key_order",
     "leg_label",
     "leg_of",
@@ -179,6 +186,7 @@ __all__ = [
     "planned_transfer_legs",
     "recorded_transfer_legs",
     "transfer_family_movements",
+    "transfer_holds_a_movement",
     "transfer_movement_rows",
     "transfers_holding_records",
 ]
