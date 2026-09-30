@@ -413,9 +413,9 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
 
     * WHICH payments: the loan walk's own set of the payments that have
       happened, :func:`app.services.loan_loaders.settled_income_shadows`, so
-      this refusal and the walk agree on WHICH payments count -- a deleted or
-      balance-excluded transfer is out, and ruling R-BAL140's status drift is
-      counted once, by its movement;
+      this refusal and the walk share one candidate set and every exclusion
+      -- a deleted or balance-excluded transfer is out, and ruling R-BAL140's
+      status drift is counted once, by its movement;
     * WHETHER and WHEN its money moved:
       :attr:`app.services.transfer_legs.TransferLeg.settled_on`, the stored
       day of the leg's covering movement.  A ``$0.00`` close holds no movement
@@ -431,16 +431,24 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
     dates a ``$0.00`` close by the installment it skips (ruling R-R107), so a
     close named a day on which nothing was paid.
 
-    **It does NOT agree with the walk on WHEN a payment counts against a
-    statement** (finding **REC-552**).  The walk orders a statement against a
-    payment by the payment's DUE date (contract order, ruling R-A), while this
-    reads the day its money moved, so a payment whose due date and money day
-    fall on opposite sides of a statement is mis-walked whatever this door
-    decides: due on or before it but paid after, the statement subsumes it
-    and its principal is lost; due after it but paid on or before, the
-    statement already holds it and the walk applies it again.  The second
-    case is one this door refuses and sends to Record balance, which walks
-    it the same way.  That is the walk's boundary to fix, not this read's.
+    **Within that set it parts from the walk twice.**  WHETHER: a ``$0.00``
+    close (and R-BAL140's reverse drift) is a member the walk still counts,
+    as a ``$0.00`` payment event dated by its installment (ruling R-R107)
+    that can capitalize the charges standing before it, until step
+    balance:X-db deletes that arm; this refusal counts it from no day --
+    R-BAL155 working as ruled.  WHEN (finding
+    **REC-552**): the walk orders a statement against a payment by the
+    payment's DUE date (contract order, ruling R-A), while this reads the day
+    its money moved, so a payment whose due date and money day fall on
+    opposite sides of a statement is mis-walked whatever this door decides:
+    due on or before it but paid after, the statement subsumes it and its
+    principal is lost; due after it but paid on or before, the statement
+    already holds it and the walk applies it again.  This door refuses the
+    second case.  Of its remedies, an earlier tracking start removes the
+    straddle and walks correctly; Record balance -- the dashboard's other
+    remedy, and the setup form's when the payment moved within a day of the
+    origination -- writes a statement on the same side and repeats the
+    mis-walk.  That is the walk's boundary to fix, not this read's.
 
     **One refusal moved downstream with that read.**  A settled payment whose
     movement carries no day (ruling R-BAL147's drift, which no door writes)

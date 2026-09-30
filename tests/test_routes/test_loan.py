@@ -1129,7 +1129,10 @@ class TestLoanSetup:
             b"A payment into this loan already moved money on Feb 27, 2026, "
             b"on or before " + stated in resp.data
         )
-        assert b"Enter the balance as of a date before Feb 27, 2026." in resp.data
+        assert (
+            b"Enter the balance as of a date after Jan 1, 2025 and before "
+            b"Feb 27, 2026." in resp.data
+        )
         assert db.session.query(LoanParams).filter_by(
             account_id=account.id,
         ).count() == 0
@@ -1203,7 +1206,7 @@ class TestLoanSetup:
     def test_setup_asks_for_the_origination_day_when_no_later_day_comes_before_the_payment(
         self, auth_client, seed_user, db, seed_periods, paid_on, period_index,
     ):
-        """A payment before the origination leaves the origination day as the only answer.
+        """A payment before, on, or the day after the origination leaves the origination day.
 
         $500 moves into the account before its loan is set up with an
         origination of Feb 27 (the payment guard, ruling R-C, has no loan
@@ -1237,7 +1240,7 @@ class TestLoanSetup:
             b"No date after the loan&#39;s origination (Feb 27, 2026) comes "
             b"before that payment: enter Feb 27, 2026 as the date" in resp.data
         )
-        assert b"Enter the balance as of a date before" not in resp.data
+        assert b"Enter the balance as of a date after" not in resp.data
         assert db.session.query(LoanParams).filter_by(
             account_id=account.id,
         ).count() == 0
@@ -1251,6 +1254,53 @@ class TestLoanSetup:
             account_id=account.id,
         ).count() == 1
         assert self._stored_anchors(db, account) == []
+
+    def test_setup_asks_for_a_day_between_the_origination_and_the_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two days after the origination, one day between them records, and it is asked for.
+
+        The loan originates Feb 27 and $500 moved into the account on Mar 1,
+        before setup; a balance stated for Mar 10 is refused.  Feb 28 is the
+        one stated day that both follows the origination and precedes the
+        payment, so the sentence names BOTH bounds -- the origination day
+        satisfies "before Mar 1" alone and records nothing -- and following
+        it records one tracking start on Feb 28.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Two Days In", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 3, 1),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-10", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 200
+        assert (
+            b"Enter the balance as of a date after Feb 27, 2026 and before "
+            b"Mar 1, 2026." in resp.data
+        )
+        assert b"No date after the loan" not in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-28", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 302
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        assert self._stored_anchors(db, account) == [(
+            date(2026, 2, 28), Decimal("25000.00"),
+            ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
+        )]
 
 
 # ── Update Params Tests ──────────────────────────────────────────────
@@ -8747,27 +8797,31 @@ class TestRecordTrackingStartRoute:
             (e.anchor_date, e.anchor_balance) for e in events
         }
 
-    @pytest.mark.parametrize(("paid_on", "period_index", "offered", "absent"), [
-        # Before the Feb 27 origination, and ON it: no date this door accepts
-        # comes before the payment.
-        (date(2026, 2, 19), 3,
-         b"No tracking start can come before that payment, since the loan "
-         b"originated on Feb 27, 2026; use Record balance",
-         b"Choose a date before"),
-        (date(2026, 2, 27), 4,
-         b"No tracking start can come before that payment, since the loan "
-         b"originated on Feb 27, 2026; use Record balance",
-         b"Choose a date before"),
-        # The day after: this door records a tracking start ON the origination
-        # day, so Feb 27 is still a date it accepts (the setup door's gap is
-        # its own: there the origination day states nothing).
-        (date(2026, 2, 28), 4,
-         b"Choose a date before Feb 28, 2026, or use Record balance",
-         b"No tracking start can come before that payment"),
-    ])
-    def test_offers_record_balance_alone_when_no_date_comes_before_the_payment(
+    @pytest.mark.parametrize(
+        ("paid_on", "period_index", "offered", "absent", "accepted_on"), [
+            # Before the Feb 27 origination, and ON it: no date this door
+            # accepts comes before the payment.
+            (date(2026, 2, 19), 3,
+             b"No tracking start can come before that payment, since the loan "
+             b"originated on Feb 27, 2026; use Record balance",
+             b"Choose a date before", None),
+            (date(2026, 2, 27), 4,
+             b"No tracking start can come before that payment, since the loan "
+             b"originated on Feb 27, 2026; use Record balance",
+             b"Choose a date before", None),
+            # The day after: this door records a tracking start ON the
+            # origination day, so Feb 27 is still a date it accepts -- and
+            # following the flash there records one (the setup door's gap is
+            # its own: there the origination day states nothing).
+            (date(2026, 2, 28), 4,
+             b"Choose a date before Feb 28, 2026, or use Record balance",
+             b"No tracking start can come before that payment",
+             date(2026, 2, 27)),
+        ],
+    )
+    def test_offers_an_earlier_date_only_when_this_door_accepts_one(
         self, auth_client, seed_user, db, seed_periods,
-        paid_on, period_index, offered, absent,
+        paid_on, period_index, offered, absent, accepted_on,
     ):
         """A payment on or before the origination leaves no date this door accepts.
 
@@ -8778,7 +8832,8 @@ class TestRecordTrackingStartRoute:
         27 and no stated balance (the payment guard, ruling R-C, has no loan
         terms to compare against until then); a Mar 1 tracking start is
         refused and appends nothing.  A payment the day after the origination
-        still leaves the origination day, so that flash offers it.
+        still leaves the origination day, so that flash offers it, and a
+        tracking start posted there is recorded.
         """
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         acct = account_service.create_account(
@@ -8823,6 +8878,21 @@ class TestRecordTrackingStartRoute:
         assert absent not in resp.data
         db.session.expire_all()
         assert self._tracking_start_events(db.session, acct) == []
+
+        if accepted_on is not None:
+            followed = auth_client.post(
+                f"/accounts/{acct.id}/loan/tracking-start",
+                data={
+                    "anchor_date": accepted_on.isoformat(),
+                    "anchor_balance": "29000.00",
+                },
+            )
+            assert followed.status_code == 302
+            db.session.expire_all()
+            assert [
+                (e.anchor_date, e.anchor_balance)
+                for e in self._tracking_start_events(db.session, acct)
+            ] == [(accepted_on, Decimal("29000.00"))]
 
     def test_a_projected_payment_does_not_refuse(
         self, auth_client, seed_user, db, seed_periods,

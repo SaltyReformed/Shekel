@@ -211,7 +211,9 @@ def _stage_stated_balance_or_refuse(
     payment into the account moved money would start the loan's record after
     a payment it holds (rulings R-R114, R-BAL155).  The whole write is rolled
     back, the params and their rate row included, and the form re-renders
-    asking for an earlier day.
+    asking for a day AFTER the origination and before the payment's -- both
+    bounds, because the origination day satisfies "before" alone and this
+    door records nothing on it.
 
     **Where no day falls strictly between the origination and that payment's
     day, no stated day both follows the origination and precedes the
@@ -248,8 +250,11 @@ def _stage_stated_balance_or_refuse(
     except TrackingStartRefused as refused:
         moved_on = refused.moved_on.strftime("%b %-d, %Y")
         origination = params.origination_date.strftime("%b %-d, %Y")
+        # Both bounds are named: the origination day satisfies "before" alone,
+        # and this door records nothing on it.
         remedy = (
-            f"Enter the balance as of a date before {moved_on}."
+            f"Enter the balance as of a date after {origination} and before "
+            f"{moved_on}."
             if refused.moved_on > params.origination_date + timedelta(days=1)
             else
             f"No date after the loan's origination ({origination}) comes "
