@@ -106,8 +106,23 @@ def _load_loan_account(account_id):
     return account, params, account_type
 
 
-def render_loan_setup(account, account_type):
+#: Every field the setup form posts, each re-rendered from a refused POST.
+_SETUP_FIELDS = (
+    "original_principal", "origination_date", "anchor_balance", "anchor_date",
+    "interest_rate", "term_months", "payment_day", "is_arm",
+)
+
+
+def render_loan_setup(account, account_type, submitted=None):
     """Render the loan setup form for an account that has no ``LoanParams`` yet.
+
+    **A refused POST comes back exactly as typed**, every field read from
+    *submitted* (review 7c of plan step recurrence:R16-c-2).  Until then a
+    refusal re-rendered the defaults below over a blank form, so an owner who
+    followed a refusal by changing only the date re-submitted the prefilled
+    balance instead of the one typed -- measured: a prefilled ``0.00``
+    configured a loan owing $0.00.  The defaults serve the form's FIRST
+    showing only.
 
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
@@ -126,6 +141,10 @@ def render_loan_setup(account, account_type):
     Args:
         account: The loan :class:`Account` being configured.
         account_type: Its :class:`AccountType` row (labels, icon, term cap).
+        submitted: The refused POST's form (``request.form``), or ``None``
+            for the form's first showing.  Each of :data:`_SETUP_FIELDS` is
+            echoed as its raw posted string -- a field the POST lacked comes
+            back empty -- and autoescaped by the template.
 
     Returns:
         The rendered setup page.
@@ -144,6 +163,10 @@ def render_loan_setup(account, account_type):
             account_type, cash_ledger.resolve_anchor(account).balance,
         ),
         today_iso=display_today().isoformat(),
+        submitted=(
+            None if submitted is None
+            else {field: submitted.get(field, "") for field in _SETUP_FIELDS}
+        ),
     )
 
 

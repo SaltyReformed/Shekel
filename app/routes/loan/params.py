@@ -110,14 +110,14 @@ def create_params(account_id):
     errors = _create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return render_loan_setup(account, account_type)
+        return render_loan_setup(account, account_type, request.form)
 
     data = _create_schema.load(request.form)
 
     refusal = _setup_refusal(data, account_type)
     if refusal is not None:
         flash(refusal, "danger")
-        return render_loan_setup(account, account_type)
+        return render_loan_setup(account, account_type, request.form)
 
     # The stated balance and its date are the assertion's, not the params'
     # (plan step R20): pop them before constructing LoanParams.
@@ -267,7 +267,7 @@ def _stage_stated_balance_or_refuse(
         # reads.
         db.session.rollback()
         flash(f"{refused}  {remedy}", "danger")
-        return render_loan_setup(account, account_type)
+        return render_loan_setup(account, account_type, request.form)
     return None
 
 

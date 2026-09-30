@@ -17,6 +17,10 @@
       Enter the details of your {{ account_type.name|lower }} to enable amortization tracking,
       escrow management, and payoff analysis.
     </p>
+    {# A refused POST re-renders every field as typed (``submitted``, the
+       route's; review 7c of plan step recurrence:R16-c-2): the defaults below
+       serve the form's first showing only, so following a refusal by changing
+       one field never re-submits a default in place of what was typed. #}
     <form method="POST" action="{{ url_for('loan.create_params', account_id=account.id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -26,13 +30,15 @@
           <div class="input-group">
             <span class="input-group-text">$</span>
             <input type="number" class="form-control" id="original_principal"
-                   name="original_principal" step="0.01" min="0" required>
+                   name="original_principal" step="0.01" min="0" required
+                   value="{{ submitted.original_principal if submitted else '' }}">
           </div>
         </div>
         <div class="col-6">
           <label for="origination_date" class="form-label">Origination Date</label>
           <input type="date" class="form-control" id="origination_date"
-                 name="origination_date" required>
+                 name="origination_date" required
+                 value="{{ submitted.origination_date if submitted else '' }}">
         </div>
       </div>
 
@@ -53,14 +59,14 @@
             <span class="input-group-text">$</span>
             <input type="number" class="form-control" id="anchor_balance"
                    name="anchor_balance" step="0.01" min="0" required
-                   value="{{ "%.2f"|format(anchor_balance) if anchor_balance is not none else '' }}">
+                   value="{{ submitted.anchor_balance if submitted else ("%.2f"|format(anchor_balance) if anchor_balance is not none else '') }}">
           </div>
         </div>
         <div class="col-6">
           <label for="anchor_date" class="form-label">As of</label>
           <input type="date" class="form-control" id="anchor_date"
                  name="anchor_date" required
-                 max="{{ today_iso }}" value="{{ today_iso }}">
+                 max="{{ today_iso }}" value="{{ submitted.anchor_date if submitted else today_iso }}">
           <div class="form-text">
             The lender's balance on this date. Started tracking mid-life?
             Enter the balance from your latest statement and its date, on or
@@ -77,7 +83,8 @@
           <div class="input-group">
             <input type="number" class="form-control" id="interest_rate"
                    name="interest_rate" step="0.001" min="0" max="100" required
-                   placeholder="6.500">
+                   placeholder="6.500"
+                   value="{{ submitted.interest_rate if submitted else '' }}">
             <span class="input-group-text">%</span>
           </div>
           <div class="form-text">Enter as percentage (e.g. 6.5 for 6.5%)</div>
@@ -87,7 +94,8 @@
           <input type="number" class="form-control" id="term_months"
                  name="term_months" min="1"
                  max="{{ account_type.max_term_months or 600 }}" required
-                 placeholder="{{ account_type.max_term_months or 360 }}">
+                 placeholder="{{ account_type.max_term_months or 360 }}"
+                 value="{{ submitted.term_months if submitted else '' }}">
           <div class="form-text">
             {% if account_type.max_term_months %}
               Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
@@ -102,7 +110,8 @@
         <div class="col-6">
           <label for="payment_day" class="form-label">Payment Day of Month</label>
           <input type="number" class="form-control" id="payment_day"
-                 name="payment_day" min="1" max="31" required value="1">
+                 name="payment_day" min="1" max="31" required
+                 value="{{ submitted.payment_day if submitted else '1' }}">
           <div class="form-text">For months with fewer days (e.g. February), the payment will be on the last day of the month.</div>
         </div>
       </div>
@@ -110,7 +119,7 @@
       <div class="mb-3">
         <div class="form-check">
           <input class="form-check-input" type="checkbox" id="is_arm"
-                 name="is_arm" value="true">
+                 name="is_arm" value="true"{% if submitted and submitted.is_arm %} checked{% endif %}>
           <label class="form-check-label" for="is_arm">
             Adjustable Rate (ARM)
           </label>

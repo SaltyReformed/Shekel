@@ -1305,6 +1305,55 @@ class TestLoanSetup:
             ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
         )]
 
+    @pytest.mark.parametrize(("stated_on", "refusal"), [
+        # The schema's: a stated day after today (2026-03-20).
+        ("2026-03-21", b"Please correct the highlighted errors"),
+        # The route's: a stated day before the origination.
+        ("2024-12-31", b"Balance date cannot be before the loan"),
+        # The tracking-start refusal's (ruling R-R115): on or after the
+        # Feb 27 payment.
+        ("2026-03-01", b"A payment into this loan already moved money on Feb 27"),
+    ])
+    def test_a_refused_setup_comes_back_as_typed(
+        self, auth_client, seed_user, db, seed_periods, stated_on, refusal,
+    ):
+        """Every refusal re-renders every field as typed, never the form's defaults.
+
+        Review 7c of plan step recurrence:R16-c-2: the refused form came back
+        with the first showing's defaults -- the account's own balance under
+        "Balance today", today's date, a blank principal, origination, rate
+        and term, payment day 1, the ARM box clear -- so following a refusal
+        by changing only the date re-submitted a prefilled balance (a
+        prefilled 0.00 configured a loan owing $0.00).  Each typed value here
+        differs from its default, so an echo of the defaults fails.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Refused As Typed", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+        typed = {**self._setup_form(stated_on), "is_arm": "true"}
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup", data=typed,
+        )
+        assert resp.status_code == 200
+        assert refusal in resp.data
+        for field in (
+            "original_principal", "origination_date", "anchor_balance",
+            "anchor_date", "interest_rate", "term_months", "payment_day",
+        ):
+            assert f'value="{typed[field]}"'.encode() in resp.data, field
+        assert b'name="is_arm" value="true" checked' in resp.data
+        assert b'value="0.00"' not in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
 
 # ── Update Params Tests ──────────────────────────────────────────────
 
