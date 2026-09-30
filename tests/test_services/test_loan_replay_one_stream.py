@@ -17,6 +17,14 @@ step that first makes it reachable on live data:
   payments' splits are a function of the facts alone, whether or not the plan
   follows them, which is what lets the posted ledger and a screen agree on
   every settled payment.
+* **A loan's FIRST tracking start clears the months before it one by one**
+  (ruling **R-R117**), so a payment the start holds pays its own month alone
+  -- in every shape pinned here, exactly as the app splits it where only the
+  months holding a payment are charged (not in every shape: an off-day
+  payment walked after a balance is finding REC-555's, and an early extra
+  before the first installment differs by step R16-c-2's own pairing); a
+  true-up, and a start dated after another balance, keep the reset's own
+  clearing.
 
 Pure: no database, no app context.  Every figure is stated by hand and checked
 against :func:`~app.utils.money.accrue_monthly_interest` /
@@ -26,6 +34,7 @@ allocation.
 
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +43,7 @@ from app.services.loan_ledger import (
     LoanCashEvent,
     LoanEventStream,
     LoanResetEvent,
+    dated_deltas,
     projection_boundary,
     replay_loan_events,
     replay_loan_stream,
@@ -59,9 +69,21 @@ def _payment(on_date: date, cash: str, *, visible_on: date | None = None):
     )
 
 
-def _reset(on_date: date, balance: str):
-    """An assertion of the balance owed on *on_date*."""
-    return LoanResetEvent(on_date=on_date, balance=Decimal(balance), source=None)
+def _reset(
+    on_date: date, balance: str, *,
+    is_opening: bool = False, is_tracking_start: bool = False,
+):
+    """An assertion of the balance owed on *on_date*: a true-up unless stated.
+
+    Its source is the plain fact a production stream carries (a
+    :class:`~app.services.loan_loaders.LoanAnchorFact`'s date and balance), so
+    :func:`~app.services.loan_ledger.dated_deltas` can date its correction.
+    """
+    return LoanResetEvent(
+        on_date=on_date, balance=Decimal(balance),
+        source=SimpleNamespace(anchor_date=on_date, anchor_balance=Decimal(balance)),
+        is_opening=is_opening, is_tracking_start=is_tracking_start,
+    )
 
 
 class TestAResetClearsWhatStands:
@@ -98,6 +120,294 @@ class TestAResetClearsWhatStands:
         assert [reset.balance_before for reset in replay.resets] == [
             _ZERO, _PRINCIPAL,
         ]
+
+
+#: Ruling R-R117's worked example (the REC-552 study's second question):
+#: $30,000.00 at 5% from 2025-01-01, $500.00 due the 15th.  A month's interest
+#: on the untouched principal is round(30,000.00 x 0.05 / 12) = $125.00, so the
+#: thirteen installments from 2025-02-15 through 2026-02-15 cost $1,625.00.
+_EXAMPLE_RATE = Decimal("0.05")
+_EXAMPLE_ORIGINATION = date(2025, 1, 1)
+
+
+def _example_charges(through: date, escrow: str = "0.00"):
+    """The example loan's installments, 2025-02-15 through *through*, by hand."""
+    installments = [
+        date(2025 + month // 12, month % 12 + 1, 15) for month in range(1, 26)
+    ]
+    return [
+        accrual_charge(on_date, _EXAMPLE_RATE, Decimal(escrow))
+        for on_date in installments if on_date <= through
+    ]
+
+
+def _example_walk(payments, *assertions, through: date, escrow: str = "0.00"):
+    """Replay the example loan: its opening, then *assertions* and *payments*."""
+    return replay_loan_stream(LoanEventStream(
+        charges=_example_charges(through, escrow),
+        payments=payments,
+        resets=[
+            _reset(_EXAMPLE_ORIGINATION, "30000.00", is_opening=True),
+            *assertions,
+        ],
+    ))
+
+
+def _owed_on(walk, on_date: date) -> Decimal:
+    """The balance a reader shows on *on_date*: every step visible by then."""
+    return sum(
+        (delta for day, delta in dated_deltas(walk) if day <= on_date), _ZERO,
+    )
+
+
+class TestTheFirstTrackingStartClearsMonthByMonth:
+    """Ruling R-R117: the loan's first tracking start drops each unpaid month before it.
+
+    "The loan's first tracking start (its earliest-dated balance, given at
+    setup or with 'Record tracking start') drops the interest of every month
+    before its date that has no payment recorded for it, even when a payment
+    it includes would otherwise pay that interest; months after it are still
+    charged, and a Record balance, or a tracking start dated after another
+    balance, is untouched."  The reset's own clearing (R-R72 part (2)) comes
+    too late for a payment the start holds -- due before it, marked paid after
+    it -- because that payment walks first, by its due date, and would pay
+    every unrecorded month since origination as its interest.
+
+    Every figure here equals what the app splits where only the months holding
+    a payment are charged (dev ``0eef2d800``, measured on these shapes
+    2026-09-30), which is the equality the ruling promised.
+    """
+
+    def test_a_payment_the_start_holds_pays_its_own_month_alone(self):
+        """Tracking from Feb 20 at $24,604.17; Feb 15's $500.00 marked paid Feb 25.
+
+        The start holds the payment (due before it), so every month before
+        Feb 15 that no payment of its own cleared is dropped and Feb 15's
+        payment pays its own month: $125.00 of interest on $30,000.00 and
+        $375.00 of principal, leaving $29,625.00, which the start then
+        corrects to $24,604.17.  Without the rule it paid all thirteen
+        months, $1,625.00 of interest and -$1,125.00 of principal.
+
+        The reads: Feb 19 shows the opening held flat, $30,000.00; Feb 20
+        the start less the principal not yet visible, $24,604.17 + $375.00 =
+        $24,979.17; Feb 25 the start, $24,604.17.
+        """
+        start = _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True)
+        walk = _example_walk(
+            [_payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25))],
+            start, through=date(2026, 2, 15),
+        )
+        [feb] = walk.payment_splits
+        assert (feb.interest, feb.principal, feb.balance_after) == (
+            Decimal("125.00"), Decimal("375.00"), Decimal("29625.00"),
+        )
+        assert [c.owed_before for c in walk.anchor_corrections] == [
+            _ZERO, Decimal("29625.00"),
+        ]
+        assert [
+            _owed_on(walk, on)
+            for on in (date(2026, 2, 19), date(2026, 2, 20), date(2026, 2, 25))
+        ] == [Decimal("30000.00"), Decimal("24979.17"), Decimal("24604.17")]
+
+    @pytest.mark.parametrize(
+        ("earlier_due", "earlier_paid", "owed_feb_20"),
+        [
+            # Dec 15 held, Jan missed.
+            (date(2025, 12, 15), date(2026, 2, 25), Decimal("25355.73")),
+            # Nov 15 held, Dec and Jan missed.
+            (date(2025, 11, 15), date(2026, 2, 25), Decimal("25355.73")),
+            # Dec 15 held but itself paid late, on Jan 10; Jan missed.
+            (date(2025, 12, 15), date(2026, 1, 10), Decimal("24980.73")),
+        ],
+        ids=["one-missed", "two-missed", "held-payment-late"],
+    )
+    def test_a_missed_month_between_two_held_payments_is_dropped(
+        self, earlier_due, earlier_paid, owed_feb_20,
+    ):
+        """Two payments the Feb 20 start holds, with missed months between them.
+
+        The earlier payment pays its own month, $125.00 / $375.00, leaving
+        $29,625.00.  The missed months after it are dropped, so Feb 15 pays
+        its own month alone: round(29,625.00 x 0.05 / 12) = $123.44 of
+        interest (123.4375) and $376.56 of principal, leaving $29,248.44,
+        which the start corrects to $24,604.17 (a -$4,644.27 step on Feb 20).
+
+        Feb 20 reads the start plus each principal not yet visible:
+        $24,604.17 + $375.00 + $376.56 = $25,355.73 when both are marked Feb
+        25, and $24,604.17 + $376.56 = $24,980.73 when the earlier one moved
+        Jan 10.  Feb 25 reads $24,604.17 in every case.
+        """
+        start = _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True)
+        walk = _example_walk(
+            [
+                _payment(earlier_due, "500.00", visible_on=earlier_paid),
+                _payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25)),
+            ],
+            start, through=date(2026, 2, 15),
+        )
+        earlier, feb = walk.payment_splits
+        assert (earlier.interest, earlier.principal, earlier.balance_after) == (
+            Decimal("125.00"), Decimal("375.00"), Decimal("29625.00"),
+        )
+        assert (feb.interest, feb.principal, feb.balance_after) == (
+            Decimal("123.44"), Decimal("376.56"), Decimal("29248.44"),
+        )
+        assert _owed_on(walk, date(2026, 2, 20)) == owed_feb_20
+        assert _owed_on(walk, date(2026, 2, 25)) == Decimal("24604.17")
+
+    def test_a_start_on_an_installment_day_holds_that_days_payment(self):
+        """Tracking from Feb 15 itself; Feb 15's own payment marked paid Feb 25.
+
+        A payment due on the start's own day walks between that day's charge
+        and the start, so the start holds it -- and the months BEFORE the day
+        are dropped all the same: it pays February alone, $125.00 / $375.00.
+        Clearing only the charges strictly before the start would leave
+        January's $125.00 standing under February's, and the payment would
+        pay $250.00 of interest and $250.00 of principal.  Reads: Feb 15
+        $24,604.17 + $375.00 = $24,979.17 (the payment not yet visible), Feb
+        25 $24,604.17.
+        """
+        start = _reset(date(2026, 2, 15), "24604.17", is_tracking_start=True)
+        walk = _example_walk(
+            [_payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25))],
+            start, through=date(2026, 2, 15),
+        )
+        [feb] = walk.payment_splits
+        assert (feb.interest, feb.principal) == (
+            Decimal("125.00"), Decimal("375.00"),
+        )
+        assert _owed_on(walk, date(2026, 2, 15)) == Decimal("24979.17")
+        assert _owed_on(walk, date(2026, 2, 25)) == Decimal("24604.17")
+
+    def test_the_escrow_of_a_dropped_month_is_dropped_with_its_interest(self):
+        """The first case with $100.00 of escrow a month.
+
+        Feb 15's payment clears its own month's $125.00 of interest and
+        $100.00 of escrow, and $275.00 is principal, leaving $29,725.00.
+        Clearing the interest alone would leave twelve earlier months'
+        $1,200.00 of escrow for it to pay first.
+        """
+        start = _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True)
+        walk = _example_walk(
+            [_payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25))],
+            start, through=date(2026, 2, 15), escrow="100.00",
+        )
+        [feb] = walk.payment_splits
+        assert (feb.interest, feb.escrow, feb.principal, feb.balance_after) == (
+            Decimal("125.00"), Decimal("100.00"), Decimal("275.00"),
+            Decimal("29725.00"),
+        )
+
+    def test_a_start_holding_no_payment_walks_as_it_did(self):
+        """The normal case: nothing due before the start is recorded.
+
+        Tracking from Feb 20 at $24,604.17 and Mar 15's $500.00 paid on Mar
+        15.  The start's own reset already cleared every month before it, so
+        marking it a tracking start changes no figure: the walk is the one a
+        true-up on the same day gives, Mar 15 paying round(24,604.17 x 0.05
+        / 12) = $102.52 (102.5173) and $397.48 of principal.
+        """
+        payments = [_payment(date(2026, 3, 15), "500.00")]
+        as_start = _example_walk(
+            payments,
+            _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+            through=date(2026, 3, 15),
+        )
+        as_true_up = _example_walk(
+            payments, _reset(date(2026, 2, 20), "24604.17"),
+            through=date(2026, 3, 15),
+        )
+        [mar] = as_start.payment_splits
+        assert (mar.interest, mar.principal) == (
+            Decimal("102.52"), Decimal("397.48"),
+        )
+        assert as_start.payment_splits == as_true_up.payment_splits
+        assert [c.owed_before for c in as_start.anchor_corrections] == [
+            c.owed_before for c in as_true_up.anchor_corrections
+        ]
+
+
+class TestTheRuleReachesOnlyTheLoansFirstBalance:
+    """R-R117's scope: a Record balance, or a start after another balance, is untouched.
+
+    Review 6 of the REC-552 study (finding M3) measured the month-by-month
+    rule misfiring on both: it cancels interest a held payment paid, or lets
+    a later start override an earlier-dated balance.  Each keeps the reset's
+    own clearing (ruling R-R72 part (2)).  A balance SHARING the start's date
+    is neither, and does not disqualify it.
+    """
+
+    @pytest.mark.parametrize(
+        "first_balance",
+        [
+            _reset(date(2026, 1, 20), "25000.00"),
+            _reset(date(2026, 1, 20), "25000.00", is_tracking_start=True),
+        ],
+        ids=["record-balance-first", "earlier-tracking-start"],
+    )
+    def test_a_start_after_another_balance_keeps_the_resets_clearing(
+        self, first_balance,
+    ):
+        """A balance of $25,000.00 on Jan 20, then a start on Mar 20; Feb missed.
+
+        Mar 15's $500.00, marked paid Mar 25, is held by the Mar 20 start.
+        That start is not the loan's first balance, so February -- charged
+        after the Jan 20 balance, on $25,000.00 -- stays owed: Mar 15 pays
+        round(25,000.00 x 0.05 / 12) = $104.17 for each of February and
+        March, $208.34, and $291.66 of principal.  Were the Mar 20 start to
+        clear month by month, February would be dropped: $104.17 / $395.83.
+        """
+        walk = _example_walk(
+            [_payment(date(2026, 3, 15), "500.00", visible_on=date(2026, 3, 25))],
+            first_balance,
+            _reset(date(2026, 3, 20), "24708.34", is_tracking_start=True),
+            through=date(2026, 3, 15),
+        )
+        [mar] = walk.payment_splits
+        assert (mar.interest, mar.principal) == (
+            Decimal("208.34"), Decimal("291.66"),
+        )
+
+    def test_a_record_balance_on_the_starts_own_day_does_not_disqualify_it(self):
+        """A Record balance and the tracking start, both on Feb 20.
+
+        The ruling leaves untouched "a tracking start dated after another
+        balance"; one sharing the earliest date is not dated after it, so the
+        start is still the loan's first balance and R-R117 applies: Feb 15's
+        payment, marked paid Feb 25, pays its own month, $125.00 / $375.00.
+        Were a same-day true-up to disqualify it, the payment would pay all
+        thirteen months, $1,625.00 / -$1,125.00.
+        """
+        walk = _example_walk(
+            [_payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25))],
+            _reset(date(2026, 2, 20), "24604.17"),
+            _reset(date(2026, 2, 20), "24604.17", is_tracking_start=True),
+            through=date(2026, 2, 15),
+        )
+        [feb] = walk.payment_splits
+        assert (feb.interest, feb.principal) == (
+            Decimal("125.00"), Decimal("375.00"),
+        )
+
+    def test_a_record_balance_alone_is_untouched(self):
+        """The first case with a Record balance where the start was.
+
+        A true-up is not a tracking start, so the rule does not reach it and
+        Feb 15's payment pays all thirteen months since origination, $1,625.00
+        of interest and -$1,125.00 of principal.  This pins R-R117's SCOPE,
+        not the figure's truth: what a Record balance does to a month with no
+        payment recorded is a separate question the REC-552 round deferred,
+        and this figure moves when that is decided.
+        """
+        walk = _example_walk(
+            [_payment(date(2026, 2, 15), "500.00", visible_on=date(2026, 2, 25))],
+            _reset(date(2026, 2, 20), "24604.17"),
+            through=date(2026, 2, 15),
+        )
+        [feb] = walk.payment_splits
+        assert (feb.interest, feb.principal) == (
+            Decimal("1625.00"), Decimal("-1125.00"),
+        )
 
 
 class TestAProjectionNeverPrecedesAFact:

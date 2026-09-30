@@ -69,10 +69,10 @@ def _payment(on_date: date, cash: str) -> LoanCashEvent:
 
 
 def _reset(on_date: date, balance: str, *, opening: bool = False):
-    """An asserted balance."""
+    """An asserted balance: the opening, or a true-up."""
     return LoanResetEvent(
         on_date=on_date, balance=Decimal(balance), source=None,
-        is_opening=opening,
+        is_opening=opening, is_tracking_start=False,
     )
 
 

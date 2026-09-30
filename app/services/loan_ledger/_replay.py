@@ -51,8 +51,26 @@ interest, escrow and hypothetical extra are zeroed with the balance overwritten.
 The arm was UNREACHABLE until plan step **recurrence:R16-c-2**, when every
 contractual installment from origination began to be charged
 (:func:`.._charges.contract_charges`): a month nobody paid now leaves its
-charge standing when a later assertion arrives -- every pre-tracking month of
-a loan configured mid-life, cleared by its tracking start.
+charge standing when a later assertion arrives -- a pre-tracking month of a
+loan configured mid-life, cleared by its tracking start (when that start is
+the loan's first balance, only the last month before it still stands when it
+lands: see the next paragraph).
+
+**A loan's FIRST tracking start clears the months before it one by one**
+(ruling **R-R117**).  Clearing only when the reset walks is too late for a
+payment the start holds -- one due before it and marked paid after it: that
+payment walks first, by its due date, and paid every unrecorded month since
+origination, arrears first, as its interest.  So when the loan's first
+balance after its opening is a tracking start, each charge dated on or before
+it REPLACES what stands (:func:`_first_tracking_start`): a month before the
+start is paid for only by a payment of its own walked before the start, and
+the months after it are charged as ever.  A month before the start whose own
+payment walks AFTER it -- one due off the contractual day, after the start
+but inside that month's interval -- meets the start's own clearing, as it
+meets any balance's, and that payment pays pure principal (finding
+**REC-555**; R-R72 part (2), not this rule).  A true-up (a Record balance), and
+a tracking start dated after another balance, keep the reset's own clearing
+alone.
 
 **One stream, PAST and FUTURE** (plan step **recurrence:R16-c-1**, rulings
 **R-R90** and **R-R72**).  The stream carries the loan's recorded FACTS -- its
@@ -69,7 +87,9 @@ boundary keep their order among themselves by their OWN date, and no event's
 ``on_date`` is rewritten.  A charge is never pushed: an installment dated
 before the boundary is part of the facts' own calendar, so a month skipped
 behind a later settled payment is cleared by THAT payment -- arrears first,
-exactly what the servicer's books say -- and the overdue catch-up behind it
+exactly what the servicer's books say, save a month on or before the loan's
+first tracking start, which that start drops (ruling R-R117, above) -- and
+the overdue catch-up behind it
 pays what then stands.  So the splits of the recorded facts are a function of
 the facts ALONE, whether or not a projection follows them.  That is what lets
 the posted ledger (which replays the facts and nothing else) and a screen
@@ -173,16 +193,31 @@ class LoanResetEvent:
         is_opening: ``True`` for the loan's ORIGINATION assertion -- the
             balance it opens at, synthesized from the immutable params -- and
             ``False`` for every later assertion (a true-up, a tracking start).
-            The replay reads no kind of assertion differently; the flag is for
-            the readers that must name the opening: the pass's visibility bound
-            keeps it whatever its date, and the target-date search bounds its
-            doubling by it for a loan not yet originated.
+            The replay reads it in one place, to find the loan's first balance
+            AFTER its opening (:func:`_first_tracking_start`); the flag is
+            otherwise for the readers that must name the opening: the pass's
+            visibility bound keeps it whatever its date, and the target-date
+            search bounds its doubling by it for a loan not yet originated.
+        is_tracking_start: ``True`` for a ``tracking_start`` assertion -- the
+            balance stated at setup or with the dashboard's tracking-start
+            door (:attr:`~app.services.loan_loaders.LoanAnchorFact
+            .is_tracking_start`, which the stream's builder copies) -- and
+            ``False`` for the opening and every true-up.  Read beside
+            ``is_opening`` in :func:`_first_tracking_start`: when the loan's
+            first balance after its opening is a tracking start, the months
+            before it are cleared month by month (ruling **R-R117**).
+            **Both kinds are keyword-only and REQUIRED**, so a constructor
+            that forgot one raises instead of silently switching R-R117 off:
+            a start read as a true-up is never the first tracking start, and
+            an opening read as a later balance becomes the "first balance"
+            itself.
     """
 
     on_date: date
     balance: Decimal
     source: object
-    is_opening: bool = False
+    is_opening: bool = field(kw_only=True)
+    is_tracking_start: bool = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -510,6 +545,46 @@ def _ordered(
     return [(kind, event) for _when, kind, event in tagged]
 
 
+def _first_tracking_start(resets: Sequence[LoanResetEvent]) -> date | None:
+    """Return the date of the loan's first balance, when that balance is a tracking start.
+
+    The day before which ruling **R-R117** clears a loan's months one by one:
+    the date of its earliest-dated assertion other than the opening, provided
+    a TRACKING START stands on that date -- the balance stated at setup, or
+    with the dashboard's tracking-start door, as the first thing the app
+    records about the loan after its origination.  ``None`` when the loan
+    asserts nothing after its opening, and when its first such balance is a
+    true-up alone (a Record balance): R-R117 leaves those, and a tracking
+    start dated after another balance, to R-R72 part (2)'s clearing at the
+    reset itself (review 6 of the REC-552 study, finding M3, measured the
+    month-by-month rule misfiring on both).  A true-up SHARING the earliest
+    date does not disqualify the start: the ruling leaves untouched a start
+    dated AFTER another balance, and one on the same day is not.
+
+    **Not the loan's recorded start.**
+    :attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`
+    is the date of the loan's first tracking start WHATEVER precedes it, the
+    day its record begins (rulings R-R111, R-R114); this is that start only
+    when no other balance is dated before it.  A loan with a Record balance
+    and then a tracking start has a recorded start and no R-R117 date.
+
+    Args:
+        resets: The stream's assertions, in any order.
+
+    Returns:
+        The first tracking start's date, or ``None``.
+    """
+    first = min(
+        (reset.on_date for reset in resets if not reset.is_opening),
+        default=None,
+    )
+    if first is None or not any(
+        reset.is_tracking_start and reset.on_date == first for reset in resets
+    ):
+        return None
+    return first
+
+
 def replay_loan_events(
     seed: Decimal,
     stream: LoanEventStream,
@@ -570,12 +645,23 @@ def replay_loan_events(
     payments: list[PaymentOutcome] = []
     resets: list[ResetOutcome] = []
     boundary = projection_boundary(stream)
+    first_start = _first_tracking_start(stream.resets)
     for kind, event in _ordered(stream, boundary):
         if kind == _CHARGE:
             # Recorded BEFORE the closed-loan test, so a payment always carries
             # its own accrual period's charge -- what governs its rate is a fact
             # about the period, not about whether the period accrued anything.
             standing = event
+            if first_start is not None and event.on_date <= first_start:
+                # Ruling R-R117: up to the loan's first tracking start, a
+                # month's charge REPLACES what stands rather than adding to
+                # it, so a month before the start that no payment of its own
+                # cleared is dropped -- even when a payment the start holds
+                # walks after it and would otherwise pay it, arrears first.
+                # On or before, not before: a payment due on the start's own
+                # day walks between that day's charge and the start, and it
+                # pays that month alone.
+                interest_due = escrow_due = extra_due = _ZERO_MONEY
             if balance <= _ZERO_MONEY:
                 continue
             interest_due += accrue_monthly_interest(

@@ -123,9 +123,19 @@ class LoanAnchorFact:
             stored row and carries :data:`_ORIGINATION_EVENT_ID`.
         is_tracking_start: ``True`` for a ``tracking_start`` assertion (a
             mid-life import's balance-as-of-date), ``False`` for the origination
-            opening and every user true-up.  The balance math never branches
-            on it: the drift scorecard labels the tracking-start row by it, and
-            the write door's duplicate rule scopes its comparison by it
+            opening and every user true-up.  Two balance readers read it,
+            with DIFFERENT questions: the replay, when a loan's first balance
+            after its opening is a tracking start, clears the months before
+            it one by one (ruling **R-R117**,
+            :func:`app.services.loan_ledger.replay_loan_events`, which reads
+            it off the stream's reset event); and the loan's recorded start
+            is its first tracking start's date whatever precedes it
+            (:attr:`app.services.balance_at._resolution.ResolvedLoan
+            .recorded_start`, rulings R-R111, R-R114), which the pre-tracking
+            estimate, the net-worth history start and the loan chart's first
+            month read.  The drift
+            scorecard labels the tracking-start row by it, and the write
+            door's duplicate rule scopes its comparison by it
             (:func:`app.services.loan_anchor_service._governing_loan_anchor`,
             ruling R-EQ).
     """
@@ -149,7 +159,9 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
     *params*, never a stored row; see :class:`LoanAnchorFact`).  Every STANDING
     ``tracking_start`` and ``user_trueup`` :class:`LoanAnchorEvent` is loaded as
     an ``is_opening=False`` balance ASSERTION -- the two differ only in
-    ``is_tracking_start`` (a label; the walk resets on both identically) --
+    ``is_tracking_start``, and the walk resets on both at their own date; a
+    loan whose FIRST balance is a tracking start also has the months before
+    it cleared one by one (ruling **R-R117**) --
     through :func:`load_standing_loan_assertions`, so a statement a
     :class:`~app.models.loan_anchor_withdrawal.LoanAnchorWithdrawal` names
     resets nothing (plan step ``recurrence:R23``).

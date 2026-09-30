@@ -124,7 +124,7 @@ def _stream(
         resets=[
             LoanResetEvent(
                 on_date=owed_from, balance=seed, source=opening,
-                is_opening=True,
+                is_opening=True, is_tracking_start=False,
             ),
         ],
     )

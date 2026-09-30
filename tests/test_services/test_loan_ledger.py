@@ -912,3 +912,68 @@ class TestTheSettledWalkChargesOncePerInstallment:
                 loan.id, seed_user["scenario"].id, on,
             ) == Decimal("98600.00")
 
+
+
+class TestTheFirstTrackingStartClearsMonthByMonth:
+    """Ruling R-R117 through the real stack: the setup door's start, a real settle.
+
+    The pure rule is pinned in ``test_loan_replay_one_stream.py`` on hand-built
+    streams; this pins the one thing those cannot reach -- that a stored
+    ``tracking_start`` row reaches the replay AS a tracking start (the stream's
+    builder copies the fact's kind onto its reset event), so the walk, the fold
+    and the POSTED ledger all split the held payment by R-R117.
+    """
+
+    def test_a_payment_the_start_holds_pays_its_own_month_on_every_reader(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """R-R117's worked example: tracked from Feb 20, Feb 15's paid Feb 25.
+
+        $30,000.00 at 5% from 2025-01-01, due the 15th, set up with a balance
+        of $24,604.17 as of 2026-02-20 (the setup door's ``tracking_start``).
+        Feb 15's $500.00 is then marked paid, its money moving Feb 25 (period
+        3, 02-13..02-26).  The start holds it and is the loan's first balance,
+        so every month before Feb 15 with no payment of its own is dropped:
+
+          Feb 15: interest round(30,000.00 x 0.05 / 12) = $125.00,
+                  principal 500.00 - 125.00 = $375.00, owing $29,625.00.
+          Feb 20: the start corrects $29,625.00 to $24,604.17.
+
+        Read on Feb 19: the opening held flat, $30,000.00.  Feb 20: the start
+        plus the principal not yet visible, $24,979.17.  Feb 25: $24,604.17.
+        Without R-R117 the payment paid thirteen months, $1,625.00 of interest
+        and -$1,125.00 of principal, and Feb 20 read $23,479.17.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Tracked Loan",
+                principal=Decimal("30000.00"), rate=Decimal("0.05000"),
+                term=60, origination_date=date(2025, 1, 1), payment_day=15,
+                tracked_balance=Decimal("24604.17"),
+                tracked_from=date(2026, 2, 20),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[3], amount=Decimal("500.00"),
+                settled_on=date(2026, 2, 25), due_date=date(2026, 2, 15),
+            )
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+
+            [feb] = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
+            assert (feb.due_date, feb.interest, feb.principal) == (
+                date(2026, 2, 15), Decimal("125.00"), Decimal("375.00"),
+            )
+            reads = {
+                date(2026, 2, 19): Decimal("30000.00"),
+                date(2026, 2, 20): Decimal("24979.17"),
+                date(2026, 2, 25): Decimal("24604.17"),
+            }
+            assert _fold(loan, seed_user, list(reads)) == reads
+            # THE POSTED MONEY: the start's correction and the payment's split
+            # are posted by the same walk, so the general ledger reads the same
+            # three days.
+            assert {
+                on: posted_loan_balance_at(loan.id, scenario_id, on)
+                for on in reads
+            } == reads

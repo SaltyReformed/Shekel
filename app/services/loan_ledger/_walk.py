@@ -244,6 +244,26 @@ def load_loan_stream(
     settle day; the anchor doors bound their date) -- the bound drops nothing
     and this is the ledger's own stream.
 
+    **"Every production pass" is a CENSUS, not a construction** (2026-09-30,
+    plan step recurrence:R16-c-2's ruling R-R117): this function has two
+    callers, :func:`walk_loan_ledger` (no bound) and the seam's per-pass walk
+    (``BalanceContext.loan_walk``, bounded by the pass's ``as_of``), and every
+    production pass is built at today.  The census rests on what no code
+    enforces: ``BalanceContext.build`` accepts any ``as_of``; the tax report's
+    display-timezone today equals the server's only while production pins its
+    timezone; and a write request built just before midnight could meet a
+    tracking start committed just after it (untraced).
+
+    It matters beyond the balance.  A pass pinned BEFORE a loan's first
+    tracking start does not see that start, so a payment due before the start
+    whose money moved before the pass's day splits there as it did before
+    R-R117 (every unrecorded month since origination), while the ledger's
+    walk splits it by R-R117.  Such a payment needs money that moved before
+    the start, which the tracking-start doors refuse when they write it
+    (rulings R-R114, R-R115); it arises only from a settle day moved or
+    recorded earlier than the start after the start was written, or from a
+    row held before those refusals existed.
+
     Args:
         loan_account_id: The loan account whose facts to load.
         scenario_id: The budget scenario the payments live in.
@@ -329,7 +349,9 @@ def walk_loan_ledger(
       rulings R-R72 and R-R100; one per occupied period since plan step
       X-au-g-2c-3b-2): a month nobody paid is charged and the next payment
       clears it first, and a second payment inside one installment's interval
-      clears no fresh charge and pays pure principal.
+      clears no fresh charge and pays pure principal.  A month on or before the
+      loan's first balance, when that balance is a tracking start, is dropped
+      instead unless a payment of its own clears it (ruling R-R117).
     * At a settled PAYMENT -- INCLUDING one whose pay period has not yet begun
       (settlement is the confirming event; see
       :func:`~app.services.loan_loaders.settled_income_shadows`) -- allocate its

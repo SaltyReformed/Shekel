@@ -7,7 +7,10 @@ stream.  THREE kinds of fact enter it, and nothing else:
   balance assertion made after it: a mid-life ``tracking_start`` and every user
   balance true-up, all loaded as
   :class:`~app.services.loan_loaders.LoanAnchorFact` and all RESETTING the running
-  balance at their own date (a ``tracking_start`` is never the opening -- step C1);
+  balance at their own date (a ``tracking_start`` is never the opening -- step C1).
+  The kind travels onto the event, because a loan whose first balance is a
+  tracking start has the months before it cleared one by one (ruling
+  **R-R117**, :func:`.._replay.replay_loan_events`);
 * a **PAYMENT** -- the to-side leg of a settled transfer into the loan, its
   covering movement the record that cash actually moved
   (:func:`~app.services.loan_loaders.settled_income_shadows`);
@@ -154,7 +157,9 @@ def loan_event_stream(
     keeps plan step R16-a's rule, the count of charges cannot depend on the
     count of payments, and ends D53's exception to it: a month nobody paid is
     charged, and the next payment clears those arrears before it reaches
-    principal.  A period holding two payments is charged once, and the second
+    principal -- except a month on or before the loan's first balance when
+    that balance is a tracking start, which the replay drops (ruling
+    **R-R117**).  A period holding two payments is charged once, and the second
     payment clears nothing fresh and pays pure principal.
 
     **EVERY input arrives PRE-ORDERED by its own loader, and nothing here or in
@@ -232,6 +237,7 @@ def loan_event_stream(
                     balance=anchor.anchor_balance,
                     source=anchor,
                     is_opening=anchor.is_opening,
+                    is_tracking_start=anchor.is_tracking_start,
                 )
                 for anchor in anchor_facts
             ],

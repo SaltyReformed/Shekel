@@ -522,10 +522,13 @@ def record_loan_tracking_start(
     **It is refused when a payment into the loan moved money on or before its
     date** (ruling **R-R114**, which amends R-R113 and ruling R-R72 part 3;
     which payments count, and from what day, is ruling **R-BAL155**'s).  The
-    walk resets on a tracking start and a true-up identically, so the two
-    differ in label alone -- but the label is what the loan's RECORDED START
-    reads (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`:
-    "the app's record of this loan starts here"), and a payment whose money
+    walk resets on a tracking start and a true-up alike, at its own date; the
+    label is what the loan's RECORDED START reads
+    (:attr:`app.services.balance_at._resolution.ResolvedLoan.recorded_start`:
+    "the app's record of this loan starts here"), and when the loan's first
+    balance is a tracking start the walk also clears the months before it one
+    by one (ruling **R-R117**, :func:`app.services.loan_ledger
+    .replay_loan_events`).  A payment whose money
     moved on or before the date says the record started earlier.  Such a
     statement is a balance correction, which :func:`apply_loan_anchor_true_up`
     records, so the door refuses it (:class:`~app.exceptions.TrackingStartRefused`)
