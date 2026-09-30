@@ -8,6 +8,7 @@ once at import time so every handler reuses the same instance (Marshmallow
 contract), preserving the pre-split monolith's behaviour.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -106,23 +107,24 @@ def _load_loan_account(account_id):
     return account, params, account_type
 
 
-#: Every field the setup form posts, each re-rendered from a refused POST.
-_SETUP_FIELDS = (
-    "original_principal", "origination_date", "anchor_balance", "anchor_date",
-    "interest_rate", "term_months", "payment_day", "is_arm",
-)
-
-
-def render_loan_setup(account, account_type, submitted=None):
+def render_loan_setup(
+    account, account_type, submitted: Mapping[str, str] | None = None,
+):
     """Render the loan setup form for an account that has no ``LoanParams`` yet.
 
-    **A refused POST comes back exactly as typed**, every field read from
-    *submitted* (review 7c of plan step recurrence:R16-c-2).  Until then a
-    refusal re-rendered the defaults below over a blank form, so an owner who
-    followed a refusal by changing only the date re-submitted the prefilled
-    balance instead of the one typed -- measured: a prefilled ``0.00``
-    configured a loan owing $0.00.  The defaults serve the form's FIRST
-    showing only.
+    **A refused POST the form itself can remedy comes back exactly as typed**
+    (review 7c of plan step recurrence:R16-c-2): the schema's refusal, the
+    term cap's, the pre-origination one and the tracking-start one each pass
+    the POST's own form as *submitted*, and every field the template draws
+    reads its posted string from it.  Until then a refusal re-rendered the
+    defaults below over a blank form, so an owner who followed a refusal by
+    changing only the date re-submitted the prefilled balance instead of the
+    one typed -- measured: a prefilled ``0.00`` configured a loan owing
+    $0.00.  The defaults serve the form's FIRST showing only.  The one
+    refusal that does not come back here is the standing payment's
+    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`):
+    its remedy is the recurring transfer's, not the form's, so it redirects
+    to the dashboard, which shows the first showing.
 
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
@@ -142,9 +144,10 @@ def render_loan_setup(account, account_type, submitted=None):
         account: The loan :class:`Account` being configured.
         account_type: Its :class:`AccountType` row (labels, icon, term cap).
         submitted: The refused POST's form (``request.form``), or ``None``
-            for the form's first showing.  Each of :data:`_SETUP_FIELDS` is
-            echoed as its raw posted string -- a field the POST lacked comes
-            back empty -- and autoescaped by the template.
+            for the form's first showing.  Passed through whole: the
+            template names its own fields, so no second list of them lives
+            here, and a field the POST lacked comes back empty.  Each value
+            is the raw posted string, autoescaped by the template.
 
     Returns:
         The rendered setup page.
@@ -158,15 +161,16 @@ def render_loan_setup(account, account_type, submitted=None):
         # HELD since plan step credit_card:CC-5-5b -- a car loan created owing
         # 5,000.00 holds -5,000.00 -- so the pre-fill crosses through the
         # door's one function (ruling R-CC52) and opens on 5,000.00.  Read
-        # raw, it would pre-fill a negative figure the box refuses.
-        anchor_balance=liability_sign.shown_figure(
-            account_type, cash_ledger.resolve_anchor(account).balance,
+        # raw, it would pre-fill a negative figure the box refuses.  Read for
+        # the first showing only: a refused POST re-renders what was typed.
+        anchor_balance=(
+            None if submitted is not None
+            else liability_sign.shown_figure(
+                account_type, cash_ledger.resolve_anchor(account).balance,
+            )
         ),
         today_iso=display_today().isoformat(),
-        submitted=(
-            None if submitted is None
-            else {field: submitted.get(field, "") for field in _SETUP_FIELDS}
-        ),
+        submitted=submitted,
     )
 
 

@@ -86,8 +86,9 @@ def create_params(account_id):
     after the day a payment into the account moved money is refused whole**
     (ruling **R-R115**, "Same rule at setup": the dashboard door's R-R114 at
     this door, and R-BAL155's day): payments can be recorded into an account
-    before its loan is set up, and the form re-renders asking for a day after
-    the origination and before the payment's
+    before its loan is set up, and the form re-renders as typed, asking for a
+    day after the origination and before the payment's, or for the
+    origination day itself where no such day exists
     (:func:`_stage_stated_balance_or_refuse`).  That
     refusal rolls the write back and THEN re-renders, as the schedule doors
     do (``routes/pay_periods.py``).

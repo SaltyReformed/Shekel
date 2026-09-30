@@ -750,7 +750,9 @@ class TrackingStartRefused(ValidationError):
     **The message states the fact and no remedy, because the remedy is the
     door's.**  The dashboard's door offers an earlier date or its Record
     balance control (a ``user_trueup``, which corrects and starts nothing);
-    the setup form has no such control and asks for an earlier date.  Each
+    the setup form has no such control and asks for a day after the
+    origination and before the payment's, or for the origination day itself
+    where no such day exists.  Each
     route appends its own sentence, and a caller asking the broader
     :class:`ValidationError` question still hears a true one.
 

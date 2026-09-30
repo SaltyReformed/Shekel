@@ -451,7 +451,8 @@ def _earliest_payment_moved_on(account: Account) -> date | None:
     straddle (paid before its due date) but, for a LATE one (paid after it),
     any day from the due day up to the money day puts it in the first case
     and loses it, while Record balance on the refused day walks a late
-    payment correctly and repeats an early one's double count.  (Record
+    payment correctly and, for an early one, repeats its double count only
+    where the refused day falls before its due date.  (Record
     balance is the dashboard's other remedy, and the setup form's when the
     payment moved on or before the day after the origination.)  The door
     cannot pick a safe date for the owner while the walk keys the boundary on
@@ -544,8 +545,9 @@ def record_loan_tracking_start(
 
     **It is decided under the owner's write lock** (R-EQ's order: the lock
     precedes the read a decision is made from).  Since plan step
-    ``balance:X-bn`` every signed-in request takes that lock before it reads
-    the owner's data (:mod:`app.db_transaction`), a settle included, so a
+    ``balance:X-bn`` every command transaction a signed-in request opens
+    takes that lock before it reads the owner's data (:mod:`app.db_transaction`;
+    a GET takes none), a settle's included, so a
     payment settled in another tab either committed before this door read the
     payments or waits for it to finish.  Until then a settle took the lock
     only inside its posting re-sync, after its own writes (finding
