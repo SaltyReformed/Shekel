@@ -38,10 +38,11 @@ PAYMENT  (cash arrived)    allocate cash + standing.extra against standing,
                            advance the balance, and clear standing
 RESET    (an assertion)    record the balance just before, overwrite it, and
                            clear standing (R-R72 part (2)) -- save the loan's
-                           first tracking start, with no Record balance on
-                           its day and the standing installment's own payment
-                           still to walk, which charges that installment
-                           again on the balance it states (R-R118)
+                           first balance when that balance is a tracking
+                           start, with no Record balance on its day and the
+                           standing installment's own payment still to walk,
+                           which charges that installment again on the
+                           balance it states (R-R118)
 ```
 
 **Fused, the CHARGE and the PAYMENT made the payment COUNT the clock** (plan step
@@ -94,8 +95,9 @@ keeps your Sept 11 rule", in the ruling's words), and the start re-charges
 nothing when a true-up shares its day, whichever of the two the loader
 orders first: the design walks a Record balance at its own date, after the
 standing charge, so it clears what stands, and the interval's payment
-after it pays pure principal, as the ruling's "as the 'lender's day'
-design does" requires.  **One residual on that day, not this ruling's:**
+after it pays pure principal, as the ruling's design (A*, the REC-552
+study's design.md s.3) does.  **One residual on that day, not this
+ruling's:**
 the design also walks the start BEFORE the charge, so the Record balance
 always closes the day, where the loader closes it on whichever statement
 was recorded later (plan step X-an-b's chronology, finding N-196,
