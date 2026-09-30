@@ -531,11 +531,12 @@ class TestTheParentDecidesADriftedSide:
     def test_a_settled_transfer_over_an_undated_kept_record_offers_nothing(
         self, app, db, seed_user,
     ):
-        """No LEG (not Projected) and no payment (its record is not dated): Invariant 5's "neither half".
+        """No LEG (not Projected) and no payment (its record is not dated).
 
-        Through leaf ``X-bi-6-4c-2`` the Projected shadow was offered as a row
-        and an Apply of it raised after the transfer's no-op settle; a match
-        could not date the kept record either way.
+        Through leaf ``X-bi-6-4c-2`` the Projected shadow was offered as a row,
+        and an Apply of it dated the kept record on the owner's TODAY rather
+        than the bank's day: the settle door keeps a settled parent's status
+        and drops the day it was given (measured 2026-09-30).
         """
         transfer = _a_transfer(seed_user)
         _settle(seed_user, transfer)

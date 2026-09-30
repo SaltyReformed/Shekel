@@ -61,9 +61,14 @@ row arms EXCLUDE a transfer's shadow (``transfer_id IS NULL``): through leaf
 ``X-bi-6-4c-2`` a transfer was offered as its SHADOW row on this account, a
 TRANSACTION, and its paid side as the shadow's movement joined to the shadow,
 which ``X-bi-6-4d`` -- deleting the shadows -- would have left offering
-nothing.  The two leg arms partition exactly as the row arms do, by the
-movement (ruling **R-BAL79**): a side is a LEG while its transfer is Projected
-and its money has not moved, and its movement is the subject otherwise.
+nothing.  The two leg arms partition by the movement (ruling **R-BAL79**): a
+side is a LEG while its transfer is Projected and its money has not moved,
+and its DATED movement is the subject once it has (ruling **R-BAL80**).  Where
+the row arms offer an un-dated kept movement (a row reverted after a
+card-tendered settle, ruling **R-CC42**), the leg arms offer none: under a
+Paid or Received transfer that record is a state no door writes, and an
+Apply of it would date it on the wrong day
+(:func:`~._valuation.leg_settlement_candidate`).
 
 **What one candidate is WORTH is** :mod:`._valuation` **'s, in its own module
 since plan step ``credit_card:CC-5-4a-1``** (this one crossed the 1,000-line
@@ -675,8 +680,9 @@ def _leg_settlement_candidates(
     * the movement is DATED -- a settled leg is its dated covering movement
       (ruling **R-BAL80**), and a side whose money has not moved is on the
       plan (:func:`_leg_candidates`, ruling **R-BAL79**), so one side is
-      offered once.  An un-dated record under a transfer that is no longer
-      Projected -- a state no door writes -- is offered by neither arm;
+      offered once.  An un-dated record under a Paid or Received transfer --
+      a state no door writes -- is offered by neither arm (under a Cancelled
+      one the contributing clause already excludes it);
       :func:`~._valuation.leg_settlement_candidate` carries why, and re-asks
       the day in Python for :func:`~._valuation.repriced`'s sake.
 

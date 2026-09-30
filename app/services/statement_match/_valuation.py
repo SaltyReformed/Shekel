@@ -595,15 +595,24 @@ def leg_settlement_candidate(
     puts every other side on the plan).  So a side is a LEG while its
     transfer is Projected and its money has not moved
     (``transfer_legs.offerable_transfer_legs``), its payment once the money
-    has moved, and NEITHER in the one state between them, an un-dated
-    record under a transfer that is no longer Projected -- which no door
-    writes, which ``CLAUDE.md``'s Transfer Invariant 5 counts in neither
-    half of the cash fold, and which a match could not date anyway (the
-    transfer's settle is a no-op on a settled parent).  A row's un-dated
-    kept movement is a candidate where a leg's is not because the row's is
-    a door-written state (ruling **R-CC42**: a reverted card-tendered row)
-    that its own door re-settles.  So a leg's payment is never priced by a
-    derivation that can refuse, and no leg payment is ever unpriceable.
+    has moved, and NEITHER when its record is un-dated under a transfer that
+    is no longer Projected.  Under a Cancelled transfer (a door-written
+    state: the seam keeps a cancelled row's movement) that was already
+    so -- the contributing gate offers nothing -- and under a Paid or
+    Received one it is a state no door writes, which the cash fold also
+    reads as nothing (its plan half needs a Projected parent and its record
+    half a dated movement).  Offering it there booked the WRONG day: an
+    Apply runs ``transfer_service.settle_transfer`` with the bank's day, the
+    parent is already settled so the door keeps its status and drops that
+    day, and the pair repair dates the kept record on the owner's TODAY
+    (measured 2026-09-30: bank day 2024-01-05, record dated the test
+    clock's 2026-03-20 -- ``transfer_service``, which this leaf does not
+    touch, did the same to the shadow's record on the branch base).
+    A row's un-dated kept movement is a candidate where a leg's is not
+    because the row's is a door-written state (ruling **R-CC42**: a reverted
+    card-tendered row) that its own door re-settles on the bank's day.  So
+    a leg's payment is never priced by a derivation that can refuse, and no
+    leg payment is ever unpriceable.
 
     Args:
         leg: The leg, carrying the movement as its ``record``
