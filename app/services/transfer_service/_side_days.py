@@ -255,8 +255,14 @@ def resolve_pair_days(
         return PairDays(expense=expense, income=borrowed_day(expense, fallback))
     if income is not None:
         return PairDays(expense=borrowed_day(income, fallback), income=income)
-    shared = borrowed_day(None, fallback)
-    return PairDays(expense=shared, income=shared)
+    # Asked once PER SIDE, although both answer *fallback* today: a borrowed
+    # day is derived for its own side, so an input that later reaches one
+    # side's derivation alone (the REC-552 study's loan-side answers) needs no
+    # second producer.
+    return PairDays(
+        expense=borrowed_day(None, fallback),
+        income=borrowed_day(None, fallback),
+    )
 
 
 def _own(current: SettleDay | None, stated: SettleDay | None) -> SettleDay | None:

@@ -27,8 +27,12 @@ from app.models.transfer import Transfer
 from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import status_seam, template_amount_service, transfer_service
-from app.services.settle_day import settle_day_from_columns
+from app.services import (
+    status_seam,
+    template_amount_service,
+    transfer_legs,
+    transfer_service,
+)
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
@@ -39,7 +43,7 @@ from app.utils.error_fragments import (
 )
 from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
-from app.routes._render_helpers import render_transfer_cell
+from app.routes._render_helpers import render_transfer_cell, transfer_side_boxes
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
@@ -65,8 +69,9 @@ _TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
 # amount, the category, the period and the due date.  Names match
 # :class:`TransferUpdateSchema` (the route's loaded ``data`` dict).
 #
-# **The two OBSERVED FACTS are deliberately absent** (developer ruling,
-# 2026-08-17): ``settled_on``, the day the bank moved the money, and
+# **The OBSERVED FACTS are deliberately absent** (developer ruling,
+# 2026-08-17): each side's day the bank moved the money (``settled_on_from`` /
+# ``settled_on_to`` since plan step balance:X-bi-6-4c-3), and
 # ``settled_amount``, what it took.  A lock protects a decision from being
 # rewritten; an observation gets corrected when the statement disagrees, and
 # neither correction requires reverting the transfer.  That matters beyond
@@ -364,7 +369,7 @@ def update_transfer(xfer_id):
     # service has loaded.  A route-tier version read the STATUS alone and so
     # discarded a figure the user had just retyped (2026-08-18).
     error_response = (
-        _grade_submitted_settle_day(xfer, data)
+        _grade_submitted_side_days(xfer, data)
         or _reject_finalised_transfer_edit(xfer, data)
         # AFTER the finalised lock, and the order is stated rather than
         # incidental: ``due_date`` IS one of ``_LOCKED_EDIT_FIELDS``, so a
@@ -555,15 +560,14 @@ def mark_done(xfer_id):
         # **The named VERB, not a kwargs bag** (plan step X-f2-c3): this door
         # means "the bank took this transfer" and nothing else, so it says so.
         # ``settle_transfer`` owns what that costs -- the loan-payment freeze,
-        # the pair's settle day, and whether a submitted figure is a human's
+        # each side's settle day, and whether a submitted figure is a human's
         # correction -- and a door that assembled ``status_id`` itself is a
         # door that can be written without them.
         #
         # NO explicit settle day, and its absence is finding N-178's fix.
-        # The day is still recorded -- ``transfer_service`` resolves ONE day
-        # for the pair and hands it to the status seam, which stamps the user's
-        # today on the first entry into a settled status (F-048 / C-22's
-        # requirement, now met by the seam rather than by this call site).
+        # The day is still recorded -- with none stated, both sides borrow the
+        # user's today (ruling **R-BAL142**; F-048 / C-22's requirement, met
+        # by ``transfer_service`` rather than by this call site).
         # Passing one HERE defeated that: the explicit-day branch wrote both
         # shadows verbatim AFTER the seam had preserved, and ``done -> done``
         # is a legal transition this route does not gate -- so a replayed or
@@ -641,62 +645,63 @@ def cancel_transfer(xfer_id):
     )
 
 
-def _grade_submitted_settle_day(xfer, data):
-    """Resolve a submitted ``settled_on`` against the status the PATCH leaves.
+def _grade_submitted_side_days(xfer, data):
+    """Resolve each submitted side's day against the status the PATCH leaves.
 
-    Ruling **R-ED**'s correction door, graded by the ONE shared rule
-    :func:`app.services.status_seam.settle_day_for_status` so this door and the
-    two transaction-side doors cannot answer differently.  Mutates *data* in
-    place: the schema's ``settled_on`` key always goes, and a day the rule KEEPS
-    comes back as a ``settle_day`` pair -- the day and the basis that says how it
-    is known (plan step **X-az**).  A day the rule DROPS leaves no key at all, so
-    the service never sees it and the seam clears both columns as part of the
-    status change.
+    Ruling **R-ED**'s correction door, one box per side since plan step
+    ``balance:X-bi-6-4c-3`` (ruling **R-BAL108**), each graded by the ONE
+    shared rule :func:`app.services.status_seam.settle_day_for_status` so this
+    door and the two transaction-side doors cannot answer differently.
+    Mutates *data* in place: both schema keys always go, and a day the rule
+    KEEPS for a side comes back as that side's
+    :class:`~app.services.transfer_service.SideDay`, under ``side_days`` -- the
+    key the service reads (it silently ignores any other).
 
-    **Why a drop rather than a refusal** (ruling **R-EG**): both full-edit forms
-    re-submit the row's whole state, and the documented way to unlock a
-    finalised transfer is to set Status to Projected in that same form -- so a
-    revert arrives carrying the day the row already had.  Keeping it would make
-    ``transfer_service._status.apply_settle_day_correction`` raise and break the unlock
-    path on every settled transfer.
+    **Each box is graded against what THAT box was prefilled with**
+    (:func:`~app.routes._render_helpers.transfer_side_boxes`, the producer the
+    popover rendered it from): an untouched box is an ECHO and states nothing,
+    so an untouched Save re-dates no side and relabels no basis.  A box for a
+    side BORROWING the other's day was rendered EMPTY and is graded against
+    nothing (ruling **R-BAL164**), so any day typed there -- the borrowed one
+    included -- is that side's own, ``entered``.
+
+    **Why a drop rather than a refusal on a revert** (ruling **R-EG**): both
+    full-edit forms re-submit the row's whole state, and the documented way to
+    unlock a finalised transfer is to set Status to Projected in that same
+    form -- so a revert arrives carrying the days the boxes held, which the
+    rule drops.
 
     Args:
         xfer: The transfer being PATCHed, for its current status (the fallback
-            when the form submitted none) and its id (for the error fragment).
+            when the form submitted none), its legs' records and its id (for
+            the error fragment).
         data: The schema-loaded payload, mutated in place.
 
     Returns:
-        A designed 400 error-fragment response when the submitted day precedes
-        the budget's schedule (ruling **R-EL**), or ``None`` when the edit may
-        proceed -- the shape this handler's other gates use, so they can share
-        one error exit.
+        A designed 400 error-fragment response when a submitted day precedes
+        the budget's schedule (ruling **R-EL**) or has not happened yet (ruling
+        **R-EJ**), or ``None`` when the edit may proceed -- the shape this
+        handler's other gates use, so they can share one error exit.
     """
-    if "settled_on" not in data:
-        return None
-    try:
-        settle_day = status_seam.settle_day_for_status(
-            current_user.id,
-            data.get("status_id", xfer.status_id), data["settled_on"],
-            # What the PAIR already records, read off the income shadow in ONE
-            # query (plan step X-az).  A transfer carries neither column, and
-            # without the stored pair an untouched Save of this prefilled form
-            # would restamp a bank-observed or panel-asserted day as the owner's
-            # own typing.  ``settle_day_columns`` is one read of both because two
-            # reads can straddle two shadows and produce a half-pair the decode
-            # rightly refuses -- a 500 for a phantom writer.
-            settle_day_from_columns(*xfer.settle_day_columns),
+    boxes = [
+        box for box in transfer_side_boxes(
+            xfer, transfer_legs.covering_movements_by_leg([xfer.id]),
         )
+        if box.field in data
+    ]
+    side_days = []
+    try:
+        for box in boxes:
+            day = status_seam.settle_day_for_status(
+                current_user.id, data.get("status_id", xfer.status_id),
+                data.pop(box.field), box.prefill,
+            )
+            if day is not None and day != box.prefill:
+                side_days.append(transfer_service.SideDay(box.account_id, day))
     except ShekelValidationError as exc:
         return _error_transfer_response(xfer.id, str(exc))
-    # **The key is REPLACED, not overwritten** (plan step **X-az**): the schema
-    # loads a ``settled_on`` date and the service takes a ``settle_day`` pair --
-    # the day AND the basis that says how it is known -- so leaving the old key
-    # in place would hand ``update_transfer`` a kwarg it silently ignores while
-    # the pair arrived under the name it reads.  ``settle_day_for_status``
-    # stamped ``entered``, which is what a day out of a date box is.
-    del data["settled_on"]
-    if settle_day is not None:
-        data["settle_day"] = settle_day
+    if side_days:
+        data["side_days"] = tuple(side_days)
     return None
 
 
@@ -796,9 +801,9 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # **The Actual box's figure is a PERSON's statement of what the bank
     # took**, and the route says so with the figure (plan step X-bi-3e-1,
     # ruling R-BAL61): the service takes the amount and who wrote it as one
-    # ``figure`` value, the way it takes the day as ``settle_day``.  The key
-    # is REPLACED for the reason ``_grade_submitted_settle_day`` gives: the
-    # service would silently ignore a ``settled_amount`` kwarg.  An empty box
+    # ``figure`` value, the way it takes each side's day as ``side_days``.
+    # The key is REPLACED for the reason ``_grade_submitted_side_days`` gives:
+    # the service would silently ignore a ``settled_amount`` kwarg.  An empty box
     # loads as ``None`` and is no statement, so no key.
     actual = typed_figure(data.pop("settled_amount", None))
     if actual is not None:

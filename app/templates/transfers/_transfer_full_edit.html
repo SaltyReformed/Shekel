@@ -318,60 +318,58 @@
       {% endif %}
     </div>
 
-    {# Settled on -- the civil day the money actually moved (ruling R-ED).
-       Rendered ONLY for a settled transfer, because that is exactly when the
-       fact exists.  Deliberately NOT disabled on a finalised transfer, unlike
-       the amount / period / category / due-date above: those are BUDGET
-       DECISIONS the #26 lock protects, and this is an OBSERVED FACT about the
-       bank, corrected when the statement disagrees.
+    {# Money moved on -- ONE BOX PER SIDE (ruling R-BAL108; plan step
+       balance:X-bi-6-4c-3, where it was one box for the pair, ruling R-ED).
+       Each side keeps its own day and says how it is known (ruling R-BAL142):
+       the bank showed it, it was reconciled, the owner typed it, or it is a
+       guess borrowed from the other side.  Rendered ONLY for a settled
+       transfer, because that is exactly when the fact exists.  Deliberately NOT
+       disabled on a finalised transfer, unlike the amount / period / category /
+       due-date above: those are BUDGET DECISIONS the #26 lock protects, and
+       this is an OBSERVED FACT about the bank, corrected when the statement
+       disagrees.  The ONLY correction door for the legacy settled rows whose
+       day was invented from a pay period's start (finding N-181).
 
-       This is the ONLY correction door for the eight legacy settled rows whose
-       day had to be invented from a pay period's start (finding N-181) -- all
-       eight are transfer shadows, and a shadow's full-edit popover is this
-       form.
+       ``side_boxes`` is ``_render_helpers.transfer_side_boxes``: the SAME
+       producer the PATCH grades each submission against, off the legs'
+       records.  A side with evidence is PREFILLED with its own day, so an
+       untouched Save is an echo and states nothing.  A side BORROWING the other
+       side's day renders EMPTY with the borrowed day in its caption (ruling
+       R-BAL164), so typing any day there -- the borrowed one included -- makes
+       it that side's own; leaving it empty keeps it following.  A side with no
+       caption holds no day (a ``$0.00`` close moved nothing); typing one there
+       records it.
 
-       Changing it MOVES MONEY: the day is the ``entry_date`` both shadows'
-       ledger postings are filed under, and the service re-dates them plus both
-       endpoint accounts' anchor corrections in the same request.
-
-       ``xfer.settled_on`` is the model's read of the pair's shared day (it is
-       not a column).  The box renders for ANY settled transfer, INCLUDING one
-       whose pair carries no day -- and the condition excluded that case until a
-       neutral review named the consequence: an undated settled transfer made
-       the posting writer before plan step ``balance:X-bi-6-3`` raise
-       ``UndatedSettleError``, i.e. a 500 on the grid.  The one movement writer
-       now posts NOTHING for an undated movement
-       (``_posting_purchases.purchase_posts``), so such a pair's money is in no
-       journal entry at all.  Either way, hiding the box left that row with no
-       way to state the day it ACTUALLY moved.  A second review
-       corrected the first's wording: a repair path did already exist, because an
-       identity-status Save falls back to ``display_today()``
-       (``transfer_service._status.apply_status_to_all_three``) -- but it repairs to
-       TODAY, inventing a day, which is the one thing this whole step exists to
-       stop.  Typing the real day into the empty box is the repair that records a
-       fact.  The two doors must not disagree about this.
-
-       An empty submit means "leave the day alone", not "clear it": the schema
-       field is not ``allow_none``, so an empty value is dropped.  Set Status to
-       Projected to remove the day -- reverting is what says the money did not
-       move, and the ``title`` says so where it will be read.
+       Changing a box MOVES MONEY on that side: its day is the ``entry_date``
+       its ledger posting is filed under, and a side borrowing it follows; the
+       service re-dates the postings and both accounts' anchor corrections in
+       the same request.  An empty submit means "leave it alone", never "clear
+       it" (the schema fields are not ``allow_none``); set Status to Projected
+       to remove the days.
 
        ``max`` is TODAY (ruling R-EJ): a settled transfer's money has already
        moved.  The browser refuses first; ``status_seam.reject_future_settle_day``
-       is the backstop.  No ``min`` -- a settle legitimately falls before its own
-       pay period. #}
+       is the backstop.  ``min`` is the schedule's floor (ruling R-EL). #}
     {% if xfer.status and xfer.status.is_settled %}
+    {% for box in side_boxes %}
     <div class="mb-2">
-      <label class="form-label mb-0 small" for="settled-on-{{ xfer.id }}">
-        Money moved on
+      <label class="form-label mb-0 small" for="{{ box.field }}-{{ xfer.id }}">
+        Money moved on, {{ box.account_name }}
       </label>
-      <input type="date" name="settled_on" id="settled-on-{{ xfer.id }}"
-             value="{{ xfer.settled_on.isoformat() if xfer.settled_on is not none else '' }}"
+      <input type="date" name="{{ box.field }}" id="{{ box.field }}-{{ xfer.id }}"
+             value="{{ box.prefill.day.isoformat() if box.prefill is not none else '' }}"
              min="{{ settle_day_min.isoformat() }}"
              max="{{ today.isoformat() }}"
              class="form-control form-control-sm"
-             title="The day your bank actually moved this. Correct it if your statement shows a different day. Clearing it does nothing. Setting Status to Projected says the money did not move, and discards any day typed here.">
+             {% if box.caption is not none %}aria-describedby="{{ box.field }}-caption-{{ xfer.id }}"{% endif %}
+             title="The day your bank actually moved this on {{ box.account_name }}. Correct it if your statement shows a different day. Leaving it empty changes nothing. Setting Status to Projected says the money did not move, and discards any day typed here.">
+      {% if box.caption is not none %}
+      <div class="form-text small" id="{{ box.field }}-caption-{{ xfer.id }}">
+        {{ box.caption }}
+      </div>
+      {% endif %}
     </div>
+    {% endfor %}
     {% endif %}
 
     {# Save / Cancel buttons #}
