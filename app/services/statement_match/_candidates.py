@@ -530,8 +530,8 @@ def _settlement_candidates(
     Args:
         account_id: The cash account the statement is for.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
-        period_ids: The owner's saved pay-period ids, threaded as the other
-            two arms take them.
+        period_ids: The owner's saved pay-period ids, threaded as every
+            other arm takes them.
         basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`, for
             the un-dated arm of :func:`~._valuation.settlement_price`.
 
@@ -788,8 +788,8 @@ def candidates_for(
 ) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
-    **The ONE entry point, and the reason it exists is that the two arms share
-    a read.**  Both scope by the owner's saved period ids, and asking twice in
+    **The ONE entry point, and the reason it exists is that the arms share
+    a read.**  Every arm scopes by the owner's saved period ids, and asking again in
     one request is a redundant producer call -- the shape this project treats
     as a DRY violation rather than as a cost.  It is resolved once here and
     threaded.
@@ -849,7 +849,7 @@ def candidates_for(
         Projected rows, ordered by the shadow's id, and is its own run after
         them now, ordered by the transfer's.
     """
-    # The owner's SAVED periods, which are both arms' ownership scope.  Asked
+    # The owner's SAVED periods, which are every arm's ownership scope.  Asked
     # of the calendar ONCE here rather than in each arm, for the reason the
     # calendar itself is threaded: two asks in one request is this project's
     # DRY violation rather than a cost.  The ``period_id is not None`` filter

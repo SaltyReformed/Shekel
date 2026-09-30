@@ -61,7 +61,8 @@ def leg_price(
     ``ValidationError`` is a DAMAGED transfer -- a shadow pair that is not
     one live expense and one live income shadow, which the leg price
     refuses because the settle would (``_validation._get_shadow_transactions``;
-    no door writes the state, production held 0 on the 2026-09-24 dump).
+    no door writes the state: 0 of 128 live transfers on the 2026-09-30 00:11
+    production dump).
     Ruling **R-BAL158** (developer 2026-09-30, "Skip it and say so"): such a
     leg is not offered and is counted in the screen's "could not be
     priced" note, the reconcile panel's answer (**R-BAL148**) on this

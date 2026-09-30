@@ -7,7 +7,7 @@ splits it, by SUBJECT).  The seam is the one :func:`repriced`'s own docstring
 has drawn since plan step ``bank_import:X-f6a-3c-2``: *the scope answers WHICH
 rows an act may reach; this answers what one of them is WORTH, and the two
 must be asked at different moments.*  :mod:`._candidates` keeps the scope --
-the three arms that decide which rows exist and may be offered, and the claims
+the arms that decide which rows exist and may be offered, and the claims
 that say which are already spoken for -- and calls the constructors here once
 per row; the write doors call :func:`repriced` once per act.
 
