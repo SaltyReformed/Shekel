@@ -4,7 +4,7 @@ The OFFER-SET half of the matcher.  Two questions, and they are here together
 because they are the same question about two acts:
 
 * :func:`candidates_for` -- *what has this account recorded that a statement
-  could be showing*, over the three subjects the app holds a cash movement
+  could be showing*, over the four subjects the app holds a cash movement
   as (:class:`~._subjects.RowKind`), each priced with its SIGNED effect on the
   account so a comparison against ``bank_statement_lines.amount`` is a
   subtraction rather than a sign negotiation;
@@ -50,14 +50,34 @@ names movements: the acts recorded before this step named rows until plan
 step ``credit_card:CC-5-4a-2`` re-keyed each onto its row's covering movement
 and dropped the row column (ruling **R-CC45**, migration ``2eabfa596ee0``).
 
+**A still-planned TRANSFER is offered as its LEG, and a paid one's side as its
+leg's covering movement** (leaf ``balance:X-bi-6-4c-1``, rulings **R-BAL87**,
+**R-BAL106**, **R-BAL159**): :func:`_leg_candidates` offers each Projected
+transfer's side on this account from ``transfer_legs.offerable_transfer_legs``
+(keyed by the transfer on this screen), and :func:`_leg_settlement_candidates`
+each paid side's movement from ``transfer_legs.recorded_transfer_legs`` -- the
+owner, live, status and period clauses read off the TRANSFER in both.  The two
+row arms EXCLUDE a transfer's shadow (``transfer_id IS NULL``): through leaf
+``X-bi-6-4c-2`` a transfer was offered as its SHADOW row on this account, a
+TRANSACTION, and its paid side as the shadow's movement joined to the shadow,
+which ``X-bi-6-4d`` -- deleting the shadows -- would have left offering
+nothing.  The two leg arms partition by the movement (ruling **R-BAL79**): a
+side is a LEG while its transfer is Projected and its money has not moved,
+and its DATED movement is the subject once it has (ruling **R-BAL80**).  Where
+the row arms offer an un-dated kept movement (a row reverted after a
+card-tendered settle, ruling **R-CC42**), the leg arms offer none: under a
+Paid or Received transfer that record is a state no door writes, and an
+Apply of it would date it on the wrong day
+(:func:`~._valuation.leg_settlement_candidate`).
+
 **What one candidate is WORTH is** :mod:`._valuation` **'s, in its own module
 since plan step ``credit_card:CC-5-4a-1``** (this one crossed the 1,000-line
 bound, ruling **balance:R-IR**; the seam is by subject, the one
 :func:`~._valuation.repriced` had always stated -- the scope answers WHICH
-rows an act may reach, the valuation what one is WORTH).  The three arms here
+rows an act may reach, the valuation what one is WORTH).  The five arms here
 decide which rows exist and may be offered and build each through that
-module's one constructor per kind; pricing is the cash ledger's and is not
-restated in either.
+module's one constructor per kind (a LEG's in :mod:`._leg_valuation`); pricing
+is the cash ledger's and the settle verbs', and is not restated in either.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): reads only, plain
 data in, frozen dataclasses out, no Flask import, no clock read.
@@ -77,15 +97,17 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, status_seam
+from app.services import cash_ledger, status_seam, transfer_legs
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
 )
 
 from ._creations import PurchaseDestination
-from ._subjects import CandidateRow, Candidates
+from ._leg_valuation import leg_candidate, leg_loads, leg_price
+from ._subjects import CandidateRow, Candidates, RowKind
 from ._valuation import (
+    leg_settlement_candidate,
     purchase_candidate,
     settlement_candidate,
     settlement_price,
@@ -130,6 +152,16 @@ class MatchedSubjects:
     own: a line belongs to one account, and a movement is offered only where
     it is.
 
+    **A transfer's LEG is claimed through its movement too** (leaf
+    ``balance:X-bi-6-4c-1``): :attr:`legs` holds the transfers whose side on
+    THIS account an act names through that side's covering movement -- a
+    reverted transfer's kept, un-dated one -- so its still-planned leg is not
+    offered again while the act stands.  The account's own acts suffice,
+    where a row's claims need the owner's: a transfer's movement is always on
+    its own side's account (``transfer_service`` names no tender), and the
+    member key holds a member to the act's account.  Keyed by the transfer
+    alone because the account is this set's (ruling **R-BAL159**).
+
     Attributes:
         lines: The ``bank_statement_lines`` ids a match already explains.
         transactions: The ``transactions`` ids a match of the owner's already
@@ -137,11 +169,14 @@ class MatchedSubjects:
             accounts.
         entries: The ``transaction_entries`` ids a match already names, a
             purchase's or a covering movement's.
+        legs: The ``transfers`` ids whose side on this account a match
+            already names through that side's covering movement.
     """
 
     lines: "frozenset[int]"
     transactions: "frozenset[int]"
     entries: "frozenset[int]"
+    legs: "frozenset[int]"
 
 
 def matched_subjects(account_id: int) -> MatchedSubjects:
@@ -179,10 +214,12 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
         .filter(StatementMatchMember.account_id == account_id)
         .all()
     )
+    entries = frozenset(row[1] for row in rows if row[1] is not None)
     return MatchedSubjects(
         lines=frozenset(row[0] for row in rows if row[0] is not None),
         transactions=_claimed_rows_of_the_owner(account_id),
-        entries=frozenset(row[1] for row in rows if row[1] is not None),
+        entries=entries,
+        legs=_claimed_legs(entries),
     )
 
 
@@ -199,6 +236,13 @@ def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
     matched on the card claims its checking row.  The owner is the account's,
     read in the query rather than taken as a second parameter that could name
     someone else.
+
+    **A transfer's payment named by an act adds its shadow's id through the
+    interval** (``None`` from ``balance:X-bi-6-4d``), which no candidate's
+    :attr:`~._subjects.CandidateRow.transaction_id` can equal: a transfer's
+    side is a LEG or a leg's payment, whose ``transaction_id`` is ``None``,
+    and it is claimed through :attr:`MatchedSubjects.legs` and its
+    movement's id instead (leaf ``balance:X-bi-6-4c-1``).
 
     Args:
         account_id: The account whose owner's claims to read.
@@ -230,6 +274,31 @@ def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
     return frozenset(row[0] for row in rows)
 
 
+def _claimed_legs(entries: "frozenset[int]") -> "frozenset[int]":
+    """Return the transfers whose side one of *entries* is the recorded movement of.
+
+    :attr:`MatchedSubjects.legs`, read through ``transfer_legs`` (leaf
+    ``balance:X-bi-6-4c-1``): which of the account's matched entries is a
+    transfer leg's record, and of which transfer.  The account needs no
+    clause of its own -- every entry an act on this account names is on this
+    account (the member key), and a transfer's movement is on its own side's.
+
+    Args:
+        entries: The ``transaction_entries`` ids this account's acts name.
+
+    Returns:
+        The ``transfers`` ids; empty without a query when *entries* is.
+    """
+    if not entries:
+        return frozenset()
+    return frozenset(
+        leg.transfer.id
+        for leg in transfer_legs.recorded_transfer_legs(
+            TransactionEntry.id.in_(entries),
+        )
+    )
+
+
 def unmatched_rows(
     candidates: Candidates, matched: MatchedSubjects,
 ) -> "list[CandidateRow]":
@@ -253,7 +322,9 @@ def unmatched_rows(
     :attr:`MatchedSubjects.transactions`, and so is a SETTLEMENT, whose row
     that set carries whichever account the act naming its movement is on.
     A PURCHASE is claimed by its own id alone: its envelope is a container,
-    never named by it.
+    never named by it.  A LEG is claimed when an act names its side's
+    covering movement (:attr:`MatchedSubjects.legs`), and a leg's payment by
+    its movement's own id, as any SETTLEMENT is.
 
     Args:
         candidates: The pass's derived offer set.
@@ -269,9 +340,11 @@ def unmatched_rows(
 
 
 def _is_claimed(row: CandidateRow, matched: MatchedSubjects) -> bool:
-    """Return whether an accepted act already names *row*, or its row's payment."""
+    """Return whether an accepted act already names *row*, or its row's or leg's payment."""
     if row.kind.names_an_entry and row.row_id in matched.entries:
         return True
+    if row.kind is RowKind.LEG:
+        return row.row_id in matched.legs
     return (
         row.transaction_id is not None
         and row.transaction_id in matched.transactions
@@ -345,17 +418,16 @@ def _transaction_candidates(
       because the clause is ALSO the OWNERSHIP scope this bullet opens with:
       it is what keeps another owner's rows out of the answer, which holds for
       every request kind and for every CLI caller;
-    * a SHADOW's parent transfer still exists and is not soft-deleted -- the
-      clause ``reconcile_service._transfers.arm`` carries for the same reason:
-      a shadow whose parent has gone is not money this account owes, and
-      pricing one sends ``transfer_service.settle_amount`` at a row it treats
-      as absent.  **It is unreachable through today's doors and stated
-      anyway**: ``delete_transfer(soft=True)`` marks the transfer AND both
-      shadows, and production carries 0 live shadows with a missing or
-      soft-deleted parent (measured 2026-08-17) -- so the clause changes no
-      answer today and the scope stops depending on a writer keeping a
-      convention.  That is the same argument
-      ``cash_ledger.movement_cash_leg`` makes for its own total guard.
+    * it is not a transfer's SHADOW (``transfer_id IS NULL``, leaf
+      ``balance:X-bi-6-4c-1``): a still-planned transfer is offered as its
+      LEG by :func:`_leg_candidates`, keyed by the transfer, whose owner,
+      live, status and period clauses read off the TRANSFER
+      (``transfer_legs.offerable_transfer_legs``).  Until that leaf the
+      shadow was offered here, behind a clause admitting it only while its
+      parent transfer stood (``_parent_transfer_stands``, the parent clause
+      ``offerable_transfer_legs`` now carries); the exclusion survives
+      ``X-bi-6-4d``, which deletes the shadows, as a clause that is true of
+      every row.
 
     **What is ALREADY MATCHED is NOT a clause here** (plan step
     ``bank_import:X-f6a-3c-2``); it is :func:`unmatched_rows`, applied by each
@@ -391,7 +463,8 @@ def _transaction_candidates(
         here is Projected and carries no day, so the id is the whole of the
         deterministic order the settled arm sorts its days ahead of; the
         proposals a screen shows must not depend on what the planner happened
-        to return), and the ids of the rows the amount model could not price.
+        to return), and the ``(kind, id)`` of the rows the amount model could
+        not price.
     """
     rows = (
         db.session.query(Transaction)
@@ -404,7 +477,7 @@ def _transaction_candidates(
             is_projected_clause(Transaction),
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
-            _parent_transfer_stands(calendar),
+            Transaction.transfer_id.is_(None),
         )
         .all()
     )
@@ -413,7 +486,7 @@ def _transaction_candidates(
     for txn in rows:
         amount = transaction_price(txn, basis)
         if amount is None:
-            unpriceable.append(txn.id)
+            unpriceable.append((RowKind.TRANSACTION, txn.id))
             continue
         candidate = transaction_candidate(txn, calendar, amount)
         if candidate is not None:
@@ -422,37 +495,12 @@ def _transaction_candidates(
     return candidates, unpriceable
 
 
-def _parent_transfer_stands(calendar: "PayCalendar"):
-    """Return the clause admitting a plain row, or a shadow whose transfer stands.
-
-    The shadow-parent clause :func:`_transaction_candidates` states in its
-    fourth bullet, spelled once for both arms that read a row: the row arm
-    applies it to the row and :func:`_settlement_candidates` to a covering
-    movement's parent, so neither can price a leg whose transfer has gone.
-
-    Args:
-        calendar: The pass's calendar, whose owner the transfer must belong to.
-
-    Returns:
-        A SQLAlchemy boolean expression over ``Transaction``.
-    """
-    return db.or_(
-        Transaction.transfer_id.is_(None),
-        Transaction.transfer_id.in_(
-            db.session.query(Transfer.id).filter(
-                Transfer.user_id == calendar.user_id,
-                Transfer.is_deleted.is_(False),
-            )
-        ),
-    )
-
-
 def _settlement_candidates(
     account_id: int, calendar: "PayCalendar",
     period_ids: "Collection[int]",
     basis: "cash_ledger.AmountBasis",
 ) -> "tuple[list[CandidateRow], list[int]]":
-    """Return the covering movements on *account_id* a statement could be showing.
+    """Return the ROWS' covering movements on *account_id* a statement could be showing.
 
     **The settled subject's arm** (plan step ``credit_card:CC-5-4a-1``,
     ruling **R-CC43**): a settled row's money IS its covering movement
@@ -478,9 +526,14 @@ def _settlement_candidates(
       reverted row's, ruling **R-CC42**) is offered only where the row is
       not -- :func:`~._valuation.row_is_offered_here` is the same partition
       in Python, re-asked by :func:`~._valuation.repriced`;
-    * its row CONTRIBUTES and is not soft-deleted, sits in one of the
-      OWNER's saved periods, and if a shadow leg has a transfer that stands
-      -- the row arm's clauses, applied to the parent for the same reasons.
+    * its row CONTRIBUTES and is not soft-deleted and sits in one of the
+      OWNER's saved periods -- the row arm's clauses, applied to the parent
+      for the same reasons;
+    * its row is not a transfer's SHADOW: a paid transfer's side is offered
+      by :func:`_leg_settlement_candidates` as its LEG's record (leaf
+      ``balance:X-bi-6-4c-1``), the transfer's clauses read off the
+      transfer, where this arm joined the movement to its shadow row until
+      that leaf.
 
     **What is ALREADY MATCHED is NOT a clause here**; see
     :func:`_transaction_candidates` for why it moved to :func:`unmatched_rows`.
@@ -488,16 +541,17 @@ def _settlement_candidates(
     Args:
         account_id: The cash account the statement is for.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
-        period_ids: The owner's saved pay-period ids, threaded as the other
-            two arms take them.
+        period_ids: The owner's saved pay-period ids, threaded as every
+            other arm takes them.
         basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`, for
             the un-dated arm of :func:`~._valuation.settlement_price`.
 
     Returns:
         ``(candidates, unpriceable)`` -- one :class:`~._subjects.CandidateRow`
-        per offerable movement, oldest recorded day first and unrecorded days
-        last with the movement id breaking ties, and the ids of the ROWS the
-        amount model could not price a re-settle for.
+        per offerable movement, UNORDERED (:func:`candidates_for` sorts the
+        row payments and the leg payments together, :func:`_by_recorded_day`),
+        and the ``(kind, id)`` of the movements whose ROW the amount model
+        could not price a re-settle for.
     """
     rows = (
         db.session.query(TransactionEntry)
@@ -519,7 +573,7 @@ def _settlement_candidates(
             ),
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
-            _parent_transfer_stands(calendar),
+            Transaction.transfer_id.is_(None),
         )
         .all()
     )
@@ -528,15 +582,134 @@ def _settlement_candidates(
     for entry in rows:
         amount = settlement_price(entry, basis)
         if amount is None:
-            unpriceable.append(entry.transaction_id)
+            unpriceable.append((RowKind.SETTLEMENT, entry.id))
             continue
         candidate = settlement_candidate(entry, calendar, amount, account_id)
         if candidate is not None:
             candidates.append(candidate)
-    candidates.sort(
-        key=lambda row: (row.settled_on is None, row.settled_on, row.row_id),
-    )
     return candidates, unpriceable
+
+
+def _by_recorded_day(row: CandidateRow):
+    """Return the settled arms' sort key: oldest recorded day first, undated last.
+
+    The movement's id breaks ties.  ONE order for a row's payments and a
+    leg's, which :func:`candidates_for` sorts TOGETHER (leaf
+    ``balance:X-bi-6-4c-1``) -- until that leaf both were one arm's, a
+    shadow's movement joined to its shadow, and a movement's id is the same
+    either way, so the settled rows keep the order they had.
+    """
+    return (row.settled_on is None, row.settled_on, row.row_id)
+
+
+def _leg_candidates(
+    account_id: int, calendar: "PayCalendar",
+    period_ids: "Collection[int]",
+    basis: "cash_ledger.AmountBasis",
+) -> "tuple[list[CandidateRow], list[tuple[RowKind, int]]]":
+    """Return the still-planned transfer LEGS on *account_id* a statement could be showing.
+
+    **The fourth subject's arm** (leaf ``balance:X-bi-6-4c-1``, rulings
+    **R-BAL87**, **R-BAL106**, **R-BAL159**): one side of a Projected transfer
+    whose money has not moved on this account, offered as the TRANSFER and
+    keyed by it, where :func:`_transaction_candidates` offered the transfer's
+    shadow row until that leaf.  The scope is
+    ``transfer_legs.offerable_transfer_legs``' -- the reconcile panel's since
+    leaf ``X-bi-6-4c-2`` -- and every clause is the row arm's, read off the
+    TRANSFER:
+
+    * this account is one of its endpoints (either side);
+    * it is Projected and live, and THIS side holds no dated movement
+      (ruling **R-BAL79**: the movement decides a side, the parent decides a
+      drifted shadow, ruling **R-JM**);
+    * its pay period is one of the OWNER's saved periods -- the owner the
+      calendar is, the scope's ownership clause.
+
+    On every door-written state it offers exactly the transfers whose shadow
+    the row arm offered (a Projected parent's two shadows are Projected, live
+    and filed in its period -- Transfer Invariants 1, 3 and 4).  Priced by
+    :func:`~._leg_valuation.leg_price`; a DAMAGED transfer, whose shadow pair
+    the price refuses, is reported among the unpriceable and its still-planned
+    side is not offered (ruling **R-BAL158**).  Not scoped by scenario, for
+    :func:`_transaction_candidates`' reason.
+
+    Args:
+        account_id: The cash account the statement is for.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`
+            -- whose ``user_id`` is the owner the loader scopes by.
+        period_ids: The owner's saved pay-period ids.
+        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+    Returns:
+        ``(candidates, unpriceable)`` -- one :class:`~._subjects.CandidateRow`
+        per offerable leg, by transfer id (every leg here carries no day), and
+        the ``(kind, id)`` of the legs that could not be priced.
+    """
+    candidates = []
+    unpriceable = []
+    for leg in transfer_legs.offerable_transfer_legs(
+        account_id, calendar.user_id, period_ids, options=leg_loads(),
+    ):
+        amount = leg_price(leg, basis)
+        if amount is None:
+            unpriceable.append((RowKind.LEG, leg.transfer.id))
+            continue
+        candidate = leg_candidate(leg, calendar, amount)
+        if candidate is not None:
+            candidates.append(candidate)
+    candidates.sort(key=lambda row: row.row_id)
+    return candidates, unpriceable
+
+
+def _leg_settlement_candidates(
+    account_id: int, calendar: "PayCalendar",
+    period_ids: "Collection[int]",
+) -> "list[CandidateRow]":
+    """Return the paid transfer legs' covering movements on *account_id*.
+
+    :func:`_settlement_candidates`' LEG twin (leaf ``balance:X-bi-6-4c-1``):
+    a side whose money moved on this account is offered as its covering
+    movement, the leg's RECORD (``transfer_legs.recorded_transfer_legs``,
+    ruling **R-BAL80**), through the loader that reaches a movement's
+    transfer and side -- so no clause here names the shadow the movement
+    still hangs off.  Every clause is the row arm's, read off the TRANSFER:
+
+    * the MOVEMENT is on this account (a transfer's is on its own side's);
+    * the transfer CONTRIBUTES and is live, and is filed in one of the
+      OWNER's saved periods;
+    * the movement is DATED -- a settled leg is its dated covering movement
+      (ruling **R-BAL80**), and a side whose money has not moved is on the
+      plan (:func:`_leg_candidates`, ruling **R-BAL79**), so one side is
+      offered once.  An un-dated record under a Paid or Received transfer --
+      a state no door writes -- is offered by neither arm (under a Cancelled
+      one the contributing clause already excludes it);
+      :func:`~._valuation.leg_settlement_candidate` carries why, and re-asks
+      the day in Python for :func:`~._valuation.repriced`'s sake.
+
+    No leg payment is ever unpriceable: its figure is the movement's own
+    (``cash_ledger.movement_cash_leg``), which no amount model can refuse.
+
+    Args:
+        account_id: The cash account the statement is for.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+        period_ids: The owner's saved pay-period ids.
+
+    Returns:
+        One :class:`~._subjects.CandidateRow` per offerable movement,
+        UNORDERED (:func:`candidates_for` sorts it with the row payments).
+    """
+    candidates = []
+    for leg in transfer_legs.recorded_transfer_legs(
+        TransactionEntry.account_id == account_id,
+        Transfer.user_id == calendar.user_id,
+        balance_contributing_clause(Transfer),
+        Transfer.pay_period_id.in_(period_ids),
+        TransactionEntry.settled_on.isnot(None),
+    ):
+        candidate = leg_settlement_candidate(leg, calendar, account_id)
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
 
 
 def _purchase_candidates(
@@ -619,8 +792,8 @@ def candidates_for(
 ) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
-    **The ONE entry point, and the reason it exists is that the two arms share
-    a read.**  Both scope by the owner's saved period ids, and asking twice in
+    **The ONE entry point, and the reason it exists is that the arms share
+    a read.**  Every arm scopes by the owner's saved period ids, and asking again in
     one request is a redundant producer call -- the shape this project treats
     as a DRY violation rather than as a cost.  It is resolved once here and
     threaded.
@@ -669,14 +842,18 @@ def candidates_for(
 
     Returns:
         A :class:`~._subjects.Candidates`.  Its ``rows`` are the settlements,
-        the transactions and the purchases TOGETHER, each arm's own order
-        preserved and in that order -- the settled records by their day, then
-        the Projected rows, then the purchases, which is the order the row arm
-        alone produced while it carried the settled rows too -- a union rather
-        than a triple, because every consumer asks the same question of every
-        kind: a bank line does not know which table its counterpart lives in.
+        the transactions, the legs and the purchases TOGETHER, each arm's own
+        order preserved and in that order -- the settled records by their day
+        (a row's payments and a leg's in ONE order, :func:`_by_recorded_day`),
+        then the Projected rows, then the still-planned transfer legs, then
+        the purchases -- a union rather than a tuple of lists, because every
+        consumer asks the same question of every kind: a bank line does not
+        know which table its counterpart lives in.  **A leg's place moved at
+        leaf ``balance:X-bi-6-4c-1``**: it was a shadow row among the
+        Projected rows, ordered by the shadow's id, and is its own run after
+        them now, ordered by the transfer's.
     """
-    # The owner's SAVED periods, which are both arms' ownership scope.  Asked
+    # The owner's SAVED periods, which are every arm's ownership scope.  Asked
     # of the calendar ONCE here rather than in each arm, for the reason the
     # calendar itself is threaded: two asks in one request is this project's
     # DRY violation rather than a cost.  The ``period_id is not None`` filter
@@ -687,14 +864,23 @@ def candidates_for(
     settlements, unpriceable_settlements = _settlement_candidates(
         account_id, calendar, period_ids, basis,
     )
+    leg_settlements = _leg_settlement_candidates(
+        account_id, calendar, period_ids,
+    )
     transactions, unpriceable_transactions = _transaction_candidates(
         account_id, calendar, period_ids, basis,
     )
+    legs, unpriceable_legs = _leg_candidates(
+        account_id, calendar, period_ids, basis,
+    )
     return Candidates(
-        rows=settlements + transactions + _purchase_candidates(
-            account_id, calendar, period_ids,
+        rows=(
+            sorted(settlements + leg_settlements, key=_by_recorded_day)
+            + transactions + legs
+            + _purchase_candidates(account_id, calendar, period_ids)
         ),
-        unpriceable_ids=(
+        unpriceable=(
             *unpriceable_settlements, *unpriceable_transactions,
+            *unpriceable_legs,
         ),
     )

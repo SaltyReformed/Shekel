@@ -206,9 +206,13 @@ class ReviewBounds:
             books open on the calendar's own first day.
         crowded_days: Days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
-        unpriceable_count: How many of the account's rows the amount model
-            could not price, so they could not be offered
-            (:class:`~._subjects.Candidates`).
+        unpriceable_count: How many of the account's subjects could not be
+            priced, so they could not be offered
+            (:attr:`~._subjects.Candidates.unpriceable`): a row or a row's
+            kept payment the amount model had no rule for, and a transfer's
+            still-planned side whose price the amount model could not answer
+            or the transfer's damaged shadow pair refused (ruling
+            **R-BAL158**).
 
     **The near tier's bound is NOT here, and that is plan step
     ``bank_import:X-f6d-3``'s one deliberate exception to the paragraph above.**
@@ -481,8 +485,12 @@ def search_gap(
             (:attr:`~._propose.ProposedMatches.declined_lines`).
         crowded_days: The days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
-        unpriceable_count: How many of the account's rows the amount model
-            could not price (:attr:`~._subjects.Candidates.unpriceable_ids`).
+        unpriceable_count: How many of the account's subjects could not be
+            priced (:attr:`~._subjects.Candidates.unpriceable`): a row or a
+            row's kept payment the amount model had no rule for, and a
+            transfer's still-planned side whose price the amount model could
+            not answer or the transfer's damaged shadow pair refused (ruling
+            **R-BAL158**).
 
     Returns:
         One sentence naming the gap, for the receipt that has to say what it

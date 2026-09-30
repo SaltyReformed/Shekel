@@ -84,13 +84,14 @@ from app.models.amount_ownership import AmountOwnership
 
 def _submit(
     seed_user, lines=(), transactions=(), entries=(), residual=None,
+    transfers=(),
 ):
     """Accept a match naming exactly these subjects."""
     scope = a_scope(seed_user)
     return statement_match.accept_match(
         a_submission(
             scope, lines=lines, transactions=transactions, entries=entries,
-            residual=residual,
+            residual=residual, transfers=transfers,
         ),
         scope,
     )
@@ -406,7 +407,7 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
             .one()
         )
         line = a_bank_line(seed_user, statement, amount="-500.00")
-        _submit(seed_user, lines=[line], transactions=[shadow])
+        _submit(seed_user, lines=[line], transfers=[shadow.transfer])
         assert line.id in _matched_line_ids(seed_user)
 
         transfer_service.delete_transfer(

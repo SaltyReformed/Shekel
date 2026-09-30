@@ -39,7 +39,7 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, status_seam
+from app.services import cash_ledger, status_seam, transfer_legs
 from app.utils.log_events import (
     ERROR,
     EVT_STATEMENT_MATCH_LINELESS,
@@ -552,6 +552,19 @@ def _accepted_row(
     -- 103 of 103 on production's shape; the migration counts and prints any
     member whose payment is dated on another day.
 
+    **A transfer's payment is valued and named through its LEG** (leaf
+    ``balance:X-bi-6-4c-1``): the member's parent is read by
+    ``transfer_legs.movement_parent`` -- the plan row, or the transfer leg
+    whose record the movement is -- and ``covered_cash_leg`` asks either
+    the same question (a leg answers ``covering_movements`` with its
+    record), so one expression values a bill's payment and a transfer's
+    with no shape branch here.  Until that leaf a transfer's was read off
+    the SHADOW row the movement hangs off (its stored ``name``; its
+    contributing gate): the label is now the leg's, composed from the
+    endpoints' CURRENT names, and the gate the TRANSFER's (ruling **R-JM**:
+    the parent decides), which the shadow's equals on every door-written
+    state.
+
     Args:
         entry: The :class:`~app.models.transaction_entry.TransactionEntry`
             the member names -- a person's purchase or a row's payment.
@@ -563,14 +576,13 @@ def _accepted_row(
         Its :class:`AcceptedRow`.
     """
     if entry.covers_settlement:
+        parent = transfer_legs.movement_parent(entry)
         return AcceptedRow(
-            label=entry.transaction.name, settled_on=entry.settled_on,
-            # What the row's covering movement moves ON THIS ACCOUNT (rulings
-            # **R-BAL81**, **R-CC40**) -- the same valuation the offer and
-            # the post-apply check use.
-            cash_amount=status_seam.covered_cash_leg(
-                entry.transaction, account_id,
-            ),
+            label=parent.name, settled_on=entry.settled_on,
+            # What the parent's covering movement moves ON THIS ACCOUNT
+            # (rulings **R-BAL81**, **R-CC40**) -- the same valuation the
+            # offer and the post-apply check use.
+            cash_amount=status_seam.covered_cash_leg(parent, account_id),
             agrees=entry.settled_on == posts_on,
         )
     # **A CARD purchase moves no cash through THIS account at all** -- it

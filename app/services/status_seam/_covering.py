@@ -175,7 +175,7 @@ DC-10 grades the state a caller of the bare seam would leave.  Money is
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -197,6 +197,9 @@ from app.services.status_seam._record import (
     tender_account_id_of,
 )
 
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.transfer_legs import PlanItem
+
 
 def covering_clause():
     """Return the SQL form of *this purchase is a covering movement*.
@@ -214,15 +217,22 @@ def covering_clause():
     return TransactionEntry.covers_settlement.is_(True)
 
 
-def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
+def covered_cash_leg(row: PlanItem, account_id: int) -> Decimal:
     """Return what a settled *row* is WORTH on *account_id*: its covering movement's cash there.
 
     **The one valuation of a settled row**, for every reader that asks what
     the row moves rather than what its movements do: the statement matcher's
-    accepted register (``_accepted_view``, for a member naming the row's
-    payment -- the one app-side member shape since plan step
+    accepted register (``_accepted_view``, for a member naming a payment --
+    the one app-side member shape since plan step
     ``credit_card:CC-5-4a-2``) and its undo dialog
-    (``_release``, for a row an act created).  Ruling **R-BAL81** (plan step
+    (``_release``, for a row an act created).  **A transfer's LEG is asked the same
+    question since leaf ``balance:X-bi-6-4c-1``**: the register values a
+    member through the movement's parent
+    (``transfer_legs.movement_parent``), a plan row or the leg whose record
+    the movement is, and a leg answers ``covering_movements`` as a row does
+    (``TransferLeg.covering_movements``: its record, or nothing), so one
+    producer values both with no shape branch -- a leg-shaped twin of this
+    function would be a second spelling of the same rule.  Ruling **R-BAL81** (plan step
     ``balance:X-bi-4a``): a row is worth what its covering movement moves,
     so a covered bill, paycheck or transfer leg is worth its figure and a
     ``purchases``-basis envelope -- which has no covering movement, its
@@ -287,7 +297,9 @@ def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
     a refusal that cannot come.
 
     Args:
-        row: The transaction, with ``entries`` loaded or loadable.
+        row: The transaction, with ``entries`` loaded or loadable -- or a
+            :class:`~app.services.transfer_legs.TransferLeg`, whose contributing
+            gate and direction are its transfer's and side's.
         account_id: The account whose statement is asking -- the only
             account a covering movement is worth anything on.
 
