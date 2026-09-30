@@ -124,8 +124,9 @@ nothing is mirrored between them.  Through ``X-bi-6-1b`` the ledger booked
 the pair as ONE entry off the income shadow's record and every
 purchase-posting door returned for a shadow's entries -- the interval ruling
 **R-BAL45** accepted, closed when that step gave the writer its per-movement
-shape.  The pair applier still keeps the two days equal (Transfer Invariant
-3) until ``X-bi-6-4`` deletes the mirror; the writer no longer depends on it.
+shape.  The two sides' days part since ``X-bi-6-4c-3`` (ruling **R-BAL142**:
+each side keeps its own day, a side with no evidence borrows the other's), and
+each movement follows its own shadow through :func:`_mirror_assertion`.
 Posting a shadow's movement through the purchase source with a CATEGORY
 counter was rejected at R-BAL45: a transfer between two of the owner's
 accounts is neither income nor expense, which is what the transit counter
@@ -180,7 +181,6 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
@@ -334,10 +334,14 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       release logic already decided that link for this move).  A covering
       movement's purchase day IS its settle day (ruling R-BAL39), so the
       correction moves both;
-    * the days are EQUAL and the row's basis rose to ``observed`` -- a bank
-      line confirmed the day the panel had only bounded (``_moving``, finding
-      **N-332**): the movement's basis rises with it and the link stands, the
-      same strengthening the row itself records;
+    * the days are EQUAL and the BASIS differs -- a bank line confirmed the
+      day the panel had only bounded (``_moving``, finding **N-332**), or a
+      transfer side's borrowed day became its own when the owner typed it
+      (ruling **R-BAL164**): the movement takes the row's pair and the link
+      stands, the same change of basis the row itself records.  It was the
+      rise to ``observed`` alone until plan step ``balance:X-bi-6-4c-3``;
+      for a plain row that rise is still the only same-day basis writer, and
+      the rule is one for every row rather than a transfer branch;
     * the days are EQUAL otherwise: the pair stands, and the movement takes
       the row's link only where it holds none -- the reconcile panel ticked
       the row on an asserted day, and the movement sits inside that assertion
@@ -374,11 +378,7 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
             row.reconciled_by_id if _links_the_row(row, movement) else None
         )
         return
-    observed = ref_cache.settled_day_basis_id(SettledDayBasisEnum.OBSERVED)
-    if (
-        row.settled_day_basis_id == observed
-        and movement.settled_day_basis_id != observed
-    ):
+    if movement.settled_day_basis_id != row.settled_day_basis_id:
         record_settle_day(movement, recorded_settle_day(row))
     if movement.reconciled_by_id is None and _links_the_row(row, movement):
         movement.reconciled_by_id = row.reconciled_by_id

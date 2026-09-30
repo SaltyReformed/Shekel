@@ -114,10 +114,13 @@ def _settle_one(
     Args:
         leg: The leg on this account, its transfer still Projected.
         submitted: The figure the panel's amount box posted, or ``None``.
-        statement: The statement being reconciled; its day is what both legs
-            record the money as having moved on, on the ``asserted`` basis --
+        statement: The statement being reconciled; its day is what THIS leg
+            records the money as having moved on, on the ``asserted`` basis --
             the owner asserted a BALANCE for that day, so the day bounds the
             movement from above rather than naming it (plan step **X-az**).
+            The leg on the other account borrows it unless it holds evidence
+            of its own (ruling **R-BAL142**; it was stated for both legs until
+            plan step ``balance:X-bi-6-4c-3``, like the link below never was).
 
     Returns:
         Whether the verb booked *submitted* as a human's correction -- the
@@ -130,7 +133,9 @@ def _settle_one(
     corrected = transfer_service.settle_transfer(
         leg.transfer.id, statement.owner_id,
         submitted=submitted,
-        settle_day=statement.settle_day,
+        side_days=(
+            transfer_service.SideDay(leg.account_id, statement.settle_day),
+        ),
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
     # service because the leg's money still lands on a SHADOW row through the

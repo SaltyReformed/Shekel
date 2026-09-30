@@ -49,11 +49,17 @@ from app.services.status_seam import (
     correction_record,
     figure_for_status,
 )
-from app.services.settle_day import SettleDay
 from app.services.stated_figure import StatedFigure
+from app.services.transfer_service._side_days import (
+    NO_DAYS,
+    PairDays,
+    SideDay,
+    stated_by_side,
+)
 from app.services.transfer_service._status import (
-    apply_settle_day_correction,
     apply_status_to_all_three,
+    drifted_sides_only,
+    reject_stated_days_without_settle,
 )
 from app.services.transfer_service._validation import (
     TransferRows,
@@ -75,8 +81,9 @@ logger = logging.getLogger(__name__)
 #: write each of them a second time.  That is not hypothetical tidiness: it is
 #: exactly what this module did until plan step X-f2-c3, where every reconcile
 #: tick stamped the settle day with the derived one and then rewrote it with the
-#: statement's through ruling **R-ED**'s CORRECTION door.
-_SETTLE_OWNED_FIELDS = frozenset({"status_id", "figure", "settle_day"})
+#: statement's through ruling **R-ED**'s CORRECTION door.  ``side_days``
+#: replaced the pair's one ``settle_day`` at plan step ``balance:X-bi-6-4c-3``.
+_SETTLE_OWNED_FIELDS = frozenset({"status_id", "figure", "side_days"})
 
 
 def _fields_the_settle_left(
@@ -84,27 +91,10 @@ def _fields_the_settle_left(
 ) -> "dict[str, object]":
     """Return the kwargs still owed an application after a settle ran.
 
-    :data:`_SETTLE_OWNED_FIELDS`, minus a ``settle_day`` that arrived as an
-    explicit ``None``.  **A settle consumes a VALUE; that ``None`` is not one --
-    it is a request to CLEAR the day**, which is a different act with its own
-    door, and a settle that swallowed it would perform neither.  Left here it
-    reaches
-    :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
-    which refuses it in a sentence a user can act on; consumed instead, that
-    designed refusal would silently become "the settle used today's date".  It
-    cannot arrive from a route -- both PATCH schemas declare ``settled_on``
-    non-nullable, so an empty input loads as ABSENT and the route never builds a
-    ``settle_day`` key for it -- but a service caller can
-    send it, and the refusal is the reason a settled transfer always carries the
-    day its money moved.
-
-    **A ``None`` figure no longer needs an exception, and losing it is
-    plan step X-au-c3's** (see :func:`_apply_remaining_fields`' figure arm).  It
-    used to mean "clear the column", because a settled transfer carrying no
-    figure was a legal state -- every reader fell back to the row's plan.  A
-    settled row now always records what moved, so there is no clearing act for a
-    ``None`` to request: it means what a form means by an empty box, which is
-    that nobody typed one.
+    Every kwarg but :data:`_SETTLE_OWNED_FIELDS`, which the settle wrote as one
+    act.  A ``settle_day=None`` (a request to CLEAR the day) needed an exception
+    here until plan step ``balance:X-bi-6-4c-3``; a :class:`~._side_days.SideDay`
+    cannot wrap ``None``, so that state has no spelling any more.
 
     Args:
         updates: The update kwargs as submitted.
@@ -114,9 +104,7 @@ def _fields_the_settle_left(
     """
     return {
         key: value for key, value in updates.items()
-        if key not in _SETTLE_OWNED_FIELDS or (
-            value is None and key == "settle_day"
-        )
+        if key not in _SETTLE_OWNED_FIELDS
     }
 
 
@@ -173,16 +161,16 @@ def _grade_submitted_figure(
 
 
 def _dispatch_settle(
-    rows: TransferRows, updates: "dict[str, object]",
+    rows: TransferRows, updates: "dict[str, object]", stated: PairDays,
 ) -> "bool | None":
     """Run the SETTLE when *updates* moves this transfer into the settled band.
 
     **The dispatch that makes a transfer's settle rule structural** (plan step
     X-f2-c3, ruling **R-FA**).  Moving a transfer into the settled band is not
     just a status change: an auto-derived loan payment books what it is LIVE
-    worth rather than the creation-time escrow its estimate carries, the pair is
-    dated by whoever knows the day, and an echoed prefill is not recorded as a
-    human's figure.  What those rules ARE
+    worth rather than the creation-time escrow its estimate carries, each side
+    is dated by whoever knows its day, and an echoed prefill is not recorded as
+    a human's figure.  What those rules ARE
     is :mod:`._settle`'s; this decides WHEN they apply.
 
     **Why here and not at each door.**  Four doors could move a transfer into
@@ -202,6 +190,8 @@ def _dispatch_settle(
             caller-stated facts (``is_override``, ``amount``) are already
             applied, which is what lets the settle read the post-edit state.
         updates: The update kwargs as submitted.
+        stated: The days stated by side, which a settle entering the band
+            admits whole.
 
     Returns:
         ``None`` when this update does not settle -- so the caller leaves every
@@ -217,13 +207,13 @@ def _dispatch_settle(
         return None
     return _settle.settle(
         rows, updates["status_id"],
-        submitted=updates.get("figure"),
-        settle_day=updates.get("settle_day"),
+        submitted=updates.get("figure"), stated=stated,
     )
 
 
 def _apply_remaining_fields(
-    rows: TransferRows, updates: "dict[str, object]", *, date_moves: bool,
+    rows: TransferRows, updates: "dict[str, object]", *,
+    stated: PairDays, date_moves: bool,
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
@@ -236,14 +226,16 @@ def _apply_remaining_fields(
 
     :data:`_SETTLE_OWNED_FIELDS` reach it only when this update did NOT settle,
     because a settle writes all three as one act and they are dropped before
-    this runs.  So a ``status_id``, a ``settle_day`` or a ``figure``
-    among the arms below belongs to a non-settling change -- a revert, a cancel,
-    an archive, or a CORRECTION to what a pair already recorded -- and each arm
-    says what that means.
+    this runs.  So a ``status_id``, a stated day or a ``figure`` reaching the
+    arms below belongs to a non-settling change -- a revert, a cancel, or a
+    CORRECTION to what a pair already recorded -- and each arm says what that
+    means.
 
     Args:
         rows: The transfer and both shadows.
         updates: The kwargs left for this function to apply.
+        stated: The days by side this change states, as its verb admitted
+            them -- empty after a settle, which consumed them.
         date_moves: Whether this update leaves a PLACED transfer on a
             different day than it has -- the one predicate under which its
             occurrence follows its date (**R-BAL94**), decided by the caller
@@ -257,8 +249,7 @@ def _apply_remaining_fields(
         here is assignment only.
 
     Raises:
-        ValidationError: From an illegal transition or the settle-day
-            correction door.
+        ValidationError: From an illegal transition or a day the seam refuses.
     """
     # ── status_id + the settlement RECORD ─────────────────────────
     # ONE seam pass carrying both, mirroring
@@ -279,28 +270,33 @@ def _apply_remaining_fields(
     # through the ONE status seam, which owns the F-048 defense-in-depth
     # ``settled_on`` synchronization and the ``status`` expire; see
     # :func:`app.services.transfer_service._status.apply_status_to_all_three`
-    # for the full audit rationale.  No day is passed: the seam CLEARS the
-    # column on the way out of the band, and there is no way in from here --
-    # :func:`_dispatch_settle` has already taken every such move.
+    # for the full audit rationale.  The seam CLEARS the day on the way out of
+    # the band, and there is no way in from here -- :func:`_dispatch_settle`
+    # has already taken every such move.
+    #
+    # The DAY half is a CORRECTION (ruling **R-ED**, per side since plan step
+    # ``balance:X-bi-6-4c-3``): a day stated for a side of a pair that stays
+    # settled, applied in the same identity pass, where a borrowing sibling
+    # follows (ruling **R-BAL142**).  It had a door of its own
+    # (``apply_settle_day_correction``) until that step.
     #
     # The RECORD half is the Actual box's write door (developer ruling,
     # 2026-08-17).  **A transfer's DAY was correctable in place and its FIGURE
     # was not**, which is the exact asymmetry that ruling objects to: the day
-    # travels through :func:`apply_settle_day_correction` and the figure was
+    # travelled through its own correction door and the figure was
     # REFUSED outright, so the only way to restate what the bank took was to
     # revert the transfer, edit, and settle it again -- and a revert RETAINS
     # the recorded figure, so the re-settle silently re-booked the old number
     # over the re-planned one.  The lock produced a wrong figure, not friction.
     #
-    # ``new_status_id`` defaults to the pair's CURRENT status, so a figure
-    # arriving alone reaches the seam as an identity transition -- the same
-    # shape :func:`apply_settle_day_to_pair` uses for a day correction, and the
+    # ``new_status_id`` defaults to the pair's CURRENT status, so a figure or a
+    # day arriving alone reaches the seam as an identity transition, the
     # reason the seam stays the single writer of the settlement columns.
     #
     # The record goes to both SHADOWS and to neither the parent, which
     # ``apply_status_to_all_three`` owns: a transfer's money moves on its two
     # legs, so each leg records its own and the two are equal by Transfer
-    # Invariant 3, exactly as their settle day is.
+    # Invariant 3.
     new_status_id = updates.get("status_id", rows.transfer.status_id)
     # Resolved from the EXPENSE leg, the same leg :func:`._settle.settle` reads
     # its figures from and for the same reason: both legs carry the same record
@@ -313,9 +309,9 @@ def _apply_remaining_fields(
         None if submitted is None
         else correction_record(rows.expense, submitted)
     )
-    if "status_id" in updates or correction is not None:
+    if "status_id" in updates or correction is not None or stated != NO_DAYS:
         apply_status_to_all_three(
-            rows, new_status_id, settlement=correction,
+            rows, new_status_id, stated=stated, settlement=correction,
         )
 
     # ── pay_period_id ──────────────────────────────────────────────
@@ -380,23 +376,6 @@ def _apply_remaining_fields(
             shadow.due_date = new_due
         if date_moves:
             rows.transfer.occurs_on = new_due
-
-    # ── settle_day ────────────────────────────────────────────────
-    # The ONE caller that legitimately supplies a day is the user CORRECTING
-    # it (ruling R-ED).  Both mark-done routes used to pass one and did not
-    # mean it: their value overrode the seam's preserve rule and re-dated a
-    # replayed settle (finding N-178, plan step X-f1b0).  It assigned the
-    # column on both shadows here until plan step X-f1b, which made that a
-    # second write door for the column the seam owns (finding N-183).
-    #
-    # **A day arriving WITH a settle no longer reaches here** (plan step
-    # X-f2-c3).  It did, and that made every reconcile tick write the column
-    # twice -- the derived day, then the statement's -- with a settle routed
-    # through the door built for a correction.  The settle takes the day at the
-    # status flip now; what is left here is a correction to a row whose money
-    # had already moved, which is what this door has always been for.
-    if "settle_day" in updates:
-        apply_settle_day_correction(rows, updates["settle_day"])
 
 
 def _reject_unowned_references(
@@ -592,6 +571,13 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # also what ownership-checks both accounts before any refusal can name one
     # (plan step R10-b).
     endpoints = _resolve_endpoints(rows, user_id, updates)
+    # The days a door STATED, by side, against the endpoints this update leaves
+    # (a shadow's ``account_id`` reads the OLD account until the flush after a
+    # move).  Before any write, like every refusal here.
+    stated = stated_by_side(
+        updates.get("side_days", ()),
+        endpoints.from_account.id, endpoints.to_account.id,
+    )
 
     # The PAYCHECK this update leaves the transfer in, resolved ONCE off the
     # owner's calendar and threaded to every reader below (ruling **R-BAL96**,
@@ -641,6 +627,12 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # at the arm that assigns it, which is after the settle has already written
     # both shadows.  (The period's is the resolution above.)
     _reject_unowned_references(user_id, updates)
+
+    # A day beside a status that settles nothing states money that has not
+    # moved: refused before the first write (it ran last, at its own door).
+    reject_stated_days_without_settle(
+        updates.get("status_id", rows.transfer.status_id), stated,
+    )
 
     # A PLACED transfer's typed figure RESTATES its definition (ruling
     # **R-BAL92**; **R-BAL96** as amended): the first write of this update,
@@ -711,10 +703,8 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # branch between here and the dispatch is a caller-stated FACT; the
     # derivation comes after all of them.
     if "is_override" in updates:
-        flag = bool(updates["is_override"])
-        rows.transfer.is_override = flag
-        for shadow in rows.shadows:
-            shadow.is_override = flag
+        for row in (rows.transfer, *rows.shadows):
+            row.is_override = bool(updates["is_override"])
 
     # ── from_account_id / to_account_id ────────────────────────────
     # A caller-stated fact like the flag above, and applied with it for the
@@ -743,12 +733,13 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
 
     # ── the SETTLE ─────────────────────────────────────────────────
     # When this update moves the transfer into the settled band, ONE act writes
-    # the amount, the status and the settle day for all three rows; the three
+    # the amount, the status and each side's day for all three rows; the three
     # kwargs it consumes are then dropped so the loop below cannot write any of
     # them a second time.
-    settled = _dispatch_settle(rows, updates)
+    settled = _dispatch_settle(rows, updates, stated)
     if settled is not None:
         remaining = _fields_the_settle_left(updates)
+        stated = NO_DAYS
     elif settle_only:
         # Already in the settled band, so there is no settle to run -- but the
         # STATUS still goes through, and dropping it too was a defect this
@@ -758,14 +749,20 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         # pair whose shadows drifted out of the
         # parent's status, which is the state a bulk ``status_id`` update
         # leaves and which the posting reconcile below then refuses as an
-        # undated settle.  What is dropped is the pair that DEGRADED: an
-        # ``actual_amount`` that would be written verbatim past the echo rule,
-        # and a ``settle_day`` that would re-date money already recorded.
+        # undated settle.  What is dropped is what DEGRADED: a figure that
+        # would be written verbatim past the echo rule, and a day for a side
+        # already in the band, which would re-date money already recorded.  A
+        # day for a side OUT of the band is the repair's own input and is
+        # honoured (ledger row **BAL-578**: it was dropped, and the repair
+        # dated the drifted side on the owner's today, not the bank's day).
         remaining = {"status_id": updates["status_id"]}
+        stated = drifted_sides_only(rows, stated)
     else:
         remaining = updates
 
-    _apply_remaining_fields(rows, remaining, date_moves=date_moves)
+    _apply_remaining_fields(
+        rows, remaining, stated=stated, date_moves=date_moves,
+    )
 
     _bump_parent_version_if_a_leg_moved(rows, versions_before)
 
@@ -797,7 +794,7 @@ def settle_transfer(
     user_id,
     *,
     submitted: StatedFigure | None = None,
-    settle_day: SettleDay | None = None,
+    side_days: "tuple[SideDay, ...]" = (),
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
 
@@ -831,19 +828,21 @@ def settle_transfer(
             panel's amount box and the shadow popover, both ``typed``).
             ``None`` means nobody stated one, and the settle then books what
             the row is worth.
-        settle_day: The civil day the money moved and HOW that day is known
-            (:class:`app.services.settle_day.SettleDay`), when the caller knows
-            it -- the reconcile tick's statement day on the ``asserted`` basis,
-            the matcher's bank day on ``observed``.  ``None`` leaves the
-            pair-day rule in force (the user's today, ``entered``, on a first
-            settle).
+        side_days: The day the money moved on an ACCOUNT and how it is known
+            (:class:`~app.services.transfer_service._side_days.SideDay`), for
+            each side the caller knows -- the reconcile tick's statement day
+            on ``asserted``, the matcher's bank day on ``observed``, for the
+            leg on the statement's account; the other side borrows it.  Empty
+            on a Paid press: both sides borrow the owner's today.
 
     Returns:
         Whether the settle booked *submitted* as a human's CORRECTION --
         False when nobody typed one, and False when the figure was an echo of
         what the row would book anyway.  A transfer ALREADY in the settled band
         is an idempotent no-op that writes nothing and returns False: a settle
-        records that money moved, and it has already been recorded.
+        records that money moved, and it has already been recorded -- save for
+        a side that DRIFTED out of the band, which the repair dates on its
+        stated day (ledger row BAL-578).
 
     Raises:
         NotFoundError: If the transfer does not exist or does not belong to
@@ -855,8 +854,8 @@ def settle_transfer(
     updates = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if submitted is not None:
         updates["figure"] = submitted
-    if settle_day is not None:
-        updates["settle_day"] = settle_day
+    if side_days:
+        updates["side_days"] = side_days
     _, corrected = _apply_transfer_updates(
         transfer_id, user_id, updates, settle_only=True,
     )
@@ -930,13 +929,13 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           day another transfer of the same definition already
                           answers is refused (the occurrence index's rule,
                           as a designed ``ValidationError``).
-        settle_day     -- The civil day the money moved and HOW that day is
-                          known, for both shadows
-                          (:class:`app.services.settle_day.SettleDay` or None).
-                          **The key is not a column name** (plan step X-az):
-                          ``Transfer`` has no ``settled_on`` column, only a
-                          read-only property over its income leg, and the value
-                          carries the day's basis as well as the day.
+        side_days      -- The day the money moved on an ACCOUNT, per side (a
+                          tuple of :class:`~._side_days.SideDay`, at most one
+                          per endpoint; ruling **R-BAL142**).  On a settled
+                          pair it CORRECTS that side's day and a borrowing side
+                          follows; beside a status that settles nothing it is
+                          refused.  It replaced the pair's ``settle_day`` (plan
+                          step ``balance:X-bi-6-4c-3``), now ignored.
         is_override    -- Override flag (transfer and both shadows).  It no
                           longer says anything about who owns the amount; since
                           plan step X-au-h it means exactly *this row is the

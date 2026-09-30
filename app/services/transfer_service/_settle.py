@@ -76,7 +76,6 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.row_valuation import fixed_contribution
-from app.services.settle_day import SettleDay
 from app.services.stated_figure import StatedFigure
 from app.services import status_seam
 from app.services.status_seam import (
@@ -85,6 +84,7 @@ from app.services.status_seam import (
     recorded_settlement,
 )
 from app.services.transfer_legs import TransferLeg
+from app.services.transfer_service._side_days import PairDays
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import (
     TransferRows,
@@ -265,7 +265,7 @@ def settle(
     new_status_id: int,
     *,
     submitted: StatedFigure | None,
-    settle_day: SettleDay | None,
+    stated: PairDays,
 ) -> bool:
     """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
 
@@ -284,14 +284,17 @@ def settle(
        both: it is compared against what the row would book anyway and is a
        CORRECTION only if it differs.  A figure somebody read off a statement is
        a fact; a derivation is an inference.
-    2. **The status, the settle day and the RECORD, in ONE seam pass.**  The day
-       is the caller's when it has one -- the reconcile tick's statement date --
-       so the pair is dated once rather than stamped with today and corrected
-       afterwards.  That second write was this module's own defect: the settle
-       went through :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
-       the door ruling **R-ED** built for a user CORRECTING a day, so every
-       tick wrote ``settled_on`` twice and the intermediate value was a day the
-       money did not move.  The figure rides in the same call
+    2. **The status, each side's settle day and the RECORD, in ONE seam
+       pass.**  A side's day is the caller's when it states one -- the
+       reconcile tick's statement date for the leg on the statement's account
+       -- so the pair is dated once rather than stamped with today and
+       corrected afterwards.  That second write was this module's own defect:
+       the settle went through the door ruling **R-ED** built for a user
+       CORRECTING a day (``apply_settle_day_correction``, deleted at plan step
+       ``balance:X-bi-6-4c-3``), so every tick wrote ``settled_on`` twice and
+       the intermediate value was a day the money did not move.  The side
+       nobody stated for borrows the stated side's day (ruling **R-BAL142**).
+       The figure rides in the same call
        (``status_seam.Settlement``) and lands on BOTH legs and on neither the
        parent, because a transfer's money moves on its legs.
 
@@ -347,11 +350,13 @@ def settle(
             (:class:`~app.services.stated_figure.StatedFigure`; every caller
             today is a person's door, so ``typed``), or ``None`` when nobody
             stated one.
-        settle_day: The civil day the money moved and HOW that day is known
-            (:class:`app.services.settle_day.SettleDay`), when the caller knows
-            it -- the reconcile tick's statement day on the ``asserted`` basis,
-            the matcher's bank day on ``observed``.  ``None`` leaves the
-            pair-day rule in force.
+        stated: The days the caller states, by side
+            (:class:`~app.services.transfer_service._side_days.PairDays`) --
+            the reconcile tick's statement day on the ``asserted`` basis, the
+            matcher's bank day on ``observed``, each for the side on the
+            statement's account.  A settle entering the band admits every
+            stated day.  Empty derives both: each side borrows the owner's
+            today, as a Paid press does.
 
     Returns:
         Whether this settle booked a figure the caller supplied NOW -- what the
@@ -388,7 +393,7 @@ def settle(
         else None
     )
 
-    # ONE act: the status, the pair's day, and what each leg RECORDS as having
+    # ONE act: the status, each side's day, and what each leg RECORDS as having
     # moved.  ``Settlement.from_settle`` states the "a human's figure beats the
     # derivation" rule once for both settle verbs, and the record lands on the
     # shadows rather than on the parent because a transfer's money moves on its
@@ -411,7 +416,7 @@ def settle(
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
     apply_status_to_all_three(
-        rows, new_status_id, settle_day=settle_day,
+        rows, new_status_id, stated=stated,
         settlement=Settlement.from_settle(
             booked, correction, recorded_settlement(rows.expense),
         ),
@@ -470,7 +475,7 @@ def record_clearing(shadow: Transaction, anchor_id: int) -> None:
     assignments here instead would be a second writer of one fact.
 
     **It writes the link and nothing else.**  The settle itself -- the status,
-    the pair's day, the loan freeze, the correction rule -- is
+    each side's day, the loan freeze, the correction rule -- is
     :func:`settle`'s, and the caller runs that first; a clearing recorded
     against a leg that has not settled would violate
     ``ck_transactions_cleared_needs_settle_day``, which pairs this column with

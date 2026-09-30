@@ -69,9 +69,11 @@ def _apply_day(
     * one side of a TRANSFER -- a still-planned LEG, or a paid leg's payment
       (:attr:`~._subjects.CandidateRow.transfer_id`; leaf
       ``balance:X-bi-6-4c-1``, where it was the transfer's shadow row) --
-      goes through ``transfer_service`` on the TRANSFER: ``settle_transfer``
-      when it is still Projected, ``update_transfer`` when only the day
-      moves, because a settled transfer is an idempotent no-op for the first;
+      goes through ``transfer_service`` on the TRANSFER, stating the day for
+      THIS account's side only (plan step ``balance:X-bi-6-4c-3``):
+      ``settle_transfer`` when it is still Projected, ``update_transfer`` when
+      only the day moves, because a settled transfer is an idempotent no-op
+      for the first;
     * every other member -- a Projected TRANSACTION, or a SETTLEMENT, which
       is a row's covering movement matched on the ROW's terms (plan step
       ``credit_card:CC-5-4a-1``, ruling **R-CC43**) -- goes through
@@ -187,13 +189,20 @@ def _apply_day(
         return outcome
 
     if row.transfer_id is not None:
+        # The bank showed THIS account's side (ruling **R-BAL89**, per side
+        # since plan step ``balance:X-bi-6-4c-3``): that side takes the day as
+        # ``observed`` and the other side, on an account whose statement
+        # nobody read here, borrows it unless it holds evidence of its own.
+        # It was stated for BOTH sides until that step, which is how every far
+        # side of a matched transfer came to claim a bank line it never had.
+        side_days = (transfer_service.SideDay(scope.account_id, settle_day),)
         if row.is_settled:
             transfer_service.update_transfer(
-                row.transfer_id, scope.owner_id, settle_day=settle_day,
+                row.transfer_id, scope.owner_id, side_days=side_days,
             )
         else:
             transfer_service.settle_transfer(
-                row.transfer_id, scope.owner_id, settle_day=settle_day,
+                row.transfer_id, scope.owner_id, side_days=side_days,
             )
         return outcome
 
