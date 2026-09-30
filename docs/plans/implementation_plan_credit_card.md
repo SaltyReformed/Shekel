@@ -162,20 +162,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         record among them (**CC-358**'s popover path); the bill popover's two captions (`R-CC56`)
         and the transfer popover's (`R-CC59`) read `match_withdrawal.pending_for_movements`.
         **CC-359** measured not a defect. No migration; suite 15167/0.
-- [ ] **CC-5-4a-4** `fix(cards): a row holding a payment or purchase is history` -- `R-CC54` parts
-      (2) and (3), its own leaf by `R-CC55`: a row's delete stops cascading to its payments and
-      purchases, so a row holding one is history -- the template and account permanent deletes
-      archive instead, the archive keeps such a row where today it hides it and its purchase leaves
-      the fold (**CC-363**: template 19 'Clothes' holds movement 343, `$107.57`, which either door
-      drops on production's copy), and truncate / regenerate lock its period; a match's key to its
-      payment or purchase stops cascading, like its key to the bank line, and the leftover-match
-      check `_candidates.act_still_names_a_row` (read by `matched_subjects` and `_undisposed`) is
-      deleted, which makes `bank_agreement._lines_on`'s membership read exact (**CC-358**). A
-      migration, `c4a4e7d1b9f2`, written on `2eabfa596ee0` and re-parented at its merge behind the
-      chain as it stands (`764461215480`, 5d's, and `5641f7729b68`, S11-a's), its own release after
-      the 4a-2 + 4a-3 release; its entry's own design questions (2026-09-22, extending part (2) to
-      the archive, the object layer and the reset and transfer doors) are filed at its tick. Closes
-      **CC-358**, **CC-363**.
+  - [x] **CC-5-4a-4** `1d7a1174` -- a row holding a payment or purchase is history (**R-CC54** parts
+        2-3): its delete stops cascading, the template, account, pay-period and transfer doors keep
+        it (**R-CC63**..**R-CC66**, **R-CC75**), the database refuses a hidden non-transfer row
+        holding one (**R-CC89**, **R-CC92**), and a match's key to its payment or purchase stops
+        cascading, the leftover-match check deleted. Migration `c4a4e7d1b9f2`; ships in one release
+        with `balance:X-bn` (**R-CC109**, **R-CC120**). Closed **CC-358**, **CC-363**, **CC-376**.
 - [ ] **CC-5-4a-5** `fix(cards): the panel and carry-forward say what they free first` -- `R-CC76`:
       the two doors that reach the status seam's `$0.00` / purchases withdrawal and undo a statement
       match with no caption (**CC-364**) name the bank lines they would free BEFORE the press, from
@@ -187,14 +179,17 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       confirmation (`grid/_carry_forward_preview_modal.html`) says it for each envelope
       `settle_from_entries` would settle. Of the seam's doors only the grid's one-click Mark Paid
       stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
-      purchase delete, Undo CC, the popover's Status leaving Credit, the account and
-      recurring-transfer permanent deletes) are **CC-367**, and whether `R-CC76` reaches them,
-      widening this step, is the developer's question. A row's own account's list, ticking a
-      reopened bill whose kept payment is on another account (a card, or Checking under `R-CC117`),
-      re-points that payment (`status_seam._covering._re_point`) and withdraws any match naming it
-      through `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its
-      builder asks the developer whether that list captions such a row (`paid from <account>`) or
-      omits it. After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-378**.
+      purchase delete, Undo CC, the popover's Status leaving Credit, the last credit purchase's
+      delete or un-credit) are **CC-367**; the account and recurring-transfer permanent deletes
+      archive on a held leg since **R-CC65** and free nothing. **R-CC80** puts CC-367's doors in
+      this step: each says it first, and the one removal act asks what the owner was shown
+      (**R-CC81**). Its `$0.00` captions are its own question at its start, under **R-BAL155**. A
+      row's own account's list, ticking a reopened bill whose kept payment is on another account (a
+      card, or Checking under `R-CC117`), re-points that payment (`status_seam._covering._re_point`)
+      and withdraws any match naming it through `match_withdrawal.withdraw_for_moved_movement` with
+      no caption (**CC-378**): its builder asks the developer whether that list captions such a row
+      (`paid from <account>`) or omits it. After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**,
+      **CC-378**.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
