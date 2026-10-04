@@ -677,8 +677,9 @@ def test_a_leaf_whose_move_failed_is_left_on_the_board_and_its_place_named(code,
     assert tracker.board.items == [2, 3, 4, 5]
     capsys.readouterr()
     assert run(tracker, code, *args) == 0
-    assert ("board: already on it, but not just after plan#1's other leaves: unless a person "
-            "moved it there, `plan move plan#5 --after plan#3`") in capsys.readouterr().out
+    assert ("board: already on it, but last, below plan#4, where a move a failure cut short "
+            "leaves it: `plan move plan#5 --after plan#3` puts it after plan#1's other leaves"
+            ) in capsys.readouterr().out
     assert tracker.board.items == [2, 3, 4, 5]
     assert run(tracker, code, "move", "plan#5", "--after", "plan#3") == 0
     capsys.readouterr()
@@ -731,3 +732,83 @@ def test_only_an_edit_of_the_tools_in_a_rulings_shape_marks_an_earlier_conversio
                "--owner", "plan#1", "--from-question", "plan#2",
                "--answer-file", str(answer)) == 0
     assert tracker.bodies[2] == ruling_body(ruling_body("Ship it tonight!", "Yes."), "No.")
+
+
+def test_a_retry_names_no_move_for_a_leaf_a_later_leaf_follows(code, tmp_path, capsys):
+    """Review cp4d M1: the note read the CURRENT last sibling, so a re-run for an earlier leaf,
+    after a later one was filed, advised a move swapping two leaves nobody touched."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
+    tracker.add(2, parent=1)
+    tracker.add(3, parent=1)
+    tracker.add(4)
+    for name in ("first", "second"):
+        spec = tmp_path / f"{name}.md"
+        spec.write_text(f"Build the {name} half.")
+    first = ("file", "step", "--parent", "plan#1", "--arc", "balance", "--title", "First half",
+             "--body-file", str(tmp_path / "first.md"))
+    assert run(tracker, code, *first) == 0
+    assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
+               "--title", "Second half", "--body-file", str(tmp_path / "second.md")) == 0
+    assert tracker.board.items == [2, 3, 5, 6, 4]
+    capsys.readouterr()
+    assert run(tracker, code, *first) == 0
+    assert "  board: already on it\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("board", [[5], [5, 4], [4, 2, 3, 5], [4, 5]])
+def test_a_retry_names_no_move_it_cannot_place(code, tmp_path, capsys, board):
+    """Review cp4d A1-A3, L5: alone on the board, with no earlier leaf on it, or below one of
+    the leaves filed before it, a leaf is where a person or its filing put it."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("Half.")
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True),
+                             Child(5, "step", True)), on_board=False)
+    tracker.add(2, parent=1, on_board=False)
+    tracker.add(3, parent=1, on_board=False)
+    tracker.add(4, on_board=False)
+    tracker.add(5, parent=1, body="Half.", title="half", on_board=False)
+    tracker.board.items[:] = board
+    assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
+               "--title", "half", "--body-file", str(spec)) == 0
+    assert "  board: already on it\n" in capsys.readouterr().out
+    assert tracker.board.items == board
+
+
+@pytest.mark.parametrize("shown", [[(2, "PVTI_2"), (4, "PVTI_4")], []])
+def test_a_retry_names_no_move_while_the_board_does_not_show_the_leaf(code, tmp_path, capsys,
+                                                                     monkeypatch, shown):
+    """Review cp4d L5, A3: a board read lagging behind the add holds no item for the leaf --
+    or none at all."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("Half.")
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(5, "step", True)), on_board=False)
+    tracker.add(2, parent=1)
+    tracker.add(4)
+    tracker.add(5, parent=1, body="Half.", title="half")
+    monkeypatch.setattr(tracker.board, "order", lambda: shown)
+    assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
+               "--title", "half", "--body-file", str(spec)) == 0
+    assert "  board: already on it\n" in capsys.readouterr().out
+
+
+def test_a_leaf_left_at_the_bottom_is_placed_after_the_leaves_filed_before_it(code, tmp_path,
+                                                                              capsys):
+    """Review cp4d M1: its place is after the lowest of the leaves filed BEFORE it, where its
+    filing put it -- never after a leaf filed later."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("Half.")
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True),
+                             Child(5, "step", True), Child(6, "step", True)), on_board=False)
+    tracker.add(2, parent=1, on_board=False)
+    tracker.add(3, parent=1, on_board=False)
+    tracker.add(4, on_board=False)
+    tracker.add(5, parent=1, body="Half.", title="half", on_board=False)
+    tracker.add(6, parent=1, on_board=False)
+    tracker.board.items[:] = [2, 3, 6, 4, 5]
+    assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
+               "--title", "half", "--body-file", str(spec)) == 0
+    assert "`plan move plan#5 --after plan#3`" in capsys.readouterr().out

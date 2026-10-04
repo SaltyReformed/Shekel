@@ -381,24 +381,35 @@ def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, 
     return Draft(args.kind, args.title, body, labels, owner), parent, asked
 
 
+def _left_at_the_bottom(order: list[tuple[int, str]], parent: Card, leaf: Card) -> str:
+    """A note when ``leaf`` sits where a board move a failure cut short leaves it -- last
+    on the board, below a card that is not one of the leaves filed before it -- naming the
+    move that puts it after the lowest of those, where its filing would have put it; empty
+    anywhere else, where a person may have put it, and while the board does not show it."""
+    numbers = [number for number, _ in order]
+    if not order or order[-1][1] != leaf.board_item or leaf.number not in parent.leaves:
+        return ""
+    earlier = parent.leaves[:parent.leaves.index(leaf.number)]
+    shown = [number for number in earlier if number in numbers]
+    if not shown or numbers[-2] in earlier:
+        return ""
+    anchor = max(shown, key=numbers.index)
+    return (f", but last, below plan#{numbers[-2]}, where a move a failure cut short leaves "
+            f"it: `plan move plan#{leaf.number} --after plan#{anchor}` puts it after "
+            f"plan#{parent.number}'s other leaves")
+
+
 def _place_leaf(tracker: Tracker, leaf: Card, parent: Card) -> None:
     """Put a new leaf where the step it splits sat (R-BAL179), each board write printed as
-    it lands.  A leaf already on the board is never moved by a retry (R-BAL186), since a
-    person may have dragged it there; one not just after its split step's other leaves --
-    where a move a failure cut short would have put it -- is reported, with the command
-    that moves it."""
+    it lands.  Under a split step that has left the board, a retry never moves a leaf
+    already on it (R-BAL186), since a person may have dragged it there; one left where a
+    move a failure cut short leaves it is reported, with the move that places it
+    (:func:`_left_at_the_bottom`)."""
     order = tracker.board.order()
-    where = leaf_placement(order, parent, leaf.number)
     if leaf.board_item is not None and parent.board_item is None:
-        items = [item for _, item in order]
-        at = items.index(leaf.board_item) if leaf.board_item in items else None
-        anchor = next((number for number, item in order if item == where.after), None)
-        placed = where.after is None or (at is not None and at > 0
-                                         and items[at - 1] == where.after)
-        print("  board: already on it" + ("" if placed else
-              f", but not just after plan#{parent.number}'s other leaves: unless a person "
-              f"moved it there, `plan move plan#{leaf.number} --after plan#{anchor}`"))
+        print("  board: already on it" + _left_at_the_bottom(order, parent, leaf))
         return
+    where = leaf_placement(order, parent, leaf.number)
     item = leaf.board_item
     if item is None:
         item = tracker.board.add(leaf)
@@ -470,8 +481,9 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
         print(f"filed plan#{number}")
         card = tracker.cards([number]).get(number)
         if card is None:
-            raise TrackerError(f"plan#{number} was filed but cannot be read back yet: run the "
-                               "same command again to finish it (R-BAL186)")
+            raise TrackerError(f"plan#{number} was filed but cannot be read back yet: once "
+                               f"`plan show plan#{number}` reads it, run the same command again "
+                               "to finish it (R-BAL186)")
         print(f"  {_label(card)}")
     else:
         _refuse_rehoming(card, parent)
@@ -626,9 +638,9 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
         raise Refused(f"{_label(card)} has no leaf below it that is still work; its own state "
                       "shows its leaves, which `plan sync` writes")
     names = ", ".join(f"plan#{leaf.number}" for leaf in below)
-    tracker.comment(card.number, f"Dropped: {args.why} (its open leaves {names})")
-    print(f"  commented on plan#{card.number}: dropping its open leaves {names}; it shows them "
-          "at the next `plan sync`")
+    tracker.comment(card.number, f"Dropped: {args.why} (its leaves still work: {names})")
+    print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}; it "
+          "shows them at the next `plan sync`")
     for leaf in below:
         _drop(tracker, leaf, args.why)
     return 0

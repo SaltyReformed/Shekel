@@ -579,6 +579,22 @@ def test_text_the_reviews_found_kept_is_redacted():
          "answer": {"number": 2, "milestone": {"number": 11, "title": "secret X"}}},
         _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret Y"}}}},
                  query="query { viewer { login } }"),
+        {"method": "GET", "url": f"{_ISSUES}/11/comments", "body": None, "status": 200,
+         "answer": [{"id": 1, "body": "secret Z1"}]},
+        {"method": "GET", "url": f"{_ISSUES}/11/comments/1", "body": None, "status": 200,
+         "answer": {"body": "kept comment", "quoted": {"body": "secret Z5"}}},
+        _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret Z2"}}}},
+                 query='query { repository # alias\n: node(id: "I_other") { ... on Issue '
+                       '{ c11: parent { number title } } } r: repository(owner: '
+                       '"saltyreformed-labs", name: "shekel-plan") { id } }'),
+        _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret Z3"}}}},
+                 query='query { repository : node(id: "I_other") { ... on Issue { c11: parent '
+                       '{ number title } } } r: repository(owner: "saltyreformed-labs", '
+                       'name: "shekel-plan") { id } }'),
+        _graphql({"data": {"repository": {"issues": {"nodes": [{"number": 12, "parent": {
+            "number": 11, "title": "secret Z4"}}]}}}},
+                 query='query { repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+                       '{ issues(first: 1) { nodes { number parent { number title } } } } }'),
         {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}/issues/11", "body": None,
          "status": 200, "answer": {"number": 11, "title": "secret S",
                                    "repository": {"full_name": "o/elsewhere"}}},
@@ -598,7 +614,8 @@ def test_text_the_reviews_found_kept_is_redacted():
                        '12) { number title } } }'),
     ], _scratch(11, 12)))
     assert "secret" not in kept, [w for w in kept.split('"') if "secret" in w]
-    for public in (f"{SCRATCH} x", "scratch body", '"open"', '"balance"', "Shekel plan"):
+    for public in (f"{SCRATCH} x", "scratch body", '"open"', '"balance"', "Shekel plan",
+                   "kept comment"):
         assert public in kept, public
 
 
@@ -636,6 +653,8 @@ _REFS = f"https://api.github.com/repos/{TRACKER}/git/refs"
     ("PATCH", f"{_ISSUES}/11", {"title": "Real title"}),
     ("POST", _ISSUES, {"title": "Real title", "body": "b"}),
     ("POST", _ISSUES, {"title": "Real title", "body": "b", "type": "step", "labels": ["balance"]}),
+    ("POST", _ISSUES, {"body": "b", "type": "step", "labels": ["balance"]}),
+    ("PATCH", f"{_ISSUES}/11", {"state_reason": "not_planned"}),
     ("POST", f"{_ISSUES}/11/sub_issues", {"sub_issue_id": 5698680001}),
     ("POST", f"{_ISSUES}/11/dependencies/blocked_by", {"issue_id": 5698680001}),
     ("DELETE", f"{_ISSUES}/11/dependencies/blocked_by/5698680001", None),
@@ -807,3 +826,22 @@ def test_a_numbered_object_naming_the_tracker_by_full_name_is_its_card():
                 "answer": {"number": 11, "title": f"{SCRATCH} x",
                            "repository": {"full_name": TRACKER}}}
     assert f"{SCRATCH} x" in json.dumps(redacted([exchange], _scratch(11)))
+
+
+@pytest.mark.parametrize("query", [
+    _TRACKER_QUERY,
+    'query { repository(owner: "saltyreformed-labs" name: "shekel-plan") '
+    '{ c11: issue(number: 11) { number title } } }',
+    'query { repository(owner: "saltyreformed-labs", # the tracker\n name: "shekel-plan") '
+    '{ c11: issue(number: 11) { number title } } }',
+])
+def test_a_scratch_cards_text_is_kept_where_the_request_reads_the_trackers_cards(query):
+    """Review cp4d R11, L3: the keep direction of the card slots -- a GraphQL field of the
+    tracker's ``repository``, however its arguments are separated, and the answer to a REST
+    request under the tracker -- names its card by number alone."""
+    graphql = _graphql({"data": {"repository": {"c11": {"number": 11, "title": "kept A"}}}},
+                       query=query)
+    rest = {"method": "GET", "url": f"{_ISSUES}/11", "body": None, "status": 200,
+            "answer": {"number": 11, "title": "kept B"}}
+    kept = json.dumps(redacted([graphql, rest], _scratch(11)))
+    assert "kept A" in kept and "kept B" in kept

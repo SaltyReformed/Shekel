@@ -310,7 +310,8 @@ def test_dropping_a_split_step_takes_its_leaves_out_of_the_order(code, capsys):
     tracker.add(1, children=(Child(2, "step", True),), on_board=False)
     tracker.add(2, parent=1)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert tracker.writes == [("comment", 1, "Dropped: superseded (its open leaves plan#2)"),
+    assert tracker.writes == [
+        ("comment", 1, "Dropped: superseded (its leaves still work: plan#2)"),
                               ("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned")]
     capsys.readouterr()
     assert run(tracker, code, "next") == 0
@@ -518,7 +519,8 @@ def test_dropping_a_step_names_every_open_leaf_below_it_and_no_container(code, c
     out = capsys.readouterr().out
     assert "dropped plan#3 " in out and "dropped plan#4 " in out and "dropped plan#2 " not in out
     assert ("close", 2, "not_planned") not in tracker.writes
-    assert ("comment", 1, "Dropped: superseded (its open leaves plan#3, plan#4)") in tracker.writes
+    assert ("comment", 1, "Dropped: superseded (its leaves still work: plan#3, plan#4)"
+            ) in tracker.writes
 
 
 
@@ -628,7 +630,8 @@ def test_a_split_step_drop_cut_short_at_its_note_is_finished_by_the_same_command
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 2
     assert not tracker.writes
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert tracker.writes == [("comment", 1, "Dropped: superseded (its open leaves plan#2)"),
+    assert tracker.writes == [
+        ("comment", 1, "Dropped: superseded (its leaves still work: plan#2)"),
                               ("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned")]
 
 

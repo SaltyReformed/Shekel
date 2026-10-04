@@ -62,7 +62,7 @@ import json
 import re
 from collections import defaultdict, deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import requests
@@ -96,8 +96,11 @@ _GRAPHQL_URL = f"{API}/graphql"
 _BOARD_WRITES = {BOARD_ADD: "c", BOARD_REMOVE: "i", BOARD_TOP: "i", BOARD_AFTER: "i"}
 _MUTATION = re.compile(r"\bmutation\b")
 _REPOSITORY_ARGUMENTS = re.compile(r"\brepository\s*\(([^)]*)\)")
-_THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*,\s*name:\s*"{REPO}"\s*')
+_THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*,?\s*name:\s*"{REPO}"\s*')
 _REPOSITORY_ALIAS = re.compile(r"\brepository\s*:")
+#: What GraphQL reads as nothing between two tokens: a comment to the end of its line,
+#: and a comma.
+_IGNORED = re.compile(r"#[^\n]*|,")
 _CLAIM = re.compile(r"refs/claims/(?:([0-9]+)|recording-[a-z0-9-]+)")
 #: The bodies the plan tool PATCHes an issue with: retype, retitle, a new body, close, reopen.
 _PATCHES = frozenset(frozenset(keys) for keys in (
@@ -214,7 +217,7 @@ def _about_the_tracker(url: str, body) -> bool:
     a REST path under the tracker, or a GraphQL query with a ``repository(...)``, every one
     the tracker's, and no alias named ``repository``."""
     if url == _GRAPHQL_URL:
-        query = str((body or {}).get("query", ""))
+        query = _IGNORED.sub(" ", str((body or {}).get("query", "")))
         arguments = _REPOSITORY_ARGUMENTS.findall(query)
         return (bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
                 and not _REPOSITORY_ALIAS.search(query))
@@ -223,8 +226,9 @@ def _about_the_tracker(url: str, body) -> bool:
 
 def _slot(path: tuple[str, ...], graphql: bool) -> bool:
     """Whether an object at ``path`` (its keys from the answer down) is where a request about
-    the tracker reads the tracker's own cards: the answer itself to a REST request, or a
-    field of the tracker's ``repository`` (or of its ``issues``) in a GraphQL one."""
+    the tracker reads the tracker's own cards: the answer to a REST request (each item, when
+    it is a list), or a field of the tracker's ``repository`` (or of its ``issues``) in a
+    GraphQL one."""
     if not graphql:
         return not path
     return ((len(path) == 3 and path[:2] == ("data", "repository"))
@@ -252,42 +256,44 @@ def _card_of(value: dict, slot: bool) -> int | None:
 
 @dataclass(frozen=True)
 class _Owner:
-    """Whose text a part of an answer holds: ``card``; the card the request names; whether
-    the part is a card's own content (its edit history); whether the request reads the
-    tracker's own cards (:func:`_about_the_tracker`), and by GraphQL."""
+    """Where a part of an answer sits, and whose text it holds: ``card``; the card the
+    request names; whether the part is a card's own content (its edit history); whether
+    the request reads the tracker's own cards (:func:`_about_the_tracker`), and by GraphQL;
+    its ``path`` (its keys from the answer down); and whether it is the answer itself
+    (``top``), not an item of it."""
 
     card: int | None
     named: int | None
     own: bool
     scoped: bool
     graphql: bool
+    path: tuple[str, ...] = ()
+    top: bool = False
 
 
-def _redact(value, key: str | None, owner: _Owner, scratch: set[int],
-            path: tuple[str, ...] = ()):
-    """``value``, held under ``key`` at ``path`` (its keys from the answer down), with every
-    string redacted that is neither a scratch card's nor under a :data:`_KEPT` key."""
+def _redact(value, key: str | None, owner: _Owner, scratch: set[int]):
+    """``value``, held under ``key`` where ``owner`` places it, with every string redacted
+    that is neither a scratch card's nor under a :data:`_KEPT` key."""
     if isinstance(value, list):
-        return [_redact(item, key, owner, scratch, path) for item in value]
+        return [_redact(item, key, replace(owner, top=False), scratch) for item in value]
     if isinstance(value, str):
         return value if key in _KEPT or owner.card in scratch else REDACTED
     if not isinstance(value, dict):
         return value
     numbered = "number" in value
     if numbered:
-        card = _card_of(value, owner.scoped and _slot(path, owner.graphql))
-        owner = _Owner(card, owner.named, False, owner.scoped, owner.graphql)
+        card = _card_of(value, owner.scoped and _slot(owner.path, owner.graphql))
+        owner = replace(owner, card=card, own=False)
     elif any(isinstance(item, str) and name not in _KEPT for name, item in value.items()):
-        card = owner.named if not path else owner.card if owner.own else None
-        owner = _Owner(card, owner.named, owner.own, owner.scoped, owner.graphql)
+        owner = replace(owner, card=owner.named if owner.top else
+                        owner.card if owner.own else None)
     board = (str(value.get("id", "")).startswith(_BOARD_NODE)
              and value.get("title") == PROJECT_TITLE)
     return {
         name: (item if board and name == "title"
-               else _redact(item, name, _Owner(owner.card, owner.named,
-                                               owner.own or (numbered and name in _OWN_CONTENT),
-                                               owner.scoped, owner.graphql),
-                            scratch, (*path, name)))
+               else _redact(item, name, replace(
+                   owner, own=owner.own or (numbered and name in _OWN_CONTENT),
+                   path=(*owner.path, name), top=False), scratch))
         for name, item in value.items()
     }
 
@@ -308,7 +314,7 @@ def redacted(exchanges: list[dict], scratch: Scratch) -> list[dict]:
         named = _named_card(url)
         answer = _redact(exchange["answer"], None,
                          _Owner(named, named, False, _about_the_tracker(url, body),
-                                url == _GRAPHQL_URL), scratch.numbers)
+                                url == _GRAPHQL_URL, top=True), scratch.numbers)
         kept.append({**exchange, "answer": answer})
     return kept
 
