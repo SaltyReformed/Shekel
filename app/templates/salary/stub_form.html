@@ -9,7 +9,8 @@
    app.services.pay_stub_service: the report (what the stub adds up to, each
    line beside the app's figure that payday, the base-pay gap) and the line
    split (the lines the app takes that payday first, the rest under their own
-   heading).  The printed net is typed once as a check and never saved. #}
+   heading).  The printed gross and net are typed once as checks and never
+   saved. #}
 {% block content %}
 {% set payday = values.get('payday', '') %}
 <div class="row justify-content-center">
@@ -153,7 +154,10 @@
           {% endif %}
         </div>
         <div class="col-md-6">
-          <label for="base_pay" class="form-label">Base pay</label>
+          {# Ruling R-SAL99 (finding SAL-590): a stub prints a GROSS that
+             already holds each taxable allowance, so this box says it is the
+             pay BEFORE them; the printed gross below checks it. #}
+          <label for="base_pay" class="form-label">Base pay (before allowances, not the gross)</label>
           <div class="input-group has-validation">
             <span class="input-group-text">$</span>
             <input type="number" step="0.01" min="0.01" id="base_pay" name="base_pay" required
@@ -265,6 +269,18 @@
                class="form-control{% if errors.notes %} is-invalid{% endif %}"
                value="{{ values.get('notes', '') }}">
         {% if errors.notes %}<div class="invalid-feedback">{{ errors.notes }}</div>{% endif %}
+      </div>
+
+      <div class="mb-3">
+        <label for="printed_gross" class="form-label">Gross as printed</label>
+        <div class="input-group has-validation">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0.01" id="printed_gross" name="printed_gross" required
+                 class="form-control{% if errors.printed_gross %} is-invalid{% endif %}"
+                 value="{{ values.get('printed_gross', '') }}">
+          {% if errors.printed_gross %}<div class="invalid-feedback">{{ errors.printed_gross }}</div>{% endif %}
+        </div>
+        <div class="form-text">A check on your typing: base pay plus every taxable earning above must add up to it.  It is not saved.</div>
       </div>
 
       <div class="mb-3">

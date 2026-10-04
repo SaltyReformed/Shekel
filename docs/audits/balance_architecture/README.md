@@ -1231,7 +1231,7 @@ section 4, under their unchanged ids.*
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites (census 105 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
+  **N-212** cites (census 106 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its

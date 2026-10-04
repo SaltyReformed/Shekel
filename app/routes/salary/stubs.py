@@ -161,12 +161,12 @@ def record_stub(profile_id: int) -> ResponseReturnValue:
     if profile is None:
         abort(404)
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             stub = pay_stub_service.record_stub(
-                profile, figures, printed_net, ctx, display_today(),
+                profile, figures, printed, ctx, display_today(),
             )
             db.session.commit()
         except PayStubRefused as refused:
@@ -221,12 +221,12 @@ def edit_stub(stub_id: int) -> ResponseReturnValue:
             stale_ctx, submitted=submitted_version, current=stub.version_id,
         )
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             pay_stub_service.edit_stub(
-                stub, figures, printed_net, ctx, display_today(),
+                stub, figures, printed, ctx, display_today(),
             )
             db.session.commit()
         except PayStubRefused as refused:
@@ -332,7 +332,11 @@ def _first_messages(errors: Mapping[str, list[str]]) -> dict[str, str]:
 
 def _read_form(
     profile: SalaryProfile,
-) -> tuple[pay_stub_service.StubFigures | None, Decimal | None, dict[str, str]]:
+) -> tuple[
+    pay_stub_service.StubFigures | None,
+    pay_stub_service.PrintedTotals | None,
+    dict[str, str],
+]:
     """Read the entry form into the service's values, or into field errors.
 
     The line and tax inputs are read BY THE PROFILE'S OWN LINES AND THE FOUR
@@ -342,9 +346,11 @@ def _read_form(
     service's refusal, not this reader's.
 
     Returns:
-        ``(figures, printed_net, errors)`` -- ``figures`` is a
-        :class:`~app.services.pay_stub_service.StubFigures` when every field
-        loaded, else ``None`` with ``errors`` naming each bad field.
+        ``(figures, printed, errors)`` -- ``figures`` is a
+        :class:`~app.services.pay_stub_service.StubFigures` and ``printed``
+        the :class:`~app.services.pay_stub_service.PrintedTotals` the stub's
+        gross and net are checked against when every field loaded, else both
+        are ``None`` with ``errors`` naming each bad field.
     """
     form = request.form
     errors = {}
@@ -359,7 +365,10 @@ def _read_form(
         line_amounts=line_amounts, withholdings=withholdings,
         one_offs=one_offs, notes=scalars.get("notes"),
     )
-    return figures, scalars["printed_net"], errors
+    printed = pay_stub_service.PrintedTotals(
+        gross=scalars["printed_gross"], net=scalars["printed_net"],
+    )
+    return figures, printed, errors
 
 
 def _read_lines(
