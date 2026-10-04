@@ -14,7 +14,7 @@ salary:X-av-3b's (ruling **R-SAL83**), and Remove never takes the last entry
 * a day that is not a payday the app holds or projects a paycheck for, or
   one later than the owner's next payday -- the stub door's own rule
   (**R-SAL49**, **R-SAL48**), asked through
-  :func:`~app.services.pay_stub_service.payday_refusal_for_door` so the rule
+  :func:`~app.services.salary_paydays.payday_refusal_for_door` so the rule
   has one home (ruling **R-SAL90**, "Up to next payday": an entry is pay
   received, and a mistyped year would otherwise replace every forecast raise
   before it), in this door's own words, "Pay can be recorded up to your next
@@ -51,8 +51,8 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.salary_pay_entry import SalaryPayEntry
 from app.models.salary_profile import SalaryProfile
-from app.services.pay_stub_service import payday_refusal_for_door
 from app.services.payroll_basis import PayrollBasis
+from app.services.salary_paydays import payday_refusal_for_door
 
 if TYPE_CHECKING:
     from app.services.balance_at import BalanceContext
@@ -108,7 +108,7 @@ def _refuse_payday(ctx: "BalanceContext", payday: date, today: date) -> None:
         today: The owner's civil today, as the stub door is handed it.
 
     Raises:
-        ValidationError: With :func:`~app.services.pay_stub_service
+        ValidationError: With :func:`~app.services.salary_paydays
             .payday_refusal_for_door`'s message in this door's words
             (ruling **R-SAL93**).
     """

@@ -174,9 +174,11 @@ An impossible production state, produced entirely by the instrument.
 ### The marker
 
 Those tests carry `@pytest.mark.server_clock` (registered in `pytest.ini`), and the sweep job
-deselects them with `-m "not docker and not server_clock"`. Two of them assert the database's clock
-**on purpose** -- the `CURRENT_DATE` server default and the audit trigger's `executed_at` -- which
-no amount of Python faking can satisfy.
+deselects them with `-m "not docker and not server_clock"`. Four of them assert the database's clock
+**on purpose**, which no amount of Python faking can satisfy: the `CURRENT_DATE` server default, the
+audit trigger's `executed_at`, and the stamp arm and the up-then-down round trip in
+`test_a_transfer_side_knows_its_own_day_migration.py`, which grade a Paid press's day against its
+own audit row's `executed_at`.
 
 > **The marker is a statement about the instrument, never a way to quiet a failure.** Every marked
 > test still runs in ordinary CI. A test earns the marker only after its failure has been traced to
@@ -262,8 +264,8 @@ Thousands of errors, not failures
 ## 8. Current state
 
 - Full suite: **7,687 passed / 0 failed**, on the normal clock and under `TZ=Pacific/Kiritimati`.
-- Calendar sweep: **7,662 passed / 0 failed** at 2028-02-29, 2027-01-01 and 2026-11-30 (25
-  `server_clock` tests deselected, all of which still run in ordinary CI).
+- Calendar sweep: **7,662 passed / 0 failed** at 2028-02-29, 2027-01-01 and 2026-11-30 (the
+  `server_clock` tests deselected, every one of which still runs in ordinary CI).
 - `app/` carries no `.replace(year=` and was never exposed to the leap-day crash.
 
 ### Known gaps, stated so they are not mistaken for covered
