@@ -36,7 +36,7 @@ class ConflictError(ShekelError):
 
 
 class UndatedSettleError(ShekelError, ValueError):
-    """A settled transaction was read for its settle day and carries none.
+    """A settled transaction or transfer was read for its settle day and carries none.
 
     A row is settled if and only if it records the civil day its money moved.
     Both facts are written by one statement -- ``status_seam.apply_status_change``
@@ -44,9 +44,13 @@ class UndatedSettleError(ShekelError, ValueError):
     pairing was written around that seam (a bulk ``query.update()``, or a
     fixture constructing the row directly).
 
-    Raised by ``app.utils.balance_predicates.settled_day``, the single accessor
-    every balance and posting consumer asks the question through (plan step
-    X-f1, ruling R-EC).  It is a REFUSAL rather than a fallback on purpose: the
+    Raised for a ROW by ``app.utils.balance_predicates.settled_day``, the
+    accessor the row readers ask the question through (plan step X-f1, ruling
+    R-EC), and for a settled TRANSFER whose loan-side payment record carries
+    no day by ``app.services.loan_ledger.payment_visible_on``, which names the
+    transfer (ruling R-BAL147; it asked ``settled_day`` and named the shadow
+    row the record hangs off until leaf balance:X-bi-6-4d-1).  It is a
+    REFUSAL rather than a fallback on purpose: the
     day is a stored fact now, so inventing one would put real money on a day
     nothing recorded, and skipping the row would remove money from a balance
     without saying so.

@@ -599,21 +599,23 @@ class TestTheSettledHalfComplementsThePlanHalf:
 class TestASettledPaymentWithAnUndatedRecordFailsLoud:
     """A settled transfer whose record carries no day is REFUSED, never dated by a guess."""
 
-    def test_a_paid_transfer_over_a_reverted_twin_refuses_and_names_the_row(
+    def test_a_paid_transfer_over_a_reverted_twin_refuses_and_names_the_transfer(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Drift B over a kept movement: the walk refuses, naming the twin's row.
+        """Drift B over a kept movement: the walk refuses, naming the TRANSFER.
 
         The transfer says Paid, and the record its leg carries -- the kept
         covering movement -- carries no day.  Read off the transfer, that is
         the broken settled-without-a-day state the refusal exists for: a day
         guessed here would put money on a day nothing recorded, and the
         R-BAL139 installment day is for a payment that moved NOTHING, not
-        for one whose movement lost its day.  The refusal names the row the
-        movement hangs off -- here the twin, whose own status is Projected,
-        which the message's "in a settled status" does not describe; the
-        TRANSFER is the settled row.  Until plan step balance:X-bi-6-4b the
-        twin's status kept this payment out of the loan entirely.
+        for one whose movement lost its day.  The refusal names the transfer
+        -- the settled row, and what its owner corrects through the app
+        (ruling R-BAL147) -- and the movement that lost its day.  It named the
+        row the movement hangs off, the twin, whose own status is Projected,
+        until leaf balance:X-bi-6-4d-1 (a re-expression under R-BAL167 class
+        1).  Until plan step balance:X-bi-6-4b the twin's status kept this
+        payment out of the loan entirely.
         """
         with app.app_context():
             loan = _loan(seed_user)
@@ -626,9 +628,16 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
             shadow = _revert_the_income_twin_keeping_an_undated_movement(
                 transfer, loan,
             )
+            [movement] = shadow.covering_movements
 
-            with pytest.raises(UndatedSettleError, match=f"Transaction {shadow.id} "):
+            with pytest.raises(UndatedSettleError) as refused:
                 walk_loan_ledger(loan.id, seed_user["scenario"].id)
+            message = str(refused.value)
+            assert message.startswith(
+                f"Transfer {transfer.id} (Transfer from Checking into "
+                f"Settled Leg Loan, due {_DUE}) is in a settled status"
+            ), message
+            assert f"(movement {movement.id})" in message, message
 
 
 class TestTheContributionFeedCountsADriftOnce:

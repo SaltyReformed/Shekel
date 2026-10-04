@@ -558,7 +558,9 @@ def movement_parent_loads() -> tuple:
 
     For a reader that resolves MANY loaded movements' parents -- the
     statement register folds every act on an account (leaf
-    ``X-bi-6-4c-1``) -- and must not lazy-load one transfer per member:
+    ``X-bi-6-4c-1``), and the loan posting probe names the transfer of
+    every stale movement it finds (``loan_posting_service._sync``, leaf
+    ``X-bi-6-4d-1``) -- and must not lazy-load one transfer per member:
     the movement's parent row and, for a transfer movement, that row's
     transfer, whose endpoints and status ride it (``lazy="joined"``).
     Published HERE rather than spelled by the reader because the chain

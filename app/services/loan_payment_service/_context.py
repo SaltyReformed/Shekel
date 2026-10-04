@@ -398,9 +398,10 @@ def get_payment_history(
     settled set, then REQUIRES the day of every record that exists -- a
     ``$0.00`` close has none and is dated by its installment (ruling
     **R-BAL139**) -- because
-    :func:`~app.utils.balance_predicates.settled_day` (inside
-    ``payment_visible_on``) refuses a settled record carrying none rather than
-    inventing one.  A payment broken the other way -- its transfer Projected
+    :func:`~app.services.loan_ledger.payment_visible_on` refuses a settled
+    record carrying none rather than inventing one (through the row accessor
+    :func:`~app.utils.balance_predicates.settled_day` until leaf
+    balance:X-bi-6-4d-1).  A payment broken the other way -- its transfer Projected
     while its covering movement still carries a day, which only a seam bypass
     can produce -- is a payment whose money MOVED (ruling **R-BAL140**, plan
     step balance:X-bi-6-4b): it arrives in the SETTLED half, dated and valued
@@ -434,8 +435,9 @@ def get_payment_history(
             (see :mod:`app.services.cash_ledger._amount_source`).
         UndatedSettleError: When a settled payment's record carries no
             ``settled_on`` -- the settled-iff-dated invariant is broken on that
-            row, and dating it by a fallback would put real money on a day
-            nothing recorded (see :func:`app.utils.balance_predicates.settled_day`).
+            payment, and dating it by a fallback would put real money on a day
+            nothing recorded (see :func:`app.services.loan_ledger.payment_visible_on`,
+            which names the transfer).
             **The mark-paid door no longer reaches this, and that is a
             refusal plan step X-au-g-1 DELETED rather than an edge it kept.**
             The paragraph here used to record the door arriving through
@@ -450,13 +452,15 @@ def get_payment_history(
             ``routes/loan/_helpers.py`` (twice) and
             ``balance_at/_resolution.py``.
 
-            The row is still broken on every other surface -- the sibling cash
-            leg refuses at ``cash_ledger._events`` and the loan fold at
-            ``loan_ledger._visible`` -- so no loan carrying such a payment is
+            The payment is still refused by the loan fold at
+            ``loan_ledger._visible``, so no loan carrying such a payment is
             silently healthy; what changed is only WHICH door reports it
-            first.  Stated rather than quietly dropped, because a refusal that
-            stops being reachable from a door is a behaviour change even when
-            every other reader still refuses.
+            first.  (This paragraph also named a refusal at
+            ``cash_ledger._events`` until leaf balance:X-bi-6-4d-1, which that
+            module does not make: the cash fold reads only DATED movements.)
+            Stated rather than quietly dropped, because a refusal that stops
+            being reachable from a door is a behaviour change even when every
+            other reader still refuses.
     """
     # The DATES, from the one producer that answers them (plan step
     # balance:X-bl-2a).  It owns the query, the chronological order, and the
