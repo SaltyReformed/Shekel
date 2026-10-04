@@ -108,3 +108,17 @@ def test_graphql_raises_on_errors_reported_inside_a_200():
     session = _Session(_Response(200, {"data": None, "errors": [{"message": "nope"}]}))
     with pytest.raises(GitHubError, match="nope"):
         GitHub("t", session).graphql("mutation { x }")
+
+
+def test_graphql_lookup_reads_a_missing_field_as_absent_but_raises_on_a_missing_repository():
+    """Review cp3 L-c: every NOT_FOUND was dropped, so a repository GitHub could not find left
+    ``data.repository`` null and the caller hit a TypeError.  Only a field below the top-level
+    object is absent; GitHub names each by its ``path`` (both shapes recorded 2026-10-04 in
+    ``recorded/tracker.json``, graded against it in ``test__tracker.py``)."""
+    below = {"data": {"repository": {"c1": None}}, "errors": [
+        {"type": "NOT_FOUND", "path": ["repository", "c1"], "message": "no issue 1"}]}
+    assert GitHub("t", _Session(_Response(200, below))).graphql_lookup("q") == below["data"]
+    top = {"data": {"repository": None}, "errors": [
+        {"type": "NOT_FOUND", "path": ["repository"], "message": "no repository x"}]}
+    with pytest.raises(GitHubError, match="no repository x"):
+        GitHub("t", _Session(_Response(200, top))).graphql_lookup("q")

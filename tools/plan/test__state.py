@@ -5,17 +5,19 @@ from datetime import UTC, datetime
 
 from _state import (
     Placement,
+    dropped,
     dropped_above,
     is_live,
     leaf_placement,
     missing,
     next_step,
+    outside_reports,
     resolved,
     stale_claims,
     sync_plan,
     workable,
 )
-from _tracker import Card, Child, Claim
+from _tracker import Card, Child, Claim, OutsideLink
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
@@ -26,7 +28,7 @@ def _card(number, kind="step", **changes):
         "number": number, "id": 1000 + number, "node_id": f"I_{number}", "title": f"card {number}",
         "kind": kind, "labels": ("balance",), "is_open": True, "state_reason": None,
         "parent": None, "children": (), "blocked_by": (), "board_item": f"PVTI_{number}",
-        "closed_by_tool": False, "touched_by_hand": False,
+        "closed_by_tool": False, "touched_by_hand": False, "outside": (),
     }
     return Card(**{**fields, **changes})
 
@@ -204,8 +206,8 @@ def test_a_leaf_inherits_the_waits_and_the_drop_of_every_step_above_it():
     assert workable(cards[9], cards, {2}, {}) and is_live(9, cards, {2})
     cards[8] = _closed(8, reason="NOT_PLANNED", parent=7, children=cards[8].children)
     assert not workable(cards[9], cards, {2}, {}) and not is_live(9, cards, {2})
-    assert dropped_above(cards[9], cards).number == 8
-    assert dropped_above(cards[7], cards) is None
+    assert dropped_above(cards[9], cards, {2}).number == 8
+    assert dropped_above(cards[7], cards, {2}) is None
 
 
 def test_leaf_placement_holds_the_split_steps_place_then_follows_its_last_leaf():
@@ -252,3 +254,116 @@ def test_sync_reports_steps_left_open_under_a_dropped_one_and_the_findings_they_
     assert len(plan.reports) == 2
     assert plan.reports[0].startswith("plan#2 is open under plan#1, which was dropped")
     assert plan.reports[1].startswith("finding plan#3's owner plan#2 is no longer live")
+
+
+# -- the review of checkpoint 3 -------------------------------------------------------------
+
+def test_a_finding_off_the_board_is_never_named_as_a_step_the_order_cannot_place():
+    """Review cp3 M-5: with ``kind == "step"`` deleted from ``workable``, every open finding
+    (findings never sit on the board, R-BAL177) was listed NOT ON THE BOARD."""
+    cards = _cards(_card(1, children=(Child(2, "finding", True),)),
+                   _card(2, "finding", parent=1, board_item=None))
+    answer = next_step([1], cards, shipped=set(), claims={})
+    assert answer.card.number == 1 and not answer.unplaced
+
+
+def test_a_container_a_person_reopened_is_reported_only_while_its_leaves_are_all_done():
+    """Review cp3 L-d and M-5: a person's close of a container is a drop, so the one state of
+    a person's hand its leaves contradict is a container reopened with every leaf done."""
+    leaf = Child(2, "step", True)
+    for leaf_card, said in ((_closed(2, parent=1), True), (_card(2, parent=1), False)):
+        cards = _cards(_card(1, children=(leaf,), touched_by_hand=True), leaf_card)
+        plan = sync_plan(cards, shipped={2} if said else set(), claims={}, ship_branches={})
+        assert bool([r for r in plan.reports if r.startswith("container plan#1")]) is said
+        assert not (plan.close or plan.drop or plan.reopen)
+    for reason in ("COMPLETED", "NOT_PLANNED"):
+        cards = _cards(_closed(1, by_tool=False, reason=reason, children=(leaf,)),
+                       _card(2, parent=1))
+        plan = sync_plan(cards, shipped=set(), claims={}, ship_branches={})
+        assert not [r for r in plan.reports if r.startswith("container plan#1")]
+        assert not (plan.close or plan.drop or plan.reopen)
+
+
+def test_a_shipped_finding_is_not_reported_as_orphaned_by_its_owner():
+    """Review cp3 M-5: with ``not in shipped`` deleted, a finding git says shipped was also
+    reported for an owner that is done -- which a shipped finding no longer needs."""
+    cards = _cards(_card(1, children=(Child(3, "finding", True),)), _card(3, "finding", parent=1))
+    plan = sync_plan(cards, shipped={1, 3},
+                     claims={1: _claim(1, "feat/a"), 3: _claim(3, "feat/a")},
+                     ship_branches={1: {"feat/a"}, 3: {"feat/a"}})
+    assert plan.close == [1, 3] and not plan.reports
+
+
+def test_a_card_that_is_not_a_step_is_no_container_whatever_hangs_under_it():
+    """Review cp3 M-4: an untyped card (or a finding) with step children was a container,
+    resolved by its leaves; it is resolved by its own state."""
+    for kind in (None, "finding"):
+        card = _card(1, kind, children=(Child(2, "step", True),))
+        assert not card.is_container
+        cards = _cards(card, _card(2, parent=1))
+        assert resolved(1, cards, shipped={1}) is (kind == "finding")
+        assert not resolved(1, cards, shipped={2})
+
+
+def test_a_container_whose_leaves_were_all_dropped_counts_as_dropped():
+    """R-BAL187: what waits on it is released and it is shown not planned; one leaf shipped
+    among dropped ones is a container done, shown completed."""
+    container = _card(7, children=(Child(8, "step", False), Child(10, "step", False)),
+                      board_item=None)
+    cards = _cards(container, _closed(8, reason="NOT_PLANNED", parent=7),
+                   _closed(10, by_tool=False, parent=7), _card(9, blocked_by=(7,)))
+    assert dropped(7, cards, set()) and resolved(7, cards, set()) and not is_live(7, cards, set())
+    assert next_step([9], cards, shipped=set(), claims={}).card.number == 9
+    plan = sync_plan(cards, shipped=set(), claims={}, ship_branches={})
+    assert (plan.drop, plan.close, plan.reopen) == ([7], [], [])
+    cards[10] = _closed(10, parent=7)
+    assert not dropped(7, cards, {10})
+    plan = sync_plan(cards, shipped={10}, claims={}, ship_branches={})
+    assert (plan.drop, plan.close) == ([], [7])
+
+
+def test_a_container_shown_completed_whose_leaves_are_now_all_dropped_is_shown_not_planned():
+    """R-BAL187: a leaf reopened and dropped between two syncs leaves the container closed as
+    completed though nothing shipped; sync re-closes it as not planned, then leaves it."""
+    leaves = (Child(8, "step", False),)
+    cards = _cards(_closed(7, children=leaves), _closed(8, reason="NOT_PLANNED", parent=7))
+    assert sync_plan(cards, shipped=set(), claims={}, ship_branches={}).drop == [7]
+    cards[7] = _closed(7, reason="NOT_PLANNED", children=leaves)
+    plan = sync_plan(cards, shipped=set(), claims={}, ship_branches={})
+    assert not (plan.drop or plan.close or plan.reopen or plan.reports)
+
+
+def test_a_card_linked_outside_the_tracker_is_not_workable_and_its_blocker_holds_its_leaves():
+    """R-BAL188: the card carrying the link is never offered; a step blocked by an outside
+    issue waits and so does every leaf under it; an outside sub-issue holds no leaf."""
+    blocker = OutsideLink("blocker", "o/code#1")
+    cards = _cards(_card(1, outside=(blocker,), children=(Child(2, "step", True),)),
+                   _card(2, parent=1), _card(3, outside=(OutsideLink("parent", "o/code#2"),)),
+                   _card(4, outside=(OutsideLink("sub-issue", "o/code#3"),),
+                         children=(Child(5, "step", True),)), _card(5, parent=4))
+    assert [n for n in cards if workable(cards[n], cards, set(), {})] == [5]
+    assert [line.split(",")[0] for line in outside_reports(cards)] == [
+        "plan#1's blocker is o/code#1", "plan#3's parent is o/code#2",
+        "plan#4's sub-issue is o/code#3"]
+    cards[3] = _closed(3, outside=cards[3].outside)
+    assert len(outside_reports(cards)) == 2
+    assert sync_plan(cards, set(), {}, {}).reports == outside_reports(cards)
+
+
+def test_sync_reports_an_open_ruling_and_tells_a_person_how_to_close_a_reopened_card():
+    """Review cp3: an open ruling (a filing whose close failed) blocked what waits on it,
+    unreported; "leave it" kept sync failing forever."""
+    cards = _cards(_card(1, "ruling"), _card(4, touched_by_hand=True))
+    plan = sync_plan(cards, shipped={4}, claims={4: _claim(4)}, ship_branches={4: {"feat/x"}})
+    assert plan.reports[0].startswith("ruling plan#1 is open")
+    assert "close it by hand" in plan.reports[1] and "leave it" not in plan.reports[1]
+
+
+def test_a_leaf_git_says_shipped_was_not_dropped_whoever_closed_it():
+    """R-BAL187 counts only DROPPED leaves: a leaf a person closed by hand that git says
+    shipped is shipped work, so the container it completes is shown completed."""
+    cards = _cards(_card(7, children=(Child(8, "step", False),)),
+                   _closed(8, by_tool=False, parent=7))
+    assert dropped(7, cards, set()) and not dropped(7, cards, {8})
+    plan = sync_plan(cards, shipped={8}, claims={}, ship_branches={})
+    assert (plan.close, plan.drop) == ([7], [])

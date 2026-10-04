@@ -201,10 +201,25 @@ def author_date(root: Path, ref: str) -> str:
     """When ``ref``'s commit was first written, ISO 8601 with its offset.
 
     The AUTHOR date, which a rebase or an amend keeps: the committer date moves
-    later with each, and ``spec-history --since <ref>`` would then miss the spec
-    edits between the two -- narrowing R-BAL174's review in the unsafe direction.
+    later with each, and a window starting at it would then miss what happened
+    between the two -- narrowing R-BAL174's review in the unsafe direction.
     """
     return git(root, "log", "-1", "--format=%aI", ref).strip()
+
+
+def started(root: Path, ref: str) -> str:
+    """When the work on branch ``ref`` started: the author date of the commit it grew from.
+
+    That is the first parent of its oldest commit not on :data:`DEV` (parents
+    before children, ``--topo-order``), so every commit of the branch -- and the
+    time before its first one -- falls inside the window ``spec-history --since
+    <ref>`` reads (R-BAL174: the spec edits since the work started).  A ref
+    with no commit off :data:`DEV` is read as its own start: a branch just cut
+    from dev starts at its tip.  So is a branch already MERGED into dev, whose
+    start git no longer records; its window then starts at its last commit.
+    """
+    own = git(root, "rev-list", "--reverse", "--topo-order", ref, "--not", DEV).split()
+    return author_date(root, f"{own[0]}^" if own else ref)
 
 
 def current_branch(root: Path) -> str | None:

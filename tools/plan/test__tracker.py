@@ -1,15 +1,15 @@
 """The tracker's reads and writes, against GitHub answers RECORDED from the live tracker.
 
-``recorded/tracker.json`` was kept 2026-10-04 (re-recorded 10:18 EDT for
-checkpoint 3) by a session that ran every :class:`_tracker.Tracker` and
-:class:`_tracker.Board` call once against scratch cards #11-#15
-(``_recorded.Recorder``, which redacts every other card's text); these tests
-replay it (``_recorded.Replay``), which answers only a request it recorded, in
-the order recorded.  Nothing here calls GitHub.  A query whose text changes no
-longer matches its recording: re-record it, never edit an answer by hand.  A
-test that needs an answer no scratch card can give (a link to another
-repository, an open pull request) starts from a recorded answer and changes the
-one field it is about, and says so.
+``recorded/tracker.json`` was kept 2026-10-04 (re-recorded 14:25 EDT for
+checkpoint 4) by a session that ran every :class:`_tracker.Tracker` and
+:class:`_tracker.Board` call once against scratch cards #11-#16
+(``_recorded.Recorder``, which writes to scratch cards only and redacts every
+other card's text); these tests replay it (``_recorded.Replay``), which
+answers only a request it recorded, in the order recorded.  Nothing here calls
+GitHub.  A query whose text changes no longer matches its recording: re-record
+it, never edit an answer by hand.  A test that needs an answer no scratch card
+can give (a link to another repository, an open pull request) starts from a
+recorded answer and changes the one field it is about, and says so.
 """
 from __future__ import annotations
 
@@ -19,12 +19,13 @@ import json
 import pytest
 
 from _github import GitHub, GitHubError
-from _recorded import REDACTED, RECORDINGS, SCRATCH, Recorder, Replay, redacted
+from _recorded import REDACTED, RECORDINGS, SCRATCH, Recorder, Replay, recording, redacted
 from _tracker import (
     BOARD_WAIT_SECONDS,
     TRACKER,
     Board,
     ClaimTaken,
+    OutsideLink,
     Tracker,
     TrackerError,
     card_from,
@@ -37,8 +38,11 @@ APP = "shekel-plan-tool"
 #: into dev, not yet on main) and PR #447's head (closed, never merged).
 ON_DEV_ONLY = "8540e8359a2649a3532379d68b3b9d7794913f52"
 NEVER_MERGED = "d3e1979040edc74086fcad98ddf432ef078c84cf"
-#: Card #15's REST id, the scratch finding the recording filed.
-FILED_ID = 5700129994
+#: Card #16's REST id, the scratch finding the recording filed.
+FILED_ID = 5702033617
+#: A GraphQL lookup of a repository that does not exist (review cp3 L-c).
+MISSING_REPOSITORY = ('query { repository(owner: "saltyreformed-labs", name: '
+                      '"no-such-repository") { c1: issue(number: 1) { number } } }')
 
 
 @pytest.fixture(name="recorded")
@@ -54,7 +58,7 @@ def test_open_cards_reads_each_cards_facts(recorded):
     """The container off the board, its leaves on it, their blockers, a card with no type."""
     tracker, _ = recorded
     cards = tracker.open_cards()
-    assert sorted(cards) == [*range(1, 12), 13, 14]
+    assert sorted(cards) == [*range(1, 12), 13, 14, 15]
     container, leaf = cards[1], cards[2]
     assert container.is_container and container.board_item is None
     # A parent lists its sub-issues in the order they were added: L1 added them in plan order.
@@ -77,7 +81,7 @@ def test_cards_leaves_out_a_number_nobody_filed_and_reads_a_persons_close(record
     assert (closed.is_open, closed.state_reason) == (False, "NOT_PLANNED")
     assert closed.touched_by_hand and not closed.closed_by_tool
     assert [(c.number, c.is_open) for c in cards[11].children] == [(12, False), (13, True),
-                                                                  (14, True)]
+                                                                  (14, True), (15, True)]
 
 
 def test_the_board_reads_in_drag_order(recorded):
@@ -126,7 +130,8 @@ def test_find_titles_and_the_branch_that_merged_a_commit(recorded):
     not yet on main (the default branch), and NO pull request for the head of one
     closed unmerged."""
     tracker, _ = recorded
-    assert [number for number, _ in tracker.find_titles("L2 measurement")] == [14, 13, 11, 12]
+    assert [number for number, _ in tracker.find_titles("L2 measurement")] == [15, 14, 13,
+                                                                                 11, 12]
     assert tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY) == {
         "tick/balance-x-bi-6-4d-1"}
     assert tracker.merged_into_dev("SaltyReformed/Shekel", NEVER_MERGED) == set()
@@ -154,6 +159,8 @@ def _replay_claims(tracker):
     github.rest("DELETE", f"{base}/git/refs/claims/recording-scratch")
     with pytest.raises(GitHubError, match="Object does not exist"):
         github.rest("POST", f"{base}/git/refs", {"ref": "refs/claims/99998", "sha": "1" * 40})
+    with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
+        github.graphql_lookup(MISSING_REPOSITORY)
 
 
 def _replay_reads(tracker):
@@ -166,11 +173,13 @@ def _replay_reads(tracker):
 
 
 def _replay_filed_card(tracker):
-    """A card filed, linked, refused a second parent, changed every way, closed, reopened."""
+    """A card filed, linked, refused a second parent, changed every way, closed, reopened,
+    then closed as completed and closed again as NOT planned: GitHub changes the reason of
+    a closed card (R-BAL187's re-close of a container shown completed)."""
     number = tracker.create("finding", f"{SCRATCH} finding, filed by the recorder (delete me)",
                             "The recorder files this card to record GitHub's answers.",
                             ["balance"])
-    assert number == 15
+    assert number == 16
     card = tracker.cards([number])[number]
     assert (card.kind, card.labels, card.id) == ("finding", ("balance",), FILED_ID)
     both = tracker.cards([11, 12])
@@ -194,6 +203,10 @@ def _replay_filed_card(tracker):
     tracker.reopen(number)
     reopened = tracker.cards([number])[number]
     assert reopened.is_open and not (reopened.closed_by_tool or reopened.touched_by_hand)
+    tracker.close(number, "completed")
+    assert tracker.cards([number])[number].state_reason == "COMPLETED"
+    tracker.close(number, "not_planned")
+    assert tracker.cards([number])[number].state_reason == "NOT_PLANNED"
     return both[11]
 
 
@@ -213,7 +226,8 @@ def test_the_recorded_session_replays_end_to_end(recorded):
     """Every write the tool makes, in the order recorded, each answered as GitHub answered;
     with what checkpoint 2's review found unrecorded (review M2, M3): a ref under claims/
     that names no card, GitHub refusing a second parent, and a board read that keeps
-    showing an item in the wrong place."""
+    showing an item in the wrong place; and checkpoint 3's (L-c, R-BAL187): a repository
+    GitHub cannot find, and a closed card's reason changed."""
     tracker, replay = recorded
     tracker.open_cards()
     tracker.cards([1, 2, 11, 12, 13, 99999])
@@ -227,7 +241,7 @@ def test_the_recorded_session_replays_end_to_end(recorded):
 
 def _recorded_answer(method, url_end):
     """GitHub's recorded answer to the first ``method`` request whose URL ends ``url_end``."""
-    for exchange in json.loads((RECORDINGS / "tracker.json").read_text(encoding="utf-8")):
+    for exchange in recording("tracker")["exchanges"]:
         if exchange["method"] == method and exchange["url"].endswith(url_end):
             return copy.deepcopy(exchange["answer"])
     raise LookupError(url_end)
@@ -256,7 +270,7 @@ def test_a_type_github_dropped_is_refused_not_trusted():
 
 def _recorded_node(number):
     """One card's GraphQL node as the recording holds it."""
-    for exchange in json.loads((RECORDINGS / "tracker.json").read_text(encoding="utf-8")):
+    for exchange in recording("tracker")["exchanges"]:
         found = ((exchange["answer"] or {}).get("data") or {}).get("repository") or {}
         if f"c{number}" in found and found[f"c{number}"]:
             return copy.deepcopy(found[f"c{number}"])
@@ -295,7 +309,7 @@ def test_a_placement_the_board_never_shows_is_reported_after_the_wait():
 def test_a_recording_never_keeps_a_token():
     """An installation token is minted through a client the recorder never wraps; if one
     ever reached it, saving refuses."""
-    recorder = Recorder()
+    recorder = Recorder(scratch=())
     recorder.exchanges.append({"method": "POST", "url": "u", "body": None, "status": 201,
                                "answer": {"token": "secret"}})
     with pytest.raises(ValueError, match="token"):
@@ -314,7 +328,7 @@ def test_a_card_nobody_ever_closed_is_neither_the_tools_display_nor_a_persons():
 
 def _recorded_query(fragment):
     """GitHub's recorded ``data`` for the first GraphQL query whose text holds ``fragment``."""
-    for exchange in json.loads((RECORDINGS / "tracker.json").read_text(encoding="utf-8")):
+    for exchange in recording("tracker")["exchanges"]:
         if fragment in ((exchange["body"] or {}).get("query") or ""):
             return copy.deepcopy(exchange["answer"]["data"])
     raise LookupError(fragment)
@@ -353,7 +367,7 @@ def test_a_board_item_of_another_repository_is_not_in_the_order():
     recorded board read, its first item's repository renamed."""
     data = _recorded_query("orderBy: {field: POSITION")
     first = data["node"]["items"]["nodes"][0]
-    first["content"]["repository"]["name"] = "Shekel"
+    first["content"]["repository"]["nameWithOwner"] = "saltyreformed-labs/Shekel"
     order = Board(_GraphQLAnswer(data), "B").order()
     assert [number for number, _ in order] == [3, 4, 5, 6, 9, 7, 8, 10]
 
@@ -361,13 +375,13 @@ def test_a_board_item_of_another_repository_is_not_in_the_order():
 def test_a_pull_request_a_title_search_finds_is_not_a_card():
     """Review M2: GitHub's issue search returns pull requests too, marked so. From the
     recorded search, one item copied as a pull request."""
-    found = next(exchange["answer"] for exchange in json.loads(
-        (RECORDINGS / "tracker.json").read_text(encoding="utf-8"))
-        if "/search/issues?" in exchange["url"])
+    found = next(exchange["answer"] for exchange in recording("tracker")["exchanges"]
+                 if "/search/issues?" in exchange["url"])
     found = copy.deepcopy(found)
     found["items"].append({**found["items"][0], "number": 99, "pull_request": {"url": "u"}})
     tracker = Tracker(_Answers(found), Board(None, "B"), APP)
-    assert [number for number, _ in tracker.find_titles("L2 measurement")] == [14, 13, 11, 12]
+    assert [number for number, _ in tracker.find_titles("L2 measurement")] == [15, 14, 13,
+                                                                                 11, 12]
 
 
 def test_only_a_pull_request_merged_into_dev_shipped_a_commit():
@@ -389,10 +403,12 @@ def test_only_a_pull_request_merged_into_dev_shipped_a_commit():
 
 
 @pytest.mark.parametrize("link", ["parent", "sub-issue", "blocker"])
-def test_a_link_to_an_issue_of_another_repository_is_refused_not_read_as_a_card(link):
-    """Review L4: read by number alone, it named the tracker's card of that number.  From
-    recorded nodes (#2's parent, #1's first sub-issue, #7's first blocker), its repository
-    renamed; as recorded, each names the tracker."""
+def test_a_link_to_an_issue_of_another_repository_is_carried_apart_not_read_as_a_card(link):
+    """R-BAL188 (replacing review L4's refusal of the whole read): read by number alone, the
+    link named the tracker's card of that number; now the card keeps it among its outside
+    links, and the plan never reads it as a card.  From recorded nodes (#2's parent, #1's
+    first sub-issue, #7's first blocker), its repository renamed; as recorded, each names
+    the tracker."""
     node, target = {
         "parent": lambda n: (n, n["parent"]),
         "sub-issue": lambda n: (n, n["subIssues"]["nodes"][0]),
@@ -400,10 +416,17 @@ def test_a_link_to_an_issue_of_another_repository_is_refused_not_read_as_a_card(
     }[link]({"parent": _recorded_node(2), "sub-issue": _recorded_node(1),
              "blocker": _open_node(7)}[link])
     assert target["repository"]["nameWithOwner"] == TRACKER
-    card_from(node, "board", APP)
+    inside = card_from(node, "board", APP)
+    assert not inside.outside
     target["repository"]["nameWithOwner"] = "saltyreformed-labs/Shekel"
-    with pytest.raises(TrackerError, match=f"{link} is saltyreformed-labs/Shekel#"):
-        card_from(node, "board", APP)
+    card = card_from(node, "board", APP)
+    assert card.outside == (OutsideLink(link, f"saltyreformed-labs/Shekel#{target['number']}"),)
+    if link == "parent":
+        assert (inside.parent, card.parent) == (target["number"], None)
+    elif link == "sub-issue":
+        assert card.children == inside.children[1:]
+    else:
+        assert card.blocked_by == inside.blocked_by[1:]
 
 
 class _RefRefused:
@@ -437,8 +460,8 @@ def test_a_ref_refused_for_another_reason_is_not_a_taken_claim(recorded):
 
 def test_a_recording_keeps_a_scratch_cards_text_and_redacts_every_other_cards():
     """L10: the recording is in the public repository and the tracker is private.  A card's
-    text is kept only for a scratch card, wherever it is read; the board's own title stays
-    (its configuration); a text tied to no card is redacted."""
+    text is kept only for a scratch card; the board's own title stays (its configuration);
+    a text tied to no card is redacted."""
     graphql = "https://api.github.com/graphql"
     exchanges = [
         {"method": "POST", "url": graphql, "body": {"query": "q", "variables": {}}, "status": 200,
@@ -458,35 +481,145 @@ def test_a_recording_keeps_a_scratch_cards_text_and_redacts_every_other_cards():
          "status": 200, "answer": {"data": {"organization": {"projectsV2": {"nodes": [
              {"id": "PVT_1", "title": "Shekel plan"}]}}}}},
     ]
-    kept = json.dumps(redacted(exchanges))
+    kept = json.dumps(redacted(exchanges, {11}))
     for private in ("Real figure", "secret", "tied to no card"):
         assert private not in kept, private
     for public in (f"{SCRATCH} card", "kept text", "scratch body", "scratch diff", "Shekel plan"):
         assert public in kept, public
 
 
-def test_a_recording_that_wrote_text_to_a_card_not_scratch_is_refused():
-    """A request is replayed as it was sent, so its text cannot be redacted: refused."""
-    wrote = [{"method": "PATCH", "url": f"https://api.github.com/repos/{TRACKER}/issues/2",
-              "body": {"body": "a new spec"}, "status": 200,
-              "answer": {"number": 2, "title": "t"}}]
-    with pytest.raises(ValueError, match="text written to card 2"):
-        redacted(wrote)
+def _graphql(answer, variables=None, query="q"):
+    """One recorded GraphQL exchange."""
+    return {"method": "POST", "url": "https://api.github.com/graphql",
+            "body": {"query": query, "variables": variables or {}}, "status": 200,
+            "answer": answer}
 
 
-def test_the_recording_the_tests_replay_holds_no_text_but_a_scratch_cards():
-    """A census of ``recorded/tracker.json`` (L10): redacting it changes nothing, so no text
-    of a card that is not a scratch card is in it."""
-    exchanges = json.loads((RECORDINGS / "tracker.json").read_text(encoding="utf-8"))
-    assert redacted(exchanges) == exchanges
-    assert any(REDACTED in json.dumps(exchange["answer"]) for exchange in exchanges)
+def test_text_the_cp3_review_found_kept_is_redacted():
+    """Review cp3 M-3 (a)-(c): a titled object with no number took the scratch card around
+    it; a blocker carrying its own number took its scratch parent; and only title, body and
+    diff were redacted.  Every string now belongs to the card whose number its object
+    carries, and is kept only under a key that holds no card's text."""
+    kept = json.dumps(redacted([
+        _graphql({"data": {"repository": {"c11": {
+            "number": 11, "title": f"{SCRATCH} x", "parent": {"title": "secret A"},
+            "blockedBy": {"nodes": [{"number": 2, "body": "secret B"}]}}}}}),
+        _graphql({"data": {"repository": {"c2": {"number": 2, "title": "t", "bodyText": "secret C",
+                                                  "titleHTML": "secret D"}}}}),
+        _graphql({"data": {"repository": {"issue": {"timelineItems": {"nodes": [
+            {"previousTitle": "secret E", "currentTitle": "secret F"}]}}}}}, {"number": 2}),
+        {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}/issues/2", "body": None,
+         "status": 200, "answer": {"number": 2, "title": "t", "body_text": "secret G",
+                                   "state": "open", "labels": [{"name": "balance"}]}},
+    ], {11}))
+    assert "secret" not in kept
+    assert f"{SCRATCH} x" in kept and '"open"' in kept and '"balance"' in kept
+
+
+@pytest.mark.parametrize(("exchange", "said"), [
+    (_graphql({"data": {}}, {"b": "secret"}, "mutation($b: String!) { updateIssue(input: "
+                                            "{id: \"I_2\", body: $b}) { issue { number } } }"),
+     "no GraphQL mutation but the board's"),
+    (_graphql({"data": {}}, {"p": "P", "c": "C"},
+              "mutation($p: ID!, $c: ID!) { a: addProjectV2ItemById(input: {projectId: $p, "
+              "contentId: $c}) { item { id } } b: updateIssue(input: {id: $c, body: \"x\"}) "
+              "{ issue { id } } }"),
+     "no GraphQL mutation but the board's"),
+    ({"method": "PATCH", "url": f"https://api.github.com/repos/{TRACKER}/issues/2",
+      "body": {"state": "closed"}, "status": 200, "answer": {"number": 2}},
+     "plan#2 is not one"),
+    ({"method": "PATCH", "url": f"https://api.github.com/repos/{TRACKER}/issues/11",
+      "body": {"title": "Real title"}, "status": 200, "answer": {"number": 11}},
+     "take it out of the scratch cards"),
+    ({"method": "POST", "url": f"https://api.github.com/repos/{TRACKER}/issues",
+      "body": {"title": "Real title", "body": "b"}, "status": 201, "answer": {"number": 99}},
+     "writes text only to a scratch card"),
+])
+def test_a_write_to_a_card_not_scratch_is_refused(exchange, said):
+    """Review cp3 M-3 (d), (e): a GraphQL mutation writing text passed, and a retitle could
+    move a real card into the scratch set and unredact its history.  The set is fixed before
+    recording, and every write that is not to a scratch card -- or that would change the
+    set -- is refused."""
+    with pytest.raises(ValueError, match=said):
+        redacted([exchange], {11})
+
+
+class _Sent:
+    """A ``requests`` session that answers each request once with ``answer``."""
+
+    def __init__(self, status, answer):
+        """Hold the answer; count what is sent."""
+        self.status, self.answer, self.sent = status, answer, []
+
+    def request(self, method, url, **kwargs):
+        """Answer, and remember what was sent."""
+        self.sent.append((method, url, kwargs.get("json")))
+        return type("Response", (), {"status_code": self.status,
+                                     "content": json.dumps(self.answer).encode(),
+                                     "json": lambda _self: self.answer})()
+
+
+def test_a_recorder_refuses_a_write_before_sending_it_and_adds_the_scratch_cards_it_files():
+    """A write a recording may not keep is never sent at all; a card filed with a scratch
+    title joins the cards it may write to."""
+    session = _Sent(201, {"number": 16})
+    recorder = Recorder({11}, session)
+    with pytest.raises(ValueError, match="not sent"):
+        recorder.request("PATCH", f"https://api.github.com/repos/{TRACKER}/issues/2",
+                         json={"body": "a new spec"})
+    assert not session.sent
+    recorder.request("POST", f"https://api.github.com/repos/{TRACKER}/issues",
+                     json={"title": f"{SCRATCH} new", "body": "b", "type": "step"})
+    assert recorder.scratch == {11, 16}
+
+
+def test_the_recording_the_tests_replay_shows_no_title_but_a_scratch_cards():
+    """A census of ``recorded/tracker.json``, apart from the redactor's own rules: every title
+    in it is redacted, a scratch card's, or the board's.  And the file is exactly what the
+    current redactor writes from it -- which proves only that it was saved by this redactor
+    and not edited by hand since, not that the redactor is right."""
+    saved = recording("tracker")
+    titles = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("title"), str):
+                titles.append((value.get("id", ""), value["title"]))
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for exchange in saved["exchanges"]:
+        walk(exchange["answer"])
+    assert titles
+    for node, title in titles:
+        assert title == REDACTED or title.startswith(SCRATCH) or (
+            str(node).startswith("PVT_") and title == "Shekel plan"), title
+    assert redacted(saved["exchanges"], set(saved["scratch"])) == saved["exchanges"]
+    assert any(title == REDACTED for _, title in titles)
 
 
 def test_a_saved_recording_is_redacted(tmp_path):
-    """L10 where it is enforced: ``save`` writes only the redacted exchanges."""
-    recorder = Recorder()
+    """L10 where it is enforced: ``save`` writes only the redacted exchanges, with the
+    scratch cards they were redacted against."""
+    recorder = Recorder(scratch=())
     recorder.exchanges.append({"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}"
                                "/issues/2", "body": None, "status": 200,
                                "answer": {"number": 2, "title": "Real figure", "body": "secret"}})
     saved = recorder.save("redacted", tmp_path).read_text(encoding="utf-8")
     assert "Real figure" not in saved and "secret" not in saved and REDACTED in saved
+    assert json.loads(saved)["scratch"] == []
+
+
+def test_a_repository_github_cannot_find_is_an_error_not_a_card_read_as_absent():
+    """Review cp3 L-c: ``graphql_lookup`` dropped every NOT_FOUND, so a missing repository
+    left ``data.repository`` null and ``cards()`` hit a TypeError (exit 1, a traceback).
+    GitHub's recorded answer, with the tracker's own query as the request."""
+    (answer,) = [exchange for exchange in recording("tracker")["exchanges"]
+                 if (exchange["body"] or {}).get("query") == MISSING_REPOSITORY]
+    assert answer["answer"]["errors"][0]["path"] == ["repository"]
+    github = GitHub("token", _Sent(200, answer["answer"]))
+    with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
+        Tracker(github, Board(github, "B"), APP).cards([1])

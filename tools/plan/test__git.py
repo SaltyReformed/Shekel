@@ -175,6 +175,24 @@ def test_origin_repository_reads_either_url_form(repo, url):
     assert _git.origin_repository(repo) == "SaltyReformed/Shekel"
 
 
+def test_a_branch_starts_at_the_commit_it_grew_from(repo, monkeypatch):
+    """Review cp3 M-2: ``spec-history --since <branch>`` starts where the work started, the
+    author date of the dev commit the branch's oldest own commit sits on; a branch with no
+    commit off dev is its own start."""
+    dated = {}
+    for name, when, parents in (("fork", "2026-09-30T12:00:00-04:00", ()),
+                                ("first", "2026-10-01T09:00:00-04:00", ("fork",)),
+                                ("dev", "2026-10-02T09:00:00-04:00", ("fork",)),
+                                ("tip", "2026-10-03T09:00:00-04:00", ("first",))):
+        monkeypatch.setenv("GIT_AUTHOR_DATE", when)
+        dated[name] = _commit(repo, name, parents=[dated[p] for p in parents])
+    _dev(repo, dated["dev"])
+    _run(repo, "update-ref", "refs/heads/feature", dated["tip"])
+    assert _git.started(repo, "feature") == "2026-09-30T12:00:00-04:00"
+    _run(repo, "update-ref", "refs/heads/fresh", dated["dev"])
+    assert _git.started(repo, "fresh") == "2026-10-02T09:00:00-04:00"
+
+
 def test_author_date_is_when_the_commit_was_first_written(repo, monkeypatch):
     """``spec-history --since <ref>`` reads the AUTHOR date, ISO with its offset: a rebase
     or amend moves the committer date later and would narrow the window."""
@@ -216,7 +234,9 @@ def _bound(request, tmp_path, monkeypatch):
     sentinel = tmp_path / "sentinel"
     sentinel.mkdir()
     _run(sentinel, "init", "--quiet", "--initial-branch=main")
-    _run(sentinel, "commit", "--quiet", "--allow-empty", "-m", "the developer's commit")
+    (sentinel / "work.txt").write_text("the developer's file\n", encoding="utf-8")
+    _run(sentinel, "add", "work.txt")
+    _run(sentinel, "commit", "--quiet", "-m", "the developer's commit")
     _run(sentinel, "worktree", "add", "--quiet", "-b", "lane", str(tmp_path / "lane"))
     gitdir = sentinel / ".git"
     if request.param == "hook in a linked worktree":
@@ -234,8 +254,13 @@ def _bound(request, tmp_path, monkeypatch):
 def test_a_bound_environment_reaches_no_repository_but_the_one_named(bound, tmp_path):
     """The incident's mechanism replayed onto a sentinel: every write the tests' builder makes
     and every git call this module makes lands in the directory named, every answer is that
-    directory's, and the sentinel is byte-identical afterwards."""
+    directory's, and the sentinel -- its refs, config, HEADs and indexes -- is byte-identical
+    afterwards.  The sentinel's indexes each hold a committed file, so an index a leaked
+    ``GIT_INDEX_FILE`` rewrote with this test's empty tree differs from it (review cp3
+    M-1: with an empty index, the rewrite was byte-identical and passed)."""
     sentinel, before = bound
+    assert b"work.txt" in before["index"] and b"work.txt" in before["lane/index"], (
+        "control: each index the sentinel holds is not empty")
     plain = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "--absolute-git-dir"],
                            capture_output=True, text=True, check=True).stdout.strip()
     assert Path(plain).resolve().is_relative_to((sentinel / ".git").resolve()), (

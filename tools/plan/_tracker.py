@@ -25,6 +25,14 @@ nothing about the plan (``_state`` does), it only reads and writes.
   the card where it was put (:data:`BOARD_WAIT_SECONDS`).
 - GitHub silently drops an issue's ``type`` when the writer lacks push access,
   so every write that sets one reads it back.
+
+**A link to an issue outside the tracker is carried, never followed**
+(ruling ``balance:R-BAL188``).  GitHub lets a parent, sub-issue or blocked-by
+link cross repositories in one organization (Shekel itself joins it at X-cx's
+L5); read by number alone, such a link would name the tracker's card of that
+number instead.  So every link and every board item is asked which repository
+it names (:func:`_is_tracker_issue`, the one test), and a card keeps its
+outside links apart (:attr:`Card.outside`) for the plan to report.
 """
 from __future__ import annotations
 
@@ -81,7 +89,7 @@ _OPEN_CARDS = (
 _BOARD = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {
   items(first: 100, after: $after, orderBy: {field: POSITION, direction: ASC}) {
     pageInfo { hasNextPage endCursor }
-    nodes { id content { ... on Issue { number repository { name } } } } } } } }"""
+    nodes { id content { ... on Issue { number repository { nameWithOwner } } } } } } } }"""
 
 _EDITS = (
     """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
@@ -111,13 +119,24 @@ class Child:
 
 
 @dataclass(frozen=True)
+class OutsideLink:
+    """A card's link to an issue outside the tracker: ``what`` the link is (``parent``,
+    ``sub-issue`` or ``blocker``) and ``issue``, ``owner/name#number``."""
+
+    what: str
+    issue: str
+
+
+@dataclass(frozen=True)
 class Card:  # pylint: disable=too-many-instance-attributes
     """One card, as the plan reads it.
 
-    Pylint: too-many-instance-attributes (14/7) -- **fourteen because a card
-    states fourteen facts the plan reads**, each its own GitHub field, and no
+    Pylint: too-many-instance-attributes (15/7) -- **fifteen because a card
+    states fifteen facts the plan reads**, each its own GitHub field, and no
     subset travels apart from the others.
 
+    ``parent``, ``children`` and ``blocked_by`` name cards of the tracker only;
+    ``outside`` holds every link to an issue anywhere else (R-BAL188).
     ``closed_by_tool``: the card is closed, and the last time anyone closed or
     reopened it, it was the plan tool -- so its state is the tool's display of
     git, not a person's decision.  ``touched_by_hand``: the last close or reopen
@@ -138,11 +157,13 @@ class Card:  # pylint: disable=too-many-instance-attributes
     board_item: str | None
     closed_by_tool: bool
     touched_by_hand: bool
+    outside: tuple[OutsideLink, ...]
 
     @property
     def is_container(self) -> bool:
-        """A step split into steps (R-BAL177: findings and rulings do not make one)."""
-        return any(child.kind == "step" for child in self.children)
+        """A step split into steps (R-BAL177: findings and rulings do not make one, and a
+        card that is not a step is no container whatever hangs under it)."""
+        return self.kind == "step" and any(child.kind == "step" for child in self.children)
 
 
 @dataclass(frozen=True)
@@ -175,20 +196,15 @@ def _counted(connection: dict, what: str, number: int) -> list:
     return connection["nodes"]
 
 
-def _in_tracker(link: dict, what: str, number: int) -> int:
-    """The card number a parent, sub-issue or blocker link names, refusing one to an
-    issue of another repository.
+def _is_tracker_issue(node: dict) -> bool:
+    """Whether a link or a board item's content names an issue of the tracker: the one
+    test, for a parent, a sub-issue, a blocker and the board alike."""
+    return (node.get("repository") or {}).get("nameWithOwner") == TRACKER
 
-    The plan reads only its own cards, and GitHub lets a link cross repositories
-    in one organization (Shekel itself joins it at X-cx's L5): read by number
-    alone, such a link would name the tracker's card of that number instead.
-    """
-    where = link["repository"]["nameWithOwner"]
-    if where != TRACKER:
-        raise TrackerError(f"plan#{number}'s {what} is {where}#{link['number']}, outside the "
-                           f"tracker ({TRACKER}): the plan links only its own cards, so "
-                           "remove that link")
-    return link["number"]
+
+def _outside(node: dict, what: str) -> OutsideLink:
+    """A link to an issue outside the tracker."""
+    return OutsideLink(what, f"{node['repository']['nameWithOwner']}#{node['number']}")
 
 
 def card_from(node: dict, board_id: str, app_login: str) -> Card:
@@ -201,6 +217,11 @@ def card_from(node: dict, board_id: str, app_login: str) -> Card:
     events = node["timelineItems"]["nodes"]
     last_actor = ((events[-1].get("actor") or {}).get("login")) if events else None
     is_open = node["state"] == "OPEN"
+    links = [(node["parent"], "parent")] if node["parent"] else []
+    links += [(child, "sub-issue") for child in _counted(node["subIssues"], "sub-issues", number)]
+    links += [(blocker, "blocker")
+              for blocker in _counted(node["blockedBy"], "blockers", number)]
+    inside = [(link, what) for link, what in links if _is_tracker_issue(link)]
     return Card(
         number=number,
         id=int(node["fullDatabaseId"]),
@@ -210,19 +231,17 @@ def card_from(node: dict, board_id: str, app_login: str) -> Card:
         labels=tuple(label["name"] for label in _counted(node["labels"], "labels", number)),
         is_open=is_open,
         state_reason=node["stateReason"],
-        parent=_in_tracker(node["parent"], "parent", number) if node["parent"] else None,
+        parent=next((link["number"] for link, what in inside if what == "parent"), None),
         children=tuple(
-            Child(_in_tracker(child, "sub-issue", number),
-                  (child["issueType"] or {}).get("name"), child["state"] == "OPEN")
-            for child in _counted(node["subIssues"], "sub-issues", number)
+            Child(link["number"], (link["issueType"] or {}).get("name"), link["state"] == "OPEN")
+            for link, what in inside if what == "sub-issue"
         ),
-        blocked_by=tuple(
-            _in_tracker(blocker, "blocker", number)
-            for blocker in _counted(node["blockedBy"], "blockers", number)
-        ),
+        blocked_by=tuple(link["number"] for link, what in inside if what == "blocker"),
         board_item=items[0] if items else None,
         closed_by_tool=not is_open and last_actor == app_login,
         touched_by_hand=bool(events) and last_actor != app_login,
+        outside=tuple(_outside(link, what) for link, what in links
+                      if not _is_tracker_issue(link)),
     )
 
 
@@ -254,7 +273,7 @@ class Board:
             items = self.github.graphql(_BOARD, id=self.board_id, after=after)["node"]["items"]
             order += [
                 (item["content"]["number"], item["id"]) for item in items["nodes"]
-                if (item["content"] or {}).get("repository", {}).get("name") == REPO
+                if _is_tracker_issue(item["content"] or {})
             ]
             if not items["pageInfo"]["hasNextPage"]:
                 return order

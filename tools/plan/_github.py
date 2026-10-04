@@ -92,15 +92,19 @@ class GitHub:
         return payload["data"]
 
     def graphql_lookup(self, query: str, **variables) -> dict:
-        """One GraphQL call whose unresolvable fields are ABSENT, not errors.
+        """One GraphQL call whose unresolvable fields BELOW the top-level object are
+        ABSENT, not errors.
 
         Asked for an issue number nobody filed, GitHub answers 200 with that
-        field ``null`` beside the others and a ``NOT_FOUND`` error naming it
-        (measured 2026-10-04); this answers the ``data`` with the field None.
-        Any other error still raises.
+        field ``null`` beside the others and a ``NOT_FOUND`` error whose ``path``
+        names it under the repository (measured 2026-10-04); this answers the
+        ``data`` with the field None.  A top-level object it cannot find -- the
+        repository itself -- is a ``NOT_FOUND`` too, with a one-step path, and
+        still raises, as does every other error.
         """
         payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})
-        others = [e for e in payload.get("errors") or [] if e.get("type") != "NOT_FOUND"]
+        others = [e for e in payload.get("errors") or []
+                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) < 2]
         if others or payload.get("data") is None:
             raise GitHubError(200, f"graphql: {json.dumps(payload.get('errors'))[:500]}")
         return payload["data"]

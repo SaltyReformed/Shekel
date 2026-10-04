@@ -21,7 +21,9 @@ rest (ruling ``balance:R-BAL170``):
 - a container -- a step with step children (``R-BAL177``) -- is resolved only
   by its leaves, when every step child is: no commit ships a container, so a
   ``Ships:`` naming one is a mistyped or stale number, reported and never
-  acted on;
+  acted on.  One whose leaves were ALL dropped counts as dropped itself
+  (``R-BAL187``): what waits on it is released, no leaf can be filed under it,
+  and ``sync`` closes it as not planned, never as completed;
 - a ruling or a question is never shipped by git (a ruling is a record, a
   question the developer's), so it is resolved once it is closed: a question
   when it is answered (its card becomes the ruling) or withdrawn.
@@ -30,6 +32,11 @@ rest (ruling ``balance:R-BAL170``):
 workable only when its own blockers AND every blocker of every step above it
 are resolved, and while no step above it was dropped.  The waits and the drop
 are recorded once, on the step they were set on; nothing is copied.
+
+**A card linked to an issue outside the tracker is never offered**
+(``R-BAL188``): the plan reads only its own cards, so the link is reported
+until someone removes it, and a step blocked by an outside issue waits, as
+does every leaf under it.
 
 **``sync`` never overrides a person** (the build plan: a check "never acts on"
 the developer's own edit): a card whose last close or reopen was a person's is
@@ -60,9 +67,31 @@ def is_work(card: Card) -> bool:
     return card.kind in SHIPPABLE and not card.is_container
 
 
-def _dropped(card: Card) -> bool:
-    """Closed by a person (for any reason), or by the tool as not planned (``plan drop``)."""
-    return not card.is_open and not (card.closed_by_tool and card.state_reason == "COMPLETED")
+def _shown_shipped(card: Card) -> bool:
+    """Closed by the tool as completed: the tool's display that git says it shipped,
+    which follows git and decides nothing."""
+    return not card.is_open and card.closed_by_tool and card.state_reason == "COMPLETED"
+
+
+def _closed_dropped(card: Card) -> bool:
+    """Closed by a person (for any reason), or by the tool as not planned (``plan drop``,
+    or ``sync`` showing a container whose leaves were all dropped)."""
+    return not card.is_open and not _shown_shipped(card)
+
+
+def _leaves(card: Card) -> list[int]:
+    """The steps a container splits into (its findings and rulings decide nothing)."""
+    return [child.number for child in card.children if child.kind == "step"]
+
+
+def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
+    """Whether a card was dropped: closed as dropped, or a container whose leaves were
+    all dropped (R-BAL187) -- never a piece of work git says shipped, whoever closed it."""
+    card = cards[number]
+    if is_work(card) and number in shipped:
+        return False
+    return _closed_dropped(card) or (
+        card.is_container and all(dropped(leaf, cards, shipped) for leaf in _leaves(card)))
 
 
 def _above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
@@ -79,7 +108,7 @@ def missing(cards: Mapping[int, Card]) -> set[int]:
     wanted = set()
     for card in cards.values():
         wanted.update(card.blocked_by)
-        wanted.update(child.number for child in card.children if child.kind == "step")
+        wanted.update(_leaves(card))
         if card.parent is not None:
             wanted.add(card.parent)
     return wanted - set(cards)
@@ -92,17 +121,18 @@ def resolved(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> 
     card = cards[number]
     if card.kind not in SHIPPABLE:
         return not card.is_open
-    if _dropped(card):
+    if dropped(number, cards, shipped):
         return True
     if card.is_container:
-        return all(resolved(child.number, cards, shipped)
-                   for child in card.children if child.kind == "step")
+        return all(resolved(leaf, cards, shipped) for leaf in _leaves(card))
     return number in shipped
 
 
-def dropped_above(card: Card, cards: Mapping[int, Card]) -> Card | None:
+def dropped_above(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> Card | None:
     """The nearest step above ``card`` that was dropped (R-BAL185); None when none was."""
-    return next((step for step in _above(card, cards) if _dropped(step)), None)
+    shipped = set(shipped)
+    return next((step for step in _above(card, cards) if dropped(step.number, cards, shipped)),
+                None)
 
 
 def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
@@ -112,26 +142,40 @@ def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> b
     step a new leaf may split.
     """
     return (not resolved(number, cards, shipped)
-            and dropped_above(cards[number], cards) is None)
+            and dropped_above(cards[number], cards, shipped) is None)
 
 
 def workable(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
              claims: Mapping[int, Claim]) -> bool:
-    """Whether a card is a step someone could start now: open unshipped unclaimed work,
-    no step above it dropped, and every blocker of it and of each step above it
-    resolved (R-BAL182, R-BAL185)."""
+    """Whether a card is a step someone could start now: open unshipped unclaimed work
+    with no link outside the tracker (R-BAL188), no step above it dropped, and every
+    blocker of it and of each step above it resolved and inside the tracker
+    (R-BAL182, R-BAL185)."""
     shipped = set(shipped)
     above = list(_above(card, cards))
     return (
         card.is_open
         and card.kind == "step"
         and is_work(card)
+        and not card.outside
         and card.number not in shipped
         and card.number not in claims
-        and not any(_dropped(step) for step in above)
+        and not any(dropped(step.number, cards, shipped) for step in above)
+        and not any(link.what == "blocker" for step in above for link in step.outside)
         and all(resolved(blocker, cards, shipped)
                 for step in (card, *above) for blocker in step.blocked_by)
     )
+
+
+def outside_reports(cards: Mapping[int, Card]) -> list[str]:
+    """Each link an open card has to an issue outside the tracker, as a report line
+    (R-BAL188): the card is not offered until someone removes it."""
+    return [
+        f"plan#{card.number}'s {link.what} is {link.issue}, outside the tracker: "
+        f"plan#{card.number} is not offered until that link is removed (R-BAL188)"
+        for card in sorted(cards.values(), key=lambda card: card.number) if card.is_open
+        for link in card.outside
+    ]
 
 
 @dataclass(frozen=True)
@@ -213,11 +257,13 @@ def stale_claims(claims: Mapping[int, Claim], now: datetime,
 
 @dataclass
 class SyncPlan:
-    """What ``sync`` would write; what it found and must leave to a person
-    (``reports``); and what ``dev``'s history says wrongly that no tracker write can
-    change (``history``, R-BAL184)."""
+    """What ``sync`` would write -- ``close`` as completed, ``drop`` (close as not
+    planned), ``reopen``, ``release`` a claim; what it found and must leave to a
+    person (``reports``); and what ``dev``'s history says wrongly that no tracker
+    write can change (``history``, R-BAL184)."""
 
     close: list[int] = field(default_factory=list)
+    drop: list[int] = field(default_factory=list)
     reopen: list[int] = field(default_factory=list)
     release: list[int] = field(default_factory=list)
     reports: list[str] = field(default_factory=list)
@@ -229,8 +275,8 @@ def _sync_shipped(card: Card, plan: SyncPlan, claims: Mapping[int, Claim],
     """An open card git says shipped: close it if its claim names a branch that shipped it."""
     if card.touched_by_hand:
         plan.reports.append(
-            f"plan#{card.number} shipped in git but a person reopened it: leave it, or ship "
-            f"a commit with 'Reopens: plan#{card.number}'"
+            f"plan#{card.number} shipped in git but a person reopened it: close it by hand, "
+            f"or ship a commit with 'Reopens: plan#{card.number}'"
         )
         return
     claim = claims.get(card.number)
@@ -248,18 +294,27 @@ def _sync_shipped(card: Card, plan: SyncPlan, claims: Mapping[int, Claim],
 
 def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
                     shipped: set[int]) -> None:
-    """A container's state follows its leaves."""
+    """A container's state follows its leaves: open while one is still work, closed as
+    not planned once all were dropped (R-BAL187), else closed as completed.
+
+    A person's close is a drop, so the one state a person leaves that its leaves
+    contradict is a container reopened by hand while its leaves are all done.
+    """
     done = resolved(card.number, cards, shipped)
     if card.touched_by_hand:
-        if done == card.is_open:
+        if done and card.is_open:
             plan.reports.append(
-                f"container plan#{card.number} is {'open' if card.is_open else 'closed'} by a "
-                f"person's hand, while its leaves are {'all' if done else 'not all'} done"
+                f"container plan#{card.number} was reopened by a person's hand, while its "
+                "leaves are all done: close it by hand, or file a new leaf under it"
             )
-    elif done and card.is_open:
+    elif not done:
+        if _shown_shipped(card):
+            plan.reopen.append(card.number)
+    elif dropped(card.number, cards, shipped):
+        if card.is_open or _shown_shipped(card):
+            plan.drop.append(card.number)
+    elif card.is_open:
         plan.close.append(card.number)
-    elif not done and not card.is_open and card.closed_by_tool:
-        plan.reopen.append(card.number)
 
 
 def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping[int, Claim],
@@ -270,8 +325,14 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
     requests into ``dev`` that merged its standing ``Ships:`` commits.
     """
     shipped = set(shipped)
-    plan = SyncPlan()
+    plan = SyncPlan(reports=outside_reports(cards))
     for card in sorted(cards.values(), key=lambda card: card.number):
+        if card.kind == "ruling" and card.is_open:
+            plan.reports.append(
+                f"ruling plan#{card.number} is open, though a ruling is a record closed when "
+                "it is filed: finish it with the `plan file ruling` command that filed it, or "
+                "close it by hand"
+            )
         if card.number in shipped and not is_work(card):
             plan.history.append(
                 f"a Ships trailer names plan#{card.number}, a "
@@ -284,12 +345,12 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
             _sync_container(card, plan, cards, shipped)
         elif card.number in shipped and card.is_open:
             _sync_shipped(card, plan, claims, ship_branches)
-        elif (card.number not in shipped and not card.is_open and card.closed_by_tool
-              and card.state_reason == "COMPLETED"):
+        elif card.number not in shipped and _shown_shipped(card):
             plan.reopen.append(card.number)
-        if card.kind == "step" and card.is_open and (dropped := dropped_above(card, cards)):
+        if card.kind == "step" and card.is_open and (gone := dropped_above(card, cards,
+                                                                            shipped)):
             plan.reports.append(
-                f"plan#{card.number} is open under plan#{dropped.number}, which was dropped, "
+                f"plan#{card.number} is open under plan#{gone.number}, which was dropped, "
                 "so it is never offered (R-BAL185): drop it, or give it a live parent"
             )
         if card.kind == "finding" and card.is_open and card.number not in shipped and (

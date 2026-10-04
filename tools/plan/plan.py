@@ -26,14 +26,16 @@ Usage, from the repository root (``plan#N`` or ``N`` names a card)::
     python tools/plan/plan.py move plan#N (--top | --bottom | --after plan#M)
     python tools/plan/plan.py drop plan#N --why REASON
     python tools/plan/plan.py sync [--dry-run]
-    python tools/plan/plan.py spec-history plan#N [--since REF_OR_DATE]
+    python tools/plan/plan.py spec-history plan#N [--since BRANCH_OR_DATE]
     python tools/plan/plan.py spec-revert plan#N --to EDIT_ID
 
 Exit status: 0 done; 1 refused, with nothing written (or, for ``sync``, a
 REPORT a person must act on); 2 a call failed -- GitHub, git, the network, or
-a file the command reads (the App's credentials, a ``--body-file``).  Every
-write is printed as it lands, so after a failure the output says what was
-written; ``file`` run again finishes a filing a failure cut short (R-BAL186).
+a file the command reads (the App's credentials, a ``--body-file``) -- or the
+command line itself is not one of the forms above (argparse's usage error),
+before anything is read.  Every write is printed as it lands, so after a
+failure the output says what was written; ``file`` run again finishes a filing
+a failure cut short (R-BAL186).
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ import difflib
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -55,11 +58,12 @@ from _state import (
     leaf_placement,
     missing,
     next_step,
+    outside_reports,
     stale_claims,
     sync_plan,
 )
 from _tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
-from check import Draft, normalized, ruling_body, ruling_question, violations
+from check import Draft, Owner, normalized, ruling_body, ruling_question, violations
 from setup_tracker import ARCS
 
 #: Branches a claim may never name: nothing is built on them directly.
@@ -163,6 +167,8 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
     for claim in stale_claims(claims, datetime.now(UTC), lambda b: _git.pushed(root, b)):
         print(f"STALE CLAIM: plan#{claim.card} by {_holder(claim)} since {claim.made or '?'}, "
               f"no pushed branch -- {_release_hint(claim)}")
+    for line in outside_reports(cards):
+        print(f"OUTSIDE LINK: {line}")
     return 0
 
 
@@ -184,7 +190,8 @@ def cmd_claim(args, tracker: Tracker, root: Path) -> int:
 
 
 def cmd_release(args, tracker: Tracker, root: Path) -> int:
-    """Delete a card's claim, only when it names the branch the caller names."""
+    """Delete a card's claim: one naming the branch passed with ``--branch`` (else the one
+    checked out), or with ``--unreadable`` one whose branch cannot be read."""
     claim = tracker.claims().get(args.card)
     if claim is None:
         raise Refused(f"plan#{args.card} is not claimed")
@@ -192,9 +199,14 @@ def cmd_release(args, tracker: Tracker, root: Path) -> int:
         if claim.branch is not None:
             raise Refused(f"plan#{args.card}'s claim names {claim.branch!r}; --unreadable "
                           "releases only a claim whose branch cannot be read")
-    elif claim.branch != (branch := args.branch or _git.current_branch(root)):
-        raise Refused(f"plan#{args.card}'s claim names {_holder(claim)}, not {branch!r}; to "
-                      f"release another branch's claim, pass {_release_flag(claim)}")
+    else:
+        branch = args.branch or _git.current_branch(root)
+        if branch is None:
+            raise Refused(f"HEAD is detached, so no branch names the claim to release; "
+                          f"pass {_release_flag(claim)}")
+        if claim.branch != branch:
+            raise Refused(f"plan#{args.card}'s claim names {_holder(claim)}, not {branch!r}; "
+                          f"to release another branch's claim, pass {_release_flag(claim)}")
     tracker.release(args.card)
     print(f"released plan#{args.card} (claimed by {_holder(claim)} since {claim.made or '?'})")
     return 0
@@ -270,36 +282,59 @@ def _read(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None]:
-    """The card ``file`` would write, and its parent (its owner, or the step it splits).
+@dataclass(frozen=True)
+class _Asked:
+    """The question card a ruling is converted from, and its body as read."""
+
+    card: Card
+    body: str
+
+
+def _converted_body(asked: _Asked, answer: str) -> str:
+    """The body an answered question takes as its ruling: its question, then ``answer``.
+
+    A conversion cut short may already have written it (R-BAL186), so a body
+    that is exactly what this conversion writes gives back its question, never
+    wrapped twice; any other body is the developer's question, word for word,
+    whatever marks it holds.  A card already typed a ruling whose body this
+    conversion did not write is refused: its answer is the developer's record,
+    and another answer is another ruling.
+    """
+    question = ruling_question(asked.body, answer)
+    if question is None and asked.card.kind == "ruling":
+        raise Refused(f"{_label(asked.card)} is already a ruling, and not with this answer: "
+                      "its answer is the developer's record, so another answer is another ruling")
+    return ruling_body(asked.body if question is None else question, answer)
+
+
+def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, _Asked | None]:
+    """The card ``file`` would write; its parent (its owner, or the step it splits); and,
+    for a ruling converted from a question, that question as read.
 
     Whether the parent is still LIVE is git's answer and the cards', read the
     way ``next`` reads a step (:func:`_state.is_live`), never the card's open
-    state alone, which is display.  An answered question already rewritten into
-    a ruling's shape by a conversion cut short gives back its question, so the
-    retry never wraps it twice (R-BAL186).
+    state alone, which is display.
     """
     parent_number = getattr(args, "owner", None) or getattr(args, "parent", None)
     parent = _one(tracker, parent_number) if parent_number else None
-    live = False
+    owner = None
     if parent is not None:
         _, shipped, _ = _shipped(root)
         cards = _with_closure(tracker, {parent.number: parent})
-        live = is_live(parent.number, cards, shipped)
+        owner = Owner(parent.kind, is_live(parent.number, cards, shipped))
+    asked = None
     if args.kind in ("step", "question"):
         body = _read(args.body_file)
     elif args.kind == "finding":
         body = args.text
     elif args.from_question:
-        asked = tracker.body(_one(tracker, args.from_question).number)
-        question = ruling_question(asked)
-        body = ruling_body(asked if question is None else question, _read(args.answer_file))
+        card = _one(tracker, args.from_question)
+        asked = _Asked(card, tracker.body(card.number))
+        body = _converted_body(asked, _read(args.answer_file))
     else:
         body = ruling_body(_read(args.question_file), _read(args.answer_file))
     labels = tuple(dict.fromkeys((args.arc, *(getattr(args, "label", None) or ()))))
-    draft = Draft(args.kind, args.title, body, labels,
-                  owner_kind=parent.kind if parent else None, owner_live=live)
-    return draft, parent
+    return Draft(args.kind, args.title, body, labels, owner), parent, asked
 
 
 def _place_leaf(tracker: Tracker, leaf: Card, parent: Card) -> None:
@@ -340,14 +375,23 @@ def _half_filed(tracker: Tracker, draft: Draft) -> Card | None:
     return same[0] if same else None
 
 
-def _attach(tracker: Tracker, card: Card, parent: Card) -> None:
-    """Make ``card`` a sub-issue of ``parent``, unless it already is one."""
+def _refuse_rehoming(card: Card, parent: Card | None) -> None:
+    """Refuse to file ``card`` under ``parent`` (None: at the top level) when it is a
+    sub-issue of another card: re-homing a card is a person's call."""
+    if card.parent is not None and card.parent != (parent.number if parent else None):
+        where = f"plan#{parent.number}" if parent else "a top-level card, as this filing names"
+        raise Refused(f"{_label(card)} is a sub-issue of plan#{card.parent}, not {where}: "
+                      "re-homing a card is done by hand")
+
+
+def _attach(tracker: Tracker, card: Card, parent: Card | None) -> None:
+    """Make ``card`` a sub-issue of ``parent`` (None: none), unless it already is one;
+    the caller has already refused a card under another parent."""
+    if parent is None:
+        return
     if card.parent == parent.number:
         print(f"  already a sub-issue of plan#{parent.number}")
         return
-    if card.parent is not None:
-        raise Refused(f"{_label(card)} is a sub-issue of plan#{card.parent}, not "
-                      f"plan#{parent.number}: re-homing a card is done by hand")
     tracker.add_child(parent.number, card)
     print(f"  a sub-issue of plan#{parent.number}")
 
@@ -355,21 +399,23 @@ def _attach(tracker: Tracker, card: Card, parent: Card) -> None:
 def cmd_file(args, tracker: Tracker, root: Path) -> int:
     """File a step, finding, ruling or question, after :func:`check.violations` passes;
     finish one a failure cut short (R-BAL186)."""
-    draft, parent = _draft_for(args, tracker, root)
+    draft, parent, asked = _draft_for(args, tracker, root)
     problems = violations(draft)
     if problems:
         raise Refused("not filed:\n  " + "\n  ".join(problems))
-    if args.kind == "ruling" and args.from_question:
-        return _convert_question(args, tracker, draft, parent)
+    if asked is not None:
+        return _convert_question(args, tracker, draft, parent, asked)
     card = _half_filed(tracker, draft)
     if card is None:
-        card = _one(tracker, tracker.create(args.kind, draft.title, draft.body, draft.labels))
-        print(f"filed {_label(card)}")
+        number = tracker.create(args.kind, draft.title, draft.body, draft.labels)
+        print(f"filed plan#{number}")
+        card = _one(tracker, number)
+        print(f"  {_label(card)}")
     else:
+        _refuse_rehoming(card, parent)
         print(f"finishing {_label(card)}: an open card with this kind, title and text exists, "
               "so this filing finishes it rather than filing another (R-BAL186)")
-    if parent is not None:
-        _attach(tracker, card, parent)
+    _attach(tracker, card, parent)
     if args.kind == "ruling":
         tracker.close(card.number, "completed")
         print("  closed: a ruling is a record")
@@ -383,25 +429,24 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
     return 0
 
 
-def _convert_question(args, tracker: Tracker, draft: Draft, owner: Card) -> int:
+def _convert_question(args, tracker: Tracker, draft: Draft, owner: Card, asked: _Asked) -> int:
     """An answered question becomes its ruling: one card, so the question is never copied.
 
     Each write is skipped when it already landed, so the same command finishes a
     conversion a failure cut short (R-BAL186): a card already typed a ruling but
-    still open is one.  Its parent is checked before anything is written.
+    still open, with this answer, is one.  Its parent is checked before anything
+    is written.
     """
-    question = _one(tracker, args.from_question)
+    question = asked.card
     if not question.is_open or question.kind not in ("question", "ruling"):
         raise Refused(f"{_label(question)} is not an open question")
     if args.arc not in question.labels:
         raise Refused(f"{_label(question)} is not in the {args.arc} arc; pass its own --arc")
-    if question.parent not in (None, owner.number):
-        raise Refused(f"{_label(question)} is a sub-issue of plan#{question.parent}, not "
-                      f"plan#{owner.number}: re-homing a card is done by hand")
+    _refuse_rehoming(question, owner)
     if question.kind == "ruling":
         print(f"finishing {_label(question)}: its conversion into a ruling was cut short "
               "(R-BAL186)")
-    if normalized(tracker.body(question.number)) != normalized(draft.body):
+    if normalized(asked.body) != normalized(draft.body):
         tracker.set_body(question.number, draft.body)
         print(f"  plan#{question.number}'s body: the question, then the answer")
     if question.kind != "ruling":
@@ -441,8 +486,9 @@ def cmd_block(args, tracker: Tracker, _root: Path) -> int:
 def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     """Put a step or question at a place in the board's order."""
     card = _one(tracker, args.card)
-    if card.kind not in ON_BOARD or not card.is_open:
-        raise Refused(f"the board holds open steps and questions only (R-BAL177): {_label(card)}")
+    if card.kind not in ON_BOARD or not card.is_open or card.is_container:
+        raise Refused(f"the board holds open steps and questions only, and no step split into "
+                      f"leaves (R-BAL177, R-BAL179): {_label(card)}")
     order = tracker.board.order()
     items = dict(order)
     if args.after is not None:
@@ -454,11 +500,27 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
         after = rest[-1] if rest else None
     else:
         after = None
-    item = items.get(card.number) or tracker.board.add(card)
+    item = items.get(card.number)
+    if item is None:
+        item = tracker.board.add(card)
+        print(f"  board: added {_label(card)} at the bottom")
     shown = tracker.board.place(item, after)
     print(f"moved {_label(card)}" + ("" if shown else
                                      " -- the board has not shown it yet; re-read it later"))
     return 0
+
+
+def _open_leaves_below(tracker: Tracker, card: Card) -> list[str]:
+    """Every open leaf below ``card`` -- under the steps it splits, under theirs, ... --
+    that is work (a step split again is not a leaf, its own leaves are)."""
+    leaves, wanted = [], [child.number for child in card.children if child.kind == "step"]
+    while wanted:
+        found = tracker.cards(wanted)
+        leaves += [f"plan#{n}" for n, step in sorted(found.items())
+                   if step.is_open and is_work(step)]
+        wanted = [child.number for step in found.values() for child in step.children
+                  if child.kind == "step"]
+    return leaves
 
 
 def cmd_drop(args, tracker: Tracker, _root: Path) -> int:
@@ -470,8 +532,7 @@ def cmd_drop(args, tracker: Tracker, _root: Path) -> int:
     print(f"  commented: Dropped: {args.why}")
     tracker.close(card.number, "not_planned")
     print(f"dropped {_label(card)}")
-    leaves = [f"plan#{child.number}" for child in card.children
-              if child.kind == "step" and child.is_open]
+    leaves = _open_leaves_below(tracker, card)
     if leaves:
         print(f"  its open leaves {', '.join(leaves)} are no longer offered: a leaf inherits "
               "the drop of a step above it (R-BAL185)")
@@ -516,6 +577,11 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
         if not args.dry_run:
             tracker.close(number, "completed")
         print(f"{verb}close {_label(cards[number])}")
+    for number in changes.drop:
+        if not args.dry_run:
+            tracker.close(number, "not_planned")
+        print(f"{verb}close as not planned, every leaf dropped (R-BAL187): "
+              f"{_label(cards[number])}")
     for number in changes.reopen:
         if not args.dry_run:
             tracker.reopen(number)
@@ -535,11 +601,12 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
 # -- spec-history, spec-revert ------------------------------------------------------
 
 def _since(root: Path, text: str) -> datetime:
-    """``--since``: an ISO date or time, or a git ref (when its commit was first written)."""
+    """``--since``: an ISO date or time, or a branch (when its work started,
+    :func:`_git.started`)."""
     try:
         when = datetime.fromisoformat(text)
     except ValueError:
-        when = datetime.fromisoformat(_git.author_date(root, text))
+        when = datetime.fromisoformat(_git.started(root, text))
     return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
@@ -657,7 +724,7 @@ def parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true")
     history = commands.add_parser("spec-history", help="a card's body edits")
     history.add_argument("card", type=card_number)
-    history.add_argument("--since", help="an ISO date or time, or a git ref")
+    history.add_argument("--since", help="an ISO date or time, or a branch (from its start)")
     revert = commands.add_parser("spec-revert", help="restore an earlier body")
     revert.add_argument("card", type=card_number)
     revert.add_argument("--to", required=True, help="an edit id spec-history printed")

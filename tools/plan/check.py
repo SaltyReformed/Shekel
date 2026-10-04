@@ -3,10 +3,12 @@
 The plan tool runs it before it sends a card (``plan file``) and refuses to
 send what fails.  The tracker's Action (step X-cx's leaf L6) runs the SAME
 function on a card the developer files or edits by hand, and comments on what
-fails without reverting it -- so the two hold a card to one set of rules.  They
-can differ in one input only: :attr:`Draft.owner_live`, which the plan tool
-reads from git and the cards (``_state.is_live``) and the Action from whatever
-it reads; the rule applied to it is the same.
+fails without reverting it -- so the two hold a card to one set of rules.  What
+each passes in can differ, never the rules: whether the owner is still work
+(:attr:`Owner.live`), which the plan tool reads from git and the cards
+(``_state.is_live``) and the Action from whatever it reads; and ``changed``, the
+parts a change writes, which a new card's filing and a hand edit name
+differently.
 
 What it holds a card to (rulings ``balance:R-BAL136``, ``R-BAL138``,
 ``R-BAL177``, ``R-BAL178``, ``R-BAL179`` and ``R-BAL180``):
@@ -18,7 +20,7 @@ What it holds a card to (rulings ``balance:R-BAL136``, ``R-BAL138``,
 - a parent the change sets is the owner its kind needs: a finding's is a LIVE
   step (a finding names a live owner), a ruling's is a step, and a step's, if
   it has one, is the LIVE step it splits (a step already done with has no work
-  left to split);
+  left to split); a parent with no type is no step, whatever the kind;
 - a body the change writes is capped: a finding's is one sentence of at most
   400 characters, and a ruling's is :func:`ruling_body`'s shape -- the
   developer's question, then his answer -- at most 2,000 characters in all.
@@ -77,20 +79,24 @@ _BREAK = re.compile(r"(?<![A-Za-z]\.[A-Za-z])" + _END + r"\s+[A-Z`*_\"'(\[]")
 
 
 @dataclass(frozen=True)
-class Draft:
-    """A card as it would stand after the change.
+class Owner:
+    """A card's parent, as the check reads it: its issue type (None when it has
+    none), and the caller's answer to whether it is still work -- the plan tool
+    asks git and the card, the Action the card."""
 
-    ``owner_kind`` is the issue type of the card's parent (None when it has
-    none).  ``owner_live`` is the caller's answer to whether that parent is
-    still work: the plan tool asks git and the card, the Action the card.
-    """
+    kind: str | None
+    live: bool
+
+
+@dataclass(frozen=True)
+class Draft:
+    """A card as it would stand after the change; ``owner`` None when it has no parent."""
 
     kind: str | None
     title: str
     body: str | None
     labels: tuple[str, ...]
-    owner_kind: str | None = None
-    owner_live: bool = False
+    owner: Owner | None = None
 
 
 def ruling_body(question: str, answer: str) -> str:
@@ -98,15 +104,21 @@ def ruling_body(question: str, answer: str) -> str:
     return f"{_QUESTION}{question.strip()}{_ANSWER}{answer.strip()}"
 
 
-def ruling_question(body: str | None) -> str | None:
-    """The question in a body of :func:`ruling_body`'s shape; None for any other body.
+def ruling_question(body: str | None, answer: str) -> str | None:
+    """The question of a body that :func:`ruling_body` wrote with THIS ``answer``;
+    None for any other body.
 
-    A question card a conversion already rewrote (R-BAL186: the same command
-    finishes a half-done conversion) holds its question in this shape, so the
-    retry reads it back instead of wrapping it a second time.
+    A conversion cut short (R-BAL186: the same command finishes it) may already
+    have written the card's body, so the retry reads its question back instead
+    of wrapping it a second time.  Only the exact text that conversion writes is
+    read back -- ``Question: ``, then anything, then a blank line and this
+    answer -- so a question that merely quotes a ruling's shape, or a ruling
+    holding another answer, is never cut at a mark inside it.
     """
-    parts = _ruling_parts(normalized(body))
-    return parts[0] if parts else None
+    text, tail = normalized(body), _ANSWER + normalized(answer)
+    if not text.startswith(_QUESTION) or not text.endswith(tail):
+        return None
+    return text[len(_QUESTION):len(text) - len(tail)].strip()
 
 
 def _ruling_parts(text: str) -> tuple[str, str] | None:
@@ -166,19 +178,30 @@ def _ruling_problems(text: str) -> list[str]:
 
 def _owner_problems(draft: Draft) -> list[str]:
     """Why a card's parent is not the owner its kind needs."""
-    parent = draft.owner_kind or "none"
-    if draft.kind == "finding" and (draft.owner_kind != "step" or not draft.owner_live):
-        if draft.owner_kind == "step":
-            parent = "a step that is done"
-        return [f"a finding is a sub-issue of a LIVE step, its owner (R-BAL177); "
-                f"its parent is {parent}"]
-    if draft.kind == "ruling" and draft.owner_kind != "step":
-        return [f"a ruling is a sub-issue of a step, its owner (R-BAL177); its parent is {parent}"]
-    if draft.kind == "step" and draft.owner_kind not in (None, "step"):
-        return [f"a step's parent is the step it splits, not a {draft.owner_kind}"]
-    if draft.kind == "step" and draft.owner_kind == "step" and not draft.owner_live:
-        return ["a step's parent is the LIVE step it splits; its parent is a step that is done"]
-    return []
+    owner = draft.owner
+    if owner is None:
+        parent = "none"
+    elif owner.kind is None:
+        parent = "a card with no type"
+    elif owner.kind == "step" and not owner.live:
+        parent = "a step that is done"
+    else:
+        parent = owner.kind
+    is_step = owner is not None and owner.kind == "step"
+    if draft.kind == "finding" and not (is_step and owner.live):
+        problem = (f"a finding is a sub-issue of a LIVE step, its owner (R-BAL177); "
+                   f"its parent is {parent}")
+    elif draft.kind == "ruling" and not is_step:
+        problem = (f"a ruling is a sub-issue of a step, its owner (R-BAL177); "
+                   f"its parent is {parent}")
+    elif draft.kind == "step" and owner is not None and not is_step:
+        problem = (f"a step's parent is the step it splits, not a {owner.kind}" if owner.kind
+                   else f"a step's parent is the step it splits; its parent is {parent}")
+    elif draft.kind == "step" and owner is not None and not owner.live:
+        problem = f"a step's parent is the LIVE step it splits; its parent is {parent}"
+    else:
+        return []
+    return [problem]
 
 
 def violations(draft: Draft, changed: Collection[str] = NEW_CARD) -> list[str]:
