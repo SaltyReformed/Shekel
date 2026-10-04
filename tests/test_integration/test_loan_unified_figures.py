@@ -66,9 +66,10 @@ from tests.oracles.recurrence_baseline import MONTHLY
 #     monthly_rate     = 0.06 / 12 = 0.005
 #     contractual_pi   = amortize(300000, 0.06, 360) = $1,798.65
 #
-# ARM: 5/5 ARM, $400,000, 6% annual, 360 months, origination
-# 2026-01-01, ``arm_first_adjustment_months = 60``.  Anchor is the
-# origination event; no payments.  Inside the fixed-rate window the
+# ARM: 5/5 ARM, $400,000, 6% annual, 360 months, originated on the
+# first of the month ARM_STARTS_MONTHS_AGO before today's (see
+# ``_create_arm_loan``), ``arm_first_adjustment_months = 60``.  Anchor is
+# the origination event; no payments.  Inside the fixed-rate window the
 # constant payment is
 #
 #     amortize(400000, 0.06, 360) = $2,398.20  (E-02 invariant)
@@ -82,6 +83,22 @@ ARM_PRINCIPAL = Decimal("400000.00")
 ARM_RATE = Decimal("0.06000")
 ARM_TERM = 360
 ARM_WINDOW = 60
+# How far before today's month the ARM originates.  Its arrears are a
+# function of the distance from origination to TODAY: ruling R-R71 charges
+# every installment nobody paid, and the forward plan dates a payoff only
+# while the loan clears within ``_plan._PAYOFF_EXTENSION_MONTHS`` (60) of
+# its contractual end.  For this loan that holds through EIGHT unpaid
+# installments and fails at nine, so an origination pinned to 2026-01-01
+# read ``None`` from 2026-10-02 on.  Relative to today it leaves five
+# unpaid installments on the 1st (today's own is still owed) and six on
+# any other day, at every read.  It must stay between 2 and 8: at least
+# one unpaid installment on the 1st (with none, the payoff equals the
+# 360-installment bound and the strict ``>`` below fails) and at most eight
+# on any day.  The fixture reads the PROCESS clock because
+# ``BalanceContext.build`` defaults to ``date.today()``; if finding N-138's
+# fix moves that default to ``display_today()``, this fixture moves with it
+# in the same change, or it fails on month boundaries under CI's skewed zone.
+ARM_STARTS_MONTHS_AGO = 6
 
 
 # ── Fixture helpers ───────────────────────────────────────────────
@@ -119,14 +136,23 @@ def _create_arm_loan(seed_user, period, *, name="C17 ARM"):
     postings and the params land in one transaction and the loan is never left
     on the no-ledger fallback.
 
+    It originates :data:`ARM_STARTS_MONTHS_AGO` months before the first of TODAY's
+    month, on the seam's own clock (``date.today()``, the default
+    ``BalanceContext.build`` reads), so the installments nobody paid are the
+    same count on every read rather than one more every month.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         period: The :class:`PayPeriod` to anchor the account to.
         name: The account name.
     """
+    today = date.today()
     account = create_loan_account(
         seed_user, db.session, name=name, principal=ARM_PRINCIPAL,
-        rate=ARM_RATE, term=ARM_TERM, origination_date=FIXED_ORIGINATION,
+        rate=ARM_RATE, term=ARM_TERM,
+        origination_date=add_months(
+            date(today.year, today.month, 1), -ARM_STARTS_MONTHS_AGO,
+        ),
         payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
     )
     loan_params = loan_params_for(db.session, account.id)
@@ -490,11 +516,13 @@ def test_arm_payoff_date_consistent_across_surfaces(
     not one -- the two SCHEDULE consumers still agree with each other, and the
     chip agrees with the seam -- and for this fixture the two answers
     deliberately DIFFER, which the control below pins.  This ARM originated
-    2026-01-01 and has never been paid, so its balance is still the full
-    $400,000.00: the contractual schedule says Jan 2056 (it amortizes six
-    installments nobody paid), while the fold says the borrower is still a
-    whole 360-month term away from its NEXT installment.  That gap IS finding
-    B-9, and the chip showing the honest side of it is the point of C8d.
+    six months before today's month (``ARM_STARTS_MONTHS_AGO``) and has never been
+    paid: the contractual schedule ends 360 installments after origination
+    (it amortizes the installments nobody paid), while the fold starts the
+    full $400,000.00 plus those months' interest (ruling R-R71) at the next
+    installment and clears it LATER than 360 installments from there.  That
+    gap IS finding B-9, and the chip showing the honest side of it is the
+    point of C8d.
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
@@ -531,8 +559,9 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # month owes its interest whichever side of today it is on), so the
         # arrears stand when the first payment lands and the loan clears LATER
         # than 360 months after it -- how much later depends on how many
-        # months today is past origination, which is why the bound is stated
-        # as an inequality rather than a date the wall clock would move.
+        # installments went unpaid (five on the 1st, six on any other day:
+        # ``ARM_STARTS_MONTHS_AGO``), which is why the bound is stated as an
+        # inequality rather than a date.
         #
         # "Not already past" is ON OR AFTER today, not "next month".  The fixture
         # pays on the 1st, so on the 1st of a month today's own installment is
