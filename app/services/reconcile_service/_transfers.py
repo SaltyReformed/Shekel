@@ -80,6 +80,7 @@ from app.exceptions import ValidationError
 from app.models.transfer import Transfer
 from app.services import transfer_legs, transfer_service
 from app.services.cash_ledger import AmountBasis, resolve_transfer_amount
+from app.services.match_withdrawal import Silent
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     DamagedTransfer,
@@ -136,6 +137,11 @@ def _settle_one(
         side_days=(
             transfer_service.SideDay(leg.account_id, statement.settle_day),
         ),
+        # A ``$0.00`` box takes a reverted pair's kept payments off the books
+        # with no caption (finding **CC-364**), named where the act asks
+        # (ruling **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s
+        # second leaf refuses that figure here (ruling **R-CC125**).
+        shown=Silent("CC-364"),
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
     # service because the leg's money still lands on a SHADOW row through the

@@ -905,9 +905,13 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # (developer ruling 2026-08-25, plan step ``bank_import:X-gb``) -- then
     # deleted out of its envelope's ``entries``.  Its PARENT is untouched:
     # removing one purchase leaves the envelope and every other purchase in it
-    # asserting exactly what they did.
+    # asserting exactly what they did.  It withdraws with no caption, and
+    # says so where the act asks (ruling **R-CC81**): finding **CC-367** owns
+    # the X's caption, built in plan step ``credit_card:CC-5-4a-5``'s second
+    # leaf (ruling **R-CC80**), which replaces this with what the X showed.
     movement_removal.remove_movements(
         [entry], owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
+        shown=match_withdrawal.Silent("CC-367"),
     )
     db.session.flush()
 

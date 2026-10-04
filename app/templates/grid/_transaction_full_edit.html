@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, posted_ids, shown_line_ids %}
 {# Anchored action card -- renders inside the #txn-popover container
    (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
    the old three-tier edit system.  Layout, top to bottom: header +
@@ -70,7 +70,53 @@
 {% set tender_picker = tender_accounts is defined and tender_accounts|length > 1
    and correctable
    and (txn.status_id == STATUS_PROJECTED or (txn.status and txn.status.is_settled)) %}
-<div class="txn-full-edit-content">
+{# **The ESTIMATE is withdrawn on a CC PAYBACK.**  A payback is worth the
+   card spend of the row it repays, so a figure typed here is not a
+   correction the app can honour -- on an entry-backed payback it is
+   written and then silently overwritten by the next purchase edit on the
+   source (finding N-252, $58.40 live on payback 2590), and on a row-backed
+   one it sticks and quietly stops matching the card spend.
+   ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
+   resolved in the route -- the template displays it, it does not compute
+   it.  The default keeps legacy render sites without the context
+   permissive, exactly as ``amount_correctable`` above does.  Set up here
+   because two things read it: the Estimated box and its $0.00 caption's
+   predicate below. #}
+{% set budget_editable = budget_correctable if budget_correctable is defined else true %}
+{#- **The card's four payment captions, each predicate stated ONCE** (plan
+    step credit_card:CC-5-4a-5, rulings R-CC56 / R-CC46 / R-CC127 /
+    R-CC129).  Every caption names the lines `payment_withdraws` frees -- the
+    route's one read of what the row's payment leaving its matches frees --
+    and the card posts those ids back (`shown_lines`, below) exactly when one
+    of them rendered, so the act a press reaches can refuse a page that named
+    other lines than it would free.  `paid_caption`: Paid / Received takes the
+    payment off -- the row settles from its purchases (`not correctable`), or
+    records $0.00 (`paid_records_nothing`, the route's answer from what a
+    settle books).  `estimate_caption`: a Save setting the estimate to $0.00
+    and the status to Paid / Received in one press takes it off, on a row that
+    settles at its plan -- no purchases, no retained figure outranking the
+    estimate (`retained`) -- so that one Save is named rather than refused as
+    out of date at every try (ruling R-CC129, "Warn in both places").
+    `zero_caption`: a $0.00 typed in Actual takes it off.  `tender_caption`:
+    a different "Paid from" pick re-points it. -#}
+{% set withdraws_a_line = payment_withdraws and payment_withdraws.frees_a_line %}
+{% set paid_caption = withdraws_a_line and txn.status_id == STATUS_PROJECTED
+   and (not correctable or paid_records_nothing) %}
+{% set estimate_caption = withdraws_a_line and txn.status_id == STATUS_PROJECTED
+   and correctable and budget_editable and retained[txn.id] is none %}
+{% set zero_caption = withdraws_a_line and txn.status and txn.status.is_settled
+   and correctable %}
+{% set tender_caption = withdraws_a_line and tender_picker %}
+{#- What the card NAMED, the one value every press on it posts back as
+    `shown_lines`: the Save's hidden field, and Paid / Received's `hx-vals`
+    (the delete dialog names its own lines, below). -#}
+{% set named_lines = shown_line_ids(payment_withdraws)
+   if paid_caption or estimate_caption or zero_caption or tender_caption
+   else '' %}
+{#- The card's root carries an id because a press refused as out of date
+    REDRAWS it whole, retargeted here (ruling R-CC128, "Redraw all");
+    `card_id` is the route's one spelling of it. -#}
+<div class="txn-full-edit-content" id="{{ card_id }}">
   <div class="d-flex justify-content-between align-items-center">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ txn.name }}">
       {{ txn.name }}
@@ -78,6 +124,9 @@
     <button type="button" class="btn-close btn-close-sm" aria-label="Close"
             data-action="close-popover"></button>
   </div>
+  {#- Drawn only on a redraw: nothing was saved, and the card below is what
+      is true now (ruling R-CC128). -#}
+  {% if page_refusal %}{{ page_refusal_banner(page_refusal) }}{% endif %}
 
   {# Context line: where and what this row is, so an action taken from
      the card cannot land on the wrong period. #}
@@ -101,6 +150,7 @@
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
             {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
+            hx-vals='{"shown_lines": "{{ named_lines }}"}'
             aria-label="Mark as paid">
       <i class="bi bi-check-circle"></i> Paid
     </button>
@@ -141,26 +191,26 @@
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
             {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
+            hx-vals='{"shown_lines": "{{ named_lines }}"}'
             aria-label="Mark as received">
       <i class="bi bi-check-circle"></i> Received
     </button>
     {% endif %}
   </div>
-  {#- **What Paid WITHDRAWS on a row whose purchases replace its payment**
-      (plan step credit_card:CC-5-4a-3, rulings R-CC54 / R-CC56).  A reverted
-      row keeps its payment un-dated (R-BAL61), and an accepted match may
-      still name it; once the row holds purchases it settles FROM them, a
-      purchases record the status seam answers by taking the kept payment off
-      the books -- so every match naming the payment is withdrawn, said here
-      beside Paid before the press.  `not correctable` is exactly "this row
-      settles from its purchases" (the route's `amount_correctable`), and
-      `payment_withdraws` is the route's one read of what the payment's
-      leaving frees; the grid's one-click Mark Paid has no caption and
-      withdraws and logs it all the same. -#}
-  {%- if txn.status_id == STATUS_PROJECTED and not correctable
-        and payment_withdraws and payment_withdraws.frees_a_line %}
+  {#- **What Paid WITHDRAWS on a reverted row whose payment it takes off**
+      (plan step credit_card:CC-5-4a-3, rulings R-CC54 / R-CC56; the $0.00
+      arm plan step CC-5-4a-5).  A reverted row keeps its payment un-dated
+      (R-BAL61), and an accepted match may still name it.  Two settles take
+      that payment off the books, so every match naming it is withdrawn,
+      said here beside Paid before the press: a row that now holds purchases
+      settles FROM them (`not correctable`, the route's
+      `amount_correctable`), and a row whose settle records $0.00 -- an
+      estimate set to $0.00 over a kept payment no correction holds -- moves
+      nothing (`paid_records_nothing`).  The grid's one-click Mark Paid has no
+      caption and withdraws and logs it all the same (R-CC56). -#}
+  {%- if paid_caption %}
   <div class="form-text mb-2" id="purchases-withdraws-{{ txn.id }}">
-    Marking this paid from its purchases {{ frees_lines(payment_withdraws) }}.
+    {% if not correctable %}Marking this paid from its purchases{% else %}Marking this {{ 'received' if txn.is_income else 'paid' }} records $0.00 and{% endif %} {{ frees_lines(payment_withdraws) }}.
   </div>
   {%- endif %}
 
@@ -173,6 +223,12 @@
        txn.version_id and short-circuits with 409 when the form is
        stale (commit C-18 / F-010). #}
     <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+    {#- **What this card's captions NAMED** (plan step
+        credit_card:CC-5-4a-5, rulings R-CC81 / R-CC127): `named_lines`,
+        posted on every Save.  ALWAYS rendered: a card that named nothing says
+        so, where a surface with no caption (the grid's one-click Mark Paid)
+        posts no field at all. -#}
+    <input type="hidden" name="shown_lines" value="{{ named_lines }}">
     {# The DEFINITION's pin too, for a placed row: its price, name, category
        and flags are edited here and live there, so a save that touches only
        them bumps the definition's counter and not the row's (plan step
@@ -195,17 +251,6 @@
     {# Amounts side by side -- the everyday edit stays one glance tall.
        The Actual box renders only when the settle verb would HONOUR one:
        ``correctable``, set once at the top of this card. #}
-    {# **The ESTIMATE is withdrawn on a CC PAYBACK.**  A payback is worth the
-       card spend of the row it repays, so a figure typed here is not a
-       correction the app can honour -- on an entry-backed payback it is
-       written and then silently overwritten by the next purchase edit on the
-       source (finding N-252, $58.40 live on payback 2590), and on a row-backed
-       one it sticks and quietly stops matching the card spend.
-       ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
-       resolved in the route -- the template displays it, it does not compute
-       it.  The default keeps legacy render sites without the context
-       permissive, exactly as ``amount_correctable`` above does. #}
-    {% set budget_editable = budget_correctable if budget_correctable is defined else true %}
     {% set from_purchases = budget_from_purchases if budget_from_purchases is defined else true %}
     <div class="row g-1 mb-2">
       <div class="col">
@@ -240,6 +285,19 @@
            every locked-row save would be refused. #}
         <input type="hidden" name="estimated_amount_as_rendered"
                value="{{ budgets[txn.id] }}">
+        {#- **What a $0.00 estimate saved as Paid WITHDRAWS** (ruling R-CC129,
+            developer 2026-10-04, "Warn in both places"): on a reverted row
+            whose kept payment is matched, one Save setting this box to 0.00
+            and the status to Paid / Received records $0.00 and takes the
+            payment off the books.  Said here, before the Save, because the
+            Paid caption reads the STORED estimate and cannot see a figure
+            typed beside the status.  Ruling R-BAL155's step X-db later refuses
+            a $0.00 payment and deletes this caption with Paid's. -#}
+        {%- if estimate_caption %}
+        <div class="form-text" id="estimate-withdraws-{{ txn.id }}">
+          Saving this as {{ 'Received' if txn.is_income else 'Paid' }} at $0.00 {{ frees_lines(payment_withdraws) }}.
+        </div>
+        {%- endif %}
         {% else %}
         <div class="form-control form-control-sm bg-body-secondary">{{ money(budgets[txn.id]) }}</div>
         {# The repair DIFFERS by payback kind and naming the wrong one is a
@@ -314,7 +372,7 @@
             the books, and every match naming it is withdrawn -- said here,
             under the box, before the Save.  `payment_withdraws` is the
             route's one read of what the payment's leaving frees. -#}
-        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        {%- if zero_caption %}
         <div class="form-text" id="zero-withdraws-{{ txn.id }}">
           Recording $0.00 {{ frees_lines(payment_withdraws) }}.
         </div>
@@ -355,7 +413,7 @@
             nothing when no match names the payment -- and nothing for a GROUP
             act the pick only shrinks (the register flags it), the silence the
             delete dialog keeps over the same case. -#}
-        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        {%- if tender_caption %}
         <div class="form-text" id="tender-withdraws-{{ txn.id }}">
           Picking another account {{ frees_lines(payment_withdraws) }}.
         </div>
@@ -746,15 +804,20 @@
       (CC-5-4a-4's second review).  On a settled row the "Your books record"
       sentence below names its money; a row reverted to Projected keeps its
       record un-dated (ruling R-BAL61), which the cash fold reads in neither
-      tier, so no sentence here names it (CC-5-4a-4's third review, L1). -#}
-  {%- set purchases = txn.entries | rejectattr('covers_settlement') | list -%}
+      tier, so no sentence here names it (CC-5-4a-4's third review, L1).
+      Read off the delete's own preview (``preview.purchase_ids``, the
+      ``Transaction.purchases`` reading) since ruling R-CC131: the question
+      counts the set the press is checked against, and posts it back.  Its
+      words are that ruling's picked text, "Delete Groceries and the 1
+      purchase under it?" (it read "filed under it", no ruling's words). -#}
+  {%- set purchases = preview.purchase_ids -%}
   {#- The un-archive sentence states its exception in words (ruling R-CC112,
       "State the condition"): un-archive restores a row of its candidate set
       (``preview.comes_back_on_unarchive``) unless the books have moved over it
       by then (rulings R-PC95, R-PC99), and a check made as this card opens
       could not see a books move made after the delete. -#}
   {%- set question -%}
-Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} filed under it{% endif %}?
+Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} under it{% endif %}?
 {% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
 {% if preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
 {% endif %}{% if preview.soft %}This occurrence stays deleted, and the recurring transaction behind it keeps generating the others.{% if preview.comes_back_on_unarchive %} Archiving and then un-archiving that item would bring it back, empty, unless the books have moved over it by then; the un-archive names any row it keeps deleted.{% endif %}{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
@@ -766,6 +829,12 @@ Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | lengt
           hx-swap="innerHTML"
           hx-disabled-elt="this"
           hx-confirm="{{ question | trim }}"
+          {#- What the dialog NAMED, sent back with the press (htmx sends a
+              DELETE's values as its query string): the lines, from the same
+              `withdraws` its clause prints (ruling R-CC127), and the
+              purchases its question counts (ruling R-CC131, "Refuse and
+              redraw"). #}
+          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}", "shown_purchases": "{{ posted_ids(purchases) }}"}'
           aria-label="Delete {{ txn.name }}">
     <i class="bi bi-trash"></i> Delete this row
   </button>

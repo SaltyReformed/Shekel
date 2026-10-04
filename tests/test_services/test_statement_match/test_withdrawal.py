@@ -154,8 +154,18 @@ def _a_transfer(seed_user):
 
 
 def _delete(seed_user, txn):
-    """Delete *txn* through the verb every delete door shares."""
-    outcome = transaction_service.delete_transaction(txn, seed_user["user"].id)
+    """Delete *txn* through the verb every delete door shares.
+
+    Posting back the lines its confirm dialog names, as the delete door does
+    since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC127**: the act
+    refuses a press whose freed lines differ from what the page named).
+    """
+    shown = match_withdrawal.Shown(
+        transaction_service.preview_deletion(txn).withdrawn.line_ids,
+    )
+    outcome = transaction_service.delete_transaction(
+        txn, seed_user["user"].id, shown=shown,
+    )
     db.session.flush()
     return outcome
 
@@ -412,6 +422,11 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
 
         transfer_service.delete_transfer(
             xfer.id, seed_user["user"].id, soft=False,
+            shown=match_withdrawal.Shown(
+                match_withdrawal.pending_for_movements(
+                    shadow.covering_movements,
+                ).line_ids,
+            ),
         )
         db.session.flush()
 

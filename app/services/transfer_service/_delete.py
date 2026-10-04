@@ -26,6 +26,7 @@ from app.services import (
     posting_service,
     transfer_legs,
 )
+from app.services.match_withdrawal import NOTHING_SHOWN
 from app.services.transfer_service._loan_posting import (
     _pays_a_loan,
     _resync_loan_after_payment_left,
@@ -41,7 +42,7 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def delete_transfer(transfer_id, user_id, soft=False):
+def delete_transfer(transfer_id, user_id, soft=False, *, shown=NOTHING_SHOWN):
     """Delete a transfer and its shadow transactions.
 
     Args:
@@ -52,6 +53,13 @@ def delete_transfer(transfer_id, user_id, soft=False):
                      physically remove the transfer; the ON DELETE
                      CASCADE FK on transactions.transfer_id removes
                      both shadows automatically.
+        shown:       The bank lines the door's page named before a HARD
+                     delete, or what lets it stay silent (ruling R-CC127).
+                     Every caller passes the default: no page captions this
+                     delete, and they reach only a pair holding no payment
+                     (ruling R-CC65), save a hand-built request to the
+                     instance DELETE no template renders -- refused if it
+                     would free a line.
 
     Returns:
         The soft-deleted Transfer if soft=True, or None if hard-deleted.
@@ -138,7 +146,7 @@ def delete_transfer(transfer_id, user_id, soft=False):
             transfer_legs.held_transfer_entries(Transfer.id == transfer_id)
             .order_by(TransactionEntry.id)
             .all(),
-            user_id, because=match_withdrawal.LEFT_THE_BOOKS,
+            user_id, because=match_withdrawal.LEFT_THE_BOOKS, shown=shown,
             rows_leaving=shadows,
         )
         db.session.flush()

@@ -125,7 +125,7 @@ def _latest_anchor(account_id):
 def _correct_tender(txn, account_id):
     """The full-edit popover's identity Save naming another 'Paid from' account."""
     transaction_service.apply_requested_status(
-        txn, txn.status_id, tender_account_id=account_id,
+        txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
     )
     db.session.commit()
 
@@ -468,7 +468,8 @@ class TestATenderCorrectionOnASettledRow:
 
             with pytest.raises(ValidationError, match=r"is not settling, so a 'Paid from'"):
                 transaction_service.apply_requested_status(
-                    txn, projected, tender_account_id=card.id,
+                    txn, projected,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -477,7 +478,8 @@ class TestATenderCorrectionOnASettledRow:
             assert _movement(fresh).account_id == checking.id
 
             transaction_service.apply_requested_status(
-                fresh, projected, tender_account_id=checking.id,
+                fresh, projected,
+                stated=transaction_service.StatedRecord(tender_account_id=checking.id),
             )
             db.session.commit()
             assert fresh.status_id == projected
@@ -503,7 +505,8 @@ class TestATenderCorrectionOnASettledRow:
             assert txn.covering_movements == []
             with pytest.raises(ValidationError, match=r"no single account its money moved through"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
 
     def test_a_tender_on_a_close_of_nothing_is_refused(
@@ -518,7 +521,8 @@ class TestATenderCorrectionOnASettledRow:
             assert txn.covering_movements == []
             with pytest.raises(ValidationError, match=r"records no payment movement"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
 
     def test_the_settle_verb_ignores_a_tender_on_the_entries_branch(
@@ -593,7 +597,8 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
 
             with pytest.raises(ValidationError, match=r"books open on"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -628,7 +633,7 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
             db.session.commit()
             transaction_service.apply_requested_status(
                 txn, txn.status_id, settle_day=the_day_after,
-                tender_account_id=card.id,
+                stated=transaction_service.StatedRecord(tender_account_id=card.id),
             )
             db.session.commit()
             movement = _movement(txn)
@@ -641,7 +646,7 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
             with pytest.raises(ValidationError, match=r"books open on"):
                 transaction_service.apply_requested_status(
                     other, other.status_id, settle_day=on_the_opening,
-                    tender_account_id=card.id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
