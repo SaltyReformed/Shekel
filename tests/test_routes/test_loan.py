@@ -65,6 +65,7 @@ from tests._test_helpers import (
     state_template_price,
     transfer_side_journal_filter,
 )
+from tests.conftest import log_in_seed_user
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
 
@@ -4637,11 +4638,7 @@ class TestTransferPrompt:
         ownership gate's and not the URL map's -- the sibling
         ``test_update_payment_settings_changes_extra`` proves the same URL
         shape routes (302) for the owner.  The owner's payment is built
-        through the ORM rather than the owner's client: the ``db`` fixture
-        holds ONE app context for the whole test and Flask-Login caches
-        ``current_user`` on ``g`` per app context, so a request from a second
-        client after the owner's runs AS THE OWNER (measured 2026-09-14: the
-        non-owner's POST wrote the extra).
+        through the ORM rather than the owner's client.
         """
         acct = _create_mortgage(seed_user, db.session)
         tpl = make_loan_payment_template(
@@ -6684,6 +6681,10 @@ class TestDashboardPayoffConsistency:
         assertion vacuous in exactly the way that paragraph warns about.
         """
         freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
+        # Sign in again on the moved date: ``auth_client`` signed in under the
+        # module freeze, and the idle timeout measures against the clock this
+        # freeze moves, so the old session is expired here as a real one would be.
+        log_in_seed_user(auth_client)
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 3, 1),
         )
@@ -6735,6 +6736,8 @@ class TestDashboardPayoffConsistency:
         carries no settle day, so it is legitimately still ahead.
         """
         freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
+        # Sign in again on the moved date -- see the case above.
+        log_in_seed_user(auth_client)
         acct = _create_fresh_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),
@@ -9580,6 +9583,10 @@ class TestLoanDetailMeasuredSurfaces:
         # means that INSTANT -- ``freeze_today``'s default is noon, so that a
         # test meaning "today is D" gets D from the display-tz readers too.
         freeze_today(monkeypatch, date(2027, 1, 1), at_time=time.min)
+        # Sign in again on the moved date: ``auth_client`` signed in under the
+        # module freeze, and the idle timeout measures against the clock this
+        # freeze moves, so the old session is expired here as a real one would be.
+        log_in_seed_user(auth_client)
 
         html = auth_client.get(f"/accounts/{loan.id}/loan").data.decode()
         match = re.search(

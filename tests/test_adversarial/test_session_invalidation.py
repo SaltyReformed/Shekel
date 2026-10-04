@@ -32,8 +32,6 @@ where the pieces are correct individually but wired together wrong.
 
 from datetime import datetime, timedelta, timezone
 
-from flask import g
-
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
@@ -42,28 +40,6 @@ from app.services.mfa_service import TotpVerificationResult
 
 _KNOWN_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
 _KNOWN_BACKUP_CODES = ["aaaaaaaa", "bbbbbbbb", "cccccccc"]
-
-
-def _reset_login_cache():
-    """Drop ``g._login_user`` so the next request re-runs ``load_user``.
-
-    Flask-Login caches the loaded user on ``g._login_user`` the first
-    time it is requested per app context.  In production each HTTP
-    request is its own app context, so the cache is effectively per-
-    request.  In the test suite the autouse ``db`` fixture in
-    ``tests/conftest.py`` wraps every test in a single
-    ``app.app_context()``, so subsequent ``test_client`` calls re-use
-    the same ``g`` and would keep returning the user that was cached
-    on the very first request -- defeating the entire point of the
-    invalidation tests below.
-
-    Mirror of the helper in ``test_session_protection.py`` /
-    ``test_secret_key_rotation.py``.  Kept duplicated rather than
-    imported because each adversarial file exercises distinct
-    invariants and a shared helper would couple them at the wrong
-    layer.
-    """
-    g.pop("_login_user", None)
 
 
 def _enable_mfa(user_id, codes=None):
@@ -106,21 +82,12 @@ def _login_with_totp(app, email, password):
     have monkeypatched it before calling this helper, since both
     branches of the test (TOTP-only and backup-code) need to control
     that function's return value.
-
-    Calls :func:`_reset_login_cache` before each request so the
-    request actually sees the request's own cookie rather than the
-    user cached on ``g`` from a sibling client's earlier request --
-    without the resets, an already-authenticated ``current_user`` in
-    the login view would short-circuit-redirect this client straight
-    to /dashboard, leaving its session in a half-built state.
     """
     client = app.test_client()
-    _reset_login_cache()
     resp = client.post("/login", data={"email": email, "password": password})
     assert resp.status_code == 302, (
         f"Setup error: password POST returned {resp.status_code}"
     )
-    _reset_login_cache()
     resp = client.post("/mfa/verify", data={"totp_code": "123456"})
     assert resp.status_code == 302, (
         f"Setup error: /mfa/verify TOTP returned {resp.status_code}; "
@@ -135,17 +102,13 @@ def _login_with_backup_code(app, email, password, backup_code):
     Returns the test client.  Unlike ``_login_with_totp``, this helper
     does NOT depend on a monkeypatched verify_totp_code -- backup-code
     verification uses bcrypt directly via mfa_service, which the
-    fast_bcrypt fixture already accelerates.  Clears the per-app-
-    context login cache before each request for the same reason as
-    ``_login_with_totp``.
+    fast_bcrypt fixture already accelerates.
     """
     client = app.test_client()
-    _reset_login_cache()
     resp = client.post("/login", data={"email": email, "password": password})
     assert resp.status_code == 302, (
         f"Setup error: password POST returned {resp.status_code}"
     )
-    _reset_login_cache()
     resp = client.post("/mfa/verify", data={"backup_code": backup_code})
     assert resp.status_code == 302, (
         f"Setup error: /mfa/verify backup-code returned {resp.status_code}; "
@@ -283,7 +246,6 @@ class TestPendingMfaTimeout:
                     )
 
             # User did NOT actually authenticate.
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 302
             assert "/login" in check.headers.get("Location", "")
@@ -348,7 +310,6 @@ class TestPendingMfaTimeout:
             assert resp.status_code == 302
             assert "/login" not in resp.headers.get("Location", "")
 
-            _reset_login_cache()
             check = client.get("/dashboard")
             assert check.status_code == 200
 
@@ -524,7 +485,6 @@ class TestBackupCodeInvalidatesOtherSessions:
             client_a = _login_with_totp(
                 app, "test@shekel.local", "testpass",
             )
-            _reset_login_cache()
             check_a = client_a.get("/dashboard")
             assert check_a.status_code == 200, (
                 "Setup error: Client A must be authenticated before "
@@ -536,14 +496,12 @@ class TestBackupCodeInvalidatesOtherSessions:
                 app, "test@shekel.local", "testpass",
                 _KNOWN_BACKUP_CODES[0],
             )
-            _reset_login_cache()
             check_b = client_b.get("/dashboard")
             assert check_b.status_code == 200, (
                 "Client B's backup-code login should succeed."
             )
 
             # Client A: must now be invalidated.
-            _reset_login_cache()
             recheck_a = client_a.get("/dashboard", follow_redirects=False)
             assert recheck_a.status_code == 302, (
                 "Backup-code consumption did NOT invalidate Client A's "
@@ -645,13 +603,11 @@ class TestBackupCodeInvalidatesOtherSessions:
             # Multiple subsequent requests must all succeed -- the
             # cookie this client owns must be valid against the bumped
             # column on every load_user call.
-            _reset_login_cache()
             r1 = client.get("/dashboard")
             assert r1.status_code == 200, (
                 f"Backup-code-consuming client survived its own bump? "
                 f"got {r1.status_code}"
             )
-            _reset_login_cache()
             r2 = client.get("/dashboard")
             assert r2.status_code == 200
 
@@ -686,14 +642,12 @@ class TestMfaDisableInvalidatesOtherSessions:
             client_a = _login_with_totp(
                 app, "test@shekel.local", "testpass",
             )
-            _reset_login_cache()
             assert client_a.get("/dashboard").status_code == 200
 
             # Client B: the user disabling MFA from a trusted device.
             client_b = _login_with_totp(
                 app, "test@shekel.local", "testpass",
             )
-            _reset_login_cache()
             disable_resp = client_b.post("/mfa/disable", data={
                 "current_password": "testpass",
                 "totp_code": "123456",
@@ -701,7 +655,6 @@ class TestMfaDisableInvalidatesOtherSessions:
             assert disable_resp.status_code == 302
 
             # Client A: must now be invalidated.
-            _reset_login_cache()
             recheck_a = client_a.get("/dashboard", follow_redirects=False)
             assert recheck_a.status_code == 302, (
                 "MFA disable did NOT invalidate Client A's session; "
@@ -730,7 +683,6 @@ class TestMfaDisableInvalidatesOtherSessions:
                 app, "test@shekel.local", "testpass",
             )
 
-            _reset_login_cache()
             disable_resp = client.post("/mfa/disable", data={
                 "current_password": "testpass",
                 "totp_code": "123456",
@@ -739,7 +691,6 @@ class TestMfaDisableInvalidatesOtherSessions:
 
             # The client that disabled MFA must still be able to
             # access protected pages.
-            _reset_login_cache()
             r = client.get("/dashboard")
             assert r.status_code == 200, (
                 "MFA-disabling client lost its own session; got "
@@ -769,7 +720,6 @@ class TestMfaDisableInvalidatesOtherSessions:
             )
 
             before = datetime.now(timezone.utc)
-            _reset_login_cache()
             client.post("/mfa/disable", data={
                 "current_password": "testpass",
                 "totp_code": "123456",
@@ -811,7 +761,6 @@ class TestMfaDisableInvalidatesOtherSessions:
             ).session_invalidated_at
             assert stamp_before is not None
 
-            _reset_login_cache()
             resp = client.post("/mfa/disable", data={
                 "current_password": "WRONG_PASSWORD",
                 "totp_code": "123456",

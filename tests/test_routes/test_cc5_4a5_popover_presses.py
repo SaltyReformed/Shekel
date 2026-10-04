@@ -50,7 +50,6 @@ from app.services.statement_match import (
 )
 from app.utils.log_events import EVT_STATEMENT_MATCH_WITHDRAWN
 from tests._test_helpers import create_account_of_type, typed
-from tests.conftest import log_in_seed_user
 from tests.test_routes._statement_forms import ReconcileFormReader
 from tests.test_routes.test_cc5_4a3_captions import (
     _claimed,
@@ -398,21 +397,15 @@ class TestACompanionsMarkPaidMayFreeNoLine:
     """Ruling R-CC130 (developer 2026-10-04, "Companion refuses")."""
 
     def test_a_companions_press_is_refused_and_the_owners_same_press_goes_ahead(
-        self, app, companion_client, seed_user, caplog,
+        self, app, companion_client, auth_client, seed_user, caplog,
     ):
         """The companion page's Mark Paid on Hotel is refused; the owner's same press withdraws.
 
         Refused with nothing changed; the owner's withdraws silently (R-CC56).
 
         Both requests post exactly what the companion page's card renders --
-        one phone-card partial, shared with the owner's phone grid.  The owner
-        signs in on the SAME client after the companion signs out, because
-        every request here runs inside this test's one app context: Flask's
-        ``RequestContext.push`` reuses an active app context, so its ``g`` --
-        where Flask-Login caches the signed-in user (``g._login_user``) -- is
-        shared by every request, and a second client's request would act as
-        the first's user (measured: an owner press from a second client was
-        refused with the companion's sentence).  Sign-out clears that cache.
+        one phone-card partial, shared with the owner's phone grid -- each from
+        its own signed-in client.
         """
         with app.app_context():
             txn, line = _reverted_envelope(
@@ -442,10 +435,8 @@ class TestACompanionsMarkPaidMayFreeNoLine:
             assert len(row.covering_movements) == 1, "the kept payment stays"
             assert _claimed(seed_user, line)
 
-            assert companion_client.post("/logout").status_code == 302
-            owner = log_in_seed_user(companion_client)
             with caplog.at_level(logging.INFO):
-                owners = owner.post(
+                owners = auth_client.post(
                     f"/transactions/{txn.id}/mark-done", data=fields,
                 )
 

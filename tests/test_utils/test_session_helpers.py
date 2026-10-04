@@ -281,17 +281,15 @@ class TestInvalidateOtherSessionsLoadUserIntegration:
         ``load_user`` return the user (current session survives).
 
         Drives the loader directly via ``login_manager._user_callback``
-        with the cookie value the helper just wrote, so the test
-        bypasses Flask-Login's per-request cache and exercises the
-        actual reload path.
+        with the cookie value the helper just wrote, so the test grades
+        the loader's own answer for that cookie.
         """
         # pylint: disable=import-outside-toplevel,protected-access
         # Local import keeps the LoginManager dependency next to the
         # test that needs it.  protected-access is intentional: we
         # are exercising the loader callback directly rather than
-        # through current_user, because going through current_user
-        # would hit the g._login_user cache and skip load_user
-        # entirely.
+        # through current_user, so the answer graded is the loader's
+        # alone.
         from app.extensions import login_manager
 
         user = seed_user["user"]

@@ -14,14 +14,7 @@ refusal, driven through the test client:
   paired with the owner's own request to the SAME ROUTE succeeding, so a 404
   from the URL map cannot pass for the ownership gate.  The attacker is
   ``auth_client`` against the second owner's rows, the shape the suite's own
-  IDOR cases use (``test_savings``' ``test_goal_idor_view_blocked``).  A first
-  draft attacked with ``second_auth_client`` in a test that also took
-  ``auth_client``, and that request RECORDED a stub on the first owner's
-  profile (measured 2026-09-23): Flask-Login caches the user on ``g`` inside
-  the ``db`` fixture's one app context, so the second client acts as the
-  first -- a harness artifact, documented at
-  ``tests/test_adversarial/test_totp_replay.py``'s ``_reset_login_cache``
-  and filed as N-550;
+  IDOR cases use (``test_savings``' ``test_goal_idor_view_blocked``);
 * the form POSTED here is the form the template EMITS: its field names are
   read off the rendered page and compared with the payload's;
 * deleting a paycheck line a stub names is refused with **R-SAL51** (c)'s
