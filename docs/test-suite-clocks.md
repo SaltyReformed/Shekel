@@ -251,7 +251,14 @@ Test fails in CI but not locally
 
 Test fails in the calendar sweep
   └─ Does it compare a server-stamped timestamp against a Python-derived date?
-     └─ YES  -> instrument artifact. Trace it, then @pytest.mark.server_clock.
+     └─ YES  -> instrument artifact. Trace it, then ask what supplies the Python-side
+                date, and take that remedy (R-BAL197, recurrence:R-R121, R-BAL198):
+        └─ a second stamp the code writes from Python's clock -> freeze both stamps
+           to one instant, freeze_today before the write (BAL-494's _one_clock, R-BAL197)
+        └─ the test's own reading of "today" -> read today from the database's
+           clock (REC-532's fix, recurrence:R-R121)
+        └─ the database stamps it itself (a trigger) -> @pytest.mark.server_clock
+           (R-BAL198)
      └─ NO   -> real calendar coupling. Make the fixture construct the property
                 it needs on every calendar day, rather than deriving it from today.
 
@@ -276,6 +283,10 @@ Thousands of errors, not failures
    breaks in that direction would not be caught.
 3. **The sweep cannot fake PostgreSQL** (section 5). Closing that would need `libfaketime` inside
    the postgres container the suite runs against -- since `balance:X-br-4` a throwaway one per run,
-   started from a baked image -- which is invasive; the marker is the accepted alternative.
+   started from a baked image -- which is invasive. Three remedies stand in for it, each where it
+   fits (section 7): freeze both stamps where the code writes a second one from Python's clock
+   (BAL-494's, **R-BAL197**), read "today" from the database where the Python side is the test's own
+   reading of today (REC-532's, **recurrence:R-R121**), and the marker where the database stamps the
+   row itself (**R-BAL198**).
 4. **Five calendar positions, not all of them.** A coupling keyed to something else -- a specific
    weekday, a DST transition -- would need its date added to the matrix.
