@@ -43,7 +43,10 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def card_total(purchases, leaving_ids=frozenset()) -> Decimal:
+def card_total(
+    purchases: "list[TransactionEntry]",
+    leaving_ids: "frozenset[int] | set[int]" = frozenset(),
+) -> Decimal:
     """Return what an envelope's card purchases sum to -- what its payback repays.
 
     ONE spelling for the sync below and for the screen that says, before a
@@ -97,7 +100,9 @@ def _settled_teardown_refusal(payback: Transaction) -> str | None:
 
 
 def payback_deleted_by(
-    txn: Transaction, leaving_ids, payback: Transaction | None,
+    txn: Transaction,
+    leaving_ids: "frozenset[int] | set[int]",
+    payback: Transaction | None,
 ) -> Transaction | None:
     """Return the payback a press taking *leaving_ids* off the card deletes, or ``None``.
 
@@ -130,7 +135,7 @@ def payback_deleted_by(
 
 
 def payback_a_removal_deletes(
-    txn: Transaction, leaving_ids,
+    txn: Transaction, leaving_ids: "frozenset[int] | set[int]",
 ) -> Transaction | None:
     """Return the live payback a press taking *leaving_ids* off the card deletes.
 
@@ -151,48 +156,45 @@ def payback_a_removal_deletes(
     return payback_deleted_by(txn, leaving_ids, get_active_payback(txn.id))
 
 
-def payback_shown(shown, txn: Transaction):
-    """Return what the payback teardown tells the removal act its page showed.
+def payback_refusal(txn: Transaction) -> str:
+    """Return the sentence a companion's press is refused with over the PAYBACK's line.
 
-    The press's own declaration, except a COMPANION's
-    (:class:`~app.services.match_withdrawal.OwnerOnly`, rulings **R-CC130** /
-    **R-CC132**): its refusal sentence was written by the door for the
-    purchase pressed, and here the line belongs to the PAYBACK the press
-    would delete, so the teardown states its own -- the envelope's name,
-    never an id (ruling **R-CC98**).  The edit form's CC un-tick reaches it
-    here; the X decides it before its one removal act
-    (:func:`x_shown_for_payback`).
+    Rulings **R-CC130** / **R-CC132** (developer 2026-10-04, "Refuse, shown
+    first": *"The last-card-purchase case is refused on press the same
+    way"*): a companion may free no line, and where the line a press would
+    free is the envelope's CC payback's -- the last card purchase's X or its
+    CC un-tick, a card refund or re-price that brings the card total to
+    zero -- the sentence names the PAYBACK, by its envelope's name, never an
+    id (ruling **R-CC98**), and every one of those presses changes the
+    envelope's card purchases.
 
     Args:
-        shown: What the press declared.
-        txn: The envelope whose payback goes.
+        txn: The envelope whose payback the press would delete.
 
     Returns:
-        The declaration for the teardown's removal.
+        The sentence.
     """
-    if not isinstance(shown, match_withdrawal.OwnerOnly):
-        return shown
-    return match_withdrawal.OwnerOnly(
-        refusal=(
-            f"{txn.name}'s card payback is matched to a line on the bank "
-            "statement, so only the account owner can change its last card "
-            "purchase."
-        ),
+    return (
+        f"{txn.name}'s card payback is matched to a line on the bank "
+        "statement, so only the account owner can change its card purchases."
     )
 
 
-def x_shown_for_payback(shown, txn: Transaction, entry):
+def x_shown_for_payback(
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent",
+    txn: Transaction,
+    entry: TransactionEntry,
+) -> "match_withdrawal.Shown | match_withdrawal.Silent":
     """Return a companion's declaration for an X that also deletes the payback.
 
-    A companion's press carries its door's refusal sentence for the PURCHASE
+    A companion's X carries its door's refusal sentence for the PURCHASE
     (ruling **R-CC132**: *"Kroger is matched to a line on the bank statement,
-    so only the account owner can delete it"*), and one removal act now takes
+    so only the account owner can delete it"*), and one removal act takes
     the purchase and its envelope's payback together.  Where the purchase's
     own matches free nothing, a refusal could only be over the PAYBACK's
-    line, so the payback's sentence is the true one
-    (:func:`payback_shown`).  Read inside the request's
-    owner lock, so it sees what the act will.  Any other press keeps its
-    declaration.
+    line, so :func:`payback_refusal` is the true sentence.  Read inside the
+    request's owner lock, so it sees what the act will.  Any other press
+    keeps its declaration.
 
     Args:
         shown: What the press declared.
@@ -206,7 +208,7 @@ def x_shown_for_payback(shown, txn: Transaction, entry):
         return shown
     if match_withdrawal.pending_for_movements([entry]).frees_a_line:
         return shown
-    return payback_shown(shown, txn)
+    return match_withdrawal.OwnerOnly(refusal=payback_refusal(txn))
 
 
 def sync_entry_payback(
@@ -253,14 +255,20 @@ def sync_entry_payback(
             (:class:`~app.services.match_withdrawal.Shown`), for the removal
             act when the sync deletes a payback whose payment a match names
             (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC80**).  The
-            purchase X and the edit form's CC un-tick name them
-            (:func:`payback_deleted_by`); a door that names none sends
+            edit form's CC un-tick names them (:func:`payback_deleted_by`).
+            The X has already taken the payback's movements off in its own
+            act (``entry_service._doors.delete_entry``), so for it this
+            frees nothing.  A companion's press is
+            :class:`~app.services.match_withdrawal.OwnerOnly` with
+            :func:`payback_refusal`'s sentence (ruling **R-CC132**).  An
+            owner's door that names none sends
             :data:`~app.services.match_withdrawal.NOTHING_SHOWN`, which
             refuses a press that would free a line (ruling **R-CC127**) --
-            the add form, and a re-price whose new card total is exactly
-            zero, which no static caption can foresee (finding **CC-381**,
-            owned by plan step ``credit_card:CC-7``, which deletes this
-            workflow).
+            the add form's card refund, and a re-price whose new card total
+            is exactly zero, which no static caption can foresee: refused as
+            "out of date" though the page was not, and again on every try
+            (finding **CC-381**, filed at this step's tick, owned by plan
+            step ``credit_card:CC-7``, which deletes this workflow).
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
@@ -454,7 +462,7 @@ def sync_entry_payback(
         movement_removal.remove_movements(
             list(existing_payback.entries), owner_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
-            shown=payback_shown(shown, txn),
+            shown=shown,
             rows_leaving=[existing_payback],
         )
         db.session.delete(existing_payback)

@@ -25,8 +25,9 @@ field, so there its presence also says WHERE a refusal is answered**: a
 popover's out-of-date press redraws the popover (ruling **R-CC128**), and any
 other surface's refusal is its ordinary error.  The purchase list's doors
 post it from the list itself and read only :attr:`Press.shown`: each answers
-every refusal by drawing that list again as it is now
-(``routes.entries._refused_entry_response``).
+a refusal by drawing that list again as it is now
+(``routes.entries._refused_entry_response``), but for a purchase or row that
+is gone, which is "not found".
 
 Pure: no Flask import, no session.  A route-tier helper because the facts it
 reads are about the FORM, the shape of :mod:`app.routes._typed_figure`.

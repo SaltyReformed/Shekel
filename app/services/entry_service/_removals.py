@@ -14,9 +14,10 @@ which deletes that payback alone
 would free before the press, from this read.
 
 **The package's third leaf, and the only one that READS the matches.**
-:mod:`._doors` writes and :mod:`._sums` reduces a set of purchases without a
-query; this asks the statement matches, ONCE per screen however many purchase
-lists the screen draws (the grid draws every envelope's), through
+:mod:`._doors` writes and :mod:`._sums`' reductions read no table; this asks
+the statement matches and the live paybacks, ONCE per screen however many
+purchase lists the screen draws (the grid draws every envelope's, through
+:func:`~app.services.entry_service._sums.build_entry_lists_dict`), by
 :func:`app.services.match_withdrawal.pending_for_each`.
 
 **The same derivation the press makes.**  Each removal is the movements the
@@ -34,6 +35,7 @@ Architecture:
 
 from dataclasses import dataclass
 
+from app.models.transaction import Transaction
 from app.services import credit_workflow, entry_credit_workflow, match_withdrawal
 from app.services.match_withdrawal import MatchWithdrawal
 
@@ -83,7 +85,9 @@ class PurchaseControls:
     owner_viewing: bool
 
 
-def purchase_controls(rows, viewer_id: int) -> "dict[int, PurchaseControls]":
+def purchase_controls(
+    rows: "list[Transaction]", viewer_id: int,
+) -> "dict[int, PurchaseControls]":
     """Return each envelope's :class:`PurchaseControls`, over ONE read.
 
     The one place the purchase lists learn both what each control frees and
@@ -110,7 +114,9 @@ def purchase_controls(rows, viewer_id: int) -> "dict[int, PurchaseControls]":
     }
 
 
-def purchase_removals(rows) -> "dict[int, PurchaseRemoval]":
+def purchase_removals(
+    rows: "list[Transaction]",
+) -> "dict[int, PurchaseRemoval]":
     """Return what removing each purchase of *rows* would withdraw, in ONE read.
 
     Args:

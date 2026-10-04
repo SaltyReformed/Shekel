@@ -3,7 +3,10 @@
 ``entry_service``'s derivation half: the pure per-set reductions (the debit /
 credit split, the remaining budget, the settled actual, the percent complete)
 and the three builders that assemble the whole context an envelope's cell or
-entry list renders from.
+entry list renders from.  One builder is not pure since plan step
+``credit_card:CC-5-4a-5``: :func:`build_entry_lists_dict` asks
+:mod:`._removals` once per screen what each purchase's X would free, a read
+of the statement matches.
 
 **The in-period CHECK is no longer here**, and it left at pay-calendar plan
 step C4-a-3 (ruling **R-PC31**).  It was ``check_purchase_date_in_period``,
@@ -16,6 +19,8 @@ period search runs are one spelling rather than two that agreed by hand.
 **Nothing here writes**, which is why it is the leaf: the write doors
 (:mod:`._doors`) read the reductions from here and nothing here reads them, so
 the arrow runs one way and neither half can grow a cycle through the other.
+(:mod:`._removals` -- read here, never reading ``_doors`` -- keeps the arrow
+one way.)
 
 **The sum of ALL of a row's purchases is NOT here**, and it left at plan step
 X-au-c3.  It was ``compute_actual_from_entries``, named for a column that step

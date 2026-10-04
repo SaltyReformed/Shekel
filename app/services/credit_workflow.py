@@ -69,7 +69,7 @@ def get_active_payback(source_txn_id: int) -> Transaction | None:
     return active_paybacks([source_txn_id]).get(source_txn_id)
 
 
-def active_paybacks(source_txn_ids) -> "dict[int, Transaction]":
+def active_paybacks(source_txn_ids: "list[int]") -> "dict[int, Transaction]":
     """Return the live CC payback of each of several source rows, in ONE query.
 
     :func:`get_active_payback` for a screen drawing many sources at once --
@@ -101,7 +101,9 @@ def active_paybacks(source_txn_ids) -> "dict[int, Transaction]":
     }
 
 
-def pending_for_credit_revert(txn: Transaction):
+def pending_for_credit_revert(
+    txn: Transaction,
+) -> "match_withdrawal.MatchWithdrawal | None":
     """Return what reverting Credit row *txn* would withdraw, or ``None``.
 
     The read twin of :func:`delete_payback_on_credit_revert`, for the full-edit

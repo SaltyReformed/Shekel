@@ -319,6 +319,10 @@ def create_entry(
     transaction_id: int,
     user_id: int,
     details: EntryDetails,
+    *,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
 ) -> TransactionEntry:
     """Create a new purchase entry against a transaction.
 
@@ -333,6 +337,9 @@ def create_entry(
             with who wrote it, description, purchased_on, is_credit, and the
             posting day -- with the basis that says how it is known -- where
             the caller already has one).
+        shown: For the payback sync, the one place an add frees a line: an
+            owner's ``NOTHING_SHOWN`` (finding **CC-381**), a companion's
+            ``OwnerOnly`` (ruling **R-CC132**, plan step CC-5-4a-5).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -546,6 +553,7 @@ def create_entry(
     sync_entry_payback(
         transaction_id, owner_id,
         moves_credit_total=bool(details.is_credit and details.figure.amount),
+        shown=shown,
     )
     _resync_after_entry_change(txn)
 
@@ -617,13 +625,10 @@ def update_entry(
     Args:
         entry_id: The entry to update.
         user_id: The requesting user's ID (owner or companion).
-        shown: The bank lines the edit form's CC caption named before the
-            press -- what un-ticking the envelope's last card purchase frees
-            when it deletes a payback a match names (plan step
-            ``credit_card:CC-5-4a-5``, ruling **R-CC80**) -- or a companion's
-            :class:`~app.services.match_withdrawal.OwnerOnly` (ruling
-            **R-CC132**).  Handed to the payback sync, the one place this
-            door can free a line.
+        shown: The lines the edit form's CC caption named (plan step
+            ``credit_card:CC-5-4a-5``, ruling **R-CC80**), or a companion's
+            ``OwnerOnly`` (ruling **R-CC132**), for the payback sync -- the
+            one place this door can free a line.
         **kwargs: Fields to update (must be a subset of allowed fields).
 
     Returns:
@@ -861,16 +866,12 @@ def delete_entry(
     Args:
         entry_id: The entry to delete.
         user_id: The requesting user's ID (owner or companion).
-        shown: The bank lines the X's confirmation named before the press
-            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC80** /
-            **R-CC127**): what the purchase's own matches free, and, on the
-            envelope's last card purchase, what deleting its payback frees --
-            or a companion's :class:`~app.services.match_withdrawal.OwnerOnly`
-            (ruling **R-CC132**).  Handed to both removals the press makes.
-            The default is the match Undo's: ``statement_match._release``
-            removes a purchase its act CREATED after withdrawing that act, so
-            nothing is left to free and nothing is shown (the row delete's
-            default, for the same caller).
+        shown: The lines the X's confirmation named (plan step
+            ``credit_card:CC-5-4a-5``, rulings **R-CC80** / **R-CC127**) --
+            the purchase's own and, on the last card purchase, its payback's
+            -- or a companion's ``OwnerOnly`` (ruling **R-CC132**).  The
+            default is the match Undo's: ``statement_match._release`` removes
+            a purchase its act CREATED after withdrawing that act.
 
     Returns:
         int -- the parent transaction_id.

@@ -25,8 +25,9 @@ from __future__ import annotations
 import html as html_lib
 import json
 import re
-from urllib.parse import parse_qsl
+from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import parse_qsl
 
 from werkzeug.datastructures import MultiDict
 
@@ -57,6 +58,7 @@ from tests.test_routes.test_cc5_4a5_popover_presses import _vals
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_later_period,
+    a_purchase_in_a_minted_envelope,
     a_scope,
     a_submission,
     a_transaction,
@@ -67,6 +69,14 @@ from app.services.statement_match import accept_match
 #: The bank's own words for the Kroger line -- distinct from the purchase's
 #: description, so a page that leaked the line would be caught naming it.
 _KROGER_LINE = "KROGER #4471 ATLANTA GA"
+
+#: The sentence a companion's press is refused with over Groceries' PAYBACK's
+#: line (ruling R-CC132's "refused on press the same way";
+#: ``entry_credit_workflow.payback_refusal``).
+_PAYBACK_REFUSAL = (
+    "Groceries's card payback is matched to a line on the bank statement, so "
+    "only the account owner can change its card purchases."
+)
 
 
 def _committed():
@@ -220,6 +230,54 @@ def _edit_form(page):
     return list(reader.fields), re.search(
         r'hx-patch="([^"]*)"', page[start:],
     ).group(1)
+
+
+def _add_form(page, txn_id):
+    """The add-purchase form's controls as rendered, and its URL."""
+    start = page.index(f'hx-post="/transactions/{txn_id}/entries')
+    start = page.rindex("<form", 0, start)
+    reader = ReconcileFormReader()
+    reader.feed(page[start:page.index("</form>", start)])
+    url = html_lib.unescape(re.search(r'hx-post="([^"]*)"', page[start:]).group(1))
+    return list(reader.fields), reader.offerable, url
+
+
+def _cc380(seed_user, *, companion_visible=False, payback_line=False):
+    """Kroger, matched to its checking line, then ticked CC (finding CC-380's state).
+
+    Ticking CC on a matched purchase is admitted (CC-380, owned by
+    ``credit_card:CC-7``): Kroger is now the envelope's last card purchase
+    AND matched itself.  With *payback_line* its payback's payment is matched
+    to a CARD PAYMENT line too and the payback reverted, so the X frees both
+    lines and the un-tick frees the payback's alone.
+
+    Returns:
+        ``(txn, kroger, kroger_line, payback, payback_line_or_None)``.
+    """
+    txn, kroger, kroger_line = _matched_kroger(
+        seed_user, companion_visible=companion_visible,
+    )
+    a_later_period(seed_user)
+    db.session.commit()
+    entry_service.update_entry(kroger.id, seed_user["user"].id, is_credit=True)
+    db.session.commit()
+    payback = credit_workflow.get_active_payback(txn.id)
+    assert payback is not None
+    second = None
+    if payback_line:
+        # The next day: one account's line is keyed by its day and figure.
+        second = a_bank_line(
+            seed_user, an_import(seed_user), amount="-12.34",
+            posted_on=_day(seed_user) + timedelta(days=1),
+            description="CARD PAYMENT",
+        )
+        db.session.commit()
+        _accept(seed_user, second, transactions=[payback])
+        transaction_service.apply_requested_status(
+            payback, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.commit()
+    return txn, kroger, kroger_line, payback, second
 
 
 def _line_day(seed_user):
@@ -410,6 +468,40 @@ class TestTheLastCardPurchaseNamesItsPaybacksLine:
             assert _claimed(seed_user, line)
 
 
+    def test_the_un_tick_names_only_the_paybacks_line(
+        self, app, auth_client, seed_user,
+    ):
+        """Kroger matched AND its payback matched: the un-tick frees the payback's line alone.
+
+        The X would free both (its confirmation names both); the un-tick
+        keeps Kroger and its own match, so its caption and its posted field
+        name the CARD PAYMENT line only.  Reached through CC-380's state.
+        """
+        with app.app_context():
+            txn, kroger, kroger_line, payback, card_line = _cc380(
+                seed_user, payback_line=True,
+            )
+
+            page = _list(auth_client, txn.id)
+            _path, _query, x_vals = _x_press(page, txn.id, kroger.id)
+            assert x_vals == {
+                "shown_lines": ",".join(
+                    str(i) for i in sorted((kroger_line.id, card_line.id))
+                ),
+            }
+            fields, url = _edit_form(_list(auth_client, txn.id, editing=kroger.id))
+            assert ("shown_lines", str(card_line.id)) in fields
+            unticked = [pair for pair in fields if pair != ("is_credit", "true")]
+
+            response = auth_client.patch(url, data=MultiDict(unticked))
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            _committed()
+            assert db.session.get(Transaction, payback.id) is None
+            assert not _claimed(seed_user, card_line)
+            assert _claimed(seed_user, kroger_line), "Kroger keeps its own match"
+
+
 class TestACompanionIsNeverShownTheOwnersLines:
     """Ruling R-CC132 ("Refuse, shown first"), and R-CC130 before it."""
 
@@ -496,9 +588,7 @@ class TestACompanionIsNeverShownTheOwnersLines:
 
             assert refused.status_code == 400
             assert (
-                "Groceries's card payback is matched to a line on the bank "
-                "statement, so only the account owner can change its last "
-                "card purchase."
+                _PAYBACK_REFUSAL
                 in html_lib.unescape(refused.get_data(as_text=True))
             )
             _committed()
@@ -524,13 +614,120 @@ class TestACompanionIsNeverShownTheOwnersLines:
 
             assert refused.status_code == 400
             assert (
-                "Groceries's card payback is matched to a line on the bank "
-                "statement, so only the account owner can change its last "
-                "card purchase."
+                _PAYBACK_REFUSAL
                 in html_lib.unescape(refused.get_data(as_text=True))
             )
             _committed()
             assert db.session.get(TransactionEntry, card.id).is_credit is True
+            assert db.session.get(Transaction, payback.id) is not None
+            assert _claimed(seed_user, line)
+
+
+    def test_a_companions_equal_card_refund_is_refused(
+        self, app, companion_client, seed_user,
+    ):
+        """The add form's card refund that would delete the payback: R-CC132's refusal, not "out of date".
+
+        The add form names nothing, and a companion's page could not name the
+        line anyway, so the refusal is the payback's own sentence and says
+        nothing of a statement screen the companion does not have.
+        """
+        with app.app_context():
+            txn, card, payback, line = _card_payback_matched(
+                seed_user, companion_visible=True,
+            )
+            page = companion_client.get(
+                f"/companion/period/{txn.pay_period_id}",
+            ).get_data(as_text=True)
+            fields, offerable, url = _add_form(page, txn.id)
+            # The CC box carries no ``value``, so a browser sends "on" when it
+            # is ticked (the reader records the attribute as rendered: "").
+            assert ("is_credit", "") in offerable
+            posted = dict(fields)
+            posted.update(
+                amount="60.00", direction="refund", description="Return",
+                is_credit="on",
+            )
+
+            refused = companion_client.post(url, data=posted)
+
+            assert refused.status_code == 400
+            body = html_lib.unescape(refused.get_data(as_text=True))
+            assert _PAYBACK_REFUSAL in body
+            assert "unexplained" not in body and "out of date" not in body
+            _committed()
+            assert [e.id for e in db.session.get(Transaction, txn.id).purchases] == [
+                card.id,
+            ]
+            assert db.session.get(Transaction, payback.id) is not None
+            assert _claimed(seed_user, line)
+
+    def test_a_crafted_phone_card_draws_no_line_for_a_companion(
+        self, app, companion_client, seed_user,
+    ):
+        """The phone card's ``can_edit`` comes back from the browser; it decides nothing here.
+
+        A companion's Mark Paid crafted with ``can_edit=1`` and a bad figure
+        answers the re-drawn phone card (422).  Its purchase list is drawn
+        for the SESSION's user, so Kroger's X stays withheld and no line is
+        named or posted (rulings R-CC130 / R-CC132).
+        """
+        with app.app_context():
+            txn, kroger, _line = _matched_kroger(
+                seed_user, companion_visible=True,
+            )
+
+            response = companion_client.post(
+                f"/transactions/{txn.id}/mark-done",
+                data={
+                    "render": "mobile_card", "card_prefix": "tp",
+                    "can_edit": "1", "settled_amount": "-5",
+                },
+            )
+
+            assert response.status_code == 422
+            body = response.get_data(as_text=True)
+            assert "Kroger" in body, "the card and its purchase list are drawn"
+            assert _x(body, txn.id, kroger.id) is None
+            assert (
+                "Matched to the bank statement: only the account owner can "
+                "delete it." in " ".join(body.split())
+            )
+            assert "shown_lines" not in body
+            assert "unexplained" not in body
+            assert _KROGER_LINE not in body
+
+    def test_a_companions_x_over_a_matched_last_card_purchase_names_the_purchase(
+        self, app, companion_client, seed_user,
+    ):
+        """Kroger's own line AND its payback would go: the refusal is the PURCHASE's sentence.
+
+        Reached through finding CC-380's state (CC ticked on a matched
+        purchase).  The X is withheld on the page; the crafted press is
+        refused, nothing changes.
+        """
+        with app.app_context():
+            txn, kroger, line, payback, _second = _cc380(
+                seed_user, companion_visible=True,
+            )
+            page = companion_client.get(
+                f"/companion/period/{txn.pay_period_id}",
+            ).get_data(as_text=True)
+            assert _x(page, txn.id, kroger.id) is None
+
+            refused = companion_client.delete(
+                f"/transactions/{txn.id}/entries/{kroger.id}",
+                query_string={"host": "tp"},
+            )
+
+            assert refused.status_code == 400
+            assert (
+                "Kroger is matched to a line on the bank statement, so only "
+                "the account owner can delete it."
+                in html_lib.unescape(refused.get_data(as_text=True))
+            )
+            _committed()
+            assert db.session.get(TransactionEntry, kroger.id) is not None
             assert db.session.get(Transaction, payback.id) is not None
             assert _claimed(seed_user, line)
 
@@ -644,3 +841,28 @@ class TestOneReadAnswersManyRemovals:
                 [publix],
             )
             assert not each["publix"].frees_a_line
+
+    def test_a_row_leaving_with_its_movements_is_not_counted_as_kept(
+        self, app, seed_user,
+    ):
+        """``rows_leaving`` parity: a minted envelope deleted with its purchase is not "kept".
+
+        The answer the act gives a press that deletes the row too
+        (``take_out_of_matches(rows_leaving=...)``, the read
+        ``pending_for_rows`` makes for a row delete): the creation naming the
+        envelope stays only while the envelope does.
+        """
+        with app.app_context():
+            _line, created = a_purchase_in_a_minted_envelope(seed_user)
+            db.session.commit()
+            purchase = db.session.get(TransactionEntry, created.entry_id)
+            envelope = db.session.get(Transaction, created.transaction_id)
+
+            alone = match_withdrawal.pending_for_each({"x": [purchase]})["x"]
+            leaving = match_withdrawal.pending_for_each(
+                {"x": [purchase]}, {"x": [envelope]},
+            )["x"]
+
+            assert alone.kept_rows == 1, "the envelope stays"
+            assert leaving.kept_rows == 0
+            assert leaving == match_withdrawal.pending_for_rows([envelope])

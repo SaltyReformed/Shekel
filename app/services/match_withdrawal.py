@@ -726,7 +726,9 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     return pending_for_each({None: entries})[None]
 
 
-def pending_for_each(removals, rows_leaving=None) -> dict:
+def pending_for_each(
+    removals: dict, rows_leaving: "dict | None" = None,
+) -> "dict[object, MatchWithdrawal]":
     """Return what each of several removals would withdraw, in ONE read.
 
     :func:`pending_for_movements` for a screen offering MANY removals at once
