@@ -180,7 +180,7 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       `settle_from_entries` would settle. Of the seam's doors only the grid's one-click Mark Paid
       stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
       purchase delete, Undo CC, the popover's Status leaving Credit, the last credit purchase's
-      delete or un-credit) are **CC-367**; the account and recurring-transfer permanent deletes
+      delete or un-credit) were **CC-367**; the account and recurring-transfer permanent deletes
       archive on a held leg since **R-CC65** and free nothing. **R-CC80** puts CC-367's doors in
       this step: each says it first, and the one removal act asks what the owner was shown
       (**R-CC81**). Its `$0.00` captions were its own question at its start, under **R-BAL155**
@@ -205,10 +205,25 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       ruling of their own: `designed_error(retarget=)` for the redraw (**salary:R-SAL33**) and the
       owner's one-click Mark Paid silent (**R-CC56**); a transfer `$0.00` Paid caption withdrawn (a
       transfer prices `$0.00` only where a derived payment rounds to it, and there the popover's
-      Paid is refused as out of date). **4a-5b**: **CC-367**'s doors (the purchase X, the last card
-      purchase's X and CC un-tick, Undo CC, Status leaving Credit; **R-CC132**, filed at its tick);
-      closes **CC-367**. **4a-5c**: the panel and carry-forward (**R-CC125**, **R-CC126**, a caption
-      per row); closes **CC-364**, **CC-378**.
+      Paid is refused as out of date). **4a-5b** `b3ff5bec` (done, no `Ships:`) -- **CC-367**'s
+      doors name what they free first and post it back (**R-CC80**, **R-CC127**): the purchase X's
+      confirmation asks in R-CC80's words and posts its lines as the DELETE's query string, a list
+      out of date refused and drawn again as it is now; on the envelope's last card purchase the X
+      names and takes the CC payback's line too, purchase and payback in ONE removal act
+      (`delete_entry`: two acts on one account refused the ordinary X as out of date); the edit
+      form's CC un-tick on that purchase names the payback's line in a caption and posts it; Undo CC
+      and Status leaving Credit share one caption beside Undo CC
+      (`credit_workflow.pending_for_credit_revert`), posted by Undo CC and the Save; one read serves
+      the purchase lists (`match_withdrawal.pending_for_each`, `entry_service._removals`), who is
+      looking taken from the session, never the posted `can_edit`. A companion is shown no line
+      (**R-CC132**): a purchase whose X would free its line has no X, the ruled note in its place, a
+      press that would free one anyway is refused with the ruled sentence, and one over the CC
+      payback's line (the last card purchase's X or un-tick, an add or an edit bringing the card
+      total to `$0.00`) with one sentence, an application: "Groceries's card payback is matched to a
+      line on the bank statement, so only the account owner can make this change." The grid's
+      statement-count test folds an `IN (...)` id list (**R-CC133**, rule 5). Closed **CC-367**.
+      **4a-5c**: the panel and carry-forward (**R-CC125**, **R-CC126**, a caption per row); closes
+      **CC-364**, **CC-378**.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
