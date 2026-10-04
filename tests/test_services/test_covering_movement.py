@@ -1907,6 +1907,7 @@ class TestAKeptMovementIsNotAPurchase:
             listed = build_entry_lists_dict(
                 [envelope], budgets, periods,
                 resolve_owner_cash_flow_set(envelope.user_id),
+                envelope.user_id,
             )
             assert listed[envelope.id]["entries"] == []
             assert entry_service.get_entries_for_transaction(

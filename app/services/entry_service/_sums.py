@@ -33,6 +33,10 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.transaction_entry import TransactionEntry
 from app.services.cash_flow_set import CashFlowSet, purchase_accounts
+from app.services.entry_service._removals import (
+    PurchaseControls,
+    purchase_controls,
+)
 from app.services.pay_calendar import DerivedPeriod
 from app.utils.entry_partition import partition_entries
 from app.utils.money import percent_complete
@@ -84,6 +88,41 @@ def purchase_amount(magnitude: Decimal, *, records_a_refund: bool) -> Decimal:
         charge.
     """
     return -magnitude if records_a_refund else magnitude
+
+
+def credit_total_moves(entry: TransactionEntry, valid_updates: dict) -> bool:
+    """Return whether applying *valid_updates* moves the envelope's credit total.
+
+    Finding **N-323**: the payback sync refuses a settled payback's re-derive
+    only for a write that moves the total.  Asked as the entry's own
+    CONTRIBUTION to that sum before and after, rather than as a case analysis
+    over which fields were submitted: the sum counts ``amount`` where
+    ``is_credit``, so an entry contributes its amount or nothing, and
+    comparing the two is exact for every combination at once.  A field-name
+    test is what the first draft used -- "amount or is_credit was submitted"
+    -- and it still refused a DEBIT row's amount edit, which cannot reach the
+    credit sum at all.  Split out of ``_doors.update_entry`` at plan step
+    ``credit_card:CC-5-4a-5``, whose ``shown`` argument took that function
+    past pylint's local-variable ceiling; a reduction over one purchase, so
+    it lives with the others.
+
+    Args:
+        entry: The purchase as stored, BEFORE the update is applied.
+        valid_updates: The submission, already narrowed to updatable fields.
+
+    Returns:
+        ``True`` when the entry's contribution to the credit sum changes.
+    """
+    credit_before = entry.amount if entry.is_credit else Decimal("0")
+    amount_after = (
+        valid_updates["figure"].amount if "figure" in valid_updates
+        else entry.amount
+    )
+    credit_after = (
+        amount_after
+        if valid_updates.get("is_credit", entry.is_credit) else Decimal("0")
+    )
+    return credit_before != credit_after
 
 
 def compute_entry_sums(
@@ -186,6 +225,7 @@ def build_entry_lists_dict(
     budgets: dict[int, Decimal],
     periods: "dict[int, DerivedPeriod]",
     cash_flow: CashFlowSet | None,
+    viewer_id: int,
 ) -> dict[int, dict]:
     """Build a {txn_id: entry_list_data} mapping for envelope transactions.
 
@@ -207,12 +247,15 @@ def build_entry_lists_dict(
     transactions are silently skipped.
 
     Expects ``entries`` and ``template`` eager-loaded on the
-    Transaction objects.  **It is PURE again at plan step X-f3b**: it stopped
-    being so on 2026-08-13, when the indicator asked each account's clearing
-    rule and so paid one indexed read per distinct account.  Ruling **R-FM**
-    made the indicator a question about the PURCHASE -- has its bank posting day
-    been recorded -- so the read is gone with the question, and a grid render
-    issues no query here at all.
+    Transaction objects.  **It was PURE from plan step X-f3b** (ruling
+    **R-FM** made the posted indicator a question about the PURCHASE, which
+    dropped the clearing rule's per-account read) **until plan step
+    ``credit_card:CC-5-4a-5``**, which gives every purchase's X the bank lines
+    it would leave unexplained (ruling **R-CC80**): that is a question about
+    the statement matches, asked here ONCE for every envelope the screen draws
+    (:func:`~app.services.entry_service._removals.purchase_controls` -- a
+    payback query, a match-member query, and the act and line loads only
+    where a match names a purchase), never once per envelope.
 
     **The PAYCHECK SPANS arrive as an argument** (pay-calendar plan step
     C4-a-3, ruling **R-PC34**), for the reason *budgets* does in
@@ -256,6 +299,12 @@ def build_entry_lists_dict(
             picker (ruling **R-CC11**).  Never the page's overridden set: an
             override outside the set collapses it to one account, which is a
             fact about the view and not about what a purchase may name.
+        viewer_id: The SESSION's user -- the rows' owner on the grid and the
+            phone card, a companion on the companion page -- so only the
+            owner's lists name the owner's bank lines (rulings **R-CC130** /
+            **R-CC132**).  An argument and not a default, for *cash_flow*'s
+            reason: a caller that forgot it must fail rather than draw the
+            owner's statement for whoever is looking.
 
     Returns:
         dict mapping envelope transaction ID to one
@@ -274,12 +323,14 @@ def build_entry_lists_dict(
             from one physical line cannot be attributed to either map, let
             alone to a table.  Named by adversarial review, 2026-08-31.
     """
+    controls = purchase_controls(transactions, viewer_id)
     return {
         txn.id: entry_list_view(
             txn.purchases,
             budgets[txn.id],
             periods[txn.pay_period_id],
             purchase_accounts(cash_flow, txn),
+            controls[txn.id],
         )
         for txn in transactions
         if txn.tracks_purchases
@@ -291,6 +342,7 @@ def entry_list_view(
     budget: Decimal,
     period: "DerivedPeriod",
     accounts: tuple[Account, ...],
+    controls: PurchaseControls,
 ) -> dict:
     """Return the WHOLE derived context one envelope's entry list renders from.
 
@@ -370,9 +422,19 @@ def entry_list_view(
             the way they pair *period*: :func:`build_entry_lists_dict`
             derives it per row from the one set it is handed, and
             ``routes.entries._render_entry_list`` from the row's owner.
+        controls: The list's
+            :class:`~app.services.entry_service._removals.PurchaseControls`
+            (:func:`~app.services.entry_service._removals.purchase_controls`):
+            what removing each purchase would withdraw, covering at least
+            *entries* -- the grid's one read over every envelope, or the
+            fragment's over its one row -- and whether the owner is looking.
+            Its removals are indexed with ``[]`` for *budgets*' reason: a
+            purchase missing from them is a caller that read a different set,
+            and an X drawn with no caption over a matched purchase is the
+            silent withdrawal ruling **R-CC80** forbids.
 
     Returns:
-        The five keys the template consumes:
+        The seven keys the template consumes:
 
           - ``entries``: the list as given.
           - ``accounts``: the tuple as given.  The template renders its
@@ -398,8 +460,19 @@ def entry_list_view(
             reservation buckets on
             (``cash_ledger._amounts._entry_checking_impact``), decided HERE in
             Python; the template renders the answer and never re-derives it.
+          - ``removals`` (dict[int, PurchaseRemoval]): each purchase's
+            :class:`~app.services.entry_service._removals.PurchaseRemoval`
+            -- what its X and its CC un-tick would leave unexplained on the
+            statement screen, which the list names before the press and
+            posts back with it (plan step ``credit_card:CC-5-4a-5``).
+          - ``owner_viewing`` (bool): whether those controls may name the
+            owner's bank lines (rulings **R-CC130** / **R-CC132**).
     """
     return {
+        "removals": {
+            entry.id: controls.removals[entry.id] for entry in entries
+        },
+        "owner_viewing": controls.owner_viewing,
         "entries": entries,
         "accounts": accounts,
         "remaining": compute_remaining(budget, entries),

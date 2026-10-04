@@ -112,10 +112,12 @@ written: a page drawn before a match existed, or a door that forgot its
 caption.  The owner's one-click Mark Paid is silent by ruling (**R-CC56**),
 and a companion's is refused whenever it would free a line, because no page
 may show a companion the owner's statement (:class:`OwnerOnly`, ruling
-**R-CC130**); the reconcile panel, carry-forward, the purchase delete and the Credit
-doors name the open finding that owns their caption until that step's
-second leaf (**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**,
-**CC-378**).
+**R-CC130**) -- as is its purchase X and CC un-tick (ruling **R-CC132**).
+The purchase X, the CC un-tick, Undo CC and Status leaving Credit name their
+lines first since plan step ``credit_card:CC-5-4a-5b`` (ruling **R-CC80**,
+finding **CC-367** closed); the reconcile panel and carry-forward name the
+open findings that own their captions until ``CC-5-4a-5c`` (**R-CC76**;
+findings **CC-364**, **CC-378**).
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -256,11 +258,11 @@ class Silent:
     Ruling **R-CC81**: a button may undo a match unannounced only by naming
     the ruling that lets it stay silent, in its own code where a reviewer
     sees it -- the grid's one-click Mark Paid (:data:`MARK_PAID`, ruling
-    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5``'s second leaf
-    captions them, the reconcile panel, carry-forward, the purchase X and
-    the three Credit doors name the OPEN FINDING that owns their caption
-    instead (**CC-364**, **CC-367**, **CC-378**): today's behaviour, now
-    stated at each call site.
+    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5c`` captions them,
+    the reconcile panel and carry-forward name the OPEN FINDING that owns
+    their caption instead (**CC-364**, **CC-378**): today's behaviour,
+    stated at each call site.  The purchase X and the three Credit doors
+    did too until ``CC-5-4a-5b`` captioned them (finding **CC-367**).
 
     Attributes:
         because: The ruling or finding id, written to the withdrawal event.
@@ -483,10 +485,57 @@ def _loses_every_row(act: StatementMatch, entry_ids: "set[int]") -> bool:
     )
 
 
+def _line_ids_of(acts: "list[StatementMatch]") -> "set[int]":
+    """Return the ids of the bank lines *acts* name.
+
+    Args:
+        acts: The acts, with ``members`` loaded.
+
+    Returns:
+        Every line id a member of one of them names.
+    """
+    return {
+        member.bank_statement_line_id
+        for act in acts
+        for member in act.members
+        if member.bank_statement_line_id is not None
+    }
+
+
+def _freed_lines(acts: "list[StatementMatch]") -> "dict[int, FreedLine]":
+    """Return the bank lines *acts* name, as facts, keyed by id -- ONE query.
+
+    Read once for however many withdrawals *acts* make up between them
+    (:func:`pending_for_each`), and for the one a press makes.  No query
+    at all when no act names a line.
+
+    Args:
+        acts: The acts, with ``members`` loaded.
+
+    Returns:
+        ``{line id: FreedLine}``.
+    """
+    line_ids = _line_ids_of(acts)
+    if not line_ids:
+        return {}
+    return {
+        line.id: FreedLine(
+            line_id=line.id,
+            posted_on=line.posted_on,
+            amount=line.amount,
+            description=line.description,
+        )
+        for line in db.session.query(BankStatementLine)
+        .filter(BankStatementLine.id.in_(line_ids))
+        .all()
+    }
+
+
 def _summarise(
     acts: "list[StatementMatch]",
     transaction_ids: "set[int]",
     entry_ids: "set[int]",
+    lines: "dict[int, FreedLine]",
 ) -> MatchWithdrawal:
     """Return what withdrawing *acts* comes to, WITHOUT withdrawing them.
 
@@ -497,33 +546,20 @@ def _summarise(
             **R-CC84**) -- so a creation that names one is not reported as
             staying.
         entry_ids: Purchase ids about to leave the table, likewise.
+        lines: :func:`_freed_lines` over *acts* or over a superset of them,
+            so many withdrawals read their lines in one query.
 
     Returns:
-        Their :class:`MatchWithdrawal`.
+        Their :class:`MatchWithdrawal`, its lines ordered by the day the
+        bank posted them.
     """
-    line_ids = {
-        member.bank_statement_line_id
-        for act in acts
-        for member in act.members
-        if member.bank_statement_line_id is not None
-    }
-    lines = (
-        db.session.query(BankStatementLine)
-        .filter(BankStatementLine.id.in_(line_ids))
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
-        if line_ids else []
-    )
     return MatchWithdrawal(
         matches=len(acts),
         lines=tuple(
-            FreedLine(
-                line_id=line.id,
-                posted_on=line.posted_on,
-                amount=line.amount,
-                description=line.description,
+            sorted(
+                (lines[line_id] for line_id in _line_ids_of(acts)),
+                key=lambda line: (line.posted_on, line.line_id),
             )
-            for line in lines
         ),
         kept_rows=sum(
             1
@@ -650,8 +686,9 @@ def pending_for_rows(rows) -> MatchWithdrawal:
         which is every row on a book nobody has matched.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
+    emptied = _acts_emptied_by(entry_ids)
     return _summarise(
-        _acts_emptied_by(entry_ids), transaction_ids, entry_ids,
+        emptied, transaction_ids, entry_ids, _freed_lines(emptied),
     )
 
 
@@ -676,9 +713,9 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     lines those free; a GROUP act that keeps another row is not named here,
     and the act still takes this member out of it and turns its ``agrees``
     flag amber on the register, stated so it reads as a choice and not a fact.
-    (The purchase X itself says nothing before its press yet -- finding
-    **CC-367**, built in plan step ``credit_card:CC-5-4a-5``, ruling
-    **R-CC80**.)
+    The purchase list reads the same derivation for many purchases at once
+    (:func:`pending_for_each`, plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC80**).
 
     Args:
         entries: The movements a screen is offering to remove or re-point.
@@ -686,8 +723,58 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     Returns:
         Their :class:`MatchWithdrawal`.
     """
-    entry_ids = {entry.id for entry in entries}
-    return _summarise(_acts_emptied_by(entry_ids), set(), entry_ids)
+    return pending_for_each({None: entries})[None]
+
+
+def pending_for_each(removals, rows_leaving=None) -> dict:
+    """Return what each of several removals would withdraw, in ONE read.
+
+    :func:`pending_for_movements` for a screen offering MANY removals at once
+    -- the purchase list's X on each of an envelope's purchases, drawn for
+    every envelope on the grid (plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC80**) -- so the page asks one member query, one act load and one
+    line query however many it offers, rather than three per purchase.
+    Each removal is answered exactly as :func:`take_out_of_matches` would
+    answer it alone: the acts naming its movements, split by
+    :func:`_partition`, the emptied ones summarised.
+
+    Args:
+        removals: ``{key: movements}`` -- each value one press's movements,
+            under whatever key the caller reads its answer back by.
+        rows_leaving: ``{key: rows}`` -- the rows a removal's press deletes
+            with its movements (a CC payback the last card purchase's X takes
+            down), as :func:`take_out_of_matches` is handed them, so a
+            creation naming one is not counted as kept.  A key absent here
+            deletes no row.
+
+    Returns:
+        ``{key: MatchWithdrawal}``, one per key given.  All zeroes for a
+        removal no act names, which is nearly every one.
+    """
+    leaving = rows_leaving or {}
+    groups = {
+        key: {entry.id for entry in entries}
+        for key, entries in removals.items()
+    }
+    acts = _acts_naming(set().union(*groups.values()))
+    emptied = {
+        key: _partition(
+            [
+                act for act in acts
+                if any(member.transaction_entry_id in ids for member in act.members)
+            ],
+            ids,
+        )[0]
+        for key, ids in groups.items()
+    }
+    lines = _freed_lines([act for each in emptied.values() for act in each])
+    return {
+        key: _summarise(
+            emptied[key], {row.id for row in leaving.get(key, ())},
+            groups[key], lines,
+        )
+        for key in groups
+    }
 
 
 def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
@@ -790,7 +877,9 @@ def take_out_of_matches(
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
     emptied, surviving = _partition(_acts_naming(entry_ids), entry_ids)
-    planned = _summarise(emptied, leaving_ids, entry_ids)
+    planned = _summarise(
+        emptied, leaving_ids, entry_ids, _freed_lines(emptied),
+    )
     _refuse_unshown(shown, entries, planned)
     if emptied:
         _withdraw(

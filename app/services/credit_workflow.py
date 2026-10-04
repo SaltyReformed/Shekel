@@ -9,6 +9,8 @@ a payback expense is auto-generated in the next pay period.
 import logging
 from decimal import Decimal
 
+from sqlalchemy.orm import selectinload
+
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
@@ -64,14 +66,72 @@ def get_active_payback(source_txn_id: int) -> Transaction | None:
         The active payback :class:`Transaction`, or ``None`` when no
         live payback exists for the source.
     """
-    return (
-        db.session.query(Transaction)
-        .filter_by(credit_payback_for_id=source_txn_id, is_deleted=False)
-        .first()
-    )
+    return active_paybacks([source_txn_id]).get(source_txn_id)
 
 
-def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
+def active_paybacks(source_txn_ids) -> "dict[int, Transaction]":
+    """Return the live CC payback of each of several source rows, in ONE query.
+
+    :func:`get_active_payback` for a screen drawing many sources at once --
+    the grid's purchase lists, whose X on an envelope's last card purchase
+    names what deleting that payback frees (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC80**) -- and the one spelling
+    of "live" both read, so the screen and the door that deletes it cannot
+    disagree on which row counts.  At most one per source:
+    ``uq_transactions_credit_payback_unique`` holds it.
+
+    Args:
+        source_txn_ids: The ``id`` values of the credit source rows.
+
+    Returns:
+        ``{source id: payback}`` for each source that has a live payback,
+        its ``entries`` loaded.
+    """
+    if not source_txn_ids:
+        return {}
+    return {
+        payback.credit_payback_for_id: payback
+        for payback in db.session.query(Transaction)
+        .filter(
+            Transaction.credit_payback_for_id.in_(source_txn_ids),
+            Transaction.is_deleted.is_(False),
+        )
+        .options(selectinload(Transaction.entries))
+        .all()
+    }
+
+
+def pending_for_credit_revert(txn: Transaction):
+    """Return what reverting Credit row *txn* would withdraw, or ``None``.
+
+    The read twin of :func:`delete_payback_on_credit_revert`, for the full-edit
+    card's Undo CC and its Status leaving Credit (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC80**: *"all three card-payback
+    buttons name the bank line before you press, using the same data the
+    button acts on, as the popovers do"*).  The SAME payback and the SAME
+    rows-leaving read the removal act makes over it
+    (:func:`~app.services.match_withdrawal.pending_for_rows`), so the caption
+    names exactly the lines the press frees.
+
+    Args:
+        txn: The Credit row the card is drawn for.
+
+    Returns:
+        A :class:`~app.services.match_withdrawal.MatchWithdrawal`, or
+        ``None`` when the row has no live payback to delete.
+    """
+    payback = get_active_payback(txn.id)
+    if payback is None:
+        return None
+    return match_withdrawal.pending_for_rows([payback])
+
+
+def delete_payback_on_credit_revert(
+    txn: Transaction, user_id: int, *,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
+) -> None:
     """Delete the live auto-generated payback for a reverted credit row.
 
     The single cleanup rule for "a Credit transaction returned to
@@ -91,6 +151,16 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     Args:
         txn: The credit transaction being reverted to Projected.
         user_id: The owning user's ID, recorded on the audit event.
+        shown: The bank lines the card's caption named before the press
+            (:func:`pending_for_credit_revert`), posted back by Undo CC and
+            by the Save that sets Status back to Projected.  A caller whose
+            page names none sends :data:`~app.services.match_withdrawal
+            .NOTHING_SHOWN`, which refuses a press that would free a line
+            (ruling **R-CC127**).
+
+    Raises:
+        PageOutOfDate: When the lines deleting the payback frees differ from
+            *shown* (``match_withdrawal.take_out_of_matches``).
     """
     payback = get_active_payback(txn.id)
     deleted_payback_id = None
@@ -109,16 +179,14 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
         # of is withdrawn and that line is unexplained again (developer ruling
         # 2026-08-25, plan step ``bank_import:X-gb``).  Measured on the
         # developer's own dev database at 4 matched paybacks, every one of them
-        # reachable from the Undo CC button on the grid card.  That button asks
-        # nothing first, and neither does the popover's Status leaving Credit:
-        # this door withdraws the act and logs it with no caption (finding
-        # ``credit_card:CC-367``), named where the act asks (ruling
-        # **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s second leaf
-        # captions both buttons (ruling **R-CC80**).
+        # reachable from the Undo CC button on the grid card.  Both doors say
+        # so first since plan step ``credit_card:CC-5-4a-5`` (ruling
+        # **R-CC80**, closing finding **CC-367**): the card's caption names
+        # the lines, and the press sends them back for the act to compare.
         movement_removal.remove_movements(
             list(payback.entries), user_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
-            shown=match_withdrawal.Silent("CC-367"), rows_leaving=[payback],
+            shown=shown, rows_leaving=[payback],
         )
         db.session.delete(payback)
 
@@ -420,7 +488,12 @@ def mark_as_credit(transaction_id, user_id):
     return payback
 
 
-def unmark_credit(transaction_id, user_id):
+def unmark_credit(
+    transaction_id, user_id, *,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
+):
     """Revert a transaction from 'credit' back to 'projected' and delete its payback.
 
     Two precondition checks layered for clarity and defense-in-depth:
@@ -453,6 +526,8 @@ def unmark_credit(transaction_id, user_id):
         user_id: The ID of the user who owns the transaction.
             Defense-in-depth: ownership is verified against the row's own
             ``user_id`` column.
+        shown: The bank lines Undo CC's caption named
+            (:func:`delete_payback_on_credit_revert`).
 
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
@@ -461,6 +536,8 @@ def unmark_credit(transaction_id, user_id):
             ``Credit`` status, or if the transition (in the unlikely
             case the bespoke guard is bypassed) is not allowed by
             the state machine.
+        PageOutOfDate: When deleting the payback would free other bank
+            lines than *shown* names.
     """
     # Defense-in-depth: ownership on the row's own owner column.
     txn = load_owned_transaction(transaction_id, user_id)
@@ -490,7 +567,7 @@ def unmark_credit(transaction_id, user_id):
     # Delete the live payback + write the audit event.  Shared with the
     # transaction PATCH route's status-revert path via the single
     # cleanup helper so the two endpoints cannot disagree.
-    delete_payback_on_credit_revert(txn, user_id)
+    delete_payback_on_credit_revert(txn, user_id, shown=shown)
 
     # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row's
     # family as the final step (the transfer pattern: reconcile on every status

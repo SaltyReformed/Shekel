@@ -18,7 +18,6 @@ Architecture:
 import logging
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -27,7 +26,11 @@ from app.models.user import User
 from app import ref_cache
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, movement_removal, posting_service
-from app.services.entry_credit_workflow import sync_entry_payback
+from app.services.entry_credit_workflow import (
+    payback_a_removal_deletes,
+    sync_entry_payback,
+    x_shown_for_payback,
+)
 from app.services.movement_account import admitted_movement_account_id
 from app.services.owned_transaction import load_owned_transaction
 from app.services.settle_day import (
@@ -36,6 +39,7 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.services.stated_figure import StatedFigure
+from app.services.entry_service._sums import credit_total_moves
 from app.services.entry_service._refusals import (
     _reject_flag_beside_another_account,
     _reject_future_posting_day,
@@ -572,7 +576,13 @@ def _posting_day_after(
     return resulting.day if resulting is not None else None
 
 
-def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
+def update_entry(
+    entry_id: int, user_id: int, *,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
+    **kwargs,
+) -> TransactionEntry:
     """Update an existing entry.
 
     Allowed fields: figure, description, purchased_on, settle_day, is_credit.
@@ -607,6 +617,13 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     Args:
         entry_id: The entry to update.
         user_id: The requesting user's ID (owner or companion).
+        shown: The bank lines the edit form's CC caption named before the
+            press -- what un-ticking the envelope's last card purchase frees
+            when it deletes a payback a match names (plan step
+            ``credit_card:CC-5-4a-5``, ruling **R-CC80**) -- or a companion's
+            :class:`~app.services.match_withdrawal.OwnerOnly` (ruling
+            **R-CC132**).  Handed to the payback sync, the one place this
+            door can free a line.
         **kwargs: Fields to update (must be a subset of allowed fields).
 
     Returns:
@@ -726,24 +743,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         "settle_day" in valid_updates
         and resulting_posting_day != entry.settled_on
     ) or flips_the_flag_on
-    # **Does THIS write move the envelope's credit total?** (finding N-323.)
-    # Asked as the entry's own CONTRIBUTION to that sum before and after,
-    # rather than as a case analysis over which fields were submitted: the sum
-    # counts ``amount`` where ``is_credit``, so an entry contributes its amount
-    # or nothing, and comparing the two is exact for every combination at once.
-    # A field-name test is what the first draft used -- "amount or is_credit
-    # was submitted" -- and it still refused a DEBIT row's amount edit, which
-    # cannot reach the credit sum at all.  Read BEFORE the loop below, because
-    # the loop is what makes ``entry`` the after-state.
-    credit_before = entry.amount if entry.is_credit else Decimal("0")
-    amount_after = (
-        valid_updates["figure"].amount if "figure" in valid_updates
-        else entry.amount
-    )
-    credit_after = (
-        amount_after
-        if valid_updates.get("is_credit", entry.is_credit) else Decimal("0")
-    )
+    # Read BEFORE the loop below, because the loop is what makes ``entry`` the
+    # after-state.
+    moves_credit_total = credit_total_moves(entry, valid_updates)
     for field, value in valid_updates.items():
         # Two keys are VALUES rather than columns, and each is written through
         # the one writer of its pair.  ``settle_day`` is the day AND the basis
@@ -836,14 +838,20 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
 
     sync_entry_payback(
         entry.transaction_id, owner_id,
-        moves_credit_total=credit_before != credit_after,
+        moves_credit_total=moves_credit_total,
+        shown=shown,
     )
     _resync_after_entry_change(entry.transaction)
 
     return entry
 
 
-def delete_entry(entry_id: int, user_id: int) -> int:
+def delete_entry(
+    entry_id: int, user_id: int, *,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
+) -> int:
     """Hard-delete an entry.
 
     Re-validates ownership before deleting.  Returns the parent
@@ -853,6 +861,16 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     Args:
         entry_id: The entry to delete.
         user_id: The requesting user's ID (owner or companion).
+        shown: The bank lines the X's confirmation named before the press
+            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC80** /
+            **R-CC127**): what the purchase's own matches free, and, on the
+            envelope's last card purchase, what deleting its payback frees --
+            or a companion's :class:`~app.services.match_withdrawal.OwnerOnly`
+            (ruling **R-CC132**).  Handed to both removals the press makes.
+            The default is the match Undo's: ``statement_match._release``
+            removes a purchase its act CREATED after withdrawing that act, so
+            nothing is left to free and nothing is shown (the row delete's
+            default, for the same caller).
 
     Returns:
         int -- the parent transaction_id.
@@ -862,7 +880,10 @@ def delete_entry(entry_id: int, user_id: int) -> int:
         ValidationError: If removing this purchase would change what a settled
             parent's own close BOOKED (:func:`_reject_settled_removal`) -- an
             undated debit under a settled row, a row recording a stored figure,
-            or an archived one.
+            or an archived one -- or a companion's press would free a line
+            (ruling **R-CC132**).
+        PageOutOfDate: When the press would free other bank lines than
+            *shown* names.
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:
@@ -905,13 +926,25 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # (developer ruling 2026-08-25, plan step ``bank_import:X-gb``) -- then
     # deleted out of its envelope's ``entries``.  Its PARENT is untouched:
     # removing one purchase leaves the envelope and every other purchase in it
-    # asserting exactly what they did.  It withdraws with no caption, and
-    # says so where the act asks (ruling **R-CC81**): finding **CC-367** owns
-    # the X's caption, built in plan step ``credit_card:CC-5-4a-5``'s second
-    # leaf (ruling **R-CC80**), which replaces this with what the X showed.
+    # asserting exactly what they did.  The X names the line first since plan
+    # step ``credit_card:CC-5-4a-5`` (ruling **R-CC80**, closing finding
+    # **CC-367**), and the act compares what it named (ruling **R-CC127**).
+    #
+    # **The payback this press deletes leaves in the SAME act** (plan step
+    # ``credit_card:CC-5-4a-5``): the act grades "the WHOLE set one press
+    # removes" against what the X named, and on the envelope's account a
+    # second act would meet the first's line and refuse the press as out of
+    # date.  The row delete takes its payback chain so, its row reversed
+    # first; the sync below deletes the payback ROW, by the same arithmetic.
+    doomed = payback_a_removal_deletes(txn, {entry.id})
+    movements, leaving = [entry], ()
+    if doomed is not None:
+        posting_service.reverse_postings_before_delete(doomed)
+        movements, leaving = [entry, *doomed.entries], (doomed,)
+        shown = x_shown_for_payback(shown, txn, entry)
     movement_removal.remove_movements(
-        [entry], owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
-        shown=match_withdrawal.Silent("CC-367"),
+        movements, owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
+        shown=shown, rows_leaving=leaving,
     )
     db.session.flush()
 
@@ -926,6 +959,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     sync_entry_payback(
         transaction_id, owner_id, moves_credit_total=removed_credit,
+        shown=shown,
     )
     _resync_after_entry_change(txn)
 
