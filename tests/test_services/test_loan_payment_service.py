@@ -493,8 +493,11 @@ class TestGetPaymentHistory:
         The state is reachable only by bypassing the status seam -- here a bulk
         ``query.update``, the shape finding N-65 measured 41 of in the suite.
         The resolver's cut now reads this day, so inventing one would place a
-        real payment on a day nothing recorded; the shared accessor refuses
-        instead (:func:`app.utils.balance_predicates.settled_day`).
+        real payment on a day nothing recorded; the loan walk refuses instead
+        (:func:`app.services.loan_ledger.payment_visible_on`, naming the
+        transfer since leaf balance:X-bi-6-4d-1; the shared row accessor
+        :func:`app.utils.balance_predicates.settled_day` refused for it until
+        then).
 
         **The payment is settled through the door, so its transfer and its
         covering movement are VALID, and the bulk update then releases only the
