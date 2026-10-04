@@ -11,6 +11,17 @@
 {% macro frees_lines(w) -%}
 withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so {{ w.lines | length }} bank line{{ '' if w.lines | length == 1 else 's' }} {{ 'is' if w.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in w.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}
 {%- endmacro %}
+{#- **The purchase X's confirmation sentence** (plan step
+    credit_card:CC-5-4a-5, ruling R-CC80, "Every door warns": the X "would
+    ask: 'Delete [the purchase] [its figure]? The bank's 9/21 -[figure] line
+    will be unexplained again on your statement screen.'").  The ruling's
+    shape, day and figure, rather than `frees_lines`' clause: it fills a
+    browser confirm, so it is PLAIN TEXT, and `w` is the same withdrawal the
+    X posts back (`shown_line_ids`).  The caller writes the question before
+    it. -#}
+{% macro unexplained_again(w) -%}
+The bank's {% for line in w.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ money(line.amount) }}{{ ', ' if not loop.last }}{% endfor %} line{{ '' if w.lines | length == 1 else 's' }} will be unexplained again on your statement screen.
+{%- endmacro %}
 {#- **What a caption NAMED, as the page posts it back** (plan step
     credit_card:CC-5-4a-5, rulings R-CC81 / R-CC127): the ids of the lines
     `frees_lines(w)` prints, from the SAME `w`, sorted and comma-joined --
@@ -30,7 +41,9 @@ withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so
 {#- **What a refused press redraws above the card** (ruling R-CC128,
     "Redraw all"): the refusal's facts, then the one instruction the redraw
     makes true -- the card below is current, so pressing again goes ahead.
-    Both full-edit popovers draw it from `PageOutOfDate.facts`. -#}
+    Both full-edit popovers draw it from `PageOutOfDate.facts`, and so does
+    the purchase list, which a refused X or edit draws again as it is now
+    (`routes.entries._refused_entry_response`). -#}
 {% macro page_refusal_banner(facts) -%}
 <div class="alert alert-warning py-1 px-2 mb-2 small" role="alert">
   <i class="bi bi-exclamation-triangle"></i> {{ facts }} Here it is as it is now; press again to go ahead.

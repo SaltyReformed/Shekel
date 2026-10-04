@@ -29,6 +29,7 @@ from app.routes._render_helpers import (
 from app.routes.transactions._bp import transactions_bp
 from app.schemas.validation import (
     MarkDoneSchema,
+    ShownLinesSchema,
     TransactionDeleteSchema,
     TransactionItemUpdateSchema,
     TransactionUpdateSchema,
@@ -120,6 +121,10 @@ _mark_done_schema = MarkDoneSchema()
 # purchases its dialog named (plan step ``credit_card:CC-5-4a-5``, rulings
 # **R-CC127** / **R-CC131**).
 _delete_dialog_schema = TransactionDeleteSchema()
+
+# Undo CC's, also a DELETE: the bank lines the card's caption named for the
+# payback it deletes (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC80**).
+_unmark_credit_schema = ShownLinesSchema()
 
 
 @dataclass(frozen=True)
@@ -304,6 +309,10 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
             [txn], budgets,
             {} if period is None else {period.period_id: period},
             cash_flow.purchases,
+            # The SESSION's user decides whether the card's purchase list may
+            # name the owner's bank lines, never ``can_edit`` below, which the
+            # browser posts back (plan step ``credit_card:CC-5-4a-5``).
+            current_user.id,
         ),
         can_edit=can_edit,
         id_prefix=card_prefix,

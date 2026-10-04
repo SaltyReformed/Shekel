@@ -1,10 +1,11 @@
 """
 Shekel Budget App -- What a page NAMED before the press
 
-One translation, made identically by every door a full-edit popover posts to:
-the transaction popover's Save, Paid / Received and Delete
-(``routes/transactions/mutations.py``) and the transfer popover's Save and Paid
-(``routes/transfers/mutations.py``).
+One translation, made identically by every door a page with withdrawal
+captions posts to: the transaction popover's Save, Paid / Received, Delete and
+Undo CC (``routes/transactions/mutations.py``), the transfer popover's Save and
+Paid (``routes/transfers/mutations.py``), and the purchase list's X and edit
+form (``routes/entries.py``).
 
 **The act that takes a movement off the books asks what the owner was SHOWN**
 (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): the
@@ -19,9 +20,14 @@ that may free no line (ruling **R-CC130**,
 ``routes.transactions._press._mark_paid_press``); every other door's is that
 it named nothing.
 
-**Only a full-edit popover posts the field, so its presence also says WHERE a
-refusal is answered**: a popover's out-of-date press redraws the popover
-(ruling **R-CC128**), and any other surface's refusal is its ordinary error.
+**At the transaction and transfer doors only a full-edit popover posts the
+field, so there its presence also says WHERE a refusal is answered**: a
+popover's out-of-date press redraws the popover (ruling **R-CC128**), and any
+other surface's refusal is its ordinary error.  The purchase list's doors
+post it from the list itself and read only :attr:`Press.shown`: each answers
+a refusal by drawing that list again as it is now
+(``routes.entries._refused_entry_response``), but for a purchase or row that
+is gone, which is "not found".
 
 Pure: no Flask import, no session.  A route-tier helper because the facts it
 reads are about the FORM, the shape of :mod:`app.routes._typed_figure`.
@@ -44,9 +50,10 @@ class Press(NamedTuple):
         shown: What the removal act is told the page named
             (:class:`~app.services.match_withdrawal.Shown`), or what lets the
             door stay silent.
-        from_popover: Whether the request posted the field -- which only a
-            full-edit popover renders -- so a refusal as out of date redraws
-            that popover (ruling **R-CC128**).
+        from_popover: Whether the request posted the field -- which, of the
+            transaction and transfer doors' surfaces, only a full-edit popover
+            renders -- so a refusal as out of date redraws that popover
+            (ruling **R-CC128**).  The purchase list's doors do not read it.
     """
 
     shown: Shown | Silent
@@ -67,8 +74,8 @@ def read_press(data: dict, *, absent: Shown | Silent) -> Press:
 
     Returns:
         The :class:`Press`: ``Shown`` over the posted ids -- none, for the
-        empty value ``ShownIds`` loads as ``None`` -- from a popover, or
-        *absent* from any other surface.
+        empty value ``ShownIds`` loads as ``None`` -- from a page that posts
+        the field, or *absent* from any other surface.
     """
     if SHOWN_LINES_FIELD not in data:
         return Press(shown=absent, from_popover=False)

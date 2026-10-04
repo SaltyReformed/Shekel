@@ -20,6 +20,7 @@ from app.models.category import Category
 from app.models.account import Account
 from app.services import (
     category_service,
+    credit_workflow,
     definition_delete,
     match_withdrawal,
     pay_period_service,
@@ -34,6 +35,7 @@ from app.services.cash_flow_set import CashFlowSet, purchase_accounts
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
+from app.utils.balance_predicates import is_credit
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
 from app.routes._refused_press import RedrawnCard
@@ -221,6 +223,16 @@ def render_full_edit(txn, *, page_refusal):
         # uses.  ``None`` for a row holding no payment; a withdrawal freeing
         # nothing renders nothing.
         payment_withdraws=_payment_withdrawal(txn),
+        # **What leaving Credit would WITHDRAW** -- Undo CC, or Status set
+        # back to Projected, deletes the row's CC payback (plan step
+        # ``credit_card:CC-5-4a-5``, ruling **R-CC80**: *"all three
+        # card-payback buttons name the bank line before you press"*), read
+        # through the doors' own twin over the same payback.  ``None`` for a
+        # row that is not Credit, whose card offers neither press.
+        payback_withdraws=(
+            credit_workflow.pending_for_credit_revert(txn)
+            if is_credit(txn) else None
+        ),
         # **Whether Paid / Received would record $0.00** (plan step
         # ``credit_card:CC-5-4a-5``): such a settle takes a kept payment off
         # the books exactly as a typed $0.00 does, so Paid's caption names

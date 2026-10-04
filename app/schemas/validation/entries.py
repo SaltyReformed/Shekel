@@ -14,6 +14,7 @@ from app.services.entry_service import CHARGE, REFUND
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    ShownIds,
     _normalize_empty_inputs,
 )
 
@@ -138,6 +139,13 @@ class EntryUpdateSchema(BaseSchema):
     # must put the purchase back among the outstanding ones.
     settled_on = fields.Date(allow_none=True)
     is_credit = fields.Boolean()
+    # The bank lines the edit form's CC caption NAMED (plan step
+    # ``credit_card:CC-5-4a-5``, rulings **R-CC80** / **R-CC127**): what
+    # un-ticking the envelope's last card purchase frees when it deletes a
+    # payback a match names.  Posted by the owner's edit form, empty when it
+    # names none.  ``allow_none`` is presence:
+    # :class:`~app.schemas.validation._helpers.ShownIds` says why.
+    shown_lines = ShownIds(allow_none=True)
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

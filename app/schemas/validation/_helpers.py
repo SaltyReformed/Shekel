@@ -498,11 +498,13 @@ class ShownIds(fields.Field):
 class ShownLinesSchema(BaseSchema):
     """A press that posts nothing but the lines its page named.
 
-    The transfer popover's Paid, which loads no other schema to declare
-    :class:`ShownIds` on (plan step ``credit_card:CC-5-4a-5``).  The
-    transfer instance DELETE reads no field: no template renders it, so every
-    request it takes named nothing.  The transaction DELETE's dialog names
-    its purchases too (``TransactionDeleteSchema``).
+    The presses that load no other schema to declare :class:`ShownIds` on
+    (plan step ``credit_card:CC-5-4a-5``): the transfer popover's Paid, the
+    purchase list's X (a DELETE, so the query string) and the bill popover's
+    Undo CC (a DELETE too).  The transfer instance DELETE reads no field: no
+    template renders it, so every request it takes named nothing.  The
+    transaction DELETE's dialog names its purchases too
+    (``TransactionDeleteSchema``).
     """
 
     @pre_load

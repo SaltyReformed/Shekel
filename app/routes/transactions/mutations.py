@@ -73,6 +73,7 @@ from app.routes.transactions._helpers import (
     _mark_done_success_response,
     _delete_dialog_schema,
     _stale_transaction_response,
+    _unmark_credit_schema,
     _update_schema_for,
     _verify_owned_fks_in_update,
 )
@@ -371,9 +372,10 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
             # here as StaleDataError and must yield the 409 conflict
             # cell, not a 500.  The helper does not commit -- the
             # deletion joins this request's commit so the status flip
-            # and the payback removal land atomically.
+            # and the payback removal land atomically, under what the card
+            # named for the payback (ruling **R-CC80**).
             credit_workflow.delete_payback_on_credit_revert(
-                txn, current_user.id,
+                txn, current_user.id, shown=press.shown,
             )
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
@@ -904,14 +906,26 @@ def mark_credit(txn_id):
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback.
 
-    Optimistic locking: see :func:`mark_credit`.
+    Optimistic locking: see :func:`mark_credit`.  The button posts the bank
+    lines its caption named (plan step ``credit_card:CC-5-4a-5``, rulings
+    **R-CC80** / **R-CC127**), and a card out of date is redrawn (**R-CC128**).
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+    errors = _unmark_credit_schema.validate(request.args)
+    if errors:
+        return _error_transaction_response(
+            txn_id, flatten_schema_errors(errors), status=422,
+        )
+    press = read_press(
+        _unmark_credit_schema.load(request.args), absent=NOTHING_SHOWN,
+    )
 
     try:
-        credit_workflow.unmark_credit(txn_id, current_user.id)
+        credit_workflow.unmark_credit(
+            txn_id, current_user.id, shown=press.shown,
+        )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -925,8 +939,9 @@ def unmark_credit(txn_id):
         # state-machine verification in
         # ``credit_workflow.unmark_credit`` rejects the request --
         # e.g. attempting to unmark a Paid row.  The fragment names
-        # the offending status so the user understands why.
-        return _error_transaction_response(txn_id, str(exc))
+        # the offending status so the user understands why; a card out of
+        # date is redrawn instead (ruling **R-CC128**).
+        return _refused(txn_id, exc, press)
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 

@@ -101,6 +101,8 @@ def _lists(rows):
     return build_entry_lists_dict(
         rows, budgets, periods,
         resolve_owner_cash_flow_set(rows[0].user_id) if rows else None,
+        # The owner is looking, as on the grid (plan step CC-5-4a-5).
+        rows[0].user_id if rows else None,
     )
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
@@ -442,6 +444,7 @@ class TestBuildEntryListsDict:
             with pytest.raises(KeyError):
                 build_entry_lists_dict(
                     [txn], budgets, {}, resolve_owner_cash_flow_set(txn.user_id),
+                    txn.user_id,
                 )
 
     def test_envelope_without_entries_still_included(
