@@ -627,7 +627,9 @@ class TestPurchaseAgainstDelete:
             assert purchase.response.status_code == 200
             assert delete.waited
             assert delete.response.status_code == 400
-            assert "Groceries holds 1 purchase now" in _body(delete)
+            assert "Groceries now holds 1 purchase the page did not name" in (
+                _body(delete)
+            )
             assert _state(row_id) == (False, 1)
 
 

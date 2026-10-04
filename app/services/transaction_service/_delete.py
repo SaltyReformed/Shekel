@@ -302,8 +302,17 @@ def _refuse_unnamed_purchases(
     all' ruling ... You decide with it in view."*  Equality both ways, as the
     bank-line comparison is (ruling **R-CC127**): a purchase added since the
     dialog was drawn would leave the books unnamed, and one named and gone was
-    removed elsewhere.  The refusal names what the row holds now, so the
-    `$12.34` is in view above the redrawn card.
+    removed elsewhere.
+
+    **What the refusal says.**  It opens with ruling **R-CC128**'s banner
+    words ("nothing was saved because the page was out of date") as every
+    out-of-date press does, then names the purchases the page did not -- by
+    description and day, never an id (ruling **R-CC98**), and only those, so
+    a swap reads as what changed -- and counts the named ones that are gone.
+    Their figures are not spelled here: the redrawn card's purchase list
+    prints each through the app's one money formatter (the ``money`` macro),
+    and a second spelling of it in a sentence would print a refund as
+    ``$-28.29``.
 
     Args:
         txn: The row being deleted.
@@ -320,19 +329,28 @@ def _refuse_unnamed_purchases(
     purchase_ids = _purchase_ids(txn)
     if purchase_ids == purchases_named:
         return purchase_ids
-    holds = txn.purchases
-    count = len(holds)
-    listed = "; ".join(
-        f"{entry.purchased_on.month}/{entry.purchased_on.day} "
-        f"{entry.description} ${entry.amount:,.2f}"
-        for entry in holds
-    )
-    raise PageOutOfDate(
-        f"Nothing was deleted: this page was out of date. {txn.name} holds "
-        f"{count} purchase{'' if count == 1 else 's'} now"
-        f"{f' ({listed})' if holds else ''}, and the page named "
-        f"{len(purchases_named)}."
-    )
+    facts = "Nothing was saved: this page was out of date."
+    unnamed = [
+        entry for entry in txn.purchases if entry.id not in purchases_named
+    ]
+    if unnamed:
+        listed = "; ".join(
+            f"{entry.description}, {entry.purchased_on.month}/"
+            f"{entry.purchased_on.day}"
+            for entry in unnamed
+        )
+        facts += (
+            f" {txn.name} now holds {len(unnamed)} purchase"
+            f"{'' if len(unnamed) == 1 else 's'} the page did not name "
+            f"({listed})."
+        )
+    gone = len(purchases_named - purchase_ids)
+    if gone:
+        facts += (
+            f" {gone} purchase{'' if gone == 1 else 's'} the page named "
+            f"{'is' if gone == 1 else 'are'} no longer under {txn.name}."
+        )
+    raise PageOutOfDate(facts)
 
 
 def delete_transaction(

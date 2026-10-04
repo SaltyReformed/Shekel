@@ -122,10 +122,12 @@ def render_full_edit(txn, *, page_refusal):
 
     **ONE render for the popover's GET and for its REDRAW** (plan step
     ``credit_card:CC-5-4a-5``, ruling **R-CC128**, developer 2026-10-04,
-    "Redraw all"): a press the popover sends that the removal act refuses as
-    out of date answers with this same card, drawn from what is true now,
-    with the refusal above it -- so every box and every caption on the
-    redrawn card, and the lines it posts back, come from one moment.  Two
+    "Redraw all"): a press the popover sends that is refused as out of date
+    -- by the removal act over the bank lines (ruling **R-CC127**), or by the
+    row delete over its dialog's purchases (ruling **R-CC131**) -- answers
+    with this same card, drawn from what is true now, with the refusal above
+    it, so every box and every caption on the redrawn card, and what it posts
+    back, come from one moment.  Two
     renders would be two answers to what the card shows.
 
     Args:

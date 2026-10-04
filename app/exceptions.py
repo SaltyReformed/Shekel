@@ -840,7 +840,9 @@ class PageOutOfDate(ValidationError):
 
         Worded for any press -- a Save, Paid / Received, a Delete -- because
         every one of them reaches it (review finding L3: it said "Saving now"
-        on a Delete).
+        on a Delete).  It opens with ruling **R-CC128**'s banner words
+        ("nothing was saved because the page was out of date"), which every
+        out-of-date refusal shares, the delete's purchases one included.
 
         Args:
             freed: How many bank lines the press would leave unexplained again.

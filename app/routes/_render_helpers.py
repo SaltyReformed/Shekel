@@ -381,11 +381,12 @@ def settles_at_nothing(budget: Decimal, retained: "Decimal | None") -> bool:
     by the same ruling (**R-CC56**); without the caption, a page that named
     no line would be refused at every press (ruling **R-CC127**).  The
     transfer popover does not ask: a stated transfer price is positive by its
-    CHECKs, and a derived loan payment is ``$0.00`` only where its P&I rounds
-    to zero with no escrow or extra (``$1.00`` at 0% over 360 months), on a
-    loan whose kept payment was booked above zero and matched -- a shape no
-    real loan reaches, and one whose press is refused as out of date rather
-    than withdrawing unnamed.
+    CHECKs, and a derived loan payment is ``$0.00`` only where its level P&I,
+    priced from the loan's original principal, rounds to zero with no escrow
+    or extra (``$1.00`` at 0% over 360 months).  On such a loan whose kept
+    payment was booked above zero and matched, the popover's Paid is refused
+    as out of date and the grid leg's one-click withdraws silently under
+    **R-CC56**.
 
     Args:
         budget: The row's PLAN -- ``budgets[id]``.

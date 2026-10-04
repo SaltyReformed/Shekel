@@ -40,11 +40,13 @@
     $0.00 over a kept, matched payment: a stated price is positive
     (ck_transfers_positive_amount,
     ck_template_amount_versions_transfer_positive_amount), and a derived loan
-    payment is $0.00 only where its P&I ROUNDS to zero with no escrow or
-    extra -- `calculate_monthly_payment` gives $0.00 for $1.00 at 0% or $0.50
-    at 5% over 360 months -- on a loan whose kept payment was booked above
-    zero and matched.  No real loan reaches that shape, and a press that did
-    would be refused as out of date (R-CC127), never withdraw unnamed. -#}
+    payment is $0.00 only where its level P&I -- priced from the loan's
+    ORIGINAL principal (loan_resolver/_periods.py) -- ROUNDS to zero with no
+    escrow or extra: `calculate_monthly_payment` gives $0.00 for $1.00 at 0%
+    or $0.50 at 5% over 360 months.  Such a loan whose kept payment was booked
+    above zero and matched would have this Paid refused as out of date
+    (R-CC127), and the grid leg's one-click Mark Paid withdraw it silently
+    under R-CC56 -- never this card unnamed. -#}
 {% set zero_caption = payment_withdraws and payment_withdraws.frees_a_line
    and xfer.status and xfer.status.is_settled %}
 {#- The root's id is what a press refused as out of date redraws (ruling

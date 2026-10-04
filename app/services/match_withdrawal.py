@@ -784,6 +784,8 @@ def take_out_of_matches(
 
     Raises:
         PageOutOfDate: When what this frees differs from *shown*.
+        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
+            would free a line (ruling **R-CC130**).
     """
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
@@ -840,6 +842,8 @@ def withdraw_for_moved_movement(
 
     Raises:
         PageOutOfDate: When what this frees differs from *shown*.
+        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
+            would free a line (ruling **R-CC130**).
     """
     return take_out_of_matches(
         [entry], owner_id, because=MOVED_ACCOUNTS, shown=shown,

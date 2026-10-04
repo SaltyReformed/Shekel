@@ -7,11 +7,12 @@ transfer popover's Save and Paid (``routes/transfers``): whether a refusal
 REDRAWS the popover or is the surface's ordinary error.
 
 **The redraw is ruling R-CC128's** (developer 2026-10-04, "Redraw all"): a
-press the removal act refuses because its page named other bank lines than it
-would free (:class:`~app.exceptions.PageOutOfDate`, ruling **R-CC127**) is
-answered with the WHOLE popover drawn from what is true now, the refusal above
-it, so every box and every caption on it -- and the lines it posts back -- come
-from one moment, and pressing again goes ahead.  It is swapped into the card
+press refused because its page named other things than the press would take
+(:class:`~app.exceptions.PageOutOfDate`: the removal act over the bank lines,
+ruling **R-CC127**, or the row delete over its dialog's purchases, ruling
+**R-CC131**) is answered with the WHOLE popover drawn from what is true now,
+the refusal above it, so every box and every caption on it -- and what it
+posts back -- come from one moment, and pressing again goes ahead.  It is swapped into the card
 the press came from (:func:`~app.utils.error_fragments.designed_error`'s
 retarget, the shape ruling **R-SAL33** gave the readiness what-if), replacing
 the card whole, so the popover stays open: the grid's ``afterSwap`` closes it
@@ -61,14 +62,19 @@ def answer_refused_press(
         press: What the request said about its page (``read_press``).
         redraw: Re-reads the press's object and draws its popover with the
             refusal's facts above it, AFTER this has rolled the press back;
-            ``None`` when the object is no longer the requester's to draw.
+            ``None`` when there is no card to draw.
         refuse: The door's ordinary designed error for *exc*; it rolls back
             itself.
 
     Returns:
         A designed 400 swapping the redrawn card into the card the press came
-        from; ``("Not found", 404)`` -- the answer both packages give a gone
-        object -- when there is none to draw; or *refuse*'s answer.
+        from, or *refuse*'s answer -- for every other refusal, and for a press
+        whose card cannot be drawn.  **Not a bare 404 there** (the second
+        review's L3, on review finding L8's one rule for whether a transfer
+        card is drawn): a bare body carries no designed-fragment header, so
+        htmx drops it and the press reads as doing nothing, where the door's
+        own refusal says why -- and answers a gone row "not found" itself
+        (the transaction door's ``_RowGone``).
     """
     if not (isinstance(exc, PageOutOfDate) and press.from_popover):
         return refuse()
@@ -76,7 +82,7 @@ def answer_refused_press(
     db.session.expire_all()
     card = redraw(exc.facts)
     if card is None:
-        return "Not found", 404
+        return refuse()
     return designed_error(
         card.body, 400, retarget=f"#{card.dom_id}", reswap="outerHTML",
     )

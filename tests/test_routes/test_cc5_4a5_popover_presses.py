@@ -20,7 +20,8 @@ field is the owner's silent Mark Paid (ruling **R-CC56**) or, at every other
 door, a press that named nothing.  Ruling **R-CC129** (developer 2026-10-04,
 "Warn in both places") names the one Save typing a $0.00 estimate beside Paid
 under the Estimated box; ruling **R-CC130** ("Companion refuses") refuses a
-companion's Mark Paid that would free a line.
+companion's Mark Paid that would free a line.  The row delete's dialog is
+graded in ``test_cc5_4a5_delete_dialog``.
 """
 
 from __future__ import annotations
@@ -36,8 +37,16 @@ from app.extensions import db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.exceptions import PageOutOfDate
+# Pylint: ``shekel-private-module-import`` -- the one test of the refused-press
+# decision's no-card arm calls it directly: a route reaches that arm only when
+# another tab changes the press's object between its refusal and the redraw.
+# pylint: disable=shekel-private-module-import
+from app.routes._refused_press import answer_refused_press
+from app.routes._shown_lines import Press
+# pylint: enable=shekel-private-module-import
 from app.services import (
-    entry_service,
+    match_withdrawal,
     transaction_service,
     transfer_legs,
     transfer_service,
@@ -49,12 +58,7 @@ from app.services.statement_match import (
     release_match,
 )
 from app.utils.log_events import EVT_STATEMENT_MATCH_WITHDRAWN
-from tests._test_helpers import (
-    create_account_of_type,
-    generate_row_of,
-    make_expense_template,
-    typed,
-)
+from tests._test_helpers import create_account_of_type, typed
 from tests.conftest import log_in_seed_user
 from tests.test_routes._statement_forms import ReconcileFormReader
 from tests.test_routes.test_cc5_4a3_captions import (
@@ -552,6 +556,64 @@ class TestTheEstimateCaption:
             assert row.covering_movements == [], "a $0.00 record moves nothing"
             assert not _claimed(seed_user, line)
 
+    def test_no_caption_on_a_settled_row(self, app, auth_client, seed_user):
+        """A settled Hotel's $0.00 is the Actual box's caption (R-CC56), not the Estimated box's.
+
+        The second review's L2: dropping the Projected half of the predicate
+        survived every test.
+        """
+        with app.app_context():
+            settled, _line = _hotel(seed_user)
+
+            html = _popover(auth_client, settled.id)
+
+            assert f'id="zero-withdraws-{settled.id}"' in html
+            assert f'id="estimate-withdraws-{settled.id}"' not in html
+
+    def test_no_caption_on_a_row_that_settles_from_its_purchases(
+        self, app, auth_client, seed_user,
+    ):
+        """A reverted envelope holding purchases settles FROM them, which Paid's caption names.
+
+        The second review's L2: dropping the purchases half of the predicate
+        survived every test.
+        """
+        with app.app_context():
+            envelope, _line = _reverted_envelope(seed_user, with_purchase=True)
+
+            html = _popover(auth_client, envelope.id)
+
+            assert f'id="purchases-withdraws-{envelope.id}"' in html
+            assert f'id="estimate-withdraws-{envelope.id}"' not in html
+
+    def test_an_income_row_says_received(self, app, auth_client, seed_user):
+        """A reverted matched paycheck's caption names Received, as its button does."""
+        with app.app_context():
+            txn = a_transaction(
+                seed_user, name="Refund", amount="120.00", income=True,
+                template=False,
+            )
+            db.session.commit()
+            _settle(seed_user, txn)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="120.00",
+                posted_on=_day(seed_user), description="REFUND",
+            )
+            db.session.commit()
+            scope = a_scope(seed_user)
+            accept_match(
+                a_submission(scope, lines=[line], transactions=[txn]), scope,
+            )
+            db.session.commit()
+            _reverted(txn)
+
+            html = _popover(auth_client, txn.id)
+
+            assert (
+                "Saving this as Received at $0.00 withdraws 1 accepted match"
+                in html
+            )
+
     def test_saves_that_free_nothing_on_that_card_go_ahead(
         self, app, auth_client, seed_user,
     ):
@@ -647,211 +709,6 @@ class TestTheSaveIsCheckedAgainstWhatItsCardNamed:
             assert db.session.query(StatementMatch).count() == 1
 
 
-class TestTheDeleteDialogPostsWhatItNamed:
-    """The card's Delete: the button's ``hx-vals``, a DELETE's query string."""
-
-    def test_the_delete_posts_its_dialogs_line_and_withdraws(
-        self, app, auth_client, seed_user,
-    ):
-        """The dialog names the HOTEL line; the button sends its id; the delete withdraws it."""
-        with app.app_context():
-            txn = a_transaction(
-                seed_user, name="Hotel", amount="120.00", template=False,
-            )
-            db.session.commit()
-            _settle(seed_user, txn)
-            line = _matched(seed_user, txn)
-            txn_id = txn.id
-            vals = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert vals == {"shown_lines": str(line.id), "shown_purchases": ""}
-
-            response = auth_client.delete(
-                f"/transactions/{txn_id}", query_string=vals,
-            )
-
-            assert response.status_code == 200
-            _committed()
-            assert not _claimed(seed_user, line)
-
-    def test_a_delete_drawn_before_the_match_is_redrawn(
-        self, app, auth_client, seed_user,
-    ):
-        """The other direction: the page named nothing, and the press would free a line."""
-        with app.app_context():
-            txn = a_transaction(
-                seed_user, name="Hotel", amount="120.00", template=False,
-            )
-            db.session.commit()
-            _settle(seed_user, txn)
-            txn_id = txn.id
-            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert stale == {"shown_lines": "", "shown_purchases": ""}
-            line = _matched(seed_user, txn)
-
-            response = auth_client.delete(
-                f"/transactions/{txn_id}", query_string=stale,
-            )
-
-            html = _redrawn(response, f"txn-full-edit-{txn_id}")
-            _committed()
-            assert db.session.get(Transaction, txn_id) is not None
-            assert _claimed(seed_user, line)
-
-            again = auth_client.delete(
-                f"/transactions/{txn_id}",
-                query_string=_delete_vals(html, txn_id),
-            )
-
-            assert again.status_code == 200
-            _committed()
-            assert not _claimed(seed_user, line)
-
-
-    def test_a_delete_without_the_field_is_refused(
-        self, app, auth_client, seed_user,
-    ):
-        """Review finding M2 (MG): the DELETE's own default is a press that named nothing.
-
-        No card posts this; a request without the field that would free a
-        line is refused on the cell, and the row and its match stand.
-        """
-        with app.app_context():
-            txn = a_transaction(
-                seed_user, name="Hotel", amount="120.00", template=False,
-            )
-            db.session.commit()
-            _settle(seed_user, txn)
-            line = _matched(seed_user, txn)
-            txn_id = txn.id
-
-            response = auth_client.delete(f"/transactions/{txn_id}")
-
-            assert response.status_code == 400
-            assert "HX-Retarget" not in response.headers
-            assert "this page was out of date" in response.get_data(as_text=True)
-            _committed()
-            assert db.session.get(Transaction, txn_id) is not None
-            assert _claimed(seed_user, line)
-
-
-class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
-    """Ruling R-CC131 (developer 2026-10-04, "Refuse and redraw"), fulfilling R-CC96's clause."""
-
-    def test_a_purchase_added_after_the_dialog_was_drawn_is_refused_and_redrawn(
-        self, app, auth_client, seed_user,
-    ):
-        """R-CC131's own example: a dialog drawn at 10:00, a $12.34 purchase at 10:01, Delete.
-
-        Nothing is deleted, the popover is redrawn with the purchase named
-        above it, and the redrawn dialog -- now counting it -- goes ahead.
-        """
-        with app.app_context():
-            txn = _groceries(seed_user)
-            txn_id = txn.id
-            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert stale == {"shown_lines": "", "shown_purchases": ""}
-            kroger = _kroger(seed_user, txn_id)
-
-            response = auth_client.delete(
-                f"/transactions/{txn_id}", query_string=stale,
-            )
-
-            assert response.status_code == 400
-            assert response.headers["HX-Retarget"] == f"#txn-full-edit-{txn_id}"
-            assert response.headers["HX-Reswap"] == "outerHTML"
-            html = response.get_data(as_text=True)
-            day = _day(seed_user)
-            assert (
-                "Nothing was deleted: this page was out of date. Groceries "
-                f"holds 1 purchase now ({day.month}/{day.day} Kroger $12.34), "
-                "and the page named 0." in html
-            )
-            assert "Here it is as it is now; press again to go ahead." in html
-            assert "and the 1 purchase filed under it?" in html
-            _committed()
-            row = db.session.get(Transaction, txn_id)
-            assert not row.is_deleted
-            assert [entry.id for entry in row.purchases] == [kroger]
-
-            fresh = _delete_vals(html, txn_id)
-            assert fresh == {"shown_lines": "", "shown_purchases": str(kroger)}
-            again = auth_client.delete(
-                f"/transactions/{txn_id}", query_string=fresh,
-            )
-
-            assert again.status_code == 200
-            _committed()
-            row = db.session.get(Transaction, txn_id)
-            assert row.is_deleted, "a recurring row stays as a tombstone"
-            assert row.entries == [], "and its purchase went with it, named"
-
-    def test_a_purchase_named_and_since_removed_is_refused(
-        self, app, auth_client, seed_user,
-    ):
-        """Equality both ways: the dialog counted a purchase another tab has since deleted."""
-        with app.app_context():
-            txn = _groceries(seed_user)
-            txn_id = txn.id
-            kroger = _kroger(seed_user, txn_id)
-            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert stale == {"shown_lines": "", "shown_purchases": str(kroger)}
-            entry_service.delete_entry(kroger, seed_user["user"].id)
-            db.session.commit()
-
-            response = auth_client.delete(
-                f"/transactions/{txn_id}", query_string=stale,
-            )
-
-            assert response.status_code == 400
-            assert (
-                "Groceries holds 0 purchases now, and the page named 1."
-                in response.get_data(as_text=True)
-            )
-            _committed()
-            assert not db.session.get(Transaction, txn_id).is_deleted
-
-    def test_a_delete_without_the_field_over_a_purchase_is_refused(
-        self, app, auth_client, seed_user,
-    ):
-        """No dialog posts this; a request naming no purchase does not delete one."""
-        with app.app_context():
-            txn = _groceries(seed_user)
-            txn_id = txn.id
-            kroger = _kroger(seed_user, txn_id)
-
-            response = auth_client.delete(f"/transactions/{txn_id}")
-
-            assert response.status_code == 400
-            assert "HX-Retarget" not in response.headers
-            _committed()
-            row = db.session.get(Transaction, txn_id)
-            assert not row.is_deleted
-            assert [entry.id for entry in row.purchases] == [kroger]
-
-
-def _groceries(seed_user):
-    """This period's recurring $300.00 Groceries envelope, holding no purchase."""
-    template = make_expense_template(
-        db.session, seed_user, amount="300.00", name="Groceries",
-        category_key="Rent", is_envelope=True,
-    )
-    txn = generate_row_of(template, seed_user["bootstrap_period"])
-    db.session.commit()
-    return txn
-
-
-def _kroger(seed_user, txn_id):
-    """A $12.34 Kroger purchase added under *txn_id* -- the companion's, at 10:01."""
-    entry = entry_service.create_entry(
-        txn_id, seed_user["user"].id, entry_service.EntryDetails(
-            figure=typed(Decimal("12.34")), description="Kroger",
-            purchased_on=_day(seed_user),
-        ),
-    )
-    db.session.commit()
-    return entry.id
-
-
 class TestTheTransferPopover:
     """The transfer card: its Save's and its Paid's ``shown_lines``."""
 
@@ -934,6 +791,25 @@ def transfer_service_revert(seed_user, xfer_id):
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
     )
     db.session.commit()
+
+
+class TestARefusedPressWithNoCardToRedraw:
+    """The second review's L3: a popover press refused when its card cannot be drawn."""
+
+    def test_it_is_the_doors_own_refusal_not_a_bare_404(self, app):
+        """A bare 404 carries no designed-fragment header, so htmx drops it.
+
+        The door's own refusal says why.
+        """
+        with app.app_context():
+            answer = answer_refused_press(
+                PageOutOfDate("Nothing was saved: this page was out of date."),
+                Press(shown=match_withdrawal.NOTHING_SHOWN, from_popover=True),
+                redraw=lambda facts: None,
+                refuse=lambda: ("the door's own refusal", 400),
+            )
+
+            assert answer == ("the door's own refusal", 400)
 
 
 class TestTheTransferInstanceDeleteRefusesRatherThanFailing:

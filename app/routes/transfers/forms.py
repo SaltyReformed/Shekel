@@ -89,15 +89,14 @@ def _drawable_card(xfer_id, leg_account_id):
     refuses).  Three states have no card:
 
     * a transfer that is not the requester's, or missing -- one "not found";
-    * a SOFT-DELETED transfer: since plan step X-au-c3 the card resolves the
-      pair's recorded and retained figures and ``load_transfer_rows``
-      REFUSES a deleted parent, so it 500'd where it used to draw an edit form
-      over a deleted row.  "Not found" per the project security response
-      rule, and a deleted row is invisible to normal operations
-      (``transfer_service._validation._get_transfer_or_raise``).  The OTHER
-      transfer routes still admit a deleted parent -- notably the idempotent
-      DELETE, which needs to -- so the refusal is scoped to the edit doors
-      rather than pushed into ``_get_owned_transfer``;
+    * a SOFT-DELETED transfer, which has no edit surface: "not found" per
+      the project security response rule, a deleted row being invisible to
+      normal operations (``transfer_service._validation._get_transfer_or_raise``).
+      The refusal dates from plan step X-au-c3, when the card's figures came
+      through a pair loader that refused a deleted parent and the request
+      500'd.  The OTHER transfer routes still admit a deleted parent --
+      notably the idempotent DELETE, which needs to -- so the refusal is
+      scoped to the edit doors rather than pushed into ``_get_owned_transfer``;
     * a ``leg_account_id`` that is neither endpoint, which names a leg that
       does not exist (a stale page whose transfer was re-pointed meanwhile).
 

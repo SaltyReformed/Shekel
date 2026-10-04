@@ -549,7 +549,7 @@ class TestTheDialogSaysWhatUnarchiveDoes:
 
 
 class TestTheDialogCountsPurchasesOnly:
-    """A Paid bill's own payment record is not 'a purchase filed under it'."""
+    """A Paid bill's own payment record is not 'a purchase under it'."""
 
     def test_a_paid_bill_names_no_purchase(
         self, app, db, auth_client, seed_user, seed_periods_today,

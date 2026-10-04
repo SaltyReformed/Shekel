@@ -19,7 +19,13 @@ withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so
     posts, because a page that named nothing has said so
     (`schemas.validation._helpers.ShownIds`). -#}
 {% macro shown_line_ids(w) -%}
-{%- if w %}{{ w.line_ids | sort | join(',') }}{% endif -%}
+{%- if w %}{{ posted_ids(w.line_ids) }}{% endif -%}
+{%- endmacro %}
+{#- **How a page posts a set of ids it NAMED back**: sorted, comma-joined --
+    the one spelling ``schemas.validation._helpers.ShownIds`` reads.  The
+    lines above, and a delete dialog's purchases (ruling R-CC131). -#}
+{% macro posted_ids(ids) -%}
+{{ ids | sort | join(',') }}
 {%- endmacro %}
 {#- **What a refused press redraws above the card** (ruling R-CC128,
     "Redraw all"): the refusal's facts, then the one instruction the redraw

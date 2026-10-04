@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, shown_line_ids %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, posted_ids, shown_line_ids %}
 {# Anchored action card -- renders inside the #txn-popover container
    (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
    the old three-tier edit system.  Layout, top to bottom: header +
@@ -807,7 +807,9 @@
       tier, so no sentence here names it (CC-5-4a-4's third review, L1).
       Read off the delete's own preview (``preview.purchase_ids``, the
       ``Transaction.purchases`` reading) since ruling R-CC131: the question
-      counts the set the press is checked against, and posts it back. -#}
+      counts the set the press is checked against, and posts it back.  Its
+      words are that ruling's picked text, "Delete Groceries and the 1
+      purchase under it?" (it read "filed under it", no ruling's words). -#}
   {%- set purchases = preview.purchase_ids -%}
   {#- The un-archive sentence states its exception in words (ruling R-CC112,
       "State the condition"): un-archive restores a row of its candidate set
@@ -815,7 +817,7 @@
       by then (rulings R-PC95, R-PC99), and a check made as this card opens
       could not see a books move made after the delete. -#}
   {%- set question -%}
-Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} filed under it{% endif %}?
+Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} under it{% endif %}?
 {% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
 {% if preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
 {% endif %}{% if preview.soft %}This occurrence stays deleted, and the recurring transaction behind it keeps generating the others.{% if preview.comes_back_on_unarchive %} Archiving and then un-archiving that item would bring it back, empty, unless the books have moved over it by then; the un-archive names any row it keeps deleted.{% endif %}{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
@@ -832,7 +834,7 @@ Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | lengt
               `withdraws` its clause prints (ruling R-CC127), and the
               purchases its question counts (ruling R-CC131, "Refuse and
               redraw"). #}
-          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}", "shown_purchases": "{{ purchases | sort | join(',') }}"}'
+          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}", "shown_purchases": "{{ posted_ids(purchases) }}"}'
           aria-label="Delete {{ txn.name }}">
     <i class="bi bi-trash"></i> Delete this row
   </button>
