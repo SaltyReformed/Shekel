@@ -12,6 +12,18 @@ What :mod:`app.services.pay_stub_service` decides, graded without a request:
   pay is named as counting every taxable earning twice, and an earning moved
   between taxable and after-tax -- which moves the gross but not the net -- is
   refused on the gross, in both directions;
+* the job's answer to "my stub's gross includes after-tax earnings"
+  (**R-SAL102**, finding SAL-592): "yes" adds them to the checked gross, and
+  cannot see an earning under the other of the two headings (the ruling's
+  accepted cost);
+* how a gross miss is worded, read off the net's miss beside it (**R-SAL106**,
+  amending R-SAL104; **R-SAL108**, **R-SAL110**, **R-SAL111**): net exact
+  names the typed gross, and beside it R-SAL104's question and the setting
+  on a "no" job short by exactly the after-tax total, the setting on a "yes"
+  job over by it, else the headings on a "no" job; net off by the same names
+  an amount, or -- when base pay is the printed gross -- the Base pay box or
+  an earning the stub does not print; twice names a line on the wrong side;
+  anything else, the difference;
 * the one-off name clash, ignoring capitals and extra spaces (**R-SAL45**,
   **R-SAL51** (b)), asked only of a one-off a save adds or renames
   (**R-SAL57**);
@@ -140,7 +152,7 @@ def _figures(world, *, payday=_PAYDAY, roth="110.00", one_offs=None, base="2884.
     )
 
 
-def _printed_under(world, figures, **kinds):
+def _printed_under(world: dict, figures: StubFigures, **kinds) -> StubFigures:
     """*figures* with each named line printed under another heading (ruling R-SAL58).
 
     Args:
@@ -321,21 +333,25 @@ class TestWhatAStubAddsUpTo:
 class TestThePrintedGross:
     """R-SAL99, "Check the gross too" (finding SAL-590): base pay plus the taxable earnings."""
 
-    def test_a_gross_typed_as_base_pay_is_named_as_counted_twice(self, world):
+    def test_a_gross_typed_as_base_pay_is_asked_about(self, world):
         """The stub's gross, $2,984.62, typed into Base pay, its earnings entered again.
 
         Base pay 2984.62 + Phone 45.00 + Retro pay 55.00 = 3084.62 against the
         printed 2984.62: the $100.00 of taxable earnings is counted twice, and
-        the refusal says so and names the box.  The net misses by the same
-        $100.00 (2152.62 against 2052.62) and is refused on its own field.
+        the net misses by the same $100.00 (2152.62 against 2052.62), refused
+        on its own field.  Base pay equal to the printed gross with that pair
+        is asked as the Base pay box OR an earning the stub does not print,
+        which makes the same pair (ruling R-SAL111 reworded R-SAL99's "is
+        counted twice", which stated the first as fact).
         """
         with pytest.raises(PayStubRefused) as refused:
             _record(world, _figures(world, base="2984.62"))
         assert refused.value.errors == {
             "printed_gross": (
                 "Base pay plus your taxable lines make $3,084.62, but the stub "
-                "prints $2,984.62: $100.00 is counted twice.  Is the gross in "
-                "the Base pay box?"
+                "prints $2,984.62: $100.00 over, and the net is off by the same.  Is "
+                "the gross in the Base pay box, or is an earning entered that the "
+                "stub does not print?"
             ),
             "printed_net": (
                 "The lines add up to $2,152.62, but the stub prints $2,052.62 (a "
@@ -352,18 +368,30 @@ class TestThePrintedGross:
         The net balances -- an earning joins the deposit either way, once the
         taxes are typed: 2939.62 - 350.00 - 472.00 - 110.00 + 45.00 = 2052.62
         -- so only the gross sees it: 2884.62 + 55.00 = 2939.62 against the
-        printed 2984.62.
+        printed 2984.62.  The gross is short by exactly the $45.00 entered as
+        after-tax, which a "no" job's stub whose gross held a real after-tax
+        earning makes too, and so does a gross typed $45.00 high, so the
+        refusal names the typed gross, asks after the entry AND names the job's
+        setting (rulings R-SAL104 and R-SAL110: the developer's rulings of
+        2026-10-04 changed this expectation from R-SAL99's single kind
+        question).
         """
         figures = _printed_under(
             world, _figures(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
         )
         with pytest.raises(PayStubRefused) as refused:
             _record(world, figures)
-        assert refused.value.errors == {"printed_gross": (
-            "Base pay plus your taxable lines make $2,939.62, but the stub prints "
-            "$2,984.62 (a difference of $45.00).  Check the base pay, each taxable "
-            "earning, and the kind each is entered under."
-        )}
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable lines make $2,939.62, but the stub prints "
+                "$2,984.62: $45.00 short, the same as your after-tax earnings.  Check "
+                "the gross you typed.  Is one of them taxed on your stub?"
+            ),
+            "stub_gross_includes_after_tax": (
+                "If your stub's gross includes after-tax earnings, set that on your "
+                "salary profile."
+            ),
+        }
 
     def test_an_after_tax_earning_entered_as_taxable_is_not_blamed_on_base_pay(self, world):
         """A stub with no taxable earning prints Phone ($45.00) AFTER-TAX; it is entered taxable.
@@ -372,7 +400,10 @@ class TestThePrintedGross:
         printed gross -- the SAL-590 slip's first sign -- but the net balances
         (2884.62 - 350.00 - 472.00 - 110.00 + 45.00 = 1997.62, and the same
         with Phone taxed: 2929.62 - 932.00), so nothing was counted twice and
-        the refusal names the difference, never the Base pay box.
+        the refusal names the difference, never the Base pay box.  The net is
+        exact, so the amounts are right and the refusal names what the pair
+        allows: the typed gross, and the headings (rulings R-SAL106 and
+        R-SAL108 reworded this from R-SAL99's "check the base pay ...").
         """
         figures = _figures(world, one_offs=())
         with pytest.raises(PayStubRefused) as refused:
@@ -380,8 +411,9 @@ class TestThePrintedGross:
                     printed_gross=Decimal("2884.62"))
         assert refused.value.errors == {"printed_gross": (
             "Base pay plus your taxable lines make $2,929.62, but the stub prints "
-            "$2,884.62 (a difference of $45.00).  Check the base pay, each taxable "
-            "earning, and the kind each is entered under."
+            "$2,884.62 (a difference of $45.00).  Your figures make the stub's net, "
+            "so the amounts are right: check the gross you typed, and which earnings "
+            "are taxable and which after-tax."
         )}
 
     def test_a_gross_typed_as_base_pay_without_every_tax_is_not_diagnosed(self, world):
@@ -390,7 +422,8 @@ class TestThePrintedGross:
         The lines' net leaves Medicare out, so it misses by $142.00 against
         the gross's $100.00 (2194.62 against 2052.62); without the net's
         matching miss the gross alone cannot tell the slip from a kind slip,
-        so the refusal names the $100.00 difference.
+        so the refusal names the $100.00 difference and nothing else (ruling
+        R-SAL106: a pair no single mistake makes).
         """
         figures = _figures(world, base="2984.62")
         medicare = _tax(WithholdingKindEnum.MEDICARE)
@@ -399,8 +432,7 @@ class TestThePrintedGross:
             _record(world, figures)
         assert refused.value.errors["printed_gross"] == (
             "Base pay plus your taxable lines make $3,084.62, but the stub prints "
-            "$2,984.62 (a difference of $100.00).  Check the base pay, each taxable "
-            "earning, and the kind each is entered under."
+            "$2,984.62 (a difference of $100.00).  Check each figure against the stub."
         )
         assert set(refused.value.errors) == {f"tax-{medicare}", "printed_gross"}
 
@@ -409,15 +441,18 @@ class TestThePrintedGross:
 
         Gross 2984.72 against 2984.62 and net 2052.72 against 2052.62 -- the
         net's matching miss alone would read as the SAL-590 slip, so the
-        base pay differing from the printed gross is what keeps it general.
+        base pay differing from the printed gross is what keeps it from naming
+        the Base pay box as the gross's; the net off by the same names an
+        amount (ruling R-SAL106).
         """
         with pytest.raises(PayStubRefused) as refused:
             _record(world, _figures(world, base="2884.72"))
         assert refused.value.errors == {
             "printed_gross": (
                 "Base pay plus your taxable lines make $2,984.72, but the stub "
-                "prints $2,984.62 (a difference of $0.10).  Check the base pay, "
-                "each taxable earning, and the kind each is entered under."
+                "prints $2,984.62 (a difference of $0.10).  The net is off by the "
+                "same, so an amount is wrong: check the base pay and each earning's "
+                "amount."
             ),
             "printed_net": (
                 "The lines add up to $2,052.72, but the stub prints $2,052.62 (a "
@@ -425,14 +460,14 @@ class TestThePrintedGross:
             ),
         }
 
-    def test_the_slip_with_a_zero_tax_left_blank_is_still_named(self, world):
+    def test_the_slip_with_a_zero_tax_left_blank_is_still_asked(self, world):
         """The SAL-590 slip on a stub printing Federal $0.00, the Federal box left blank.
 
         The stub nets 2052.62 + 150.00 = 2202.62.  Typed: Base pay 2984.62
         (the gross) and no Federal, so the lines make gross 3084.62 and net
         3084.62 - 350.00 - 322.00 - 110.00 = 2302.62: both miss by $100.00,
-        exactly as with $0.00 typed, so the slip is named beside the missing
-        tax's own refusal.
+        exactly as with $0.00 typed, so the slip is asked about (ruling
+        R-SAL111's wording) beside the missing tax's own refusal.
         """
         federal = _tax(WithholdingKindEnum.FEDERAL_INCOME)
         figures = _figures(world, base="2984.62")
@@ -443,19 +478,25 @@ class TestThePrintedGross:
             f"tax-{federal}": "Enter the stub's Federal income tax ($0.00 if none).",
             "printed_gross": (
                 "Base pay plus your taxable lines make $3,084.62, but the stub "
-                "prints $2,984.62: $100.00 is counted twice.  Is the gross in "
-                "the Base pay box?"
+                "prints $2,984.62: $100.00 over, and the net is off by the same.  Is "
+                "the gross in the Base pay box, or is an earning entered that the "
+                "stub does not print?"
             ),
         }
 
     def test_a_printed_gross_a_cent_off_is_refused_on_its_own(self, world):
-        """$2,984.63 printed against the lines' $2,984.62; the net is right."""
+        """$2,984.63 printed against the lines' $2,984.62; the net is right.
+
+        Ruling R-SAL108's own case: a typo in the gross box leaves the net
+        exact, so the gross typed is named beside the headings.
+        """
         with pytest.raises(PayStubRefused) as refused:
             _record(world, printed_gross=Decimal("2984.63"))
         assert refused.value.errors == {"printed_gross": (
             "Base pay plus your taxable lines make $2,984.62, but the stub prints "
-            "$2,984.63 (a difference of $0.01).  Check the base pay, each taxable "
-            "earning, and the kind each is entered under."
+            "$2,984.63 (a difference of $0.01).  Your figures make the stub's net, "
+            "so the amounts are right: check the gross you typed, and which earnings "
+            "are taxable and which after-tax."
         )}
 
     def test_the_gross_is_checked_without_a_complete_set_of_taxes(self, world):
@@ -469,6 +510,340 @@ class TestThePrintedGross:
         with pytest.raises(PayStubRefused) as refused:
             _record(world, figures, printed_gross=Decimal("2984.63"))
         assert set(refused.value.errors) == {f"tax-{medicare}", "printed_gross"}
+
+
+def _say_yes(world):
+    """Set the world's job to "my stub's gross includes after-tax earnings" (R-SAL102)."""
+    world["profile"].stub_gross_includes_after_tax = True
+    db.session.commit()
+
+
+def _reimbursed(world, **departures):
+    """The worked example with a $20.00 AFTER-TAX one-off "Reimbursement" for Retro pay.
+
+    gross (base + Phone) 2884.62 + 45.00 = 2929.62; after-tax 20.00;
+    net 2929.62 - 350.00 - 472.00 - 110.00 + 20.00 = 2017.62.  A stub whose
+    gross holds the reimbursement prints 2949.62.
+    """
+    return _figures(world, one_offs=(
+        OneOffFigure("Reimbursement", _kind(PaycheckLineKindEnum.AFTER_TAX_EARNING),
+                     Decimal("20.00")),
+    ), **departures)
+
+
+def _reimbursed_without_phone(world, **departures):
+    """:func:`_reimbursed` with no taxable earning at all: Phone is not on the stub.
+
+    gross = base 2884.62; after-tax 20.00;
+    net 2884.62 - 350.00 - 472.00 - 110.00 + 20.00 = 1972.62.
+    """
+    figures = _reimbursed(world, **departures)
+    del figures.line_amounts[world["lines"]["phone"].id]
+    return figures
+
+
+class TestTheJobSaysWhatItsGrossHolds:
+    """R-SAL102 ("A yes/no on each job", finding SAL-592), worded by R-SAL104 and R-SAL106.
+
+    A "yes" job's printed gross is checked as base pay plus the taxable AND
+    the after-tax earnings.  How a miss is worded is read off the net
+    (R-SAL106): with the net exact, a miss of exactly the after-tax total in
+    the direction that fits the job names the typed gross and the setting
+    (R-SAL104's question beside them on a "no" job; R-SAL108, R-SAL110);
+    with the net off, the pair decides and no setting is named.
+    """
+
+    def test_the_door_reads_the_jobs_answer(self, world):
+        """The same stub, gross 2949.62 holding the reimbursement: "no" refuses, "yes" saves.
+
+        "no": base + taxable = 2929.62, $20.00 short -- exactly the after-tax
+        earnings, with the net exact -- so the refusal names the typed gross,
+        asks after the entry and names the setting (R-SAL104, R-SAL110).
+        """
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed(world), printed_net=Decimal("2017.62"),
+                    printed_gross=Decimal("2949.62"))
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable lines make $2,929.62, but the stub prints "
+                "$2,949.62: $20.00 short, the same as your after-tax earnings.  Check "
+                "the gross you typed.  Is one of them taxed on your stub?"
+            ),
+            "stub_gross_includes_after_tax": (
+                "If your stub's gross includes after-tax earnings, set that on your "
+                "salary profile."
+            ),
+        }
+        db.session.rollback()
+        assert db.session.query(PayStub).count() == 0
+
+        _say_yes(world)
+        stub = _record(world, _reimbursed(world), printed_net=Decimal("2017.62"),
+                       printed_gross=Decimal("2949.62"))
+        assert [(o.name, o.amount) for o in stub.one_offs] == [
+            ("Reimbursement", Decimal("20.00")),
+        ]
+
+    def test_an_edit_reads_the_stubs_own_job(self, world):
+        """A "yes" job's stub takes an edit (Roth 110 -> 100, net +10.00) checked the same way."""
+        _say_yes(world)
+        stub = _record(world, _reimbursed(world), printed_net=Decimal("2017.62"),
+                       printed_gross=Decimal("2949.62"))
+        pay_stub_service.edit_stub(
+            stub, _reimbursed(world, roth="100.00"),
+            _printed(Decimal("2027.62"), Decimal("2949.62")), _ctx(world), _TODAY,
+        )
+        db.session.commit()
+        assert stub.version_id == 2
+
+    def test_a_yes_jobs_gross_that_leaves_them_out_names_the_setting(self, world):
+        """"yes", but the stub prints 2929.62: the check's 2949.62 is $20.00 over, net exact.
+
+        On a "yes" job no heading moves the gross, so with every amount right
+        the pair allows the setting (ruling R-SAL106) or a typo in the gross
+        box (ruling R-SAL110), and the refusal names both.
+        """
+        _say_yes(world)
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed(world), printed_net=Decimal("2017.62"),
+                    printed_gross=Decimal("2929.62"))
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable and after-tax lines make $2,949.62, but "
+                "the stub prints $2,929.62: $20.00 over, the same as your after-tax "
+                "earnings, and your figures make the stub's net: check the gross you "
+                "typed, or your stub's gross leaves after-tax earnings out."
+            ),
+            "stub_gross_includes_after_tax": "Set that on your salary profile.",
+        }
+
+    def test_a_deduction_entered_as_an_earning_is_named_by_the_net(self, world):
+        """"yes", Roth ($110.00, a post-tax deduction) entered as an AFTER-TAX earning.
+
+        The stub prints the worked example (gross 2984.62, net 2052.62).  The
+        check makes 2984.62 + 110.00 = 3094.62, $110.00 over -- the after-tax
+        total -- but the net misses by TWICE that, 2984.62 - 350.00 - 472.00
+        + 110.00 = 2272.62 against 2052.62, which rules the setting out: the
+        refusal asks after a deduction entered as an earning and names no
+        setting (ruling R-SAL106).
+        """
+        _say_yes(world)
+        figures = _printed_under(
+            world, _figures(world), roth=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+        )
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, figures)
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable and after-tax lines make $3,094.62, but "
+                "the stub prints $2,984.62: $110.00 over; the net is off by twice "
+                "that.  Is a deduction entered as an earning?  Check each line's kind."
+            ),
+            "printed_net": (
+                "The lines add up to $2,272.62, but the stub prints $2,052.62 (a "
+                "difference of $220.00).  Check each figure against the stub."
+            ),
+        }
+
+    def test_a_gross_typed_as_base_pay_on_a_yes_job_is_asked_about(self, world):
+        """"yes", the stub's gross 2949.62 typed into Base pay beside its earnings.
+
+        The check makes 2949.62 + 45.00 + 20.00 = 3014.62: $65.00 counted
+        twice, and the net misses by the same (2082.62 against 2017.62): asked
+        as the Base pay box or an earning the stub does not print (R-SAL111).
+        """
+        _say_yes(world)
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed(world, base="2949.62"),
+                    printed_net=Decimal("2017.62"), printed_gross=Decimal("2949.62"))
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable and after-tax lines make $3,014.62, but "
+                "the stub prints $2,949.62: $65.00 over, and the net is off by the "
+                "same.  Is the gross in the Base pay box, or is an earning entered "
+                "that the stub does not print?"
+            ),
+            "printed_net": (
+                "The lines add up to $2,082.62, but the stub prints $2,017.62 (a "
+                "difference of $65.00).  Check each figure against the stub."
+            ),
+        }
+
+    def test_the_net_tells_the_doubled_gross_from_the_setting(self, world):
+        """With no taxable earning both slips put base pay at the printed gross, $20.00 over.
+
+        A "yes" stub printing base 2884.62 + Reimbursement 20.00 = 2904.62,
+        that gross typed as base pay: the check's 2924.62 is $20.00 over AND
+        the net misses by $20.00 (1992.62 against 1972.62) -- the Base pay box.
+        A stub that leaves the reimbursement out prints 2884.62, typed right:
+        the same $20.00 over, but the net balances at 1972.62 -- the setting
+        (or the typed gross).  Read without the net, the first would name the
+        setting.
+        """
+        _say_yes(world)
+        with pytest.raises(PayStubRefused) as doubled:
+            _record(world, _reimbursed_without_phone(world, base="2904.62"),
+                    printed_net=Decimal("1972.62"), printed_gross=Decimal("2904.62"))
+        assert doubled.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable and after-tax lines make $2,924.62, but "
+                "the stub prints $2,904.62: $20.00 over, and the net is off by the "
+                "same.  Is the gross in the Base pay box, or is an earning entered "
+                "that the stub does not print?"
+            ),
+            "printed_net": (
+                "The lines add up to $1,992.62, but the stub prints $1,972.62 (a "
+                "difference of $20.00).  Check each figure against the stub."
+            ),
+        }
+        db.session.rollback()
+        with pytest.raises(PayStubRefused) as left_out:
+            _record(world, _reimbursed_without_phone(world),
+                    printed_net=Decimal("1972.62"), printed_gross=Decimal("2884.62"))
+        assert set(left_out.value.errors) == {
+            "printed_gross", "stub_gross_includes_after_tax",
+        }
+        assert "your stub's gross leaves after-tax earnings out." in (
+            left_out.value.errors["printed_gross"]
+        )
+
+    @pytest.mark.parametrize(("yes", "printed_gross", "message"), [
+        (False, "2909.62", (
+            "Base pay plus your taxable lines make $2,929.62, but the stub prints "
+            "$2,909.62 (a difference of $20.00).  Your figures make the stub's net, "
+            "so the amounts are right: check the gross you typed, and which earnings "
+            "are taxable and which after-tax."
+        )),
+        (True, "2969.62", (
+            "Base pay plus your taxable and after-tax lines make $2,949.62, but the "
+            "stub prints $2,969.62 (a difference of $20.00).  Your figures make the "
+            "stub's net, so the amounts are right: check the gross you typed."
+        )),
+    ], ids=["no-job-over", "yes-job-short"])
+    def test_the_after_tax_total_the_wrong_way_names_no_setting(
+        self, world, yes, printed_gross, message,
+    ):
+        """A miss of $20.00 the OTHER way, net exact, names no setting.
+
+        "no": 2909.62 printed is $20.00 UNDER the check (2929.62) -- no
+        after-tax earning a gross holds makes that.  "yes": 2969.62 is $20.00
+        ABOVE the check (2949.62) -- the reverse of a gross that leaves them
+        out.  The net is exact, so the typed gross is named, and on "no" the
+        headings too (rulings R-SAL106, R-SAL108); on "yes" no heading moves
+        the gross.
+        """
+        if yes:
+            _say_yes(world)
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed(world), printed_net=Decimal("2017.62"),
+                    printed_gross=Decimal(printed_gross))
+        assert refused.value.errors == {"printed_gross": message}
+
+    def test_an_earning_the_stub_does_not_print_is_asked_beside_the_base_box(self, world):
+        """A "no" job whose stub prints no taxable earning; Phone ($45.00) entered anyway.
+
+        Base pay is typed right and equals the printed gross, 2884.62; the
+        stub nets 2884.62 - 350.00 - 472.00 - 110.00 = 1952.62.  The lines
+        make 2884.62 + 45.00 = 2929.62 and net 1997.62: both $45.00 over --
+        the pair the gross typed into Base pay makes too, so both are asked
+        and neither is stated (ruling R-SAL111; review round 3, MEDIUM-1,
+        where "is counted twice" sent the owner to lower base pay and save).
+        """
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _figures(world, one_offs=()),
+                    printed_net=Decimal("1952.62"), printed_gross=Decimal("2884.62"))
+        assert refused.value.errors["printed_gross"] == (
+            "Base pay plus your taxable lines make $2,929.62, but the stub prints "
+            "$2,884.62: $45.00 over, and the net is off by the same.  Is the gross in "
+            "the Base pay box, or is an earning entered that the stub does not print?"
+        )
+        assert set(refused.value.errors) == {"printed_gross", "printed_net"}
+
+    def test_a_base_pay_typo_of_the_after_tax_total_is_an_amount(self, world):
+        """A "no" job, base typed 2864.62 for 2884.62 -- $20.00, the after-tax total.
+
+        The stub's gross leaves the reimbursement out (2929.62).  The check
+        makes 2864.62 + 45.00 = 2909.62, $20.00 short like R-SAL104's figure,
+        but the net is off by the same $20.00 (1997.62 against 2017.62), which
+        neither of R-SAL104's causes makes: an amount is wrong, and no setting
+        is named (ruling R-SAL106; adversarial review round 1, M-1 (a)).
+        """
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed(world, base="2864.62"),
+                    printed_net=Decimal("2017.62"), printed_gross=Decimal("2929.62"))
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable lines make $2,909.62, but the stub prints "
+                "$2,929.62 (a difference of $20.00).  The net is off by the same, so "
+                "an amount is wrong: check the base pay and each earning's amount."
+            ),
+            "printed_net": (
+                "The lines add up to $1,997.62, but the stub prints $2,017.62 (a "
+                "difference of $20.00).  Check each figure against the stub."
+            ),
+        }
+
+    def test_the_doubled_gross_beside_a_second_mistake_names_no_setting(self, world):
+        """"yes", no taxable earning: the gross 2904.62 typed as base pay AND Roth 100 for 110.
+
+        The check makes 2904.62 + 20.00 = 2924.62, $20.00 over -- the after-tax
+        total -- and the net 2904.62 - 350.00 - 472.00 - 100.00 + 20.00 =
+        2002.62 is $30.00 off 1972.62: a pair no single mistake makes, so the
+        difference alone (ruling R-SAL106; review round 1, M-1 (b), where the
+        setting's exit ended in the reimbursement saved as base pay).
+        """
+        _say_yes(world)
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, _reimbursed_without_phone(world, base="2904.62", roth="100.00"),
+                    printed_net=Decimal("1972.62"), printed_gross=Decimal("2904.62"))
+        assert refused.value.errors == {
+            "printed_gross": (
+                "Base pay plus your taxable and after-tax lines make $2,924.62, but "
+                "the stub prints $2,904.62 (a difference of $20.00).  Check each "
+                "figure against the stub."
+            ),
+            "printed_net": (
+                "The lines add up to $2,002.62, but the stub prints $1,972.62 (a "
+                "difference of $30.00).  Check each figure against the stub."
+            ),
+        }
+
+    def test_an_earning_entered_as_a_deduction_is_the_mirror(self, world):
+        """A "no" job, Phone ($45.00 taxable) entered as a POST-TAX deduction.
+
+        The check makes 2884.62 + 55.00 = 2939.62, $45.00 short of 2984.62,
+        and the net 2939.62 - 350.00 - 472.00 - 155.00 = 1962.62 is $90.00
+        short of 2052.62 -- twice: an earning entered as a deduction.
+        """
+        figures = _printed_under(
+            world, _figures(world), phone=PaycheckLineKindEnum.POST_TAX_DEDUCTION,
+        )
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, figures)
+        assert refused.value.errors["printed_gross"] == (
+            "Base pay plus your taxable lines make $2,939.62, but the stub prints "
+            "$2,984.62: $45.00 short; the net is off by twice that.  Is an earning "
+            "entered as a deduction?  Check each line's kind."
+        )
+        assert set(refused.value.errors) == {"printed_gross", "printed_net"}
+
+    def test_yes_cannot_see_an_earning_under_the_other_heading(self, world):
+        """R-SAL102's accepted cost: Phone (taxed on the stub) entered as AFTER-TAX saves.
+
+        "yes": the check adds the after-tax earnings too, so 2884.62 + 45.00 +
+        20.00 = 2949.62 makes the printed gross, and the net balances at
+        2884.62 - 932.00 + 65.00 = 2017.62.  Only the stub's page shows the
+        slip: Phone's kind beside its paycheck line's.
+        """
+        _say_yes(world)
+        figures = _printed_under(
+            world, _reimbursed(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+        )
+        stub = _record(world, figures, printed_net=Decimal("2017.62"),
+                       printed_gross=Decimal("2949.62"))
+        report = pay_stub_service.stub_report(world["profile"], stub, _ctx(world))
+        phone = {row.name: row for row in report.lines}["Phone Allowance"]
+        assert phone.kind_agrees is False
 
 
 class TestTheOneOffNameClash:

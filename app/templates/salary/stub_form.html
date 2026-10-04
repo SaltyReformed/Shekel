@@ -278,9 +278,27 @@
           <input type="number" step="0.01" min="0.01" id="printed_gross" name="printed_gross" required
                  class="form-control{% if errors.printed_gross %} is-invalid{% endif %}"
                  value="{{ values.get('printed_gross', '') }}">
-          {% if errors.printed_gross %}<div class="invalid-feedback">{{ errors.printed_gross }}</div>{% endif %}
+          {# Rulings R-SAL104 and R-SAL106: a gross refusal whose pair allows
+             it also names the job's setting (rulings R-SAL102, R-SAL105), and
+             the link is drawn here because the service that words the
+             refusal cannot build a URL.  Both links open a NEW tab (ruling
+             R-SAL107), so the typed stub survives: the door reads the setting
+             afresh on submit, and nothing on this form pins the profile. #}
+          {% set setting_url = url_for('salary.edit_profile', profile_id=profile.id) ~ '#stub_gross_includes_after_tax' %}
+          {% if errors.printed_gross %}
+          <div class="invalid-feedback">
+            {{ errors.printed_gross }}
+            {% if errors.stub_gross_includes_after_tax %}
+            {{ errors.stub_gross_includes_after_tax }}
+            <a href="{{ setting_url }}" target="_blank" rel="noopener">Open the setting</a>
+            {% endif %}
+          </div>
+          {% endif %}
         </div>
-        <div class="form-text">A check on your typing: base pay plus every taxable earning above must add up to it.  It is not saved.</div>
+        <div class="form-text">A check on your typing: base pay plus every {{ gross_counts }} earning above
+          must add up to it, which is what your salary profile says this stub's gross holds
+          (<a href="{{ setting_url }}" target="_blank" rel="noopener">change that</a>).
+          It is not saved.</div>
       </div>
 
       <div class="mb-3">

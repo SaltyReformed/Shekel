@@ -25,7 +25,12 @@ refusal, driven through the test client:
 * the form POSTED here is the form the template EMITS: its field names are
   read off the rendered page and compared with the payload's;
 * deleting a paycheck line a stub names is refused with **R-SAL51** (c)'s
-  wording, and the line stays.
+  wording, and the line stays;
+* the job's answer to "my stub's gross includes after-tax earnings"
+  (**R-SAL102**) reaches the door, the line under the gross box says what
+  this job's gross counts, a refusal naming the setting links to it
+  (**R-SAL104**, **R-SAL106**), and both links open a new tab (**R-SAL107**)
+  -- changing the setting there leaves the open stub form submittable.
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
@@ -36,6 +41,8 @@ so 03-27 is the next payday.
 import re
 from datetime import date
 from decimal import Decimal
+from html import unescape
+from html.parser import HTMLParser
 
 import pytest
 
@@ -44,6 +51,7 @@ from app.enums import PaycheckLineKindEnum, WithholdingKindEnum
 from app.extensions import db
 from app.models.pay_stub import PayStub
 from app.models.paycheck_line import PaycheckLine
+from app.models.salary_profile import SalaryProfile
 from app.services import pay_stub_service
 from tests._test_helpers import (
     build_pay_stub_world,
@@ -130,7 +138,7 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", printed_gross="298
     }
 
 
-def _printed_under(world, payload, **kinds):
+def _printed_under(world: dict, payload: dict, **kinds) -> dict:
     """*payload* with each named line's kind select on another heading (ruling R-SAL58).
 
     Args:
@@ -273,7 +281,8 @@ class TestRecording:
         """R-SAL99 (SAL-590): the printed gross in the Base pay box is named, nothing written.
 
         Base pay 2984.62 + Phone 45.00 + Retro pay 55.00 = 3084.62 against the
-        printed 2984.62: the $100.00 of earnings is counted twice.
+        printed 2984.62: the $100.00 of earnings is counted twice, and asked
+        about with its twin, an earning the stub does not print (R-SAL111).
         """
         payload = _payload(world)
         payload["base_pay"] = "2984.62"
@@ -282,7 +291,8 @@ class TestRecording:
         html = response.data.decode()
         assert (
             "Base pay plus your taxable lines make $3,084.62, but the stub prints "
-            "$2,984.62: $100.00 is counted twice.  Is the gross in the Base pay box?"
+            "$2,984.62: $100.00 over, and the net is off by the same.  Is the gross in "
+            "the Base pay box, or is an earning entered that the stub does not print?"
         ) in html
         gross_input = html[html.index('name="printed_gross"'):]
         gross_input = gross_input[:gross_input.index(">")]
@@ -693,3 +703,233 @@ class TestTheLineDelete:
         assert auth_client.post(f"/salary/lines/{vision}/delete").status_code == 302
         db.session.expire_all()
         assert db.session.get(PaycheckLine, vision) is None
+
+
+def _say_yes(world):
+    """Set the world's job to "my stub's gross includes after-tax earnings" (R-SAL102)."""
+    db.session.get(SalaryProfile, world["profile_id"]).stub_gross_includes_after_tax = True
+    db.session.commit()
+
+
+def _reimbursed_payload(world, printed_gross, *, roth="110.00", printed_net="2017.62"):
+    """The worked example with a $20.00 AFTER-TAX one-off "Reimbursement" for Retro pay.
+
+    gross (base + Phone) 2884.62 + 45.00 = 2929.62; net 2929.62 - 350.00 -
+    472.00 - 110.00 + 20.00 = 2017.62.  A stub whose gross holds the
+    reimbursement prints 2949.62.
+    """
+    payload = _payload(world, one_off=("Reimbursement", "20.00"), printed_net=printed_net,
+                       printed_gross=printed_gross, roth=roth)
+    after_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.AFTER_TAX_EARNING)
+    payload["one_off_kind"] = [str(after_tax), ""]
+    return payload
+
+
+def _setting_link(world, words):
+    """The anchor the stub form draws to the profile's setting, worded *words*.
+
+    Both setting links open a new tab (ruling R-SAL107).
+    """
+    return (
+        f'<a href="/salary/{world["profile_id"]}/edit#stub_gross_includes_after_tax" '
+        f'target="_blank" rel="noopener">{words}</a>'
+    )
+
+
+class _FormControls(HTMLParser):
+    """Every control of the ONE form posting to *action*, as a browser submits it.
+
+    Repeated names (the one-off rows) keep every value in order; an
+    ``<input>`` submits its ``value`` and a ``<select>`` its ``selected``
+    option, else its first.  A control without a name submits nothing.  It
+    reads only those two shapes, the stub form's: any other control inside
+    the form (a checkbox or radio, a ``<textarea>``, a named button, a
+    disabled control) fails the reading loudly rather than being posted as a
+    browser would not post it.
+    """
+
+    #: Input types a browser posts by their ``value`` alone.
+    _PLAIN_INPUTS = frozenset({"hidden", "text", "number", "date"})
+
+    def __init__(self, action):
+        super().__init__()
+        self.action = action
+        self.controls: "dict[str, list[str]]" = {}
+        self._inside = False
+        self._select = None
+        self._chosen = None
+
+    def handle_starttag(self, tag, attrs):
+        """Open the form, record an input, or read a select's options."""
+        attributes = dict(attrs)
+        if tag == "form":
+            self._inside = attributes.get("action") == self.action
+        elif self._inside and tag in ("textarea", "button") and attributes.get("name"):
+            raise AssertionError(f"the reader does not post a named <{tag}>")
+        elif self._inside and tag == "input" and attributes.get("name"):
+            plain = attributes.get("type", "text") in self._PLAIN_INPUTS
+            if not plain or "disabled" in attributes:
+                raise AssertionError(f"the reader does not post {attributes}")
+            self.controls.setdefault(attributes["name"], []).append(attributes.get("value") or "")
+        elif self._inside and tag == "select":
+            self._select, self._chosen = attributes.get("name"), None
+        elif self._select is not None and tag == "option":
+            if self._chosen is None or "selected" in attributes:
+                self._chosen = attributes.get("value", "")
+
+    def handle_endtag(self, tag):
+        """Close a select, submitting its choice, or close the form."""
+        if tag == "select" and self._select is not None:
+            self.controls.setdefault(self._select, []).append(self._chosen or "")
+            self._select = None
+        elif tag == "form":
+            self._inside = False
+
+
+def _rendered_controls(html, action):
+    """What the form posting to *action* submits, read off *html*."""
+    reader = _FormControls(action)
+    reader.feed(html)
+    assert reader.controls, f"no form posts to {action}"
+    return reader.controls
+
+
+def _say(client, world, answer):
+    """Switch the job's answer through the PROFILE's own door, as another tab would."""
+    profile = db.session.get(SalaryProfile, world["profile_id"])
+    response = client.post(f"/salary/{world['profile_id']}", data={
+        "name": profile.name, "version_id": profile.version_id,
+        "stub_gross_includes_after_tax": answer,
+    })
+    assert response.status_code == 302
+
+
+class TestTheJobsGrossSetting:
+    """R-SAL102 and R-SAL104 to R-SAL110 at the stub door and on the profile page."""
+
+    def test_a_refusal_naming_the_setting_links_to_it(self, auth_client, world):
+        """A "no" job, gross 2949.62 holding the reimbursement: a 422 asking both, with the link.
+
+        The setting's sentence and its link sit inside the printed gross's own
+        feedback, and nothing is written.
+        """
+        response = auth_client.post(
+            f"/salary/{world['profile_id']}/stubs",
+            data=_reimbursed_payload(world, "2949.62"),
+        )
+        assert response.status_code == 422
+        page = unescape(response.data.decode())
+        start = page.index("Base pay plus your taxable lines make $2,929.62")
+        feedback = page[start:page.index("</div>", start)]
+        assert (
+            "$20.00 short, the same as your after-tax earnings.  Check the gross you "
+            "typed.  Is one of them taxed on your stub?"
+        ) in feedback
+        assert (
+            "If your stub's gross includes after-tax earnings, set that on your "
+            "salary profile."
+        ) in feedback
+        assert _setting_link(world, "Open the setting") in feedback
+        assert db.session.query(PayStub).count() == 0
+
+    def test_a_yes_job_whose_gross_leaves_them_out_is_linked_to_the_setting(
+        self, auth_client, world,
+    ):
+        """"yes", the stub prints 2929.62 (no reimbursement in it), net exact.
+
+        The refusal names the typed gross or the setting, with the link.
+        """
+        _say_yes(world)
+        response = auth_client.post(
+            f"/salary/{world['profile_id']}/stubs",
+            data=_reimbursed_payload(world, "2929.62"),
+        )
+        assert response.status_code == 422
+        page = unescape(response.data.decode())
+        start = page.index("Base pay plus your taxable and after-tax lines make $2,949.62")
+        feedback = page[start:page.index("</div>", start)]
+        assert (
+            "$20.00 over, the same as your after-tax earnings, and your figures make "
+            "the stub's net: check the gross you typed, or your stub's gross leaves "
+            "after-tax earnings out."
+        ) in feedback
+        assert "Set that on your salary profile." in feedback
+        assert _setting_link(world, "Open the setting") in feedback
+
+    def test_a_new_stub_form_survives_the_setting_changed_elsewhere(self, auth_client, world):
+        """R-SAL107: refused on "no", the job switched in another tab, the SAME form saves.
+
+        The refused page's own form -- every control it re-renders, read off
+        the page before the switch -- is what is posted after it: the form
+        carries nothing that pins the profile, and the door reads the answer
+        afresh.
+        """
+        url = f"/salary/{world['profile_id']}/stubs"
+        refused = auth_client.post(url, data=_reimbursed_payload(world, "2949.62"))
+        assert refused.status_code == 422
+        original = _rendered_controls(refused.data.decode(), url)
+        assert original["printed_gross"] == ["2949.62"]
+        _say(auth_client, world, "true")
+        assert auth_client.post(url, data=original).status_code == 302
+        assert [(o.name, o.amount) for o in _stub().one_offs] == [
+            ("Reimbursement", Decimal("20.00")),
+        ]
+
+    def test_an_edit_form_survives_the_setting_changed_elsewhere(self, auth_client, world):
+        """R-SAL107 on the edit door: the stub's own version is all its form pins.
+
+        Recorded on "yes" (gross 2949.62).  Its page's form is read off the
+        page and typed into -- Roth 110 -> 100, which moves the net to
+        2027.62, and the gross a "no" job checks, base + Phone = 2929.62 --
+        then the job is switched to "no" elsewhere, and exactly that form is
+        posted: saved, not stale.
+        """
+        _say_yes(world)
+        url = f"/salary/{world['profile_id']}/stubs"
+        assert auth_client.post(
+            url, data=_reimbursed_payload(world, "2949.62"),
+        ).status_code == 302
+        stub = _stub()
+        edit_url = f"/salary/stubs/{stub.id}/edit"
+        original = _rendered_controls(
+            auth_client.get(f"/salary/stubs/{stub.id}").data.decode(), edit_url,
+        )
+        original[f"line-{world['lines']['roth']}"] = ["100.00"]
+        original["printed_gross"] = ["2929.62"]
+        original["printed_net"] = ["2027.62"]
+        _say(auth_client, world, "false")
+        response = auth_client.post(edit_url, data=original)
+        assert response.status_code == 302
+        roth = world["lines"]["roth"]
+        assert {r.paycheck_line_id: r.amount for r in _stub().line_amounts}[roth] == (
+            Decimal("100.00")
+        )
+
+    def test_a_yes_job_records_that_stub(self, auth_client, world):
+        """The same form on a "yes" job saves: base + taxable + after-tax is 2949.62."""
+        _say_yes(world)
+        response = auth_client.post(
+            f"/salary/{world['profile_id']}/stubs",
+            data=_reimbursed_payload(world, "2949.62"),
+        )
+        assert response.status_code == 302
+        assert [(o.name, o.amount) for o in _stub().one_offs] == [
+            ("Reimbursement", Decimal("20.00")),
+        ]
+
+    def test_the_line_under_the_gross_box_says_what_this_job_counts(self, auth_client, world):
+        """"no": every taxable earning; "yes": taxable and after-tax; both link the setting."""
+        url = f"/salary/{world['profile_id']}/stubs/new?payday={_PAYDAY}"
+        link = _setting_link(world, "change that")
+        page = auth_client.get(url).data.decode()
+        assert "base pay plus every taxable earning above" in page
+        assert link in page
+        _say_yes(world)
+        page = auth_client.get(url).data.decode()
+        assert "base pay plus every taxable and after-tax earning above" in page
+        assert link in page
+
+    def test_the_link_lands_on_the_setting(self, auth_client, world):
+        """The profile page carries the control the link's fragment names."""
+        page = auth_client.get(f"/salary/{world['profile_id']}/edit").data.decode()
+        assert 'id="stub_gross_includes_after_tax"' in page

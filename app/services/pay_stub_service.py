@@ -30,7 +30,14 @@ calibrated path (``S11-c``); the old calibration keeps pricing until then.
   **SAL-590**, which reads the printed gross as exactly that sum): a gross
   typed into the Base pay box counts every taxable earning twice, and an
   earning moved between taxable and after-tax moves the gross but not the
-  net, so only this check sees it -- typed once like the net, never stored;
+  net, so only this check sees it -- typed once like the net, never stored.
+  On a job whose stub's gross also holds the after-tax earnings (ruling
+  **R-SAL102**, a yes/no on the profile, closing finding **SAL-592**) those
+  are added too, and that job's check cannot see the taxable / after-tax
+  slip.  How a miss is worded is read off the net's miss beside it, naming
+  the job's setting where the pair allows it (rulings **R-SAL104**,
+  **R-SAL106**, **R-SAL108**, **R-SAL110**, **R-SAL111**;
+  :mod:`app.services.pay_stub_gross`);
 * a printed net the lines do not add up to, to the cent (ruling **R-SAL42**,
   decomposition item 2: typed once as a check, never stored);
 * a one-off named like one of the profile's paycheck lines or a tax, or like
@@ -94,7 +101,7 @@ from app.models.pay_stub import (
 from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_line_kinds, withholding_kinds
-from app.services.pay_stub_gross import gross_refusal
+from app.services.pay_stub_gross import gross_refusals
 from app.services.paycheck_calculator import waterfall_gross, waterfall_net
 from app.services.salary_paydays import paycheck_on, payday_refusal_for_door
 from app.utils.money import ZERO
@@ -170,7 +177,8 @@ class PrintedTotals:
 
     Attributes:
         gross: The gross pay the stub prints, which R-SAL99 reads as base pay
-            plus every taxable earning.
+            plus every taxable earning, and R-SAL102 as that plus every
+            after-tax earning on a job whose stub prints them in its gross.
         net: The net pay the stub prints.
     """
     gross: Decimal
@@ -685,9 +693,10 @@ def _refuse(
             missing_tax = True
     errors.update(_one_off_errors(profile, figures.one_offs, held))
     totals = totals_of(profile, figures)
-    refusal = gross_refusal(figures.base_pay, totals, printed)
-    if refusal is not None:
-        errors["printed_gross"] = refusal
+    errors.update(gross_refusals(
+        figures.base_pay, totals, printed,
+        includes_after_tax=profile.stub_gross_includes_after_tax,
+    ))
     # The net is checked only over a COMPLETE set of taxes: without one, the
     # lines' sum leaves it out and the check would blame figures that are right.
     if not missing_tax and totals.net != printed.net:

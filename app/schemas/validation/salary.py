@@ -101,6 +101,10 @@ class SalaryProfileCreateSchema(BaseSchema):
         load_default="0", places=2, as_string=True,
         validate=_NON_NEGATIVE_MONETARY,
     )
+    # What the job's pay stub prints as its gross (plan step salary:S11-c-2b,
+    # rulings R-SAL102 and R-SAL105): "no", the column's own default, unless
+    # the form says otherwise.
+    stub_gross_includes_after_tax = fields.Boolean(load_default=False)
 
 
 class SalaryProfileUpdateSchema(BaseSchema):
@@ -139,6 +143,11 @@ class SalaryProfileUpdateSchema(BaseSchema):
         places=2, as_string=True,
         validate=_NON_NEGATIVE_MONETARY,
     )
+    # Absent leaves the stored answer alone, like every field above.  The
+    # form renders it as a two-option select rather than a checkbox because
+    # of exactly that: an unticked checkbox submits nothing, so "no" could
+    # never be saved over a "yes" (plan step salary:S11-c-2b, R-SAL105).
+    stub_gross_includes_after_tax = fields.Boolean()
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))
