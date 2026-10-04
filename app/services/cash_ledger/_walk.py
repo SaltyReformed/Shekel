@@ -121,7 +121,7 @@ class CashLedgerWalk:
         source_facts: One :class:`~._events.CashSourceFact` per settled
             balance-contributing row AND per posted purchase recorded against
             one (ruling **R-FM**, plan step X-f3b), ascending by
-            ``(settled_on, transaction_id, entry_id)``.  **None is dated at or
+            ``(settled_on, entry_id)``.  **None is dated at or
             before :attr:`opening`'s day** -- an opening equity is that day's
             CLOSING balance (ruling **R-HG**, plan step X-f3c-2b), so such a
             row is already inside the level this walk's fold seeds at, and a

@@ -217,3 +217,66 @@ class TestATransfersPaymentIsNamedByItsLeg:
                 "This is the payment record of Transfer to Rainy Day,"
             ), message
             assert "Stale Shadow Name" not in message
+
+
+class TestTheAdviceIsTheParentsOwn:
+    """Each parent's refusal advises the acts THAT parent has (leaf ``X-bi-6-4d-1``).
+
+    A transfer's payment is corrected on the transfer -- its "Money moved
+    on" box for that side and its Actual -- and a transfer has no purchases
+    to be closed from, so the row's advice named acts no transfer has.  Both
+    directions are graded, so neither parent can be handed the other's.
+    """
+
+    def test_a_transfers_payment_is_advised_onto_the_transfer(
+        self, app, seed_user, seed_periods,
+    ):
+        """A Paid $250.00 transfer checking -> Rainy Day: the transfer's own words."""
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Rainy Day",
+            )
+            db.session.commit()
+            transfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("250.00"),
+            )
+            db.session.commit()
+            expense_shadow = db.session.query(Transaction).filter_by(
+                transfer_id=transfer.id, account_id=seed_user["account"].id,
+            ).one()
+            (movement,) = expense_shadow.covering_movements
+
+            with pytest.raises(ValidationError) as refused:
+                entry_service.delete_entry(movement.id, seed_user["user"].id)
+
+            message = str(refused.value)
+            assert message.startswith(
+                "This is the payment record of Transfer to Rainy Day, "
+                "written when that transfer was marked paid."
+            ), message
+            assert (
+                'change it on the transfer itself, through its "Money moved '
+                f'on" day for {seed_user["account"].name} and its Actual'
+            ) in message
+            assert "purchases" not in message
+            assert "settle day" not in message
+
+    def test_a_rows_payment_keeps_the_rows_advice(
+        self, app, seed_user, seed_periods,
+    ):
+        """A Paid $148.32 Electric bill: the row's settle day and its purchases."""
+        with app.app_context():
+            _, movement = _a_settled_bill(seed_user, seed_periods[0])
+
+            with pytest.raises(ValidationError) as refused:
+                entry_service.delete_entry(movement.id, seed_user["user"].id)
+
+            message = str(refused.value)
+            assert message.startswith(
+                "This is the payment record of Electric, written when that "
+                "row was marked paid."
+            ), message
+            assert "edit the row's settle day" in message
+            assert "closing the row from its own purchases" in message
+            assert "Money moved on" not in message

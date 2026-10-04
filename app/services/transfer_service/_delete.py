@@ -18,7 +18,14 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import match_withdrawal, movement_removal, posting_service
+from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
+from app.services import (
+    match_withdrawal,
+    movement_removal,
+    posting_service,
+    transfer_legs,
+)
 from app.services.match_withdrawal import NOTHING_SHOWN
 from app.services.transfer_service._loan_posting import (
     _pays_a_loan,
@@ -121,6 +128,14 @@ def delete_transfer(transfer_id, user_id, soft=False, *, shown=NOTHING_SHOWN):
     # ``transfer_recurrence`` restores soft-deleted shadows during a maintain
     # pass, so a withdrawal here would destroy an accepted act that a shipped
     # button puts the rows back for (adversarial review, 2026-08-25).
+    #
+    # **Which movements go is asked of ``transfer_legs``** (leaf
+    # ``balance:X-bi-6-4d-1``): every entry the transfer holds, under any
+    # shadow live or dead -- the scope ``fk_transaction_entries_transaction_id``
+    # would refuse the delete for -- through the one join, so ``X-bi-6-4d``'s
+    # re-parent moves this collection with it.  It read
+    # ``shadow.entries`` per shadow until then.  In movement-id order, so the
+    # act walks them deterministically.
     shadows = (
         db.session.query(Transaction)
         .filter_by(transfer_id=transfer_id)
@@ -128,7 +143,9 @@ def delete_transfer(transfer_id, user_id, soft=False, *, shown=NOTHING_SHOWN):
     )
     if not soft:
         movement_removal.remove_movements(
-            [movement for shadow in shadows for movement in shadow.entries],
+            transfer_legs.held_transfer_entries(Transfer.id == transfer_id)
+            .order_by(TransactionEntry.id)
+            .all(),
             user_id, because=match_withdrawal.LEFT_THE_BOOKS, shown=shown,
             rows_leaving=shadows,
         )

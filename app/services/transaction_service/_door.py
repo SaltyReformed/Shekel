@@ -305,10 +305,10 @@ def _correction_for_status(
     # is refused rather than discarded.  It lives at the door rather than at the
     # route because only here is the row in hand, and the comparison is against
     # what the row RECORDS -- which is what the box was prefilled from.  The
-    # tender's reading is the same shape against the same record.
-    figure = figure_for_status(
-        txn, new_status_id, submitted, settled_figure(txn),
-    )
+    # tender's reading is the same shape against the same record.  Read ONCE:
+    # the echo rule below compares against the same figure.
+    recorded = settled_figure(txn)
+    figure = figure_for_status(txn, new_status_id, submitted, recorded)
     tender = tender_for_status(
         txn, new_status_id, tender_account_id, tender_account_id_of(txn),
     )
@@ -331,7 +331,9 @@ def _correction_for_status(
             "and no single account its money moved through. Record the "
             "purchase, or correct one that is already there.",
         )
-    record = correction_record(txn, figure) if figure is not None else None
+    record = (
+        correction_record(recorded, figure) if figure is not None else None
+    )
     if tender is None:
         return record
     tender = admitted_movement_account_id(txn, tender, movement="payment")
