@@ -183,13 +183,32 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       delete or un-credit) are **CC-367**; the account and recurring-transfer permanent deletes
       archive on a held leg since **R-CC65** and free nothing. **R-CC80** puts CC-367's doors in
       this step: each says it first, and the one removal act asks what the owner was shown
-      (**R-CC81**). Its `$0.00` captions are its own question at its start, under **R-BAL155**. A
-      row's own account's list, ticking a reopened bill whose kept payment is on another account (a
-      card, or Checking under `R-CC117`), re-points that payment (`status_seam._covering._re_point`)
-      and withdraws any match naming it through `match_withdrawal.withdraw_for_moved_movement` with
-      no caption (**CC-378**): its builder asks the developer whether that list captions such a row
-      (`paid from <account>`) or omits it. After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**,
-      **CC-378**.
+      (**R-CC81**). Its `$0.00` captions were its own question at its start, under **R-BAL155**
+      (ruled below). A row's own account's list, ticking a reopened bill whose kept payment is on
+      another account (a card, or Checking under `R-CC117`), re-points that payment
+      (`status_seam._covering._re_point`) and withdraws any match naming it through
+      `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its builder asked
+      the developer whether that list captions such a row (`paid from <account>`) or omits it (ruled
+      below). After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**, **CC-378**.
+      **Ruled at its start** (2026-09-30): the panel refuses a `$0.00` payment (**R-CC125**), a
+      reopened bill paid from another account is offered only on that account's list (**R-CC126**,
+      so the panel never re-points and **CC-378** closes unreachable), and the removal act checks
+      the page (**R-CC127**). **Built in three leaves, `Ships:` on the last one** (the coordinator,
+      2026-10-04). **4a-5a** `ff86849b` (done, no `Ships:`) -- the removal act takes the lines a
+      page showed or a named silence (**R-CC127**); every popover press posts the lines its captions
+      named (`shown_lines`), and a stale press redraws the whole card (**R-CC128**); Estimated's
+      caption on a reverted matched row lets one Save record `$0.00` (**R-CC129**); a companion's
+      Mark Paid that would free a line is refused (**R-CC130**); the delete dialog posts the
+      purchases it named (`shown_purchases`; **R-CC131**, fulfilling **R-CC96**'s clause);
+      `ShownIds` joins the row-id census; a hand-built hard DELETE of a pair whose leg is matched,
+      which withdrew the match silently, is refused (a designed 400; **R-CC127**). Applications, no
+      ruling of their own: `designed_error(retarget=)` for the redraw (**salary:R-SAL33**) and the
+      owner's one-click Mark Paid silent (**R-CC56**); a transfer `$0.00` Paid caption withdrawn (a
+      transfer prices `$0.00` only where a derived payment rounds to it, and there the popover's
+      Paid is refused as out of date). **4a-5b**: **CC-367**'s doors (the purchase X, the last card
+      purchase's X and CC un-tick, Undo CC, Status leaving Credit; **R-CC132**, filed at its tick);
+      closes **CC-367**. **4a-5c**: the panel and carry-forward (**R-CC125**, **R-CC126**, a caption
+      per row); closes **CC-364**, **CC-378**.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this

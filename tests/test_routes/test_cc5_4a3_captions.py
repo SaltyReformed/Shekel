@@ -253,11 +253,12 @@ class TestTheDeleteDialogKeepsItsSentence:
         A row of a recurring definition deletes soft -- it stays as the
         tombstone the engine reads, keeping its payment and its match -- and
         its dialog rightly names no line.  Only the withdrawal CLAUSE is
-        pinned: the dialog's first sentence counts the row's payment as "the
-        1 purchase filed under it", which is ledger row **BAL-504**'s known
-        defect (owner ``balance:X-ck``, re-confirmed on 550cc9ce
-        2026-09-22), deliberately NOT asserted here so that step's fix
-        changes no pin.
+        pinned here.  The dialog's first sentence counts purchases only, the
+        row's own payment not among them (``test_cc5_4a4_hidden_row_doors``
+        ``TestTheDialogCountsPurchasesOnly``), read off the delete's own
+        preview since ruling R-CC131 (``test_cc5_4a5_delete_dialog``); ledger
+        row BAL-504, which this docstring quoted as open, closed at the tick
+        of plan step ``credit_card:CC-5-4a-5``'s first leaf.
         """
         with app.app_context():
             txn = a_transaction(

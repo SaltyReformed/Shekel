@@ -788,8 +788,11 @@ class TestARefusedPressWithNoCardToDraw:
         routing this arm through the door's own refusal was measured worse --
         a soft-deleted transfer drawn as live (the third review) -- and
         nothing else would catch its return.  The "writes nothing" half pins
-        the end state only: the refusal raises before the press stages a
-        write, so it cannot tell the arm's rollback from none.
+        the end state only: the press flushes the legs' posting reversal
+        before the act refuses, and the request's teardown rollback
+        (credit_card:R-CC123) discards it either way, so this check cannot
+        tell the arm's rollback from none; the redraw tests grade that
+        rollback.
         """
         with app.app_context():
             xfer, (line,) = _matched_transfer(seed_user, legs=("checking",))
