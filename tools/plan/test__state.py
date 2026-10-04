@@ -10,6 +10,7 @@ from _state import (
     is_live,
     leaf_placement,
     missing,
+    never_offered,
     next_step,
     outside_reports,
     resolved,
@@ -381,15 +382,18 @@ def test_a_finding_whose_owner_is_outside_the_tracker_is_reported_once():
 
 
 def test_a_reopened_container_report_advises_the_remedies_the_tool_takes():
-    """Review cp4 L-6 and cp4b L8: it advised filing a new leaf, which the tool refuses
-    under a split step whose leaves are all done, then reopening a leaf, which never offers
-    one git says shipped.  Shipped work comes back by a ``Reopens:`` commit, a dropped leaf
-    by its reopening; and closing the split step by hand records it dropped (R-BAL190)."""
+    """Review cp4 L-6, cp4b L8 and cp4c L3: it advised filing a new leaf, which the tool
+    refuses under a split step whose leaves are all done, then reopening a leaf, which never
+    offers one git says shipped, then a ``Reopens:`` alone, which never revives a leaf a
+    person closed.  A leaf comes back by reopening it by hand when it was dropped or a person
+    closed it, and by a ``Reopens:`` commit when it shipped; closing the split step by hand
+    records it dropped (R-BAL190)."""
     cards = _cards(_card(1, children=(Child(2, "step", False),), touched_by_hand=True),
                    _closed(2, parent=1))
     (report,) = sync_plan(cards, {2}, {}, {}).reports
-    assert "ship 'Reopens: plan#N' for a leaf that shipped" in report
-    assert "reopen a dropped one" in report and "records it dropped (R-BAL190)" in report
+    assert "reopen by hand a leaf that was dropped or that a person closed" in report
+    assert "ship 'Reopens: plan#N' for one that shipped" in report
+    assert "records it dropped (R-BAL190)" in report
     assert "file a new leaf" not in report
 
 
@@ -451,3 +455,13 @@ def test_a_leaf_is_placed_after_its_other_leaves_never_after_itself():
     order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
     assert leaf_placement(order, split, 5) == Placement(
         "I4", None, "to just after plan#2's other leaves")
+
+
+def test_a_wait_or_a_drop_two_steps_up_holds_a_leaf_back():
+    """Review cp4c S3, S4: ``never_offered`` reads every step above, not the nearest only."""
+    cards = _cards(_card(1, outside=(OutsideLink("blocker", "o/code#1"),),
+                         children=(Child(2, "step", True),)),
+                   _card(2, parent=1, children=(Child(3, "step", True),)), _card(3, parent=2))
+    assert "plan#1 above it waits on o/code#1" in never_offered(cards[3], cards, set())
+    cards[1] = _closed(1, by_tool=False, children=(Child(2, "step", True),))
+    assert never_offered(cards[3], cards, set()) == "plan#1 above it was dropped (R-BAL185)"

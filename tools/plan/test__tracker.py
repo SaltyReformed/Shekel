@@ -564,6 +564,21 @@ def test_text_the_reviews_found_kept_is_redacted():
                  query='query { node(id: "I_other") { ... on Issue { number title } } }'),
         _graphql({"data": {"repository": {"issue": {"number": 11, "subIssues": {"nodes": [
             {"number": 11, "title": "secret R", "repository": {"name": "Shekel"}}]}}}}}),
+        _graphql({"data": {"repository": {"issue": {"number": 12, "subIssues": {"nodes": [
+            {"number": 11, "title": "secret T"}]}}}, "node": {"number": 11, "title": "secret U"}}},
+                 query='query { repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+                       '{ issue(number: 12) { number subIssues { nodes { number title } } } } '
+                       'node(id: "I_other") { ... on Issue { number title } } }'),
+        _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret V"}}}},
+                 query='query { repository: node(id: "I_other") { ... on Issue { c11: parent '
+                       '{ number title } } } r: repository(owner: "saltyreformed-labs", '
+                       'name: "shekel-plan") { id } }'),
+        {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}-other/issues/11",
+         "body": None, "status": 200, "answer": {"number": 11, "title": "secret W"}},
+        {"method": "GET", "url": f"{_ISSUES}/2", "body": None, "status": 200,
+         "answer": {"number": 2, "milestone": {"number": 11, "title": "secret X"}}},
+        _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret Y"}}}},
+                 query="query { viewer { login } }"),
         {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}/issues/11", "body": None,
          "status": 200, "answer": {"number": 11, "title": "secret S",
                                    "repository": {"full_name": "o/elsewhere"}}},
@@ -620,12 +635,22 @@ _REFS = f"https://api.github.com/repos/{TRACKER}/git/refs"
     ("PATCH", f"{_ISSUES}/2", {"state": "closed"}),
     ("PATCH", f"{_ISSUES}/11", {"title": "Real title"}),
     ("POST", _ISSUES, {"title": "Real title", "body": "b"}),
+    ("POST", _ISSUES, {"title": "Real title", "body": "b", "type": "step", "labels": ["balance"]}),
     ("POST", f"{_ISSUES}/11/sub_issues", {"sub_issue_id": 5698680001}),
     ("POST", f"{_ISSUES}/11/dependencies/blocked_by", {"issue_id": 5698680001}),
     ("DELETE", f"{_ISSUES}/11/dependencies/blocked_by/5698680001", None),
     ("POST", _REFS, {"ref": "refs/claims/2", "sha": "a" * 40}),
     ("DELETE", f"{_REFS}/claims/2", None),
     ("PATCH", "https://api.github.com/repos/o/elsewhere/issues/11", {"body": "anything"}),
+    ("PATCH", f"https://api.github.com/repos/{TRACKER}-other/issues/11", {"body": "anything"}),
+    ("POST", _ISSUES, {"title": f"{SCRATCH} new", "body": "b", "type": "step",
+                       "labels": ["balance"], "assignees": ["x"]}),
+    ("PATCH", f"{_ISSUES}/11", {"body": "b", "milestone": 1}),
+    ("PATCH", f"{_ISSUES}/11", {"title": f"{SCRATCH} renamed", "body": "b"}),
+    ("POST", f"{_ISSUES}/11/dependencies/blocked_by", {"issue_id": 911, "x": 1}),
+    ("DELETE", f"{_ISSUES}/11/dependencies/blocked_by/911", {"x": 1}),
+    ("POST", _REFS, {"ref": "refs/claims/11", "sha": "a" * 40, "force": True}),
+    ("DELETE", f"{_REFS}/claims/11", {"x": 1}),
     ("PUT", f"{_ISSUES}/11/lock", None),
 ])
 def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, url, body):
@@ -641,8 +666,10 @@ def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, 
 
 
 @pytest.mark.parametrize(("method", "url", "body"), [
-    ("POST", _ISSUES, {"title": f"{SCRATCH} new", "body": "b", "type": "step"}),
-    ("PATCH", f"{_ISSUES}/11", {"title": f"{SCRATCH} renamed", "body": "b"}),
+    ("POST", _ISSUES, {"title": f"{SCRATCH} new", "body": "b", "type": "step",
+                       "labels": ["balance"]}),
+    ("PATCH", f"{_ISSUES}/11", {"title": f"{SCRATCH} renamed"}),
+    ("PATCH", f"{_ISSUES}/11", {"state": "closed", "state_reason": "not_planned"}),
     ("POST", f"{_ISSUES}/11/sub_issues", {"sub_issue_id": 911}),
     ("POST", f"{_ISSUES}/11/dependencies/blocked_by", {"issue_id": 911}),
     ("DELETE", f"{_ISSUES}/11/dependencies/blocked_by/911", None),
@@ -683,7 +710,8 @@ def test_a_recorder_refuses_a_write_before_sending_it_and_counts_what_it_files_a
     with pytest.raises(ValueError, match="not sent"):
         recorder.request("PATCH", f"{_ISSUES}/2", json={"body": "a new spec"})
     assert not session.sent
-    recorder.request("POST", _ISSUES, json={"title": f"{SCRATCH} new", "body": "b"})
+    recorder.request("POST", _ISSUES, json={"title": f"{SCRATCH} new", "body": "b", "type": "step",
+                           "labels": ["balance"]})
     assert (16 in recorder.scratch.numbers, 916 in recorder.scratch.ids,
             "S_16" in recorder.scratch.nodes) == (True, True, True)
     session.answer = {"data": {"addProjectV2ItemById": {"item": {"id": "SI_16"}}}}
@@ -695,7 +723,8 @@ def test_a_recorder_refuses_a_write_before_sending_it_and_counts_what_it_files_a
 def test_a_create_github_refused_counts_nothing_as_scratch():
     """Review cp4 M52: only a filing GitHub took makes a scratch card."""
     recorder = Recorder(_scratch(11), _Sent(422, {"message": "Validation Failed"}))
-    recorder.request("POST", _ISSUES, json={"title": f"{SCRATCH} new", "body": "b"})
+    recorder.request("POST", _ISSUES, json={"title": f"{SCRATCH} new", "body": "b", "type": "step",
+                           "labels": ["balance"]})
     assert recorder.scratch == _scratch(11)
 
 

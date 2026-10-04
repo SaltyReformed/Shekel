@@ -36,7 +36,8 @@ workable only when its own blockers AND every blocker of every step above it
 are resolved, and while no step above it was dropped.  A wait is recorded
 once, on the step it was set on, and so is a PERSON's close of a split step;
 nothing is copied.  ``plan drop`` of a split step writes its drop on each leaf
-instead (``R-BAL190``: the tool records a decision only where the work is).
+below it that is still work instead (``R-BAL190``: the tool records a decision
+only where the work is).
 
 **A card linked to an issue outside the tracker is never offered**
 (``R-BAL188``): the plan reads only its own cards, so the link is reported
@@ -324,9 +325,9 @@ def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
         if done and card.is_open:
             plan.reports.append(
                 f"container plan#{card.number} was reopened by a person's hand, while its "
-                "leaves are all done: to put work back under it, ship 'Reopens: plan#N' for "
-                "a leaf that shipped or reopen a dropped one; to leave it, close it by hand, "
-                "which records it dropped (R-BAL190)"
+                "leaves are all done: to put work back under it, reopen by hand a leaf that "
+                "was dropped or that a person closed, and ship 'Reopens: plan#N' for one that "
+                "shipped; to leave it, close it by hand, which records it dropped (R-BAL190)"
             )
         return
     shown = None if card.is_open else card.state_reason

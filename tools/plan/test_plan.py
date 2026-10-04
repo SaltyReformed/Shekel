@@ -339,7 +339,7 @@ def test_a_split_step_with_no_open_leaf_is_not_dropped_again(code, capsys):
     tracker.add(1, children=(Child(2, "step", False),), on_board=False)
     tracker.add(2, parent=1, is_open=False, state_reason="NOT_PLANNED", closed_by_tool=True)
     assert run(tracker, code, "drop", "plan#1", "--why", "again") == 1
-    assert "no open leaf below it" in capsys.readouterr().err
+    assert "no leaf below it that is still work" in capsys.readouterr().err
     assert not tracker.writes
 
 
@@ -673,4 +673,42 @@ def test_dropping_a_step_that_owns_findings_drops_the_step(code):
     tracker.add(1, children=(Child(2, "finding", True),))
     tracker.add(2, "finding", parent=1)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert ("close", 1, "not_planned") in tracker.writes
+
+
+def test_open_work_git_says_shipped_cannot_be_claimed(code, capsys):
+    """Review cp4c L1: ``next`` never offers it; ``claim`` took it."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    ship(code, "Ships: plan#1")
+    assert run(tracker, code, "claim", "plan#1", "--branch", "feat/again") == 1
+    assert "shipped in git" in capsys.readouterr().err
+    assert not tracker.writes
+
+
+def test_dropping_a_split_step_drops_a_leaf_git_revived_whatever_its_card_shows(code, capsys):
+    """Review cp4c L2 and L6: the leaves were picked by their display, so a leaf the tool
+    shows completed whose ``Reopens:`` merged was skipped, then reopened by sync and offered
+    under the dropped split step; and a shipped leaf left was not named."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", False), Child(3, "step", True),
+                             Child(4, "step", False)), on_board=False)
+    tracker.add(2, parent=1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
+    tracker.add(3, parent=1)
+    tracker.add(4, parent=1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
+    ship(code, "Ships: plan#2", "Ships: plan#4")
+    ship(code, "Reopens: plan#2")
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert ("close", 2, "not_planned") in tracker.writes
+    assert "plan#4 shipped in git, so it is not dropped" in capsys.readouterr().out
+    assert not [write for write in tracker.writes if write[1] == 4]
+
+
+def test_a_card_that_is_not_work_named_by_a_ships_trailer_can_still_be_dropped(code):
+    """Review cp4c P11: git's answer counts only for work; a question a mistyped ``Ships:``
+    names is still the developer's to withdraw."""
+    tracker = FakeTracker()
+    tracker.add(1, "question")
+    ship(code, "Ships: plan#1")
+    assert run(tracker, code, "drop", "plan#1", "--why", "withdrawn") == 0
     assert ("close", 1, "not_planned") in tracker.writes

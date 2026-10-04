@@ -640,3 +640,94 @@ def test_a_question_blocked_from_outside_the_tracker_still_becomes_its_ruling(co
                "--owner", "plan#1", "--from-question", "plan#2",
                "--answer-file", str(answer)) == 0
     assert tracker.cards_by_number[2].kind == "ruling"
+
+
+class _FailPlaceOnce:
+    """``board.place`` failing once (GitHub's 502 on the move)."""
+
+    def __init__(self, board):
+        """Stand in for ``board.place``."""
+        self.real, self.failed = board.place, False
+        board.place = self
+
+    def __call__(self, item, after):
+        """Fail once, then move."""
+        if not self.failed:
+            self.failed = True
+            raise GitHubError(502, "bad gateway")
+        return self.real(item, after)
+
+
+def test_a_leaf_whose_move_failed_is_left_on_the_board_and_its_place_named(code, tmp_path,
+                                                                          capsys):
+    """Review cp4c M1: the add landed and the move after the split step's other leaves
+    failed; the retry never moves a leaf already on the board (a person may have dragged
+    it), but says where it belongs and how to put it there."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("Build the trailer check.")
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
+    tracker.add(2, parent=1)
+    tracker.add(3, parent=1)
+    tracker.add(4)
+    _FailPlaceOnce(tracker.board)
+    args = ("file", "step", "--parent", "plan#1", "--arc", "balance", "--title",
+            "Trailer check", "--body-file", str(spec))
+    assert run(tracker, code, *args) == 2
+    assert tracker.board.items == [2, 3, 4, 5]
+    capsys.readouterr()
+    assert run(tracker, code, *args) == 0
+    assert ("board: already on it, but not just after plan#1's other leaves: unless a person "
+            "moved it there, `plan move plan#5 --after plan#3`") in capsys.readouterr().out
+    assert tracker.board.items == [2, 3, 4, 5]
+    assert run(tracker, code, "move", "plan#5", "--after", "plan#3") == 0
+    capsys.readouterr()
+    assert run(tracker, code, *args) == 0
+    assert "  board: already on it\n" in capsys.readouterr().out
+
+
+def test_a_card_filed_but_not_yet_readable_is_a_failed_call_not_a_refusal(code, tmp_path,
+                                                                          capsys, monkeypatch):
+    """Review cp4c L4: a lagging read after ``create`` exited 1, which says "refused, with
+    nothing written", though a card was filed."""
+    text = tmp_path / "q.md"
+    text.write_text("Which day?")
+    tracker = FakeTracker()
+    real = tracker.cards
+    monkeypatch.setattr(tracker, "cards", lambda numbers: {} if 1 in numbers else real(numbers))
+    assert run(tracker, code, "file", "question", "--arc", "recurrence", "--title", "Day",
+               "--body-file", str(text)) == 2
+    captured = capsys.readouterr()
+    assert captured.out.startswith("filed plan#1\n") and "run the same command again" in (
+        captured.err)
+
+
+def _rewritten(tracker, editor, body):
+    """Card 2, a question, with one edit after its filing: ``body`` saved by ``editor``, and
+    the question put back by the developer since."""
+    tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
+    tracker.versions[2] = [Edit("E2.0", "2026-10-01T00:00:00Z", "shekel-plan-tool",
+                                "Ship it tonight?"),
+                           Edit("E2.1", "2026-10-02T00:00:00Z", editor, body),
+                           Edit("E2.2", "2026-10-03T00:00:00Z", "SaltyReformed",
+                                ruling_body("Ship it tonight!", "Yes."))]
+    tracker.bodies[2] = ruling_body("Ship it tonight!", "Yes.")
+
+
+@pytest.mark.parametrize(("editor", "body"), [
+    ("SaltyReformed", ruling_body("Ship it tonight?", "Yes.")),
+    ("shekel-plan-tool", "Ship it tonight, please?"),
+])
+def test_only_an_edit_of_the_tools_in_a_rulings_shape_marks_an_earlier_conversion(
+        code, tmp_path, editor, body):
+    """Review cp4c P6, P7: a person's ruling-shaped edit, or a tool edit in no ruling's shape,
+    is no earlier conversion: the body as it stands is the developer's question."""
+    answer = tmp_path / "a"
+    answer.write_text("No.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    _rewritten(tracker, editor, body)
+    assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Tonight",
+               "--owner", "plan#1", "--from-question", "plan#2",
+               "--answer-file", str(answer)) == 0
+    assert tracker.bodies[2] == ruling_body(ruling_body("Ship it tonight!", "Yes."), "No.")

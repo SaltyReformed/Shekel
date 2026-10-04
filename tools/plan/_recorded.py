@@ -24,8 +24,9 @@ tracker it reads is private: real production figures are allowed there
 - **Only a known write to a scratch card is sent** (:func:`refusal`, asked of
   every request before it goes out, and of every request a recording keeps): a
   REST write takes one of the routes in :data:`_ROUTES` on the tracker, with
-  exactly the body the plan tool sends and every card it names -- in its path,
-  by its REST id, or as a claim -- a scratch card; a GraphQL write is one of the
+  exactly the body keys the plan tool sends (their values are not checked but
+  for the cards they name) and every card it names -- in its path, by its REST
+  id, or as a claim -- a scratch card; a GraphQL write is one of the
   board's four, word for word, on the plan board, moving a scratch card's
   board item.  A body sent other than as JSON is refused too.  Anything else is
   refused, unsent.
@@ -34,10 +35,12 @@ tracker it reads is private: real production figures are allowed there
   repositories, dates, error messages -- or it belongs to a scratch card, or it
   is the plan board's own title (:data:`setup_tracker.PROJECT_TITLE`, already
   in this repository).  An object carrying a ``number`` is that card of the
-  tracker only when it names the tracker as its repository, or names none in
-  an answer to a request about the tracker alone (a REST path under the
-  tracker, or a GraphQL query reading no repository but the tracker); any
-  other numbered object is no card.  An object with no number that carries a
+  tracker only when it names the tracker as its repository, or names none and
+  sits where the request reads the tracker's own cards: the answer itself to a
+  REST request under the tracker, or a field of the tracker's ``repository``
+  (and its ``issues``) in a GraphQL query whose every ``repository(...)`` is
+  the tracker's and that aliases nothing as ``repository``.  Any other
+  numbered object is no card.  An object with no number that carries a
   string of its own belongs to NO card -- except the answer itself, which is
   the card the request's URL names, and the edit history of an object that
   carries a card's number; any other object shares its enclosing object's
@@ -49,9 +52,9 @@ it); everything on the REQUEST side, kept as sent because the replay matches it
 -- read URLs, search terms, GraphQL variables, a claim commit's message -- so a
 recording session puts no private text in a request; a scratch card's own
 text, including any edit history from before it carried a scratch title (the
-recording sessions file their scratch cards as scratch); and, in an answer
-about the tracker alone, the text of an object carrying a number that is not a
-card's (a milestone numbered like a scratch card), read as that card's.
+recording sessions file their scratch cards as scratch); and, where the request
+reads the tracker's own cards, the text of an object carrying a number that is
+not a card's (a milestone numbered like a scratch card), read as that card's.
 """
 from __future__ import annotations
 
@@ -94,7 +97,11 @@ _BOARD_WRITES = {BOARD_ADD: "c", BOARD_REMOVE: "i", BOARD_TOP: "i", BOARD_AFTER:
 _MUTATION = re.compile(r"\bmutation\b")
 _REPOSITORY_ARGUMENTS = re.compile(r"\brepository\s*\(([^)]*)\)")
 _THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*,\s*name:\s*"{REPO}"\s*')
+_REPOSITORY_ALIAS = re.compile(r"\brepository\s*:")
 _CLAIM = re.compile(r"refs/claims/(?:([0-9]+)|recording-[a-z0-9-]+)")
+#: The bodies the plan tool PATCHes an issue with: retype, retitle, a new body, close, reopen.
+_PATCHES = frozenset(frozenset(keys) for keys in (
+    {"type"}, {"title"}, {"body"}, {"state", "state_reason"}, {"state"}))
 
 
 @dataclass
@@ -139,11 +146,10 @@ _Allows = Callable[[re.Match, dict, Scratch], bool]
 _ROUTES: tuple[tuple[str, re.Pattern, _Allows], ...] = tuple(
     (method, re.compile(path), allows) for method, path, allows in (
         ("POST", r"/issues",
-         lambda _m, body, _s: set(body) <= {"title", "body", "type", "labels"}
-         and str(body.get("title", "")).startswith(SCRATCH)),
+         lambda _m, body, _s: set(body) == {"title", "body", "type", "labels"}
+         and str(body["title"]).startswith(SCRATCH)),
         ("PATCH", r"/issues/([0-9]+)",
-         lambda m, body, s: int(m[1]) in s.numbers
-         and set(body) <= {"title", "body", "type", "state", "state_reason"}
+         lambda m, body, s: int(m[1]) in s.numbers and frozenset(body) in _PATCHES
          and str(body.get("title", SCRATCH)).startswith(SCRATCH)),
         ("POST", r"/issues/([0-9]+)/comments",
          lambda m, body, s: int(m[1]) in s.numbers and set(body) == {"body"}),
@@ -204,13 +210,25 @@ def refusal(method: str, url: str, body, scratch: Scratch) -> str | None:
 
 
 def _about_the_tracker(url: str, body) -> bool:
-    """Whether a request provably reads nothing but the tracker -- a REST path under it, or
-    a GraphQL query whose every ``repository(...)`` is the tracker, and that has one -- so a
-    number in its answer that names no repository names a card of the tracker."""
+    """Whether a request's answer holds the tracker's own cards where :func:`_slot` looks:
+    a REST path under the tracker, or a GraphQL query with a ``repository(...)``, every one
+    the tracker's, and no alias named ``repository``."""
     if url == _GRAPHQL_URL:
-        arguments = _REPOSITORY_ARGUMENTS.findall(str((body or {}).get("query", "")))
-        return bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
+        query = str((body or {}).get("query", ""))
+        arguments = _REPOSITORY_ARGUMENTS.findall(query)
+        return (bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
+                and not _REPOSITORY_ALIAS.search(query))
     return url.startswith(_REPO_URL + "/")
+
+
+def _slot(path: tuple[str, ...], graphql: bool) -> bool:
+    """Whether an object at ``path`` (its keys from the answer down) is where a request about
+    the tracker reads the tracker's own cards: the answer itself to a REST request, or a
+    field of the tracker's ``repository`` (or of its ``issues``) in a GraphQL one."""
+    if not graphql:
+        return not path
+    return ((len(path) == 3 and path[:2] == ("data", "repository"))
+            or path == ("data", "repository", "issues", "nodes"))
 
 
 def _named_card(url: str) -> int | None:
@@ -219,9 +237,9 @@ def _named_card(url: str) -> int | None:
     return int(found[1]) if found else None
 
 
-def _card_of(value: dict, scoped: bool) -> int | None:
+def _card_of(value: dict, slot: bool) -> int | None:
     """The tracker card an object carrying a ``number`` is: when it names the tracker as its
-    repository, or names none in an answer about the tracker alone (``scoped``); None
+    repository, or names none and sits in one of the request's card slots (``slot``); None
     otherwise."""
     repository, url = value.get("repository"), value.get("repository_url")
     if isinstance(repository, dict):
@@ -229,43 +247,47 @@ def _card_of(value: dict, scoped: bool) -> int | None:
         return value["number"] if named == TRACKER else None
     if url is not None:
         return value["number"] if url == _REPO_URL else None
-    return value["number"] if scoped else None
+    return value["number"] if slot else None
 
 
 @dataclass(frozen=True)
 class _Owner:
     """Whose text a part of an answer holds: ``card``; the card the request names; whether
-    the part is a card's own content (its edit history); whether the request is about the
-    tracker alone."""
+    the part is a card's own content (its edit history); whether the request reads the
+    tracker's own cards (:func:`_about_the_tracker`), and by GraphQL."""
 
     card: int | None
     named: int | None
     own: bool
     scoped: bool
+    graphql: bool
 
 
-def _redact(value, key: str | None, owner: _Owner, scratch: set[int], top: bool = False):
-    """``value``, held under ``key``, with every string redacted that is neither a scratch
-    card's nor under a :data:`_KEPT` key."""
+def _redact(value, key: str | None, owner: _Owner, scratch: set[int],
+            path: tuple[str, ...] = ()):
+    """``value``, held under ``key`` at ``path`` (its keys from the answer down), with every
+    string redacted that is neither a scratch card's nor under a :data:`_KEPT` key."""
     if isinstance(value, list):
-        return [_redact(item, key, owner, scratch) for item in value]
+        return [_redact(item, key, owner, scratch, path) for item in value]
     if isinstance(value, str):
         return value if key in _KEPT or owner.card in scratch else REDACTED
     if not isinstance(value, dict):
         return value
     numbered = "number" in value
     if numbered:
-        owner = _Owner(_card_of(value, owner.scoped), owner.named, False, owner.scoped)
+        card = _card_of(value, owner.scoped and _slot(path, owner.graphql))
+        owner = _Owner(card, owner.named, False, owner.scoped, owner.graphql)
     elif any(isinstance(item, str) and name not in _KEPT for name, item in value.items()):
-        card = owner.named if top else owner.card if owner.own else None
-        owner = _Owner(card, owner.named, owner.own, owner.scoped)
+        card = owner.named if not path else owner.card if owner.own else None
+        owner = _Owner(card, owner.named, owner.own, owner.scoped, owner.graphql)
     board = (str(value.get("id", "")).startswith(_BOARD_NODE)
              and value.get("title") == PROJECT_TITLE)
     return {
         name: (item if board and name == "title"
                else _redact(item, name, _Owner(owner.card, owner.named,
                                                owner.own or (numbered and name in _OWN_CONTENT),
-                                               owner.scoped), scratch))
+                                               owner.scoped, owner.graphql),
+                            scratch, (*path, name)))
         for name, item in value.items()
     }
 
@@ -285,8 +307,8 @@ def redacted(exchanges: list[dict], scratch: Scratch) -> list[dict]:
             raise ValueError(why)
         named = _named_card(url)
         answer = _redact(exchange["answer"], None,
-                         _Owner(named, named, False, _about_the_tracker(url, body)),
-                         scratch.numbers, top=True)
+                         _Owner(named, named, False, _about_the_tracker(url, body),
+                                url == _GRAPHQL_URL), scratch.numbers)
         kept.append({**exchange, "answer": answer})
     return kept
 

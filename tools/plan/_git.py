@@ -212,15 +212,15 @@ def started(root: Path, ref: str) -> str:
     """When the work on branch ``ref`` started: the earliest author date among its own
     commits (those not on :data:`DEV`) and the commits they grew from.
 
-    The commits they grew from are the boundary of that set -- the dev commits
-    under each line, whichever parent a merge lists first; the own commits are
-    there too because a rebase, a cherry-pick or an amend keeps each one's
-    author date while moving it onto a newer base.  So every commit of the
-    branch falls inside the window ``spec-history --since <ref>`` reads
-    (R-BAL174: the spec edits since the work started).  A ref with no commit off
-    :data:`DEV` is read as its own start: a branch just cut from dev starts at
-    its tip.  So is a branch already MERGED into dev, whose start git no longer
-    records; its window then starts at its last commit.
+    The commits they grew from are the boundary of that set -- every commit not
+    of the branch that one of its own commits sits on, under any line a merge
+    brought in; the own commits are there too because a rebase, a cherry-pick or
+    an amend keeps each one's author date while moving it onto a newer base.  So
+    every commit of the branch falls inside the window ``spec-history --since
+    <ref>`` reads (R-BAL174: the spec edits since the work started).  A ref with
+    no commit off :data:`DEV` is read as its own start: a branch just cut from
+    dev starts at its tip.  So is a branch already MERGED into dev, whose start
+    git no longer records; its window then starts at its last commit.
     """
     dates = git(root, "log", "--boundary", "--format=%aI", ref, "--not", DEV).split()
     if not dates:

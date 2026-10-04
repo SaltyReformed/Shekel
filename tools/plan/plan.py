@@ -9,7 +9,9 @@ GitHub App, and every card a session files passes :mod:`check` first.
 Whether a card SHIPPED is git's answer, never the card's state: a commit on
 ``dev`` carrying ``Ships: plan#N``, with no later ``Reopens: plan#N``
 (:mod:`_git`).  The card's open or closed state is display, which ``sync``
-writes from git.
+writes from git.  So every command that asks git -- ``next``, ``show``,
+``claim``, ``drop``, ``sync``, and ``file`` given an owner or a parent -- first
+runs ``git fetch origin dev``, which moves this checkout's ``origin/dev``.
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
@@ -60,6 +62,7 @@ from _state import (
     never_offered,
     next_step,
     outside_reports,
+    resolved,
     stale_claims,
     sync_plan,
 )
@@ -196,6 +199,8 @@ def cmd_claim(args, tracker: Tracker, root: Path) -> int:
     cards = _with_closure(tracker, {card.number: card})
     if why := never_offered(card, cards, shipped):
         raise Refused(f"{_label(card)} is never offered as work: {why}")
+    if card.number in shipped:
+        raise Refused(f"{_label(card)} shipped in git: no work is left on it to claim")
     branch = _branch(root, args.branch)
     try:
         claim = tracker.claim(card.number, branch)
@@ -378,11 +383,22 @@ def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, 
 
 def _place_leaf(tracker: Tracker, leaf: Card, parent: Card) -> None:
     """Put a new leaf where the step it splits sat (R-BAL179), each board write printed as
-    it lands; a leaf already placed is left where it is (R-BAL186)."""
+    it lands.  A leaf already on the board is never moved by a retry (R-BAL186), since a
+    person may have dragged it there; one not just after its split step's other leaves --
+    where a move a failure cut short would have put it -- is reported, with the command
+    that moves it."""
+    order = tracker.board.order()
+    where = leaf_placement(order, parent, leaf.number)
     if leaf.board_item is not None and parent.board_item is None:
-        print("  board: already on it")
+        items = [item for _, item in order]
+        at = items.index(leaf.board_item) if leaf.board_item in items else None
+        anchor = next((number for number, item in order if item == where.after), None)
+        placed = where.after is None or (at is not None and at > 0
+                                         and items[at - 1] == where.after)
+        print("  board: already on it" + ("" if placed else
+              f", but not just after plan#{parent.number}'s other leaves: unless a person "
+              f"moved it there, `plan move plan#{leaf.number} --after plan#{anchor}`"))
         return
-    where = leaf_placement(tracker.board.order(), parent, leaf.number)
     item = leaf.board_item
     if item is None:
         item = tracker.board.add(leaf)
@@ -452,7 +468,10 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
     if card is None:
         number = tracker.create(args.kind, draft.title, draft.body, draft.labels)
         print(f"filed plan#{number}")
-        card = _one(tracker, number)
+        card = tracker.cards([number]).get(number)
+        if card is None:
+            raise TrackerError(f"plan#{number} was filed but cannot be read back yet: run the "
+                               "same command again to finish it (R-BAL186)")
         print(f"  {_label(card)}")
     else:
         _refuse_rehoming(card, parent)
@@ -553,13 +572,13 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     return 0
 
 
-def _open_leaves_below(tracker: Tracker, card: Card) -> list[Card]:
-    """Every open leaf below ``card`` that is work -- under the steps it splits, under
-    theirs, ... (a step split again is not a leaf; its own leaves are)."""
+def _leaves_below(tracker: Tracker, card: Card) -> list[Card]:
+    """Every leaf below ``card`` that is work, in any state -- under the steps it splits,
+    under theirs, ... (a step split again is not a leaf; its own leaves are)."""
     below, wanted = [], list(card.leaves)
     while wanted:
         found = tracker.cards(wanted)
-        below += [step for _, step in sorted(found.items()) if step.is_open and is_work(step)]
+        below += [step for _, step in sorted(found.items()) if is_work(step)]
         wanted = [number for step in found.values() for number in step.leaves]
     return below
 
@@ -581,11 +600,12 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
 
     Work git says shipped is never dropped: undoing it is a ``Reopens:`` commit.
     A split step holds no decision of the tool's (R-BAL190): dropping one notes
-    it on the split step first, then drops every open leaf below it that git
-    has not shipped, each with the reason; its own state shows its leaves at the
-    next ``sync``.  Run again after a failure, it notes the split step again and
-    drops the leaves still open (a leaf whose comment landed but not its close
-    gets the reason twice).
+    it on the split step first, then drops every leaf below it that is still
+    work by git's answer -- not shipped and not dropped, whatever its card shows
+    -- each with the reason, and names the shipped ones it leaves; its own
+    state shows its leaves at the next ``sync``.  Run again after a failure, it
+    notes the split step again and drops the leaves still work (a leaf whose
+    comment landed but not its close gets the reason twice).
     """
     card = _one(tracker, args.card)
     _, shipped, _ = _shipped(root)
@@ -597,10 +617,14 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
                           f"'Reopens: plan#{card.number}', not a drop")
         _drop(tracker, card, args.why)
         return 0
-    below = [leaf for leaf in _open_leaves_below(tracker, card) if leaf.number not in shipped]
+    below = _leaves_below(tracker, card)
+    done = [leaf for leaf in below if leaf.number in shipped]
+    below = [leaf for leaf in below if not resolved(leaf.number, {leaf.number: leaf}, shipped)]
+    for leaf in done:
+        print(f"  plan#{leaf.number} shipped in git, so it is not dropped")
     if not below:
-        raise Refused(f"{_label(card)} has no open leaf below it that git has not shipped; its "
-                      "own state shows its leaves, which `plan sync` writes")
+        raise Refused(f"{_label(card)} has no leaf below it that is still work; its own state "
+                      "shows its leaves, which `plan sync` writes")
     names = ", ".join(f"plan#{leaf.number}" for leaf in below)
     tracker.comment(card.number, f"Dropped: {args.why} (its open leaves {names})")
     print(f"  commented on plan#{card.number}: dropping its open leaves {names}; it shows them "
