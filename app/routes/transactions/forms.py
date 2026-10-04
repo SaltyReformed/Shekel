@@ -36,9 +36,11 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
+from app.routes._refused_press import RedrawnCard
 from app.routes._render_helpers import (
     fragment_amounts,
     render_transaction_cell,
+    settles_at_nothing,
 )
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
@@ -112,7 +114,31 @@ def get_full_edit(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+    return render_full_edit(txn, page_refusal=None)
 
+
+def render_full_edit(txn, *, page_refusal):
+    """Render the full-edit popover for *txn* from its current state.
+
+    **ONE render for the popover's GET and for its REDRAW** (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC128**, developer 2026-10-04,
+    "Redraw all"): a press the popover sends that is refused as out of date
+    -- by the removal act over the bank lines (ruling **R-CC127**), or by the
+    row delete over its dialog's purchases (ruling **R-CC131**) -- answers
+    with this same card, drawn from what is true now, with the refusal above
+    it, so every box and every caption on the redrawn card, and what it posts
+    back, come from one moment.  Two
+    renders would be two answers to what the card shows.
+
+    Args:
+        txn: The row, owner-established by the caller
+            (:func:`~app.routes.transactions._helpers._get_owned_transaction`).
+        page_refusal: :attr:`~app.exceptions.PageOutOfDate.facts` for a
+            redraw, else ``None``.
+
+    Returns:
+        The rendered ``grid/_transaction_full_edit.html``.
+    """
     statuses = db.session.query(Status).all()
     # Pay periods power the in-popover period-move selector.  Only the
     # current and future periods are offered -- moving an expense into an
@@ -178,20 +204,32 @@ def get_full_edit(txn_id):
     tender_accounts, tender_account_id = _tender_picker(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
+        card_id=full_edit_dom_id(txn.id),
+        page_refusal=page_refusal,
         # **What taking the row's payment out of its matches would WITHDRAW**
-        # -- read once, for the card's three captions: a different "Paid
+        # -- read once, for the card's four captions: a different "Paid
         # from" pick re-points the payment (plan step
         # ``credit_card:CC-5-4a-1``, ruling **R-CC46**), and a ``$0.00``
-        # Actual or Paid on a row whose purchases replace its payment takes
-        # it off the books (plan step ``credit_card:CC-5-4a-3``, rulings
-        # **R-CC54** / **R-CC56**).  Every accepted match names the row's
-        # payment, and none of the three keeps it named, so all three free
-        # the same lines -- said BEFORE the press, the disclosure a delete
-        # makes through its dialog, read through the same twin
+        # Actual, a ``$0.00`` estimate saved as Paid (ruling **R-CC129**) or
+        # Paid on a row whose purchases replace its payment takes it off the
+        # books (plan step ``credit_card:CC-5-4a-3``, rulings **R-CC54** /
+        # **R-CC56**).  Every accepted match names the row's payment, and
+        # none of the four keeps it named, so all four free the same lines
+        # -- said BEFORE the press, the disclosure a delete makes through its
+        # dialog, read through the same twin
         # (``match_withdrawal.pending_for_movements``) the doors' own write
         # uses.  ``None`` for a row holding no payment; a withdrawal freeing
         # nothing renders nothing.
         payment_withdraws=_payment_withdrawal(txn),
+        # **Whether Paid / Received would record $0.00** (plan step
+        # ``credit_card:CC-5-4a-5``): such a settle takes a kept payment off
+        # the books exactly as a typed $0.00 does, so Paid's caption names
+        # what it withdraws (R-CC56) -- read off the two maps this card
+        # already draws, by the contract they state.  The card asks it only
+        # of a Projected row whose figure is not its purchases'.
+        paid_records_nothing=settles_at_nothing(
+            amounts.budgets[txn.id], amounts.retained[txn.id],
+        ),
         txn=txn,
         categories=categories,
         # The row's OWN paycheck, as the DERIVED value (plan step C4-a-5).  The
@@ -293,6 +331,46 @@ def get_full_edit(txn_id):
         # so the two coincide) with no override, as every picker is.
         tender_accounts=tender_accounts,
         tender_account_id=tender_account_id,
+    )
+
+
+def full_edit_dom_id(txn_id):
+    """Return the ``id`` of a row's full-edit card -- what a redraw replaces.
+
+    Spelled once for the card's root (``card_id``) and the redraw that
+    targets it (:func:`redraw_full_edit`, ruling **R-CC128**).
+
+    Args:
+        txn_id: The row's id.
+
+    Returns:
+        The DOM id.
+    """
+    return f"txn-full-edit-{txn_id}"
+
+
+def redraw_full_edit(txn_id, facts):
+    """Re-read a row after a refused press and draw its card again (ruling **R-CC128**).
+
+    The transaction popover's half of
+    :func:`app.routes._refused_press.answer_refused_press`, which has rolled
+    the press back before calling this, so the row is read as it stands.
+
+    Args:
+        txn_id: The row the press named.
+        facts: :attr:`~app.exceptions.PageOutOfDate.facts`, drawn above the
+            card.
+
+    Returns:
+        The :class:`~app.routes._refused_press.RedrawnCard`, or ``None`` when
+        the row is no longer the requester's to draw -- the ownership door's
+        own answer (:func:`_get_owned_transaction`).
+    """
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return None
+    return RedrawnCard(
+        full_edit_dom_id(txn_id), render_full_edit(txn, page_refusal=facts),
     )
 
 

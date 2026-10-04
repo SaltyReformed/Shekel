@@ -19,6 +19,7 @@ from app.models.category import Category
 from app.models.transfer import Transfer
 from app.schemas.validation import (
     SAME_ACCOUNT_TRANSFER_MESSAGE,
+    ShownLinesSchema,
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
     TransferCreateSchema,
@@ -39,6 +40,10 @@ _create_schema = TransferTemplateCreateSchema()
 _update_schema = TransferTemplateUpdateSchema()
 _xfer_create_schema = TransferCreateSchema()
 _xfer_update_schema = TransferUpdateSchema()
+# Mark Paid's one parameter: the bank lines the popover's captions named (plan
+# step ``credit_card:CC-5-4a-5``, ruling **R-CC127**); absent from the grid
+# leg's one-click, which is silent by ruling **R-CC56**.
+_shown_lines_schema = ShownLinesSchema()
 
 
 def _user_owns(model, pk):

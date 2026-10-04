@@ -85,11 +85,15 @@ def _hotel(seed_user):
     return txn, _matched(seed_user, txn)
 
 
-def _reverted_envelope(seed_user, *, with_purchase):
-    """A matched $120.00 envelope reverted to Projected, its payment kept un-dated."""
+def _reverted_envelope(seed_user, *, with_purchase, companion_visible=False):
+    """A matched $120.00 envelope reverted to Projected, its payment kept un-dated.
+
+    *companion_visible* lets the owner's companion see (and press) its row.
+    """
     template = make_expense_template(
         db.session, seed_user, amount="120.00", name="Hotel",
         category_key="Rent", is_envelope=True,
+        companion_visible=companion_visible,
     )
     txn = generate_row_of(template, seed_user["bootstrap_period"])
     db.session.commit()
@@ -220,7 +224,12 @@ class TestPaidSaysWhatReplacingThePaymentWouldFree:
     def test_pressing_paid_withdraws_the_match(
         self, app, auth_client, seed_user,
     ):
-        """The Paid button's own POST: the purchases replace the payment."""
+        """A Paid POST with no field: the purchases replace the payment.
+
+        Since plan step CC-5-4a-5 an empty POST is the GRID's one-click Mark
+        Paid, silent by ruling R-CC56; the popover's own Paid posts the lines
+        its caption named, graded in ``test_cc5_4a5_popover_presses``.
+        """
         with app.app_context():
             txn, line = _reverted_envelope(seed_user, with_purchase=True)
             assert _claimed(seed_user, line)
@@ -244,11 +253,12 @@ class TestTheDeleteDialogKeepsItsSentence:
         A row of a recurring definition deletes soft -- it stays as the
         tombstone the engine reads, keeping its payment and its match -- and
         its dialog rightly names no line.  Only the withdrawal CLAUSE is
-        pinned: the dialog's first sentence counts the row's payment as "the
-        1 purchase filed under it", which is ledger row **BAL-504**'s known
-        defect (owner ``balance:X-ck``, re-confirmed on 550cc9ce
-        2026-09-22), deliberately NOT asserted here so that step's fix
-        changes no pin.
+        pinned here.  The dialog's first sentence counts purchases only, the
+        row's own payment not among them (``test_cc5_4a4_hidden_row_doors``
+        ``TestTheDialogCountsPurchasesOnly``), read off the delete's own
+        preview since ruling R-CC131 (``test_cc5_4a5_delete_dialog``); ledger
+        row BAL-504, which this docstring quoted as open, closed at the tick
+        of plan step ``credit_card:CC-5-4a-5``'s first leaf.
         """
         with app.app_context():
             txn = a_transaction(

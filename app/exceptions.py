@@ -720,12 +720,11 @@ class PayStubRefused(ValidationError):
     """A transcribed pay stub the entry door will not record (plan step salary:S11-b).
 
     Carries every refusal the SERVICE finds in one submission, keyed by what
-    it is about (``"payday"``, ``"tax-<kind id>"``, ``"printed_net"``,
-    ``"one_off:<index>"``), so the entry form marks each of them at once.  A
-    form the route could not read at all (a malformed figure) is answered
-    first and never reaches the service, so its refusals follow on the next
-    submit.  What
-    each refusal is, and whose ruling, is
+    it is about (``"payday"``, ``"tax-<kind id>"``, ``"printed_gross"``,
+    ``"printed_net"``, ``"one_off:<index>"``), so the entry form marks each of
+    them at once.  A form the route could not read at all (a malformed figure)
+    is answered first and never reaches the service, so its refusals follow
+    on the next submit.  What each refusal is, and whose ruling, is
     :mod:`app.services.pay_stub_service`'s module docstring.
 
     Attributes:
@@ -783,4 +782,78 @@ class TrackingStartRefused(ValidationError):
             f"{moved_on.strftime('%b %-d, %Y')}, on or before "
             f"{asked.strftime('%b %-d, %Y')}, so the app's record of this loan "
             f"starts earlier than that date."
+        )
+
+
+class PageOutOfDate(ValidationError):
+    """A press was refused: its page named other things than the press would take.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**
+    (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
+    bank lines it named, and the function compares them with what it would
+    undo. At 10:10 they differ, so nothing is saved"*.  Raised by
+    ``match_withdrawal.take_out_of_matches`` -- the match step of the one act
+    that takes a movement off the books, and of the seam's re-point -- before
+    it writes anything (:meth:`over_lines`); the door's rollback undoes
+    whatever the press staged before it.  Two causes reach it: a page drawn
+    before a match was made or undone in another tab, and a door that forgot
+    its caption.  **And by the row delete over the PURCHASES its dialog
+    named** (ruling **R-CC131**, developer 2026-10-04, "Refuse and redraw",
+    fulfilling ruling **R-CC96**'s clause): a purchase added under the row in
+    another tab after the dialog was drawn is not deleted unnamed
+    (``transaction_service._delete``).  A third --
+    one popover Save typing a $0.00 estimate beside the status Paid, which
+    the Paid caption reading the STORED estimate could not name, so the
+    redrawn card was refused again at every try -- is closed by the caption
+    under the Estimated box (ruling **R-CC129**, "Warn in both places").
+
+    **The message states the fact and the reload a plain surface needs; a
+    popover answers with its own.**  Ruling **R-CC128** (developer
+    2026-10-04, "Redraw all"): a press refused from a full-edit popover
+    redraws the whole popover from current state, so it shows
+    :attr:`facts` above the current caption and tells the owner to press
+    again rather than to reload.  Every other door hears the full sentence
+    through its ordinary ``ValidationError`` arm, which is why this is a
+    subclass: a route that does not know this refusal still renders a true
+    one.
+
+    Args:
+        facts: What was refused and why, with no remedy -- the raiser's,
+            because only it knows what the page named.
+
+    Attributes:
+        facts: As given.
+    """
+
+    def __init__(self, facts: str) -> None:
+        """Keep the facts, then add the reload a plain surface needs."""
+        self.facts = facts
+        super().__init__(
+            f"{facts} Reload the page to see what this press does now, then "
+            f"press again."
+        )
+
+    @classmethod
+    def over_lines(cls, freed: int, named: int) -> "PageOutOfDate":
+        """Return the refusal of a press freeing other bank lines than its page named.
+
+        Worded for any press -- a Save, Paid / Received, a Delete -- because
+        every one of them reaches it (review finding L3: it said "Saving now"
+        on a Delete).  It opens with ruling **R-CC128**'s banner words
+        ("nothing was saved because the page was out of date"), which every
+        out-of-date refusal shares, the delete's purchases one included.
+
+        Args:
+            freed: How many bank lines the press would leave unexplained again.
+            named: How many of the lines its page named are on the accounts
+                the press touches.
+
+        Returns:
+            The exception, to raise.
+        """
+        return cls(
+            f"Nothing was saved: this page was out of date. As things are now, "
+            f"this press leaves {freed} bank line{'' if freed == 1 else 's'} "
+            f"unexplained again on your statement screen, and the page named "
+            f"{named}."
         )

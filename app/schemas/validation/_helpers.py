@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from marshmallow import (
     Schema,
     fields,
+    pre_load,
     validate,
     ValidationError,
     EXCLUDE,
@@ -438,6 +439,78 @@ class BaseSchema(Schema):
         """Marshmallow options: silently drop unknown fields (e.g. the CSRF token)."""
 
         unknown = EXCLUDE
+
+
+class ShownIds(fields.Field):
+    """The rows a page NAMED before a press, as the page posts them back.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**:
+    *"Each warning also sends back the bank lines it named, and the function
+    compares them with what it would undo."*  The bank lines a withdrawal
+    caption named (``_withdrawal_macros.shown_line_ids``), and since ruling
+    **R-CC131** the purchases a row's delete dialog named.  The page writes
+    the ids as one comma-joined value and this reads them back, each through
+    :func:`~app.utils.digit_strings.parse_row_id` -- :class:`RowId`'s rule --
+    so a submitted id means here what it means at every other door.
+
+    **Declare it ``allow_none``, and the reason is PRESENCE.**  A full-edit
+    popover always posts the field, EMPTY when its captions name no line, and
+    a press that names nothing is a statement (*"A button with no warning sends
+    nothing"*) where a press without the field -- the grid's one-click Mark
+    Paid -- says nothing at all.  ``_normalize_empty_inputs`` drops an empty
+    value for a field that is not ``allow_none``, which would erase that
+    difference; for an ``allow_none`` field it loads as ``None``, so a page
+    that named nothing reads as present.  ``routes._shown_lines`` is the one
+    reader of both answers for the bank lines.
+
+    The ids are OWNER INPUT, never a scope: the act compares only the named
+    lines on the accounts its movements are on
+    (``match_withdrawal._refuse_unshown``), and the delete compares the named
+    purchases with the row's own, as a set.
+    """
+
+    default_error_messages = {"invalid": "Not a valid list of ids."}
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the ids *value* names.
+
+        Args:
+            value: The submitted value -- ids joined by commas.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Unused; marshmallow's contract.
+
+        Returns:
+            The ids as a ``frozenset`` of ``int``.
+
+        Raises:
+            ValidationError: *value* is not a string, or any comma-separated
+                part of it names no row.
+        """
+        if not isinstance(value, str):
+            raise self.make_error("invalid")
+        ids = [parse_row_id(part) for part in value.split(",")]
+        if None in ids:
+            raise self.make_error("invalid")
+        return frozenset(ids)
+
+
+class ShownLinesSchema(BaseSchema):
+    """A press that posts nothing but the lines its page named.
+
+    The transfer popover's Paid, which loads no other schema to declare
+    :class:`ShownIds` on (plan step ``credit_card:CC-5-4a-5``).  The
+    transfer instance DELETE reads no field: no template renders it, so every
+    request it takes named nothing.  The transaction DELETE's dialog names
+    its purchases too (``TransactionDeleteSchema``).
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``shown_lines`` to ``None``: a page that named nothing."""
+        return _normalize_empty_inputs(self, data)
+
+    shown_lines = ShownIds(allow_none=True)
 
 
 def _reject_envelope_on_income(data, message):

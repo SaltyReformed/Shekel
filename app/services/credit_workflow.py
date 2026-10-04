@@ -112,10 +112,13 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
         # reachable from the Undo CC button on the grid card.  That button asks
         # nothing first, and neither does the popover's Status leaving Credit:
         # this door withdraws the act and logs it with no caption (finding
-        # ``credit_card:CC-367``).
+        # ``credit_card:CC-367``), named where the act asks (ruling
+        # **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s second leaf
+        # captions both buttons (ruling **R-CC80**).
         movement_removal.remove_movements(
             list(payback.entries), user_id,
-            because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=[payback],
+            because=match_withdrawal.LEFT_THE_BOOKS,
+            shown=match_withdrawal.Silent("CC-367"), rows_leaving=[payback],
         )
         db.session.delete(payback)
 

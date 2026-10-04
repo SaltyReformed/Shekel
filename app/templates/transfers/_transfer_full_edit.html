@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, shown_line_ids %}
 {# Transfer full edit popover -- renders inside #txn-popover container.
    Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
@@ -31,7 +31,27 @@
 #}
 {% set locked = xfer.status and xfer.status.is_immutable %}
 {% set target_id = leg_dom_id(xfer.id, leg_account_id) if leg_account_id else "xfer-cell-" ~ xfer.id %}
-<div class="txn-full-edit-content">
+{#- **The card's one payment caption, its predicate stated ONCE** (plan step
+    credit_card:CC-5-4a-5, rulings R-CC59 / R-CC127): a $0.00 typed in Actual
+    names the lines `payment_withdraws` frees -- the route's one read of what
+    taking BOTH legs' payments off frees -- and the card posts those ids back
+    (`shown_lines`, below) exactly when it rendered.  Paid names nothing and
+    posts that, and the one way it could take a payment off is a price of
+    $0.00 over a kept, matched payment: a stated price is positive
+    (ck_transfers_positive_amount,
+    ck_template_amount_versions_transfer_positive_amount), and a derived loan
+    payment is $0.00 only where its level P&I -- priced from the loan's
+    ORIGINAL principal (loan_resolver/_periods.py) -- ROUNDS to zero with no
+    escrow or extra: `calculate_monthly_payment` gives $0.00 for $1.00 at 0%
+    or $0.50 at 5% over 360 months.  Such a loan whose kept payment was booked
+    above zero and matched would have this Paid refused as out of date
+    (R-CC127), and the grid leg's one-click Mark Paid withdraw it silently
+    under R-CC56 -- never this card unnamed. -#}
+{% set zero_caption = payment_withdraws and payment_withdraws.frees_a_line
+   and xfer.status and xfer.status.is_settled %}
+{#- The root's id is what a press refused as out of date redraws (ruling
+    R-CC128, "Redraw all"); `card_id` is the route's one spelling of it. -#}
+<div class="txn-full-edit-content" id="{{ card_id }}">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ xfer.name or 'Transfer' }}">
       {{ xfer.name or 'Transfer' }}
@@ -39,6 +59,9 @@
     <button type="button" class="btn-close btn-close-sm" aria-label="Close"
             data-action="close-popover"></button>
   </div>
+  {#- Drawn only on a redraw: nothing was saved, and the card below is what
+      is true now (ruling R-CC128). -#}
+  {% if page_refusal %}{{ page_refusal_banner(page_refusal) }}{% endif %}
 
   <form hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"
         hx-target="#{{ target_id }}"
@@ -49,6 +72,14 @@
        xfer.version_id and short-circuits with 409 when the form is
        stale (commit C-18). #}
     <input type="hidden" name="version_id" value="{{ xfer.version_id }}">
+    {#- **What this card's caption NAMED** (plan step
+        credit_card:CC-5-4a-5, ruling R-CC127): the lines `payment_withdraws`
+        frees when the $0.00 caption rendered, else nothing -- posted on every
+        Save and, through `hx-include`, by Paid.  ALWAYS rendered: a card that
+        named nothing says so, where the grid leg's one-click Mark Paid posts
+        no field at all (R-CC56). -#}
+    <input type="hidden" name="shown_lines" id="xfer-shown-lines-{{ xfer.id }}"
+           value="{{ shown_line_ids(payment_withdraws) if zero_caption else '' }}">
 
     {# Pass leg_account_id so the transfer route handler renders the
        leg's grid cell rather than the transfers page's cell.  Only
@@ -166,7 +197,7 @@
             withdrawn -- said here, under the box, before the Save.
             `payment_withdraws` is the route's one read of what the two
             payments' leaving frees. -#}
-        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        {%- if zero_caption %}
         <div class="form-text" id="zero-withdraws-{{ xfer.id }}">
           Recording $0.00 {{ frees_lines(payment_withdraws) }}.
         </div>
@@ -392,6 +423,7 @@
             hx-post="{{ url_for('transfers.mark_done', xfer_id=xfer.id) }}"
             hx-target="#{{ target_id }}" hx-swap="innerHTML"
             {% if leg_account_id %}hx-vals='{"leg_account_id": "{{ leg_account_id }}"}'{% endif %}
+            hx-include="#xfer-shown-lines-{{ xfer.id }}"
             hx-disabled-elt="this"
             aria-label="Mark as paid">
       <i class="bi bi-check-circle"></i> Paid

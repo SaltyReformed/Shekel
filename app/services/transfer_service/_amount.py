@@ -28,8 +28,12 @@ in place; does not flush and does not commit.
 """
 
 from app.enums import AmountSourceEnum
+from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import derived_ownership
-from app.services.transfer_service._validation import TransferRows
+from app.services.transfer_service._validation import (
+    TransferRows,
+    _validate_positive_amount,
+)
 
 
 def apply_amount_ownership(rows: TransferRows, ownership) -> None:
@@ -97,3 +101,63 @@ def apply_amount_ownership(rows: TransferRows, ownership) -> None:
     )
     for shadow in rows.shadows:
         shadow.amount_ownership = leg_ownership
+
+
+def grade_amount_ownership(updates: "dict[str, object]") -> None:
+    """Refuse a malformed ``amount_ownership`` and write its figure coerced.
+
+    The GRADE before :func:`apply_amount_ownership`'s apply, which
+    ``._update`` asks ahead of every write: hoisted there by plan step
+    R10-b's adversarial review:
+    it ran at the arm that assigns it, two writes later, so an update that
+    moved the pair between accounts and stated a negative figure reversed a
+    loan payment's split BEFORE deciding the amount was illegal.
+
+    Why the caller states ONE value (ruling **R-BAL11**) is this module's
+    docstring.
+
+    **READ rather than POPPED, and a first revision of this step popped it.**
+    TWO things downstream read ``updates.keys()``: the posting reconcile's
+    ``_POSTING_RELEVANT_FIELDS`` test and the audit's ``fields_changed``.
+    Popping took the amount out of both, so a settled transfer's re-price
+    stopped reconciling its ledger and vanished from the audit trail. Nothing
+    here applies fields by name, so the key rides harmlessly.
+
+    **Presence is the question, not a sentinel value.** A first revision used
+    one, reasoning from ``AmountOwnership``'s own rule that ``None`` means
+    "stated nothing" on the ATTRIBUTE -- but that ambiguity is the mapped
+    column pair's, and a kwargs dict answers "was this stated" by key. The
+    sentinel also turned an explicit ``amount_ownership=None`` into an
+    ``AttributeError``, where the parameter it replaced deliberately REFUSED
+    the analogous absence with a message.
+
+    **The COERCED value is what gets written.** ``_validate_positive_amount``
+    returns ``Decimal(str(amount))``, and a first revision validated the
+    figure and then applied the caller's raw ownership -- so one input
+    produced two values and a ``float`` handed in here would have reached a
+    ``Numeric(12,2)`` column. Unreachable from the routes, which load
+    Marshmallow ``Decimal``s, and a money-type guard the code deliberately had.
+
+    Args:
+        updates: The update kwargs as submitted; an owned figure is replaced
+            in place by its coerced value.
+
+    Raises:
+        ValueError: On an explicit ``amount_ownership=None``.
+        ValidationError: On a non-positive owned figure.
+    """
+    if "amount_ownership" not in updates:
+        return
+    ownership = updates["amount_ownership"]
+    if ownership is None:
+        raise ValueError(
+            "update_transfer was given amount_ownership=None. A save that "
+            "says nothing about the amount OMITS the key (ruling R-BAL11); "
+            "an explicit None is a half-written statement, and applying it "
+            "would leave all three rows owning neither a figure nor a "
+            "relation -- the state ck_transfers_amount_ownership refuses."
+        )
+    if ownership.figure is not None:
+        updates["amount_ownership"] = AmountOwnership.own(
+            _validate_positive_amount(ownership.figure),
+        )

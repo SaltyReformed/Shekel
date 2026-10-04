@@ -680,7 +680,8 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         db.session.flush()
         with pytest.raises(ValidationError, match="takes its figure from the purchases"):
             transaction_service.apply_requested_status(
-                envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
+                envelope, envelope.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("999.99"))),
             )
         db.session.flush()
         assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
