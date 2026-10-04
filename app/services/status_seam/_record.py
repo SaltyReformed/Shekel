@@ -42,7 +42,6 @@ from app import ref_cache
 from app.enums import MovementFigureSourceEnum
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services.row_valuation import settled_figure
 from app.services.stated_figure import StatedFigure
 from app.utils.balance_predicates import settled_status_ids
 
@@ -336,10 +335,46 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
         ValueError: When the row holds more than one covering movement
             (:func:`covering_movement_of`).
     """
-    movement = covering_movement_of(row)
+    return _recorded(covering_movement_of(row), row.status_id)
+
+
+def recorded_leg_settlement(leg) -> Optional[Settlement]:
+    """Return the settlement a transfer *leg* already records, or ``None``.
+
+    :func:`recorded_settlement`'s twin over a transfer leg (leaf
+    ``balance:X-bi-6-4d-1``), with the same three answers from the same body
+    (:func:`_recorded`): a leg's record is its covering movement, reached
+    through ``transfer_legs``' one join (:attr:`TransferLeg.record
+    <app.services.transfer_legs.TransferLeg.record>`), and its status is its
+    TRANSFER's.  Asked by ``transfer_service._settle.settle`` for the pair's
+    retained record, read off its expense side, so the read moves with the
+    join when ``X-bi-6-4d`` re-parents the movement off the shadow.
+
+    Args:
+        leg: A :class:`~app.services.transfer_legs.TransferLeg` whose
+            ``record`` the caller loaded -- ``None`` when the side holds none.
+
+    Returns:
+        The recorded :class:`Settlement`, or ``None``.
+
+    Raises:
+        KeyError: When the movement's ``figure_source_id`` names no member
+            of its enum (:func:`_source_of`).
+    """
+    return _recorded(leg.record, leg.status_id)
+
+
+def _recorded(movement, status_id: int) -> Optional[Settlement]:
+    """Return the record a holder of *movement* in *status_id* states.
+
+    The ONE body of :func:`recorded_settlement` and
+    :func:`recorded_leg_settlement`: the covering movement's figure and
+    source when there is one; ``Settlement(None, None)`` for a SETTLED holder
+    with none (its entries are its record, ruling **R-BAL82**); else ``None``.
+    """
     if movement is not None:
         return movement_settlement(movement)
-    if row.status_id in settled_status_ids():
+    if status_id in settled_status_ids():
         return Settlement(amount=None, source=None)
     return None
 
@@ -516,17 +551,20 @@ def honoured_figure(recorded: Optional[Settlement]) -> Optional[Decimal]:
 
 
 def correction_record(
-    row: Transaction, submitted: StatedFigure,
+    recorded: Optional[Decimal], submitted: StatedFigure,
 ) -> Optional[Settlement]:
     """Return the record a stated CORRECTION makes, or ``None`` for an echo.
 
     **The Actual box's rule, stated once for both tables** (developer ruling,
     2026-08-17): the estimate and the actual are two different facts about a
     row, so they get two boxes, and editing the actual states what the bank
-    really took.  ``transaction_service._door`` asks it of a plain row and
-    ``transfer_service._update`` asks it of a transfer's expense leg; a second
-    spelling of the echo comparison is how the two tables would come to disagree
-    about what counts as a correction.
+    really took.  ``transaction_service._door`` asks it with a plain row's
+    record and ``transfer_service._update`` with a transfer's expense leg's; a
+    second spelling of the echo comparison is how the two tables would come to
+    disagree about what counts as a correction.  It takes the RECORDED FIGURE
+    rather than the row since leaf ``balance:X-bi-6-4d-1``, so each table
+    reads its own record its own way -- a row off its entries, a leg off the
+    covering movement ``transfer_legs`` reaches -- and the rule stays one.
 
     **An ECHO writes nothing.**  Both popovers PREFILL the box with what the row
     already records, so an untouched Save posts the same figure back; recording
@@ -541,7 +579,8 @@ def correction_record(
 
     **The comparison is against what the row RECORDS, not its plan**
     (:func:`app.services.row_valuation.settled_figure`, the sum of its
-    entries -- the same map the box was PREFILLED from).  The two differ
+    entries, or :func:`~app.services.row_valuation.leg_settled_figure` for a
+    leg -- the same maps the box was PREFILLED from).  The two differ
     whenever a correction stands, so comparing against the plan would read
     every re-save of a corrected row as a fresh correction of the same
     figure.  It read a TOTAL twin, ``recorded_figure``, through ``X-bi-4a``,
@@ -553,9 +592,10 @@ def correction_record(
     correction, which is the repair.
 
     Args:
-        row: The settled row being corrected -- a plain transaction, or either
-            leg of a transfer (both carry the same record, Transfer Invariant
-            3).  The CALLER establishes that it is settled;
+        recorded: What the settled row or leg being corrected already records
+            (the caller's :func:`~app.services.row_valuation.settled_figure`
+            or :func:`~app.services.row_valuation.leg_settled_figure`).  The
+            CALLER establishes that it is settled;
             :func:`reject_figure_without_settled_status` is that check.
         submitted: The figure the door stated and who wrote it
             (:class:`~app.services.stated_figure.StatedFigure`).
@@ -564,6 +604,6 @@ def correction_record(
         A stated :class:`Settlement`, or ``None`` when *submitted*'s figure
         equals what the row already records.
     """
-    if settled_figure(row) == submitted.amount:
+    if recorded == submitted.amount:
         return None
     return Settlement(amount=submitted.amount, source=submitted.source)

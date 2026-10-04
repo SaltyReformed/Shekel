@@ -484,8 +484,12 @@ def held_transfer_entries(*filters: ColumnElement) -> Query:
     :func:`transfer_holds_a_movement` as rows rather than a test: the
     archive aggregate (``archive_helpers.transfers_holding_movements``)
     reads WHICH kind each held entry is and counts the transfers holding
-    them, over the same scope -- any entry under any shadow.  Unordered,
-    because its one reader aggregates it.
+    them, over the same scope -- any entry under any shadow -- and since
+    leaf ``X-bi-6-4d-1`` the transfer's hard delete
+    (``transfer_service._delete``) hands the one removal act every entry its
+    transfer holds, the scope ``fk_transaction_entries_transaction_id``
+    would refuse the delete for.  Unordered: the aggregate needs no order
+    and the delete states its own.
 
     Args:
         *filters: Clauses over ``Transfer`` -- never the shadow's columns,
@@ -694,6 +698,12 @@ def grid_transfer_leg(transfer: Transfer, account_id: int) -> TransferLeg:
     What a transfer door renders back into a leg's cell (leaf
     ``X-bi-6-1``): :func:`grid_transfer_legs` over one transfer and one
     side, stated separately so the fragment renderers name what they load.
+    Since leaf ``X-bi-6-4d-1`` it is also how the transfer service reads
+    what a side already RECORDS -- the settle's retained correction and
+    carried record, the update's echo comparison
+    (``transfer_service._validation.TransferRows.expense_leg``) and the
+    offer's retained correction (``transfer_service._settle.settle_amount``)
+    -- which read the expense shadow's ``entries`` until then.
 
     Args:
         transfer: The parent.

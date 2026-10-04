@@ -780,20 +780,38 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     movement's parent ``X-bi-6-4d`` re-points when a transfer's payment has
     no row at all.
 
+    **The advice is the PARENT's too since leaf ``X-bi-6-4d-1``**: a
+    transfer's payment is corrected on the TRANSFER -- its "Money moved on"
+    box for that side and its Actual, the labels its popover shows -- and a
+    transfer has no purchases to be closed from, so the row's advice ("edit
+    the row's settle day ... closing the row from its own purchases") named
+    acts no transfer has.  Both sentences start with the parent's name, so a
+    reader matching "This is the payment record of <name>," reads either.
+
     Args:
         entry: The purchase the door was asked to write.
 
     Raises:
         ValidationError: When *entry* is its parent's settlement record.
     """
-    if entry.covers_settlement:
+    if not entry.covers_settlement:
+        return
+    parent = transfer_legs.movement_parent(entry)
+    if isinstance(parent, transfer_legs.TransferLeg):
         raise ValidationError(
-            "This is the payment record of "
-            f"{transfer_legs.movement_parent(entry).name}, "
-            "written when that row was marked paid. "
-            "It is not a purchase: to change the day its money moved, edit "
-            "the row's settle day; to change the figure, correct the row's "
-            "actual or revert it and mark it paid again. It is withdrawn "
-            "only by a $0.00 actual, or by closing the row from its own "
-            "purchases."
+            f"This is the payment record of {parent.name}, written when "
+            "that transfer was marked paid. It is not a purchase: to change "
+            "the day its money moved, edit the transfer's \"Money moved on\" "
+            "day for this account; to change the figure, correct the "
+            "transfer's Actual or revert it and mark it paid again. It is "
+            "withdrawn only by a $0.00 Actual."
         )
+    raise ValidationError(
+        f"This is the payment record of {parent.name}, "
+        "written when that row was marked paid. "
+        "It is not a purchase: to change the day its money moved, edit "
+        "the row's settle day; to change the figure, correct the row's "
+        "actual or revert it and mark it paid again. It is withdrawn "
+        "only by a $0.00 actual, or by closing the row from its own "
+        "purchases."
+    )

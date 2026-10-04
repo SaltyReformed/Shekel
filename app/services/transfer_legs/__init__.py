@@ -124,7 +124,13 @@ out of the list :func:`parent_entries` answers, and since leaf
 ``X-bi-6-4c-3`` (ruling **R-BAL142**, ledger row **BAL-568**) for "Remove
 earlier paychecks"' dated-money arm and the transfer popover's two day boxes,
 which read each side's own day off its movement
-(:func:`transfer_movement_rows`, :func:`covering_movements_by_leg`).
+(:func:`transfer_movement_rows`, :func:`covering_movements_by_leg`), and
+since leaf ``X-bi-6-4d-1`` for the transfer service's own reads of what a
+side RECORDS -- the settle's retained correction and carried record, the
+update's echo comparison and the offer's retained correction
+(:func:`grid_transfer_leg`) -- and for the transfer's hard delete, which hands
+the removal act every entry its transfer holds
+(:func:`held_transfer_entries`).
 **Other readers still reach it themselves until their leaf moves them** and
 ``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
 leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which

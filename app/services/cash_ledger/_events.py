@@ -368,17 +368,19 @@ class CashSourceFact:  # pylint: disable=too-many-instance-attributes
             plan row it records money for (ruling **R-BAL35**; never a fact
             of its own).  For a transfer leg it is the shadow the movement
             still hangs off, NULL from ``X-bi-6-4d``; the fold reads no
-            parent through it.  Its readers: the sort's tie-break (6-4d must
-            re-key it, a ``None`` beside an ``int`` does not sort) and the
-            bank-agreement screen's names and match state
-            (``bank_agreement._rows_on`` / ``_row_names``).
+            parent through it.  Its one reader is the bank-agreement screen's
+            name lookup (``bank_agreement._rows_on`` / ``_row_names``), which
+            keys both sides by this column, so a NULL matches a NULL.  The
+            sort's tie-break read it until leaf ``X-bi-6-4d-1`` re-keyed that
+            on :attr:`entry_id`, because a ``None`` beside an ``int`` does
+            not sort.
         transfer_id: The transfer the movement is a LEG of, ``None`` for a
             plan row's (leaf ``X-bi-6-4a``): what the far-leg exclusion
             (``balance_at._cash_periods._budget_legs``) asks.
-        entry_id: The ``budget.transaction_entries`` row.  ``(transaction_id,
-            entry_id)`` is the fact's identity: an envelope's posted purchases
-            are distinct movements sharing one parent, and the sort breaks
-            their same-day tie with it.
+        entry_id: The ``budget.transaction_entries`` row, and the fact's
+            identity: one fact per movement, and an envelope's posted
+            purchases are distinct movements sharing one parent.  The sort
+            breaks a same-day tie with it.
         pay_period_id: The BUDGET clock -- the ``budget.pay_periods`` row the
             PARENT is attributed to (NOT NULL on its column).  A movement
             takes its parent's because it spends or receives in the parent's
@@ -821,8 +823,8 @@ def settled_cash_facts(
 
     Returns:
         One :class:`CashSourceFact` per dated movement, ASCENDING by
-        ``(settled_on, transaction_id, entry_id)`` -- the order the walk
-        consumes them in, the ids breaking a same-day tie deterministically.
+        ``(settled_on, entry_id)`` -- the order the walk consumes them in,
+        the movement's id breaking a same-day tie deterministically.
         Order WITHIN a day is not observable: the walk only sums a day's
         sources before its assertions close it (ruling R-DH), and the fold
         reads a day's boundary after every step on it, so only the day's
@@ -846,9 +848,12 @@ def settled_cash_facts(
             TransactionEntry.settled_on.isnot(None),
         )
     )
-    facts.sort(
-        key=lambda fact: (fact.settled_on, fact.transaction_id, fact.entry_id),
-    )
+    # The movement's own id breaks a same-day tie: it is the fact's identity
+    # (a primary key) and the one id every fact carries, where a transfer
+    # leg's ``transaction_id`` names the shadow it still hangs off and is
+    # NULL once ``X-bi-6-4d`` re-parents it -- a ``None`` beside an ``int``
+    # does not sort.
+    facts.sort(key=lambda fact: (fact.settled_on, fact.entry_id))
     return facts
 
 
