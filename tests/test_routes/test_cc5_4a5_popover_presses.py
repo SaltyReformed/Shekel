@@ -787,7 +787,9 @@ class TestARefusedPressWithNoCardToDraw:
         resolver falls back, the card's draw rule refuses).  Pinned because
         routing this arm through the door's own refusal was measured worse --
         a soft-deleted transfer drawn as live (the third review) -- and
-        nothing else would catch its return.
+        nothing else would catch its return.  The "writes nothing" half pins
+        the end state only: the refusal raises before the press stages a
+        write, so it cannot tell the arm's rollback from none.
         """
         with app.app_context():
             xfer, (line,) = _matched_transfer(seed_user, legs=("checking",))
@@ -812,6 +814,26 @@ class TestARefusedPressWithNoCardToDraw:
             assert len(transfer_legs.covering_movements_by_leg([xfer_id])) == 2, (
                 "the refused $0.00 took neither leg's payment off"
             )
+
+    def test_the_same_crafted_leg_on_a_current_page_goes_ahead(
+        self, app, auth_client, seed_user,
+    ):
+        """The sibling: that 404 is the no-card arm's, not a door refusing a bad leg up front."""
+        with app.app_context():
+            xfer, (line,) = _matched_transfer(seed_user, legs=("checking",))
+            xfer_id = xfer.id
+            fields = _form_fields(_transfer_popover(auth_client, xfer_id))
+            assert fields["shown_lines"] == str(line.id)
+            fields["settled_amount"] = "0.00"
+            fields["leg_account_id"] = "999999"
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer_id}", data=fields,
+            )
+
+            assert response.status_code == 200
+            _committed()
+            assert transfer_legs.covering_movements_by_leg([xfer_id]) == {}
 
 
 def transfer_service_revert(seed_user, xfer_id):

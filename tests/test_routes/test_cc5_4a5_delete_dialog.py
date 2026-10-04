@@ -228,13 +228,7 @@ class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
             stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
             assert stale == {"shown_lines": "", "shown_purchases": str(kroger)}
             entry_service.delete_entry(kroger, seed_user["user"].id)
-            costco = entry_service.create_entry(
-                txn_id, seed_user["user"].id, entry_service.EntryDetails(
-                    figure=typed(Decimal("300.00")), description="Costco",
-                    purchased_on=_day(seed_user),
-                ),
-            ).id
-            db.session.commit()
+            costco = _bought(seed_user, txn_id, "Costco", "300.00")
 
             response = auth_client.delete(
                 f"/transactions/{txn_id}", query_string=stale,
@@ -379,11 +373,4 @@ def _groceries(seed_user):
 
 def _kroger(seed_user, txn_id):
     """A $12.34 Kroger purchase added under *txn_id* -- the companion's, at 10:01."""
-    entry = entry_service.create_entry(
-        txn_id, seed_user["user"].id, entry_service.EntryDetails(
-            figure=typed(Decimal("12.34")), description="Kroger",
-            purchased_on=_day(seed_user),
-        ),
-    )
-    db.session.commit()
-    return entry.id
+    return _bought(seed_user, txn_id, "Kroger", "12.34")

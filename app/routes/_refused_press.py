@@ -77,9 +77,10 @@ def answer_refused_press(
     as doing nothing.  It is reached by a press refused as out of date whose
     object another tab has ALSO changed -- deleted it, or moved the transfer
     endpoint a leg's card was drawn for -- on the owner's own data, moving no
-    money; and by a crafted transfer press naming a leg that is not the
-    transfer's (``_drawable_card`` refuses it where the leg resolver falls
-    back), which no page renders.  Routing it through *refuse* instead was
+    money; and by a crafted transfer press, ALSO refused as out of date, naming
+    a leg that is not the transfer's (``_drawable_card`` refuses it where the
+    leg resolver falls back; on a current page the press goes ahead), which no
+    page renders.  Routing it through *refuse* instead was
     measured worse (the
     third review, 2026-10-04): the transaction door's refusal still answers a
     bare 404 (``_RowGone``), and the transfer door's would draw a soft-deleted
