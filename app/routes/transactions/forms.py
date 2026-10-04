@@ -205,15 +205,16 @@ def render_full_edit(txn, *, page_refusal):
         card_id=full_edit_dom_id(txn.id),
         page_refusal=page_refusal,
         # **What taking the row's payment out of its matches would WITHDRAW**
-        # -- read once, for the card's three captions: a different "Paid
+        # -- read once, for the card's four captions: a different "Paid
         # from" pick re-points the payment (plan step
         # ``credit_card:CC-5-4a-1``, ruling **R-CC46**), and a ``$0.00``
-        # Actual or Paid on a row whose purchases replace its payment takes
-        # it off the books (plan step ``credit_card:CC-5-4a-3``, rulings
-        # **R-CC54** / **R-CC56**).  Every accepted match names the row's
-        # payment, and none of the three keeps it named, so all three free
-        # the same lines -- said BEFORE the press, the disclosure a delete
-        # makes through its dialog, read through the same twin
+        # Actual, a ``$0.00`` estimate saved as Paid (ruling **R-CC129**) or
+        # Paid on a row whose purchases replace its payment takes it off the
+        # books (plan step ``credit_card:CC-5-4a-3``, rulings **R-CC54** /
+        # **R-CC56**).  Every accepted match names the row's payment, and
+        # none of the four keeps it named, so all four free the same lines
+        # -- said BEFORE the press, the disclosure a delete makes through its
+        # dialog, read through the same twin
         # (``match_withdrawal.pending_for_movements``) the doors' own write
         # uses.  ``None`` for a row holding no payment; a withdrawal freeing
         # nothing renders nothing.

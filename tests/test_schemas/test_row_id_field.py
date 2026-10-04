@@ -745,14 +745,33 @@ class TestNoIdFieldWasMissed:
         never named.
         """
         field = _helpers.ShownLines()
-        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0", ""):
+        for lax in (
+            "\u0661\u0662", " 12 ", " 12", "12 ", "+12", "1_0", "007", "-5",
+            "0", "",
+        ):
             with pytest.raises(ValidationError):
                 field.deserialize(lax)
             with pytest.raises(ValidationError):
                 field.deserialize(f"12,{lax}")
+        # An empty PART is no id either, wherever the stray comma sits.
+        for gap in ("12,,7", ",12", "12,", ","):
+            with pytest.raises(ValidationError):
+                field.deserialize(gap)
         # ...and what it DOES accept: one id, several, repeats folded.
         assert field.deserialize("12") == frozenset({12})
         assert field.deserialize("12,7,12") == frozenset({7, 12})
+
+    def test_an_empty_shown_lines_loads_as_present(self):
+        """``""`` is a page that named nothing -- PRESENT, as ``None`` -- and absence stays absence.
+
+        The difference :class:`~app.schemas.validation._helpers.ShownLines`'
+        ``allow_none`` exists for (review finding H1's schema cases): a full
+        popover posts the field empty, the grid's one-click posts none, and
+        ``routes._shown_lines.read_press`` reads the two differently.
+        """
+        schema = _helpers.ShownLinesSchema()
+        assert schema.load({"shown_lines": ""}) == {"shown_lines": None}
+        assert schema.load({}) == {}
 
     def test_the_reviewed_row_field_is_strict_about_the_ids_it_carries(self):
         """``ReviewedRowField`` names a ROW and a REVISION, both graded.

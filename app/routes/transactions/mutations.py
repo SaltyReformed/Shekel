@@ -38,7 +38,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
-from app.services.match_withdrawal import MARK_PAID, NOTHING_SHOWN
+from app.services.match_withdrawal import NOTHING_SHOWN
 from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
@@ -55,7 +55,7 @@ from app.routes.transactions._gates import (
     _resolve_status_change,
     _stale_form_conflict,
 )
-from app.routes.transactions._press import _refused
+from app.routes.transactions._press import _mark_paid_press, _refused
 from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
 from app.utils.rendered_figure import as_rendered_field
@@ -746,21 +746,19 @@ def _mark_done_regular(txn, submitted, tender_account_id, press, target):
             shown=press.shown,
         )
         db.session.commit()
-    except NotFoundError as exc:
-        # A submitted tender that is not the ROW's owner's -- or does not
-        # exist -- is the verb's 404 (plan step ``credit_card:CC-5-3``; the
-        # security response rule: one answer for "not found" and "not
-        # yours"), rendered as the same designed fragment a domain refusal
-        # is, at the status the rule names -- the shape ``routes/entries.py``
-        # gave the purchase door's tender at CC-5-2.
-        return _error_transaction_response(txn_id, str(exc), target, status=404)
-    except ValidationError as exc:
-        # The envelope branch's preconditions, and the illegal-transition case
-        # a stale surface can still reach (e.g. a Mark Paid tap on a card
-        # another device just cancelled) -- the designed fragment shows
-        # current state plus the reason (grid audit D2, ruled 2026-07-11).
-        # Audit reference: F-047 / F-161 follow-up to commit C-21.  A popover
-        # out of date is redrawn instead (ruling **R-CC128**).
+    except (NotFoundError, ValidationError) as exc:
+        # ONE arm, answered by the package's one refusal decision (``_refused``,
+        # which is where "not found" becomes the 404): a submitted tender that
+        # is not the ROW's owner's -- or does not exist -- is the verb's 404
+        # (plan step ``credit_card:CC-5-3``; the security response rule: one
+        # answer for "not found" and "not yours"), as the designed fragment the
+        # purchase door's tender took at CC-5-2.  A domain refusal -- the
+        # envelope branch's preconditions, the illegal transition a stale
+        # surface can still reach (a Mark Paid tap on a card another device
+        # just cancelled; grid audit D2, F-047 / F-161), a companion's press
+        # that would free a line (ruling **R-CC130**) -- is the 400 fragment
+        # showing current state plus the reason; a popover out of date is
+        # redrawn (ruling **R-CC128**).
         return _refused(txn_id, exc, press, target)
     except StaleDataError:
         logger.info(
@@ -850,9 +848,10 @@ def mark_done(txn, target):
         # gated by the verb against the ROW's owner, never ``current_user``
         # (ruling **R-CC11**: a companion settles the owner's row).
         mark_done_data.get("tender_account_id"),
-        # What the popover's captions named; the grid's one-click and the
-        # phone card post nothing and withdraw silently (ruling **R-CC56**).
-        read_press(mark_done_data, absent=MARK_PAID),
+        # What the popover's captions named; the owner's one-click posts
+        # nothing and withdraws silently (ruling **R-CC56**), and a
+        # companion's may free no line (ruling **R-CC130**).
+        _mark_paid_press(txn, mark_done_data),
         target,
     )
 

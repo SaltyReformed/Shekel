@@ -496,9 +496,11 @@ class ShownLines(fields.Field):
 class ShownLinesSchema(BaseSchema):
     """A press that posts nothing but the lines its page named.
 
-    The two DELETE doors -- whose parameters htmx sends as a query string --
-    and the transfer popover's Paid, none of which loads another schema to
-    declare :class:`ShownLines` on (plan step ``credit_card:CC-5-4a-5``).
+    The transaction DELETE -- whose parameters htmx sends as a query string --
+    and the transfer popover's Paid, neither of which loads another schema to
+    declare :class:`ShownLines` on (plan step ``credit_card:CC-5-4a-5``).  The
+    transfer instance DELETE reads no field: no template renders it, so every
+    request it takes named nothing.
     """
 
     @pre_load

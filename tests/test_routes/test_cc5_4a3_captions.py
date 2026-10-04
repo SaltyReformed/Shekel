@@ -85,11 +85,15 @@ def _hotel(seed_user):
     return txn, _matched(seed_user, txn)
 
 
-def _reverted_envelope(seed_user, *, with_purchase):
-    """A matched $120.00 envelope reverted to Projected, its payment kept un-dated."""
+def _reverted_envelope(seed_user, *, with_purchase, companion_visible=False):
+    """A matched $120.00 envelope reverted to Projected, its payment kept un-dated.
+
+    *companion_visible* lets the owner's companion see (and press) its row.
+    """
     template = make_expense_template(
         db.session, seed_user, amount="120.00", name="Hotel",
         category_key="Rent", is_envelope=True,
+        companion_visible=companion_visible,
     )
     txn = generate_row_of(template, seed_user["bootstrap_period"])
     db.session.commit()

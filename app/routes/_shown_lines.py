@@ -13,8 +13,11 @@ button stay silent.  The popover posts those lines back as ``shown_lines`` --
 EMPTY when its captions name none, and that emptiness is itself a statement:
 *"A button with no warning sends nothing"*.  A request WITHOUT the field came
 from a surface that renders no caption at all, and what that means is the
-DOOR's to say: Mark Paid's is silence under ruling **R-CC56** (the grid's
-one-click and the phone card), every other door's is that it named nothing.
+DOOR's to say: Mark Paid's is silence under ruling **R-CC56** for the owner's
+one-click (the grid's cell and its phone card) and, for a companion's, a press
+that may free no line (ruling **R-CC130**,
+``routes.transactions._press._mark_paid_press``); every other door's is that
+it named nothing.
 
 **Only a full-edit popover posts the field, so its presence also says WHERE a
 refusal is answered**: a popover's out-of-date press redraws the popover

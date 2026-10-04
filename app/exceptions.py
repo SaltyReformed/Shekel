@@ -797,7 +797,11 @@ class PageOutOfDate(ValidationError):
     that takes a movement off the books, and of the seam's re-point -- before
     it writes anything; the door's rollback undoes whatever the press staged
     before it.  Two causes reach it: a page drawn before a match was made or
-    undone in another tab, and a door that forgot its caption.
+    undone in another tab, and a door that forgot its caption.  A third --
+    one popover Save typing a $0.00 estimate beside the status Paid, which
+    the Paid caption reading the STORED estimate could not name, so the
+    redrawn card was refused again at every try -- is closed by the caption
+    under the Estimated box (ruling **R-CC129**, "Warn in both places").
 
     **The message states the fact and the reload a plain surface needs; a
     popover answers with its own.**  Ruling **R-CC128** (developer
@@ -819,13 +823,19 @@ class PageOutOfDate(ValidationError):
     """
 
     def __init__(self, freed: int, named: int) -> None:
-        """State both counts, then the reload a plain surface needs."""
+        """State both counts, then the reload a plain surface needs.
+
+        Worded for any press -- a Save, Paid / Received, a Delete -- because
+        every one of them reaches it (review finding L3: it said "Saving now"
+        on a Delete).
+        """
         self.facts = (
-            f"Nothing was saved: this page was out of date. Saving now leaves "
-            f"{freed} bank line{'' if freed == 1 else 's'} unexplained again "
-            f"on your statement screen, and the page named {named}."
+            f"Nothing was saved: this page was out of date. As things are now, "
+            f"this press leaves {freed} bank line{'' if freed == 1 else 's'} "
+            f"unexplained again on your statement screen, and the page named "
+            f"{named}."
         )
         super().__init__(
-            f"{self.facts} Reload it to see what saving does now, then press "
-            f"again."
+            f"{self.facts} Reload the page to see what this press does now, "
+            f"then press again."
         )

@@ -109,8 +109,10 @@ caller of :func:`take_out_of_matches` passes the bank lines its page named
 (:class:`Shown`) or what lets it stay silent (:class:`Silent`), and a press
 whose freed lines differ from the named ones is refused before anything is
 written: a page drawn before a match existed, or a door that forgot its
-caption.  The grid's one-click Mark Paid is silent by ruling (**R-CC56**);
-the reconcile panel, carry-forward, the purchase delete and the Credit
+caption.  The owner's one-click Mark Paid is silent by ruling (**R-CC56**),
+and a companion's is refused whenever it would free a line, because no page
+may show a companion the owner's statement (:class:`OwnerOnly`, ruling
+**R-CC130**); the reconcile panel, carry-forward, the purchase delete and the Credit
 doors name the open finding that owns their caption until that step's
 second leaf (**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**,
 **CC-378**).
@@ -132,13 +134,13 @@ caller owns the unit of work.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app.exceptions import PageOutOfDate
+from app.exceptions import PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
@@ -273,7 +275,32 @@ class Silent:
 #: line, so a door added later cannot undo a match without declaring.
 NOTHING_SHOWN = Shown(frozenset())
 
-#: The grid's one-click Mark Paid, silent by ruling **R-CC56**.
+@dataclass(frozen=True)
+class OwnerOnly(Shown):
+    """A press by someone no page may show the owner's bank lines to: a companion.
+
+    Ruling **R-CC130** (developer 2026-10-04, "Companion refuses"): *"On the
+    companion page, a Mark Paid that would undo a match is refused: 'Hotel is
+    matched to a line on the bank statement, so only the account owner can
+    mark it paid.' Nothing changes"*.  A companion has no statement screen, so
+    its page names no line and never could: a press that would free one is
+    refused with *refusal* rather than as a page out of date, which the page
+    was not.  A :class:`Shown` naming nothing, so every signature that takes
+    what a page showed takes this, and the act compares it as one.
+
+    Attributes:
+        line_ids: Empty: what a companion's page names.
+        refusal: The sentence such a press is refused with -- the door's,
+            because it names the row and the act it refuses (ruling
+            **R-CC98**: the row's name, never an id).
+    """
+
+    line_ids: "frozenset[int]" = frozenset()
+    refusal: str = field(kw_only=True)
+
+
+#: The owner's one-click Mark Paid -- the grid's cell and its phone card --
+#: silent by ruling **R-CC56**.
 MARK_PAID = Silent("R-CC56")
 
 
@@ -294,7 +321,9 @@ def _refuse_unshown(
 
     **Equality, both ways** (*"At 10:10 they differ, so nothing is saved"*):
     a line freed and not named is the silent withdrawal the ruling forbids,
-    and a line named and not freed is a page out of date.
+    and a line named and not freed is a page out of date -- except for a
+    press whose page could name none (:class:`OwnerOnly`), whose refusal is
+    its own sentence (ruling **R-CC130**).
 
     Args:
         shown: What the door declared.
@@ -306,6 +335,8 @@ def _refuse_unshown(
             the door's existing refusal path renders it and its rollback
             undoes the press; a full-edit popover redraws itself instead
             (ruling **R-CC128**).
+        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
+            would free a line.
     """
     if isinstance(shown, Silent):
         return
@@ -324,6 +355,8 @@ def _refuse_unshown(
         }
     freed = planned.line_ids
     if freed != named:
+        if isinstance(shown, OwnerOnly):
+            raise ValidationError(shown.refusal)
         raise PageOutOfDate(len(freed), len(named))
 
 

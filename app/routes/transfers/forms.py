@@ -30,10 +30,7 @@ from app.routes._render_helpers import (
     transfer_side_boxes,
 )
 from app.routes.transfers._bp import transfers_bp
-from app.routes.transfers._helpers import (
-    _get_owned_transfer,
-    _resolve_leg_request,
-)
+from app.routes.transfers._helpers import _get_owned_transfer
 from app.utils.digit_strings import parse_row_id
 
 
@@ -72,32 +69,55 @@ def get_full_edit(xfer_id):
     post the id back for the leg's re-render.  Until this leaf the grid
     reached the same popover through ``transactions.get_full_edit`` on the
     SHADOW row, which returned this template with ``source_txn_id``; the leg
-    has no row, so the cell asks the transfer's own door.  A ``leg_account_id``
-    that is neither endpoint names a leg that does not exist: 404, the
-    "not found" every missing surface answers.
+    has no row, so the cell asks the transfer's own door.  Whether the card
+    may be drawn at all is :func:`_drawable_card`'s, which its redraw asks too.
+    """
+    card = _drawable_card(
+        xfer_id, parse_row_id(request.args.get("leg_account_id")),
+    )
+    if card is None:
+        return "Not found", 404
+    return render_full_edit(*card, page_refusal=None)
+
+
+def _drawable_card(xfer_id, leg_account_id):
+    """Return the transfer and leg a full-edit card is drawn for, or ``None``.
+
+    **ONE rule for the popover's GET and its REDRAW** (ruling **R-CC128**;
+    review finding L8: the redraw fell back to the transfers page's
+    ``#xfer-cell-`` target, absent on the grid, for the stale leg the GET
+    refuses).  Three states have no card:
+
+    * a transfer that is not the requester's, or missing -- one "not found";
+    * a SOFT-DELETED transfer: since plan step X-au-c3 the card resolves the
+      pair's recorded and retained figures and ``load_transfer_rows``
+      REFUSES a deleted parent, so it 500'd where it used to draw an edit form
+      over a deleted row.  "Not found" per the project security response
+      rule, and a deleted row is invisible to normal operations
+      (``transfer_service._validation._get_transfer_or_raise``).  The OTHER
+      transfer routes still admit a deleted parent -- notably the idempotent
+      DELETE, which needs to -- so the refusal is scoped to the edit doors
+      rather than pushed into ``_get_owned_transfer``;
+    * a ``leg_account_id`` that is neither endpoint, which names a leg that
+      does not exist (a stale page whose transfer was re-pointed meanwhile).
+
+    Args:
+        xfer_id: The transfer the request named.
+        leg_account_id: The account of the grid leg the card is for, as the
+            request carried it, or ``None`` for the transfers page.
+
+    Returns:
+        ``(transfer, leg_account_id)`` -- :func:`render_full_edit`'s first two
+        arguments -- or ``None`` when there is no card to draw.
     """
     xfer = _get_owned_transfer(xfer_id)
-    if xfer is None:
-        return "Not found", 404
-    leg_account_id = parse_row_id(request.args.get("leg_account_id"))
+    if xfer is None or xfer.is_deleted:
+        return None
     if leg_account_id is not None and leg_account_id not in (
         xfer.from_account_id, xfer.to_account_id,
     ):
-        return "Not found", 404
-    # A soft-deleted transfer has no edit surface, and since plan step X-au-c3
-    # it has no popover either: this form now resolves the pair's recorded and
-    # retained figures, and ``load_transfer_rows`` REFUSES a deleted parent --
-    # so without this the request 500'd where it used to render an edit form
-    # over a deleted row.  404 rather than a message, per the project security
-    # response rule: "not found" and "not yours" are indistinguishable, and a
-    # deleted row is invisible to normal operations
-    # (``transfer_service._validation._get_transfer_or_raise``).  The OTHER
-    # transfer routes still admit a deleted parent -- notably the idempotent
-    # DELETE, which needs to -- so the refusal is scoped to the edit doors
-    # rather than pushed into ``_get_owned_transfer``.
-    if xfer.is_deleted:
-        return "Not found", 404
-    return render_full_edit(xfer, leg_account_id, page_refusal=None)
+        return None
+    return xfer, leg_account_id
 
 
 def render_full_edit(xfer, leg_account_id, *, page_refusal):
@@ -191,7 +211,8 @@ def redraw_full_edit(xfer_id, facts):
     :func:`app.routes._refused_press.answer_refused_press`, which has rolled
     the press back before calling this.  The popover posts its leg's account
     with every press (``leg_account_id``), so the card is redrawn for the
-    same surface it was opened from.
+    same surface it was opened from -- or not at all, by the GET's own rule
+    (:func:`_drawable_card`).
 
     Args:
         xfer_id: The transfer the press named.
@@ -199,20 +220,16 @@ def redraw_full_edit(xfer_id, facts):
             card.
 
     Returns:
-        The :class:`~app.routes._refused_press.RedrawnCard`, or ``None`` when
-        the transfer is not the requester's or has been deleted -- the two
-        states :func:`get_full_edit` answers "not found".
+        The :class:`~app.routes._refused_press.RedrawnCard`, or ``None`` where
+        :func:`get_full_edit` answers "not found".
     """
-    xfer = _get_owned_transfer(xfer_id)
-    if xfer is None or xfer.is_deleted:
+    card = _drawable_card(
+        xfer_id, parse_row_id(request.form.get("leg_account_id")),
+    )
+    if card is None:
         return None
-    leg = _resolve_leg_request(xfer)
     return RedrawnCard(
-        full_edit_dom_id(xfer_id),
-        render_full_edit(
-            xfer, leg.account_id if leg is not None else None,
-            page_refusal=facts,
-        ),
+        full_edit_dom_id(xfer_id), render_full_edit(*card, page_refusal=facts),
     )
 
 

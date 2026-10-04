@@ -35,12 +35,16 @@
     credit_card:CC-5-4a-5, rulings R-CC59 / R-CC127): a $0.00 typed in Actual
     names the lines `payment_withdraws` frees -- the route's one read of what
     taking BOTH legs' payments off frees -- and the card posts those ids back
-    (`shown_lines`, below) exactly when it rendered.  It is the card's only
-    press that can take a payment off: a transfer's Paid books a price no arm
-    lets be $0.00 (ck_transfers_positive_amount,
-    ck_template_amount_versions_transfer_positive_amount, a derived loan
-    payment's positive P&I) or a retained movement, never zero, so it names
-    nothing and posts that. -#}
+    (`shown_lines`, below) exactly when it rendered.  Paid names nothing and
+    posts that, and the one way it could take a payment off is a price of
+    $0.00 over a kept, matched payment: a stated price is positive
+    (ck_transfers_positive_amount,
+    ck_template_amount_versions_transfer_positive_amount), and a derived loan
+    payment is $0.00 only where its P&I ROUNDS to zero with no escrow or
+    extra -- `calculate_monthly_payment` gives $0.00 for $1.00 at 0% or $0.50
+    at 5% over 360 months -- on a loan whose kept payment was booked above
+    zero and matched.  No real loan reaches that shape, and a press that did
+    would be refused as out of date (R-CC127), never withdraw unnamed. -#}
 {% set zero_caption = payment_withdraws and payment_withdraws.frees_a_line
    and xfer.status and xfer.status.is_settled %}
 {#- The root's id is what a press refused as out of date redraws (ruling
