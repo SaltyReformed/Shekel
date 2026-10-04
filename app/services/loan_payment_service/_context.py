@@ -399,9 +399,11 @@ def get_payment_history(
     ``$0.00`` close has none and is dated by its installment (ruling
     **R-BAL139**) -- because
     :func:`~app.services.loan_ledger.payment_visible_on` refuses a settled
-    record carrying none rather than inventing one (through the row accessor
-    :func:`~app.utils.balance_predicates.settled_day` until leaf
-    balance:X-bi-6-4d-1).  A payment broken the other way -- its transfer Projected
+    record carrying none rather than inventing one (through
+    :func:`~app.utils.balance_predicates.require_settled_day`, the one refusal
+    of a missing day, since leaf balance:X-bi-6-4d-1; through the row accessor
+    :func:`~app.utils.balance_predicates.settled_day` until then).  A payment
+    broken the other way -- its transfer Projected
     while its covering movement still carries a day, which only a seam bypass
     can produce -- is a payment whose money MOVED (ruling **R-BAL140**, plan
     step balance:X-bi-6-4b): it arrives in the SETTLED half, dated and valued
@@ -457,7 +459,8 @@ def get_payment_history(
             silently healthy; what changed is only WHICH door reports it
             first.  (This paragraph also named a refusal at
             ``cash_ledger._events`` until leaf balance:X-bi-6-4d-1, which that
-            module does not make: the cash fold reads only DATED movements.)
+            module does not make: it refuses no un-dated movement, and folds
+            an un-dated covering record in neither half.)
             Stated rather than quietly dropped, because a refusal that stops
             being reachable from a door is a behaviour change even when every
             other reader still refuses.

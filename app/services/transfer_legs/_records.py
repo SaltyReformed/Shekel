@@ -754,9 +754,12 @@ def transfer_side_leg(transfer: Transfer, *, is_income: bool) -> TransferLeg:
 
     Raises:
         sqlalchemy.exc.MultipleResultsFound: When the side holds two covering
-            movements under live shadows, which
-            ``uq_transaction_entries_one_settlement_record`` makes unstorable
-            under one shadow.
+            movements under live shadows -- a state no stored row can reach:
+            ``uq_transactions_transfer_type_active`` allows a transfer one
+            live shadow per type, which is one per side, and
+            ``uq_transaction_entries_one_settlement_record`` that shadow one
+            covering movement.  Stated as the refusal it would be rather than
+            left to :func:`covering_movements_by_leg`'s keep-the-last map.
     """
     side = _leg_is_income() if is_income else not_(_leg_is_income())
     record = (

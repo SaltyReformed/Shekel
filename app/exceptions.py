@@ -44,13 +44,14 @@ class UndatedSettleError(ShekelError, ValueError):
     pairing was written around that seam (a bulk ``query.update()``, or a
     fixture constructing the row directly).
 
-    Raised for a ROW by ``app.utils.balance_predicates.settled_day``, the
-    accessor the row readers ask the question through (plan step X-f1, ruling
-    R-EC), and for a settled TRANSFER whose loan-side payment record carries
-    no day by ``app.services.loan_ledger.payment_visible_on``, which names the
-    transfer (ruling R-BAL147; it asked ``settled_day`` and named the shadow
-    row the record hangs off until leaf balance:X-bi-6-4d-1).  It is a
-    REFUSAL rather than a fallback on purpose: the
+    Raised by ``app.utils.balance_predicates.require_settled_day``, the one
+    refusal of a missing settle day (plan step X-f1, ruling R-EC), for its two
+    holders: a ROW, through ``settled_day``, the accessor the row readers ask
+    the question through, and a settled TRANSFER's loan-side payment, through
+    ``app.services.loan_ledger.payment_visible_on``, which names it as its
+    owner finds it in the app (leaf balance:X-bi-6-4d-1; it named the shadow
+    row the record hangs off until then).  It is a REFUSAL rather than a
+    fallback on purpose: the
     day is a stored fact now, so inventing one would put real money on a day
     nothing recorded, and skipping the row would remove money from a balance
     without saying so.

@@ -135,9 +135,9 @@ the removal act every entry its transfer holds
 (``loan_posting_service._sync``, ledger row **BAL-579**), which loads the
 movements it resolves through :func:`movement_parent_loads` where it spelled
 that chain inline.  The loan walk's refusal of an un-dated settle
-(``loan_ledger._visible.payment_visible_on``) left this list at that leaf
-too: it named the shadow's ``transaction_id`` and names the transfer now
-(ruling **R-BAL147** applied).
+(``loan_ledger._visible.payment_visible_on``) stopped reaching a movement
+through a shadow at that leaf too: it named the shadow's ``transaction_id``
+and names the transfer now, as its owner finds it in the app.
 **Other readers still reach it themselves until their leaf moves them** and
 ``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
 leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which

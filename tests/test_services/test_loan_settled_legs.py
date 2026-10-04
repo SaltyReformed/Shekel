@@ -47,6 +47,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders
+from app.services.loan_ledger import _visible
 from app.services.loan_ledger import (
     confirmed_shadows_through,
     load_loan_stream,
@@ -609,16 +610,32 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
         the broken settled-without-a-day state the refusal exists for: a day
         guessed here would put money on a day nothing recorded, and the
         R-BAL139 installment day is for a payment that moved NOTHING, not
-        for one whose movement lost its day.  The refusal names the transfer
-        -- the settled row, and what its owner corrects through the app
-        (ruling R-BAL147) -- and the movement that lost its day.  It named the
-        row the movement hangs off, the twin, whose own status is Projected,
-        until leaf balance:X-bi-6-4d-1 (a re-expression under R-BAL167 class
-        1).  Until plan step balance:X-bi-6-4b the twin's status kept this
-        payment out of the loan entirely.
+        for one whose movement lost its day.  The refusal names the payment as
+        its owner finds it in the app -- the Checking grid's label for the
+        transfer, the figure, the paycheck and the due date -- with the
+        transfer's and the movement's ids, because ruling R-BAL147's "you fix
+        the row through the app" is the TRANSFER once the movement re-parents.
+        It named the row the movement hangs off, the twin, whose own status is
+        Projected, until leaf balance:X-bi-6-4d-1 (a re-expression under
+        R-BAL167 class 1).  Until plan step balance:X-bi-6-4b the twin's
+        status kept this payment out of the loan entirely.
+
+        Two unrelated transfers are built FIRST so the transfer's, the twin's
+        and the movement's ids all differ: in a fresh database each counts
+        from 1, and a message naming the twin's id where the movement's
+        belongs passed the leaf's first version of this case.
         """
         with app.app_context():
             loan = _loan(seed_user)
+            decoy = create_savings_account(
+                seed_user, db.session, "Decoy Savings", Decimal("0.00"),
+            )
+            for amount in ("10.00", "20.00"):
+                create_transfer(
+                    seed_user, db.session, seed_user["account"], decoy,
+                    seed_periods[_PERIOD], amount=Decimal(amount),
+                )
+            db.session.commit()
             transfer = create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_PERIOD], amount=Decimal("1000.00"),
@@ -629,15 +646,52 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
                 transfer, loan,
             )
             [movement] = shadow.covering_movements
+            assert len({transfer.id, shadow.id, movement.id}) == 3, (
+                "the three ids must differ for the message to grade which one "
+                f"it names: transfer {transfer.id}, twin {shadow.id}, "
+                f"movement {movement.id}"
+            )
 
             with pytest.raises(UndatedSettleError) as refused:
                 walk_loan_ledger(loan.id, seed_user["scenario"].id)
             message = str(refused.value)
             assert message.startswith(
-                f"Transfer {transfer.id} (Transfer from Checking into "
-                f"Settled Leg Loan, due {_DUE}) is in a settled status"
+                f"Transfer {transfer.id}'s loan-side payment (\"Transfer to "
+                f"Settled Leg Loan\" on the Checking grid, $1,000.00 in the "
+                f"paycheck of {seed_periods[_PERIOD].start_date}, due {_DUE}; "
+                f"movement {movement.id}) is in a settled status but carries "
+                "no settled_on"
             ), message
-            assert f"(movement {movement.id})" in message, message
+            assert "\"Money moved on\" box" in message, message
+
+    def test_a_dated_payment_never_builds_the_refusals_words(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):  # pylint: disable=unused-argument
+        """The walk over a payment WITH its day never composes the refusal's subject.
+
+        The subject reads the transfer's relationships, and the walk asks
+        ``payment_visible_on`` for every settled payment it folds, so it is
+        built only when the refusal fires
+        (:func:`~app.utils.balance_predicates.require_settled_day`).  The
+        builder is replaced by one that fails the case if called.
+        """
+        def never(_leg):
+            raise AssertionError("the refusal's subject was built on a dated payment")
+
+        monkeypatch.setattr(_visible, "_undated_payment_subject", never)
+        with app.app_context():
+            loan = _loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_PERIOD], amount=Decimal("1000.00"),
+                settled_on=_CLOSED_ON, due_date=_DUE,
+            )
+            db.session.commit()
+
+            [outcome] = walk_loan_ledger(
+                loan.id, seed_user["scenario"].id,
+            ).settled_splits
+            assert outcome.visible_on == _CLOSED_ON
 
 
 class TestTheContributionFeedCountsADriftOnce:

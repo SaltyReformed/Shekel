@@ -101,10 +101,13 @@ class PaymentDates:
 
         **Derived, never stored** (plan step **X-an**).  A payment is confirmed
         if and only if it carries the day its money moved -- the same
-        settled-iff-dated invariant
-        :func:`app.services.status_seam.apply_status_change` holds on the row
-        this value is built from, and
-        :func:`app.utils.balance_predicates.settled_day` refuses to break.
+        settled-iff-dated invariant the status seam holds on the record this
+        value is built from (a settled transfer's loan-side covering movement
+        since plan step balance:X-bi-6-4b), and
+        :func:`app.utils.balance_predicates.require_settled_day` refuses to
+        break (through :func:`app.services.loan_ledger.payment_visible_on`;
+        through ``settled_day``, naming the shadow row, until leaf
+        balance:X-bi-6-4d-1).
         Storing the boolean beside the day would be a second copy of one fact,
         free to disagree with it inside a value every consumer reads.
 

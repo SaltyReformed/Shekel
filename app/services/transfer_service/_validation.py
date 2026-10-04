@@ -129,7 +129,12 @@ class TransferRows:
         reads.  A reader AFTER the seam pass would not see the act's own write
         consistently (a first settle's new movement is absent from the cached
         value; a kept one is the same object, re-priced in place), so none
-        may be added there.
+        may be added there.  **Its ``account_id`` is frozen at the read**, too:
+        the figure grade reads this value before an endpoint move in the same
+        act (``_update._grade_submitted_figure`` runs ahead of
+        ``_endpoints._apply_endpoint_move``), so after a move it names the OLD
+        source.  Every reader takes its ``record`` and nothing reads its
+        account; one that needs the side's account reads the transfer's.
 
         Returns:
             The :class:`~app.services.transfer_legs.TransferLeg` on the
