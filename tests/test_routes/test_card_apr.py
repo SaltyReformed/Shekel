@@ -19,6 +19,9 @@ once terms exist).  What is pinned:
 import re
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
 
 from app.extensions import db
 from app.models.credit_card_params import CreditCardParams
@@ -90,59 +93,69 @@ def _remove(client, account_id, row_id):
     return client.post(f"/accounts/{account_id}/card/rate/{row_id}/delete")
 
 
-#: A date well inside the past on either clock (the process's UTC day or the
-#: display day), so "in effect today" holds on every day the suite runs.
-PAST = display_today() - timedelta(days=60)
-EARLIER = PAST - timedelta(days=90)
-#: And one well ahead of both, so it is never in effect.
-FUTURE = display_today() + timedelta(days=60)
+@pytest.fixture(name="apr_days")
+def _apr_days():
+    """The three days the APR cases use, read off the app's today ONCE per test.
+
+    ``past`` is well inside the past and ``future`` well ahead, so "in effect
+    today" holds on every day the suite runs -- read when the test RUNS, never
+    at import, so a clock moved before the test body (the calendar sweep's
+    session-scoped one, or an autouse freeze) moves them too.  A
+    function-scoped freeze requested AFTER ``apr_days`` would not.
+    """
+    today = display_today()
+    past = today - timedelta(days=60)
+    return SimpleNamespace(
+        past=past, earlier=past - timedelta(days=90),
+        future=today + timedelta(days=60),
+    )
 
 
 class TestTheSetDoor:
     """Create the row for a date, or rewrite its rate."""
 
-    def test_a_new_date_creates_the_row_as_a_fraction(self, auth_client, seed_user):
+    def test_a_new_date_creates_the_row_as_a_fraction(self, apr_days, auth_client, seed_user):
         """24.99 on the form is 0.24990 in the column; then back to the page."""
         card = _configured_card(seed_user)
 
-        response = _set(auth_client, card.id, PAST, "24.99")
+        response = _set(auth_client, card.id, apr_days.past, "24.99")
 
         assert response.status_code == 302
         assert response.headers["Location"].endswith(f"/accounts/{card.id}/details")
-        assert _rows_of(card) == [(PAST, Decimal("0.24990"))]
+        assert _rows_of(card) == [(apr_days.past, Decimal("0.24990"))]
 
-    def test_the_same_date_again_rewrites_the_rate(self, auth_client, seed_user):
+    def test_the_same_date_again_rewrites_the_rate(self, apr_days, auth_client, seed_user):
         """A second submit for the date is the correction: one row, new rate,
         same id."""
         card = _configured_card(seed_user)
-        _set(auth_client, card.id, PAST, "24.99")
+        _set(auth_client, card.id, apr_days.past, "24.99")
         first_id = db.session.query(RateHistory).filter_by(account_id=card.id).one().id
 
-        response = _set(auth_client, card.id, PAST, "27.99")
+        response = _set(auth_client, card.id, apr_days.past, "27.99")
 
         assert response.status_code == 302
-        assert _rows_of(card) == [(PAST, Decimal("0.27990"))]
+        assert _rows_of(card) == [(apr_days.past, Decimal("0.27990"))]
         assert db.session.query(RateHistory).filter_by(
             account_id=card.id,
         ).one().id == first_id
 
-    def test_a_second_date_is_a_second_row(self, auth_client, seed_user):
+    def test_a_second_date_is_a_second_row(self, apr_days, auth_client, seed_user):
         """Two dates, two rows."""
         card = _configured_card(seed_user)
-        _set(auth_client, card.id, EARLIER, "19.99")
-        _set(auth_client, card.id, PAST, "24.99")
+        _set(auth_client, card.id, apr_days.earlier, "19.99")
+        _set(auth_client, card.id, apr_days.past, "24.99")
 
         assert _rows_of(card) == [
-            (EARLIER, Decimal("0.19990")), (PAST, Decimal("0.24990")),
+            (apr_days.earlier, Decimal("0.19990")), (apr_days.past, Decimal("0.24990")),
         ]
 
     def test_a_rate_above_100_percent_is_refused_and_nothing_is_written(
-        self, auth_client, seed_user,
+        self, apr_days, auth_client, seed_user,
     ):
         """The schema's unit-interval bound, in the form's percent domain."""
         card = _configured_card(seed_user)
 
-        response = _set(auth_client, card.id, PAST, "101")
+        response = _set(auth_client, card.id, apr_days.past, "101")
 
         assert response.status_code == 302
         assert _rows_of(card) == []
@@ -173,14 +186,14 @@ class TestTheSetDoor:
         assert response.status_code == 302
         assert _rows_of(card) == []
 
-    def test_the_refusal_is_heard(self, auth_client, seed_user, seed_periods_today):
+    def test_the_refusal_is_heard(self, apr_days, auth_client, seed_user, seed_periods_today):
         """The redirect lands with the validation flash on the page, and not
         the success flash."""
         card = _configured_card(seed_user)
 
         response = auth_client.post(
             f"/accounts/{card.id}/card/rate",
-            data={"effective_date": PAST.isoformat(), "interest_rate": "101"},
+            data={"effective_date": apr_days.past.isoformat(), "interest_rate": "101"},
             follow_redirects=True,
         )
 
@@ -192,17 +205,17 @@ class TestTheSetDoor:
 class TestTheRemoveDoor:
     """Delete this card's row; 404 for any other."""
 
-    def test_this_cards_row_is_removed(self, auth_client, seed_user):
+    def test_this_cards_row_is_removed(self, apr_days, auth_client, seed_user):
         """The named row goes, its sibling stays, back to the page."""
         card = _configured_card(seed_user)
-        doomed = _row(card, EARLIER, "0.1999")
-        _row(card, PAST, "0.2499")
+        doomed = _row(card, apr_days.earlier, "0.1999")
+        _row(card, apr_days.past, "0.2499")
 
         response = _remove(auth_client, card.id, doomed)
 
         assert response.status_code == 302
         assert response.headers["Location"].endswith(f"/accounts/{card.id}/details")
-        assert _rows_of(card) == [(PAST, Decimal("0.24990"))]
+        assert _rows_of(card) == [(apr_days.past, Decimal("0.24990"))]
 
     def test_an_unknown_row_is_404(self, auth_client, seed_user):
         """No row carries the id."""
@@ -210,17 +223,17 @@ class TestTheRemoveDoor:
 
         assert _remove(auth_client, card.id, 999_999).status_code == 404
 
-    def test_another_accounts_row_is_404_and_survives(self, auth_client, seed_user):
+    def test_another_accounts_row_is_404_and_survives(self, apr_days, auth_client, seed_user):
         """The owner's OTHER card's row, named through this card's URL: not
         this card's to remove."""
         card = _configured_card(seed_user)
         other = _configured_card(seed_user, name="Amex")
-        theirs = _row(other, PAST, "0.2999")
+        theirs = _row(other, apr_days.past, "0.2999")
 
         response = _remove(auth_client, card.id, theirs)
 
         assert response.status_code == 404
-        assert _rows_of(other) == [(PAST, Decimal("0.29990"))]
+        assert _rows_of(other) == [(apr_days.past, Decimal("0.29990"))]
 
 
 class TestTheGates:
@@ -228,50 +241,50 @@ class TestTheGates:
     with the route that serves."""
 
     def test_another_owners_card_is_404_and_gains_no_row(
-        self, auth_client, second_user,
+        self, apr_days, auth_client, second_user,
     ):
         """The victim's configured card, written directly (ledger row
         BAL-521: a second authenticated client would run as the first
         user), gains nothing through either door."""
         victim = _configured_card(second_user, name="Other Visa")
-        theirs = _row(victim, PAST, "0.2999")
+        theirs = _row(victim, apr_days.past, "0.2999")
 
-        set_response = _set(auth_client, victim.id, EARLIER, "1.00")
+        set_response = _set(auth_client, victim.id, apr_days.earlier, "1.00")
         remove_response = _remove(auth_client, victim.id, theirs)
 
         assert set_response.status_code == 404
         assert remove_response.status_code == 404
         assert b"Other Visa" not in set_response.data
-        assert _rows_of(victim) == [(PAST, Decimal("0.29990"))]
+        assert _rows_of(victim) == [(apr_days.past, Decimal("0.29990"))]
 
-    def test_a_checking_account_is_404(self, auth_client, seed_user):
+    def test_a_checking_account_is_404(self, apr_days, auth_client, seed_user):
         """The kind gate, on both doors."""
         checking = seed_user["account"]
 
-        assert _set(auth_client, checking.id, PAST, "24.99").status_code == 404
+        assert _set(auth_client, checking.id, apr_days.past, "24.99").status_code == 404
         assert _remove(auth_client, checking.id, 1).status_code == 404
         assert _rows_of(checking) == []
 
-    def test_a_missing_account_is_404(self, auth_client, seed_user):
+    def test_a_missing_account_is_404(self, apr_days, auth_client, seed_user):
         """Not-found and not-yours are one answer."""
-        assert _set(auth_client, 999_999, PAST, "24.99").status_code == 404
+        assert _set(auth_client, 999_999, apr_days.past, "24.99").status_code == 404
         assert _remove(auth_client, 999_999, 1).status_code == 404
 
-    def test_a_dormant_card_is_404_on_both_doors(self, auth_client, seed_user):
+    def test_a_dormant_card_is_404_on_both_doors(self, apr_days, auth_client, seed_user):
         """No terms row: the section never rendered, so a POST to either
         door is a forged or stale request, and nothing is written."""
         card = _card(seed_user)
-        stray = _row(card, PAST, "0.2499")
+        stray = _row(card, apr_days.past, "0.2499")
 
-        assert _set(auth_client, card.id, EARLIER, "19.99").status_code == 404
+        assert _set(auth_client, card.id, apr_days.earlier, "19.99").status_code == 404
         assert _remove(auth_client, card.id, stray).status_code == 404
-        assert _rows_of(card) == [(PAST, Decimal("0.24990"))]
+        assert _rows_of(card) == [(apr_days.past, Decimal("0.24990"))]
 
-    def test_both_urls_route_for_a_configured_card(self, auth_client, seed_user):
+    def test_both_urls_route_for_a_configured_card(self, apr_days, auth_client, seed_user):
         """The pair for every 404 above: the same URLs, a configured card,
         serve.  A 404 from the URL map and one from a gate look alike."""
         card = _configured_card(seed_user)
-        assert _set(auth_client, card.id, PAST, "24.99").status_code == 302
+        assert _set(auth_client, card.id, apr_days.past, "24.99").status_code == 302
         row_id = db.session.query(RateHistory).filter_by(account_id=card.id).one().id
         assert _remove(auth_client, card.id, row_id).status_code == 302
 
@@ -307,15 +320,15 @@ class TestThePageShowsTheApr:
         assert f"/accounts/{card.id}/card/rate/".encode() not in response.data
 
     def test_the_series_renders_newest_first_with_todays_rate(
-        self, auth_client, seed_user, seed_periods_today,
+        self, apr_days, auth_client, seed_user, seed_periods_today,
     ):
         """Three rows -- one future -- list newest first as percents, each
         with its remove form; today's rate is the latest PAST row's, not
         the future one's (24.990%, not 29.990%)."""
         card = _configured_card(seed_user)
-        earlier = _row(card, EARLIER, "0.1999")
-        past = _row(card, PAST, "0.2499")
-        future = _row(card, FUTURE, "0.2999")
+        earlier = _row(card, apr_days.earlier, "0.1999")
+        past = _row(card, apr_days.past, "0.2499")
+        future = _row(card, apr_days.future, "0.2999")
 
         response = auth_client.get(f"/accounts/{card.id}/details")
 
