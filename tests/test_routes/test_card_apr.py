@@ -243,9 +243,8 @@ class TestTheGates:
     def test_another_owners_card_is_404_and_gains_no_row(
         self, apr_days, auth_client, second_user,
     ):
-        """The victim's configured card, written directly (ledger row
-        BAL-521: a second authenticated client would run as the first
-        user), gains nothing through either door."""
+        """The victim's configured card, written directly, gains nothing
+        through either door."""
         victim = _configured_card(second_user, name="Other Visa")
         theirs = _row(victim, apr_days.past, "0.2999")
 

@@ -24,8 +24,6 @@ shipped in ``scripts/rotate_sessions.py``).
 
 from datetime import datetime, timedelta, timezone
 
-from flask import g
-
 from app.extensions import db
 from app.models.user import User
 
@@ -44,26 +42,6 @@ def _set_session_created_at(test_client, when: datetime) -> None:
     """
     with test_client.session_transaction() as sess:
         sess["_session_created_at"] = when.isoformat()
-
-
-def _reset_login_cache() -> None:
-    """Force Flask-Login to re-evaluate ``current_user`` on the next
-    request.
-
-    Flask-Login caches the user lookup on ``g._login_user`` once per
-    request.  In production each HTTP request gets a fresh app
-    context (and therefore a fresh ``g``), so the cache is effectively
-    per-request.  In the test suite, the autouse ``db`` fixture holds
-    a single app context across every ``test_client`` call in the
-    test, so ``g._login_user`` persists between simulated requests and
-    Flask-Login will return the stale user even after the session has
-    been invalidated.
-
-    Calling this before each "subsequent request" in a single test
-    forces a fresh user lookup, which is what would happen between
-    HTTP requests in production.
-    """
-    g.pop("_login_user", None)
 
 
 class TestSecretKeyRotation:
@@ -104,10 +82,6 @@ class TestSecretKeyRotation:
             "SECRET_KEY for the signature mismatch to fire."
         )
         monkeypatch.setitem(app.config, "SECRET_KEY", new_key)
-
-        # Force a fresh user lookup -- Flask-Login's per-request cache
-        # is sticky inside the autouse db fixture's app context.
-        _reset_login_cache()
 
         # Same cookie, new key: signature mismatch.  Flask treats the
         # session as empty, current_user is anonymous, and any
@@ -153,10 +127,6 @@ class TestSecretKeyRotation:
         user.session_invalidated_at = datetime.now(timezone.utc)
         db.session.commit()
 
-        # Force a fresh user lookup so the next request actually
-        # exercises load_user (rather than reading a cached value).
-        _reset_login_cache()
-
         post = auth_client.get("/dashboard", follow_redirects=False)
         assert post.status_code == 302
         assert "/login" in post.headers["Location"]
@@ -180,11 +150,6 @@ class TestSecretKeyRotation:
 
         # Force the session to look brand new.
         _set_session_created_at(auth_client, datetime.now(timezone.utc))
-
-        # Drop the cached user so load_user actually re-runs the
-        # timestamp comparison.  Without this the test would pass
-        # spuriously by returning the cached pre-test user.
-        _reset_login_cache()
 
         post = auth_client.get("/dashboard")
         assert post.status_code == 200, (
