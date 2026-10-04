@@ -11,10 +11,10 @@ for (R-R16 / R-R18 / R-R27). Which steps are in PRODUCTION is a measurement, nev
 on the resolver and the WRITE is gone. **A tie-break is a sign the SEARCH is the wrong question**
 (R-R35): only ONE tier of three asks "which transfer into a loan is its payment", and **R16**
 deletes the rest (four leaves, **R-R36**): `R16-b-2` (`7e2e6413`), `R20` (`b4da8068`, **R-R72** part
-3) and `R16-c-1` (`c88ed6ba`, **R-R90**: ONE event stream) shipped, and `R23` (`f3bf8b9d`,
-**R-R98**) moved a balance a migration had dated its own run day to the setup day. `R16-c-2` (the
-contract calendar, **R-R89**; MOVES POSTED MONEY) is next. **JUST LANDED: `R5-a` (`b0e1322a`)**: a
-row is dated from its occurrence, the rule's due day gone (**R-R94**..**R-R97**, **D18**).
+3), `R16-c-1` (`c88ed6ba`, **R-R90**: ONE event stream) and `R23` (`f3bf8b9d`, **R-R98**) shipped.
+**JUST LANDED: `R16-c-2` (`ea946f33`), the contract calendar** (**R-R89**, **R-R100**..**R-R118**;
+MOVES POSTED MONEY): every contractual installment is charged from origination on ONE calendar rule,
+`app.services.installment_calendar`, so `R16-c` is whole; `R5-a` (`b0e1322a`) landed before.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
 the findings (`ledger.md`), the index, the rules and `verification.md` are the shared registries in
@@ -296,7 +296,7 @@ since it is derivable, so whether it refuses is decided and stated.
 **`due_date` is a POSTING INPUT**: each `_POSTING_RELEVANT_FIELDS` names `due_on`,
 `loan_posting_service.backfill_all_loan_postings()` runs after the migration (the caveat
 `c4e91a7b2d38` carries), and the posted ledger is proven identical. The Python files naming
-`due_date` in code (census 64 code files `due_date` in `app/**/*.py`) are a SUPERSET of the column's
+`due_date` in code (census 63 code files `due_date` in `app/**/*.py`) are a SUPERSET of the column's
 sites, and two templates carry `<input name="due_date">`, so the wire moves too. **Rule 14 hazard:**
 `spending_analysis.py` spells the date in SQL (`COALESCE(due_date, PayPeriod.start_date)`), a second
 producer of the accessor; the step names ONE walk. **Carried relays:**
@@ -319,13 +319,13 @@ form's "Payment Day of Month" (`templates/loan/setup.html:98-100`) and the dashb
 (`templates/loan/dashboard.html:567-568`), which today store the day the money moves; the Van's
 stored `payment_day` is corrected from 22 to 1 here too.
 **There is no `recurrence_due_dates` table and there will not be.** The files carrying `payment_day`
-in code (census 19 code files `payment_day` in `app/**/*.py`)
+in code (census 24 code files `payment_day` in `app/**/*.py`)
 **already read it as the installment, bar one** -- `loan_recurrence_sync.py` makes it a CASH day
 (`loan_cadence_start`, which READS it at :416-417 as the payment rule's first date), and that is
 D4's mechanism, re-pointed here so the rule keeps the day the money moves while `payment_day` holds
 the contract day; `routes/loan/payment_transfer.py`, which once typed `day_of_month=payment_day`
 itself, now calls that producer and names `payment_day` only in a comment (:190), so it is not among
-the code files. The other files of the (census 30 files `payment_day` in `app/**/*.py`) that name it
+the code files. The other files of the (census 33 files `payment_day` in `app/**/*.py`) that name it
 at all carry it only in comments or string literals, which a code census blanks by construction, and
 not every one of those is prose: `routes/loan/_helpers.py`'s `_PARAM_FIELDS` keys a form field by
 the string. Eight distinct producers of "when is this installment due" collapse into one; the plan
@@ -694,9 +694,9 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       owner at `pay_calendar:C18-a`'s tick (the leaf it now waits on) beside **PC-519** and the
       rulings above.
 
-- [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
-      leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR
-      (c-2, the money move). Ticks with its last leaf.
+- [x] **R16-c -- the PAST and the FUTURE become ONE event STREAM.** `ea946f33` -- ticked with
+      R16-c-2, its last leaf; split into TWO leaves 2026-09-19 (**R-R90**): the MERGE (c-1), then
+      the CALENDAR (c-2, the money move).
 
 - [x] **R16-c-1 -- the MERGE.** `c88ed6ba` -- as built: ONE builder, ONE replay seeded at the
       origination, ONE record type (`PaymentOutcome`); no projected event before a recorded fact; a
@@ -705,76 +705,49 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       byte-identical on the 09-19 clone (3,952 + 919 harness lines, 0 diff). Closed **D61**,
       **balance:N-180**. Record: `historical/recurrence_r16c1_as_built_2026-09-20.md`.
 
-- [ ] **R16-c-2 -- the CALENDAR: every contractual installment charged, from origination, in the one
-      stream.** **MOVES POSTED MONEY, OWN PR, OWN RELEASE**; **R-R89** (the accrual period is the
-      contract's interval) and **R-R72** (1)+(2); D53's past half; closes **D55**.
+- [x] **R16-c-2 -- the CALENDAR, charged from origination.** `ea946f33` -- as built: ONE calendar
+      rule, `app.services.installment_calendar` (**R-R105**, **R-R106**), charges every contractual
+      installment through a stream's last event (**R-R100**); an off-day payment is priced, dated
+      and shown by its interval's installment (**R-R104**, **R-R107**..**R-R110**); a loan's
+      recorded and first tracking start are ruled (**R-R111**..**R-R118**); no migration. Closed
+      **D55**, and **REC-555** at birth, no row.
 
-**D53 is answered at `R16-b-2` and this step inherits the answer** -- the CONTRACT charges every
-forward period (**R-R37**), repealing "an overdue slot with no record ... holds flat" (B-9) for the
-FUTURE half, which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.
-What this step owes is the same rule for the PAST. **MOVES POSTED MONEY, OWN PR.** It also owes
-**D55** (the accrual period is the CALENDAR month where the contract's is the installment month --
-`$1,629.94` on which side of a boundary an extra payment falls); **D54** closed at `R16-b-2`, whose
-contract calendar never charges a slot the seed charged.
-**It applies R-R72 parts (1) and (2) to the settled walk**: the walk charges only the months it saw
-paid (`loan_ledger._charges.charges_for_due_dates`, D53's past half), so a read AT `as_of` omits a
-skipped month's interest until the catch-up payment where the read after it carries it; the one
-stream charges every contractual installment after the loan's latest assertion, and an assertion
-clears the charges standing before it -- the reset arm `_replay.py` applies since R16-c-1
-(`c88ed6ba`), pinned on a hand-built stream and unreachable until this step charges every
-installment.
+- [ ] **R25 -- the loan code's last copies of its calendar and terms go** (**R-R105**, **R-R106**;
+      findings **REC-545**, **REC-546**, **REC-547**). `$0.00`. Onto the one rule `R16-c-2` built
+      (`app.services.installment_calendar`): the adjustable-rate month step
+      (`rate_period_engine._add_months`) and the payoff and refinance calculators' clamp
+      (`amortization_engine._projection._advance_month`, behind `advance_to_next_payment_date`),
+      both re-spelling `app.utils.dates.clamped_day`; pricing's second bundle of a loan's terms
+      (`cash_ledger._loan_installment._LoanCashBasis` and `_loan_pricing.LoanPricing`'s escrow
+      lines) reads the charges' `loan_ledger.LoanCalendar` instead; and the monthly-grid arithmetic
+      (the first day on or after, the last on or before, the enumeration) becomes ONE set beside
+      `clamped_day` in `app.utils.dates`. **Its trace asks the developer** whether it folds the pay
+      grid's (`pay_calendar/_grid.py`) and the recurrence month walk's (`recurrence/_months.py`)
+      sides too, or only the loan and card sides (`installment_calendar`, `card_statement`):
+      **R-R106** split only the clamp copies.
 
-**What it owes, as decomposed at R16-c-1's handoff (rulings R-R72 (1)+(2), R-R89, D53's past half,
-D55):**
+- [ ] **R24 -- a loan payment's interest PAID is the part its cash covered** (**R-R102**; finding
+      **REC-538**). `apply_payment_cash` returns the CHARGED interest as a payment's `interest`
+      whatever cash moved, and `balance_at/_loan_interest._settled_sum_in_year` sums it, so a short
+      payment reports capitalized interest as paid on the dashboard's interest-paid chip, the loan's
+      payment history card (`loan_posting_service/_display.py:228`) and Schedule A. Interest paid
+      becomes the part the cash covered, the rest reported as added to the balance; its lane first
+      asks the developer which is paid first, interest or escrow (the code states no order). A
+      `$0.00` close is refused from `balance:X-db` (**balance:R-BAL155**), which leaves short
+      payments. `$0.00` today.
 
-1. **The ONE contractual calendar on the leaf**:
-   `rate_period_engine.installment_dates(origination, payment_day, through)` =
-   `first_installment_date` then `_advance_one_month` (re-clamped to `payment_day` each month --
-   `_plan._charge_dates` extends with `add_months` from the last contractual row, which DRIFTS after
-   a February for a due day of 29-31; the one producer fixes that). `loan_event_stream` charges
-   every installment from origination through the last recorded fact; `merged_stream` extends the
-   same sequence through the plan's horizon (the `_PAYOFF_EXTENSION_MONTHS` rule and the
-   matured-loan `through`). `charges_for_due_dates` becomes
-   `charges_for_installments(dates, periods, escrow_lines)` (no month collapse); `installment_slot`
-   DELETED from the leaf.
-2. **Delete the partition and the projected charges**: `_plan._seed_boundaries` / `seed_slots` /
-   `_charges_for`'s exclusion, `LoanEventStream.projected_charges` and the `_PROJECTED_CHARGE` kind
-   (the plan then carries NO charges of its own: `LoanForwardPlan.charges` goes,
-   `LoanForwardPlan.periods` goes with it once the stream's `periods` serve; the what-if extra then
-   accrues at every charge on or after the projection boundary, the rule to restate). The plan's
-   `last_anchor` bound on PAYMENTS (R-R72) stays: a projection due at or before the latest visible
-   assertion is dropped.
-3. **Every `(year, month)` key in the two tiers** (R-R89): `_estimated_from_contract`'s
-   `covered_slots` -> "a record is due inside installment k's interval" (the latest contractual
-   installment date at or before the record's due date); `routes/loan/_helpers._period_slot` groups
-   on `charge_date` itself. `amortization_engine.schedule_dates` / `slotted_dates` stay for R16-e /
-   R16-f (walk 3's).
-4. **Posted money**: the settled walk's splits change wherever a month between two facts (or between
-   origination and the first fact, before the latest assertion) went unpaid: the next payment clears
-   the arrears first. The Van (`$14,745.51` at 5.668%, `$531.94`/mo; August 22 skipped, September 22
-   paid, read September 30): today and after R16-c-1 the September fact pays `$69.65` interest /
-   `$462.29` principal, balance `$14,283.22` at the read, the overdue August row pays August's
-   `$67.46`, `$13,352.07` after October 22; after this step the September fact clears August AND
-   September, `$139.30` / `$392.64`, `$14,352.87` at the read (`+$69.65`, the skipped month), the
-   August row pays pure principal, `$13,354.27` after October 22 (`+$2.20`, September's interest on
-   the un-reduced balance), and the posted September interest leg moves `$69.65` -> `$139.30`
-   (computed 2026-09-19 with `accrue_monthly_interest` / `apply_payment_cash`). The release's
-   migration RE-SYNCS every loan's postings (`sync_loan_postings_all_scenarios` per loan, inside the
-   Alembic migration -- the backfill rule) and PRINTS per-loan the count of payments whose split
-   moved and the net principal delta; the harness that reads that count is written FIRST, so the
-   migration's production effect is a prediction graded before it runs rather than after. Rehearse
-   up / down / up on a FRESH production clone.
-5. **Harness**: extend `verify_loan_plan_sum.py` (or a sibling) to print the SETTLED splits per
-   payment and the posted per-date nets, so the diff shows the ruled move and nothing else; the
-   expected production move is bounded by "both live loans carry a 2026 assertion" (any skipped
-   month before it is cleared by the assertion; only skipped months after it, and gaps before it
-   that a later pre-assertion payment catches up, move).
-6. **Tests that pin the OLD rule and need the developer's confirmation (rule 5)**: none assert "an
-   unpaid month is uncharged in the settled walk" by name (grep 2026-09-19: no test module matches
-   `no payment.*no charge|only the months|months it saw paid`); `charges_for_due_dates`' docstring
-   states the rule and `tests/oracles/loan_monthly_composition.py:96` cites it. Expect
-   `test_loan_ledger.py` / `test_confirmed_view.py` fixtures with skipped months to move; R-R72 is
-   the developer's confirmation, cite it per changed value.
+- [ ] **R27 -- a STUDY: what a recorded balance does to a missed loan payment** (the REC-552 round's
+      deferred N1, **R-R116**): a design step, nothing built before the developer rules. Two
+      questions **R-R116** left on the rule `R16-c-2` ships: what a Record balance does to the
+      interest of a month with no recorded payment, and whether a payment still unpaid on a
+      balance's date stays in the forecast (**R-R72** (1)'s plan half) beside **balance:R-BAL155**'s
+      "leave it unpaid while you still mean to pay it". Its brief is that round's deferred list: a
+      stored past-due figure is a second home for interest the placement already holds; one identity
+      per installment; escrow; partial payments, which the allocation capitalises; ONE lender model;
+      **balance:R-BAL155**'s "Lender waived: Record balance" path. It waits on nothing: a study
+      needs nothing built. Its deliverable is ONE question to the developer naming both halves, with
+      worked dollars per option; its answer may change `balance:X-cu`'s build (the study's design
+      s.3 M2).
 
 - [ ] **R16-d -- the accrual CONVENTION becomes a value on the loan** (finding **D52**).
 
