@@ -834,10 +834,15 @@ def test_a_numbered_object_naming_the_tracker_by_full_name_is_its_card():
     '{ c11: issue(number: 11) { number title } } }',
     'query { repository(owner: "saltyreformed-labs", # the tracker\n name: "shekel-plan") '
     '{ c11: issue(number: 11) { number title } } }',
+    'query { repository(owner: "saltyreformed-labs", # the tracker\r name: "shekel-plan") '
+    '{ c11: issue(number: 11) { number title } } }',
+    'query { repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: "#x, y") { id } c11: issue(number: 11) { number title } } }',
 ])
 def test_a_scratch_cards_text_is_kept_where_the_request_reads_the_trackers_cards(query):
-    """Review cp4d R11, L3: the keep direction of the card slots -- a GraphQL field of the
-    tracker's ``repository``, however its arguments are separated, and the answer to a REST
+    """Review cp4d R11, L3, cp4e M2: the keep direction of the card slots -- a GraphQL field
+    of the tracker's ``repository``, however its arguments are separated (a comment ends at
+    a lone ``\\r`` too) and with a ``#`` or a comma in its strings, and the answer to a REST
     request under the tracker -- names its card by number alone."""
     graphql = _graphql({"data": {"repository": {"c11": {"number": 11, "title": "kept A"}}}},
                        query=query)
@@ -845,3 +850,67 @@ def test_a_scratch_cards_text_is_kept_where_the_request_reads_the_trackers_cards
             "answer": {"number": 11, "title": "kept B"}}
     kept = json.dumps(redacted([graphql, rest], _scratch(11)))
     assert "kept A" in kept and "kept B" in kept
+
+
+@pytest.mark.parametrize("query", [
+    'query { repository(owner: "saltyreformed-labs", name: "shekel-plan") { id } '
+    's: search(query: "#", type: ISSUE, first: 1) { issueCount } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: "#x") { id } } repository: node(id: "I_other") '
+    '{ ... on Issue { c11: parent { number title } } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") { id } '
+    '# the tracker\rrepository: node(id: "I_other") { ... on Issue { c11: parent '
+    '{ number title } } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") { id } '
+    'repository,: node(id: "I_other") { ... on Issue { c11: parent { number title } } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") { id } '
+    'repository\ufeff: node(id: "I_other") { ... on Issue { c11: parent { number title } } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") { id } '
+    'a,repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: """a"#b""") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: "a\\"#b") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: """a""b"#c""") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: """a\\"""#b""") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: """a""#b""") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { r: repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+    '{ l: label(name: """\n# x""") { id } } '
+    'repository(owner: "elsewhere", name: "x") { c11: issue(number: 11) { number title } } }',
+    'query { repository(owner: "saltyreformed-labs", name: "Shekel") '
+    '{ c11: issue(number: 11) { number title } } }',
+    'query { repository(owner: "elsewhere", name: "shekel-plan") '
+    '{ c11: issue(number: 11) { number title } } }',
+])
+def test_a_foreign_card_the_repository_checks_cannot_see_past_is_redacted(query):
+    """Review cp4e M2, J, L, cp5 R1, R2, R6, R11, R12: GraphQL reads a ``#`` or a comma in a
+    string -- a block string too, whatever quotes, escaped quotes or line breaks it holds --
+    as text, ends a comment at a lone ``\\r`` too, and reads a comma or a byte-order mark
+    between two tokens as nothing.  A ``#`` in a string read as a comment, a comment run
+    past a lone ``\\r``, or a block string ended early hid a foreign ``repository(...)`` or
+    an alias named ``repository`` from the checks, and a foreign issue's text was kept as
+    scratch card #11's; a comma or a byte-order mark not read as a space would hide one too.
+    A repository of the tracker's owner but another name, or another owner, is not the
+    tracker."""
+    exchange = _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret"}}}},
+                        query=query)
+    assert "secret" not in json.dumps(redacted([exchange], _scratch(11)))
+
+
+def test_a_string_in_a_list_takes_no_card_from_the_url():
+    """Review cp4e M2's residual (Q): a bare string in a list answer, or one in a list under
+    an item with no string of its own, took the card the URL names, so a scratch card's URL
+    kept it; nothing encloses the answer, so neither belongs to any card."""
+    exchange = {"method": "GET", "url": f"{_ISSUES}/11/comments", "body": None, "status": 200,
+                "answer": ["secret A", {"id": 1, "lines": ["secret B"]}]}
+    kept = json.dumps(redacted([exchange], _scratch(11)))
+    assert "secret A" not in kept and "secret B" not in kept

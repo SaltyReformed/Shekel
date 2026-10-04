@@ -43,8 +43,8 @@ tracker it reads is private: real production figures are allowed there
   numbered object is no card.  An object with no number that carries a
   string of its own belongs to NO card -- except the answer itself, which is
   the card the request's URL names, and the edit history of an object that
-  carries a card's number; any other object shares its enclosing object's
-  card.
+  carries a card's number; any other object, and a string in a list, shares its
+  enclosing object's card, and nothing encloses the answer.
 
 What a recording can still hold: a string under a :data:`_KEPT` key, of any
 card (so a key enters that set only when no card's text can be stored under
@@ -96,11 +96,13 @@ _GRAPHQL_URL = f"{API}/graphql"
 _BOARD_WRITES = {BOARD_ADD: "c", BOARD_REMOVE: "i", BOARD_TOP: "i", BOARD_AFTER: "i"}
 _MUTATION = re.compile(r"\bmutation\b")
 _REPOSITORY_ARGUMENTS = re.compile(r"\brepository\s*\(([^)]*)\)")
-_THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*,?\s*name:\s*"{REPO}"\s*')
+_THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*name:\s*"{REPO}"\s*')
 _REPOSITORY_ALIAS = re.compile(r"\brepository\s*:")
-#: What GraphQL reads as nothing between two tokens: a comment to the end of its line,
-#: and a comma.
-_IGNORED = re.compile(r"#[^\n]*|,")
+#: A GraphQL string (a block string, then a one-line one), or what GraphQL reads as
+#: nothing between two tokens: a comment, to the end of its line (``\n`` or ``\r``), a
+#: comma, and a byte-order mark.
+_STRING_OR_IGNORED = re.compile(
+    r'"""(?:\\"""|[^"]|"(?!""))*"""|"(?:\\.|[^"\\\n\r])*"|#[^\n\r]*|[,\ufeff]')
 _CLAIM = re.compile(r"refs/claims/(?:([0-9]+)|recording-[a-z0-9-]+)")
 #: The bodies the plan tool PATCHes an issue with: retype, retitle, a new body, close, reopen.
 _PATCHES = frozenset(frozenset(keys) for keys in (
@@ -212,12 +214,19 @@ def refusal(method: str, url: str, body, scratch: Scratch) -> str | None:
                                  f"cards: {method} {url} {json.dumps(body)[:200]}")
 
 
+def _as_graphql_reads_it(query: str) -> str:
+    """``query`` with each comment, comma and byte-order mark read as the space GraphQL
+    reads it as, and each string kept as text: a ``#`` or a comma in a string is text."""
+    return _STRING_OR_IGNORED.sub(
+        lambda found: found[0] if found[0].startswith('"') else " ", query)
+
+
 def _about_the_tracker(url: str, body) -> bool:
     """Whether a request's answer holds the tracker's own cards where :func:`_slot` looks:
     a REST path under the tracker, or a GraphQL query with a ``repository(...)``, every one
-    the tracker's, and no alias named ``repository``."""
+    the tracker's, and no alias named ``repository`` (:func:`_as_graphql_reads_it`)."""
     if url == _GRAPHQL_URL:
-        query = _IGNORED.sub(" ", str((body or {}).get("query", "")))
+        query = _as_graphql_reads_it(str((body or {}).get("query", "")))
         arguments = _REPOSITORY_ARGUMENTS.findall(query)
         return (bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
                 and not _REPOSITORY_ALIAS.search(query))
@@ -313,7 +322,7 @@ def redacted(exchanges: list[dict], scratch: Scratch) -> list[dict]:
             raise ValueError(why)
         named = _named_card(url)
         answer = _redact(exchange["answer"], None,
-                         _Owner(named, named, False, _about_the_tracker(url, body),
+                         _Owner(None, named, False, _about_the_tracker(url, body),
                                 url == _GRAPHQL_URL, top=True), scratch.numbers)
         kept.append({**exchange, "answer": answer})
     return kept

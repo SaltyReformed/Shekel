@@ -509,7 +509,7 @@ def test_a_card_linked_outside_the_tracker_is_never_offered_and_is_reported(code
 def test_dropping_a_step_names_every_open_leaf_below_it_and_no_container(code, capsys):
     """Review cp3: the note named only the dropped step's own children, and called a step
     split again a leaf; R-BAL190: every open leaf below is dropped, and no step split
-    again, whose state shows its own leaves."""
+    again, whose state shows its own leaves; review cp4e I: the line printed of the note."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
     tracker.add(2, parent=1, children=(Child(4, "step", True),), on_board=False)
@@ -518,6 +518,7 @@ def test_dropping_a_step_names_every_open_leaf_below_it_and_no_container(code, c
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
     out = capsys.readouterr().out
     assert "dropped plan#3 " in out and "dropped plan#4 " in out and "dropped plan#2 " not in out
+    assert "commented on plan#1: dropping its leaves still work, plan#3, plan#4;" in out
     assert ("close", 2, "not_planned") not in tracker.writes
     assert ("comment", 1, "Dropped: superseded (its leaves still work: plan#3, plan#4)"
             ) in tracker.writes
