@@ -68,13 +68,20 @@ def answer_refused_press(
 
     Returns:
         A designed 400 swapping the redrawn card into the card the press came
-        from, or *refuse*'s answer -- for every other refusal, and for a press
-        whose card cannot be drawn.  **Not a bare 404 there** (the second
-        review's L3, on review finding L8's one rule for whether a transfer
-        card is drawn): a bare body carries no designed-fragment header, so
-        htmx drops it and the press reads as doing nothing, where the door's
-        own refusal says why -- and answers a gone row "not found" itself
-        (the transaction door's ``_RowGone``).
+        from; ``("Not found", 404)`` -- the answer both packages give a gone
+        object, and the card's GET gives the same states -- when there is none
+        to draw; or *refuse*'s answer.
+
+    **The "not found" is bare, and that is a known cost, not a design**: it
+    carries no designed-fragment header, so htmx drops it and the press reads
+    as doing nothing.  It is reached only by a press refused as out of date
+    whose object another tab has ALSO changed -- deleted it, or moved the
+    transfer endpoint a leg's card was drawn for -- on the owner's own data,
+    moving no money.  Routing it through *refuse* instead was measured worse (the
+    third review, 2026-10-04): the transaction door's refusal still answers a
+    bare 404 (``_RowGone``), and the transfer door's would draw a soft-deleted
+    transfer as live, which the card's own rule answers "not found"
+    (``routes.transfers.forms._drawable_card``).
     """
     if not (isinstance(exc, PageOutOfDate) and press.from_popover):
         return refuse()
@@ -82,7 +89,7 @@ def answer_refused_press(
     db.session.expire_all()
     card = redraw(exc.facts)
     if card is None:
-        return refuse()
+        return "Not found", 404
     return designed_error(
         card.body, 400, retarget=f"#{card.dom_id}", reswap="outerHTML",
     )

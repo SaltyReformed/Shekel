@@ -37,16 +37,7 @@ from app.extensions import db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.exceptions import PageOutOfDate
-# Pylint: ``shekel-private-module-import`` -- the one test of the refused-press
-# decision's no-card arm calls it directly: a route reaches that arm only when
-# another tab changes the press's object between its refusal and the redraw.
-# pylint: disable=shekel-private-module-import
-from app.routes._refused_press import answer_refused_press
-from app.routes._shown_lines import Press
-# pylint: enable=shekel-private-module-import
 from app.services import (
-    match_withdrawal,
     transaction_service,
     transfer_legs,
     transfer_service,
@@ -791,25 +782,6 @@ def transfer_service_revert(seed_user, xfer_id):
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
     )
     db.session.commit()
-
-
-class TestARefusedPressWithNoCardToRedraw:
-    """The second review's L3: a popover press refused when its card cannot be drawn."""
-
-    def test_it_is_the_doors_own_refusal_not_a_bare_404(self, app):
-        """A bare 404 carries no designed-fragment header, so htmx drops it.
-
-        The door's own refusal says why.
-        """
-        with app.app_context():
-            answer = answer_refused_press(
-                PageOutOfDate("Nothing was saved: this page was out of date."),
-                Press(shown=match_withdrawal.NOTHING_SHOWN, from_popover=True),
-                redraw=lambda facts: None,
-                refuse=lambda: ("the door's own refusal", 400),
-            )
-
-            assert answer == ("the door's own refusal", 400)
 
 
 class TestTheTransferInstanceDeleteRefusesRatherThanFailing:

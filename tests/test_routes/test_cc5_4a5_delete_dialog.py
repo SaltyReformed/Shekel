@@ -165,6 +165,12 @@ class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
             assert "and the 1 purchase under it?" in html, (
                 "R-CC131's picked question, word for word"
             )
+            # "... with the $12.34 shown": the redrawn card loads its purchase
+            # list, which prints each figure through the one `money` macro.
+            assert f'id="entry-list-{txn_id}"' in html
+            listed = auth_client.get(f"/transactions/{txn_id}/entries")
+            assert listed.status_code == 200
+            assert "$12.34" in listed.get_data(as_text=True)
             _committed()
             row = db.session.get(Transaction, txn_id)
             assert not row.is_deleted
@@ -266,6 +272,57 @@ class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
             row = db.session.get(Transaction, txn_id)
             assert not row.is_deleted
             assert [entry.id for entry in row.purchases] == [kroger]
+
+
+class TestTheRefusalSaysWhatChanged:
+    """The refusal's sentence: only what the page did not name, then what is gone."""
+
+    def test_several_added_and_several_gone_are_counted_and_listed(
+        self, app, auth_client, seed_user,
+    ):
+        """Two named purchases gone, two others added: the plural forms and the list."""
+        with app.app_context():
+            txn = _groceries(seed_user)
+            txn_id = txn.id
+            first = _kroger(seed_user, txn_id)
+            second = _bought(seed_user, txn_id, "Aldi", "8.00")
+            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
+            assert stale["shown_purchases"] == ",".join(
+                str(i) for i in sorted((first, second))
+            )
+            entry_service.delete_entry(first, seed_user["user"].id)
+            entry_service.delete_entry(second, seed_user["user"].id)
+            db.session.commit()
+            _bought(seed_user, txn_id, "Costco", "300.00")
+            _bought(seed_user, txn_id, "Target", "45.00")
+
+            response = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=stale,
+            )
+
+            assert response.status_code == 400
+            day = _day(seed_user)
+            on = f"{day.month}/{day.day}"
+            assert (
+                "Groceries now holds 2 purchases the page did not name "
+                f"(Costco, {on}; Target, {on}). 2 purchases the page named "
+                "are no longer under Groceries."
+                in response.get_data(as_text=True)
+            )
+            _committed()
+            assert len(db.session.get(Transaction, txn_id).purchases) == 2
+
+
+def _bought(seed_user, txn_id, description, amount):
+    """A purchase of *amount* at *description* added under *txn_id*; its id."""
+    entry = entry_service.create_entry(
+        txn_id, seed_user["user"].id, entry_service.EntryDetails(
+            figure=typed(Decimal(amount)), description=description,
+            purchased_on=_day(seed_user),
+        ),
+    )
+    db.session.commit()
+    return entry.id
 
 
 def _groceries(seed_user):
