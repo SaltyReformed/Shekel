@@ -68,6 +68,7 @@ from tests._test_helpers import (
     loan_params_for,
     make_cadence_rule,
     make_every_period_rule,
+    on_both_sides,
     rebuild_calendar,
     rhythm_of,
 )
@@ -519,8 +520,9 @@ class TestTheChargeCalendarIsTheContracts:
             transfer_service.update_transfer(
                 row.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settle_day=SettleDay(
-                    day=occurrence, basis=SettledDayBasisEnum.ENTERED,
+                side_days=on_both_sides(
+                    row.from_account_id, row.to_account_id,
+                    SettleDay(day=occurrence, basis=SettledDayBasisEnum.ENTERED),
                 ),
             )
         may = (
@@ -743,8 +745,11 @@ class TestTheLatestAssertionIsTheBoundary:
             transfer_service.update_transfer(
                 row.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settle_day=SettleDay(
-                    day=date(2026, 4, 15), basis=SettledDayBasisEnum.ENTERED,
+                side_days=on_both_sides(
+                    row.from_account_id, row.to_account_id,
+                    SettleDay(
+                        day=date(2026, 4, 15), basis=SettledDayBasisEnum.ENTERED,
+                    ),
                 ),
             )
         db.session.commit()

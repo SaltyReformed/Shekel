@@ -108,7 +108,6 @@ from app.services._posting_write import (
 )
 from app.services.cash_ledger import settled_cash_facts
 from app.services.posting_service import PostingError
-from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
     family_journal_filter,
@@ -561,23 +560,23 @@ class TestSyncSettleEntryDate:
     def test_a_settled_transfer_cannot_be_left_without_a_day(
         self, app, db, seed_user, savings,
     ):
-        """Clearing a settled transfer's day is REFUSED, not defaulted.
+        """Clearing a settled transfer's day cannot be asked, so it is never defaulted.
 
         **This test asserted the fallback until plan step X-f1**: with no
         ``paid_at`` recorded, ``entry_date`` -- which is NOT NULL -- took the pay
         period's ``start_date``.  That was a guess the reader could not see, and
         the day is a stored fact now, so there is nothing to fall back TO.  A
-        transfer edit that would leave a settled pair undated is refused at the
-        service, which is what keeps ``entry_date`` derivable at all.
+        transfer edit that would leave a settled pair undated was refused at the
+        service (``ValidationError``, "cannot be cleared") until plan step
+        ``balance:X-bi-6-4c-3``; since then a door states each side's day as a
+        :class:`~app.services.transfer_service.SideDay`, which cannot wrap
+        ``None``, so the edit has no spelling at all -- which is what keeps
+        ``entry_date`` derivable.
         """
         with app.app_context():
-            period = seed_user["bootstrap_period"]
-            with pytest.raises(ValidationError) as exc:
-                create_settled_transfer(
-                    seed_user, _db.session, seed_user["account"], savings,
-                    period, amount=Decimal("100.00"), settled_on=None,
-                )
-            assert "cannot be cleared" in str(exc.value)
+            with pytest.raises(ValueError) as exc:
+                transfer_service.SideDay(savings.id, None)
+            assert "cannot wrap None" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -761,7 +760,6 @@ class TestSyncReversal:
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settle_day=an_entered_day(display_today()),
             )
             assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()

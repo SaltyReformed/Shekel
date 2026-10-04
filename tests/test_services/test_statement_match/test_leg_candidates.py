@@ -52,6 +52,7 @@ from app.services.statement_match._valuation import repriced
 from tests._test_helpers import (
     an_entered_day,
     create_transfer,
+    on_both_sides,
     open_books_before_the_first_assertion,
 )
 
@@ -125,8 +126,11 @@ def _settle(seed_user, transfer, days_in=3):
     """Settle *transfer* through its own door, both sides dated *days_in* days into its period."""
     transfer_service.settle_transfer(
         transfer.id, seed_user["user"].id,
-        settle_day=an_entered_day(
-            seed_user["bootstrap_period"].start_date + timedelta(days=days_in),
+        side_days=on_both_sides(
+            transfer.from_account_id, transfer.to_account_id,
+            an_entered_day(
+                seed_user["bootstrap_period"].start_date + timedelta(days=days_in),
+            ),
         ),
     )
     db.session.flush()

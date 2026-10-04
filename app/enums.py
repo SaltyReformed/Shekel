@@ -787,16 +787,27 @@ class SettledDayBasisEnum(enum.Enum):
                      was inside it, so the money moved on or before it.  It is
                      an UPPER BOUND and not a point; the true posting day may
                      be days earlier.
-        entered   -- the app's own record with no bank document behind it: the
-                     owner typed the day, or a settle door stamped the day the
-                     act happened.  A POINT, on the owner's word.
+        entered   -- the owner's own word with no bank document behind it:
+                     the owner typed the day, or a settle door stamped the day
+                     the act happened on a plain row.  A POINT, on the owner's
+                     word.
+        borrowed  -- NO evidence of its own: one side of a TRANSFER whose day
+                     is its other side's, or the day Paid was pressed when
+                     neither side has one (plan step ``balance:X-bi-6-4c-3``,
+                     rulings **R-BAL142** and **R-BAL143**).  A guess, which
+                     follows its lender when the lender's day is corrected.
 
     **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
-    settle day is backed by a bank line, by a balance assertion, or by neither;
-    there is no fourth kind of evidence for it, so every writer lands in exactly
-    one member.  What separates ``entered`` from ``observed`` is not confidence
-    but provenance -- both are points, and a reader that wants to rank them can,
-    because the column now says which is which.
+    settle day is backed by a bank line, by a balance assertion, by the owner's
+    own word, or by nothing of its own; there is no fifth kind, so every writer
+    lands in exactly one member.  The first three ARE evidence and ``borrowed``
+    is the one member that is not -- the question
+    ``settle_day.is_evidence`` answers, and the reason a
+    transfer's two sides can hold two different days.  What separates
+    ``entered`` from ``observed`` is not confidence but provenance -- both are
+    points, and a reader that wants to rank them can, because the column now
+    says which is which.  Only a transfer side is ever ``borrowed``: a plain
+    row has no other side to borrow from.
 
     **Its whole reason for existing is that the difference decides a WINDOW.**
     ``statement_match._subjects.CandidateRow.expected_window`` bounds a purchase
@@ -832,6 +843,7 @@ class SettledDayBasisEnum(enum.Enum):
     OBSERVED = "observed"
     ASSERTED = "asserted"
     ENTERED = "entered"
+    BORROWED = "borrowed"
 
 
 class MovementFigureSourceEnum(enum.Enum):

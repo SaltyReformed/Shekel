@@ -78,31 +78,37 @@ class TestEmptyInputNormalization:
         """An empty settle-day input means "leave the day alone", not "clear it".
 
         The load-bearing case for plan step X-f1c's two settle-day edit doors.
-        ``settled_on`` is declared WITHOUT ``allow_none`` on both update
-        schemas precisely so an untouched or blanked input lands in the
-        non-nullable arm above and DROPS: a settled row always carries the day
-        its money moved (the balance walk refuses one that does not), and the
-        way to remove the day is to move the row out of the settled band, which
-        the status seam does.  Were the field nullable, blanking the box on a
-        settled transfer would post ``settled_on=None`` and
-        ``apply_settle_day_correction`` would reject the save.
+        Every settle-day field is declared WITHOUT ``allow_none`` on both
+        update schemas -- the transaction popover's ``settled_on`` and the
+        transfer popover's one box per side, ``settled_on_from`` /
+        ``settled_on_to`` since plan step ``balance:X-bi-6-4c-3`` -- precisely
+        so an untouched or blanked input lands in the non-nullable arm above
+        and DROPS: a settled row always carries the day its money moved (the
+        balance walk refuses one that does not), and the way to remove the day
+        is to move the row out of the settled band, which the status seam does.
+        Were the fields nullable, blanking a box would post a ``None`` day,
+        which the transfer service cannot state (a ``SideDay`` cannot wrap
+        ``None``) and the transaction door rejects.  A transfer side's box is
+        EMPTY whenever that side borrows the other's day (ruling
+        **R-BAL164**), so the drop is what every untouched Save of such a
+        transfer posts.
 
         Asserted on BOTH doors, because the rule is only true if the two agree:
         the transaction popover and the transfer popover are two forms onto one
         column-level invariant.
         """
-        assert "settled_on" not in TransferUpdateSchema().load(
-            {"settled_on": ""},
-        )
+        for field in ("settled_on_from", "settled_on_to"):
+            assert field not in TransferUpdateSchema().load({field: ""})
         assert "settled_on" not in TransactionUpdateSchema().load(
             {"settled_on": ""},
         )
         # The positive control: a real day still arrives, so the assertions
         # above are about the EMPTY value and not about the field being absent
         # from the schema altogether.
-        assert TransferUpdateSchema().load(
-            {"settled_on": "2026-07-14"},
-        ) == {"settled_on": date(2026, 7, 14)}
+        for field in ("settled_on_from", "settled_on_to"):
+            assert TransferUpdateSchema().load(
+                {field: "2026-07-14"},
+            ) == {field: date(2026, 7, 14)}
         assert TransactionUpdateSchema().load(
             {"settled_on": "2026-07-14"},
         ) == {"settled_on": date(2026, 7, 14)}

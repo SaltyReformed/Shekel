@@ -92,6 +92,7 @@ from tests._test_helpers import (
     loan_correction_entries,
     loan_correction_entries_at,
     loan_income_shadow,
+    on_both_sides,
     posted_loan_balance_at,
     posted_loan_balance_map,
     transfer_family_journal_filter,
@@ -3185,7 +3186,10 @@ class TestCheckedProjection:
             # checked-projection assert; a raise here IS the N-13 regression.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settle_day=an_entered_day(date(2026, 2, 5)),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(date(2026, 2, 5)),
+                ),
             )
             db.session.commit()
 
@@ -3226,7 +3230,10 @@ class TestCheckedProjection:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settle_day=an_entered_day(date(2026, 1, 20)),
+                side_days=on_both_sides(
+                    xfer.from_account_id, xfer.to_account_id,
+                    an_entered_day(date(2026, 1, 20)),
+                ),
             )
             db.session.commit()
 

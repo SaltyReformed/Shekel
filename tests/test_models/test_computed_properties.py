@@ -11,7 +11,7 @@ Tests for computed properties on models:
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from decimal import Decimal
@@ -32,7 +32,6 @@ from app.services.paycheck_calculator import (
 from app.services.pay_calendar import PayCadence
 from app.services.pay_rhythm import FixedDays
 from app.services import account_service
-from app.utils.dates import display_today
 from app.utils.dates import add_months
 from app.services.cash_ledger import (
     derived_amount_basis,
@@ -42,16 +41,13 @@ from app.services.cash_ledger import (
 from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
-    an_entered_day,
     cover_bare_settled_row,
     create_savings_account,
     create_transfer,
     default_settle_day,
     one_off_row_of,
-    open_books_before_the_first_assertion,
     settle_day_columns,
 )
-from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -436,238 +432,6 @@ class TestTransferAmountResolves:
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             ) == Decimal("500.00")
-
-
-class TestTransferSettleDay:
-    """Tests for ``Transfer.settled_on`` -- the pair's shared day, read once.
-
-    A transfer has no ``settled_on`` COLUMN: the day lives on its two shadow
-    ``Transaction`` rows (Transfer Invariant 3).  The property exists so the
-    full-edit form's correction input -- rendered from TWO blueprints, the
-    transfers page and a grid shadow cell -- asks one question rather than each
-    re-deriving "which shadow, and what if it is missing".
-    """
-
-    @staticmethod
-    def _settled_transfer(seed_user, seed_periods, day):
-        """Return a settled transfer whose pair carries *day*, through the service."""
-        from app import ref_cache
-        from app.enums import StatusEnum
-        from app.models.ref import AccountType
-        from app.services import transfer_service
-
-        savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("0"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
-        # Its BOOKS open before anything this fixture dates (plan step
-        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day
-        # it asserts -- the owner's today -- and this helper settles the
-        # transfer on a day the caller chooses, which is earlier.
-        open_books_before_the_first_assertion(db.session, savings)
-
-        xfer = transfer_service.create_transfer(
-            transfer_service.TransferSpec(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                amount_ownership=AmountOwnership.own(Decimal("250.00")),
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                category_id=seed_user["categories"]["Rent"].id,
-                name="Settle day probe",
-            ),
-        )
-        db.session.flush()
-        transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id,
-            status_id=ref_cache.status_id(StatusEnum.DONE),
-        )
-        transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
-        )
-        db.session.flush()
-        return xfer
-
-    def test_a_projected_transfer_has_no_settle_day(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A transfer whose money has not moved answers ``None``.
-
-        Its shadows carry no day (the settled-iff-dated invariant), so the
-        property must report the absence rather than inventing one -- the
-        template renders no correction input on that answer.
-        """
-        with app.app_context():
-            from app import ref_cache
-            from app.enums import StatusEnum
-            from app.models.ref import AccountType
-            from app.services import transfer_service
-
-            savings_type = db.session.query(AccountType).filter_by(
-                name="Savings",
-            ).one()
-            savings = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings",
-                    anchor_balance=Decimal("0"),
-                ),
-            )
-            db.session.add(savings)
-            db.session.flush()
-            xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                    category_id=seed_user["categories"]["Rent"].id,
-                    name="Undated probe",
-                ),
-            )
-            db.session.flush()
-            assert xfer.settled_on is None
-
-    def test_a_settled_transfer_reports_its_pairs_day(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The property returns the day both shadows carry.
-
-        Asserted against the SHADOWS as well as against a literal, so the test
-        grades "the property reads the pair" rather than "the property returns
-        the constant the fixture happened to pass".
-        """
-        with app.app_context():
-            day = display_today() - timedelta(days=21)
-            xfer = self._settled_transfer(seed_user, seed_periods, day)
-
-            shadow_days = {
-                shadow.settled_on
-                for shadow in db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            }
-            assert shadow_days == {day}
-            assert xfer.settled_on == day
-
-    def test_it_reads_the_income_shadow(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The day comes from the TO-account shadow, named by its account.
-
-        Until plan step ``balance:X-bi-6-3`` the posting writer dated a
-        transfer's one journal entry from the income shadow alone, so this
-        property reads the same row: were it to read the expense side, a pair
-        that had somehow diverged would render one day on the form and file
-        the postings under another.  Since that step each side's entry is
-        filed under that side's covering movement's own day, so the property
-        no longer names the row the ledger dates from; it still names the
-        income shadow (``Transfer.settled_on``'s docstring says why), and this
-        test pins that choice.  The divergence is forced here (bypassing the
-        service, which is what keeps the pair equal) precisely because the two
-        rows are otherwise identical and the choice would be untestable.
-
-        **The unfalsifiable version of this test was fixed in the CODE, not
-        here, and that is the point worth keeping.**  The property used to
-        iterate the ``shadow_transactions`` backref, which declares no
-        ``order_by`` -- so "reads the income shadow" and "reads whichever row
-        the unordered SELECT returned first" were indistinguishable, and a
-        POSITIONAL implementation is right half the time.  A neutral review
-        planted a last-row read and it survived; a second, swapped-days control
-        written against it survived too, because a positional read that happens
-        to land on the income row lands there in both arrangements.  No test
-        over a two-row pair can separate them.
-
-        The property now names the row in SQL (``account_id ==
-        to_account_id``), so position is not expressible and the only mutation
-        left is naming the WRONG account -- which this test kills in both
-        arrangements.  The days are still swapped and the property still asked
-        twice, because that is what proves the answer tracks the ACCOUNT rather
-        than a value the fixture happened to write last.
-        """
-        with app.app_context():
-            day = display_today() - timedelta(days=21)
-            xfer = self._settled_transfer(seed_user, seed_periods, day)
-            income_shadow = (
-                db.session.query(Transaction)
-                .filter_by(
-                    transfer_id=xfer.id, account_id=xfer.to_account_id,
-                    is_deleted=False,
-                )
-                .one()
-            )
-            expense_shadow = (
-                db.session.query(Transaction)
-                .filter_by(
-                    transfer_id=xfer.id, account_id=xfer.from_account_id,
-                    is_deleted=False,
-                )
-                .one()
-            )
-            day_a = display_today() - timedelta(days=15)
-            day_b = display_today() - timedelta(days=17)
-            for income_day, expense_day in ((day_a, day_b), (day_b, day_a)):
-                record_settle_day(income_shadow, an_entered_day(income_day))
-                record_settle_day(expense_shadow, an_entered_day(expense_day))
-                db.session.flush()
-                db.session.expire(xfer, ["shadow_transactions"])
-
-                assert xfer.settled_on == income_day, (
-                    "the property did not read the income (to-account) shadow, "
-                    "the row Transfer.settled_on names for the pair's day: "
-                    f"got {xfer.settled_on} "
-                    f"with income={income_day} expense={expense_day}"
-                )
-
-    def test_a_soft_deleted_shadow_is_skipped(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A soft-deleted shadow does not answer for the pair.
-
-        A soft-deleted transfer's shadows are soft-deleted with it, and the
-        backref carries them regardless; answering from one would show a day
-        for a transfer that no longer moves money.
-        """
-        with app.app_context():
-            day = display_today() - timedelta(days=21)
-            xfer = self._settled_transfer(seed_user, seed_periods, day)
-            for shadow in xfer.shadow_transactions:
-                shadow.is_deleted = True
-            db.session.flush()
-            db.session.expire(xfer, ["shadow_transactions"])
-
-            assert xfer.settled_on is None
-
-    def test_it_cannot_be_assigned(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Assigning the property raises -- the seam stays the single writer.
-
-        ``status_seam.apply_status_change`` is the one door that writes
-        ``Transaction.settled_on``; a settable property here would be a second
-        one, which is the shape finding **N-183** closed on
-        ``update_transfer``.  ``AttributeError`` is that refusal made
-        structural rather than reviewed.
-        """
-        with app.app_context():
-            xfer = self._settled_transfer(
-                seed_user, seed_periods, display_today() - timedelta(days=21),
-            )
-            with pytest.raises(AttributeError):
-                record_settle_day(xfer, an_entered_day(date(2026, 7, 20)))
 
 
 # ── Category.display_name ────────────────────────────────────────────

@@ -213,8 +213,9 @@ def _correction_for_status(
     **The Actual box's write rule for a plain row** (developer ruling,
     2026-08-17): a settled row's figure is an observation about the bank, and
     an observation gets corrected when the statement disagrees.  Its sibling
-    for the other half of the same assertion is
-    :func:`app.services.transfer_service._status.apply_settle_day_correction`,
+    for the other half of the same assertion is the transfer's day correction
+    (a stated side's day through
+    :func:`app.services.transfer_service._status.apply_status_to_all_three`),
     which corrects the DAY on the identical argument.  **And the "Paid from"
     picker's, since plan step ``credit_card:CC-5-3``**: which account the
     money moved through is the record's third fact, observed the same way
