@@ -220,7 +220,12 @@ class TestPaidSaysWhatReplacingThePaymentWouldFree:
     def test_pressing_paid_withdraws_the_match(
         self, app, auth_client, seed_user,
     ):
-        """The Paid button's own POST: the purchases replace the payment."""
+        """A Paid POST with no field: the purchases replace the payment.
+
+        Since plan step CC-5-4a-5 an empty POST is the GRID's one-click Mark
+        Paid, silent by ruling R-CC56; the popover's own Paid posts the lines
+        its caption named, graded in ``test_cc5_4a5_popover_presses``.
+        """
         with app.app_context():
             txn, line = _reverted_envelope(seed_user, with_purchase=True)
             assert _claimed(seed_user, line)

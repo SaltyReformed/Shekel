@@ -27,7 +27,6 @@ withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so
     Both full-edit popovers draw it from `PageOutOfDate.facts`. -#}
 {% macro page_refusal_banner(facts) -%}
 <div class="alert alert-warning py-1 px-2 mb-2 small" role="alert">
-  <i class="bi bi-exclamation-triangle"></i> {{ facts }} Here it is as it is
-  now; press again to go ahead.
+  <i class="bi bi-exclamation-triangle"></i> {{ facts }} Here it is as it is now; press again to go ahead.
 </div>
 {%- endmacro %}
