@@ -779,3 +779,48 @@ class TrackingStartRefused(ValidationError):
             f"{asked.strftime('%b %-d, %Y')}, so the app's record of this loan "
             f"starts earlier than that date."
         )
+
+
+class PageOutOfDate(ValidationError):
+    """A press was refused: its page named other bank lines than it would free.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**
+    (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
+    bank lines it named, and the function compares them with what it would
+    undo. At 10:10 they differ, so nothing is saved"*.  Raised by
+    ``match_withdrawal.take_out_of_matches`` -- the match step of the one act
+    that takes a movement off the books, and of the seam's re-point -- before
+    it writes anything; the door's rollback undoes whatever the press staged
+    before it.  Two causes reach it: a page drawn before a match was made or
+    undone in another tab, and a door that forgot its caption.
+
+    **The message states the fact and the reload a plain surface needs; a
+    popover answers with its own.**  Ruling **R-CC128** (developer
+    2026-10-04, "Redraw all"): a press refused from a full-edit popover
+    redraws the whole popover from current state, so it shows
+    :attr:`facts` above the current caption and tells the owner to press
+    again rather than to reload.  Every other door hears the full sentence
+    through its ordinary ``ValidationError`` arm, which is why this is a
+    subclass: a route that does not know this refusal still renders a true
+    one.
+
+    Args:
+        freed: How many bank lines the press would leave unexplained again.
+        named: How many of the lines its page named are on the accounts the
+            press touches.
+
+    Attributes:
+        facts: What was refused and why, with no remedy.
+    """
+
+    def __init__(self, freed: int, named: int) -> None:
+        """State both counts, then the reload a plain surface needs."""
+        self.facts = (
+            f"Nothing was saved: this page was out of date. Saving now leaves "
+            f"{freed} bank line{'' if freed == 1 else 's'} unexplained again "
+            f"on your statement screen, and the page named {named}."
+        )
+        super().__init__(
+            f"{self.facts} Reload it to see what saving does now, then press "
+            f"again."
+        )

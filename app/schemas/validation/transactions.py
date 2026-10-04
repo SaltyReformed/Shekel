@@ -11,6 +11,7 @@ from marshmallow import (
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    ShownLines,
     _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
@@ -149,6 +150,13 @@ class TransactionUpdateSchema(BaseSchema):
     # choice (ruling **R-CC34**), so a one-account form posts nothing here
     # and ``_normalize_empty_inputs`` drops an empty select.
     tender_account_id = RowId()
+    # The bank lines the popover's withdrawal captions NAMED (plan step
+    # ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): posted on
+    # every popover Save, empty when they name none, so the act a Save reaches
+    # can refuse a press whose page was out of date.  Absent from the grid's
+    # quick edit, whose door then names nothing.  ``allow_none`` is presence:
+    # :class:`~app.schemas.validation._helpers.ShownLines` says why.
+    shown_lines = ShownLines(allow_none=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 
@@ -357,3 +365,10 @@ class MarkDoneSchema(BaseSchema):
     # verb's seam books on its default -- the kept record's account, else the
     # row's (ruling **R-CC42**).  Gated by the verb against the ROW's owner.
     tender_account_id = RowId()
+    # The bank lines the popover's captions NAMED, posted by its Paid /
+    # Received buttons (plan step ``credit_card:CC-5-4a-5``, ruling
+    # **R-CC127**); ABSENT from the grid's one-click Mark Paid and the phone
+    # card, which withdraw silently by ruling **R-CC56**, and from the
+    # reconcile panel, which loads only ``settled_amount`` here.
+    # ``allow_none`` is presence: :class:`ShownLines` says why.
+    shown_lines = ShownLines(allow_none=True)

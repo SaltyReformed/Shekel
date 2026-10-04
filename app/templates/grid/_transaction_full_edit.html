@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, shown_line_ids %}
 {# Anchored action card -- renders inside the #txn-popover container
    (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
    the old three-tier edit system.  Layout, top to bottom: header +
@@ -70,7 +70,32 @@
 {% set tender_picker = tender_accounts is defined and tender_accounts|length > 1
    and correctable
    and (txn.status_id == STATUS_PROJECTED or (txn.status and txn.status.is_settled)) %}
-<div class="txn-full-edit-content">
+{#- **The card's three payment captions, each predicate stated ONCE** (plan
+    step credit_card:CC-5-4a-5, rulings R-CC56 / R-CC46 / R-CC127).  Every
+    caption names the lines `payment_withdraws` frees -- the route's one read
+    of what the row's payment leaving its matches frees -- and the card posts
+    those ids back (`shown_lines`, below) exactly when one of them rendered, so
+    the act a press reaches can refuse a page that named other lines than it
+    would free.  `paid_caption`: Paid / Received takes the payment off -- the
+    row settles from its purchases (`not correctable`), or records $0.00
+    (`paid_records_nothing`, the route's answer from what a settle books).
+    `zero_caption`: a $0.00 typed in Actual takes it off.  `tender_caption`:
+    a different "Paid from" pick re-points it. -#}
+{% set withdraws_a_line = payment_withdraws and payment_withdraws.frees_a_line %}
+{% set paid_caption = withdraws_a_line and txn.status_id == STATUS_PROJECTED
+   and (not correctable or paid_records_nothing) %}
+{% set zero_caption = withdraws_a_line and txn.status and txn.status.is_settled
+   and correctable %}
+{% set tender_caption = withdraws_a_line and tender_picker %}
+{#- What the card NAMED, the one value every press on it posts back as
+    `shown_lines`: the Save's hidden field, and Paid / Received's `hx-vals`
+    (the delete dialog names its own lines, below). -#}
+{% set named_lines = shown_line_ids(payment_withdraws)
+   if paid_caption or zero_caption or tender_caption else '' %}
+{#- The card's root carries an id because a press refused as out of date
+    REDRAWS it whole, retargeted here (ruling R-CC128, "Redraw all");
+    `card_id` is the route's one spelling of it. -#}
+<div class="txn-full-edit-content" id="{{ card_id }}">
   <div class="d-flex justify-content-between align-items-center">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ txn.name }}">
       {{ txn.name }}
@@ -78,6 +103,9 @@
     <button type="button" class="btn-close btn-close-sm" aria-label="Close"
             data-action="close-popover"></button>
   </div>
+  {#- Drawn only on a redraw: nothing was saved, and the card below is what
+      is true now (ruling R-CC128). -#}
+  {% if page_refusal %}{{ page_refusal_banner(page_refusal) }}{% endif %}
 
   {# Context line: where and what this row is, so an action taken from
      the card cannot land on the wrong period. #}
@@ -101,6 +129,7 @@
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
             {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
+            hx-vals='{"shown_lines": "{{ named_lines }}"}'
             aria-label="Mark as paid">
       <i class="bi bi-check-circle"></i> Paid
     </button>
@@ -141,26 +170,26 @@
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
             {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
+            hx-vals='{"shown_lines": "{{ named_lines }}"}'
             aria-label="Mark as received">
       <i class="bi bi-check-circle"></i> Received
     </button>
     {% endif %}
   </div>
-  {#- **What Paid WITHDRAWS on a row whose purchases replace its payment**
-      (plan step credit_card:CC-5-4a-3, rulings R-CC54 / R-CC56).  A reverted
-      row keeps its payment un-dated (R-BAL61), and an accepted match may
-      still name it; once the row holds purchases it settles FROM them, a
-      purchases record the status seam answers by taking the kept payment off
-      the books -- so every match naming the payment is withdrawn, said here
-      beside Paid before the press.  `not correctable` is exactly "this row
-      settles from its purchases" (the route's `amount_correctable`), and
-      `payment_withdraws` is the route's one read of what the payment's
-      leaving frees; the grid's one-click Mark Paid has no caption and
-      withdraws and logs it all the same. -#}
-  {%- if txn.status_id == STATUS_PROJECTED and not correctable
-        and payment_withdraws and payment_withdraws.frees_a_line %}
+  {#- **What Paid WITHDRAWS on a reverted row whose payment it takes off**
+      (plan step credit_card:CC-5-4a-3, rulings R-CC54 / R-CC56; the $0.00
+      arm plan step CC-5-4a-5).  A reverted row keeps its payment un-dated
+      (R-BAL61), and an accepted match may still name it.  Two settles take
+      that payment off the books, so every match naming it is withdrawn,
+      said here beside Paid before the press: a row that now holds purchases
+      settles FROM them (`not correctable`, the route's
+      `amount_correctable`), and a row whose settle records $0.00 -- an
+      estimate set to $0.00 over a kept payment no correction holds -- moves
+      nothing (`paid_records_nothing`).  The grid's one-click Mark Paid has no
+      caption and withdraws and logs it all the same (R-CC56). -#}
+  {%- if paid_caption %}
   <div class="form-text mb-2" id="purchases-withdraws-{{ txn.id }}">
-    Marking this paid from its purchases {{ frees_lines(payment_withdraws) }}.
+    {% if not correctable %}Marking this paid from its purchases{% else %}Marking this {{ 'received' if txn.is_income else 'paid' }} records $0.00 and{% endif %} {{ frees_lines(payment_withdraws) }}.
   </div>
   {%- endif %}
 
@@ -173,6 +202,12 @@
        txn.version_id and short-circuits with 409 when the form is
        stale (commit C-18 / F-010). #}
     <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+    {#- **What this card's captions NAMED** (plan step
+        credit_card:CC-5-4a-5, rulings R-CC81 / R-CC127): `named_lines`,
+        posted on every Save.  ALWAYS rendered: a card that named nothing says
+        so, where a surface with no caption (the grid's one-click Mark Paid)
+        posts no field at all. -#}
+    <input type="hidden" name="shown_lines" value="{{ named_lines }}">
     {# The DEFINITION's pin too, for a placed row: its price, name, category
        and flags are edited here and live there, so a save that touches only
        them bumps the definition's counter and not the row's (plan step
@@ -314,7 +349,7 @@
             the books, and every match naming it is withdrawn -- said here,
             under the box, before the Save.  `payment_withdraws` is the
             route's one read of what the payment's leaving frees. -#}
-        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        {%- if zero_caption %}
         <div class="form-text" id="zero-withdraws-{{ txn.id }}">
           Recording $0.00 {{ frees_lines(payment_withdraws) }}.
         </div>
@@ -355,7 +390,7 @@
             nothing when no match names the payment -- and nothing for a GROUP
             act the pick only shrinks (the register flags it), the silence the
             delete dialog keeps over the same case. -#}
-        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        {%- if tender_caption %}
         <div class="form-text" id="tender-withdraws-{{ txn.id }}">
           Picking another account {{ frees_lines(payment_withdraws) }}.
         </div>
@@ -766,6 +801,10 @@ Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | lengt
           hx-swap="innerHTML"
           hx-disabled-elt="this"
           hx-confirm="{{ question | trim }}"
+          {#- The lines the dialog NAMED, from the same `withdraws` its
+              clause prints (ruling R-CC127); htmx sends a DELETE's values as
+              its query string. #}
+          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}"}'
           aria-label="Delete {{ txn.name }}">
     <i class="bi bi-trash"></i> Delete this row
   </button>

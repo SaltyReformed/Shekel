@@ -64,6 +64,7 @@ helper, envelope-on-income rule) live in :mod:`._helpers`.
 from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
+    ShownLinesSchema,
     form_payload,
 )
 from app.schemas.validation._recurrence import (
@@ -268,6 +269,7 @@ __all__ = [
     "SalaryProfileUpdateSchema",
     "SavingsGoalCreateSchema",
     "SavingsGoalUpdateSchema",
+    "ShownLinesSchema",
     "TemplateCreateSchema",
     "TemplateUpdateSchema",
     "TransactionCreateSchema",

@@ -42,6 +42,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    match_withdrawal,
     pay_period_admin,
     pay_period_gates,
     transaction_service,
@@ -538,6 +539,9 @@ class TestTheRowDoorsSoftArm:
 
             outcome = transaction_service.delete_transaction(
                 row, seed_user["user"].id,
+                # What the dialog names, as the card posts it back (plan step
+                # credit_card:CC-5-4a-5, ruling R-CC127).
+                shown=match_withdrawal.Shown(preview.withdrawn.line_ids),
             )
             db.session.commit()
             db.session.expire_all()

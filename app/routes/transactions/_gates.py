@@ -20,9 +20,18 @@ where ``None`` means *this gate passes*.  A route-tier guard is the
 crafted-request and stale-form BACKSTOP for a rule the popover already obeys by
 not rendering the control; the rule itself lives in the service or the model.
 
+**The STALE-FORM check joined at plan step ``credit_card:CC-5-4a-5``**
+(:func:`_stale_form_conflict`), when the popover's posted bank lines pushed
+``mutations`` past the line cap again.  It runs AHEAD of the chain -- in the
+door, before ``_apply_regular_update`` -- and answers a 409 rather than a
+400, but it is the same shape over the same payload and writes nothing, which
+is this module's whole membership test.
+
 Boundary discipline: these read the request's already-schema-loaded ``data`` and
 the loaded row, and write nothing.
 """
+
+import logging
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -30,7 +39,10 @@ from app.exceptions import ValidationError
 from app.services.state_machine import verify_transition
 from app.services.transaction_service import repays_card_spend
 
+from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import _error_transaction_response
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_status_change(txn, data):
@@ -244,4 +256,51 @@ def _reject_tracking_on_income(txn, data):
         return _error_transaction_response(
             txn.id, "Purchase tracking is only available for expenses.",
         )
+    return None
+
+
+def _stale_form_conflict(txn, data):
+    """Return the 409 conflict cell when the card that posted *data* is stale.
+
+    The card pins the ROW's ``version_id`` (commit C-18 / F-010), and since
+    plan step ``balance:X-bi-7b`` a PLACED row's card pins its DEFINITION's
+    too: a one-off's name, category, flags and PRICE live on the definition
+    and the card edits them there, so a save that touches only those bumps
+    the definition's counter and not the row's -- and two cards rendered
+    before either saved would both have answered 200, the second silently
+    overwriting the first's price, where the row's own counter caught that
+    race while the price lived on the row.  Found by adversarial review.
+    Each pin is compared only when the card shipped it (a legacy row's card
+    ships none for the definition; a client that omits both falls through to
+    the SQLAlchemy-tier check at flush time), and both are POPPED so the
+    field loop never sees them.
+
+    Args:
+        txn: The row being edited.
+        data: The schema-loaded PATCH payload; ``version_id`` and
+            ``template_version_id`` are removed from it.
+
+    Returns:
+        The conflict cell as a ``(html, 409)`` tuple, or ``None``.
+    """
+    submitted_version = data.pop("version_id", None)
+    submitted_definition_version = data.pop("template_version_id", None)
+    if submitted_version is not None and submitted_version != txn.version_id:
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(submitted=%d, current=%d)",
+            txn.id, submitted_version, txn.version_id,
+        )
+        return render_transaction_cell(txn, conflict=True), 409
+    if (
+        submitted_definition_version is not None
+        and txn.is_placed
+        and submitted_definition_version != txn.template.version_id
+    ):
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(definition submitted=%d, current=%d)",
+            txn.id, submitted_definition_version, txn.template.version_id,
+        )
+        return render_transaction_cell(txn, conflict=True), 409
     return None

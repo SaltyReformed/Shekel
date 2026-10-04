@@ -97,6 +97,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     entry_service,
+    match_withdrawal,
     pay_period_gates,
     transaction_service,
     transfer_service,
@@ -597,6 +598,9 @@ class TestATombstoneCountsAsLeaving:
             preview = transaction_service.preview_deletion(envelope)
             outcome = transaction_service.delete_transaction(
                 envelope, seed_user["user"].id,
+                # What the dialog names, as the card posts it back (plan step
+                # credit_card:CC-5-4a-5, ruling R-CC127).
+                shown=match_withdrawal.Shown(preview.withdrawn.line_ids),
             )
             db.session.commit()
             db.session.expire_all()

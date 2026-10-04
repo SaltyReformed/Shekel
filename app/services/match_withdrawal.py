@@ -138,7 +138,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app.exceptions import ValidationError
+from app.exceptions import PageOutOfDate
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
@@ -302,8 +302,10 @@ def _refuse_unshown(
         planned: What it would withdraw (:func:`_summarise`).
 
     Raises:
-        ValidationError: When the two sets differ.  The door's existing
-            refusal path renders it and its rollback undoes the press.
+        PageOutOfDate: When the two sets differ -- a ``ValidationError``, so
+            the door's existing refusal path renders it and its rollback
+            undoes the press; a full-edit popover redraws itself instead
+            (ruling **R-CC128**).
     """
     if isinstance(shown, Silent):
         return
@@ -322,13 +324,7 @@ def _refuse_unshown(
         }
     freed = planned.line_ids
     if freed != named:
-        raise ValidationError(
-            "Nothing was saved: this page is out of date. Saving now leaves "
-            f"{len(freed)} bank line{'' if len(freed) == 1 else 's'} "
-            "unexplained again on your statement screen, and the page named "
-            f"{len(named)}. Reload it to see what saving does now, then press "
-            "again."
-        )
+        raise PageOutOfDate(len(freed), len(named))
 
 
 def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":
@@ -754,7 +750,7 @@ def take_out_of_matches(
         What was withdrawn, as the dialog's read would have printed it.
 
     Raises:
-        ValidationError: When what this frees differs from *shown*.
+        PageOutOfDate: When what this frees differs from *shown*.
     """
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
@@ -810,7 +806,7 @@ def withdraw_for_moved_movement(
         What was withdrawn.
 
     Raises:
-        ValidationError: When what this frees differs from *shown*.
+        PageOutOfDate: When what this frees differs from *shown*.
     """
     return take_out_of_matches(
         [entry], owner_id, because=MOVED_ACCOUNTS, shown=shown,

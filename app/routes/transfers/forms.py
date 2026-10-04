@@ -22,6 +22,7 @@ from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
+from app.routes._refused_press import RedrawnCard
 from app.routes._render_helpers import (
     render_transfer_cell,
     transfer_budgets,
@@ -29,7 +30,10 @@ from app.routes._render_helpers import (
     transfer_side_boxes,
 )
 from app.routes.transfers._bp import transfers_bp
-from app.routes.transfers._helpers import _get_owned_transfer
+from app.routes.transfers._helpers import (
+    _get_owned_transfer,
+    _resolve_leg_request,
+)
 from app.utils.digit_strings import parse_row_id
 
 
@@ -93,6 +97,31 @@ def get_full_edit(xfer_id):
     # rather than pushed into ``_get_owned_transfer``.
     if xfer.is_deleted:
         return "Not found", 404
+    return render_full_edit(xfer, leg_account_id, page_refusal=None)
+
+
+def render_full_edit(xfer, leg_account_id, *, page_refusal):
+    """Render the transfer full-edit popover from the pair's current state.
+
+    **ONE render for the popover's GET and for its REDRAW** (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC128**, developer 2026-10-04,
+    "Redraw all"): a Save or Paid the removal act refuses as out of date
+    answers with this same card, drawn from what is true now, the refusal
+    above it -- the transaction popover's
+    (:func:`app.routes.transactions.forms.render_full_edit`) twin over the
+    one decision both share (:mod:`app.routes._refused_press`).
+
+    Args:
+        xfer: The live transfer, owner-established by the caller.
+        leg_account_id: The account of the grid leg the popover was opened
+            from, validated as one of the transfer's endpoints, or ``None``
+            for the transfers page.
+        page_refusal: :attr:`~app.exceptions.PageOutOfDate.facts` for a
+            redraw, else ``None``.
+
+    Returns:
+        The rendered ``transfers/_transfer_full_edit.html``.
+    """
     statuses = db.session.query(Status).all()
     categories = category_service.list_active_categories(current_user.id)
     # Current + future periods power the in-popover period-move selector,
@@ -113,6 +142,8 @@ def get_full_edit(xfer_id):
     amounts = transfer_settlement_amounts(xfer, current_user.id, records)
     return render_template(
         "transfers/_transfer_full_edit.html",
+        card_id=full_edit_dom_id(xfer.id),
+        page_refusal=page_refusal,
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
         leg_account_id=leg_account_id,
         budgets=transfer_budgets(xfer),
@@ -138,6 +169,50 @@ def get_full_edit(xfer_id):
         # ``credit_card:CC-5-4a-3``, ruling **R-CC59**): the caption under
         # the Actual box, read through the same twin the seam's write uses.
         payment_withdraws=_payment_withdrawal(records),
+    )
+
+
+def full_edit_dom_id(xfer_id):
+    """Return the ``id`` of a transfer's full-edit card -- what a redraw replaces.
+
+    Args:
+        xfer_id: The transfer's id.
+
+    Returns:
+        The DOM id, spelled once for the card's root and its redraw.
+    """
+    return f"xfer-full-edit-{xfer_id}"
+
+
+def redraw_full_edit(xfer_id, facts):
+    """Re-read a transfer after a refused press and draw its card again (ruling **R-CC128**).
+
+    The transfer popover's half of
+    :func:`app.routes._refused_press.answer_refused_press`, which has rolled
+    the press back before calling this.  The popover posts its leg's account
+    with every press (``leg_account_id``), so the card is redrawn for the
+    same surface it was opened from.
+
+    Args:
+        xfer_id: The transfer the press named.
+        facts: :attr:`~app.exceptions.PageOutOfDate.facts`, drawn above the
+            card.
+
+    Returns:
+        The :class:`~app.routes._refused_press.RedrawnCard`, or ``None`` when
+        the transfer is not the requester's or has been deleted -- the two
+        states :func:`get_full_edit` answers "not found".
+    """
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None or xfer.is_deleted:
+        return None
+    leg = _resolve_leg_request(xfer)
+    return RedrawnCard(
+        full_edit_dom_id(xfer_id),
+        render_full_edit(
+            xfer, leg.account_id if leg is not None else None,
+            page_refusal=facts,
+        ),
     )
 
 

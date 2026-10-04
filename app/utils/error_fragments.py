@@ -34,6 +34,14 @@ DESIGNED_FRAGMENT_HEADER = "Shekel-Designed-Fragment"
 # assumptions RAIL, and that request targets the readiness card.
 RETARGET_HEADER = "HX-Retarget"
 
+# htmx's own response header naming the swap style a response uses INSTEAD of
+# the request's ``hx-swap``.  Paired with :data:`RETARGET_HEADER` where the
+# region a refusal redraws is not swapped the way the request's own target is:
+# a full-edit popover refusing a press as out of date redraws the CARD
+# (ruling **R-CC128**), replacing it whole, while the press's own target is a
+# cell whose inside it replaces.
+RESWAP_HEADER = "HX-Reswap"
+
 # The uniform user-facing message for a foreign-key ``IntegrityError`` --
 # one definition shared by the transaction, entries, and transfer
 # mutation handlers whose designed fragments surface it.
@@ -80,7 +88,8 @@ def refusal_for_a_gone_row(answer, refusal) -> str:
 
 
 def designed_error(
-    body: str, status: int, *, retarget: str | None = None,
+    body: str, status: int, *,
+    retarget: str | None = None, reswap: str | None = None,
 ) -> ResponseReturnValue:
     """Wrap a rendered error fragment so htmx swaps it despite the status.
 
@@ -96,16 +105,22 @@ def designed_error(
             the request's own swap style still applies.  ``None`` for a
             body built for the request's target, which is every caller but
             the readiness what-if's refusal (plan step salary:S3-f-4,
-            ruling **R-SAL33**).
+            ruling **R-SAL33**) and a full-edit popover's out-of-date
+            refusal (ruling **R-CC128**).
+        reswap: An htmx swap style that replaces the request's own
+            (:data:`RESWAP_HEADER`), or ``None`` to keep it.  ``"outerHTML"``
+            for the popover's redraw, whose body is the whole card.
 
     Returns:
         Flask response tuple ``(body, status, headers)`` carrying the
-        designed-fragment marker header, and the retarget header when one
-        was asked for.
+        designed-fragment marker header, and the retarget and reswap headers
+        when they were asked for.
     """
     headers = {DESIGNED_FRAGMENT_HEADER: "1"}
     if retarget is not None:
         headers[RETARGET_HEADER] = retarget
+    if reswap is not None:
+        headers[RESWAP_HEADER] = reswap
     return body, status, headers
 
 
