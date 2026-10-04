@@ -65,7 +65,8 @@ from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_account,
 )
 from app.services.row_valuation import leg_settled_contribution
-from app.services.transfer_legs import grid_transfer_leg
+from app.services.transfer_legs import grid_transfer_leg, transfer_side_leg
+from app.utils.dates import display_today
 from tests._test_helpers import (
     basis_for,
     cover_bare_settled_row,
@@ -656,12 +657,15 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
                 walk_loan_ledger(loan.id, seed_user["scenario"].id)
             message = str(refused.value)
             assert message.startswith(
-                f"Transfer {transfer.id}'s loan-side payment (\"Transfer to "
-                f"Settled Leg Loan\" on the Checking grid, $1,000.00 in the "
-                f"paycheck of {seed_periods[_PERIOD].start_date}, due {_DUE}; "
-                f"movement {movement.id}) is in a settled status but carries "
-                "no settled_on"
+                f"The loan-side payment (movement {movement.id}) of transfer "
+                f"{transfer.id} \"{transfer.name}\" (Checking to Settled Leg "
+                f"Loan, $1,000.00 in the paycheck of "
+                f"{seed_periods[_PERIOD].start_date}, due {_DUE}) is in a "
+                "settled status but carries no settled_on"
             ), message
+            assert transfer.name == "Checking to Settled Leg Loan", (
+                "the create door's default name, the popover's title"
+            )
             assert "\"Money moved on\" box" in message, message
 
     def test_a_dated_payment_never_builds_the_refusals_words(
@@ -692,6 +696,117 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
                 loan.id, seed_user["scenario"].id,
             ).settled_splits
             assert outcome.visible_on == _CLOSED_ON
+
+
+class TestTheRefusalsRepairWorksThroughTheApp:
+    """The repair the refusal's message names, through the transfer's own door.
+
+    ``_visible._UNDATED_PAYMENT_CAUSE`` tells the reader of the log to type
+    each account's day into that account's "Money moved on" box, that a box
+    left empty follows the other side's day (ruling R-BAL142), and that a
+    revert then Mark Paid would date the payment to the day of the click.
+    Those are claims a log line makes about another door, which no other case
+    grades, so each is held to it here: the drift is the refusal's, the
+    PATCH posts the popover's two day boxes as that door's own route tests
+    do, and the walk that refused reads the repaired day.  ``_CLOSED_ON``
+    (03-05) is the day the transfer was marked paid; the suite's frozen
+    clock is the day of the click.
+    """
+
+    @staticmethod
+    def _refused_drift(seed_user, seed_periods):
+        """Paid 03-05, then the loan side's twin reverted alone: the walk refuses."""
+        loan = _loan(seed_user)
+        transfer = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan,
+            seed_periods[_PERIOD], amount=Decimal("1000.00"),
+            settled_on=_CLOSED_ON, due_date=_DUE,
+        )
+        db.session.commit()
+        _revert_the_income_twin_keeping_an_undated_movement(transfer, loan)
+        with pytest.raises(UndatedSettleError):
+            walk_loan_ledger(loan.id, seed_user["scenario"].id)
+        return loan, transfer.id
+
+    @staticmethod
+    def _days(loan, transfer_id, scenario_id):
+        """Return (the loan walk's day for the payment, the source side's day)."""
+        db.session.expire_all()
+        [outcome] = walk_loan_ledger(loan.id, scenario_id).settled_splits
+        source = transfer_side_leg(
+            db.session.get(Transfer, transfer_id), is_income=False,
+        )
+        return outcome.visible_on, source.settled_on
+
+    def test_a_day_typed_into_the_loan_box_dates_it_and_the_empty_box_follows(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Only the loan's box typed, 03-09: the payment is visible 03-09, and Checking follows it."""
+        with app.app_context():
+            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+            typed = date(2026, 3, 9)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{transfer_id}",
+                data={"settled_on_from": "", "settled_on_to": typed.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(
+                loan, transfer_id, seed_user["scenario"].id,
+            ) == (typed, typed)
+
+    def test_each_box_typed_dates_its_own_side(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Checking's box 03-05, the loan's 03-09: each side keeps the day typed into its box."""
+        with app.app_context():
+            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+            typed = date(2026, 3, 9)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{transfer_id}",
+                data={
+                    "settled_on_from": _CLOSED_ON.isoformat(),
+                    "settled_on_to": typed.isoformat(),
+                },
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            assert self._days(
+                loan, transfer_id, seed_user["scenario"].id,
+            ) == (typed, _CLOSED_ON)
+
+    def test_a_revert_then_mark_paid_dates_it_to_the_day_of_the_click(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Reverted, then Mark Paid: the walk no longer refuses, and both sides read the click's day."""
+        with app.app_context():
+            loan, transfer_id = self._refused_drift(seed_user, seed_periods)
+
+            reverted = auth_client.patch(
+                f"/transfers/instance/{transfer_id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                },
+            )
+            assert reverted.status_code == 200, reverted.get_data(
+                as_text=True,
+            )[:300]
+            paid = auth_client.post(
+                f"/transfers/instance/{transfer_id}/mark-done",
+            )
+            assert paid.status_code == 200, paid.get_data(as_text=True)[:300]
+
+            clicked = display_today()
+            assert clicked != _CLOSED_ON, "the click must fall on another day"
+            assert self._days(
+                loan, transfer_id, seed_user["scenario"].id,
+            ) == (clicked, clicked)
 
 
 class TestTheContributionFeedCountsADriftOnce:

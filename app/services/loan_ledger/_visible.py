@@ -94,7 +94,7 @@ from datetime import date
 
 from app.services.installment_calendar import installment_paid_by
 from app.services.loan_loaders import loan_payment_due_date
-from app.services.transfer_legs import TransferLeg, leg_label
+from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import require_settled_day
 
 
@@ -203,8 +203,8 @@ def payment_visible_on(
             corrected through the app), from
             :func:`~app.utils.balance_predicates.require_settled_day`.  The
             refusal names the payment as its owner finds it in the app -- the
-            from-side's grid label and account, the figure, the paycheck and
-            the due date, the ids beside them
+            transfer's own name and its two accounts, the figure, the
+            paycheck and the due date, the ids beside them
             (:func:`_undated_payment_subject`) -- since leaf
             ``balance:X-bi-6-4d-1``, where ruling R-BAL147's "you fix the row
             through the app" was read onto the TRANSFER, the thing its owner
@@ -230,17 +230,21 @@ def payment_visible_on(
 
 #: Why a settled transfer's loan-side payment can carry no day, and the repair
 #: its owner makes through the app: ``payment_visible_on``'s cause sentence
-#: for :func:`~app.utils.balance_predicates.require_settled_day`.  Both repairs
-#: named were measured through the app by the leaf's adversarial review
-#: (balance:X-bi-6-4d-1): typing the loan side's day dates the payment on it,
-#: and a revert then Mark Paid dated it on the day of the click instead.
+#: for :func:`~app.utils.balance_predicates.require_settled_day`.  Each claim
+#: about the transfer's door is pinned through that door
+#: (``test_loan_settled_legs.TestTheRefusalsRepairWorksThroughTheApp``): a day
+#: typed into a side's box dates that side, a box left empty follows the other
+#: side's day (ruling R-BAL142), and a revert then Mark Paid dates the payment
+#: to the day of the click.
 _UNDATED_PAYMENT_CAUSE = (
     "Its transfer is settled, and a settle dates each side through the status "
-    "seam, so this was written around the transfer service.  Reverting the "
-    "transfer and marking it Paid again dates the payment to the day of that "
-    "click, so correct it in place through the app (ruling R-BAL147): open "
-    "the transfer from that grid cell and type the day the loan's money moved "
-    "into the loan account's \"Money moved on\" box"
+    "seam, so this was written around the transfer service.  Correct it in "
+    "place through the app (ruling R-BAL147): open the transfer from its "
+    "source account's grid, in that paycheck's column, and type the day each "
+    "account's money moved into that account's \"Money moved on\" box -- a "
+    "box left empty follows the other side's day.  Reverting the transfer "
+    "and marking it Paid again would instead date the payment to the day of "
+    "that click"
 )
 
 
@@ -248,28 +252,32 @@ def _undated_payment_subject(leg: TransferLeg) -> str:
     """Name a settled payment whose record carries no day, as its owner finds it.
 
     The words a reader of the log needs to FIND the transfer in the app
-    (ruling **R-BAL147**: refused, and corrected through the app): the label
-    and account of the grid cell that draws it -- the from-side's, since the
-    loan's own page refuses on this state too -- the figure, the paycheck
-    column it sits in and its due date, which tell apart a loan's many
-    payments under one label; then the ids beside them.  Called only on the
-    refusal (:func:`~app.utils.balance_predicates.require_settled_day`), so
-    the relationships it reads cost the happy path nothing.
+    (ruling **R-BAL147**: refused, and corrected through the app): the
+    transfer's own name, which its popover is titled with; its two accounts
+    -- the source account's grid draws it in the row named for the
+    destination (``grid_view_service._short_display_name`` strips the leg
+    label's prefix), the loan's own page refusing on this state too -- the
+    figure, the paycheck whose column it sits in and its due date, which
+    tell apart a loan's many payments between one pair of accounts; then the
+    ids beside them.  Called only on the refusal
+    (:func:`~app.utils.balance_predicates.require_settled_day`), so the
+    relationships it reads cost the happy path nothing.
 
     Args:
         leg: The settled payment's to-side leg, its record attached.
 
     Returns:
-        The subject words, e.g. ``Transfer 3's loan-side payment ("Transfer
-        to Mortgage" on the Checking grid, $1,000.00 in the paycheck of
-        2026-02-27, due 2026-03-01; movement 2)``.
+        The subject words, e.g. ``The loan-side payment (movement 2) of
+        transfer 3 "Mortgage" (Checking to Mortgage, $1,000.00 in the
+        paycheck of 2026-02-27, due 2026-03-01)``; a transfer storing no
+        name (the create door always writes one) omits the quoted name.
     """
     transfer = leg.transfer
-    grid_label, _ = leg_label(transfer.from_account, transfer.to_account)
+    named = "" if transfer.name is None else f' "{transfer.name}"'
     due = "no due date" if leg.due_date is None else f"due {leg.due_date}"
     return (
-        f"Transfer {transfer.id}'s loan-side payment (\"{grid_label}\" on the "
-        f"{transfer.from_account.name} grid, ${leg.record.amount:,.2f} in the "
-        f"paycheck of {leg.pay_period.start_date}, {due}; "
-        f"movement {leg.record.id})"
+        f"The loan-side payment (movement {leg.record.id}) of transfer "
+        f"{transfer.id}{named} ({transfer.from_account.name} to "
+        f"{transfer.to_account.name}, ${leg.record.amount:,.2f} in the "
+        f"paycheck of {leg.pay_period.start_date}, {due})"
     )
