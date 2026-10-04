@@ -45,6 +45,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 from app.models.account import Account
 from app.models.loan_params import LoanParams
@@ -131,6 +132,23 @@ class ResolvedLoan:
             of them, so "which definitions pay in" and "which one is the
             standing payment" are one query and cannot disagree.  ``[]`` for a
             loan with no definition, whose plan is then the contract's.
+        recorded_start: (A property, not a field.)  The day the app's record
+            of the loan STARTS: its ``tracking_start`` assertion's date for a
+            loan imported mid-life, else its origination (rulings **R-R111**,
+            **R-R114**); no payment moves it.
+            Before it the app's record of the loan has not started: the
+            ledger carries the origination principal forward, moved only by
+            what is dated there -- a true-up, a ``$0.00`` close, or a payment
+            whose money moved there (one recorded after the tracking start
+            with an earlier day, or one already held when a tracking start
+            was written before plan step recurrence:R16-c-2 made its doors
+            refuse) -- so the readers that ask "since when is this loan's balance
+            real?" -- the property chart's pre-tracking estimate, the net-worth
+            trend's honest start and the loan chart's first month -- read it
+            here.  They read the FIRST confirmed schedule row's date until
+            plan step recurrence:R16-c-2, which ruling R-R109 broke: a row
+            dated by the installment its payment pays can fall before the
+            tracking start.
     """
 
     params: LoanParams
@@ -143,6 +161,35 @@ class ResolvedLoan:
     def standing(self) -> TransferTemplate | None:
         """The oldest of :attr:`definitions`, or ``None``: DERIVED, never stored beside it."""
         return self.definitions[0] if self.definitions else None
+
+    @property
+    def recorded_start(self) -> date:
+        """The day the loan's record starts: DERIVED from its statements alone.
+
+        The tracking-start assertion's date, else the origination (rulings
+        **R-R111** and **R-R114**).  **No payment moves it**: whether a
+        statement added to a loan with a recorded history starts the record
+        or only corrects the balance is decided ONCE, where a tracking start
+        is written: the dashboard's door
+        (:func:`app.services.loan_anchor_service.record_loan_tracking_start`)
+        and the setup door
+        (:func:`app.services.loan_anchor_service.stage_loan_tracking_start`)
+        refuse a date on or before the day a payment into the loan moved
+        money (rulings R-R114, R-R115, R-BAL155), so the owner records a
+        true-up, which starts nothing.  Ruling R-R113 read the payment feed
+        here instead, and review 5 of plan step recurrence:R16-c-2 measured
+        two ways that misfired on a loan imported mid-life: a ``$0.00`` close
+        is dated by the installment it skips (ruling R-R107), so a close due
+        after the statement counted as recorded before it; and one real
+        payment dated the day before the statement put the untracked
+        origination principal back in every earlier month, as confirmed.
+        Reading the statements alone also keeps this a CONTRACT fact, the
+        same with or without a baseline scenario (plan step C8e).
+        """
+        return next(
+            (fact.anchor_date for fact in self.anchor_facts if fact.is_tracking_start),
+            self.params.origination_date,
+        )
 
 
 def resolved_loan(

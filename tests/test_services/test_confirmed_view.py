@@ -82,6 +82,12 @@ from tests._test_helpers import (
 
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
  _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
+# The origination a case takes when a payment is walked BEFORE its true-up: the
+# month before P1's 02-01 installment (plan step recurrence:R16-c-2, ruling
+# R-R101).  Every contractual installment from origination is charged now, so
+# SPLIT_LOAN's 2025-01-01 would have that payment clear twelve unpaid months
+# first; restated, each figure stays what these cases were written to pin.
+_ORIGINATION_BEFORE_P1 = date(2026, 1, 1)
 
 # The evaluation date every "all payments visible" assertion reads at, and the
 # frozen today it must stay at or before (the view's domain is as_of <= today).
@@ -107,13 +113,19 @@ def _loan_params(loan) -> LoanParams:
 def _make_loan(
     seed_user, *, anchor_balance=_ANCHOR_BALANCE, anchor_date=_ANCHOR_DATE,
     rate=_RATE, escrow_annual=None, name="Split Loan",
+    origination_date=_ORIGINATION_DATE,
 ):
-    """Create the SPLIT_LOAN shape, optionally overriding the anchor or rate."""
+    """Create the SPLIT_LOAN shape, optionally overriding the anchor or rate.
+
+    A case that walks a payment before its true-up passes
+    :data:`_ORIGINATION_BEFORE_P1` as *origination_date* (plan step
+    recurrence:R16-c-2, ruling R-R101).
+    """
     return create_loan_with_trueup(
         seed_user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
-        origination_date=_ORIGINATION_DATE, escrow_annual=escrow_annual,
+        origination_date=origination_date, escrow_annual=escrow_annual,
         name=name,
     )
 
@@ -855,9 +867,15 @@ class TestConfirmedViewShapeMatrix:
         round(99,500.00 x 0.005) = 497.50 and paid only 502.50 down, leaving
         98,997.50.  The owner is 497.50 better off, and that difference is the
         whole of what this step moves.
+
+        The true-up is dated 2026-02-10, after the 02-01 installment no payment
+        here pays: every contractual installment is charged since plan step
+        recurrence:R16-c-2, so the SPLIT_LOAN true-up's 2026-01-10 would leave
+        February standing for the first March payment to clear (the fixture is
+        restated so nothing is left unpaid, ruling R-R103).
         """
         with app.app_context():
-            loan = _make_loan(seed_user)
+            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 10))
             _settle(seed_user, loan, seed_periods[3])
             _settle(seed_user, loan, seed_periods[4])
             db.session.commit()
@@ -888,7 +906,10 @@ class TestConfirmedViewShapeMatrix:
         (2000.00) exceeds the contractual 1498.88, so extra = 501.12.
         """
         with app.app_context():
-            loan = _make_loan(seed_user, anchor_date=date(2026, 3, 15))
+            loan = _make_loan(
+                seed_user, anchor_date=date(2026, 3, 15),
+                origination_date=_ORIGINATION_BEFORE_P1,
+            )
             _settle(seed_user, loan, seed_periods[_P1], Decimal("2000.00"))
             db.session.commit()
 

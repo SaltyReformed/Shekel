@@ -36,7 +36,6 @@ from app.models.ref import CalcMethod, PaycheckLineKind, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import balance_at, paycheck_calculator
-from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (
@@ -44,6 +43,7 @@ from app.services.tax_report_service import (
     compute_tax_report,
 )
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
     SPLIT_LOAN,
     payroll_basis,
@@ -743,7 +743,7 @@ class TestScheduleAMortgageInterest:
         bctx = BalanceContext.build(seed_user["user"].id)
         rows_2025 = [
             row
-            for row in net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id]
+            for row in resolved_loan(loan, bctx).state.schedule
             if row.payment_date.year == 2025
         ]
         assert rows_2025 == []

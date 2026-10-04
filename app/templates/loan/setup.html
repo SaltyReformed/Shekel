@@ -17,6 +17,12 @@
       Enter the details of your {{ account_type.name|lower }} to enable amortization tracking,
       escrow management, and payoff analysis.
     </p>
+    {# A refused POST the form itself can remedy re-renders every field as
+       typed (``submitted``, the POST's own form; review 7c of plan step
+       recurrence:R16-c-2): the defaults below serve the form's first showing
+       only, so following a refusal by changing one field never re-submits a
+       default in place of what was typed.  (The answers that redirect
+       instead are listed once, in render_loan_setup's docstring.) #}
     <form method="POST" action="{{ url_for('loan.create_params', account_id=account.id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -26,13 +32,15 @@
           <div class="input-group">
             <span class="input-group-text">$</span>
             <input type="number" class="form-control" id="original_principal"
-                   name="original_principal" step="0.01" min="0" required>
+                   name="original_principal" step="0.01" min="0" required
+                   value="{{ submitted.get('original_principal', '') if submitted is not none else '' }}">
           </div>
         </div>
         <div class="col-6">
           <label for="origination_date" class="form-label">Origination Date</label>
           <input type="date" class="form-control" id="origination_date"
-                 name="origination_date" required>
+                 name="origination_date" required
+                 value="{{ submitted.get('origination_date', '') if submitted is not none else '' }}">
         </div>
       </div>
 
@@ -42,7 +50,10 @@
          before it.  It replaced a "Current Principal" field the form
          required and nothing read.  The balance prefills from the account's
          latest cash assertion (plan step X-f1c3a) and the date from today,
-         the setup date; both are the route's. #}
+         the setup date; both are the route's.  For a loan that originated
+         before the stated day, a day on or after the day a payment into the
+         account moved money is refused, as the dashboard's tracking-start
+         door refuses one (ruling R-R115). #}
       <div class="row mb-3">
         <div class="col-6">
           <label for="anchor_balance" class="form-label">Balance today</label>
@@ -50,18 +61,20 @@
             <span class="input-group-text">$</span>
             <input type="number" class="form-control" id="anchor_balance"
                    name="anchor_balance" step="0.01" min="0" required
-                   value="{{ "%.2f"|format(anchor_balance) if anchor_balance is not none else '' }}">
+                   value="{{ submitted.get('anchor_balance', '') if submitted is not none else ("%.2f"|format(anchor_balance) if anchor_balance is not none else '') }}">
           </div>
         </div>
         <div class="col-6">
           <label for="anchor_date" class="form-label">As of</label>
           <input type="date" class="form-control" id="anchor_date"
                  name="anchor_date" required
-                 max="{{ today_iso }}" value="{{ today_iso }}">
+                 max="{{ today_iso }}" value="{{ submitted.get('anchor_date', '') if submitted is not none else today_iso }}">
           <div class="form-text">
             The lender's balance on this date. Started tracking mid-life?
             Enter the balance from your latest statement and its date, on or
-            after the origination date.
+            after the origination date. If you have already paid into this
+            account here, a date after the origination date must come before
+            your first payment.
           </div>
         </div>
       </div>
@@ -72,7 +85,8 @@
           <div class="input-group">
             <input type="number" class="form-control" id="interest_rate"
                    name="interest_rate" step="0.001" min="0" max="100" required
-                   placeholder="6.500">
+                   placeholder="6.500"
+                   value="{{ submitted.get('interest_rate', '') if submitted is not none else '' }}">
             <span class="input-group-text">%</span>
           </div>
           <div class="form-text">Enter as percentage (e.g. 6.5 for 6.5%)</div>
@@ -82,7 +96,8 @@
           <input type="number" class="form-control" id="term_months"
                  name="term_months" min="1"
                  max="{{ account_type.max_term_months or 600 }}" required
-                 placeholder="{{ account_type.max_term_months or 360 }}">
+                 placeholder="{{ account_type.max_term_months or 360 }}"
+                 value="{{ submitted.get('term_months', '') if submitted is not none else '' }}">
           <div class="form-text">
             {% if account_type.max_term_months %}
               Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
@@ -97,7 +112,8 @@
         <div class="col-6">
           <label for="payment_day" class="form-label">Payment Day of Month</label>
           <input type="number" class="form-control" id="payment_day"
-                 name="payment_day" min="1" max="31" required value="1">
+                 name="payment_day" min="1" max="31" required
+                 value="{{ submitted.get('payment_day', '') if submitted is not none else '1' }}">
           <div class="form-text">For months with fewer days (e.g. February), the payment will be on the last day of the month.</div>
         </div>
       </div>
@@ -105,7 +121,7 @@
       <div class="mb-3">
         <div class="form-check">
           <input class="form-check-input" type="checkbox" id="is_arm"
-                 name="is_arm" value="true">
+                 name="is_arm" value="true"{% if submitted is not none and submitted.get('is_arm') == 'true' %} checked{% endif %}>
           <label class="form-check-label" for="is_arm">
             Adjustable Rate (ARM)
           </label>

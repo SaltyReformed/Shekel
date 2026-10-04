@@ -73,6 +73,11 @@ from tests._test_helpers import (
 #     origination event; no payments.  The fixed-window constant is
 #         amortize(400000, 0.06, 360) = $2,398.20  (E-02 invariant)
 ORIGINATION_DATE = date(2026, 1, 1)
+# The fixed loan's: the month before its one payment's 2026-03-01 installment
+# (``seed_periods[3]``).  Every contractual installment from origination is
+# charged since plan step recurrence:R16-c-2 (ruling R-R101), so the ARM's
+# 2026-01-01 would leave February unpaid ahead of that payment.
+FIXED_ORIGINATION_DATE = date(2026, 2, 1)
 FIXED_PRINCIPAL = Decimal("300000.00")
 FIXED_RATE = Decimal("0.06000")
 FIXED_TERM = 360
@@ -105,7 +110,7 @@ def _create_fixed_loan(seed_user, period):
     account = create_loan_account(
         seed_user, db.session, name="Single-Source Mortgage",
         principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
-        origination_date=ORIGINATION_DATE, payment_day=1,
+        origination_date=FIXED_ORIGINATION_DATE, payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
     return account, loan_params_for(db.session, account.id)

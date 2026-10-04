@@ -31,7 +31,11 @@ seam's scalar makes.
 The cockpit's forward net-worth trend PROJECTS investment and retirement
 growth forward, and that forward WHAT-IF keeps ``growth_engine`` (ruling R-U);
 what moved here is the balance-at-T half.  The loan SCHEDULE bundle
-(:class:`DebtSchedule`) still lives here because the trend needs it.
+(``DebtSchedule``, with ``generate_debt_schedules`` and the rows accessor
+``debt_schedule_rows``) lived here for that trend's history gate until plan
+step recurrence:R16-c-2, where ruling R-R112 gates every loan from its
+recorded start instead; no schedule is read there now, so the three went
+with their last caller.
 
 Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"): this
 module imports no Flask symbol and performs no database writes.  Since plan
@@ -50,141 +54,14 @@ import (plan step X-g2b; the slice used to live here as
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
 
 from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext
-from ._resolution import resolved_loan
 from . import _asset_fold
 
-
-@dataclass(frozen=True)
-class DebtSchedule:
-    """A loan's resolved schedule rows and its origination, from ONE resolution.
-
-    The outputs of ONE resolution
-    (:func:`~app.services.balance_at._resolution.resolved_loan`), bundled so
-    the schedule and the loan's origination cannot come from different places
-    and drift.
-
-    **It carried the forward projection's SEED until plan step
-    recurrence:R16-c-1** -- the settled fold's balance at the read day, which
-    the forward fold started from.  The seam replays a loan's whole timeline
-    from its origination now (:mod:`._loan_stream`), so there is no second
-    fold to seed and no balance on this bundle: the field went with the fold,
-    and the attribute fence ``debt_schedule_rows`` exists for has one fewer
-    thing to protect.
-
-    Attributes:
-        schedule: The loan's :class:`AmortizationRow` list (the
-            confirmed-history rows plus the CONTRACT's forward rows; its
-            readers take a date off it, never a balance).  May be empty for a
-            fully-resolved / paid-off loan.
-        owed_from: The loan's ``origination_date``.  A loan owes nothing before
-            it exists, and the timeline's fold enforces that structurally: its
-            first event is the origination assertion, so a date before it
-            reads the empty prefix, ``0.00``.
-    """
-
-    schedule: list
-    owed_from: date
-
-
-def generate_debt_schedules(
-    debt_accounts: list,
-    ctx: "BalanceContext",
-) -> dict[int, "DebtSchedule"]:
-    """Return each debt account's :class:`DebtSchedule` from the pass's resolutions.
-
-    Projects the read pass's memoized loan resolutions
-    (:func:`~app.services.balance_at._resolution.resolved_loan`) into the narrow
-    ``(schedule, owed_from)`` bundle its readers need.
-    Same resolver output the loan dashboard and the /savings debt card consume,
-    so mortgage interest, debt progress, and net-worth liability all derive from
-    ONE resolution per loan (E-18 / Commit 15).
-
-    It no longer resolves anything itself, and that is the point.  It used to
-    call the resolver per account against its own ``date.today()`` -- so the five
-    surfaces that called it in a single ``/savings`` render each re-resolved
-    every loan, against five independently-read clocks.  Now the context owns
-    both the clock and the resolution, so calling this twice in one pass costs
-    one dict comprehension, not two amortization walks
-    (``docs/audits/balance_architecture/followup_redundant_loan_resolution.md``).
-
-    Args:
-        debt_accounts: The amortizing loan accounts to bundle.  An account the
-            context cannot resolve (no ``LoanParams`` -- not a configured loan)
-            is absent from the result, and the caller's per-kind dispatch then
-            falls through to its non-loan path.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (it pins the scenario and the as-of, and memoizes each resolution).
-
-    Returns:
-        dict mapping account_id to :class:`DebtSchedule`.
-    """
-    schedules: dict[int, DebtSchedule] = {}
-    for account in debt_accounts:
-        resolved = resolved_loan(account, ctx)
-        if resolved is None:
-            continue
-        schedules[account.id] = DebtSchedule(
-            schedule=resolved.state.schedule,
-            owed_from=resolved.params.origination_date,
-        )
-    return schedules
-
-
-def debt_schedule_rows(
-    debt_accounts: list,
-    ctx: "BalanceContext",
-) -> dict[int, list]:
-    """Return each debt account's amortization ROWS -- no balance attached.
-
-    The accessor every out-of-cluster consumer of the loan schedules reads,
-    instead of :func:`generate_debt_schedules`.  They want the
-    :class:`AmortizationRow` list -- today, the net-worth trend's
-    honest-history gate needs a first-payment date -- and none of them wants a
-    balance.  (The year-end and Schedule A interest hybrids read it too until
-    plan steps F2 / C3c folded them onto the balance seam.)
-
-    Handing them rows rather than the :class:`DebtSchedule` bundle is what keeps
-    a balance out of an out-of-cluster consumer's hands.  The name-keyed fence of
-    the day bound on function NAMES: it flagged a consumer that CALLED a balance
-    producer.  It could not see an ATTRIBUTE read, and
-    ``DebtSchedule.projection_seed`` WAS a loan balance (until plan step
-    recurrence:R16-c-1 deleted the field with the second fold it seeded).  So
-    while any consumer could call :func:`generate_debt_schedules`, one line --
-    ``schedules[account.id].projection_seed`` in a template context -- would have
-    put a balance on a screen without passing the seam, with every gate silent
-    (``docs/audits/balance_architecture/followup_debt_schedule_attribute_fence.md``).
-    The bundle carries no balance now and this accessor stays the out-of-cluster
-    entry, so a consumer that wants a balance has no choice but
-    ``balance_at.balance_at`` -- which is the point.
-    :func:`generate_debt_schedules` lives in this PRIVATE seam module (W9910
-    structurally stops any outside import since plan step D3 retired its name
-    fence), and its callers are all inside the seam.
-
-    Args:
-        debt_accounts: The amortizing loan accounts whose rows to return.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (each loan is resolved at most once for the pass).
-
-    Returns:
-        ``{account_id: [AmortizationRow, ...]}`` -- the loan's schedule
-        (confirmed history plus the contract's forward rows).  A loan the context
-        cannot resolve (no ``LoanParams``) is absent, matching
-        :func:`generate_debt_schedules`.
-    """
-    return {
-        account_id: schedule.schedule
-        for account_id, schedule in generate_debt_schedules(
-            debt_accounts, ctx,
-        ).items()
-    }
 
 def _modelled_columns(
     account: Account,

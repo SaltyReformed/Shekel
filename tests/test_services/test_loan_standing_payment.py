@@ -44,6 +44,7 @@ from app.services import (
 from app.services import transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import loan_plan
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
@@ -341,10 +342,12 @@ class TestEstimatedTierPricing:
         # it, not a payment -- and the pair the allocator takes is still
         # (this cash, that charge).  A tier calling its escrow 0.00 would route
         # the escrow into principal exactly as before, so the assertion moves
-        # with the value rather than weakening.
-        assert {charge.escrow for charge in plan.charges} == {
-            Decimal("616.99"),
-        }
+        # with the value rather than weakening.  The charges are read off the
+        # one timeline since plan step recurrence:R16-c-2 (ruling R-R100).
+        assert {
+            charge.escrow
+            for charge in loan_timeline(account, ctx).stream.charges
+        } == {Decimal("616.99")}
 
     def test_a_derived_installment_takes_the_contract_plus_escrow_and_extra(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -414,9 +417,10 @@ class TestEstimatedTierPricing:
         estimated = [p for p in plan.payments if p.is_estimated]
         assert estimated
         assert estimated[0].cash == contractual_pi + Decimal("616.99")
-        assert {charge.escrow for charge in plan.charges} == {
-            Decimal("616.99"),
-        }
+        assert {
+            charge.escrow
+            for charge in loan_timeline(account, ctx).stream.charges
+        } == {Decimal("616.99")}
 
 
 class TestPayoffDoesNotMoveWithMaterialisation:

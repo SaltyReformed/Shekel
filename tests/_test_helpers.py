@@ -7548,7 +7548,7 @@ def make_retired_loan_payment(
     The loan is ``$12,000.00`` at 5% over 24 months, originating
     *origination_date* with the contractual *payment_day*; its first
     installment is that day of the month AFTER origination
-    (``rate_period_engine.first_installment_date``: a loan closed 2026-05-01
+    (``installment_calendar.first_installment_date``: a loan closed 2026-05-01
     with a ``payment_day`` of 1 owes first on 2026-06-01, not on the day it
     closed).  The true-up to ``$0.00`` on *cleared_on* retires it, so its
     closing date is
@@ -10367,7 +10367,7 @@ def unseeded_replay_balance(loan_id, scenario_id, as_of):
 
     params = loan_loaders.load_loan_params(loan_id)
     installments = loan_ledger.payment_installments(
-        loan_id, scenario_id, params.payment_day, options=(), leg_options=(),
+        loan_id, scenario_id, params, options=(), leg_options=(),
     )
     return round_money(
         _replay_from_anchor(

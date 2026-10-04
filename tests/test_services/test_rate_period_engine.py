@@ -12,11 +12,11 @@ from decimal import Decimal
 import pytest
 
 from app.services.amortization_engine import PaymentDates, RateChangeRecord
+from app.services.installment_calendar import monthly_due_date
 from app.services.rate_period_engine import (
     BalanceAnchor,
     LoanTerms,
     build_rate_periods,
-    monthly_due_date,
     payment_number,
     period_for_date,
     replay_schedule,
