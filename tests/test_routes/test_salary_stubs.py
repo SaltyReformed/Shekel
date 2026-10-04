@@ -28,8 +28,9 @@ refusal, driven through the test client:
   wording, and the line stays.
 
 The figures are the service suite's worked example
-(``tests/test_services/test_pay_stub_service.py``): the 03-27 stub nets
-``$2,052.62``.  Today is frozen at 2026-03-20, so 03-27 is the next payday.
+(``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
+gross of ``$2,984.62`` and nets ``$2,052.62``.  Today is frozen at 2026-03-20,
+so 03-27 is the next payday.
 """
 
 import re
@@ -95,8 +96,8 @@ def _tax_field(member):
     return f"tax-{ref_cache.withholding_kind_id(member)}"
 
 
-def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", roth="110.00",
-             one_off=("Retro pay", "55.00")):
+def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", printed_gross="2984.62",
+             roth="110.00", one_off=("Retro pay", "55.00")):
     """The worked example as the form posts it: every field the template emits.
 
     Vision is left blank (the stub does not print it).  Every line posts its
@@ -124,6 +125,7 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", roth="110.00",
         "one_off_kind": [taxable, ""],
         "one_off_amount": [one_off[1], ""],
         "notes": "",
+        "printed_gross": printed_gross,
         "printed_net": printed_net,
     }
 
@@ -267,6 +269,42 @@ class TestRecording:
         assert b'value="Retro pay"' in response.data
         assert db.session.query(PayStub).count() == 0
 
+    def test_a_gross_typed_as_base_pay_is_refused_with_its_reason(self, auth_client, world):
+        """R-SAL99 (SAL-590): the printed gross in the Base pay box is named, nothing written.
+
+        Base pay 2984.62 + Phone 45.00 + Retro pay 55.00 = 3084.62 against the
+        printed 2984.62: the $100.00 of earnings is counted twice.
+        """
+        payload = _payload(world)
+        payload["base_pay"] = "2984.62"
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 422
+        html = response.data.decode()
+        assert (
+            "Base pay plus your taxable lines make $3,084.62, but the stub prints "
+            "$2,984.62: $100.00 is counted twice.  Is the gross in the Base pay box?"
+        ) in html
+        gross_input = html[html.index('name="printed_gross"'):]
+        gross_input = gross_input[:gross_input.index(">")]
+        assert "is-invalid" in gross_input
+        assert 'value="2984.62"' in gross_input
+        base_input = html[html.index('name="base_pay"'):]
+        assert 'value="2984.62"' in base_input[:base_input.index(">")]
+        assert db.session.query(PayStub).count() == 0
+
+    def test_a_form_without_its_printed_gross_is_refused_on_that_field(
+        self, auth_client, world,
+    ):
+        """The box is required: a post without it is a 422 naming it, never a 500."""
+        payload = _payload(world)
+        del payload["printed_gross"]
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 422
+        html = response.data.decode()
+        gross_input = html[html.index('name="printed_gross"'):]
+        assert "is-invalid" in gross_input[:gross_input.index(">")]
+        assert db.session.query(PayStub).count() == 0
+
     def test_a_missing_tax_is_refused(self, auth_client, world):
         """Every tax is required ($0.00 allowed)."""
         payload = _payload(world)
@@ -279,7 +317,7 @@ class TestRecording:
     def test_a_one_off_named_like_a_line_is_refused_on_its_row(self, auth_client, world):
         """'health insurance' is refused, and the message sits in that row."""
         response = _record(auth_client, world, one_off=("health insurance", "0.00"),
-                           printed_net="1997.62")
+                           printed_net="1997.62", printed_gross="2929.62")
         assert response.status_code == 422
         html = response.data.decode()
         row = html.index('value="health insurance"')
@@ -374,6 +412,14 @@ class TestEditing:
         _record(auth_client, world)
         page = auth_client.get(f"/salary/stubs/{_stub().id}")
         assert _field_names(page.data.decode()) == set(_payload(world)) | {"version_id"}
+
+    def test_the_edit_form_asks_for_the_printed_totals_again(self, auth_client, world):
+        """R-SAL42, R-SAL99: neither printed total is stored, so a saved stub's form asks both."""
+        _record(auth_client, world)
+        html = auth_client.get(f"/salary/stubs/{_stub().id}").data.decode()
+        for name in ("printed_gross", "printed_net"):
+            control = html[html.index(f'name="{name}"'):]
+            assert 'value=""' in control[:control.index(">")], name
 
     def test_an_edit_rewrites_the_stub(self, auth_client, world):
         """Roth 110 -> 100, so the stub nets $2,062.62."""
@@ -531,14 +577,17 @@ class TestTheKindAStubPrints:
         """Phone posted as an AFTER-TAX earning: stored so, listed, and pre-set so on its page.
 
         The net is $2,052.62 either way (an earning joins the deposit whether
-        taxed or not, once the taxes are typed), so the record passes the
-        net check and the REPORT is what shows the heading differs.
+        taxed or not, once the taxes are typed), and R-SAL99 reads the printed
+        gross as base pay plus the TAXABLE earnings, $2,939.62 here, so the
+        record passes both checks and the REPORT is what shows the heading
+        differs.
         """
         after_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.AFTER_TAX_EARNING)
         response = auth_client.post(
             f"/salary/{world['profile_id']}/stubs",
             data=_printed_under(
-                world, _payload(world), phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
+                world, _payload(world, printed_gross="2939.62"),
+                phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
             ),
         )
         assert response.status_code == 302
@@ -557,11 +606,11 @@ class TestTheKindAStubPrints:
         """Phone printed as an AFTER-TAX earning of $50.00; the app takes $45.00 taxable.
 
         gross 2884.62 + 55.00 = 2939.62; net 2939.62 - 350.00 - 472.00 - 110.00
-        + 50.00 = 2057.62, the printed net the record carries.
+        + 50.00 = 2057.62: the printed gross and net the record carries.
         """
         phone = world["lines"]["phone"]
         payload = _printed_under(
-            world, _payload(world, printed_net="2057.62"),
+            world, _payload(world, printed_net="2057.62", printed_gross="2939.62"),
             phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
         )
         payload[f"line-{phone}"] = "50.00"
