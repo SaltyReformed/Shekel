@@ -309,10 +309,10 @@ def _refused_entry_response(
     above the CURRENT list -- whose X and CC captions now name what is true
     -- so pressing again goes ahead, where the plain sentence's "Reload the
     page" would send the owner away from a list that is already current.
-    **Except for a press no caption can name**: a re-price whose new card
-    total is exactly zero deletes a payback a match may name, the form named
-    nothing, and the same refusal answers every try (finding **CC-381**,
-    owned by plan step ``credit_card:CC-7``).
+    **Except for a press no caption can name**: an edit whose new card total
+    is exactly zero (a re-price, or a CC tick on a refund) deletes a payback
+    a match may name, the form named nothing, and the same refusal answers
+    every try (finding **CC-381**, owned by plan step ``credit_card:CC-7``).
 
     Args:
         txn: The parent Transaction whose entry list is re-rendered.

@@ -165,8 +165,9 @@ def payback_refusal(txn: Transaction) -> str:
     free is the envelope's CC payback's -- the last card purchase's X or its
     CC un-tick, a card refund or re-price that brings the card total to
     zero -- the sentence names the PAYBACK, by its envelope's name, never an
-    id (ruling **R-CC98**), and every one of those presses changes the
-    envelope's card purchases.
+    id (ruling **R-CC98**), and says what is refused: THIS change, not every
+    change to the envelope's card purchases (a companion may still add a
+    card charge, re-price one above zero, or re-describe one).
 
     Args:
         txn: The envelope whose payback the press would delete.
@@ -176,7 +177,7 @@ def payback_refusal(txn: Transaction) -> str:
     """
     return (
         f"{txn.name}'s card payback is matched to a line on the bank "
-        "statement, so only the account owner can change its card purchases."
+        "statement, so only the account owner can make this change."
     )
 
 
@@ -258,17 +259,19 @@ def sync_entry_payback(
             edit form's CC un-tick names them (:func:`payback_deleted_by`).
             The X has already taken the payback's movements off in its own
             act (``entry_service._doors.delete_entry``), so for it this
-            frees nothing.  A companion's press is
+            frees nothing.  A companion's edit and add are
             :class:`~app.services.match_withdrawal.OwnerOnly` with
-            :func:`payback_refusal`'s sentence (ruling **R-CC132**).  An
+            :func:`payback_refusal`'s sentence (ruling **R-CC132**); its X
+            hands this whatever it declared, which frees nothing here.  An
             owner's door that names none sends
             :data:`~app.services.match_withdrawal.NOTHING_SHOWN`, which
             refuses a press that would free a line (ruling **R-CC127**) --
-            the add form's card refund, and a re-price whose new card total
-            is exactly zero, which no static caption can foresee: refused as
-            "out of date" though the page was not, and again on every try
-            (finding **CC-381**, filed at this step's tick, owned by plan
-            step ``credit_card:CC-7``, which deletes this workflow).
+            the add form's card refund, and any edit whose new card total is
+            exactly zero (a re-price, or a CC tick on a refund), which no
+            static caption can foresee: refused as "out of date" though the
+            page was not, and again on every try (finding **CC-381**, filed
+            at this step's tick, owned by plan step ``credit_card:CC-7``,
+            which deletes this workflow).
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.

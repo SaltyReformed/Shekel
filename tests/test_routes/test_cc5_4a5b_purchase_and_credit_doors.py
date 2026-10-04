@@ -75,7 +75,7 @@ _KROGER_LINE = "KROGER #4471 ATLANTA GA"
 #: ``entry_credit_workflow.payback_refusal``).
 _PAYBACK_REFUSAL = (
     "Groceries's card payback is matched to a line on the bank statement, so "
-    "only the account owner can change its card purchases."
+    "only the account owner can make this change."
 )
 
 
@@ -354,6 +354,7 @@ class TestTheOwnersXNamesWhatItFrees:
             body = refused.get_data(as_text=True)
             assert "Nothing was saved: this page was out of date." in body
             assert "Here it is as it is now; press again to go ahead." in body
+            assert "Reload the page" not in body, "the list below IS current"
             _committed()
             assert db.session.get(TransactionEntry, kroger.id) is not None
             assert _claimed(seed_user, line)
@@ -466,7 +467,6 @@ class TestTheLastCardPurchaseNamesItsPaybacksLine:
             assert db.session.get(TransactionEntry, card.id).is_credit is True
             assert db.session.get(Transaction, payback.id) is not None
             assert _claimed(seed_user, line)
-
 
     def test_the_un_tick_names_only_the_paybacks_line(
         self, app, auth_client, seed_user,
@@ -622,7 +622,6 @@ class TestACompanionIsNeverShownTheOwnersLines:
             assert db.session.get(Transaction, payback.id) is not None
             assert _claimed(seed_user, line)
 
-
     def test_a_companions_equal_card_refund_is_refused(
         self, app, companion_client, seed_user,
     ):
@@ -659,6 +658,62 @@ class TestACompanionIsNeverShownTheOwnersLines:
             assert [e.id for e in db.session.get(Transaction, txn.id).purchases] == [
                 card.id,
             ]
+            assert db.session.get(Transaction, payback.id) is not None
+            assert _claimed(seed_user, line)
+
+    def test_a_companions_re_price_to_a_zero_card_total_is_refused(
+        self, app, companion_client, seed_user,
+    ):
+        """A re-price that would delete the payback: R-CC132's refusal, posted from the rendered form.
+
+        Kroger $60.00 and a -$20.00 card return leave a $40.00 payback whose
+        payment a match names; re-pricing the return to $60.00 brings the card
+        total to $0.00 and would delete it.  The companion's edit form names
+        nothing, so the press is refused with the payback's sentence -- never
+        as "out of date" -- and nothing changes.
+        """
+        with app.app_context():
+            txn = _groceries(seed_user, companion_visible=True)
+            a_later_period(seed_user)
+            db.session.commit()
+            _purchase(seed_user, txn, "60.00", "Kroger", is_credit=True)
+            back = entry_service.create_entry(
+                txn.id, seed_user["user"].id, entry_service.EntryDetails(
+                    figure=typed(Decimal("-20.00")), description="Return",
+                    purchased_on=_day(seed_user), is_credit=True,
+                ),
+            )
+            db.session.commit()
+            payback = credit_workflow.get_active_payback(txn.id)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-40.00",
+                posted_on=_day(seed_user), description="CARD PAYMENT",
+            )
+            db.session.commit()
+            _accept(seed_user, line, transactions=[payback])
+            transaction_service.apply_requested_status(
+                payback, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            fields, url = _edit_form(
+                _list(companion_client, txn.id, editing=back.id),
+            )
+            repriced = [
+                ("amount", "60.00") if name == "amount" else (name, value)
+                for name, value in fields
+            ]
+            assert ("direction", "refund") in repriced
+
+            refused = companion_client.patch(url, data=MultiDict(repriced))
+
+            assert refused.status_code == 400
+            body = html_lib.unescape(refused.get_data(as_text=True))
+            assert _PAYBACK_REFUSAL in body
+            assert "unexplained" not in body and "out of date" not in body
+            _committed()
+            assert db.session.get(TransactionEntry, back.id).amount == (
+                Decimal("-20.00")
+            )
             assert db.session.get(Transaction, payback.id) is not None
             assert _claimed(seed_user, line)
 

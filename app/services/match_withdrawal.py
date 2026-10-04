@@ -136,6 +136,7 @@ caller owns the unit of work.
 from __future__ import annotations
 
 import logging
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -727,8 +728,9 @@ def pending_for_movements(entries) -> MatchWithdrawal:
 
 
 def pending_for_each(
-    removals: dict, rows_leaving: "dict | None" = None,
-) -> "dict[object, MatchWithdrawal]":
+    removals: "dict[Hashable, Iterable]",
+    rows_leaving: "dict[Hashable, Iterable] | None" = None,
+) -> "dict[Hashable, MatchWithdrawal]":
     """Return what each of several removals would withdraw, in ONE read.
 
     :func:`pending_for_movements` for a screen offering MANY removals at once
