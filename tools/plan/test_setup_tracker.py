@@ -380,9 +380,27 @@ def test_apply_on_an_empty_board_deletes_rank_hides_status_and_no_automation():
     assert not [name for name, _ in sent if name in ("deleteProjectV2Workflow",
                                                      "updateProjectV2Field")]
     assert ("updateProjectV2View", {"id": "V1", "fields": ["F1"]}) in github.mutations
-    assert report.differences == 1
+    assert report.differences == 2
     assert any("'Item closed' is on" in line for line in report.lines)
     assert not any("'Auto-close issue'" in line for line in report.lines)
+
+
+def test_an_automation_that_adds_cards_is_a_difference():
+    """Only the plan tool puts a card on the board (balance:R-BAL177): GitHub's default
+    "Auto-add sub-issues to project" would add every finding and ruling; hiding is allowed."""
+    project = _project(views=(("Plan", "is:open", 0),))
+    project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]
+    project["views"]["nodes"][0]["fields"]["nodes"] = _visible("F1")
+    project["workflows"]["nodes"] = [
+        {"name": "Auto-add sub-issues to project", "enabled": True},
+        {"name": "Auto-add to project", "enabled": True},
+        {"name": "Auto-archive items", "enabled": True},
+    ]
+    differences = setup_tracker.board_differences(project)
+    assert [d.split(" is on")[0] for d in differences] == [
+        "the board automation 'Auto-add sub-issues to project'",
+        "the board automation 'Auto-add to project'",
+    ]
 
 
 def test_a_refused_field_deletion_is_still_a_difference():
@@ -391,7 +409,8 @@ def test_a_refused_field_deletion_is_still_a_difference():
     report = Report()
     setup_tracker.check_board(github, {"node_id": "R"}, apply=True, report=report)
     assert any("stores a field, 'Rank'" in line for line in report.lines)
-    assert report.differences == 2
+    # Rank, 'Item closed' on, and 'Auto-add sub-issues to project' on (R-BAL177).
+    assert report.differences == 3
 
 
 def test_github_status_is_tolerated_only_hidden_and_a_custom_select_is_not():
@@ -547,8 +566,9 @@ def test_check_mode_sends_no_mutation_even_to_a_public_unlinked_board():
     report = Report()
     setup_tracker.check_board(github, {"node_id": "R"}, apply=False, report=report)
     assert not github.writes()
-    # Public, unlinked, Rank stored, 'Item closed' on, no 'Plan' view.
-    assert report.differences == 5
+    # Public, unlinked, Rank stored, 'Item closed' on, 'Auto-add sub-issues to
+    # project' on (R-BAL177), no 'Plan' view.
+    assert report.differences == 6
 
 
 def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None):

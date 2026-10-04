@@ -32,8 +32,13 @@ every automation that writes it switched off, and any card holding a Status
 value reported as a difference.  Those automations matter twice over: one of
 them, "Auto-close issue", would close a card when someone set its Status to
 Done -- a third way to close a card, beside git and the developer's own hand.
-The board may keep only automations that choose WHICH cards it shows
-(:data:`ALLOWED_WORKFLOWS`).
+**Nor may an automation put a card on the board** (ruling ``balance:R-BAL177``):
+the board holds steps and questions only, and the plan tool places each one
+itself, a new leaf where the step it splits sat.  "Auto-add sub-issues to
+project" would put every finding and ruling, each a sub-issue of its owner
+step, at the bottom of the ordered list (measured 2026-10-04: within ten
+seconds).  The board may keep only an automation that hides a card it already
+holds (:data:`ALLOWED_WORKFLOWS`).
 
 Usage, from the repository root::
 
@@ -122,16 +127,15 @@ STORED_FIELD_TYPES = frozenset(
 #: lose (see the module docstring); it is tolerated only while unused.
 GITHUB_STATUS_FIELD = "Status"
 
-#: The board's automations that may run: each only decides WHICH cards the
-#: board shows.  Names as GitHub's documentation lists them (the API lists a
-#: built-in automation only once a board has it; the 09-24 demo board listed
-#: six, the last of these among them).  Every other one writes a stored field
-#: or an issue's state, and must be switched off -- on the web, because the
+#: The board's automations that may run: only one that hides a card the board
+#: already holds.  Names as GitHub's documentation lists them (the API lists a
+#: built-in automation only once a board has it).  Every other one writes a
+#: stored field or an issue's state, or ADDS cards ("Auto-add to project",
+#: "Auto-add sub-issues to project"), which only the plan tool may do
+#: (``balance:R-BAL177``); each must be switched off -- on the web, because the
 #: API can only DELETE an automation, and what deleting a built-in one does
 #: is unmeasured.
-ALLOWED_WORKFLOWS = frozenset(
-    {"Auto-add to project", "Auto-archive items", "Auto-add sub-issues to project"}
-)
+ALLOWED_WORKFLOWS = frozenset({"Auto-archive items"})
 
 #: The board's view: the open cards, unsorted, so it shows the drag order.
 VIEW_NAME = "Plan"
@@ -337,8 +341,8 @@ def board_differences(project: dict) -> list[str]:
             "was renamed, so no card's Status can be read -- rename it back"
         )
     differences += [
-        f"the board automation {workflow['name']!r} is on and writes card state: switch it "
-        f"off at {project['url']}/workflows"
+        f"the board automation {workflow['name']!r} is on, and only "
+        f"{sorted(ALLOWED_WORKFLOWS)} may be: switch it off at {project['url']}/workflows"
         for workflow in project["workflows"]["nodes"]
         if workflow["enabled"] and workflow["name"] not in ALLOWED_WORKFLOWS
     ]
@@ -446,13 +450,25 @@ def _project(github: GitHub, project_id: str) -> dict:
     return github.graphql(_PROJECT, id=project_id)["node"]
 
 
-def _find_project(github: GitHub) -> tuple[str, dict | None]:
-    """The organization's node id and the board titled :data:`PROJECT_TITLE`, if any."""
+def _board_listing(github: GitHub) -> tuple[str, str | None]:
+    """The organization's node id and the id of the board titled :data:`PROJECT_TITLE`."""
     organization = github.graphql(_PROJECTS, org=ORG)["organization"]
     matches = [p for p in organization["projectsV2"]["nodes"] if p["title"] == PROJECT_TITLE]
     if len(matches) > 1:
         raise GitHubError(200, f"{len(matches)} boards are titled {PROJECT_TITLE!r}; keep one")
-    return organization["id"], (_project(github, matches[0]["id"]) if matches else None)
+    return organization["id"], (matches[0]["id"] if matches else None)
+
+
+def find_board(github: GitHub) -> str | None:
+    """The plan's board's node id (None while there is none): the one lookup both this
+    module and the plan tool make."""
+    return _board_listing(github)[1]
+
+
+def _find_project(github: GitHub) -> tuple[str, dict | None]:
+    """The organization's node id and the board titled :data:`PROJECT_TITLE`, if any."""
+    org_id, board_id = _board_listing(github)
+    return org_id, (_project(github, board_id) if board_id else None)
 
 
 def _apply_to_view(github: GitHub, project: dict, report: Report) -> None:
@@ -580,7 +596,7 @@ def check_board(github: GitHub, repository: dict | None, apply: bool, report: Re
     if not differences:
         report.ok(
             f"board {PROJECT_TITLE!r} ({project['url']}): no stored field but GitHub's unused "
-            f"{GITHUB_STATUS_FIELD}, no state-writing automation on, an unsorted "
+            f"{GITHUB_STATUS_FIELD}, no automation on that writes or adds cards, an unsorted "
             f"{VIEW_NAME!r} table of open cards, ungrouped, showing no stored field"
         )
 

@@ -29,6 +29,10 @@ extend-exclude = [
   "tests/manual/**",
   # Archived planning docs (write-once).
   "docs/plans/historical/**",
+  # Recorded GitHub API answers the plan tool's tests replay
+  # (tools/plan/_recorded.py): GitHub's machine text -- node ids, commit
+  # signatures -- not ours to spell.
+  "tools/plan/recorded/**",
 ]
 
 # A git SHORT HASH is never a typo, and this is the STRUCTURAL form of that
