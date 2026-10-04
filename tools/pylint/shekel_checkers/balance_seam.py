@@ -74,7 +74,8 @@ from pylint.checkers import BaseChecker
 # ``LoanState.current_balance`` -- the balance-at-today that made a resolver
 # bundle a leak -- is DELETED, so ``resolve_loan_bundle`` / ``resolve_loan_seeded``
 # hand back schedule detail of the same sanctioned class ``debt_schedule_rows``
-# already exposes.  Plan step E1d-a then moved that whole read INSIDE the seam
+# exposed (deleted with its last caller at recurrence:R16-c-2).  Plan step
+# E1d-a then moved that whole read INSIDE the seam
 # as the private ``balance_at._resolution``, re-exported nowhere, so W9910 is the
 # only gate it needs and its completeness scope deleted with it (its
 # ``resolve_loan_seeded`` half folded away at E1d-b); the context memo went with

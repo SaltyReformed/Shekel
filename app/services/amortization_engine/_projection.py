@@ -61,8 +61,8 @@ class PaymentRecord:
 
     Attributes:
         dates: The payment's :class:`~app.services.amortization_engine.PaymentDates`
-            -- its funding period, the installment it satisfies, and the day
-            its cash moved.  See that class for what each governs and for what
+            -- its funding period, its own due date, and the day its cash
+            moved.  See that class for what each governs and for what
             conflating any two of them costs.
         amount: The total payment amount (principal + interest).  Must
             be >= 0.  A zero amount represents a missed payment where
@@ -298,14 +298,15 @@ def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
     Apr 24, both due May 1) collide on the May schedule row, and the schedule and
     the override map key everything by due month -- a pay-period-start key would
     leave that collision unresolved and sum both into a single double payment.
-    *That key is written inline here rather than through
-    ``loan_ledger.installment_slot``, which spells the same ``(year, month)``:
-    routing the two together changes the installment identity across the whole
-    loan architecture, which is ``recurrence:R16-c``'s job and is deferred in
-    that function's own docstring.*
+    *That key is the calendar MONTH, and it is no longer the installment
+    identity the walks use*: plan step recurrence:R16-c-2 deleted
+    ``loan_ledger.installment_slot`` and keys an installment by its contract
+    interval (ruling **R-R89**, finding **D55**).  This slotting feeds the
+    schedule replay (walk 3), whose re-key is ``recurrence:R16-e`` /
+    ``R16-f``'s.
 
     Args:
-        due_dates: Each payment's own installment date, in the order the caller
+        due_dates: Each payment's own due date, in the order the caller
             wants collisions resolved (the caller's order decides which payment
             keeps a contested month, so it must be the chronology both the
             replay and the priced feed use).

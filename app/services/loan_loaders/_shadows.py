@@ -193,11 +193,14 @@ def settled_income_shadows(
     two can disagree on which payments are settled: the fold's event stream
     (:func:`app.services.loan_ledger.walk_loan_ledger`), the fold's display bound
     (:func:`app.services.loan_ledger.confirmed_shadows_through`), the ledger's
-    per-payment principal reader, the asset contribution pass, and
+    per-payment principal reader, the asset contribution pass,
     :func:`_settled_payment_due_dates` (the escrow forward-only guard's
-    boundary :func:`latest_settled_payment_due_date`, since finding N-34; the
-    tracking-start ordering guard that also read it was deleted at plan step
-    ``recurrence:R20``).
+    boundary :func:`latest_settled_payment_due_date`, since finding N-34), and
+    the tracking-start refusal (``loan_anchor_service``, rulings **R-R114**,
+    **R-R115**, **R-BAL155**), which asks each leg the day its money moved.
+    *A tracking-start guard that read this set's DUE dates was deleted at plan
+    step ``recurrence:R20``; the refusal that returned at R16-c-2 reads the
+    movement's day instead.*
 
     **The set is keyed on the TRANSFER, never on its movement alone.**  A
     ``$0.00`` close -- a transfer settled with no movement, ruling **R-BAL82**

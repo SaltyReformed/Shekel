@@ -93,8 +93,9 @@ def accrual_charge(
 
     The charge a test plan states for one accrual period, wrapping *annual_rate*
     in the :class:`RatePeriod` the value carries.  Stated by hand rather than
-    taken from ``charges_for_due_dates``, so a fold graded against it is graded
-    against arithmetic rather than against the derivation that feeds it.
+    taken from the leaf's calendar (``loan_ledger.contract_charges``, ruling
+    R-R100), so a fold graded against it is graded against arithmetic rather
+    than against the derivation that feeds it.
 
     Args:
         on_date: The date the period's charge falls.

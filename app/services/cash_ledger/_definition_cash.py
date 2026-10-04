@@ -70,9 +70,11 @@ class DefinitionRow:
 
     Attributes:
         template: The recurring transfer definition (``Transfer.template``).
-        due_date: The installment the payment satisfies -- the row's own
-            ``due_date``, or the date the occurrence's row would carry
-            (:func:`app.services.recurrence.compute_due_date`).  Never
+        due_date: The row's own due date -- its ``due_date`` column, or the
+            date the occurrence's row would carry
+            (:func:`app.services.recurrence.compute_due_date`); for a loan
+            payment, the installment it pays, if any, is the one this date
+            falls in (ruling **R-R104**).  Never
             ``None``: a written row here names a definition, and
             ``ck_transfers_template_row_needs_due_date`` (plan step
             **X-bv-2**, ruling **R-BAL17**) refuses such a row without a

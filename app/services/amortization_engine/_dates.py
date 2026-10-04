@@ -44,9 +44,13 @@ class PaymentDates:
     * ``period_start`` -- the FUNDING basis: which pay period the payment is
       booked in, i.e. which paycheck pays for it.  Drives the replay's rate
       lookup, and it is the plan date of a payment whose cash has not moved.
-    * ``due_date`` -- the INSTALLMENT basis: which contractual monthly payment
-      this satisfies.  Drives the anchor boundary, the replayed row's date, and
-      ``next_pay_date``.
+    * ``due_date`` -- the INSTALLMENT basis: the payment's own due date in
+      contract time.  The contractual installment it pays is the one this date
+      falls in (:func:`app.services.installment_calendar.installment_paid_by`,
+      ruling **R-R104**) -- this date itself for a payment due on the loan's
+      contractual day; a payment due before the first installment pays none
+      and keeps this date.  Drives the anchor boundary, the replayed row's
+      date, and ``next_pay_date``.
 
     The funding basis and the installment basis differ whenever a payment is
     settled LATE (past its due date, into the next biweekly pay period --
@@ -71,8 +75,9 @@ class PaymentDates:
             FUNDING basis above).  Matched to the schedule by year-month, not
             exact day, so biweekly dates (e.g. 2026-03-06) map to the monthly
             schedule period (2026-03).
-        due_date: The monthly installment this payment satisfies (the
-            INSTALLMENT basis above).  Supplied by
+        due_date: The payment's own due date in contract time (the
+            INSTALLMENT basis above; the installment it pays is the one this
+            date falls in).  Supplied by
             :func:`app.services.loan_loaders.loan_payment_due_date` -- the one
             derivation the genesis write walk uses too, so the posted ledger
             and the replay can never drift on a payment's due date.  A feed
@@ -126,7 +131,10 @@ class PaymentDates:
         assert what it had removed) once it measured the two to be the same
         predicate.  This property is the answer for the readers that ask the
         question directly -- the loan card's "has this loan ever been paid?"
-        (``balance_at._loan_figures``), and the suite.
+        (``balance_at._loan_figures``), whether the payment history prices a
+        payment off its record or its plan
+        (:func:`app.services.loan_payment_service.get_payment_history`), and
+        the suite.
 
         Returns:
             ``True`` for a payment from the settled half of

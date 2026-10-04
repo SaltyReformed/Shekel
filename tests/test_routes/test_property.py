@@ -28,6 +28,7 @@ from app.services import (
     home_equity_service,
     property_equity_chart,
 )
+from app.services.balance_at._loan_stream import loan_timeline
 from app.services.balance_at._plan import memoized_plan
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.balance_at._resolution import (
@@ -856,6 +857,19 @@ class TestPropertyEquityChartProducer:
                 origination_date=date(2025, 11, 1), payment_day=1,
             )
             loan.collateral_account_id = prop.id
+            # Imported mid-life: tracked from 2026-01-01 at the contract's own
+            # balance then, so the months before it are the estimated
+            # back-projection (ruling R-R111 reads the loan's RECORDED start;
+            # an in-app loan, tracked from its origination, has none -- its
+            # unpaid months read the ledger).  Until plan step
+            # recurrence:R16-c-2 this loan was in-app and the stand-in (the
+            # first schedule row's date) made its months before the first
+            # payment "pre-tracking"; Josh approved this fixture change
+            # (rule 5, 2026-09-25).
+            insert_tracking_start_event(
+                load_loan_params(loan.id), Decimal("239422.06"),
+                date(2026, 1, 1),
+            )
             db.session.commit()
             # Two confirmed monthly payments, both historical (Jan/Feb periods),
             # settled on their period starts so they are visible by the frozen
@@ -896,10 +910,9 @@ class TestPropertyEquityChartProducer:
 
             # The loan's series comes from the PRODUCTION seam
             # (``balance_at.secured_loan_series``), which is what the property
-            # route calls.  The resolved schedule opens at the FIRST confirmed
-            # payment, so the months from origination to that payment become the
-            # estimated back-projection (a real, non-empty prefix here); the
-            # reconciliation keys off the confirmed / fold tier.
+            # route calls.  The months from origination to the tracking start
+            # are the estimated back-projection (a real, non-empty prefix
+            # here); the reconciliation keys off the confirmed / fold tier.
             series = _series_for(prop, loan, today)
             assert any(
                 tier == property_equity_chart.TIER_ESTIMATED
@@ -1113,11 +1126,19 @@ class TestPropertyEquityChartProducer:
                 "precondition: the whole term and its extension must be past, "
                 "or this does not exercise the empty-plan fallback"
             )
-            assert empty.charges == [], (
-                "and nothing is charged either: the plan charges every "
-                "contractual installment AFTER the loan's latest assertion "
-                "(ruling R-R71), and every installment of this term, its "
-                "extension included, precedes today's assertion"
+            # Every contractual installment from 2005 is charged since plan
+            # step recurrence:R16-c-2 (ruling R-R100), and today's
+            # tracking-start clears them all (R-R72 part (2)); nothing is
+            # charged AFTER it.  Until that step the check read the plan's own
+            # charge list, which was empty; the developer approved the
+            # re-expressed check (rule 5).
+            assert not [
+                charge for charge in loan_timeline(loan, ctx).stream.charges
+                if charge.on_date > today
+            ], (
+                "nothing is charged after today's assertion: every "
+                "installment of this term, its extension included, precedes "
+                "it and is cleared by it"
             )
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date is None
@@ -1157,8 +1178,9 @@ class TestPropertyEquityChartProducer:
             params = load_loan_params(loan.id)
             # 260k at 24 months in is well below the ~285k contractual balance,
             # so the seam gap is unmistakable.
+            tracking_start = add_months(today, -24)
             insert_tracking_start_event(
-                params, Decimal("260000.00"), add_months(today, -24),
+                params, Decimal("260000.00"), tracking_start,
             )
             db.session.commit()
 
@@ -1171,24 +1193,27 @@ class TestPropertyEquityChartProducer:
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
             )
 
-            # The tracking start -- where the recorded ledger opens -- is the
-            # resolved schedule's first month, the same boundary the seam clips the
-            # back-projection at.
+            # The tracking start -- where the recorded ledger opens -- is the date
+            # this test recorded above, the same boundary the seam clips the
+            # back-projection at (the loan's recorded start, ruling R-R111).  It
+            # read the resolved schedule's first row's date until plan step
+            # recurrence:R16-c-2, which parts from the recorded date when today
+            # is the 1st (the tracking start then lands on an installment);
+            # Josh approved the re-derived boundary (rule 5, 2026-09-25).
             resolved = resolve_loan_bundle(
                 loan, BalanceContext.build(seed_user["user"].id, as_of=today),
             )
             assert resolved is not None, "configured loan must resolve"
-            tracking_start = resolved.state.schedule[0].payment_date
 
             # Re-derive the expected pre-tracking rows from the same contractual
             # producer the seam feeds in, clipped to the months before tracking
             # begins.  This pins the chart's month-mapping and tiering of those
             # rows (not the amortization math -- that is test_balance_at_resolution.py).
+            contractual = contractual_schedule_from_origination(
+                params, load_rate_changes(loan.id),
+            )
             oracle_pre = [
-                row for row in contractual_schedule_from_origination(
-                    params, load_rate_changes(loan.id),
-                )
-                if row.payment_date < tracking_start
+                row for row in contractual if row.payment_date < tracking_start
             ]
             assert oracle_pre, "the oracle must have pre-tracking rows too"
 
@@ -1213,9 +1238,13 @@ class TestPropertyEquityChartProducer:
             # The first tracked month is 'confirmed': the fold reads the recorded
             # $260,000 opening (this loan has no settled payments, so the balance
             # holds flat there), where the pre-C5 schedule-row producer read the
-            # unconfirmed row as 'projected'.
+            # unconfirmed row as 'projected'.  It is the month of the first
+            # installment on or after the tracking start.
             first_tracked = chart.labels.index(
-                tracking_start.strftime("%b %Y"),
+                next(
+                    row.payment_date for row in contractual
+                    if row.payment_date >= tracking_start
+                ).strftime("%b %Y"),
             )
             assert chart.debt_tier[first_tracked] == "confirmed"
             assert chart.debt[first_tracked] == Decimal("260000.00")
