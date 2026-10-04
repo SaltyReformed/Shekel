@@ -1,16 +1,17 @@
-"""Plan step ``balance:X-bi-6-4d`` leaf 1: the hard delete asks ``transfer_legs``.
+"""The transfer's hard delete takes EVERY entry the transfer holds (leaf ``X-bi-6-4d-1``).
 
 The transfer's hard delete hands the one removal act every entry its transfer
 holds, and since leaf ``X-bi-6-4d-1`` it asks
 ``transfer_legs.held_transfer_entries`` for them rather than walking each
 shadow's ``entries`` -- so ``X-bi-6-4d``'s re-parent moves the collection with
-the join.  The scope is ANY entry under ANY shadow, live or dead, because that
-is what ``fk_transaction_entries_transaction_id`` (NO ACTION) refuses the
-cascade for: a kept, un-dated record a revert left behind counts, and so does
-one under a shadow an occurrence delete hid (finding **BAL-532**'s state).
-A collection narrowed to dated movements, or to live shadows, leaves such a
-record behind and the delete fails at the flush -- the two cases below are
-that scope's grade.
+the join.  These cases grade the SCOPE that swap claims to keep, not the swap
+itself (they pass on the old per-shadow walk too, by design): ANY entry under
+ANY shadow, live or dead, because that is what
+``fk_transaction_entries_transaction_id`` (NO ACTION) refuses the cascade for.
+A kept, un-dated record a revert left behind counts, and so does one under a
+shadow an occurrence delete hid (finding **BAL-532**'s state).  A collection
+narrowed to dated movements, or to live shadows, leaves such a record behind
+and the delete fails at the flush.  The suite graded neither before this leaf.
 """
 
 from decimal import Decimal

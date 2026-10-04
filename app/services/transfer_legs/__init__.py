@@ -128,13 +128,18 @@ which read each side's own day off its movement
 since leaf ``X-bi-6-4d-1`` for the transfer service's own reads of what a
 side RECORDS -- the settle's retained correction and carried record, the
 update's echo comparison and the offer's retained correction
-(:func:`grid_transfer_leg`) -- and for the transfer's hard delete, which hands
+(:func:`transfer_side_leg`, keyed by side) -- and for the transfer's hard
+delete, which hands
 the removal act every entry its transfer holds
 (:func:`held_transfer_entries`).
 **Other readers still reach it themselves until their leaf moves them** and
 ``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
 leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which
-DC-11's and BA-06's leg arms read); statement match's own reads of a
+DC-11's and BA-06's leg arms read); the transfer service's own mirror,
+which the step rewrites -- ``_endpoints._apply_endpoint_move`` walks each
+shadow's ``covering_movements`` to carry them to a moved endpoint, and
+``_status.apply_status_to_all_three`` repairs a drifted shadow from its
+sibling's ``recorded_settlement``; statement match's own reads of a
 payment member's row -- ``_acts.named_rows``,
 ``_candidates._claimed_rows_of_the_owner`` and
 ``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
@@ -206,6 +211,7 @@ from app.services.transfer_legs._records import (
     transfer_family_movements,
     transfer_holds_a_movement,
     transfer_movement_rows,
+    transfer_side_leg,
     transfers_holding_records,
 )
 
@@ -233,5 +239,6 @@ __all__ = [
     "transfer_family_movements",
     "transfer_holds_a_movement",
     "transfer_movement_rows",
+    "transfer_side_leg",
     "transfers_holding_records",
 ]

@@ -36,7 +36,7 @@ no Flask.
 
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum
@@ -44,6 +44,9 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services.stated_figure import StatedFigure
 from app.utils.balance_predicates import settled_status_ids
+
+if TYPE_CHECKING:
+    from app.services.transfer_legs import TransferLeg
 
 
 @dataclass(frozen=True)
@@ -338,7 +341,7 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     return _recorded(covering_movement_of(row), row.status_id)
 
 
-def recorded_leg_settlement(leg) -> Optional[Settlement]:
+def recorded_leg_settlement(leg: "TransferLeg") -> Optional[Settlement]:
     """Return the settlement a transfer *leg* already records, or ``None``.
 
     :func:`recorded_settlement`'s twin over a transfer leg (leaf
@@ -347,8 +350,10 @@ def recorded_leg_settlement(leg) -> Optional[Settlement]:
     through ``transfer_legs``' one join (:attr:`TransferLeg.record
     <app.services.transfer_legs.TransferLeg.record>`), and its status is its
     TRANSFER's.  Asked by ``transfer_service._settle.settle`` for the pair's
-    retained record, read off its expense side, so the read moves with the
-    join when ``X-bi-6-4d`` re-parents the movement off the shadow.
+    retained record, read off its expense side, and by
+    ``transfer_service._settle.settle_amount`` for the offered side's, so
+    both reads move with the join when ``X-bi-6-4d`` re-parents the movement
+    off the shadow.
 
     Args:
         leg: A :class:`~app.services.transfer_legs.TransferLeg` whose
@@ -364,7 +369,9 @@ def recorded_leg_settlement(leg) -> Optional[Settlement]:
     return _recorded(leg.record, leg.status_id)
 
 
-def _recorded(movement, status_id: int) -> Optional[Settlement]:
+def _recorded(
+    movement: Optional[TransactionEntry], status_id: int,
+) -> Optional[Settlement]:
     """Return the record a holder of *movement* in *status_id* states.
 
     The ONE body of :func:`recorded_settlement` and

@@ -49,7 +49,7 @@ from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.account_projection import is_revolving
 from app.services.state_machine import allowed_transitions
-from app.services.transfer_legs import TransferLeg, grid_transfer_leg
+from app.services.transfer_legs import TransferLeg, transfer_side_leg
 from app.services.transfer_service._loan_posting import (
     _reject_transfer_out_of_loan,
 )
@@ -110,11 +110,13 @@ class TransferRows:
         side -- the retained correction a re-settle honours, the record it
         carries forward, the figure an echoed Actual box is compared against
         -- and since leaf ``balance:X-bi-6-4d-1`` they read it here, through
-        :func:`app.services.transfer_legs.grid_transfer_leg`, rather than off
-        the expense shadow's ``entries``: ``transfer_legs`` is the one module
-        that knows a movement hangs off a shadow, so ``X-bi-6-4d``'s
-        re-parent moves this read with its join.  The leg's status is its
-        TRANSFER's, which Transfer Invariant 3 holds equal to the shadow's.
+        :func:`app.services.transfer_legs.transfer_side_leg`, rather than off
+        the expense shadow's ``entries``: ``transfer_legs`` holds the one join
+        ``X-bi-6-4d``'s re-parent moves, so this read moves with it.  The
+        leg's status is its TRANSFER's, which Transfer Invariant 3 holds
+        equal to the shadow's.  It is read by SIDE, never by the transfer's
+        current account, because an endpoint move earlier in the same act
+        leaves ``from_account_id`` stale until a flush (see the producer).
 
         **Read ONCE per act and kept**, so the grade, the settle and the
         correction of one update ask one query between them: a producer asked
@@ -123,8 +125,11 @@ class TransferRows:
         That is correct because every reader asks BEFORE the act's seam pass
         writes the record, and nothing earlier in the act writes a movement's
         figure or source -- an endpoint move re-points the movement's account
-        alone, which no reader of this value reads.  A reader AFTER the seam
-        pass would read the pre-settle record, so none may be added there.
+        alone, which neither the side-keyed read nor any reader of this value
+        reads.  A reader AFTER the seam pass would not see the act's own write
+        consistently (a first settle's new movement is absent from the cached
+        value; a kept one is the same object, re-priced in place), so none
+        may be added there.
 
         Returns:
             The :class:`~app.services.transfer_legs.TransferLeg` on the
@@ -132,7 +137,7 @@ class TransferRows:
             the expense side holds (dated, or kept un-dated across a revert),
             ``None`` when it holds none.
         """
-        return grid_transfer_leg(self.transfer, self.transfer.from_account_id)
+        return transfer_side_leg(self.transfer, is_income=False)
 
 
 def load_transfer_rows(transfer_id, user_id) -> TransferRows:

@@ -782,11 +782,14 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
 
     **The advice is the PARENT's too since leaf ``X-bi-6-4d-1``**: a
     transfer's payment is corrected on the TRANSFER -- its "Money moved on"
-    box for that side and its Actual, the labels its popover shows -- and a
-    transfer has no purchases to be closed from, so the row's advice ("edit
-    the row's settle day ... closing the row from its own purchases") named
-    acts no transfer has.  Both sentences start with the parent's name, so a
-    reader matching "This is the payment record of <name>," reads either.
+    box for that side's account and its Actual, the labels its popover shows
+    while the transfer is marked paid -- and a transfer has no purchases to
+    be closed from, so the row's advice ("edit the row's settle day ...
+    closing the row from its own purchases") named acts no transfer has.  It
+    says only where the record is changed, not every way it can leave the
+    books (a hard delete of the transfer also takes it).  Both sentences
+    start with the parent's name, so a reader matching "This is the payment
+    record of <name>," reads either.
 
     Args:
         entry: The purchase the door was asked to write.
@@ -800,11 +803,10 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     if isinstance(parent, transfer_legs.TransferLeg):
         raise ValidationError(
             f"This is the payment record of {parent.name}, written when "
-            "that transfer was marked paid. It is not a purchase: to change "
-            "the day its money moved, edit the transfer's \"Money moved on\" "
-            "day for this account; to change the figure, correct the "
-            "transfer's Actual or revert it and mark it paid again. It is "
-            "withdrawn only by a $0.00 Actual."
+            "that transfer was marked paid. It is not a purchase: change it "
+            "on the transfer itself, through its \"Money moved on\" day "
+            f"for {parent.account.name} and its Actual, which the transfer "
+            "shows while it is marked paid."
         )
     raise ValidationError(
         f"This is the payment record of {parent.name}, "

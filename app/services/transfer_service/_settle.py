@@ -83,7 +83,7 @@ from app.services.status_seam import (
     honoured_figure,
     recorded_leg_settlement,
 )
-from app.services.transfer_legs import TransferLeg, grid_transfer_leg
+from app.services.transfer_legs import TransferLeg, transfer_side_leg
 from app.services.transfer_service._side_days import PairDays
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import (
@@ -201,11 +201,11 @@ def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     # (``transaction_service.honoured_correction``); a draft honoured it only at
     # the WRITE, so the panel offered the plan and the settle booked the
     # human's figure.  Asked before the basis is built, so an honoured row runs
-    # no producer at all.  The record is the leg's on this shadow's account,
-    # reached through ``transfer_legs`` (leaf ``balance:X-bi-6-4d-1``) rather
-    # than off the shadow's ``entries``, so the re-parent moves this read too.
+    # no producer at all.  The record is the offered side's, reached through
+    # ``transfer_legs`` by SIDE (leaf ``balance:X-bi-6-4d-1``) rather than off
+    # the shadow's ``entries``, so the re-parent moves this read too.
     held = honoured_figure(recorded_leg_settlement(
-        grid_transfer_leg(shadow.transfer, shadow.account_id),
+        transfer_side_leg(shadow.transfer, is_income=shadow.is_income),
     ))
     if held is not None:
         return held

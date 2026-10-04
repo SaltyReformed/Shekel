@@ -15,7 +15,8 @@ the settled half's :func:`transfer_movement_rows` /
 :func:`recorded_transfer_legs`, the posting writer's
 :func:`transfer_family_movements`, the grid's
 :func:`covering_movements_by_leg` / :func:`grid_transfer_leg` /
-:func:`grid_transfer_legs`, the recurrence engine's
+:func:`grid_transfer_legs`, the transfer service's
+:func:`transfer_side_leg`, the recurrence engine's
 :func:`transfers_holding_records`, and every door's "this transfer holds a
 payment or purchase" (:func:`transfer_holds_a_movement` /
 :func:`held_transfer_entries`, over the join BARE, :func:`_entries_under_shadows`)
@@ -33,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import or_
+from sqlalchemy import not_, or_
 from sqlalchemy.orm import Query, contains_eager, joinedload
 from sqlalchemy.sql.expression import ColumnElement, Exists
 
@@ -698,12 +699,6 @@ def grid_transfer_leg(transfer: Transfer, account_id: int) -> TransferLeg:
     What a transfer door renders back into a leg's cell (leaf
     ``X-bi-6-1``): :func:`grid_transfer_legs` over one transfer and one
     side, stated separately so the fragment renderers name what they load.
-    Since leaf ``X-bi-6-4d-1`` it is also how the transfer service reads
-    what a side already RECORDS -- the settle's retained correction and
-    carried record, the update's echo comparison
-    (``transfer_service._validation.TransferRows.expense_leg``) and the
-    offer's retained correction (``transfer_service._settle.settle_amount``)
-    -- which read the expense shadow's ``entries`` until then.
 
     Args:
         transfer: The parent.
@@ -722,6 +717,52 @@ def grid_transfer_leg(transfer: Transfer, account_id: int) -> TransferLeg:
             (transfer.id, account_id),
         ),
     )
+
+
+def transfer_side_leg(transfer: Transfer, *, is_income: bool) -> TransferLeg:
+    """Return *transfer*'s leg on one SIDE with its record, keyed by the side alone.
+
+    How the transfer service reads what a side already RECORDS (leaf
+    ``X-bi-6-4d-1``): the settle's retained correction and carried record and
+    the update's echo comparison, off the expense side
+    (``transfer_service._validation.TransferRows.expense_leg``), and the
+    offer's retained correction, off the offered side
+    (``transfer_service._settle.settle_amount``) -- each of which read its
+    shadow's ``entries`` until then.
+
+    **Keyed by the SIDE and never by an account**, which is what makes it
+    safe inside an act that moves an endpoint: ``_endpoints._apply_endpoint_move``
+    assigns the transfer's account RELATIONSHIP, and ``from_account_id`` reads
+    the old account until a flush, so a read keyed by that column found the
+    record only when some lazy load happened to autoflush first (the leaf's
+    adversarial review measured the miss).  The side is the join's own
+    :func:`_leg_is_income` through the interval and the side link from
+    ``X-bi-6-4d`` (ruling **R-BAL88**), so this read never names an account.
+    It refuses a side holding two records (``one_or_none``), as
+    ``status_seam.covering_movement_of`` refuses a row holding two, where
+    :func:`covering_movements_by_leg`'s map would keep the last.
+
+    Args:
+        transfer: The parent.
+        is_income: ``True`` for the to-side, ``False`` for the from-side.
+
+    Returns:
+        The leg, its record the side's covering movement -- dated, or kept
+        un-dated across a revert -- or ``None`` when the side holds none.
+
+    Raises:
+        sqlalchemy.exc.MultipleResultsFound: When the side holds two covering
+            movements under live shadows, which
+            ``uq_transaction_entries_one_settlement_record`` makes unstorable
+            under one shadow.
+    """
+    side = _leg_is_income() if is_income else not_(_leg_is_income())
+    record = (
+        _covering_movements_query()
+        .filter(_leg_transfer_id() == transfer.id, side)
+        .one_or_none()
+    )
+    return _leg_on_side(transfer, is_income=is_income, record=record)
 
 
 def grid_transfer_legs(

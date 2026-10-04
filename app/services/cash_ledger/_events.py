@@ -825,12 +825,17 @@ def settled_cash_facts(
         One :class:`CashSourceFact` per dated movement, ASCENDING by
         ``(settled_on, entry_id)`` -- the order the walk consumes them in,
         the movement's id breaking a same-day tie deterministically.
-        Order WITHIN a day is not observable: the walk only sums a day's
+        Order WITHIN a day moves no figure: the walk only sums a day's
         sources before its assertions close it (ruling R-DH), and the fold
         reads a day's boundary after every step on it, so only the day's
-        total can be read back.  The sort is total anyway, because a
-        nondeterministic order in a financial replay is a reproducibility
-        defect even where it is arithmetically inert.
+        total enters a balance.  One reader SHOWS it: the bank-agreement
+        screen lists a day's movements stable-sorted by size
+        (``bank_agreement._rows_on``), so two of equal size on one day keep
+        this order -- which the re-key on the movement id at leaf
+        ``X-bi-6-4d-1`` may flip (a declared change; 0 listings moved on the
+        2026-09-30 00:11 production dump).  The sort is total anyway,
+        because a nondeterministic order in a financial replay is a
+        reproducibility defect even where it is arithmetically inert.
     """
     facts = [
         _source_fact(entry, entry.transaction, transfer_id=None)

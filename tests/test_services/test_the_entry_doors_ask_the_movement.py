@@ -255,8 +255,10 @@ class TestTheAdviceIsTheParentsOwn:
                 "This is the payment record of Transfer to Rainy Day, "
                 "written when that transfer was marked paid."
             ), message
-            assert '"Money moved on" day for this account' in message
-            assert "correct the transfer's Actual" in message
+            assert (
+                'change it on the transfer itself, through its "Money moved '
+                f'on" day for {seed_user["account"].name} and its Actual'
+            ) in message
             assert "purchases" not in message
             assert "settle day" not in message
 
