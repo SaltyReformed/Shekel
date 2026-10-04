@@ -452,11 +452,18 @@ def _build_trend_window(
 ) -> tuple[list, int, int]:
     """Build the net-worth trend window and its honest-history gate.
 
-    Generates the loan amortization schedules the honest-history gate reads
-    -- each loan's first-payment date, the data the balance maps do NOT carry
-    -- then delegates to :func:`build_trend_periods`.  The schedules feed
-    ONLY the gate; the dense-map build assembles its own inside the
-    :mod:`app.services.balance_at` seam.
+    Reads the day each loan's record starts -- the data the balance maps do
+    NOT carry -- then delegates to :func:`build_trend_periods`.  The start is
+    the loan's :attr:`~app.services.balance_at.LoanTerms.recorded_start`, off
+    the read pass's one memoized resolution, and EVERY configured loan gates
+    from it, paid off or not (rulings **R-R111** and **R-R112**).  Until plan
+    step recurrence:R16-c-2 this read each loan's amortization rows: the
+    earliest row's date stood in for the start, and a loan whose rows were
+    EMPTY (paid off) did not gate.  Before its record starts the ledger holds
+    only the loan's origination principal, so a loan first tracked once paid
+    off drew that principal through the history: a $20,000.00 loan tracked at
+    $0.00 beside $1,000.00 of cash read -$19,000.00 at every point before its
+    tracking start (ruling R-R112's example).  Nothing here reads a schedule.
 
     **It carries no no-baseline guard of its own** (plan step X-t2, finding
     N-107): its one caller owns that rule for the whole region, so this is
@@ -473,13 +480,15 @@ def _build_trend_window(
         ``(trend_periods, current_index, honest_start)`` from
         :func:`build_trend_periods`.
     """
-    loan_accounts = [
-        acct for acct in core.accounts if acct.id in params.loan_params_map
-    ]
     return build_trend_periods(
         core.accounts, core.balance_ctx.reported_periods(),
         core.current_period,
-        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx),
+        {
+            acct.id: balance_at.loan_terms(
+                acct, core.balance_ctx,
+            ).recorded_start
+            for acct in core.accounts if acct.id in params.loan_params_map
+        },
     )
 
 

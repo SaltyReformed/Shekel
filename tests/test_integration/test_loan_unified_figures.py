@@ -14,8 +14,17 @@ the plan-vs-contract interest saved (now ``app/routes/loan/calculators.py``)
 with ``round_money`` (the E-26 / HIGH-04 boundary).
 
 Test IDs C17-1..C17-6 trace to ``remediation_plan.md`` Section 9
-"Commit 17" subsection E.  Hand-computed expectations follow the
-arithmetic conventions in
+"Commit 17" subsection E.  C17-1 (the year-end aggregation's per-period
+rows equal the resolver's) was deleted at plan step recurrence:R16-c-2 with
+the ``debt_schedule_rows`` accessor it read, with the developer's approval
+(2026-09-29).  It compared the schedule the resolver builds with no payment
+feed (``_resolver_state``) against the seam's resolution seeded from the
+ledger -- two producers, not one read twice -- but no screen reads either
+schedule's rows: the year-end consumer went at plan step F2, and the one
+``app/`` reader left asks only whether the schedule is empty.  A narrower
+form of that comparison, a read before origination, stays in
+``tests/test_services/test_confirmed_view.py``.  Hand-computed expectations
+follow the arithmetic conventions in
 ``tests/test_integration/test_loan_resolver_single_source.py``; the
 two files reinforce each other on the loan single-source-of-truth
 contract.
@@ -38,7 +47,6 @@ from app.services import (
     loan_posting_service,
     loan_resolver,
 )
-from app.services.balance_at import _kernel as net_worth_kernel
 from app.utils.dates import add_months, months_between
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
@@ -66,9 +74,10 @@ from tests.oracles.recurrence_baseline import MONTHLY
 #     monthly_rate     = 0.06 / 12 = 0.005
 #     contractual_pi   = amortize(300000, 0.06, 360) = $1,798.65
 #
-# ARM: 5/5 ARM, $400,000, 6% annual, 360 months, origination
-# 2026-01-01, ``arm_first_adjustment_months = 60``.  Anchor is the
-# origination event; no payments.  Inside the fixed-rate window the
+# ARM: 5/5 ARM, $400,000, 6% annual, 360 months, originated on the
+# first of the month ARM_STARTS_MONTHS_AGO before today's (see
+# ``_create_arm_loan``), ``arm_first_adjustment_months = 60``.  Anchor is
+# the origination event; no payments.  Inside the fixed-rate window the
 # constant payment is
 #
 #     amortize(400000, 0.06, 360) = $2,398.20  (E-02 invariant)
@@ -82,6 +91,22 @@ ARM_PRINCIPAL = Decimal("400000.00")
 ARM_RATE = Decimal("0.06000")
 ARM_TERM = 360
 ARM_WINDOW = 60
+# How far before today's month the ARM originates.  Its arrears are a
+# function of the distance from origination to TODAY: ruling R-R71 charges
+# every installment nobody paid, and the forward plan dates a payoff only
+# while the loan clears within ``_plan._PAYOFF_EXTENSION_MONTHS`` (60) of
+# its contractual end.  For this loan that holds through EIGHT unpaid
+# installments and fails at nine, so an origination pinned to 2026-01-01
+# read ``None`` from 2026-10-02 on.  Relative to today it leaves five
+# unpaid installments on the 1st (today's own is still owed) and six on
+# any other day, at every read.  It must stay between 2 and 8: at least
+# one unpaid installment on the 1st (with none, the payoff equals the
+# 360-installment bound and the strict ``>`` below fails) and at most eight
+# on any day.  The fixture reads the PROCESS clock because
+# ``BalanceContext.build`` defaults to ``date.today()``; if finding N-138's
+# fix moves that default to ``display_today()``, this fixture moves with it
+# in the same change, or it fails on month boundaries under CI's skewed zone.
+ARM_STARTS_MONTHS_AGO = 6
 
 
 # ── Fixture helpers ───────────────────────────────────────────────
@@ -119,14 +144,23 @@ def _create_arm_loan(seed_user, period, *, name="C17 ARM"):
     postings and the params land in one transaction and the loan is never left
     on the no-ledger fallback.
 
+    It originates :data:`ARM_STARTS_MONTHS_AGO` months before the first of TODAY's
+    month, on the seam's own clock (``date.today()``, the default
+    ``BalanceContext.build`` reads), so the installments nobody paid are the
+    same count on every read rather than one more every month.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         period: The :class:`PayPeriod` to anchor the account to.
         name: The account name.
     """
+    today = date.today()
     account = create_loan_account(
         seed_user, db.session, name=name, principal=ARM_PRINCIPAL,
-        rate=ARM_RATE, term=ARM_TERM, origination_date=FIXED_ORIGINATION,
+        rate=ARM_RATE, term=ARM_TERM,
+        origination_date=add_months(
+            date(today.year, today.month, 1), -ARM_STARTS_MONTHS_AGO,
+        ),
         payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
     )
     loan_params = loan_params_for(db.session, account.id)
@@ -156,66 +190,6 @@ def _resolver_state(account, loan_params, as_of):
         ),
         as_of,
     )
-
-
-# ── C17-1: per-period principal / interest single source ──────────
-
-
-def test_per_period_principal_interest_single_source(
-    app, seed_user, seed_periods,
-):
-    """C17-1 / HIGH-08 / F-017..F-018: per-period rows are identical
-    across the resolver and the year-end debt aggregation.
-
-    Before Commit 17 the year-end summary's ``_compute_mortgage_interest``
-    ran ``amortization_engine.generate_schedule`` independently of the
-    resolver, so the per-period interest rows could drift (the symptom
-    was visible when shadow income tweaks moved one schedule but not
-    the other).  Post-Commit-15 / Commit 17, ``_generate_debt_schedules``
-    runs ``loan_resolver.resolve_loan`` and the year-end aggregation
-    sums its row interests directly.  This test pins that contract:
-    schedule rows used by the year-end aggregation MUST be the same
-    ``AmortizationRow`` objects the resolver produced, not a parallel
-    re-computation.
-    """
-    with app.app_context():
-        account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0],
-        )
-
-        state = _resolver_state(account, loan_params, date.today())
-
-        debt_schedules = net_worth_kernel.debt_schedule_rows(
-            [account], BalanceContext.build(seed_user["user"].id),
-        )
-        year_end_schedule = debt_schedules[account.id]
-
-        # The two schedules MUST be the same length and identical
-        # row-by-row -- year-end derives from the resolver, no
-        # parallel computation allowed (HIGH-08 / F-017 / F-018).
-        assert len(year_end_schedule) == len(state.schedule), (
-            f"Resolver schedule has {len(state.schedule)} rows, year-"
-            f"end has {len(year_end_schedule)} -- divergence indicates"
-            " a parallel computation has reappeared."
-        )
-        for idx, (resolver_row, year_end_row) in enumerate(
-            zip(state.schedule, year_end_schedule),
-        ):
-            assert resolver_row.payment_date == year_end_row.payment_date, (
-                f"Row {idx}: payment_date diverged "
-                f"({resolver_row.payment_date} vs "
-                f"{year_end_row.payment_date})."
-            )
-            assert resolver_row.principal == year_end_row.principal, (
-                f"Row {idx}: principal diverged "
-                f"({resolver_row.principal} vs "
-                f"{year_end_row.principal})."
-            )
-            assert resolver_row.interest == year_end_row.interest, (
-                f"Row {idx}: interest diverged "
-                f"({resolver_row.interest} vs "
-                f"{year_end_row.interest})."
-            )
 
 
 # ── C17-2: total_interest one definition; calendar-year is a subset
@@ -486,15 +460,21 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
     **Plan step C8d re-partitioned those surfaces, and this test follows.**
     The chip no longer reads a schedule at all: it reads the seam's DERIVED
-    payoff, the date the BALANCE folds to zero.  So there are two invariants,
-    not one -- the two SCHEDULE consumers still agree with each other, and the
-    chip agrees with the seam -- and for this fixture the two answers
-    deliberately DIFFER, which the control below pins.  This ARM originated
-    2026-01-01 and has never been paid, so its balance is still the full
-    $400,000.00: the contractual schedule says Jan 2056 (it amortizes six
-    installments nobody paid), while the fold says the borrower is still a
-    whole 360-month term away from its NEXT installment.  That gap IS finding
-    B-9, and the chip showing the honest side of it is the point of C8d.
+    payoff, the date the BALANCE folds to zero.  So the invariant is the chip
+    agreeing with the seam, and for this fixture the seam and the contractual
+    schedule deliberately DIFFER, which the control below pins.  (It also
+    pinned, until plan step recurrence:R16-c-2 deleted ``debt_schedule_rows``,
+    that the schedule the resolver builds with no payment feed ended where
+    the seam's ledger-seeded resolution did -- rows no screen reads since the
+    year-end consumer went at plan step F2; deleted with the developer's
+    approval, 2026-09-29.)  This ARM originated
+    six months before today's month (``ARM_STARTS_MONTHS_AGO``) and has never been
+    paid: the contractual schedule ends 360 installments after origination
+    (it amortizes the installments nobody paid), while the fold starts the
+    full $400,000.00 plus those months' interest (ruling R-R71) at the next
+    installment and clears it LATER than 360 installments from there.  That
+    gap IS finding B-9, and the chip showing the honest side of it is the
+    point of C8d.
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
@@ -503,25 +483,12 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
         state = _resolver_state(account, loan_params, date.today())
         # The resolver publishes no payoff_date since plan C8d; its schedule's
-        # last row is the CONTRACTUAL endpoint, and that is what the other
-        # schedule consumer below must agree with.
+        # last row is the CONTRACTUAL endpoint, which the control below
+        # separates from the seam's.
         resolver_payoff = (
             state.schedule[-1].payment_date if state.schedule else None
         )
-
-        # Year-end-summary path: the same schedule the resolver
-        # produced flows through ``_generate_debt_schedules``.
         ctx = BalanceContext.build(seed_user["user"].id)
-        debt_schedules = net_worth_kernel.debt_schedule_rows([account], ctx)
-        ye_schedule = debt_schedules[account.id]
-        ye_payoff = (
-            ye_schedule[-1].payment_date if ye_schedule else None
-        )
-
-        assert ye_payoff == resolver_payoff, (
-            f"ARM payoff_date diverged: resolver={resolver_payoff}, "
-            f"year-end={ye_payoff} -- two surfaces, two payoff dates."
-        )
 
         # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
         # loan has paid nothing, so its balance is still $400,000.00 and the
@@ -531,8 +498,9 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # month owes its interest whichever side of today it is on), so the
         # arrears stand when the first payment lands and the loan clears LATER
         # than 360 months after it -- how much later depends on how many
-        # months today is past origination, which is why the bound is stated
-        # as an inequality rather than a date the wall clock would move.
+        # installments went unpaid (five on the 1st, six on any other day:
+        # ``ARM_STARTS_MONTHS_AGO``), which is why the bound is stated as an
+        # inequality rather than a date.
         #
         # "Not already past" is ON OR AFTER today, not "next month".  The fixture
         # pays on the 1st, so on the 1st of a month today's own installment is
@@ -658,17 +626,21 @@ def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
     ``LoanState`` carries no payoff, and :attr:`LoanFigures.payoff_date` is
     the date the balance folds to zero).
 
-    So the invariant is now three-sided, and none of its sides is vacuous:
+    So the invariant is two-sided, and neither side is vacuous:
 
     * the resolver's ``state.schedule`` IS the composer's confirmed history
       plus the CONTRACT's forward for the same inputs, to the row -- no
       extra, no plan (its readers take a date off it, never a balance);
-    * the year-end aggregation reads that same schedule;
     * the seam's DERIVED payoff sits STRICTLY EARLIER than the contractual
       one, because the fold prices the definition's occurrences with the
       extra inside them.  This is the side that fails the day the extra
       stops reaching the fold, and the side that failed the OLD way the day
       the resolver stopped adding it.
+
+    A third side, "the year-end aggregation reads that same schedule", went at
+    plan step recurrence:R16-c-2 with the ``debt_schedule_rows`` accessor it
+    read: the year-end consumer was deleted at plan step F2, so it read the
+    very resolution the first side does.
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
@@ -712,17 +684,6 @@ def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
         assert state.total_interest == ref_total_interest, (
             f"Summary-surface life-of-loan interest {state.total_interest} != "
             f"the composer's {ref_total_interest}."
-        )
-
-        # Year-end / net-worth debt aggregation reads the same seam
-        # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
-        debt_schedules = (
-            net_worth_kernel.debt_schedule_rows([account], balance_ctx)
-        )
-        ye_schedule = debt_schedules[account.id]
-        assert ye_schedule[-1].payment_date == ref_payoff, (
-            f"Year-end debt schedule ends {ye_schedule[-1].payment_date} != "
-            f"the composer's {ref_payoff}."
         )
 
         # The teeth: the payoff a surface SHOWS is the fold's, and the fold

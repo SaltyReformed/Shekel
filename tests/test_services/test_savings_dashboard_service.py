@@ -3739,8 +3739,8 @@ class TestBuildTrendPeriods:
         The id is offset (``100 + index``) so an id/index swap in the
         production code would surface rather than coincide.  ``end_date`` is
         biweekly-spaced and distinct per index so the loan gate
-        (``_loan_schedule_start_index``, which matches a schedule's first
-        payment_date to a period by ``end_date``) resolves unambiguously.
+        (``_loan_record_start_index``, which matches a loan's recorded start
+        to a period by ``end_date``) resolves unambiguously.
         """
         return DerivedPeriod(
             period_id=100 + period_index,
@@ -3756,7 +3756,7 @@ class TestBuildTrendPeriods:
 
         ``anchor_period_index`` is mapped to the matching ``_period`` id
         (``100 + index``); ``None`` leaves the account unanchored.
-        ``account_id`` keys the loan gate's ``debt_schedules`` lookup.
+        ``account_id`` keys the loan gate's ``loan_starts`` lookup.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
@@ -3772,30 +3772,16 @@ class TestBuildTrendPeriods:
         return SimpleNamespace(id=account_id, account_type=acct_type)
 
     @staticmethod
-    def _debt_schedule(first_payment_period_index, periods):
-        """A one-row loan schedule first paying in a period.
+    def _recorded_start(start_period_index, periods):
+        """A loan whose record starts in a period: that period's ``end_date``.
 
-        The row's ``payment_date`` is that period's ``end_date``, so the
-        loan gate resolves the loan's honest start to that period's index.
-        The gate reads only the schedule ROWS -- which is why it is now handed
-        rows (``debt_schedule_rows``) rather than the balance-bearing
-        ``DebtSchedule`` bundle.
+        The loan gate resolves the loan's honest start to that period's index.
+        It reads the day the loan's record starts (ruling R-R111); until plan
+        step recurrence:R16-c-2 it read the earliest row of the loan's
+        schedule, which this helper built as a one-row schedule dated the
+        same day.
         """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-        return [SimpleNamespace(
-            payment_date=periods[first_payment_period_index].end_date,
-            remaining_balance=Decimal("1000.00"),
-        )]
-
-    @staticmethod
-    def _empty_debt_schedule():
-        """An EMPTY loan schedule (a paid-off / fully-resolved loan).
-
-        The gate must NOT constrain the window for such a loan -- its flat
-        current balance is its real balance at every period.
-        """
-        return []
+        return periods[start_period_index].end_date
 
     def test_history_reaches_back_past_the_cash_anchor(self):
         """A cash account's anchor no longer bounds the history (N-44).
@@ -3976,13 +3962,15 @@ class TestBuildTrendPeriods:
         assert current_index == 0
         assert honest_start == 5
 
-    def test_loan_schedule_start_gates_history(self):
-        """A loan's today-forward schedule gates the history past the cash.
+    def test_a_loans_recorded_start_gates_history(self):
+        """A loan's recorded start gates the history past the cash.
 
         A PLAIN account is anchored at index 1, but an AMORTIZING loan's
-        schedule first pays in period 5 (today at index 7).  Pre-schedule
-        periods report the loan's current balance held flat (today's balance,
-        not its real past), so the loan gates the honest start at index 5.
+        record starts in period 5 (today at index 7).  Before it the loan's
+        map carries its origination principal flat (not its real past), so
+        the loan gates the honest start at index 5 (ruling R-R111; this was
+        ``test_loan_schedule_start_gates_history``, when the gate read the
+        loan's first schedule row, until plan step recurrence:R16-c-2).
         Window indices 5..9, ``current_index`` 2 (indices 5, 6).  Without the
         loan gate the honest start would be 0 (cash constrains nothing since
         plan step X-c2b2), the cap would bind at 7 - 6 = 1 and
@@ -3999,26 +3987,34 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: self._debt_schedule(5, periods)}
+        loan_starts = {8: self._recorded_start(5, periods)}
 
         window, current_index, honest_start = build_trend_periods(
-            accounts, periods, periods[7], debt_schedules,
+            accounts, periods, periods[7], loan_starts,
         )
 
         assert honest_start == 5
         assert current_index == 2
         assert window[0].period_index == 5
 
-    def test_empty_loan_schedule_does_not_gate(self):
-        """A resolved-but-unpaid loan (empty schedule) does not gate history.
+    def test_an_amortizing_account_with_no_loan_terms_does_not_gate(self):
+        """An amortizing account absent from ``loan_starts`` does not gate history.
 
-        An empty schedule means the loan sits at its current balance at every
-        period (a paid-off / fully-resolved loan), which IS its real balance,
-        so it is honest throughout and must not gate.  PLAIN anchored at
-        index 1, an AMORTIZING loan with an empty schedule, today at index 7:
-        nothing gates, so the honest start is 0 and the
-        ``_TREND_HISTORY_PERIODS`` cap bounds the tail at 7 - 6 = 1.  Window
-        indices 1..9, ``current_index`` 6.
+        The dashboard passes a start for every CONFIGURED loan
+        (``_orchestrator._build_trend_window``, ruling R-R112), so the one
+        amortizing account absent here is one whose loan terms were never set
+        up: it has no ``LoanParams``, so it has no recorded start to pass.
+        PLAIN anchored at index 1, that account, today at index 7: nothing
+        gates, so the honest start is 0 and the ``_TREND_HISTORY_PERIODS`` cap
+        bounds the tail at 7 - 6 = 1.  Window indices 1..9, ``current_index``
+        6.
+
+        This was ``test_empty_loan_schedule_does_not_gate`` until plan step
+        recurrence:R16-c-2: the dashboard passed no start for a PAID-OFF loan
+        (an empty schedule), and this pinned that exception.  Ruling R-R112
+        deleted it -- every loan gates from its recorded start, paid off or not
+        -- and the opposite assertion, through a real paid-off loan, is
+        ``TestTheTrendWindowGatesEachLoanFromItsRecordedStart``.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -4030,10 +4026,8 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: self._empty_debt_schedule()}
-
         window, current_index, honest_start = build_trend_periods(
-            accounts, periods, periods[7], debt_schedules,
+            accounts, periods, periods[7], {},
         )
 
         assert honest_start == 0
@@ -7283,3 +7277,111 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
             db.session.query(CalibrationOverride).delete()
             db.session.commit()
             assert _summary().dti.ratio == calibrated.dti.ratio
+
+
+class TestTheTrendWindowGatesEachLoanFromItsRecordedStart:
+    """Rulings R-R111 and R-R112 at the dashboard, through real loans.
+
+    ``_orchestrator._build_trend_window`` hands the net-worth gate the day each
+    configured loan's record starts (``LoanTerms.recorded_start``), and EVERY
+    loan gates from it, paid off or not.  Before its record starts the ledger
+    holds nothing but the loan's origination principal, so the trend would draw
+    that principal as the loan's balance through a past the app never recorded.
+    Until plan step recurrence:R16-c-2 the gate read each loan's schedule rows:
+    the earliest row's date stood in for the start (ruling R-R111 replaced it)
+    and a loan whose schedule was EMPTY -- paid off -- did not gate at all
+    (ruling R-R112 deleted the exception; this class replaces the monkeypatched
+    orchestrator test that pinned it, on review 4's advice to grade a real loan
+    through the dashboard's own window).
+
+    Both tests run on :func:`seed_periods` (paydays every 14 days from
+    2026-01-02, so the periods end Jan 15, Jan 29, Feb 12, Feb 26, Mar 12,
+    Mar 26, Apr 9, Apr 23, May 7, May 21) with today frozen on Apr 20, in the
+    period ending Apr 23 (index 7).  Nothing else gates: the checking account
+    constrains nothing (finding N-44), so an ungated loan leaves the history at
+    the six-period cap, periods 1..6.
+    """
+
+    @staticmethod
+    def _series(seed_user):
+        """The /savings page's net-worth trend, built the way the page builds it."""
+        return savings_dashboard_service.compute_dashboard_data(
+            BalanceContext.build(seed_user["user"].id),
+        )["net_worth"].series
+
+    def test_a_paid_off_loan_gates_from_its_recorded_start(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Ruling R-R112's own example: no $20,000 swing that never happened.
+
+        A $20,000.00 loan from 2024-01-22, due the 22nd, first tracked on
+        2026-04-01 at $0.00 (already paid off), beside the owner's $1,000.00
+        checking.  Before Apr 1 the ledger holds only the $20,000.00
+        origination principal, so an ungated trend read -$19,000.00 at every
+        history point from Jan 29 to Mar 26 and then +$1,000.00.  Gated from
+        its recorded start, the history begins in the period ending Apr 9 (the
+        first whose end reaches Apr 1) and every point reads $1,000.00.
+
+        The loan's schedule is EMPTY (the precondition below), which is the
+        case the gate used to skip: restore that exception in
+        ``_build_trend_window`` and this test fails with the -$19,000.00 run.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._resolution import resolve_loan_bundle
+        from tests._test_helpers import create_loan_account, freeze_today
+
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Paid-off car",
+                principal=Decimal("20000.00"), term=60,
+                origination_date=date(2024, 1, 22), payment_day=22,
+                tracked_balance=Decimal("0.00"), tracked_from=date(2026, 4, 1),
+            )
+            resolved = resolve_loan_bundle(
+                loan, BalanceContext.build(seed_user["user"].id),
+            )
+            assert resolved.state.schedule == [], (
+                "precondition: a paid-off loan's schedule is empty -- the case "
+                "the gate skipped until ruling R-R112"
+            )
+
+            series = self._series(seed_user)
+
+            assert [point.end_date for point in series.periods] == [
+                date(2026, 4, 9), date(2026, 4, 23),
+                date(2026, 5, 7), date(2026, 5, 21),
+            ]
+            assert series.current_index == 1
+            assert series.net == [Decimal("1000.00")] * 4
+
+    def test_a_tracked_loan_gates_from_its_tracking_start_not_its_first_row(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Ruling R-R111: the gate reads the tracking start, not the first row's date.
+
+        A $20,000.00 loan from 2024-01-22, due the 22nd, first tracked on
+        2026-03-01 at $15,000.00 and still owing.  Its record starts Mar 1, so
+        the history begins in the period ending Mar 12.  The stand-in the gate
+        read until plan step recurrence:R16-c-2 -- the first schedule row, the
+        Mar 22 installment -- would have begun it in the period ending Mar 26,
+        and ignoring the tracking start (reading the origination) would leave
+        the history at the cap, beginning Jan 29.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_loan_account, freeze_today
+
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Tracked car",
+                principal=Decimal("20000.00"), term=60,
+                origination_date=date(2024, 1, 22), payment_day=22,
+                tracked_balance=Decimal("15000.00"),
+                tracked_from=date(2026, 3, 1),
+            )
+
+            series = self._series(seed_user)
+
+            assert series.periods[0].end_date == date(2026, 3, 12)
+            assert series.current_index == 3

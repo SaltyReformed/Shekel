@@ -32,7 +32,7 @@ dict and is deleted; the dense period map is now
 
 The two producers that take raw ``Account`` rows are NOT balance reductions and
 that is why they are exempt: :func:`build_trend_periods` computes a WINDOW from
-each account's kind and loan schedule, and :func:`compute_property_equity`
+each account's kind and each loan's recorded start, and :func:`compute_property_equity`
 resolves an EQUITY figure through another service.  (This paragraph claimed
 "every producer here" until plan step X-w6's adversarial review counted them --
 the same overclaim X-t2 made about this package's seam doors, two steps on.)
@@ -54,7 +54,6 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services import home_equity_service
 from app.services.home_equity_service import HomeEquity
-from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
 from app.services.liability_sign import owed, shown_figure
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
@@ -415,53 +414,63 @@ _RECORDED_HISTORY_KINDS = frozenset({
 
 # The gate index an account contributes when it constrains nothing: the
 # earliest period there could be.  ``max`` over the gating indices then leaves
-# the window to whatever genuinely does constrain it (a loan's schedule) or to
-# the ``_TREND_HISTORY_PERIODS`` cap.
+# the window to whatever genuinely does constrain it (a loan's recorded start)
+# or to the ``_TREND_HISTORY_PERIODS`` cap.
 _UNCONSTRAINED_INDEX = 0
 
 
-def _loan_schedule_start_index(
+def _loan_record_start_index(
     all_periods: PeriodWindow,
-    schedule_rows: list[AmortizationRow] | None,
+    recorded_start: date | None,
 ) -> int | None:
-    """Earliest period_index at which a loan's schedule gives a real balance.
+    """Earliest period_index at which a loan's balance is recorded, not assumed.
 
-    A loan's schedule has no rows before its first recorded payment, so a
-    schedule-derived map returns the loan's CURRENT balance, held flat, for every
-    period before that first payment -- today's balance, not the real amortized
-    balance the loan actually had then.  (The ledger now owns every BEGUN period,
-    so that hazard is gone from the balance map itself; this gate still bounds
-    what the TREND is willing to draw.)  So a loan is "honest" only
-    from the first period whose ``end_date`` reaches its first schedule row
-    onward; before that the trend would carry today's balance flat backward
-    through the loan's real past.  For a GENESIS loan the confirmed rows are
-    ledger-derived from the loan's FIRST recorded payment (the history read
-    switch), so the honest window extends back over the real recorded
-    history -- which the C9 splice fills with ledger-real balances -- where a
-    replay-fallback loan's rows start at its latest anchor.
+    Before a loan's record starts, its balance map carries the origination
+    principal forward from its origination to that day, moved only by what
+    the ledger holds dated there -- a true-up, a ``$0.00`` close, or a payment
+    whose money moved there (recorded after the tracking start with an
+    earlier day, or already held when a tracking start was written before
+    plan step recurrence:R16-c-2 made its doors refuse) -- not the balance
+    the loan really had then.  So a loan is "honest" only from
+    the first period whose ``end_date`` reaches the day its record starts;
+    before that the trend would draw a past the app never recorded.
+
+    **The loan's record starts at its RECORDED start** (ruling **R-R111**):
+    its ``tracking_start`` assertion's date, else its origination; no payment
+    moves it (ruling **R-R114**)
+    (:attr:`app.services.balance_at.LoanTerms.recorded_start`).  This read the
+    EARLIEST schedule row's date until plan step recurrence:R16-c-2, a
+    stand-in ruling R-R109 broke: a confirmed row is dated by the installment
+    its payment pays, which for a payment due off the loan's day can fall
+    before the tracking start.  It was also named for the schedule it read
+    (``_loan_schedule_start_index``) until then.
+
+    **A paid-off loan gates like any other** (ruling **R-R112**).  Until the
+    same step its caller passed no start for a loan whose schedule was empty,
+    on the premise that a paid-off loan's flat balance IS its real balance --
+    true after its record starts and false before it, where the map carries
+    the origination principal just the same.
 
     Returns that first honest ``period_index``, or ``None`` when the loan
-    does not constrain the window: an empty schedule (a paid-off or
-    fully-resolved loan, whose flat current balance IS its real balance) or a
-    missing one (``None``), and the degenerate case of a schedule dated
-    entirely after the user's last period.
+    does not constrain the window: no start (an amortizing account whose loan
+    terms were never set up -- it has no
+    :class:`~app.models.loan_params.LoanParams`, so the dashboard passes it
+    none), and the degenerate case of a start after the user's last period.
 
     Args:
         all_periods: The owner's saved schedule as a
             :class:`~app.services.pay_calendar.PeriodWindow`, payday-ordered.
-        schedule_rows: The loan's amortization rows
-            (:func:`app.services.balance_at.debt_schedule_rows`), or ``None``
-            when the context could not resolve the loan.
+        recorded_start: The day the loan's record starts, or ``None`` when it
+            does not gate.
 
     Returns:
         The first honest ``period_index``, or ``None`` when the loan does
         not gate the window.
     """
-    if not schedule_rows:
+    if recorded_start is None:
         return None
-    first_payment = min(row.payment_date for row in schedule_rows)
     for period in all_periods:
-        if period.end_date >= first_payment:
+        if period.end_date >= recorded_start:
             return period.period_index
     return None
 
@@ -470,17 +479,17 @@ def _honest_history_start_index(
     accounts: list,
     all_periods: PeriodWindow,
     current_period: DerivedPeriod,
-    debt_schedules: dict[int, list[AmortizationRow]],
+    loan_starts: dict[int, date],
 ) -> int:
     """Earliest period_index whose net worth is real for every account.
 
     The trend's leading "actual" segment must not show an account's balance
     as a fallback value in the past.  ONE kind still carries such a fallback:
 
-    - AMORTIZING loans: the resolver schedule is today-forward, so periods
-      before it report the loan's CURRENT balance held flat -- today's
-      balance, not its real past balance.  Gates at its schedule-start index
-      (:func:`_loan_schedule_start_index`).
+    - AMORTIZING loans: before a loan's record starts, its map carries the
+      origination principal flat -- not the balance it really had then.
+      Gates at the period its record starts in, paid off or not
+      (:func:`_loan_record_start_index`, rulings R-R111 and R-R112).
 
     Every NON-loan kind is defined at every period by the seam's one event
     replay, so none of them constrains the window.  This paragraph named the
@@ -515,8 +524,8 @@ def _honest_history_start_index(
     property only -- and cash is exactly the thing that makes it not so.
 
     Returns the maximum gating index -- the earliest period at or after
-    which every cash account has a real balance AND every loan is within
-    its schedule -- clamped to not exceed ``current_period``'s index.
+    which every cash account has a real balance AND every loan's record has
+    started -- clamped to not exceed ``current_period``'s index.
     Returns ``current_period``'s index (no history) when nothing gates
     earlier, so the trend never fabricates a backward run for an
     investment-or-property-only set (those are projected, not "actual").
@@ -525,16 +534,14 @@ def _honest_history_start_index(
         accounts: The user's active accounts (each with ``account_type``
             eager-loaded for :func:`classify_account` and an ``id``).
         all_periods: All of the user's pay periods (the loan gate maps a
-            first-payment date to its period index).
+            loan's recorded start to its period index).
         current_period: The period containing today (the upper clamp).
-        debt_schedules: account_id -> the loan's amortization ROW list
-            (from :func:`app.services.balance_at.debt_schedule_rows`), for the
-            loan gate.  Not a ``DebtSchedule`` bundle -- the rows-only accessor
-            was minted so a balance the bundle then carried (its
-            ``projection_seed``, deleted at plan step recurrence:R16-c-1 with
-            the second fold it seeded) stayed out of an out-of-cluster
-            consumer's hands, and it stays the entry.  (A row does carry a
-            ``remaining_balance``; this module reads only ``payment_date``.)
+        loan_starts: account_id -> the day the loan's record starts, for
+            every configured loan (rulings **R-R111** and **R-R112**; an
+            amortizing account absent from it has no loan terms and does not
+            gate).  It was the loan's amortization ROW list until plan step
+            recurrence:R16-c-2, of which this read only the earliest
+            ``payment_date``, and a loan with an empty list did not gate.
 
     Returns:
         The earliest honest history ``period_index`` (``0`` ..
@@ -546,8 +553,8 @@ def _honest_history_start_index(
         if kind in _RECORDED_HISTORY_KINDS:
             gating_indices.append(_UNCONSTRAINED_INDEX)
         elif kind is AccountProjectionKind.AMORTIZING:
-            loan_start = _loan_schedule_start_index(
-                all_periods, debt_schedules.get(account.id),
+            loan_start = _loan_record_start_index(
+                all_periods, loan_starts.get(account.id),
             )
             if loan_start is not None:
                 gating_indices.append(loan_start)
@@ -560,7 +567,7 @@ def build_trend_periods(
     accounts: list,
     all_periods: PeriodWindow,
     current_period: DerivedPeriod | None,
-    debt_schedules: dict[int, list[AmortizationRow]],
+    loan_starts: dict[int, date],
 ) -> tuple[list[DerivedPeriod], int, int]:
     """Build the net-worth trend's window, current index, and honest start.
 
@@ -573,8 +580,8 @@ def build_trend_periods(
     The tail spans the up-to-:data:`_TREND_HISTORY_PERIODS` periods
     immediately before the current period, but never earlier than
     :func:`_honest_history_start_index` -- so at every history point every
-    loan is within its schedule (none shows today's balance carried flat
-    backward through its real past).  Cash no longer constrains it at all
+    loan's record has started (none shows its origination principal carried
+    flat through a past the app never recorded).  Cash no longer constrains it at all
     (finding N-44): the fold replays every assertion, so a past period reads
     the balance each cash account really held then.
 
@@ -593,9 +600,8 @@ def build_trend_periods(
             :class:`~app.services.pay_calendar.PeriodWindow`, payday-ordered.
         current_period: The period containing the read pass's day, or
             ``None``.
-        debt_schedules: account_id -> the loan's amortization ROW list
-            (:func:`app.services.balance_at.debt_schedule_rows`), for the loan
-            gate.
+        loan_starts: account_id -> the day each configured loan's record
+            starts (:func:`_honest_history_start_index`).
 
     Returns:
         ``(periods, current_index, honest_start)`` -- ``periods`` is the
@@ -611,7 +617,7 @@ def build_trend_periods(
 
     current_idx = current_period.period_index
     honest_start = _honest_history_start_index(
-        accounts, all_periods, current_period, debt_schedules,
+        accounts, all_periods, current_period, loan_starts,
     )
     history_start = max(honest_start, current_idx - _TREND_HISTORY_PERIODS)
     periods = [p for p in all_periods if p.period_index >= history_start]

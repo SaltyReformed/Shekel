@@ -78,7 +78,6 @@ from app.services import (
     savings_dashboard_service,
 )
 from app.services.cash_flow_set import CashFlowSet
-from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from app.services.liability_sign import owed, shown_figure
@@ -1333,9 +1332,7 @@ class TestLoanCrossPageEquality:
             bctx = _bctx(ctx)
 
             # Non-vacuity: unpaid installments dated on or before today exist.
-            schedule = net_worth_kernel.debt_schedule_rows(
-                [ctx["account"]], bctx,
-            )[ctx["account_id"]]
+            schedule = resolved_loan(ctx["account"], bctx).state.schedule
             stale_projected = [
                 row for row in schedule
                 if not row.is_confirmed and row.payment_date <= bctx.as_of

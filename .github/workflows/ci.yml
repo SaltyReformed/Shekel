@@ -5,7 +5,7 @@
 #
 #   scope          classifies the change set: ``registry-only`` or ``full``
 #                  (tools/plan_gate/ci_scope.py; step 2b below).
-#   plan-gate      the plan gate, in EVERY scope (step 4b).
+#   plan-gate      the plan gate and the plan tool, in EVERY scope (step 4b).
 #   tax-law        refuses from December 1 until next year's tax law is in
 #                  the app, in EVERY scope (step 4c).
 #   lint           every pylint floor and the checker tests (steps 5-5c),
@@ -201,10 +201,19 @@ jobs:
       # so the floor is held here too, in both scopes.  ``yaml`` (PyYAML,
       # pinned in requirements-dev.txt) is what ``test_ci_scope.py`` reads
       # THIS file with, which is why the step follows the install.
+      #
+      # The plan TOOL (tools/plan/: the private tracker's setup, and from
+      # step X-cx's leaf L2 the ``plan`` command; ruling balance:R-BAL170) is
+      # graded in the same step, at the same floor, in every scope.  Its tests
+      # never call GitHub and take under a second, and a test of the tool that
+      # will READ the registries (the migration, L7) must not be skipped by a
+      # registry-only change set, which the lint job would do.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/plan_gate -c /dev/null -q
+          pylint tools/plan/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/plan -c /dev/null -q
 
   tax-law:
     runs-on: ubuntu-latest

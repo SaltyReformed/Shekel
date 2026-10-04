@@ -7,6 +7,7 @@ rate history, and payoff calculator across multiple loan types.
 
 import re
 from datetime import date, time, timedelta
+from html.parser import HTMLParser
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -252,7 +253,10 @@ class TestLoanDashboard:
         ``balance_at`` seam, which FOLDS the loan's source facts (origination anchor
         + settled shadows), so the page shows what the borrower actually owes.
 
-        The $240,000 loan (6%, originated 2024-09-01) receives ONE $10,000 payment:
+        The $240,000 loan (6%, originated 2026-01-01, the month before the
+        payment's 2026-02-01 installment -- ruling R-R101 moved it from
+        2024-09-01 when plan step recurrence:R16-c-2 began charging every
+        installment from origination) receives ONE $10,000 payment:
         $1,200 interest that month ($240,000 x 0.06 / 12) and $8,800 principal, so
         the fold owes $240,000 - $8,800 = $231,200.00.  The money-blind replay
         advances only the scheduled first-month principal of $238.92 ->
@@ -268,7 +272,7 @@ class TestLoanDashboard:
         acct = create_loan_account(
             seed_user, db.session, name="Broken Mortgage",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
-            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            term=360, origination_date=date(2026, 1, 1), payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
         checking = create_account_of_type(
@@ -876,13 +880,21 @@ class TestLoanSetup:
         )
         assert resp.status_code == 200
         assert b'name="current_principal"' not in resp.data
-        assert b'name="anchor_balance"' in resp.data
-        assert b'value="15000.00"' in resp.data
-        assert b'name="anchor_date"' in resp.data
+        # Read input by input (review 7f): a second input of a name ahead of
+        # the real box is what a browser posts first and the server reads.
+        values, _ = self._inputs(resp.data)
+        assert values.get("anchor_balance") == ["15000.00"]
+        assert values.get("anchor_date") == ["2026-03-20"]
         assert b'max="2026-03-20" value="2026-03-20"' in resp.data
 
-    def _unconfigured_auto_loan(self, seed_user, db, name):
-        """Return a committed, not-yet-configured Auto Loan account."""
+    def _unconfigured_auto_loan(self, seed_user, db, name, opened_on=None):
+        """Return a committed, not-yet-configured Auto Loan account.
+
+        ``opened_on`` is the day its books open (its opening assertion's
+        day, today when omitted): a test that records a payment into the
+        account before setup passes an earlier one, since the ledger refuses
+        a movement dated before the books open.
+        """
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         account = account_service.create_account(
             account_service.AccountSpec(
@@ -890,6 +902,7 @@ class TestLoanSetup:
                 account_type_id=loan_type.id,
                 name=name,
                 anchor_balance=Decimal("0"),
+                observed_on=opened_on,
             ),
         )
         db.session.add(account)
@@ -1073,6 +1086,341 @@ class TestLoanSetup:
             account_id=account.id,
         ).count() == 0
         assert self._stored_anchors(db, account) == []
+
+    @staticmethod
+    def _setup_form(anchor_date, origination_date="2025-01-01"):
+        """Return a $30,000 auto-loan setup form stating $25,000 as of *anchor_date*."""
+        return {
+            "original_principal": "30000.00",
+            "anchor_balance": "25000.00",
+            "anchor_date": anchor_date,
+            "interest_rate": "5.000",
+            "term_months": "60",
+            "origination_date": origination_date,
+            "payment_day": "15",
+        }
+
+    @pytest.mark.parametrize("stated_on", ["2026-02-27", "2026-03-01"])
+    def test_setup_refuses_a_stated_day_on_or_after_a_payment_and_writes_nothing(
+        self, auth_client, seed_user, db, seed_periods, stated_on,
+    ):
+        """Ruling R-R115 ("Same rule at setup"): the setup door refuses as the dashboard's does.
+
+        A $500 payment into the account moves money on Feb 27, 2026 (seed
+        period 4's first day), before its loan is set up.  A balance stated
+        for that day or for Mar 1 would start the loan's record after a
+        payment it holds, so the setup is refused WHOLE: the form re-renders
+        asking for an earlier day, and neither params, rate row nor anchor row
+        is written.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Before Setup", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form(stated_on),
+        )
+        assert resp.status_code == 200
+        stated = date.fromisoformat(stated_on).strftime("%b %-d, %Y").encode()
+        assert (
+            b"A payment into this loan already moved money on Feb 27, 2026, "
+            b"on or before " + stated in resp.data
+        )
+        assert (
+            b"Enter the balance as of a date after Jan 1, 2025 and before "
+            b"Feb 27, 2026." in resp.data
+        )
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_records_a_stated_day_before_the_first_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The day before the Feb 27 payment starts the record: one tracking start, Feb 26."""
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Stated Before Paying", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-26"),
+        )
+        assert resp.status_code == 302
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        assert self._stored_anchors(db, account) == [(
+            date(2026, 2, 26), Decimal("25000.00"),
+            ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
+        )]
+
+    def test_setup_does_not_count_a_zero_close(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Ruling R-BAL155 at setup: a $0.00 close moved no money and refuses nothing.
+
+        The account's payment due Mar 15 (the loan's own day, so also the
+        installment it would skip) is closed at $0.00 on Feb 27, before
+        setup.  A balance stated for Mar 16 -- after the close's settle day,
+        its due date and its installment alike -- is recorded as the tracking
+        start it is, so no day of the close is counted.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Closed Empty Before Setup", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_amount=Decimal("0.00"), settled_on=date(2026, 2, 27),
+            due_date=date(2026, 3, 15),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-16"),
+        )
+        assert resp.status_code == 302
+        assert [
+            (anchor_date, balance)
+            for anchor_date, balance, _ in self._stored_anchors(db, account)
+        ] == [(date(2026, 3, 16), Decimal("25000.00"))]
+
+    @pytest.mark.parametrize(("paid_on", "period_index"), [
+        (date(2026, 2, 19), 3),  # before the Feb 27 origination
+        (date(2026, 2, 27), 4),  # ON the origination day
+        (date(2026, 2, 28), 4),  # the day after: no day falls between them
+    ])
+    def test_setup_asks_for_the_origination_day_when_no_later_day_comes_before_the_payment(
+        self, auth_client, seed_user, db, seed_periods, paid_on, period_index,
+    ):
+        """A payment before, on, or the day after the origination leaves the origination day.
+
+        $500 moves into the account before its loan is set up with an
+        origination of Feb 27 (the payment guard, ruling R-C, has no loan
+        terms to compare against until then): on Feb 19, on Feb 27 itself, or
+        on Feb 28.  In each case no day falls strictly between the
+        origination and the payment, so every stated day that would record a
+        tracking start is on or after the payment, and one before the
+        origination is refused as pre-origination: the sentence asks for the
+        origination day itself -- which states nothing beyond the original
+        amount -- and names Record balance for the correction, rather than
+        asking for "a date before" the payment, which would send the owner
+        to the origination day without saying the stated balance is then
+        dropped.  Following it configures the loan with no tracking start.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Around Its Origination", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[period_index], amount=Decimal("500.00"),
+            settled_on=paid_on,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-01", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 200
+        assert (
+            b"No date after the loan&#39;s origination (Feb 27, 2026) comes "
+            b"before that payment: enter Feb 27, 2026 as the date" in resp.data
+        )
+        assert b"Enter the balance as of a date after" not in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-27", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 302
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 1
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_asks_for_a_day_between_the_origination_and_the_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two days after the origination, one day between them records, and it is asked for.
+
+        The loan originates Feb 27 and $500 moved into the account on Mar 1,
+        before setup; a balance stated for Mar 10 is refused.  Feb 28 is the
+        one stated day that both follows the origination and precedes the
+        payment, so the sentence names BOTH bounds -- the origination day
+        satisfies "before Mar 1" alone and records nothing -- and following
+        it records one tracking start on Feb 28.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Paid Two Days In", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 3, 1),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-03-10", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 200
+        assert (
+            b"Enter the balance as of a date after Feb 27, 2026 and before "
+            b"Mar 1, 2026." in resp.data
+        )
+        assert b"No date after the loan" not in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data=self._setup_form("2026-02-28", origination_date="2026-02-27"),
+        )
+        assert resp.status_code == 302
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        assert self._stored_anchors(db, account) == [(
+            date(2026, 2, 28), Decimal("25000.00"),
+            ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
+        )]
+
+    @staticmethod
+    def _inputs(page):
+        """Return ``({name: [values]}, {checked names})`` for every ``<input>`` on *page*.
+
+        Each value is read off its OWN input, so a value that came back in
+        the wrong box does not count as coming back; and EVERY input of a
+        name is kept, in page order, because a browser posts them all and
+        the server reads the FIRST (review 7e: keeping only the last let a
+        hidden duplicate ahead of the real box pass).
+        """
+        class _Inputs(HTMLParser):
+            """Collect every input's name, value and checked flag."""
+
+            def __init__(self):
+                super().__init__()
+                self.values, self.checked = {}, set()
+
+            def handle_starttag(self, tag, attrs):
+                """Record one ``<input>``."""
+                if tag != "input":
+                    return
+                named = dict(attrs)
+                if "name" in named:
+                    self.values.setdefault(named["name"], []).append(
+                        named.get("value", ""),
+                    )
+                    if "checked" in named:
+                        self.checked.add(named["name"])
+
+        parser = _Inputs()
+        parser.feed(page.decode())
+        return parser.values, parser.checked
+
+    @pytest.mark.parametrize(("stated_on", "term", "refusal"), [
+        # The schema's: a stated day after today (2026-03-20).
+        ("2026-03-21", "60", b"Please correct the highlighted errors"),
+        # The term cap's: over the Auto Loan type's 120 months.
+        ("2026-03-01", "121", b"Term cannot exceed 120 months"),
+        # The pre-origination one: a stated day before the origination.
+        ("2024-12-31", "60", b"Balance date cannot be before the loan"),
+        # The tracking-start one (ruling R-R115): on or after the Feb 27
+        # payment.
+        ("2026-03-01", "60",
+         b"A payment into this loan already moved money on Feb 27"),
+    ])
+    def test_a_refused_setup_comes_back_as_typed(
+        self, auth_client, seed_user, db, seed_periods, stated_on, term, refusal,
+    ):
+        """Every refusal the form itself can remedy re-renders every field as typed.
+
+        Review 7c of plan step recurrence:R16-c-2: the refused form came back
+        with the first showing's defaults -- the account's own balance under
+        "Balance today", today's date, a blank principal, origination, rate
+        and term, payment day 1, the ARM box clear -- so following a refusal
+        by changing only the date re-submitted a prefilled balance (a
+        prefilled 0.00 configured a loan owing $0.00).  Each value is read off
+        its own input (review 7d: a value echoed into the wrong box must not
+        pass), and each typed value differs from its default, so an echo of
+        the defaults fails.  The answers that redirect instead are
+        render_loan_setup's docstring's to list, not repeated here.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Refused As Typed", opened_on=date(2026, 1, 2),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[4], amount=Decimal("500.00"),
+            settled_on=date(2026, 2, 27),
+        )
+        db.session.commit()
+        typed = {
+            **self._setup_form(stated_on), "term_months": term, "is_arm": "true",
+        }
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup", data=typed,
+        )
+        assert resp.status_code == 200
+        assert refusal in resp.data
+        values, checked = self._inputs(resp.data)
+        assert {field: values.get(field) for field in typed} == {
+            field: [value] for field, value in typed.items()
+        }
+        assert "is_arm" in checked
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+
+    def test_a_refused_setup_leaves_an_arm_box_posted_false_unchecked(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Only the box's own posted value checks it on the way back (review 7d).
+
+        The form's box posts ``true`` or nothing; a hand-built ``is_arm=false``
+        is not ARM, and echoing it by its string's truthiness re-rendered the
+        box checked, so a re-submit would have made the loan ARM.
+        """
+        account = self._unconfigured_auto_loan(
+            seed_user, db, "Posted False", opened_on=date(2026, 1, 2),
+        )
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={**self._setup_form("2026-03-21"), "is_arm": "false"},
+        )
+        assert resp.status_code == 200
+        assert b"Please correct the highlighted errors" in resp.data
+        values, checked = self._inputs(resp.data)
+        # The as-typed render, not the first showing's (which never checks
+        # the box either): the refused day came back.
+        assert values.get("anchor_date") == ["2026-03-21"]
+        assert values.get("is_arm") == ["true"]
+        assert "is_arm" not in checked
 
 
 # ── Update Params Tests ──────────────────────────────────────────────
@@ -2172,16 +2520,20 @@ class TestEscrow:
 
 
 def _make_sync_loan(seed_user, db_session):
-    """Create a $100,000 / 6% mortgage originated 2023-06-01 (clean arithmetic).
+    """Create a $100,000 / 6% mortgage originated 2026-01-01 (clean arithmetic).
 
     Interest on a payment folded against the origination principal is
     100000 * 0.06 / 12 = 500.00 exactly, so a $1,000 payment splits 500 interest /
     500 principal with no rounding -- the shape the E1b sync tests fold against.
+    Originated the month before the one payment's 2026-02-01 installment (plan
+    step recurrence:R16-c-2, ruling R-R101): every contractual installment from
+    origination is charged now, so the 2023-06-01 it carried until then read as
+    thirty-two unpaid months ahead of that payment.
     """
     return create_loan_account(
         seed_user, db_session, name="Sync Mortgage",
         principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
-        origination_date=date(2023, 6, 1), payment_day=1,
+        origination_date=date(2026, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
 
@@ -3227,6 +3579,8 @@ class TestBandChartLongestBaseline:
             scenarios,
             balance_at.loan_payoff_date(acct, balance_ctx),
             balance_at.loan_installments(acct, balance_ctx),
+            params,
+            balance_at.loan_terms(acct, balance_ctx).recorded_start,
         )
         return balance_ctx, scenarios, dates
 
@@ -3270,11 +3624,13 @@ class TestBandChartLongestBaseline:
         A loan due on the 31st: ``add_months`` clamps a 31st to a short
         month's end and, stepped AGAIN from that result, decays to the 28th
         for good, so an extension built one step at a time would put its
-        dates before the plan's (the plan steps from the contract's last
-        installment by a month count, ``_plan._charge_dates``) and run one
-        tick past the payoff.  The grid's dates past the contract are the
-        plan's own: the last label is the payoff's month and the point
-        count past the contract is the month count to the payoff.
+        dates before the plan's and run one tick past the payoff.  Since plan
+        step recurrence:R16-c-2 the grid and the plan's extension both step
+        the loan's ONE installment calendar
+        (``installment_calendar.installment_dates``), which clamps the due day to each
+        month afresh.  The grid's dates past the contract are the plan's own:
+        the last label is the payoff's month and the point count past the
+        contract is the month count to the payoff.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 31),
@@ -8427,32 +8783,33 @@ class TestRecordTrackingStartRoute:
         db.session.expire_all()
         assert len(self._tracking_start_events(db.session, acct)) == before
 
-    def test_accepts_a_date_after_a_recorded_payment(
+    def test_refuses_a_date_after_a_recorded_payment(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """A tracking-start dated after a recorded payment is recorded and governs.
+        """A tracking-start dated after a recorded payment is refused; nothing is written.
 
-        **The route refused this until plan step R20** (ruling R-R72 part 3),
-        on the ground that the payment "would sort before the opening in the
-        walk and be subsumed" -- a claim about an opening the tracking-start
-        stopped being at step C1.  It is an ordinary dated assertion: with a
-        $500 payment settled in an early period (due well before the frozen
-        today of 2026-03-20), a $20,000 tracking-start dated today is
-        appended, and it is the loan's LATEST assertion, so the ledger's
-        balance today reads exactly $20,000 -- the payment before it is
-        superseded by the owner's statement, precisely as a true-up dated
-        today would supersede it.
+        **Ruling R-R114 ("Decide at the door") flips this test**, which pinned
+        the opposite from plan step R20 (it was
+        ``test_accepts_a_date_after_a_recorded_payment``): a tracking start
+        says where the app's record of the loan STARTS -- what the loan's
+        recorded start reads -- and a payment whose money already moved says
+        it started earlier (ruling R-BAL155's day), so the statement is a
+        balance correction and the flash offers an earlier date or the Record
+        balance control that records one.  A $500 payment settles on Jan 2
+        (seed period 0's start); a $20,000 tracking-start asserted for today,
+        Mar 20, appends nothing and moves no balance.
         """
         acct = _create_auto_loan(seed_user, db.session)
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
         )
         db.session.commit()
         before = len(self._tracking_start_events(db.session, acct))
-        assert posted_loan_balance_at(
+        balance_before = posted_loan_balance_at(
             acct.id, seed_user["scenario"].id, date.today(),
-        ) != Decimal("20000.00")
+        )
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
@@ -8460,22 +8817,231 @@ class TestRecordTrackingStartRoute:
                 "anchor_date": date(2026, 3, 20).isoformat(),
                 "anchor_balance": "20000.00",
             },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert (
+            b"A payment into this loan already moved money on Jan 2, 2026, "
+            b"on or before Mar 20, 2026" in resp.data
+        )
+        assert (
+            b"Choose a date before Jan 2, 2026, or use Record balance to "
+            b"correct the loan" in resp.data
+        )
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before
+        assert posted_loan_balance_at(
+            acct.id, seed_user["scenario"].id, date.today(),
+        ) == balance_before
+
+    def test_refuses_the_day_a_payment_is_recorded(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Ruling R-R114's "on or before": a tracking start ON the payment's day is refused."""
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-01-02", "anchor_balance": "25000.00"},
+            follow_redirects=True,
+        )
+        assert (
+            b"A payment into this loan already moved money on Jan 2, 2026, "
+            b"on or before Jan 2, 2026" in resp.data
+        )
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before
+
+    def test_accepts_a_date_before_the_first_recorded_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The day before the Jan 2 payment is a start: the event is appended."""
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("500.00"),
+            settled_on=date(2026, 1, 2),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2025-12-31", "anchor_balance": "25100.00"},
         )
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith(f"/accounts/{acct.id}/loan")
         db.session.expire_all()
         events = self._tracking_start_events(db.session, acct)
         assert len(events) == before + 1
-        assert posted_loan_balance_at(
-            acct.id, seed_user["scenario"].id, date.today(),
-        ) == Decimal("20000.00")
-        page = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert page.status_code == 200
-        # Two tracking-start rows now wear the anchors card's badge (the
-        # form's own label is on every page and grades nothing).
-        assert page.data.count(
-            b'<span class="badge bg-secondary ms-1">Tracking start</span>'
-        ) == 2
+        assert (date(2025, 12, 31), Decimal("25100.00")) in {
+            (e.anchor_date, e.anchor_balance) for e in events
+        }
+
+    def test_a_zero_close_counts_from_no_day(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A $0.00 close moved no money, so no tracking start after it is refused.
+
+        **The developer's explicit change of behaviour, not a rule-5
+        deletion** (ruling **R-BAL155**, answered in the recurrence lane's
+        decisions record, s.18: "The loan's tracking-start button stops
+        counting $0.00 payments now").  This test was ``test_a_zero_close_counts_from_the_installment_it_skips``,
+        which pinned checkpoint 12's reading: a $0.00 close due Mar 20 on a
+        loan due the 15th counted from Mar 15, the installment it skips
+        (ruling R-R107), so a Mar 17 tracking start was refused naming a day
+        nothing was paid.  The same close now counts from no day: a tracking
+        start on Mar 20 -- after the installment it skips and ON its due and
+        settled days -- is recorded.
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[5], amount=Decimal("500.00"),
+            settled_amount=Decimal("0.00"),
+            settled_on=date(2026, 3, 20), due_date=date(2026, 3, 20),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-20", "anchor_balance": "20000.00"},
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        events = self._tracking_start_events(db.session, acct)
+        assert len(events) == before + 1
+        assert (date(2026, 3, 20), Decimal("20000.00")) in {
+            (e.anchor_date, e.anchor_balance) for e in events
+        }
+
+    @pytest.mark.parametrize(
+        ("paid_on", "period_index", "offered", "absent", "accepted_on"), [
+            # Before the Feb 27 origination, and ON it: no date this door
+            # accepts comes before the payment.
+            (date(2026, 2, 19), 3,
+             b"No tracking start can come before that payment, since the loan "
+             b"originated on Feb 27, 2026; use Record balance",
+             b"Choose a date before", None),
+            (date(2026, 2, 27), 4,
+             b"No tracking start can come before that payment, since the loan "
+             b"originated on Feb 27, 2026; use Record balance",
+             b"Choose a date before", None),
+            # The day after: this door records a tracking start ON the
+            # origination day, so Feb 27 is still a date it accepts -- and
+            # following the flash there records one (the setup door's gap is
+            # its own: there the origination day states nothing).
+            (date(2026, 2, 28), 4,
+             b"Choose a date before Feb 28, 2026, or use Record balance",
+             b"No tracking start can come before that payment",
+             date(2026, 2, 27)),
+        ],
+    )
+    def test_offers_an_earlier_date_only_when_this_door_accepts_one(
+        self, auth_client, seed_user, db, seed_periods,
+        paid_on, period_index, offered, absent, accepted_on,
+    ):
+        """This door offers an earlier date only where it accepts one; else Record balance alone.
+
+        The door accepts dates from the origination on, so where the
+        payment's money moved on or before the origination the flash cannot
+        ask for an earlier date: it offers Record balance alone.  $500 moves
+        into an account before its loan is set up with an origination of Feb
+        27 and no stated balance (the payment guard, ruling R-C, has no loan
+        terms to compare against until then); a Mar 1 tracking start is
+        refused and appends nothing.  A payment the day after the origination
+        still leaves the origination day, so that flash offers it, and a
+        tracking start posted there is recorded.
+        """
+        loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        acct = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Paid Around Its Origination",
+                anchor_balance=Decimal("0"),
+                observed_on=date(2026, 1, 2),
+            ),
+        )
+        db.session.add(acct)
+        db.session.flush()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[period_index], amount=Decimal("500.00"),
+            settled_on=paid_on,
+        )
+        db.session.commit()
+        configured = auth_client.post(
+            f"/accounts/{acct.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "30000.00",
+                "anchor_date": "2026-02-27",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2026-02-27",
+                "payment_day": "15",
+            },
+        )
+        assert configured.status_code == 302
+        assert self._tracking_start_events(db.session, acct) == []
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-01", "anchor_balance": "29000.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert offered in resp.data
+        assert absent not in resp.data
+        db.session.expire_all()
+        assert self._tracking_start_events(db.session, acct) == []
+
+        if accepted_on is not None:
+            followed = auth_client.post(
+                f"/accounts/{acct.id}/loan/tracking-start",
+                data={
+                    "anchor_date": accepted_on.isoformat(),
+                    "anchor_balance": "29000.00",
+                },
+            )
+            assert followed.status_code == 302
+            db.session.expire_all()
+            assert [
+                (e.anchor_date, e.anchor_balance)
+                for e in self._tracking_start_events(db.session, acct)
+            ] == [(accepted_on, Decimal("29000.00"))]
+
+    def test_a_projected_payment_does_not_refuse(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A payment due Feb 15 that has not settled is not recorded: Mar 1 is a start."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_transfer
+        acct = _create_auto_loan(seed_user, db.session)
+        create_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[3], amount=Decimal("500.00"),
+            due_date=date(2026, 2, 15),
+        )
+        db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2026-03-01", "anchor_balance": "24000.00"},
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert len(self._tracking_start_events(db.session, acct)) == before + 1
 
 
 class TestLoanBalanceTrueUp:
@@ -9439,3 +10005,174 @@ class TestScheduleRowsResolveTheirOwnTerms:
         assert {row.interest_rate for row in rows} == {
             Decimal("0.05000"), Decimal("0.07000"),
         }
+
+
+class TestTheLoanPageNamesAPaymentByItsInstallment:
+    """Rulings R-R108 and R-R109: the page names a payment by the installment it pays.
+
+    A payment due off the loan's contractual day pays the installment whose
+    interval its due date falls in (ruling R-R104): a payment due Mar 10 on a
+    loan due the 22nd pays Feb 22's, and its charge, cash price, balance and
+    ledger entry already read Feb 22.  The page now names it the same way:
+    the payment-history card lists it under ``Feb 2026`` (R-R108), and the
+    schedule's row for it is ``#1 . Feb 22, 2026`` in every column -- its date,
+    its number, the escrow it is priced with (R-R109).  The band chart does not
+    name payments at all: it plots every installment, each at the balance the
+    ledger holds that day (ruling R-R110, which replaced R-R109's "plots it
+    there").
+
+    Josh's worked example for R-R109, rendered through both routes: a
+    ``$200,000.00`` mortgage at 6%, due the 22nd from 2026-01-22 (P&I
+    ``$1,199.10``), escrowing ``$100.00`` a month rising to ``$300.00`` on
+    Mar 1, and one payment due Mar 10 that moves ``$1,299.10`` -- P&I plus
+    Feb 22's ``$100.00`` escrow.  Feb 22's charge is ``200000.00 * 0.06 / 12
+    = 1000.00`` of interest and ``$100.00`` of escrow, so the payment splits
+    interest ``1,000.00``, escrow ``100.00``, principal ``199.10``.  Before
+    R-R109 the row read ``#2 . Mar 10, 2026`` with Mar 10's ``$300.00``
+    escrow, a row total of ``$1,499.10`` -- ``$200.00`` more than moved.
+    Today is frozen at 2026-03-20 for this file, after the payment.
+    """
+
+    @staticmethod
+    def _mortgage_paid_off_day(seed_user, seed_periods, db_session):
+        """The worked example's mortgage, escrow step and Mar 10 payment."""
+        acct = _create_fresh_mortgage(
+            seed_user, db_session, principal=Decimal("200000.00"),
+            rate=Decimal("0.06000"), payment_day=22,
+            origination_date=date(2026, 1, 22),
+        )
+        opening = add_escrow_line(
+            db_session, acct.id, "Property Tax", Decimal("1200.00"),
+            effective_date=date(2026, 1, 22),
+        )
+        db_session.add(EscrowComponentVersion(
+            line_id=opening.line_id,
+            effective_date=date(2026, 3, 1),
+            annual_amount=Decimal("3600.00"),
+        ))
+        db_session.commit()
+        create_settled_transfer(
+            seed_user, db_session, seed_user["account"], acct,
+            seed_periods[4], amount=Decimal("1299.10"),
+            settled_on=date(2026, 3, 10), due_date=date(2026, 3, 10),
+        )
+        db_session.commit()
+        return acct
+
+    def test_the_schedule_row_is_the_installment_in_every_column(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """``#1 . Feb 22, 2026``, escrow ``$100.00``, total ``$1,299.10`` = the cash."""
+        acct = self._mortgage_paid_off_day(seed_user, seed_periods, db.session)
+
+        context, html = (
+            TestScheduleRowsResolveTheirOwnTerms._capture_schedule_context(  # pylint: disable=protected-access
+                app, auth_client, acct.id,
+            )
+        )
+        rows = context["amortization_schedule"]
+        assert [row.is_confirmed for row in rows[:2]] == [True, False]
+        confirmed = rows[0]
+        assert (
+            context["schedule_row_numbers"][0],
+            confirmed.payment_date,
+            confirmed.interest,
+            confirmed.principal,
+            context["schedule_row_escrow"][0],
+            context["schedule_row_totals"][0],
+        ) == (
+            1, date(2026, 2, 22), Decimal("1000.00"), Decimal("199.10"),
+            Decimal("100.00"), Decimal("1299.10"),
+        )
+        assert "Feb 22, 2026" in html
+        assert "Mar 10, 2026" not in html
+
+    def test_the_card_and_the_chart_name_the_feb_22_installment(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The card lists it under ``Feb 2026``; the chart plots every installment.
+
+        Ruling R-R110 (amends R-R109's "the loan chart plots the payment on
+        Feb 22"): the chart's months are the loan's installment dates, each
+        the balance the ledger holds that day.  Feb 22: ``$200,000.00`` (the
+        payment's money moves Mar 10).  Mar 22: the Mar 10 payment's
+        ``$199.10`` of principal and the planned Mar 22 installment's
+        ``$200.10`` (interest ``199800.90 * 0.06 / 12 = 999.00`` of its
+        ``$1,199.10`` P&I) -- ``$199,600.80``.  Apr 22: ``$201.10`` more
+        (interest ``998.00``) -- ``$199,399.70``.  Before R-R110 the chart read
+        Feb $200,000.00 then Apr: the payment never showed and March was gone.
+        """
+        acct = self._mortgage_paid_off_day(seed_user, seed_periods, db.session)
+
+        response = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert "Ledger-confirmed through Feb 2026" in html
+        assert "<td>Feb 2026</td>" in html
+        assert "<td>Mar 2026</td>" not in html
+        band = _parse_band_chart(html)
+        assert list(zip(band["labels"][:3], band["balance"][:3])) == [
+            ("Feb 2026", 200000.0), ("Mar 2026", 199600.8),
+            ("Apr 2026", 199399.7),
+        ]
+
+
+class TestTheLoanChartKeepsTheMonthsOfACorrectedLoan:
+    """Ruling R-R114 on the loan chart: a corrected in-app loan charts from its first installment.
+
+    Ruling R-R113's example: $20,000.00 at 6% for 24 months, kept in the app
+    from 2025-12-22, due the 22nd, $2,000.00 paid on Jan 22, Feb 22 and Mar 22
+    2026, then its balance corrected on 2026-04-01 to $15,000.00.  Since ruling
+    R-R114 the tracking-start door refuses that date (payments are recorded
+    before it), so the correction is a TRUE-UP, which starts nothing: the
+    loan's record starts at its origination and the chart's grid runs from the
+    first installment after it (Jan 22).  Recorded as a tracking start, the
+    state the door now refuses, the record would start Apr 1 and the grid
+    would open at Apr 22.  The seam's figures for those months are pinned in
+    ``test_balance_at.py`` (``TestNoPaymentMovesTheRecordedStart``).
+    """
+
+    def test_the_grid_opens_at_the_first_installment_after_origination(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The band's first four points are Jan 22, Feb 22, Mar 22 and Apr 22 2026."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            freeze_today,
+            insert_trueup_event,
+            loan_params_for,
+        )
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Kept in the app",
+                principal=Decimal("20000.00"), rate=Decimal("0.06000"), term=24,
+                origination_date=date(2025, 12, 22), payment_day=22,
+            )
+            db.session.commit()
+            for period_index, paid_on in (
+                (1, date(2026, 1, 22)), (3, date(2026, 2, 22)),
+                (5, date(2026, 3, 22)),
+            ):
+                create_settled_transfer(
+                    seed_user, db.session, seed_user["account"], loan,
+                    seed_periods[period_index], amount=Decimal("2000.00"),
+                    settled_on=paid_on, due_date=paid_on,
+                )
+            db.session.commit()
+            insert_trueup_event(
+                loan_params_for(db.session, loan.id), Decimal("15000.00"),
+                date(2026, 4, 1),
+            )
+            db.session.commit()
+
+            _ctx, _scenarios, dates = TestBandChartLongestBaseline._band_inputs(
+                seed_user, loan,
+            )
+
+            assert dates[:4] == [
+                date(2026, 1, 22), date(2026, 2, 22), date(2026, 3, 22),
+                date(2026, 4, 22),
+            ]

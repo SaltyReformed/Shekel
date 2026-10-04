@@ -145,6 +145,27 @@ repos:
           - tools/plan_gate/
           - --fail-under=10
           - --fail-on=E,F
+      - id: pylint-plan-tool
+        name: pylint plan tool (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tools/plan/.*\.py$
+        pass_filenames: false
+        # The private tracker's tooling (ruling balance:R-BAL170) holds the
+        # 10.00/10 floor tools/pylint and tools/plan_gate hold, from its first
+        # commit; ci.yml step 4b runs the same command in every scope.
+        args:
+          - tools/plan/
+          - --fail-under=10
+          - --fail-on=E,F
+      - id: plan-tool-tests
+        name: plan tool unit tests
+        entry: pytest
+        language: system
+        files: ^tools/plan/.*\.py$
+        pass_filenames: false
+        args: [tools/plan, -c, /dev/null, -q]
 
       # The planning REGISTRIES and the four arc documents.  Every finding
       # names a LIVE owner, the stated row count matches the table, every

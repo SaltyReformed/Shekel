@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.services.installment_calendar import installment_paid_by
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.loan_loaders import load_loan_params
 from app.services.posting_service import _ledger_account_for
@@ -61,11 +62,18 @@ class LoanPaymentHistoryRow:
     equals its cash (plan step X-au-g-2c-3b-2).
 
     Attributes:
-        due_date: The monthly installment the payment satisfies
-            (:func:`app.services.loan_loaders.loan_payment_due_date` -- the
-            transfer's own stored ``due_date``) -- the same date the amortization
-            schedule rows it.  NOT derived from the pay period, so a payment
-            settled late still reports the installment it actually paid.
+        installment: The contractual installment the payment PAYS, which the
+            card names it by (ruling **R-R108**): the installment its own due
+            date (:func:`app.services.loan_loaders.loan_payment_due_date`) falls
+            in, :func:`~app.services.installment_calendar.installment_paid_by`
+            -- the one answer its charge, its cash price, the ledger and the
+            confirmed schedule row read (rulings **R-R104**, **R-R109**).  A
+            payment due Mar 10 on a loan due the 22nd pays, and is listed
+            under, Feb 22; one due on the contractual day is listed under its
+            due date, and one due before the loan's first installment under
+            its own.  It was the due date itself until R-R108.  NOT derived
+            from the pay period or the settled day, so a payment settled late
+            still reports the installment it actually paid.
         cash: The full cash paid (the settled payment leg's
             :func:`~app.services.row_valuation.leg_settled_contribution`),
             cent-quantized.
@@ -77,7 +85,7 @@ class LoanPaymentHistoryRow:
         escrow: The real escrow the payment cleared, cent-quantized.
     """
 
-    due_date: date
+    installment: date
     cash: Decimal
     principal: Decimal
     interest: Decimal
@@ -188,16 +196,16 @@ def confirmed_loan_payment_history(
     walk = _configured_loan_walk(loan_account_id, scenario_id)
     if walk is None:
         return None
-    # Sorted by the INSTALLMENT the payment satisfies, matching how the ledger
-    # seam's confirmed view orders its rows and how the amortization table
-    # reads.  The walk's outcomes arrive in CONTRACT order already, but a
-    # payment pre-paid for a later installment and one paid late for an
-    # earlier one are ordered here by the same key the schedule rows by, and
-    # the payment's TRANSFER id breaks a tie (two payments against one
-    # installment) with the stable recording order.  It was the shadow's id
-    # until plan step balance:X-bi-6-4b; the two orders agree wherever a
-    # transfer's shadows were written with it (0 inversions measured on the
-    # 2026-09-23 21:17 production dump).
+    # Sorted by the payment's own DUE date, matching how the ledger seam's
+    # confirmed view orders its rows, and so by the INSTALLMENT it pays too:
+    # ``installment_paid_by`` never falls as the due date rises.  The walk's
+    # outcomes arrive in CONTRACT order already, but a payment pre-paid for a
+    # later installment and one paid late for an earlier one are ordered here
+    # by the same key the schedule rows by, and the payment's TRANSFER id
+    # breaks a tie (two payments due on one day) with the stable recording
+    # order.  It was the shadow's id until plan step balance:X-bi-6-4b; the
+    # two orders agree wherever a transfer's shadows were written with it (0
+    # inversions measured on the 2026-09-23 21:17 production dump).
     by_installment = sorted(
         (
             outcome for outcome in walk.settled_splits
@@ -205,9 +213,16 @@ def confirmed_loan_payment_history(
         ),
         key=lambda outcome: (outcome.due_date, outcome.source.transfer.id),
     )
+    # The loan's calendar rides on the walk's stream (ruling R-R100), so the
+    # installment each row is named by is placed on the one calendar the walk
+    # charged it against.
+    calendar = walk.stream.calendar
     return [
         LoanPaymentHistoryRow(
-            due_date=outcome.due_date,
+            installment=installment_paid_by(
+                calendar.origination_date, calendar.payment_day,
+                outcome.due_date,
+            ),
             cash=round_money(outcome.cash),
             principal=round_money(outcome.principal),
             interest=round_money(outcome.interest),

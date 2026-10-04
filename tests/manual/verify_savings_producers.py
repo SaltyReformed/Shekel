@@ -132,22 +132,36 @@ def _date(value):
 
 
 def _terms(terms):
-    """Every field of the seam's LoanTerms."""
+    """Every field of the seam's LoanTerms.
+
+    ``is_arm`` and ``recorded_start`` were missing until plan step
+    recurrence:R16-c-2, so this dump could not see a change to either; on a
+    tree whose LoanTerms has no ``recorded_start`` (before that step)
+    :func:`_get` reads it as ``None``, an intended shape change on every loan.
+    """
     if terms is None:
         return None
     return {
         "monthly_payment": _money(_get(terms, "monthly_payment")),
         "current_rate": _money(_get(terms, "current_rate")),
         "is_originated": _get(terms, "is_originated"),
+        "is_arm": _get(terms, "is_arm"),
+        "recorded_start": _date(_get(terms, "recorded_start")),
     }
 
 
 def _figures(figures):
-    """Every field of the seam's LoanFigures."""
+    """Every field of the seam's LoanFigures.
+
+    ``closing_date`` (plan step recurrence:R7d-h) was missing until plan step
+    recurrence:R16-c-2; on a tree older than R7d-h :func:`_get` reads it as
+    ``None``.
+    """
     if figures is None:
         return None
     return {
         "payoff_date": _date(_get(figures, "payoff_date")),
+        "closing_date": _date(_get(figures, "closing_date")),
         "is_retired": _get(figures, "is_retired"),
         "is_paid_off": _get(figures, "is_paid_off"),
         "terms": _terms(_get(figures, "terms")),
