@@ -31,11 +31,13 @@ from datetime import datetime as _datetime
 from datetime import timezone as _timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import text
 
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from tests._test_helpers import load_migration_module
+from app.utils.dates import display_today
+from tests._test_helpers import freeze_today, load_migration_module
 
 _MIGRATION_FILENAME = (
     "e5b2c8a17d34_an_assertion_records_the_day_it_was_typed.py"
@@ -59,6 +61,24 @@ def _app_dated_rows():
 
 class TestTheDowngradeRefusesWhatItCannotRebuild:
     """``_APP_DATED`` is the gate between a lossless drop and a silent one."""
+
+    @pytest.fixture(autouse=True)
+    def _one_clock(self, monkeypatch):
+        """Both stamps these cases read answer ONE instant before ``seed_user``.
+
+        The opening assertion ``seed_user`` provisions takes ``recorded_on``
+        from Python's clock (the column's ``display_today`` default) and
+        ``created_at`` from PostgreSQL's ``now()``, and ``_APP_DATED`` flags
+        any row where the two disagree.  A clock that moves only one of them
+        -- the calendar sweep moves Python's alone -- seeds a row both cases
+        would read as app-dated.  :func:`freeze_today` patches Python's clock
+        and has the harness answer the database's for ORM writes: omitted
+        server defaults are stamped at flush and rendered ``now()`` calls
+        are rewritten.  PostgreSQL's own clock does not move, so a Core
+        ``insert()`` into this table would escape the freeze (and fail the
+        sweep loudly).  Autouse, so it runs before ``seed_user``.
+        """
+        freeze_today(monkeypatch, display_today())
 
     def test_it_is_silent_on_a_database_whose_rows_the_derivation_covers(
         self, app, seed_user,

@@ -204,7 +204,10 @@ def test_r20_backfill_records_the_unasserted_stated_balance_once(
             "FROM budget.loan_params WHERE account_id = :a"
         ), {"a": probe.id}).scalar()
         assert date(2024, 1, 1) < setup_day
-        assert abs(setup_day - date.today()) <= timedelta(days=1)
+        db_today = db.session.execute(text(
+            "SELECT (now() AT TIME ZONE 'America/New_York')::date"
+        )).scalar()
+        assert abs(setup_day - db_today) <= timedelta(days=1)
 
         midlife = create_loan_account(
             seed_user, db.session, name="R20 midlife",
