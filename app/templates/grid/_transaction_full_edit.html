@@ -804,8 +804,11 @@
       (CC-5-4a-4's second review).  On a settled row the "Your books record"
       sentence below names its money; a row reverted to Projected keeps its
       record un-dated (ruling R-BAL61), which the cash fold reads in neither
-      tier, so no sentence here names it (CC-5-4a-4's third review, L1). -#}
-  {%- set purchases = txn.entries | rejectattr('covers_settlement') | list -%}
+      tier, so no sentence here names it (CC-5-4a-4's third review, L1).
+      Read off the delete's own preview (``preview.purchase_ids``, the
+      ``Transaction.purchases`` reading) since ruling R-CC131: the question
+      counts the set the press is checked against, and posts it back. -#}
+  {%- set purchases = preview.purchase_ids -%}
   {#- The un-archive sentence states its exception in words (ruling R-CC112,
       "State the condition"): un-archive restores a row of its candidate set
       (``preview.comes_back_on_unarchive``) unless the books have moved over it
@@ -824,10 +827,12 @@ Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | lengt
           hx-swap="innerHTML"
           hx-disabled-elt="this"
           hx-confirm="{{ question | trim }}"
-          {#- The lines the dialog NAMED, from the same `withdraws` its
-              clause prints (ruling R-CC127); htmx sends a DELETE's values as
-              its query string. #}
-          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}"}'
+          {#- What the dialog NAMED, sent back with the press (htmx sends a
+              DELETE's values as its query string): the lines, from the same
+              `withdraws` its clause prints (ruling R-CC127), and the
+              purchases its question counts (ruling R-CC131, "Refuse and
+              redraw"). #}
+          hx-vals='{"shown_lines": "{{ shown_line_ids(withdraws) }}", "shown_purchases": "{{ purchases | sort | join(',') }}"}'
           aria-label="Delete {{ txn.name }}">
     <i class="bi bi-trash"></i> Delete this row
   </button>

@@ -36,7 +36,12 @@ from app.extensions import db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import transaction_service, transfer_legs
+from app.services import (
+    entry_service,
+    transaction_service,
+    transfer_legs,
+    transfer_service,
+)
 from app.services.settle_day import SettleDay
 from app.services.statement_match import (
     accept_match,
@@ -44,7 +49,12 @@ from app.services.statement_match import (
     release_match,
 )
 from app.utils.log_events import EVT_STATEMENT_MATCH_WITHDRAWN
-from tests._test_helpers import create_account_of_type, typed
+from tests._test_helpers import (
+    create_account_of_type,
+    generate_row_of,
+    make_expense_template,
+    typed,
+)
 from tests.conftest import log_in_seed_user
 from tests.test_routes._statement_forms import ReconcileFormReader
 from tests.test_routes.test_cc5_4a3_captions import (
@@ -87,11 +97,32 @@ def _vals(html, method, path):
 
 
 def _paid_vals(html, txn_id):
+    """What the card's Paid / Received button sends beside its request."""
     return _vals(html, "post", f"/transactions/{txn_id}/mark-done")
 
 
 def _delete_vals(html, txn_id):
+    """What the card's Delete button sends: the lines and purchases its dialog named."""
     return _vals(html, "delete", f"/transactions/{txn_id}")
+
+
+def dialog_delete_values(client, txn_id):
+    """What the popover's Delete sends if pressed now: its dialog's ``hx-vals``.
+
+    The bank lines and the purchases the dialog names as the card is drawn at
+    this moment (rulings R-CC127 / R-CC131) -- for a test that deletes a row
+    the way the card does, rather than with a hand-picked query.
+
+    Args:
+        client: A signed-in test client.
+        txn_id: The row.
+
+    Returns:
+        The query the Delete button sends.
+    """
+    response = client.get(f"/transactions/{txn_id}/full-edit")
+    assert response.status_code == 200
+    return _delete_vals(response.get_data(as_text=True), txn_id)
 
 
 def _undo_elsewhere(seed_user, line, account=None):
@@ -374,7 +405,9 @@ class TestACompanionsMarkPaidMayFreeNoLine:
     def test_a_companions_press_is_refused_and_the_owners_same_press_goes_ahead(
         self, app, companion_client, seed_user, caplog,
     ):
-        """The companion page's Mark Paid on Hotel: refused, nothing changes; the owner's withdraws silently.
+        """The companion page's Mark Paid on Hotel is refused; the owner's same press withdraws.
+
+        Refused with nothing changed; the owner's withdraws silently (R-CC56).
 
         Both requests post exactly what the companion page's card renders --
         one phone-card partial, shared with the owner's phone grid.  The owner
@@ -434,7 +467,9 @@ class TestACompanionsMarkPaidMayFreeNoLine:
     def test_a_companions_crafted_lines_are_not_read(
         self, app, companion_client, seed_user,
     ):
-        """A companion posting the right line id is still refused: the owner's statement is never its to name.
+        """A companion posting the right line id is still refused.
+
+        The owner's statement is never the companion's to name.
 
         The card's own controls plus a crafted ``shown_lines`` naming the very
         line the press frees -- what passes for a popover's Paid.
@@ -618,7 +653,7 @@ class TestTheDeleteDialogPostsWhatItNamed:
     def test_the_delete_posts_its_dialogs_line_and_withdraws(
         self, app, auth_client, seed_user,
     ):
-        """The delete dialog names the HOTEL line; the button sends its id, and the delete withdraws it."""
+        """The dialog names the HOTEL line; the button sends its id; the delete withdraws it."""
         with app.app_context():
             txn = a_transaction(
                 seed_user, name="Hotel", amount="120.00", template=False,
@@ -628,7 +663,7 @@ class TestTheDeleteDialogPostsWhatItNamed:
             line = _matched(seed_user, txn)
             txn_id = txn.id
             vals = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert vals == {"shown_lines": str(line.id)}
+            assert vals == {"shown_lines": str(line.id), "shown_purchases": ""}
 
             response = auth_client.delete(
                 f"/transactions/{txn_id}", query_string=vals,
@@ -650,7 +685,7 @@ class TestTheDeleteDialogPostsWhatItNamed:
             _settle(seed_user, txn)
             txn_id = txn.id
             stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
-            assert stale == {"shown_lines": ""}
+            assert stale == {"shown_lines": "", "shown_purchases": ""}
             line = _matched(seed_user, txn)
 
             response = auth_client.delete(
@@ -699,13 +734,131 @@ class TestTheDeleteDialogPostsWhatItNamed:
             assert _claimed(seed_user, line)
 
 
+class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
+    """Ruling R-CC131 (developer 2026-10-04, "Refuse and redraw"), fulfilling R-CC96's clause."""
+
+    def test_a_purchase_added_after_the_dialog_was_drawn_is_refused_and_redrawn(
+        self, app, auth_client, seed_user,
+    ):
+        """R-CC131's own example: a dialog drawn at 10:00, a $12.34 purchase at 10:01, Delete.
+
+        Nothing is deleted, the popover is redrawn with the purchase named
+        above it, and the redrawn dialog -- now counting it -- goes ahead.
+        """
+        with app.app_context():
+            txn = _groceries(seed_user)
+            txn_id = txn.id
+            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
+            assert stale == {"shown_lines": "", "shown_purchases": ""}
+            kroger = _kroger(seed_user, txn_id)
+
+            response = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=stale,
+            )
+
+            assert response.status_code == 400
+            assert response.headers["HX-Retarget"] == f"#txn-full-edit-{txn_id}"
+            assert response.headers["HX-Reswap"] == "outerHTML"
+            html = response.get_data(as_text=True)
+            day = _day(seed_user)
+            assert (
+                "Nothing was deleted: this page was out of date. Groceries "
+                f"holds 1 purchase now ({day.month}/{day.day} Kroger $12.34), "
+                "and the page named 0." in html
+            )
+            assert "Here it is as it is now; press again to go ahead." in html
+            assert "and the 1 purchase filed under it?" in html
+            _committed()
+            row = db.session.get(Transaction, txn_id)
+            assert not row.is_deleted
+            assert [entry.id for entry in row.purchases] == [kroger]
+
+            fresh = _delete_vals(html, txn_id)
+            assert fresh == {"shown_lines": "", "shown_purchases": str(kroger)}
+            again = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=fresh,
+            )
+
+            assert again.status_code == 200
+            _committed()
+            row = db.session.get(Transaction, txn_id)
+            assert row.is_deleted, "a recurring row stays as a tombstone"
+            assert row.entries == [], "and its purchase went with it, named"
+
+    def test_a_purchase_named_and_since_removed_is_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """Equality both ways: the dialog counted a purchase another tab has since deleted."""
+        with app.app_context():
+            txn = _groceries(seed_user)
+            txn_id = txn.id
+            kroger = _kroger(seed_user, txn_id)
+            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
+            assert stale == {"shown_lines": "", "shown_purchases": str(kroger)}
+            entry_service.delete_entry(kroger, seed_user["user"].id)
+            db.session.commit()
+
+            response = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=stale,
+            )
+
+            assert response.status_code == 400
+            assert (
+                "Groceries holds 0 purchases now, and the page named 1."
+                in response.get_data(as_text=True)
+            )
+            _committed()
+            assert not db.session.get(Transaction, txn_id).is_deleted
+
+    def test_a_delete_without_the_field_over_a_purchase_is_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """No dialog posts this; a request naming no purchase does not delete one."""
+        with app.app_context():
+            txn = _groceries(seed_user)
+            txn_id = txn.id
+            kroger = _kroger(seed_user, txn_id)
+
+            response = auth_client.delete(f"/transactions/{txn_id}")
+
+            assert response.status_code == 400
+            assert "HX-Retarget" not in response.headers
+            _committed()
+            row = db.session.get(Transaction, txn_id)
+            assert not row.is_deleted
+            assert [entry.id for entry in row.purchases] == [kroger]
+
+
+def _groceries(seed_user):
+    """This period's recurring $300.00 Groceries envelope, holding no purchase."""
+    template = make_expense_template(
+        db.session, seed_user, amount="300.00", name="Groceries",
+        category_key="Rent", is_envelope=True,
+    )
+    txn = generate_row_of(template, seed_user["bootstrap_period"])
+    db.session.commit()
+    return txn
+
+
+def _kroger(seed_user, txn_id):
+    """A $12.34 Kroger purchase added under *txn_id* -- the companion's, at 10:01."""
+    entry = entry_service.create_entry(
+        txn_id, seed_user["user"].id, entry_service.EntryDetails(
+            figure=typed(Decimal("12.34")), description="Kroger",
+            purchased_on=_day(seed_user),
+        ),
+    )
+    db.session.commit()
+    return entry.id
+
+
 class TestTheTransferPopover:
     """The transfer card: its Save's and its Paid's ``shown_lines``."""
 
     def test_a_stale_transfer_zero_save_is_redrawn_and_the_second_press_goes_ahead(
         self, app, auth_client, seed_user,
     ):
-        """R-CC128 on the transfer card: 0.00 typed while matched, the match undone elsewhere, Save.
+        """R-CC128 on the transfer card: 0.00 typed, the match undone elsewhere, Save.
 
         The card is redrawn with nothing written; the redrawn card's own Save
         of 0.00 then takes both legs' payments off.
@@ -776,9 +929,6 @@ class TestTheTransferPopover:
 
 def transfer_service_revert(seed_user, xfer_id):
     """Set a transfer back to Projected, as the card's Status dropdown would."""
-    # pylint: disable=import-outside-toplevel
-    from app.services import transfer_service
-
     transfer_service.update_transfer(
         xfer_id, seed_user["user"].id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
@@ -792,7 +942,7 @@ class TestTheTransferInstanceDeleteRefusesRatherThanFailing:
     def test_a_hard_delete_that_would_free_a_line_is_refused_and_writes_nothing(
         self, app, auth_client, seed_user,
     ):
-        """An ad-hoc pair whose checking leg is matched: the field-less DELETE names nothing, so it is refused.
+        """An ad-hoc pair with a matched leg: the field-less DELETE names nothing; refused.
 
         cp1 raised the act's refusal out of this door uncaught, a 500; it is
         the designed 400 now, and the pair and its match stand.

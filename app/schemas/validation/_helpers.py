@@ -441,16 +441,17 @@ class BaseSchema(Schema):
         unknown = EXCLUDE
 
 
-class ShownLines(fields.Field):
-    """The bank lines a page's withdrawal caption NAMED, as the page posts them back.
+class ShownIds(fields.Field):
+    """The rows a page NAMED before a press, as the page posts them back.
 
     Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**:
     *"Each warning also sends back the bank lines it named, and the function
-    compares them with what it would undo."*  The page writes the ids as one
-    comma-joined value (``_withdrawal_macros.shown_line_ids``) and this reads
-    them back, each through :func:`~app.utils.digit_strings.parse_row_id` --
-    :class:`RowId`'s rule -- so a submitted id means here what it means at
-    every other door.
+    compares them with what it would undo."*  The bank lines a withdrawal
+    caption named (``_withdrawal_macros.shown_line_ids``), and since ruling
+    **R-CC131** the purchases a row's delete dialog named.  The page writes
+    the ids as one comma-joined value and this reads them back, each through
+    :func:`~app.utils.digit_strings.parse_row_id` -- :class:`RowId`'s rule --
+    so a submitted id means here what it means at every other door.
 
     **Declare it ``allow_none``, and the reason is PRESENCE.**  A full-edit
     popover always posts the field, EMPTY when its captions name no line, and
@@ -460,17 +461,18 @@ class ShownLines(fields.Field):
     value for a field that is not ``allow_none``, which would erase that
     difference; for an ``allow_none`` field it loads as ``None``, so a page
     that named nothing reads as present.  ``routes._shown_lines`` is the one
-    reader of both answers.
+    reader of both answers for the bank lines.
 
     The ids are OWNER INPUT, never a scope: the act compares only the named
     lines on the accounts its movements are on
-    (``match_withdrawal._refuse_unshown``).
+    (``match_withdrawal._refuse_unshown``), and the delete compares the named
+    purchases with the row's own, as a set.
     """
 
-    default_error_messages = {"invalid": "Not a valid list of bank lines."}
+    default_error_messages = {"invalid": "Not a valid list of ids."}
 
     def _deserialize(self, value, attr, data, **kwargs):
-        """Return the line ids *value* names.
+        """Return the ids *value* names.
 
         Args:
             value: The submitted value -- ids joined by commas.
@@ -496,11 +498,11 @@ class ShownLines(fields.Field):
 class ShownLinesSchema(BaseSchema):
     """A press that posts nothing but the lines its page named.
 
-    The transaction DELETE -- whose parameters htmx sends as a query string --
-    and the transfer popover's Paid, neither of which loads another schema to
-    declare :class:`ShownLines` on (plan step ``credit_card:CC-5-4a-5``).  The
+    The transfer popover's Paid, which loads no other schema to declare
+    :class:`ShownIds` on (plan step ``credit_card:CC-5-4a-5``).  The
     transfer instance DELETE reads no field: no template renders it, so every
-    request it takes named nothing.
+    request it takes named nothing.  The transaction DELETE's dialog names
+    its purchases too (``TransactionDeleteSchema``).
     """
 
     @pre_load
@@ -508,7 +510,7 @@ class ShownLinesSchema(BaseSchema):
         """Map an empty ``shown_lines`` to ``None``: a page that named nothing."""
         return _normalize_empty_inputs(self, data)
 
-    shown_lines = ShownLines(allow_none=True)
+    shown_lines = ShownIds(allow_none=True)
 
 
 def _reject_envelope_on_income(data, message):

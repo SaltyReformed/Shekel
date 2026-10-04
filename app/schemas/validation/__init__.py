@@ -178,6 +178,7 @@ from app.schemas.validation.transactions import (
     InlineTransactionCreateSchema,
     MarkDoneSchema,
     TransactionCreateSchema,
+    TransactionDeleteSchema,
     TransactionItemUpdateSchema,
     TransactionUpdateSchema,
 )
@@ -273,6 +274,7 @@ __all__ = [
     "TemplateCreateSchema",
     "TemplateUpdateSchema",
     "TransactionCreateSchema",
+    "TransactionDeleteSchema",
     "TransactionItemUpdateSchema",
     "TransactionUpdateSchema",
     "TransferCreateSchema",

@@ -124,6 +124,7 @@ from tests._test_helpers import (
     typed,
 )
 from tests.test_routes._statement_forms import ReconcileFormReader
+from tests.test_routes.test_cc5_4a5_popover_presses import dialog_delete_values
 from tests.test_routes.test_transfer_leg_cells import (
     _create_savings,
     _create_transfer,
@@ -599,8 +600,9 @@ class TestATombstoneCountsAsLeaving:
             outcome = transaction_service.delete_transaction(
                 envelope, seed_user["user"].id,
                 # What the dialog names, as the card posts it back (plan step
-                # credit_card:CC-5-4a-5, ruling R-CC127).
+                # credit_card:CC-5-4a-5, rulings R-CC127 / R-CC131).
                 shown=match_withdrawal.Shown(preview.withdrawn.line_ids),
+                purchases_named=preview.purchase_ids,
             )
             db.session.commit()
             db.session.expire_all()
@@ -1125,7 +1127,12 @@ class TestAnArchivedItemsRowSaysArchived:
             ).status_code == 302
             db.session.expire_all()
             assert db.session.get(Transaction, row_id).is_deleted is False
-            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            # Pressed as the card's Delete sends it: the $12.34 purchase its
+            # dialog names (plan step credit_card:CC-5-4a-5, ruling R-CC131).
+            assert auth_client.delete(
+                f"/transactions/{row_id}",
+                query_string=dialog_delete_values(auth_client, row_id),
+            ).status_code == 200
 
             response = auth_client.post(f"/transactions/{row_id}/mark-done")
 

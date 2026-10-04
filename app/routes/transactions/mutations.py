@@ -71,7 +71,7 @@ from app.routes.transactions._helpers import (
     _INVALID_REFERENCE_MSG,
     _mark_done_schema,
     _mark_done_success_response,
-    _shown_lines_schema,
+    _delete_dialog_schema,
     _stale_transaction_response,
     _update_schema_for,
     _verify_owned_fks_in_update,
@@ -631,7 +631,10 @@ def delete_transaction(txn_id):
 
     Refusals (``deletion_refusal``) come back as the designed error fragment
     the card's other controls use, so a crafted request or a stale card is told
-    why rather than swapping a bare string.
+    why rather than swapping a bare string.  A dialog out of date -- it named
+    other bank lines (ruling **R-CC127**) or other purchases (ruling
+    **R-CC131**) than the row holds now -- redraws the popover instead (ruling
+    **R-CC128**).
 
     Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE and the
     hard-delete DELETE are both version-pinned by SQLAlchemy.  A concurrent
@@ -644,20 +647,22 @@ def delete_transaction(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    # The lines the card's dialog named (ruling **R-CC127**), which htmx sends
-    # as a DELETE's query string; a request without them named none.
-    errors = _shown_lines_schema.validate(request.values)
+    # What the card's dialog named, which htmx sends as a DELETE's query
+    # string: the bank lines (ruling **R-CC127**) and the purchases (ruling
+    # **R-CC131**).  A request without them named none.
+    errors = _delete_dialog_schema.validate(request.values)
     if errors:
         return _error_transaction_response(
             txn_id, flatten_schema_errors(errors), status=422,
         )
-    press = read_press(
-        _shown_lines_schema.load(request.values), absent=NOTHING_SHOWN,
-    )
+    dialog = _delete_dialog_schema.load(request.values)
+    purchases_named = dialog.pop("shown_purchases", None) or frozenset()
+    press = read_press(dialog, absent=NOTHING_SHOWN)
 
     try:
         outcome = transaction_service.delete_transaction(
             txn, current_user.id, shown=press.shown,
+            purchases_named=purchases_named,
         )
         db.session.commit()
     except ValidationError as exc:

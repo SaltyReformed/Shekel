@@ -33,7 +33,7 @@ from app.services.match_withdrawal import Shown, Silent
 
 #: The form field a full-edit popover posts its captions' bank lines under,
 #: declared on every schema those presses load
-#: (:class:`~app.schemas.validation._helpers.ShownLines`).
+#: (:class:`~app.schemas.validation._helpers.ShownIds`).
 SHOWN_LINES_FIELD = "shown_lines"
 
 
@@ -67,7 +67,7 @@ def read_press(data: dict, *, absent: Shown | Silent) -> Press:
 
     Returns:
         The :class:`Press`: ``Shown`` over the posted ids -- none, for the
-        empty value ``ShownLines`` loads as ``None`` -- from a popover, or
+        empty value ``ShownIds`` loads as ``None`` -- from a popover, or
         *absent* from any other surface.
     """
     if SHOWN_LINES_FIELD not in data:

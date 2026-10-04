@@ -357,7 +357,7 @@ def _refuse_unshown(
     if freed != named:
         if isinstance(shown, OwnerOnly):
             raise ValidationError(shown.refusal)
-        raise PageOutOfDate(len(freed), len(named))
+        raise PageOutOfDate.over_lines(len(freed), len(named))
 
 
 def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":

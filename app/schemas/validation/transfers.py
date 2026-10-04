@@ -13,7 +13,7 @@ from app.schemas.validation._helpers import (
     _EFFECTIVE_DATE_RANGE,
     BaseSchema,
     RowId,
-    ShownLines,
+    ShownIds,
     _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
     reject_figure_without_its_rendered_companion,
@@ -300,8 +300,8 @@ class TransferUpdateSchema(BaseSchema):
     # The bank lines the popover's withdrawal captions NAMED (plan step
     # ``credit_card:CC-5-4a-5``, ruling **R-CC127**): posted on every popover
     # Save, empty when they name none.  ``allow_none`` is presence:
-    # :class:`~app.schemas.validation._helpers.ShownLines` says why.
-    shown_lines = ShownLines(allow_none=True)
+    # :class:`~app.schemas.validation._helpers.ShownIds` says why.
+    shown_lines = ShownIds(allow_none=True)
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

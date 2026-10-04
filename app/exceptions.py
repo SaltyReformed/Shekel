@@ -787,7 +787,7 @@ class TrackingStartRefused(ValidationError):
 
 
 class PageOutOfDate(ValidationError):
-    """A press was refused: its page named other bank lines than it would free.
+    """A press was refused: its page named other things than the press would take.
 
     Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**
     (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
@@ -795,9 +795,14 @@ class PageOutOfDate(ValidationError):
     undo. At 10:10 they differ, so nothing is saved"*.  Raised by
     ``match_withdrawal.take_out_of_matches`` -- the match step of the one act
     that takes a movement off the books, and of the seam's re-point -- before
-    it writes anything; the door's rollback undoes whatever the press staged
-    before it.  Two causes reach it: a page drawn before a match was made or
-    undone in another tab, and a door that forgot its caption.  A third --
+    it writes anything (:meth:`over_lines`); the door's rollback undoes
+    whatever the press staged before it.  Two causes reach it: a page drawn
+    before a match was made or undone in another tab, and a door that forgot
+    its caption.  **And by the row delete over the PURCHASES its dialog
+    named** (ruling **R-CC131**, developer 2026-10-04, "Refuse and redraw",
+    fulfilling ruling **R-CC96**'s clause): a purchase added under the row in
+    another tab after the dialog was drawn is not deleted unnamed
+    (``transaction_service._delete``).  A third --
     one popover Save typing a $0.00 estimate beside the status Paid, which
     the Paid caption reading the STORED estimate could not name, so the
     redrawn card was refused again at every try -- is closed by the caption
@@ -814,28 +819,40 @@ class PageOutOfDate(ValidationError):
     one.
 
     Args:
-        freed: How many bank lines the press would leave unexplained again.
-        named: How many of the lines its page named are on the accounts the
-            press touches.
+        facts: What was refused and why, with no remedy -- the raiser's,
+            because only it knows what the page named.
 
     Attributes:
-        facts: What was refused and why, with no remedy.
+        facts: As given.
     """
 
-    def __init__(self, freed: int, named: int) -> None:
-        """State both counts, then the reload a plain surface needs.
+    def __init__(self, facts: str) -> None:
+        """Keep the facts, then add the reload a plain surface needs."""
+        self.facts = facts
+        super().__init__(
+            f"{facts} Reload the page to see what this press does now, then "
+            f"press again."
+        )
+
+    @classmethod
+    def over_lines(cls, freed: int, named: int) -> "PageOutOfDate":
+        """Return the refusal of a press freeing other bank lines than its page named.
 
         Worded for any press -- a Save, Paid / Received, a Delete -- because
         every one of them reaches it (review finding L3: it said "Saving now"
         on a Delete).
+
+        Args:
+            freed: How many bank lines the press would leave unexplained again.
+            named: How many of the lines its page named are on the accounts
+                the press touches.
+
+        Returns:
+            The exception, to raise.
         """
-        self.facts = (
+        return cls(
             f"Nothing was saved: this page was out of date. As things are now, "
             f"this press leaves {freed} bank line{'' if freed == 1 else 's'} "
             f"unexplained again on your statement screen, and the page named "
             f"{named}."
-        )
-        super().__init__(
-            f"{self.facts} Reload the page to see what this press does now, "
-            f"then press again."
         )

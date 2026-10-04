@@ -17,7 +17,7 @@ withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so
     so what a press sends and what its caption said are one reading of one
     withdrawal.  Empty for `w` None or freeing nothing; the field still
     posts, because a page that named nothing has said so
-    (`schemas.validation._helpers.ShownLines`). -#}
+    (`schemas.validation._helpers.ShownIds`). -#}
 {% macro shown_line_ids(w) -%}
 {%- if w %}{{ w.line_ids | sort | join(',') }}{% endif -%}
 {%- endmacro %}

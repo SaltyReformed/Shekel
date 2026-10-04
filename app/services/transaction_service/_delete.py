@@ -25,10 +25,15 @@ door's own precondition, asked before the sequence starts.
    for the same pair of guards.  Nothing here locks the row: since plan step
    ``balance:X-bn`` (ruling **R-CC106**) the request's transaction took its
    owner's write lock before it read any of the owner's data, so a purchase
-   another tab added either committed before this delete read the row, and
-   is taken off with the rest, or waits for the delete to commit.  Until that
-   step the row's own lock did it (ruling **R-CC96**, plan step
-   ``credit_card:CC-5-4a-4``).
+   another tab added either committed before this delete read the row, or
+   waits for the delete to commit.  Until that step the row's own lock did it
+   (ruling **R-CC96**, plan step ``credit_card:CC-5-4a-4``).  **One that
+   committed first is not deleted unnamed** (ruling **R-CC131**, developer
+   2026-10-04, "Refuse and redraw", fulfilling R-CC96's clause "a later step
+   makes Delete refuse when it would remove more than its dialog said"): the
+   dialog sends back the purchases it named, and a row holding others is
+   refused before anything is written, its popover redrawn under ruling
+   **R-CC128**.
 1. **Reverse the postings** (``posting_service``), while
    ``journal_entries.transaction_id`` and ``.transaction_entry_id`` still link
    them.  Both are ``ON DELETE SET NULL``: reversing afterwards is impossible
@@ -107,7 +112,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import NotFoundError, PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import (
@@ -155,6 +160,10 @@ class RowDeletion:
             (:class:`~app.services.match_withdrawal.MatchWithdrawal`), so a
             receipt can name the bank lines that are unexplained again without
             asking a relation the delete has already destroyed.
+        purchase_ids: The row's own PURCHASES that go with it
+            (``Transaction.purchases``, the one reading of them) -- what the
+            dialog's question counts and posts back, and what the press
+            compares that against (ruling **R-CC131**).
         disposes_definition: Whether the row's DEFINITION goes with it --
             a one-off's, of which this row is the last (step 5 of the module
             docstring's order; rulings **R-BAL23** / **R-BAL27**, plan step
@@ -183,6 +192,7 @@ class RowDeletion:
     soft: bool
     paybacks: "tuple[str, ...]"
     withdrawn: MatchWithdrawal
+    purchase_ids: "frozenset[int]"
     disposes_definition: bool
     comes_back_on_unarchive: bool
 
@@ -263,13 +273,71 @@ def preview_deletion(
         soft=soft,
         paybacks=tuple(row.name for row in rows[1:]),
         withdrawn=match_withdrawal.pending_for_rows(rows),
+        purchase_ids=_purchase_ids(txn),
         disposes_definition=last_row_of_definition,
         comes_back_on_unarchive=comes_back,
     )
 
 
+def _purchase_ids(txn: Transaction) -> "frozenset[int]":
+    """Return the ids of *txn*'s own purchases -- the set a delete dialog names.
+
+    Args:
+        txn: The row being deleted, or offered for it.
+
+    Returns:
+        ``Transaction.purchases``' ids.
+    """
+    return frozenset(entry.id for entry in txn.purchases)
+
+
+def _refuse_unnamed_purchases(
+    txn: Transaction, purchases_named: "frozenset[int]",
+) -> "frozenset[int]":
+    """Refuse a delete whose row holds other purchases than its dialog named.
+
+    Ruling **R-CC131** (developer 2026-10-04, "Refuse and redraw"):
+    *"The dialog also sends back the purchases it named. At 10:02 they
+    differ, so nothing is deleted and the popover redraws under your 'Redraw
+    all' ruling ... You decide with it in view."*  Equality both ways, as the
+    bank-line comparison is (ruling **R-CC127**): a purchase added since the
+    dialog was drawn would leave the books unnamed, and one named and gone was
+    removed elsewhere.  The refusal names what the row holds now, so the
+    `$12.34` is in view above the redrawn card.
+
+    Args:
+        txn: The row being deleted.
+        purchases_named: The purchase ids its dialog posted back -- owner
+            input, compared as a set and never used as a scope.
+
+    Returns:
+        The row's purchase ids, as read once for the comparison -- what the
+        press then reports it took.
+
+    Raises:
+        PageOutOfDate: When the two sets differ.
+    """
+    purchase_ids = _purchase_ids(txn)
+    if purchase_ids == purchases_named:
+        return purchase_ids
+    holds = txn.purchases
+    count = len(holds)
+    listed = "; ".join(
+        f"{entry.purchased_on.month}/{entry.purchased_on.day} "
+        f"{entry.description} ${entry.amount:,.2f}"
+        for entry in holds
+    )
+    raise PageOutOfDate(
+        f"Nothing was deleted: this page was out of date. {txn.name} holds "
+        f"{count} purchase{'' if count == 1 else 's'} now"
+        f"{f' ({listed})' if holds else ''}, and the page named "
+        f"{len(purchases_named)}."
+    )
+
+
 def delete_transaction(
     txn: Transaction, owner_id: int, *, shown: Shown | Silent = NOTHING_SHOWN,
+    purchases_named: "frozenset[int]" = frozenset(),
 ) -> RowDeletion:
     """Remove *txn* from the books, soft or hard, with everything it holds.
 
@@ -291,6 +359,12 @@ def delete_transaction(
             ``credit_card:CC-5-4a-5``, ruling **R-CC127**).  The match
             Undo's ``_release`` passes the default: it deletes and flushes
             the act before it reaches here, so nothing is left to free.
+        purchases_named: The row's purchases the dialog named
+            (:func:`preview_deletion`'s ``purchase_ids``), posted back with
+            the press (ruling **R-CC131**).  The default names none, which is
+            the match Undo's truth too: it removes a created container's own
+            purchases first and never reaches here for one holding another's
+            (``statement_match._release._remove``).
 
     Returns:
         What the delete did, as :class:`RowDeletion` -- the same shape
@@ -317,7 +391,10 @@ def delete_transaction(
             delete leaves the database exactly as it was.  Also when the
             lines the press frees differ from *shown* (ruling **R-CC127**):
             that one is raised after the reversal has flushed, and the
-            route's rollback undoes the press.
+            route's rollback undoes the press.  And as
+            :class:`~app.exceptions.PageOutOfDate` when the row holds other
+            purchases than *purchases_named* (ruling **R-CC131**), before
+            anything is written.
         PostingError: From the ledger reconcile, on a broken invariant.
     """
     if txn.user_id != owner_id:
@@ -331,6 +408,7 @@ def delete_transaction(
     )
     if refusal is not None:
         raise ValidationError(refusal)
+    purchase_ids = _refuse_unnamed_purchases(txn, purchases_named)
 
     soft, comes_back, rows = _leaves_the_books(txn)
     paybacks = tuple(row.name for row in rows[1:])
@@ -360,6 +438,7 @@ def delete_transaction(
         definition_delete.permanently_delete_definition(definition)
     return RowDeletion(
         soft=soft, paybacks=paybacks, withdrawn=withdrawn,
+        purchase_ids=purchase_ids,
         disposes_definition=last_row_of_definition,
         comes_back_on_unarchive=comes_back,
     )

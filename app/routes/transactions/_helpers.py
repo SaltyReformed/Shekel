@@ -29,7 +29,7 @@ from app.routes._render_helpers import (
 from app.routes.transactions._bp import transactions_bp
 from app.schemas.validation import (
     MarkDoneSchema,
-    ShownLinesSchema,
+    TransactionDeleteSchema,
     TransactionItemUpdateSchema,
     TransactionUpdateSchema,
     TransactionCreateSchema,
@@ -116,9 +116,10 @@ _inline_create_schema = InlineTransactionCreateSchema()
 # 2026-04-15 security remediation plan.
 _mark_done_schema = MarkDoneSchema()
 
-# The delete door's one parameter: the bank lines its dialog named (plan step
-# ``credit_card:CC-5-4a-5``, ruling **R-CC127**), sent as a query string.
-_shown_lines_schema = ShownLinesSchema()
+# The delete door's parameters, sent as a query string: the bank lines and the
+# purchases its dialog named (plan step ``credit_card:CC-5-4a-5``, rulings
+# **R-CC127** / **R-CC131**).
+_delete_dialog_schema = TransactionDeleteSchema()
 
 
 @dataclass(frozen=True)
