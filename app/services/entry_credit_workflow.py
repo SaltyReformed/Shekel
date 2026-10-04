@@ -272,10 +272,15 @@ def sync_entry_payback(
         # payback stops being true when the row goes, so it is withdrawn and
         # its bank line is unexplained again (developer ruling 2026-08-25, plan
         # step ``bank_import:X-gb``) -- a reverted payback keeps its payment
-        # un-dated, and an act may still name it.
+        # un-dated, and an act may still name it.  No caption says so before
+        # the last credit purchase's delete or un-credit: finding **CC-367**,
+        # named where the act asks (ruling **R-CC81**) until plan step
+        # ``credit_card:CC-5-4a-5``'s second leaf captions it (ruling
+        # **R-CC80**).
         movement_removal.remove_movements(
             list(existing_payback.entries), owner_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
+            shown=match_withdrawal.Silent("CC-367"),
             rows_leaving=[existing_payback],
         )
         db.session.delete(existing_payback)

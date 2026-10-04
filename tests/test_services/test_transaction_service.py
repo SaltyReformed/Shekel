@@ -1774,7 +1774,8 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             day = txn.settled_on
 
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=typed(Decimal("87.10")),
+                txn, txn.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("87.10"))),
             )
 
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
@@ -1824,7 +1825,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             with pytest.raises(ValidationError) as exc:
                 transaction_service.apply_requested_status(
                     txn, ref_cache.status_id(StatusEnum.PROJECTED),
-                    submitted=typed(Decimal("123.45")),
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("123.45"))),
                 )
 
             assert "has nothing to record" in str(exc.value)
@@ -1851,7 +1852,8 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             assert status_seam.recorded_settlement(txn).source is resolved
 
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=typed(Decimal("100.00")),
+                txn, txn.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("100.00"))),
             )
 
             assert status_seam.recorded_settlement(txn).source is resolved
@@ -1905,7 +1907,7 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
             db.session.flush()
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.DONE),
-                submitted=typed(Decimal("245.32")),
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("245.32"))),
             )
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),

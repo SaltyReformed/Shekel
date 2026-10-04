@@ -117,7 +117,12 @@ from app.services import (
     movement_removal,
     posting_service,
 )
-from app.services.match_withdrawal import MatchWithdrawal
+from app.services.match_withdrawal import (
+    NOTHING_SHOWN,
+    MatchWithdrawal,
+    Shown,
+    Silent,
+)
 from app.services.transaction_service._row_rules import deletion_refusal
 from app.utils.balance_predicates import is_projected
 
@@ -263,7 +268,9 @@ def preview_deletion(
     )
 
 
-def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
+def delete_transaction(
+    txn: Transaction, owner_id: int, *, shown: Shown | Silent = NOTHING_SHOWN,
+) -> RowDeletion:
     """Remove *txn* from the books, soft or hard, with everything it holds.
 
     The module docstring carries the order and why each step is where it is.
@@ -278,6 +285,12 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
         owner_id: The user the caller proved owns it, recorded on the events
             AND reconciled against the row (step 0 of the module docstring's
             order, finding **N-373**).
+        shown: The bank lines the delete dialog named before the press
+            (:func:`preview_deletion`'s ``withdrawn``), posted back with it;
+            the act refuses a press whose freed lines differ (plan step
+            ``credit_card:CC-5-4a-5``, ruling **R-CC127**).  The match
+            Undo's ``_release`` passes the default: it deletes and flushes
+            the act before it reaches here, so nothing is left to free.
 
     Returns:
         What the delete did, as :class:`RowDeletion` -- the same shape
@@ -301,7 +314,10 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
         ValidationError: When :func:`~._row_rules.deletion_refusal` names a
             reason this row may not be deleted on its own -- a transfer shadow
             or a CC payback.  It fires BEFORE anything is written, so a refused
-            delete leaves the database exactly as it was.
+            delete leaves the database exactly as it was.  Also when the
+            lines the press frees differ from *shown* (ruling **R-CC127**):
+            that one is raised after the reversal has flushed, and the
+            route's rollback undoes the press.
         PostingError: From the ledger reconcile, on a broken invariant.
     """
     if txn.user_id != owner_id:
@@ -328,7 +344,8 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     # its place in the table and nothing it held, and counts as gone.
     withdrawn = movement_removal.remove_movements(
         [movement for row in rows for movement in row.entries],
-        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=rows,
+        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, shown=shown,
+        rows_leaving=rows,
     )
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)
 

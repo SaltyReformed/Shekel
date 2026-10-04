@@ -102,10 +102,18 @@ an act naming no app row is unrepresentable rather than filtered.  What this
 module adds is the CLEANUP and the DISCLOSURE: the act the press empties goes,
 and a door that discloses names the lines it frees before the press -- the row
 delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
-The grid's one-click Mark Paid withdraws and logs by ruling (**R-CC56**); the
-reconcile panel, carry-forward, the purchase delete and the Credit doors
-withdraw and log with no caption until plan step ``credit_card:CC-5-4a-5``
-(**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**).
+
+**And the act ASKS what the owner was shown** (plan step
+``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**).  Every
+caller of :func:`take_out_of_matches` passes the bank lines its page named
+(:class:`Shown`) or what lets it stay silent (:class:`Silent`), and a press
+whose freed lines differ from the named ones is refused before anything is
+written: a page drawn before a match existed, or a door that forgot its
+caption.  The grid's one-click Mark Paid is silent by ruling (**R-CC56**);
+the reconcile panel, carry-forward, the purchase delete and the Credit
+doors name the open finding that owns their caption until that step's
+second leaf (**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**,
+**CC-378**).
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -130,6 +138,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
@@ -205,6 +214,121 @@ class MatchWithdrawal:
         ``length`` test in a Jinja condition.
         """
         return bool(self.lines)
+
+    @property
+    def line_ids(self) -> "frozenset[int]":
+        """Return the ids of the lines this frees -- what a caption naming them posts back.
+
+        The one spelling the page's posted field and the act's comparison
+        (:func:`_refuse_unshown`) share, so what a caption sends and what the
+        press is graded against cannot be two readings of one withdrawal
+        (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC127**).
+        """
+        return frozenset(line.line_id for line in self.lines)
+
+
+@dataclass(frozen=True)
+class Shown:
+    """The bank lines a page NAMED before the press: what the owner was shown.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**
+    (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
+    bank lines it named, and the function compares them with what it would
+    undo."*  The page posts back the ids its caption printed
+    (``_withdrawal_macros.frees_lines``) and the door hands them here; a
+    page that printed none posts none, which is :data:`NOTHING_SHOWN`.
+
+    Attributes:
+        line_ids: The ``bank_statement_lines.id`` values the caption named.
+            Owner input, so never trusted as a scope: :func:`_refuse_unshown`
+            reads only those on the accounts the press touches.
+    """
+
+    line_ids: "frozenset[int]"
+
+
+@dataclass(frozen=True)
+class Silent:
+    """A door that withdraws with NO caption, and what lets it.
+
+    Ruling **R-CC81**: a button may undo a match unannounced only by naming
+    the ruling that lets it stay silent, in its own code where a reviewer
+    sees it -- the grid's one-click Mark Paid (:data:`MARK_PAID`, ruling
+    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5``'s second leaf
+    captions them, the reconcile panel, carry-forward, the purchase X and
+    the three Credit doors name the OPEN FINDING that owns their caption
+    instead (**CC-364**, **CC-367**, **CC-378**): today's behaviour, now
+    stated at each call site.
+
+    Attributes:
+        because: The ruling or finding id, written to the withdrawal event.
+    """
+
+    because: str
+
+
+#: What a page that names no bank line shows, and what every settle verb
+#: assumes when its door says nothing: *"A button with no warning sends
+#: nothing"* (ruling **R-CC127**).  It refuses any press that would free a
+#: line, so a door added later cannot undo a match without declaring.
+NOTHING_SHOWN = Shown(frozenset())
+
+#: The grid's one-click Mark Paid, silent by ruling **R-CC56**.
+MARK_PAID = Silent("R-CC56")
+
+
+def _refuse_unshown(
+    shown: "Shown | Silent", entries, planned: MatchWithdrawal,
+) -> None:
+    """Refuse a press whose freed lines differ from the lines its page named.
+
+    **Compared PER ACCOUNT**: the lines this call frees against the named
+    lines on the accounts of the movements it takes.  A member is held to its
+    act's account and to its line's or movement's (the composite keys on
+    :class:`~app.models.statement_match.StatementMatchMember`), so a call can
+    free a line only on its own movements' accounts -- and a transfer's two
+    sides, on two accounts, are two calls of one press that one posted set
+    grades exactly, each against its own side's lines.  A named line on no
+    account this call touches is another call's, or (a payment re-pointed
+    in another tab since the page was drawn) a line already unexplained.
+
+    **Equality, both ways** (*"At 10:10 they differ, so nothing is saved"*):
+    a line freed and not named is the silent withdrawal the ruling forbids,
+    and a line named and not freed is a page out of date.
+
+    Args:
+        shown: What the door declared.
+        entries: The movements this call takes out of their matches.
+        planned: What it would withdraw (:func:`_summarise`).
+
+    Raises:
+        ValidationError: When the two sets differ.  The door's existing
+            refusal path renders it and its rollback undoes the press.
+    """
+    if isinstance(shown, Silent):
+        return
+    named = set()
+    if shown.line_ids:
+        named = {
+            row[0]
+            for row in db.session.query(BankStatementLine.id)
+            .filter(
+                BankStatementLine.id.in_(shown.line_ids),
+                BankStatementLine.account_id.in_(
+                    {entry.account_id for entry in entries},
+                ),
+            )
+            .all()
+        }
+    freed = planned.line_ids
+    if freed != named:
+        raise ValidationError(
+            "Nothing was saved: this page is out of date. Saving now leaves "
+            f"{len(freed)} bank line{'' if len(freed) == 1 else 's'} "
+            "unexplained again on your statement screen, and the page named "
+            f"{len(named)}. Reload it to see what saving does now, then press "
+            "again."
+        )
 
 
 def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":
@@ -460,7 +584,8 @@ def _withdraw(
             log is read.
         **fields: Subject coordinates for the event (``transaction_ids``,
             ``transfer_ids``, ``transaction_entry_ids`` and
-            ``freed_line_ids``).
+            ``freed_line_ids``), and ``silent_by``: the ruling or finding a
+            no-caption door named (:class:`Silent`), else ``None``.
     """
     for act in acts:
         db.session.delete(act)
@@ -570,7 +695,8 @@ def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
 
 
 def take_out_of_matches(
-    entries, owner_id: int, *, because: str, rows_leaving=(),
+    entries, owner_id: int, *, because: str, shown: "Shown | Silent",
+    rows_leaving=(),
 ) -> MatchWithdrawal:
     """Take *entries* out of every act naming them; withdraw the acts that empties.
 
@@ -600,6 +726,13 @@ def take_out_of_matches(
     status seam run inside a caller's ``no_autoflush`` block (the
     carry-forward batch) writes no earlier than it did before this step.
 
+    **It asks what the owner was SHOWN** (plan step
+    ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): *shown* is
+    REQUIRED, and a press whose freed lines differ from what its page named
+    is refused before anything is written (:func:`_refuse_unshown`).  The
+    doors above the seam pass it down from the settle verbs, whose default
+    is :data:`NOTHING_SHOWN`.
+
     Does NOT commit -- the caller owns the session boundary.
 
     Args:
@@ -609,6 +742,8 @@ def take_out_of_matches(
         owner_id: The owner under whose books the acts are filed.
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
+        shown: The lines the door's page named (:class:`Shown`), or what
+            lets it stay silent (:class:`Silent`).
         rows_leaving: The rows going in the same press, soft or hard (a
             recurring occurrence's tombstone counts as gone, ruling
             **R-CC84**), when the caller is a row delete -- so a creation that
@@ -617,11 +752,15 @@ def take_out_of_matches(
 
     Returns:
         What was withdrawn, as the dialog's read would have printed it.
+
+    Raises:
+        ValidationError: When what this frees differs from *shown*.
     """
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
     emptied, surviving = _partition(_acts_naming(entry_ids), entry_ids)
     planned = _summarise(emptied, leaving_ids, entry_ids)
+    _refuse_unshown(shown, entries, planned)
     if emptied:
         _withdraw(
             emptied, planned, owner_id, because=because,
@@ -631,6 +770,8 @@ def take_out_of_matches(
             **_parent_ids(entries, leaving_ids),
             transaction_entry_ids=sorted(entry_ids),
             freed_line_ids=[line.line_id for line in planned.lines],
+            # What let a no-caption door withdraw (ruling **R-CC81**).
+            silent_by=shown.because if isinstance(shown, Silent) else None,
         )
     taken = [
         (act, member) for act in surviving for member in act.members
@@ -643,7 +784,9 @@ def take_out_of_matches(
     return planned
 
 
-def withdraw_for_moved_movement(entry, owner_id: int) -> MatchWithdrawal:
+def withdraw_for_moved_movement(
+    entry, owner_id: int, *, shown: "Shown | Silent",
+) -> MatchWithdrawal:
     """Take *entry* out of every act naming it; withdraw the acts that empties.
 
     The door a movement's ACCOUNT change calls BEFORE the account is
@@ -660,8 +803,15 @@ def withdraw_for_moved_movement(entry, owner_id: int) -> MatchWithdrawal:
     Args:
         entry: The covering movement about to be re-pointed.
         owner_id: The row's owner, under whose books the act is filed.
+        shown: What the door's page named, or what lets it stay silent
+            (:func:`take_out_of_matches`).
 
     Returns:
         What was withdrawn.
+
+    Raises:
+        ValidationError: When what this frees differs from *shown*.
     """
-    return take_out_of_matches([entry], owner_id, because=MOVED_ACCOUNTS)
+    return take_out_of_matches(
+        [entry], owner_id, because=MOVED_ACCOUNTS, shown=shown,
+    )

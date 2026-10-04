@@ -648,6 +648,7 @@ def _deleted_as_the_door_leaves_it(seed_user, db, period, account, name):
     movement_removal.remove_movements(
         list(txn.entries), seed_user["user"].id,
         because=match_withdrawal.LEFT_THE_BOOKS,
+        shown=match_withdrawal.NOTHING_SHOWN,
     )
     txn.is_deleted = True
     db.session.flush()

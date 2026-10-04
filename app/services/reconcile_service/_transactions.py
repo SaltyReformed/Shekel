@@ -66,6 +66,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, status_seam, transaction_service
 from app.services.account_projection import is_revolving
 from app.services.cash_ledger import AmountBasis
+from app.services.match_withdrawal import Silent
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -225,6 +226,12 @@ def _settle_one(
     corrected = transaction_service.settle_transaction(
         txn, submitted=submitted, settle_day=statement.settle_day,
         tender_account_id=statement.account_id,
+        # The tick withdraws a kept payment's match with no caption -- a
+        # ``$0.00`` box or an envelope's purchases (finding **CC-364**) and a
+        # re-point from the row's own list (**CC-378**) -- named where the act
+        # asks (ruling **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s
+        # second leaf (rulings **R-CC76**, **R-CC125**, **R-CC126**).
+        shown=Silent("CC-364, CC-378"),
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

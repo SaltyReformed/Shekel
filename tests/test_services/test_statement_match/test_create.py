@@ -1411,7 +1411,8 @@ class TestWhatTheScreenMayOFFER:
                 settled_on=seed_user["bootstrap_period"].start_date,
             )
             transaction_service.apply_requested_status(
-                envelope, envelope.status_id, submitted=typed(Decimal("0.00")),
+                envelope, envelope.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
             )
             db.session.flush()
             assert envelope.covering_movements == []

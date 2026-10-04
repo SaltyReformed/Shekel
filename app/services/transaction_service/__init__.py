@@ -72,6 +72,8 @@ from app.services.transaction_service._delete import (
     preview_deletion,
 )
 from app.services.transaction_service._door import (
+    NOTHING_STATED,
+    StatedRecord,
     apply_requested_status,
 )
 from app.services.transaction_service._row_rules import (
@@ -97,7 +99,9 @@ from app.services.transaction_service._status_rules import (
 )
 
 __all__ = [
+    "NOTHING_STATED",
     "RowDeletion",
+    "StatedRecord",
     "apply_requested_status",
     "delete_transaction",
     "deletion_refusal",

@@ -458,7 +458,10 @@ def _apply_status_or_postings(txn, data, new_status_id):
     ):
         transaction_service.apply_requested_status(
             txn, new_status_id, settle_day=settle_day,
-            submitted=submitted_figure, tender_account_id=tender_account_id,
+            stated=transaction_service.StatedRecord(
+                figure=submitted_figure,
+                tender_account_id=tender_account_id,
+            ),
         )
     elif _POSTING_RELEVANT_FIELDS & data.keys():
         # Posting ledger reconcile (Build-Order Step 3) for the edit that

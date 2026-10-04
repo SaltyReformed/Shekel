@@ -456,7 +456,8 @@ class TestTheSeamRefusesADeletedRow:
                 "Hotel was deleted: a payment cannot be recorded under it"
             )):
                 transaction_service.apply_requested_status(
-                    deleted, paid, submitted=typed(Decimal("125.00")),
+                    deleted, paid,
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
                 )
             db.session.rollback()
             assert db.session.get(Transaction, row_id).status_id == paid
@@ -475,7 +476,8 @@ class TestTheSeamRefusesADeletedRow:
             _settle(row, period.start_date)
 
             transaction_service.apply_requested_status(
-                row, row.status_id, submitted=typed(Decimal("125.00")),
+                row, row.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
             )
             db.session.commit()
 
@@ -1233,7 +1235,7 @@ class TestAnArchivedItemsRowSaysArchived:
             )):
                 transaction_service.apply_requested_status(
                     db.session.get(Transaction, row_id), paid,
-                    submitted=typed(Decimal("125.00")),
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
                 )
             db.session.rollback()
             _holds_nothing_and_locks_nothing(row_id, period, user_id)

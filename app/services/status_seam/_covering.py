@@ -187,6 +187,7 @@ from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
+from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
 from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
@@ -495,6 +496,7 @@ def _record_onto(
 
 def _re_point(
     row: Transaction, movement: TransactionEntry, account_id: int,
+    shown: Shown | Silent,
 ) -> bool:
     """Move *movement* onto *account_id* if it is not there; say whether it moved.
 
@@ -554,26 +556,33 @@ def _re_point(
             written for this act.
         movement: Its covering movement.
         account_id: The account the record names, already gated.
+        shown: What the door's page named, or what lets it stay silent
+            (ruling **R-CC81**; :func:`sync_covering_movement`).
 
     Returns:
         Whether the movement's account changed, for :func:`_record_moved`.
 
     Raises:
         ValidationError: When the row's day is on or before the new
-            account's opening.
+            account's opening, or when the matches the move withdraws free
+            other lines than *shown* names (ruling **R-CC127**).
     """
     if movement.account_id == account_id:
         return False
     if row.settled_on is not None:
         reject_movement_before_books_open(account_id, row.settled_on)
-    match_withdrawal.withdraw_for_moved_movement(movement, row.user_id)
+    match_withdrawal.withdraw_for_moved_movement(
+        movement, row.user_id, shown=shown,
+    )
     movement.reconciled_by_id = None
     row.reconciled_by_id = None
     movement.account_id = account_id
     return True
 
 
-def _cover(row: Transaction, settlement: Settlement) -> None:
+def _cover(
+    row: Transaction, settlement: Settlement, shown: Shown | Silent,
+) -> None:
     """Ensure *row* holds exactly one covering movement mirroring *settlement*.
 
     **A ``$0.00`` settlement writes NO movement** -- zero movements is a
@@ -611,7 +620,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     relationship follows on this path.
     """
     if not settlement.amount:
-        _withdraw(row)
+        _withdraw(row, shown)
         return
     account_id = (
         settlement.account_id if settlement.account_id is not None
@@ -619,7 +628,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     )
     movement = covering_movement_of(row)
     if movement is not None:
-        re_pointed = _re_point(row, movement, account_id)
+        re_pointed = _re_point(row, movement, account_id, shown)
         if _record_onto(row, movement, settlement) or re_pointed:
             _record_moved(row)
         return
@@ -649,7 +658,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     _record_moved(row)
 
 
-def _withdraw(row: Transaction) -> None:
+def _withdraw(row: Transaction, shown: Shown | Silent) -> None:
     """Take *row*'s covering movements off the books: a record that carries nothing.
 
     The two records that WITHDRAW a mirror rather than un-date it (module
@@ -671,15 +680,18 @@ def _withdraw(row: Transaction) -> None:
     ``uq_statement_match_members_line``.  The screen that offers either
     record says what it frees first (ruling **R-CC56**: the full-edit
     popover's Actual box and its Paid button, reading
-    ``match_withdrawal.pending_for_movements``); every other door that
-    reaches the seam with either record -- the grid's one-click Mark Paid
-    among them -- withdraws and logs it all the same.
+    ``match_withdrawal.pending_for_movements``) and posts back what it
+    named; the act refuses a press whose freed lines differ from *shown*
+    (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC127**), so a door with
+    no caption withdraws only by naming what lets it stay silent -- the
+    grid's one-click Mark Paid, ruling **R-CC56**.
     """
     movements = list(row.covering_movements)
     if not movements:
         return
     movement_removal.remove_movements(
         movements, row.user_id, because=match_withdrawal.RE_RECORDED,
+        shown=shown,
     )
     _record_moved(row)
 
@@ -803,6 +815,7 @@ def sync_covering_movement(
     was_settled: bool,
     now_settled: bool,
     settlement: Optional[Settlement],
+    shown: Shown | Silent = NOTHING_SHOWN,
 ) -> None:
     """Keep *row*'s covering movement in step with the record the seam wrote.
 
@@ -841,6 +854,13 @@ def sync_covering_movement(
             assigned its new status.
         now_settled: Whether it is in the band after.
         settlement: The record the seam was handed for this act, or ``None``.
+        shown: What the door's page named before the press, or what lets it
+            stay silent: both arms that take a payment out of its matches
+            (:func:`_withdraw`, :func:`_re_point`) are reached through here
+            and the act asks it (plan step ``credit_card:CC-5-4a-5``, rulings
+            **R-CC81** / **R-CC127**).  Defaults to *nothing shown*, as
+            ``apply_status_change`` does, so a caller that says nothing is
+            refused if the record would free a line.
     """
     if not was_settled and not now_settled:
         return
@@ -849,8 +869,8 @@ def sync_covering_movement(
         # refuses one without the other), and only such a record has anything
         # to mirror: a ``purchases`` record has neither.
         if settlement.source is not None:
-            _cover(row, settlement)
+            _cover(row, settlement, shown)
         else:
-            _withdraw(row)
+            _withdraw(row, shown)
         return
     _follow_assertion(row)
