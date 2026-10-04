@@ -133,8 +133,9 @@ class TransferRows:
         and an act may move an endpoint around that read: when a figure is
         graded the read precedes the move (``_update._grade_submitted_figure``
         runs ahead of ``_endpoints._apply_endpoint_move``) and names the OLD
-        source after it; otherwise the first read follows the move, before
-        its flush.  Either way nothing may read this leg's account: every
+        source after it; otherwise the first read is the settle's, after the
+        move has flushed, and names the NEW source.  Either way nothing may
+        read this leg's account: every
         reader takes its ``record``, and one that needs the side's account
         reads the transfer's.
 

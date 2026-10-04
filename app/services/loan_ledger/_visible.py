@@ -233,18 +233,20 @@ def payment_visible_on(
 #: for :func:`~app.utils.balance_predicates.require_settled_day`.  Each claim
 #: about the transfer's door is pinned through that door
 #: (``test_loan_settled_legs.TestTheRefusalsRepairWorksThroughTheApp``): a day
-#: typed into a side's box dates that side, a box left empty follows the other
-#: side's day (ruling R-BAL142), and a revert then Mark Paid dates the payment
-#: to the day of the click.
+#: typed into a side's box dates that side, and a revert then Mark Paid dates
+#: the payment to the day of the click.  It asks for EACH account's day
+#: because, today, a side whose day is only a guess follows the other side's
+#: (ruling R-BAL142), so typing the loan's alone moves Checking's guessed day
+#: too; ruling R-R116 (plan step X-cu) reverses that for a loan, and the
+#: sentence is true under both.
 _UNDATED_PAYMENT_CAUSE = (
     "Its transfer is settled, and a settle dates each side through the status "
     "seam, so this was written around the transfer service.  Correct it in "
     "place through the app (ruling R-BAL147): open the transfer from its "
     "source account's grid, in that paycheck's column, and type the day each "
-    "account's money moved into that account's \"Money moved on\" box -- a "
-    "box left empty follows the other side's day.  Reverting the transfer "
-    "and marking it Paid again would instead date the payment to the day of "
-    "that click"
+    "account's money moved into that account's \"Money moved on\" box.  "
+    "Reverting the transfer and marking it Paid again would instead date the "
+    "payment to the day of that click"
 )
 
 

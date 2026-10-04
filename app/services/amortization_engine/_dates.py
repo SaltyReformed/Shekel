@@ -104,7 +104,8 @@ class PaymentDates:
         settled-iff-dated invariant the status seam holds on the record this
         value is built from (a settled transfer's loan-side covering movement
         since plan step balance:X-bi-6-4b; a ``$0.00`` close holds none and
-        is dated by the installment it skips, ruling **R-BAL139**), and
+        is dated by the installment it skips, its interval's -- rulings
+        **R-BAL139** and **R-R107**), and
         :func:`app.utils.balance_predicates.require_settled_day` refuses to
         break (through :func:`app.services.loan_ledger.payment_visible_on`;
         through ``settled_day``, naming the shadow row, until leaf

@@ -73,7 +73,7 @@ Transfer invariants (critical -- violating any one is a critical bug):
   of the cash fold and, since balance:X-bi-6-4b, once by the loan walk, as a $0.00
   payment (R-BAL140); a settled parent over its loan-side (income) shadow reverted
   alone, whose kept movement is un-dated, makes the loan walk refuse
-  (UndatedSettleError, naming the transfer: its label, loan account and due date;
+  (UndatedSettleError, naming the transfer: its name, its two accounts and due date;
   R-BAL147, R-BAL167). That is pinned, not a new defect, but any door that could WRITE
   such a drift is one.
 

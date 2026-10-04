@@ -612,8 +612,9 @@ class TestASettledPaymentWithAnUndatedRecordFailsLoud:
         guessed here would put money on a day nothing recorded, and the
         R-BAL139 installment day is for a payment that moved NOTHING, not
         for one whose movement lost its day.  The refusal names the payment as
-        its owner finds it in the app -- the Checking grid's label for the
-        transfer, the figure, the paycheck and the due date -- with the
+        its owner finds it in the app -- the transfer's own name (its
+        popover's title) and its two accounts, the figure, the paycheck and
+        the due date -- with the
         transfer's and the movement's ids, because ruling R-BAL147's "you fix
         the row through the app" is the TRANSFER once the movement re-parents.
         It named the row the movement hangs off, the twin, whose own status is
@@ -702,8 +703,7 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     """The repair the refusal's message names, through the transfer's own door.
 
     ``_visible._UNDATED_PAYMENT_CAUSE`` tells the reader of the log to type
-    each account's day into that account's "Money moved on" box, that a box
-    left empty follows the other side's day (ruling R-BAL142), and that a
+    each account's day into that account's "Money moved on" box, and that a
     revert then Mark Paid would date the payment to the day of the click.
     Those are claims a log line makes about another door, which no other case
     grades, so each is held to it here: the drift is the refusal's, the
@@ -711,6 +711,13 @@ class TestTheRefusalsRepairWorksThroughTheApp:
     do, and the walk that refused reads the repaired day.  ``_CLOSED_ON``
     (03-05) is the day the transfer was marked paid; the suite's frozen
     clock is the day of the click.
+
+    **What Checking's day does when only the loan's box is typed is not the
+    message's claim and is not asserted**: today Checking's guessed day
+    follows the loan's (ruling R-BAL142), and ruling R-R116 (plan step X-cu)
+    reverses that for a loan.  The message asks for EACH account's day, which
+    is right under both, and :meth:`test_each_box_typed_dates_its_own_side`
+    holds it.
     """
 
     @staticmethod
@@ -738,10 +745,10 @@ class TestTheRefusalsRepairWorksThroughTheApp:
         )
         return outcome.visible_on, source.settled_on
 
-    def test_a_day_typed_into_the_loan_box_dates_it_and_the_empty_box_follows(
+    def test_a_day_typed_into_the_loan_box_dates_the_payment(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Only the loan's box typed, 03-09: the payment is visible 03-09, and Checking follows it."""
+        """Only the loan's box typed, 03-09: the walk no longer refuses and dates the payment 03-09."""
         with app.app_context():
             loan, transfer_id = self._refused_drift(seed_user, seed_periods)
             typed = date(2026, 3, 9)
@@ -754,9 +761,10 @@ class TestTheRefusalsRepairWorksThroughTheApp:
                 as_text=True,
             )[:300]
 
-            assert self._days(
+            visible_on, _ = self._days(
                 loan, transfer_id, seed_user["scenario"].id,
-            ) == (typed, typed)
+            )
+            assert visible_on == typed
 
     def test_each_box_typed_dates_its_own_side(
         self, app, auth_client, seed_user, seed_periods,
