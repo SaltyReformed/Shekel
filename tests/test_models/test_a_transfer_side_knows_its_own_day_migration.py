@@ -159,6 +159,7 @@ def _a_statement_once_named_the_expense_side(xfer):
 class TestTheArms:
     """Each arm of the relabel predicate, on the state its writer leaves."""
 
+    @pytest.mark.server_clock
     def test_a_pre_step_paid_press_is_a_stamp(self, app, seed_user, seed_periods_today):
         """Status into the band AND the write's own day, in one UPDATE: the press, not typing."""
         with app.app_context():
@@ -167,6 +168,7 @@ class TestTheArms:
 
             assert _arms(xfer) == ("entered_stamp", "entered_stamp")
 
+    @pytest.mark.server_clock
     def test_a_day_typed_onto_a_settled_pair_is_typed(
         self, app, seed_user, seed_periods_today,
     ):
@@ -185,6 +187,7 @@ class TestTheArms:
 
             assert _arms(xfer) == ("entered_typed", "entered_typed")
 
+    @pytest.mark.server_clock
     def test_a_day_written_onto_a_dateless_settled_pair_is_a_guess_or_a_repair(
         self, app, seed_user, seed_periods_today,
     ):
@@ -283,6 +286,7 @@ class TestTheArms:
 
             assert _arms(xfer) == ("borrowed_kept", "borrowed_kept")
 
+    @pytest.mark.server_clock
     def test_an_entered_day_no_audit_row_wrote_stays_typed(
         self, app, seed_user, seed_periods_today,
     ):
@@ -434,6 +438,7 @@ class TestTheRoundTrip:
     as the migration's docstring states it.
     """
 
+    @pytest.mark.server_clock
     def test_up_then_down_restores_every_label_and_the_ref_row(
         self, app, seed_user, seed_periods_today,
     ):
