@@ -24,8 +24,9 @@ which refuses a one-off whose name matches a paycheck line or a tax ("enter it
 on the line instead") beside its printed-net check.
 
 **What is NOT stored, and why.**  Gross, taxable wages and net pay are DERIVED
-from the lines (rule 14); the printed net is typed once at the entry door as a
-check against the lines and never kept.
+from the lines (rule 14); the printed gross and net are typed once at the entry
+door as checks against the lines and never kept (rulings **R-SAL99** and
+**R-SAL42**).
 
 **What a stub line records is its own** (ruling **R-SAL58**, "Stub records its
 kind", plan step ``S11-c-1``, which retired **R-SAL56**'s refusal before it was
