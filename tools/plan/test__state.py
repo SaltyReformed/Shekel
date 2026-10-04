@@ -380,13 +380,17 @@ def test_a_finding_whose_owner_is_outside_the_tracker_is_reported_once():
     assert len(reports) == 1 and "outside the tracker" in reports[0]
 
 
-def test_a_reopened_container_report_advises_a_remedy_the_tool_takes():
-    """Review cp4 L-6: it advised filing a new leaf, which the tool refuses under a step
-    whose leaves are all done."""
+def test_a_reopened_container_report_advises_the_remedies_the_tool_takes():
+    """Review cp4 L-6 and cp4b L8: it advised filing a new leaf, which the tool refuses
+    under a split step whose leaves are all done, then reopening a leaf, which never offers
+    one git says shipped.  Shipped work comes back by a ``Reopens:`` commit, a dropped leaf
+    by its reopening; and closing the split step by hand records it dropped (R-BAL190)."""
     cards = _cards(_card(1, children=(Child(2, "step", False),), touched_by_hand=True),
                    _closed(2, parent=1))
     (report,) = sync_plan(cards, {2}, {}, {}).reports
-    assert "reopen the leaf it still needs" in report and "file a new leaf" not in report
+    assert "ship 'Reopens: plan#N' for a leaf that shipped" in report
+    assert "reopen a dropped one" in report and "records it dropped (R-BAL190)" in report
+    assert "file a new leaf" not in report
 
 
 def test_the_findings_a_split_step_owns_decide_nothing_about_its_drop():
@@ -431,3 +435,19 @@ def test_a_ships_naming_a_dropped_card_that_is_not_work_leaves_it_dropped():
     cards = _cards(_closed(1, None, by_tool=False, children=(Child(2, "step", True),)),
                    _card(2, parent=1))
     assert dropped_above(cards[2], cards, {1}).number == 1
+
+
+def test_a_finding_with_no_parent_but_an_outside_blocker_has_lost_its_owner():
+    """Review cp4b S9: only an outside PARENT is an owner outside the tracker."""
+    finding = _card(3, "finding", outside=(OutsideLink("blocker", "o/code#9"),))
+    reports = sync_plan(_cards(finding), set(), {}, {}).reports
+    assert any("owner is missing" in line for line in reports)
+
+
+def test_a_leaf_is_placed_after_its_other_leaves_never_after_itself():
+    """``leaf_placement`` reads the split step's OTHER leaves on the board; a leaf already
+    there is never its own anchor."""
+    split = _card(2, board_item=None, children=(Child(4, "step", True), Child(5, "step", True)))
+    order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
+    assert leaf_placement(order, split, 5) == Placement(
+        "I4", None, "to just after plan#2's other leaves")

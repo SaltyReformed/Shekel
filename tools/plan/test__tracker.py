@@ -1,9 +1,8 @@
 """The tracker's reads and writes, against GitHub answers RECORDED from the live tracker.
 
-``recorded/tracker.json`` was kept 2026-10-04 (re-recorded 16:27 EDT for
-checkpoint 4's review and R-BAL190) by a session that ran every
-:class:`_tracker.Tracker` and :class:`_tracker.Board` call once against scratch
-cards #11-#19
+``recorded/tracker.json`` was kept 2026-10-04 (re-recorded 16:56 EDT for
+checkpoint 4b's review) by a session that ran every :class:`_tracker.Tracker`
+and :class:`_tracker.Board` call once against scratch cards #11-#20
 (``_recorded.Recorder``, which writes to scratch cards only and redacts every
 other card's text); these tests replay it (``_recorded.Replay``), which
 answers only a request it recorded, in the order recorded.  Nothing here calls
@@ -53,8 +52,8 @@ APP = "shekel-plan-tool"
 #: into dev, not yet on main) and PR #447's head (closed, never merged).
 ON_DEV_ONLY = "8540e8359a2649a3532379d68b3b9d7794913f52"
 NEVER_MERGED = "d3e1979040edc74086fcad98ddf432ef078c84cf"
-#: Card #19's REST id, the scratch finding the recording filed.
-FILED_ID = 5702998724
+#: Card #20's REST id, the scratch finding the recording filed.
+FILED_ID = 5703240093
 #: A GraphQL lookup of a repository that does not exist (review cp3 L-c).
 MISSING_REPOSITORY = ('query { repository(owner: "saltyreformed-labs", name: '
                       '"no-such-repository") { c1: issue(number: 1) { number } } }')
@@ -96,7 +95,8 @@ def test_cards_leaves_out_a_number_nobody_filed_and_reads_a_persons_close(record
     assert (closed.is_open, closed.state_reason) == (False, "NOT_PLANNED")
     assert closed.touched_by_hand and not closed.closed_by_tool
     assert [(c.number, c.is_open) for c in cards[11].children] == [
-        (12, False), (13, True), (14, True), (15, True), (16, False), (17, False), (18, False)]
+        (12, False), (13, True), (14, True), (15, True), (16, False), (17, False), (18, False),
+        (19, False)]
 
 
 def test_the_board_reads_in_drag_order(recorded):
@@ -146,7 +146,7 @@ def test_find_titles_and_the_branch_that_merged_a_commit(recorded):
     closed unmerged."""
     tracker, _ = recorded
     assert [number for number, _ in tracker.find_titles("L2 measurement")] == [
-        15, 14, 13, 11, 18, 17, 16, 12]
+        15, 14, 13, 11, 19, 18, 17, 16, 12]
     assert tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY) == {
         "tick/balance-x-bi-6-4d-1"}
     assert tracker.merged_into_dev("SaltyReformed/Shekel", NEVER_MERGED) == set()
@@ -195,7 +195,7 @@ def _replay_filed_card(tracker):
     number = tracker.create("finding", f"{SCRATCH} finding, filed by the recorder (delete me)",
                             "The recorder files this card to record GitHub's answers.",
                             ["balance"])
-    assert number == 19
+    assert number == 20
     card = tracker.cards([number])[number]
     assert (card.kind, card.labels, card.id) == ("finding", ("balance",), FILED_ID)
     both = tracker.cards([11, 12])
@@ -410,7 +410,7 @@ def test_a_pull_request_a_title_search_finds_is_not_a_card():
     found["items"].append({**found["items"][0], "number": 99, "pull_request": {"url": "u"}})
     tracker = Tracker(_Answers(found), Board(None, "B"), APP)
     assert [number for number, _ in tracker.find_titles("L2 measurement")] == [
-        15, 14, 13, 11, 18, 17, 16, 12]
+        15, 14, 13, 11, 19, 18, 17, 16, 12]
 
 
 def test_only_a_pull_request_merged_into_dev_shipped_a_commit():
@@ -513,8 +513,14 @@ def test_a_recording_keeps_a_scratch_cards_text_and_redacts_every_other_cards():
         assert public in kept, public
 
 
-def _graphql(answer, variables=None, query="q"):
-    """One recorded GraphQL exchange."""
+#: A query reading the tracker alone, so a number its answer names no repository for is
+#: the tracker's card.
+_TRACKER_QUERY = ('query { repository(owner: "saltyreformed-labs", name: "shekel-plan") '
+                  '{ c11: issue(number: 11) { number title } } }')
+
+
+def _graphql(answer, variables=None, query=_TRACKER_QUERY):
+    """One recorded GraphQL exchange, by default a read of the tracker alone."""
     return {"method": "POST", "url": "https://api.github.com/graphql",
             "body": {"query": query, "variables": variables or {}}, "status": 200,
             "answer": answer}
@@ -522,18 +528,19 @@ def _graphql(answer, variables=None, query="q"):
 
 def _scratch(*numbers):
     """Scratch cards numbered ``numbers``: REST id 900 + number, node id S_<number>, and a
-    board item SI_<number> each."""
+    board item SI_<number> each, on the plan board PVT_1."""
     return Scratch({*numbers}, {900 + n for n in numbers}, {f"S_{n}" for n in numbers},
-                   {f"SI_{n}" for n in numbers})
+                   {f"SI_{n}" for n in numbers}, "PVT_1")
 
 
 def test_text_the_reviews_found_kept_is_redacted():
-    """Review cp3 M-3 (a)-(c) and review cp4 M-4: a titled object with no number took the
-    scratch card around it, and then the card the request named; a blocker carrying its own
-    number took its scratch parent; only title, body and diff were redacted; a card was its
-    number alone, of any repository; and every board's title was kept.  An object with a
-    number is that card of the tracker; one with no number and text of its own belongs to
-    no card; only a kept key's string survives elsewhere."""
+    """Review cp3 M-3 (a)-(c), cp4 M-4 and cp4b M1, M2: a titled object with no number took
+    the scratch card around it, and then the card the request named; a blocker carrying its
+    own number took its scratch parent; only title, body and diff were redacted; a card was
+    its number alone, of any repository, and a number naming no repository was the
+    tracker's whatever the request read; a related card's edit history, read through an
+    object without its number, was the scratch card's own; and every board's title was
+    kept.  Only a kept key's string survives outside a scratch card's own text."""
     kept = json.dumps(redacted([
         _graphql({"data": {"repository": {"c11": {
             "number": 11, "title": f"{SCRATCH} x", "parent": {"title": "secret A"},
@@ -545,6 +552,21 @@ def test_text_the_reviews_found_kept_is_redacted():
             "parent": {"title": "secret D", "body": "secret E"}}}}}, {"number": 11}),
         _graphql({"data": {"repository": {"c2": {"number": 2, "title": "t", "bodyText": "secret F",
                                                   "titleHTML": "secret G"}}}}),
+        _graphql({"data": {"repository": {"issue": {"number": 2, "timelineItems": {"nodes": [
+            {"previousTitle": "secret M", "currentTitle": "secret N"}]}}}}}, {"number": 2}),
+        _graphql({"data": {"repository": {"issue": {
+            "number": 11, "body": "scratch body",
+            "parent": {"id": "I_real", "userContentEdits": {"nodes": [
+                {"id": "UCE_1", "diff": "secret O"}]}},
+            "subIssues": {"nodes": [{"userContentEdits": {"nodes": [
+                {"id": "UCE_2", "diff": "secret P"}]}}]}}}}}, {"number": 11}),
+        _graphql({"data": {"node": {"number": 11, "title": "secret Q"}}},
+                 query='query { node(id: "I_other") { ... on Issue { number title } } }'),
+        _graphql({"data": {"repository": {"issue": {"number": 11, "subIssues": {"nodes": [
+            {"number": 11, "title": "secret R", "repository": {"name": "Shekel"}}]}}}}}),
+        {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}/issues/11", "body": None,
+         "status": 200, "answer": {"number": 11, "title": "secret S",
+                                   "repository": {"full_name": "o/elsewhere"}}},
         {"method": "GET", "url": f"https://api.github.com/repos/{TRACKER}/issues/2", "body": None,
          "status": 200, "answer": {"number": 2, "title": "t", "body_text": "secret H",
                                    "state": "open", "labels": [{"name": "balance"}]}},
@@ -560,7 +582,7 @@ def test_text_the_reviews_found_kept_is_redacted():
                  query='query { repository(owner: "o", name: "elsewhere") { c12: issue(number: '
                        '12) { number title } } }'),
     ], _scratch(11, 12)))
-    assert "secret" not in kept
+    assert "secret" not in kept, [w for w in kept.split('"') if "secret" in w]
     for public in (f"{SCRATCH} x", "scratch body", '"open"', '"balance"', "Shekel plan"):
         assert public in kept, public
 
@@ -585,6 +607,14 @@ _REFS = f"https://api.github.com/repos/{TRACKER}/git/refs"
      {"query": BOARD_ADD, "variables": {"p": "PVT_1", "c": "I_a_real_card"}}),
     ("POST", "https://api.github.com/graphql",
      {"query": BOARD_ADD, "variables": {"p": "PVT_1", "c": "SI_11"}}),
+    ("POST", "https://api.github.com/graphql",
+     {"query": BOARD_ADD, "variables": {"p": "PVT_another_project", "c": "S_11"}}),
+    ("POST", "https://api.github.com/graphql",
+     {"query": BOARD_ADD + ' b: updateIssue(input: {id: "I_2", body: "x"}) { issue { id } }',
+      "variables": {"p": "PVT_1", "c": "S_11"}}),
+    ("POST", f"{_ISSUES}/11/sub_issues", {"sub_issue_id": 911, "replace_parent": True}),
+    ("POST", f"{_ISSUES}/11/comments", {"body": "b", "title": "x"}),
+    ("POST", f"{_REFS[:-5]}/commits", {"message": "m", "tree": "t", "parents": ["p"]}),
     ("POST", "https://api.github.com/graphql",
      {"query": BOARD_TOP, "variables": {"p": "PVT_1", "i": "S_11"}}),
     ("PATCH", f"{_ISSUES}/2", {"state": "closed"}),
@@ -720,3 +750,31 @@ def test_a_repository_github_cannot_find_is_an_error_not_a_card_read_as_absent()
     github = GitHub("token", _Sent(200, answer["answer"]))
     with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
         Tracker(github, Board(github, "B"), APP).cards([1])
+
+
+def test_a_recorder_sends_a_body_only_as_json():
+    """Review cp4b L1: a body in ``data=`` was read as no body, so a mutation riding there was
+    sent as a read."""
+    session = _Sent(200, {})
+    recorder = Recorder(_scratch(11), session)
+    with pytest.raises(ValueError, match="only as JSON"):
+        recorder.request("POST", "https://api.github.com/graphql", data='{"query": "mutation"}')
+    assert not session.sent
+
+
+def test_a_board_add_github_refuses_in_a_200_is_not_counted_and_does_not_crash():
+    """Review cp4b L4: GraphQL answers a refusal 200 with the field null; the Recorder indexed
+    into it."""
+    recorder = Recorder(_scratch(11), _Sent(200, {"data": {"addProjectV2ItemById": None},
+                                                  "errors": [{"message": "no"}]}))
+    recorder.request("POST", "https://api.github.com/graphql",
+                     json={"query": BOARD_ADD, "variables": {"p": "PVT_1", "c": "S_11"}})
+    assert recorder.scratch.items == {"SI_11"}
+
+
+def test_a_numbered_object_naming_the_tracker_by_full_name_is_its_card():
+    """A REST answer may name its repository by ``full_name`` (review cp4b R20)."""
+    exchange = {"method": "GET", "url": f"{_ISSUES}/11", "body": None, "status": 200,
+                "answer": {"number": 11, "title": f"{SCRATCH} x",
+                           "repository": {"full_name": TRACKER}}}
+    assert f"{SCRATCH} x" in json.dumps(redacted([exchange], _scratch(11)))

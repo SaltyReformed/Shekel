@@ -105,7 +105,8 @@ class GitHub:
         """
         payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})
         others = [e for e in payload.get("errors") or []
-                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) != 2]
+                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) != 2
+                  or e["path"][0] != "repository"]
         if others or payload.get("data") is None:
             raise GitHubError(200, f"graphql: {json.dumps(payload.get('errors'))[:500]}")
         return payload["data"]

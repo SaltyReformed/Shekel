@@ -33,8 +33,10 @@ rest (ruling ``balance:R-BAL170``):
 
 **A leaf inherits every step above it** (``R-BAL182``, ``R-BAL185``): it is
 workable only when its own blockers AND every blocker of every step above it
-are resolved, and while no step above it was dropped.  The waits and the drop
-are recorded once, on the step they were set on; nothing is copied.
+are resolved, and while no step above it was dropped.  A wait is recorded
+once, on the step it was set on, and so is a PERSON's close of a split step;
+nothing is copied.  ``plan drop`` of a split step writes its drop on each leaf
+instead (``R-BAL190``: the tool records a decision only where the work is).
 
 **A card linked to an issue outside the tracker is never offered**
 (``R-BAL188``): the plan reads only its own cards, so the link is reported
@@ -77,14 +79,9 @@ def _shown_shipped(card: Card) -> bool:
 
 
 def _closed_dropped(card: Card) -> bool:
-    """A piece of work closed by a person (for any reason), or by the tool as not planned
-    (``plan drop``)."""
+    """A card that is no container closed by a person (for any reason), or by the tool as
+    not planned (``plan drop``)."""
     return not card.is_open and not _shown_shipped(card)
-
-
-def leaves(card: Card) -> list[int]:
-    """The steps a card splits into (its findings and rulings decide nothing)."""
-    return [child.number for child in card.children if child.kind == "step"]
 
 
 def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
@@ -98,7 +95,7 @@ def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
     card = cards[number]
     if card.is_container:
         return (not card.is_open and card.touched_by_hand) or all(
-            dropped(leaf, cards, shipped) for leaf in leaves(card))
+            dropped(leaf, cards, shipped) for leaf in card.leaves)
     return _closed_dropped(card) and not (is_work(card) and number in shipped)
 
 
@@ -116,7 +113,7 @@ def missing(cards: Mapping[int, Card]) -> set[int]:
     wanted = set()
     for card in cards.values():
         wanted.update(card.blocked_by)
-        wanted.update(leaves(card))
+        wanted.update(card.leaves)
         if card.parent is not None:
             wanted.add(card.parent)
     return wanted - set(cards)
@@ -132,7 +129,7 @@ def resolved(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> 
     if dropped(number, cards, shipped):
         return True
     if card.is_container:
-        return all(resolved(leaf, cards, shipped) for leaf in leaves(card))
+        return all(resolved(leaf, cards, shipped) for leaf in card.leaves)
     return number in shipped
 
 
@@ -153,25 +150,39 @@ def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> b
             and dropped_above(cards[number], cards, shipped) is None)
 
 
+def never_offered(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
+    """Why a piece of work is never offered, whatever its own blockers: a link of its own
+    outside the tracker, a blocker outside the tracker on a step above it (R-BAL188), or a
+    step above it dropped (R-BAL185); None when none holds it back."""
+    shipped = set(shipped)
+    if card.outside:
+        links = ", ".join(f"its {link.what} {link.issue}" for link in card.outside)
+        return f"it links {links}, outside the tracker (R-BAL188)"
+    above = list(_above(card, cards))
+    for step in above:
+        for link in step.outside:
+            if link.what == "blocker":
+                return (f"plan#{step.number} above it waits on {link.issue}, outside the "
+                        "tracker (R-BAL188)")
+    gone = next((step for step in above if dropped(step.number, cards, shipped)), None)
+    return f"plan#{gone.number} above it was dropped (R-BAL185)" if gone else None
+
+
 def workable(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
              claims: Mapping[int, Claim]) -> bool:
-    """Whether a card is a step someone could start now: open unshipped unclaimed work
-    with no link outside the tracker (R-BAL188), no step above it dropped, and every
-    blocker of it and of each step above it resolved and inside the tracker
-    (R-BAL182, R-BAL185)."""
+    """Whether a card is a step someone could start now: open unshipped unclaimed work that
+    nothing holds back (:func:`never_offered`), and every blocker of it and of each step
+    above it resolved (R-BAL182)."""
     shipped = set(shipped)
-    above = list(_above(card, cards))
     return (
         card.is_open
         and card.kind == "step"
         and is_work(card)
-        and not card.outside
+        and never_offered(card, cards, shipped) is None
         and card.number not in shipped
         and card.number not in claims
-        and not any(dropped(step.number, cards, shipped) for step in above)
-        and not any(link.what == "blocker" for step in above for link in step.outside)
         and all(resolved(blocker, cards, shipped)
-                for step in (card, *above) for blocker in step.blocked_by)
+                for step in (card, *_above(card, cards)) for blocker in step.blocked_by)
     )
 
 
@@ -240,8 +251,7 @@ def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) ->
     if parent.board_item is not None:
         return Placement(parent.board_item, parent.board_item,
                          f"into plan#{parent.number}'s place")
-    siblings = [items[child.number] for child in parent.children
-                if child.kind == "step" and child.number in items and child.number != leaf]
+    siblings = [items[number] for number in parent.leaves if number in items and number != leaf]
     if siblings:
         positions = [item for _, item in order]
         return Placement(max(siblings, key=positions.index), None,
@@ -314,7 +324,9 @@ def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
         if done and card.is_open:
             plan.reports.append(
                 f"container plan#{card.number} was reopened by a person's hand, while its "
-                "leaves are all done: close it by hand, or reopen the leaf it still needs"
+                "leaves are all done: to put work back under it, ship 'Reopens: plan#N' for "
+                "a leaf that shipped or reopen a dropped one; to leave it, close it by hand, "
+                "which records it dropped (R-BAL190)"
             )
         return
     shown = None if card.is_open else card.state_reason

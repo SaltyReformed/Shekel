@@ -11,6 +11,7 @@ import requests
 import _git
 import plan
 from _fake import FakeTracker, run, ship
+from _github import GitHubError
 from _scratch import run as _run
 from _tracker import Child, Claim, Edit, OutsideLink
 
@@ -303,14 +304,14 @@ def test_a_ships_naming_a_container_closes_nothing_and_unblocks_nothing(code, ca
 
 def test_dropping_a_split_step_takes_its_leaves_out_of_the_order(code, capsys):
     """R-BAL190 (narrowing R-BAL185 for ``plan drop``; review L2 first): ``plan drop``
-    on a split step drops each open leaf, each with the reason, and the split step shows
-    them at the next sync."""
+    on a split step notes it there, then drops each open leaf, each with the reason, and the
+    split step shows them at the next sync."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True),), on_board=False)
     tracker.add(2, parent=1)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert tracker.writes == [("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned"),
-                              ("comment", 1, "Dropped: superseded (its open leaves plan#2)")]
+    assert tracker.writes == [("comment", 1, "Dropped: superseded (its open leaves plan#2)"),
+                              ("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned")]
     capsys.readouterr()
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: nothing")
@@ -582,3 +583,94 @@ def test_dropping_a_claimed_card_names_the_claim_it_leaves(code, capsys):
     assert ("its claim by 'feat/one' stays: `plan release plan#1 --branch feat/one`"
             in capsys.readouterr().out)
     assert 1 in tracker.held
+
+
+def test_dropping_a_split_step_never_drops_a_leaf_git_shipped(code, capsys):
+    """Review cp4b L6: a leaf whose ``Ships:`` merged before sync closed it was dropped, and
+    no sync rule shows a shipped leaf the tool closed as not planned; git's answer wins, and
+    undoing shipped work is a ``Reopens:`` commit."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
+    tracker.add(2, parent=1)
+    tracker.add(3, parent=1)
+    ship(code, "Ships: plan#2")
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert not [write for write in tracker.writes if write[1] == 2]
+    assert ("close", 3, "not_planned") in tracker.writes
+    capsys.readouterr()
+    assert run(tracker, code, "drop", "plan#2", "--why", "superseded") == 1
+    assert "'Reopens: plan#2', not a drop" in capsys.readouterr().err
+
+
+class _FailOnComment:
+    """``tracker.comment`` failing once, on the card numbered ``number``."""
+
+    def __init__(self, tracker, number):
+        """Stand in for ``tracker.comment``."""
+        self.real, self.number, self.failed = tracker.comment, number, False
+        tracker.comment = self
+
+    def __call__(self, number, text):
+        """Fail the first comment on ``self.number``."""
+        if number == self.number and not self.failed:
+            self.failed = True
+            raise GitHubError(502, "bad gateway")
+        return self.real(number, text)
+
+
+def test_a_split_step_drop_cut_short_at_its_note_is_finished_by_the_same_command(code):
+    """Review cp4b L7: with the note written last, a retry after every leaf landed found no
+    open leaf and never wrote it; the note goes first."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True),), on_board=False)
+    tracker.add(2, parent=1)
+    _FailOnComment(tracker, 1)
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 2
+    assert not tracker.writes
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert tracker.writes == [("comment", 1, "Dropped: superseded (its open leaves plan#2)"),
+                              ("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned")]
+
+
+def test_a_leaf_held_back_from_above_cannot_be_claimed(code, capsys):
+    """Review cp4b L10: ``claim`` refused only the card's own outside link; a leaf under a
+    split step blocked from outside the tracker (R-BAL188), or closed by a person
+    (R-BAL185), is never offered either."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True),), on_board=False,
+                outside=(OutsideLink("blocker", "saltyreformed-labs/Shekel#6"),))
+    tracker.add(2, parent=1)
+    tracker.add(3, children=(Child(4, "step", True),), on_board=False, is_open=False,
+                state_reason="NOT_PLANNED", touched_by_hand=True)
+    tracker.add(4, parent=3)
+    assert run(tracker, code, "claim", "plan#2", "--branch", "feat/a") == 1
+    assert "plan#1 above it waits on saltyreformed-labs/Shekel#6" in capsys.readouterr().err
+    assert run(tracker, code, "claim", "plan#4", "--branch", "feat/b") == 1
+    assert "plan#3 above it was dropped" in capsys.readouterr().err
+    assert not tracker.writes
+
+
+def test_show_names_an_outside_parent_once(code, capsys):
+    """Review cp4b P11: the parent line names it; the outside-link lines name the rest."""
+    tracker = FakeTracker()
+    tracker.add(1, outside=(OutsideLink("parent", "saltyreformed-labs/Shekel#5"),))
+    assert run(tracker, code, "show", "plan#1") == 0
+    assert capsys.readouterr().out.count("Shekel#5") == 1
+
+
+def test_a_closed_card_is_not_dropped_again(code, capsys):
+    """Review cp4b P14."""
+    tracker = FakeTracker()
+    tracker.add(1, is_open=False, state_reason="NOT_PLANNED", closed_by_tool=True)
+    assert run(tracker, code, "drop", "plan#1", "--why", "again") == 1
+    assert "already closed" in capsys.readouterr().err
+    assert not tracker.writes
+
+
+def test_dropping_a_step_that_owns_findings_drops_the_step(code):
+    """Review cp4b P15: a step owning findings (and no step) is no split step (R-BAL177)."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "finding", True),))
+    tracker.add(2, "finding", parent=1)
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert ("close", 1, "not_planned") in tracker.writes

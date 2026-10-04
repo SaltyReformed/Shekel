@@ -10,7 +10,7 @@ import requests
 
 from _fake import FakeTracker, run, ship
 from _github import GitHubError
-from _tracker import Child, Claim, OutsideLink
+from _tracker import Child, Claim, Edit, OutsideLink
 from check import ruling_body
 
 
@@ -605,3 +605,38 @@ def test_the_fake_tracker_fails_loudly_on_a_re_parent_outside_the_tracker():
     card = tracker.add(2, "question", outside=(OutsideLink("parent", "o/code#5"),))
     with pytest.raises(AssertionError, match="outside the tracker"):
         tracker.add_child(1, card)
+
+
+def test_a_conversion_a_person_touched_up_is_still_refused(code, tmp_path, capsys):
+    """Review cp4b L9: the refusal read only who saved last, so the tool's ruling-shaped body,
+    touched up on the web, was taken as the developer's question and wrapped twice."""
+    answer = tmp_path / "a"
+    answer.write_text("Yes.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
+    _FailOnce(tracker, "retype")
+    args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
+            "--from-question", "plan#2", "--answer-file", str(answer))
+    assert run(tracker, code, *args) == 2
+    touched = ruling_body("Ship it tonight!", "Yes.")
+    tracker.versions[2].append(Edit("E2.9", "2026-10-04T00:00:09Z", "SaltyReformed", touched))
+    tracker.bodies[2] = touched
+    answer.write_text("No, tomorrow.")
+    capsys.readouterr()
+    assert run(tracker, code, *args) == 1
+    assert "text is an earlier conversion's" in capsys.readouterr().err
+
+
+def test_a_question_blocked_from_outside_the_tracker_still_becomes_its_ruling(code, tmp_path):
+    """Review cp4b P13: only an outside PARENT re-homes a card; an outside blocker does not."""
+    answer = tmp_path / "a"
+    answer.write_text("Yes.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2, "question", body="Ship it?", title="Ship",
+                outside=(OutsideLink("blocker", "saltyreformed-labs/Shekel#6"),))
+    assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Ship",
+               "--owner", "plan#1", "--from-question", "plan#2",
+               "--answer-file", str(answer)) == 0
+    assert tracker.cards_by_number[2].kind == "ruling"

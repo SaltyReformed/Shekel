@@ -337,3 +337,28 @@ def test_a_bound_environment_reaches_no_repository_but_the_one_named(bound, tmp_
     assert _git.current_branch(work) is None
 
     assert _sentinel_state(sentinel) == before
+
+
+def test_a_rebased_branch_starts_at_its_earliest_own_commit(repo, monkeypatch):
+    """Review cp4b L5: a rebase keeps an own commit's author date and moves it onto a newer
+    base, so the base's date alone opened the window after the commit was written."""
+    dated = {}
+    for name, when, parents in (("d0", "2026-09-01T00:00:00-04:00", ()),
+                                ("d9", "2026-09-09T00:00:00-04:00", ("d0",)),
+                                ("b1", "2026-09-02T00:00:00-04:00", ("d9",))):
+        monkeypatch.setenv("GIT_AUTHOR_DATE", when)
+        dated[name] = _commit(repo, name, parents=[dated[p] for p in parents])
+    _dev(repo, dated["d9"])
+    _run(repo, "update-ref", "refs/heads/feature", dated["b1"])
+    assert _git.started(repo, "feature") == "2026-09-02T00:00:00-04:00"
+
+
+def test_the_start_is_the_earliest_moment_whatever_each_dates_offset(repo, monkeypatch):
+    """Review cp4b G4: dates written in different offsets compare as moments, not as text
+    (``+05:00`` 09-02 01:00 is 09-01 20:00 UTC, before ``-04:00`` 09-01 22:00)."""
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-01T22:00:00-04:00")
+    base = _commit(repo, "dev")
+    _dev(repo, base)
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-02T01:00:00+05:00")
+    _run(repo, "update-ref", "refs/heads/feature", _commit(repo, "own", parents=[base]))
+    assert _git.started(repo, "feature") == "2026-09-02T01:00:00+05:00"

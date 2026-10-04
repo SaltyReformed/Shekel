@@ -18,32 +18,40 @@ tracker it reads is private: real production figures are allowed there
 
 - **The scratch cards are fixed before anything is sent** (:class:`Scratch`):
   the cards the recording session has checked carry a scratch title
-  (:data:`SCRATCH`), plus each card it files with one.  Nothing an answer says
-  changes the set.
+  (:data:`SCRATCH`), and the plan board's id.  The set grows only by what the
+  session itself makes: a card it files with a scratch title, and the board
+  item it adds for a scratch card.
 - **Only a known write to a scratch card is sent** (:func:`refusal`, asked of
-  every request before it goes out): a REST write takes one of the routes in
-  :data:`_ROUTES` on the tracker, with every card it names -- in its path, by
-  its REST id, or as a claim -- a scratch card; a GraphQL write is one of the
-  board's four, word for word, moving a scratch card's board item.  Anything
-  else is refused, unsent.
+  every request before it goes out, and of every request a recording keeps): a
+  REST write takes one of the routes in :data:`_ROUTES` on the tracker, with
+  exactly the body the plan tool sends and every card it names -- in its path,
+  by its REST id, or as a claim -- a scratch card; a GraphQL write is one of the
+  board's four, word for word, on the plan board, moving a scratch card's
+  board item.  A body sent other than as JSON is refused too.  Anything else is
+  refused, unsent.
 - **Every string an answer holds is redacted** (:data:`REDACTED`) unless its
   key is one of :data:`_KEPT` -- ids, states, names of labels, types and
   repositories, dates, error messages -- or it belongs to a scratch card, or it
   is the plan board's own title (:data:`setup_tracker.PROJECT_TITLE`, already
   in this repository).  An object carrying a ``number`` is that card of the
-  tracker, unless it names another repository (then it is no card); an object
-  with no number that carries a string of its own belongs to NO card -- except
-  the answer itself, which is the card the request's URL names, and a card's
-  own edit history; any other object shares its enclosing object's card.  An
-  answer to a request about another repository holds no card's text.
+  tracker only when it names the tracker as its repository, or names none in
+  an answer to a request about the tracker alone (a REST path under the
+  tracker, or a GraphQL query reading no repository but the tracker); any
+  other numbered object is no card.  An object with no number that carries a
+  string of its own belongs to NO card -- except the answer itself, which is
+  the card the request's URL names, and the edit history of an object that
+  carries a card's number; any other object shares its enclosing object's
+  card.
 
 What a recording can still hold: a string under a :data:`_KEPT` key, of any
 card (so a key enters that set only when no card's text can be stored under
 it); everything on the REQUEST side, kept as sent because the replay matches it
 -- read URLs, search terms, GraphQL variables, a claim commit's message -- so a
-recording session puts no private text in a request; and a scratch card's own
+recording session puts no private text in a request; a scratch card's own
 text, including any edit history from before it carried a scratch title (the
-recording sessions file their scratch cards as scratch).
+recording sessions file their scratch cards as scratch); and, in an answer
+about the tracker alone, the text of an object carrying a number that is not a
+card's (a milestone numbered like a scratch card), read as that card's.
 """
 from __future__ import annotations
 
@@ -92,12 +100,13 @@ _CLAIM = re.compile(r"refs/claims/(?:([0-9]+)|recording-[a-z0-9-]+)")
 @dataclass
 class Scratch:
     """The cards a recording may write to and keep the text of -- each by its number, its
-    REST id and its node id -- and the board items added for them."""
+    REST id and its node id -- the board items added for them, and the plan board."""
 
     numbers: set[int] = field(default_factory=set)
     ids: set[int] = field(default_factory=set)
     nodes: set[str] = field(default_factory=set)
     items: set[str] = field(default_factory=set)
+    board: str | None = None
 
     def take(self, issue: dict) -> None:
         """Count a card a REST answer describes (``number``, ``id``, ``node_id``) as scratch."""
@@ -108,12 +117,13 @@ class Scratch:
     def as_json(self) -> dict:
         """The set as a recording keeps it."""
         return {"numbers": sorted(self.numbers), "ids": sorted(self.ids),
-                "nodes": sorted(self.nodes), "items": sorted(self.items)}
+                "nodes": sorted(self.nodes), "items": sorted(self.items), "board": self.board}
 
     @classmethod
     def from_json(cls, kept: dict) -> Scratch:
         """The set a recording kept."""
-        return cls(set(kept["numbers"]), set(kept["ids"]), set(kept["nodes"]), set(kept["items"]))
+        return cls(set(kept["numbers"]), set(kept["ids"]), set(kept["nodes"]),
+                   set(kept["items"]), kept["board"])
 
 
 def _scratch_claim(ref: str, scratch: Scratch) -> bool:
@@ -124,25 +134,34 @@ def _scratch_claim(ref: str, scratch: Scratch) -> bool:
 
 _Allows = Callable[[re.Match, dict, Scratch], bool]
 #: Every REST write a recording may send, under the tracker's repository: its method,
-#: its path, and whether the cards it names are scratch cards.
+#: its path, and whether its body is exactly what the plan tool sends, naming scratch cards
+#: only.
 _ROUTES: tuple[tuple[str, re.Pattern, _Allows], ...] = tuple(
     (method, re.compile(path), allows) for method, path, allows in (
         ("POST", r"/issues",
-         lambda _m, body, _s: str(body.get("title", "")).startswith(SCRATCH)),
+         lambda _m, body, _s: set(body) <= {"title", "body", "type", "labels"}
+         and str(body.get("title", "")).startswith(SCRATCH)),
         ("PATCH", r"/issues/([0-9]+)",
          lambda m, body, s: int(m[1]) in s.numbers
+         and set(body) <= {"title", "body", "type", "state", "state_reason"}
          and str(body.get("title", SCRATCH)).startswith(SCRATCH)),
-        ("POST", r"/issues/([0-9]+)/comments", lambda m, _body, s: int(m[1]) in s.numbers),
+        ("POST", r"/issues/([0-9]+)/comments",
+         lambda m, body, s: int(m[1]) in s.numbers and set(body) == {"body"}),
         ("POST", r"/issues/([0-9]+)/sub_issues",
-         lambda m, body, s: int(m[1]) in s.numbers and body.get("sub_issue_id") in s.ids),
+         lambda m, body, s: int(m[1]) in s.numbers and set(body) == {"sub_issue_id"}
+         and body["sub_issue_id"] in s.ids),
         ("POST", r"/issues/([0-9]+)/dependencies/blocked_by",
-         lambda m, body, s: int(m[1]) in s.numbers and body.get("issue_id") in s.ids),
+         lambda m, body, s: int(m[1]) in s.numbers and set(body) == {"issue_id"}
+         and body["issue_id"] in s.ids),
         ("DELETE", r"/issues/([0-9]+)/dependencies/blocked_by/([0-9]+)",
-         lambda m, _body, s: int(m[1]) in s.numbers and int(m[2]) in s.ids),
-        ("POST", r"/git/commits", lambda _m, _body, _s: True),
-        ("POST", r"/git/refs", lambda _m, body, s: _scratch_claim(str(body.get("ref")), s)),
+         lambda m, body, s: int(m[1]) in s.numbers and int(m[2]) in s.ids and not body),
+        ("POST", r"/git/commits",
+         lambda _m, body, _s: set(body) == {"message", "tree", "parents"}
+         and body["parents"] == []),
+        ("POST", r"/git/refs",
+         lambda _m, body, s: set(body) == {"ref", "sha"} and _scratch_claim(str(body["ref"]), s)),
         ("DELETE", r"/git/refs/(claims/.+)",
-         lambda m, _body, s: _scratch_claim(f"refs/{m[1]}", s)),
+         lambda m, body, s: _scratch_claim(f"refs/{m[1]}", s) and not body),
     )
 )
 
@@ -161,8 +180,10 @@ def _graphql_allows(body: dict, scratch: Scratch) -> bool:
     card's item."""
     query = str(body.get("query", ""))
     if query in _BOARD_WRITES:
-        moved = (body.get("variables") or {}).get(_BOARD_WRITES[query])
-        return moved in (scratch.nodes if query == BOARD_ADD else scratch.items)
+        variables = body.get("variables") or {}
+        moved = variables.get(_BOARD_WRITES[query])
+        return (scratch.board is not None and variables.get("p") == scratch.board
+                and moved in (scratch.nodes if query == BOARD_ADD else scratch.items))
     return not _MUTATION.search(query)
 
 
@@ -183,12 +204,13 @@ def refusal(method: str, url: str, body, scratch: Scratch) -> str | None:
 
 
 def _about_the_tracker(url: str, body) -> bool:
-    """Whether a request reads nothing but the tracker, so a number in its answer that names
-    no repository names a card of the tracker."""
+    """Whether a request provably reads nothing but the tracker -- a REST path under it, or
+    a GraphQL query whose every ``repository(...)`` is the tracker, and that has one -- so a
+    number in its answer that names no repository names a card of the tracker."""
     if url == _GRAPHQL_URL:
-        return all(_THE_TRACKER.fullmatch(arguments) for arguments in
-                   _REPOSITORY_ARGUMENTS.findall(str((body or {}).get("query", ""))))
-    return not url.startswith(f"{API}/repos/") or url.startswith(_REPO_URL + "/")
+        arguments = _REPOSITORY_ARGUMENTS.findall(str((body or {}).get("query", "")))
+        return bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
+    return url.startswith(_REPO_URL + "/")
 
 
 def _named_card(url: str) -> int | None:
@@ -197,26 +219,29 @@ def _named_card(url: str) -> int | None:
     return int(found[1]) if found else None
 
 
-def _card_of(value: dict) -> int | None:
-    """The tracker card an object carrying a ``number`` is; None when it names another
-    repository."""
-    repository = value.get("repository")
-    named = ((repository.get("nameWithOwner") or repository.get("full_name"))
-             if isinstance(repository, dict) else None)
-    url = value.get("repository_url")
-    if named not in (None, TRACKER) or url not in (None, _REPO_URL):
-        return None
-    return value["number"]
+def _card_of(value: dict, scoped: bool) -> int | None:
+    """The tracker card an object carrying a ``number`` is: when it names the tracker as its
+    repository, or names none in an answer about the tracker alone (``scoped``); None
+    otherwise."""
+    repository, url = value.get("repository"), value.get("repository_url")
+    if isinstance(repository, dict):
+        named = repository.get("nameWithOwner") or repository.get("full_name")
+        return value["number"] if named == TRACKER else None
+    if url is not None:
+        return value["number"] if url == _REPO_URL else None
+    return value["number"] if scoped else None
 
 
 @dataclass(frozen=True)
 class _Owner:
     """Whose text a part of an answer holds: ``card``; the card the request names; whether
-    the part is a card's own content (its edit history)."""
+    the part is a card's own content (its edit history); whether the request is about the
+    tracker alone."""
 
     card: int | None
     named: int | None
     own: bool
+    scoped: bool
 
 
 def _redact(value, key: str | None, owner: _Owner, scratch: set[int], top: bool = False):
@@ -228,17 +253,19 @@ def _redact(value, key: str | None, owner: _Owner, scratch: set[int], top: bool 
         return value if key in _KEPT or owner.card in scratch else REDACTED
     if not isinstance(value, dict):
         return value
-    if "number" in value:
-        owner = _Owner(_card_of(value), owner.named, False)
+    numbered = "number" in value
+    if numbered:
+        owner = _Owner(_card_of(value, owner.scoped), owner.named, False, owner.scoped)
     elif any(isinstance(item, str) and name not in _KEPT for name, item in value.items()):
         card = owner.named if top else owner.card if owner.own else None
-        owner = _Owner(card, owner.named, owner.own)
+        owner = _Owner(card, owner.named, owner.own, owner.scoped)
     board = (str(value.get("id", "")).startswith(_BOARD_NODE)
              and value.get("title") == PROJECT_TITLE)
     return {
         name: (item if board and name == "title"
                else _redact(item, name, _Owner(owner.card, owner.named,
-                                               owner.own or name in _OWN_CONTENT), scratch))
+                                               owner.own or (numbered and name in _OWN_CONTENT),
+                                               owner.scoped), scratch))
         for name, item in value.items()
     }
 
@@ -256,10 +283,10 @@ def redacted(exchanges: list[dict], scratch: Scratch) -> list[dict]:
         why = refusal(exchange["method"], url, body, scratch)
         if why:
             raise ValueError(why)
-        tracker = _about_the_tracker(url, body)
-        named = _named_card(url) if tracker else None
-        answer = _redact(exchange["answer"], None, _Owner(named, named, False),
-                         scratch.numbers if tracker else set(), top=True)
+        named = _named_card(url)
+        answer = _redact(exchange["answer"], None,
+                         _Owner(named, named, False, _about_the_tracker(url, body)),
+                         scratch.numbers, top=True)
         kept.append({**exchange, "answer": answer})
     return kept
 
@@ -309,6 +336,8 @@ class Recorder:
         """
         body = kwargs.get("json")
         why = refusal(method, url, body, self.scratch)
+        if set(kwargs) - {"json", "headers", "timeout"}:
+            why = f"a recording sends a body only as JSON: {sorted(kwargs)}"
         if why:
             raise ValueError(f"not sent: {why}")
         response = self._session.request(method, url, **kwargs)
@@ -325,7 +354,9 @@ class Recorder:
         if method == "POST" and url == f"{_REPO_URL}/issues":
             self.scratch.take(answer)
         elif url == _GRAPHQL_URL and (body or {}).get("query") == BOARD_ADD:
-            self.scratch.items.add(answer["data"]["addProjectV2ItemById"]["item"]["id"])
+            added = ((answer or {}).get("data") or {}).get("addProjectV2ItemById")
+            if added:
+                self.scratch.items.add(added["item"]["id"])
 
     def save(self, name: str, directory: Path = RECORDINGS) -> Path:
         """Write the scratch cards and the exchanges to ``<directory>/<name>.json``

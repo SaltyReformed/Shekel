@@ -209,26 +209,23 @@ def author_date(root: Path, ref: str) -> str:
 
 
 def started(root: Path, ref: str) -> str:
-    """When the work on branch ``ref`` started: the earliest author date among the commits
-    its own commits grew from.
+    """When the work on branch ``ref`` started: the earliest author date among its own
+    commits (those not on :data:`DEV`) and the commits they grew from.
 
-    Those are the boundary of ``ref``'s commits not on :data:`DEV` -- the dev
-    commits under its first own commit, and under any line a merge brought in,
-    whichever parent the merge lists first -- plus any own commit with no parent
-    at all; so every commit of the branch falls inside the window
-    ``spec-history --since <ref>`` reads (R-BAL174: the spec edits since the
-    work started).  A ref with no commit off :data:`DEV` is read as its own
-    start: a branch just cut from dev starts at its tip.  So is a branch already
-    MERGED into dev, whose start git no longer records; its window then starts
-    at its last commit.
+    The commits they grew from are the boundary of that set -- the dev commits
+    under each line, whichever parent a merge lists first; the own commits are
+    there too because a rebase, a cherry-pick or an amend keeps each one's
+    author date while moving it onto a newer base.  So every commit of the
+    branch falls inside the window ``spec-history --since <ref>`` reads
+    (R-BAL174: the spec edits since the work started).  A ref with no commit off
+    :data:`DEV` is read as its own start: a branch just cut from dev starts at
+    its tip.  So is a branch already MERGED into dev, whose start git no longer
+    records; its window then starts at its last commit.
     """
-    grew_from = [line[1:] for line in
-                 git(root, "rev-list", "--boundary", ref, "--not", DEV).split()
-                 if line.startswith("-")]
-    grew_from += git(root, "rev-list", "--max-parents=0", ref, "--not", DEV).split()
-    if not grew_from:
+    dates = git(root, "log", "--boundary", "--format=%aI", ref, "--not", DEV).split()
+    if not dates:
         return author_date(root, ref)
-    return min((author_date(root, sha) for sha in grew_from), key=datetime.fromisoformat)
+    return min(dates, key=datetime.fromisoformat)
 
 
 def current_branch(root: Path) -> str | None:

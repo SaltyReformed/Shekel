@@ -128,3 +128,12 @@ def test_graphql_lookup_reads_a_missing_field_as_absent_but_raises_on_a_missing_
         {"type": "NOT_FOUND", "path": ["repository", "c1", "parent"], "message": "unseen"}]}
     with pytest.raises(GitHubError, match="unseen"):
         GitHub("t", _Session(_Response(200, deeper))).graphql_lookup("q")
+
+
+def test_graphql_lookup_reads_as_absent_only_a_card_under_the_repository():
+    """A two-step NOT_FOUND under any other top-level field (an organization's) still raises:
+    only a card the repository holds no number for was measured as absent."""
+    other = {"data": {"organization": {"x": None}}, "errors": [
+        {"type": "NOT_FOUND", "path": ["organization", "x"], "message": "elsewhere"}]}
+    with pytest.raises(GitHubError, match="elsewhere"):
+        GitHub("t", _Session(_Response(200, other))).graphql_lookup("q")

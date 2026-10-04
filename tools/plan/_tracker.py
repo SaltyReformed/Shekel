@@ -173,10 +173,16 @@ class Card:  # pylint: disable=too-many-instance-attributes
     outside: tuple[OutsideLink, ...]
 
     @property
+    def leaves(self) -> tuple[int, ...]:
+        """The steps this card splits into, the one spelling (R-BAL177: the findings and
+        rulings it owns decide nothing)."""
+        return tuple(child.number for child in self.children if child.kind == "step")
+
+    @property
     def is_container(self) -> bool:
-        """A step split into steps (R-BAL177: findings and rulings do not make one, and a
-        card that is not a step is no container whatever hangs under it)."""
-        return self.kind == "step" and any(child.kind == "step" for child in self.children)
+        """A step split into steps (a card that is not a step is no container, whatever
+        hangs under it)."""
+        return self.kind == "step" and bool(self.leaves)
 
 
 @dataclass(frozen=True)

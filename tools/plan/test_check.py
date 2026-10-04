@@ -12,6 +12,7 @@ from check import (
     TITLE_CAP,
     Draft,
     Owner,
+    in_ruling_shape,
     ruling_body,
     ruling_question,
     violations,
@@ -247,3 +248,10 @@ def test_a_card_under_a_parent_with_no_type_is_refused_never_read_as_having_none
         (problem,) = violations(draft, {OWNER})
         assert problem.endswith("its parent is a card with no type")
     assert not violations(Draft("step", "top", "", ("balance",)))
+
+
+def test_in_ruling_shape_needs_both_marks():
+    """Review cp4b C1: the question mark alone is no ruling's shape."""
+    assert in_ruling_shape(ruling_body("Where?", "Here."))
+    for body in ("Question: Where?", "Where?\n\nAnswer: Here.", None):
+        assert not in_ruling_shape(body), body
