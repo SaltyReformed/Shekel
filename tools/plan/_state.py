@@ -18,12 +18,15 @@ rest (ruling ``balance:R-BAL170``):
   state; one the TOOL closed as completed is only the tool's display of git,
   so it is resolved only while git says it shipped -- a ``Reopens:`` commit
   makes it unresolved at once, before ``sync`` reopens it;
-- a container -- a step with step children (``R-BAL177``) -- is resolved only
-  by its leaves, when every step child is: no commit ships a container, so a
-  ``Ships:`` naming one is a mistyped or stale number, reported and never
-  acted on.  One whose leaves were ALL dropped counts as dropped itself
-  (``R-BAL187``): what waits on it is released, no leaf can be filed under it,
-  and ``sync`` closes it as not planned, never as completed;
+- a container -- a step with step children (``R-BAL177``) -- holds no decision
+  of the tool's (``R-BAL190``): it is resolved by its leaves, when every
+  step child is, and dropped when every leaf was (``R-BAL187``: what waits on
+  it is released, and no leaf can be filed under it), or when a PERSON closed
+  it, a drop its leaves inherit (``R-BAL185``).  Its open or closed state is
+  the tool's display of its leaves, which ``sync`` keeps in step both ways --
+  reopened when a leaf is revived, closed as completed or as not planned as
+  they end.  No commit ships a container, so a ``Ships:`` naming one is a
+  mistyped or stale number, reported and never acted on;
 - a ruling or a question is never shipped by git (a ruling is a record, a
   question the developer's), so it is resolved once it is closed: a question
   when it is answered (its card becomes the ruling) or withdrawn.
@@ -74,24 +77,29 @@ def _shown_shipped(card: Card) -> bool:
 
 
 def _closed_dropped(card: Card) -> bool:
-    """Closed by a person (for any reason), or by the tool as not planned (``plan drop``,
-    or ``sync`` showing a container whose leaves were all dropped)."""
+    """A piece of work closed by a person (for any reason), or by the tool as not planned
+    (``plan drop``)."""
     return not card.is_open and not _shown_shipped(card)
 
 
-def _leaves(card: Card) -> list[int]:
-    """The steps a container splits into (its findings and rulings decide nothing)."""
+def leaves(card: Card) -> list[int]:
+    """The steps a card splits into (its findings and rulings decide nothing)."""
     return [child.number for child in card.children if child.kind == "step"]
 
 
 def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
-    """Whether a card was dropped: closed as dropped, or a container whose leaves were
-    all dropped (R-BAL187) -- never a piece of work git says shipped, whoever closed it."""
+    """Whether a card was dropped.
+
+    A piece of work: closed as dropped, and not shipped (git's answer, whoever
+    closed it).  A container: closed by a PERSON (R-BAL185), or every leaf
+    dropped (R-BAL187) -- never its own close by the tool, which only shows its
+    leaves (R-BAL190).
+    """
     card = cards[number]
-    if is_work(card) and number in shipped:
-        return False
-    return _closed_dropped(card) or (
-        card.is_container and all(dropped(leaf, cards, shipped) for leaf in _leaves(card)))
+    if card.is_container:
+        return (not card.is_open and card.touched_by_hand) or all(
+            dropped(leaf, cards, shipped) for leaf in leaves(card))
+    return _closed_dropped(card) and not (is_work(card) and number in shipped)
 
 
 def _above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
@@ -108,7 +116,7 @@ def missing(cards: Mapping[int, Card]) -> set[int]:
     wanted = set()
     for card in cards.values():
         wanted.update(card.blocked_by)
-        wanted.update(_leaves(card))
+        wanted.update(leaves(card))
         if card.parent is not None:
             wanted.add(card.parent)
     return wanted - set(cards)
@@ -124,7 +132,7 @@ def resolved(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> 
     if dropped(number, cards, shipped):
         return True
     if card.is_container:
-        return all(resolved(leaf, cards, shipped) for leaf in _leaves(card))
+        return all(resolved(leaf, cards, shipped) for leaf in leaves(card))
     return number in shipped
 
 
@@ -294,8 +302,9 @@ def _sync_shipped(card: Card, plan: SyncPlan, claims: Mapping[int, Claim],
 
 def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
                     shipped: set[int]) -> None:
-    """A container's state follows its leaves: open while one is still work, closed as
-    not planned once all were dropped (R-BAL187), else closed as completed.
+    """A container's state shows its leaves (R-BAL190): open while one is still
+    work, closed as not planned once all were dropped (R-BAL187), else closed as
+    completed -- reopened, closed or re-closed as they change.
 
     A person's close is a drop, so the one state a person leaves that its leaves
     contradict is a container reopened by hand while its leaves are all done.
@@ -305,16 +314,18 @@ def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
         if done and card.is_open:
             plan.reports.append(
                 f"container plan#{card.number} was reopened by a person's hand, while its "
-                "leaves are all done: close it by hand, or file a new leaf under it"
+                "leaves are all done: close it by hand, or reopen the leaf it still needs"
             )
-    elif not done:
-        if _shown_shipped(card):
-            plan.reopen.append(card.number)
+        return
+    shown = None if card.is_open else card.state_reason
+    if not done:
+        wanted, writes = None, plan.reopen
     elif dropped(card.number, cards, shipped):
-        if card.is_open or _shown_shipped(card):
-            plan.drop.append(card.number)
-    elif card.is_open:
-        plan.close.append(card.number)
+        wanted, writes = "NOT_PLANNED", plan.drop
+    else:
+        wanted, writes = "COMPLETED", plan.close
+    if shown != wanted:
+        writes.append(card.number)
 
 
 def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping[int, Claim],
@@ -354,10 +365,16 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
                 "so it is never offered (R-BAL185): drop it, or give it a live parent"
             )
         if card.kind == "finding" and card.is_open and card.number not in shipped and (
-            card.parent is None or not is_live(card.parent, cards, shipped)
-        ):
-            owner = ("is missing" if card.parent is None else
-                     f"plan#{card.parent} is no longer live (done, or under a dropped step)")
-            plan.reports.append(f"finding plan#{card.number}'s owner {owner}: give it an open "
+                lost := _owner_lost(card, cards, shipped)):
+            plan.reports.append(f"finding plan#{card.number}'s owner {lost}: give it an open "
                                 "step as its owner (R-BAL177)")
     return plan
+
+
+def _owner_lost(card: Card, cards: Mapping[int, Card], shipped: set[int]) -> str | None:
+    """How an open finding lost its live owner; None while it has one -- or an owner
+    outside the tracker, which the outside link's own report names (R-BAL188)."""
+    if card.parent is not None:
+        return (None if is_live(card.parent, cards, shipped) else
+                f"plan#{card.parent} is no longer live (done, or under a dropped step)")
+    return None if any(link.what == "parent" for link in card.outside) else "is missing"

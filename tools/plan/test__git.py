@@ -193,6 +193,55 @@ def test_a_branch_starts_at_the_commit_it_grew_from(repo, monkeypatch):
     assert _git.started(repo, "fresh") == "2026-10-02T09:00:00-04:00"
 
 
+def test_a_branch_holding_a_merge_starts_at_the_earliest_line_it_grew_from(repo, monkeypatch):
+    """Review cp4 L-5: a merge listing a peer line FIRST put that line's base first, so the
+    branch's own commit b1 fell outside the window; every line it grew from counts."""
+    dated = {}
+    for name, when, parents in (("d0", "2026-09-01T00:00:00-04:00", ()),
+                                ("b1", "2026-09-02T00:00:00-04:00", ("d0",)),
+                                ("b2", "2026-09-03T00:00:00-04:00", ("b1",)),
+                                ("d5", "2026-09-05T00:00:00-04:00", ("d0",)),
+                                ("p1", "2026-09-06T00:00:00-04:00", ("d5",)),
+                                ("p2", "2026-09-07T00:00:00-04:00", ("p1",)),
+                                ("m", "2026-09-09T00:00:00-04:00", ("p2", "b2"))):
+        monkeypatch.setenv("GIT_AUTHOR_DATE", when)
+        dated[name] = _commit(repo, name, parents=[dated[p] for p in parents])
+    _dev(repo, dated["d5"])
+    _run(repo, "update-ref", "refs/heads/feature", dated["m"])
+    assert _git.started(repo, "feature") == "2026-09-01T00:00:00-04:00"
+    _run(repo, "update-ref", "refs/heads/feature",
+         _commit(repo, "m2", parents=[dated["b2"], dated["p2"]]))
+    assert _git.started(repo, "feature") == "2026-09-01T00:00:00-04:00"
+
+
+def test_a_branch_with_a_root_of_its_own_starts_at_that_root(repo, monkeypatch):
+    """A line no dev commit lies under (an orphan root) has no boundary; its root is where
+    that line's work started."""
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-10T00:00:00-04:00")
+    _dev(repo, _commit(repo, "dev"))
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-01T00:00:00-04:00")
+    root = _commit(repo, "orphan")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-05T00:00:00-04:00")
+    _run(repo, "update-ref", "refs/heads/feature", _commit(repo, "work", parents=[root]))
+    assert _git.started(repo, "feature") == "2026-09-01T00:00:00-04:00"
+
+
+def test_a_branch_starts_at_the_earliest_of_every_line_it_grew_from(repo, monkeypatch):
+    """A dev commit under one line and an orphan root under another: the earlier of the two,
+    whichever git lists last."""
+    dated = {}
+    for name, when, parents in (("d", "2026-09-01T00:00:00-04:00", ()),
+                                ("b1", "2026-09-03T00:00:00-04:00", ("d",)),
+                                ("r", "2026-09-05T00:00:00-04:00", ()),
+                                ("w", "2026-09-06T00:00:00-04:00", ("r",)),
+                                ("m", "2026-09-07T00:00:00-04:00", ("w", "b1"))):
+        monkeypatch.setenv("GIT_AUTHOR_DATE", when)
+        dated[name] = _commit(repo, name, parents=[dated[p] for p in parents])
+    _dev(repo, dated["d"])
+    _run(repo, "update-ref", "refs/heads/feature", dated["m"])
+    assert _git.started(repo, "feature") == "2026-09-01T00:00:00-04:00"
+
+
 def test_author_date_is_when_the_commit_was_first_written(repo, monkeypatch):
     """``spec-history --since <ref>`` reads the AUTHOR date, ISO with its offset: a rebase
     or amend moves the committer date later and would narrow the window."""

@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from setup_tracker import ARCS
@@ -208,18 +209,26 @@ def author_date(root: Path, ref: str) -> str:
 
 
 def started(root: Path, ref: str) -> str:
-    """When the work on branch ``ref`` started: the author date of the commit it grew from.
+    """When the work on branch ``ref`` started: the earliest author date among the commits
+    its own commits grew from.
 
-    That is the first parent of its oldest commit not on :data:`DEV` (parents
-    before children, ``--topo-order``), so every commit of the branch -- and the
-    time before its first one -- falls inside the window ``spec-history --since
-    <ref>`` reads (R-BAL174: the spec edits since the work started).  A ref
-    with no commit off :data:`DEV` is read as its own start: a branch just cut
-    from dev starts at its tip.  So is a branch already MERGED into dev, whose
-    start git no longer records; its window then starts at its last commit.
+    Those are the boundary of ``ref``'s commits not on :data:`DEV` -- the dev
+    commits under its first own commit, and under any line a merge brought in,
+    whichever parent the merge lists first -- plus any own commit with no parent
+    at all; so every commit of the branch falls inside the window
+    ``spec-history --since <ref>`` reads (R-BAL174: the spec edits since the
+    work started).  A ref with no commit off :data:`DEV` is read as its own
+    start: a branch just cut from dev starts at its tip.  So is a branch already
+    MERGED into dev, whose start git no longer records; its window then starts
+    at its last commit.
     """
-    own = git(root, "rev-list", "--reverse", "--topo-order", ref, "--not", DEV).split()
-    return author_date(root, f"{own[0]}^" if own else ref)
+    grew_from = [line[1:] for line in
+                 git(root, "rev-list", "--boundary", ref, "--not", DEV).split()
+                 if line.startswith("-")]
+    grew_from += git(root, "rev-list", "--max-parents=0", ref, "--not", DEV).split()
+    if not grew_from:
+        return author_date(root, ref)
+    return min((author_date(root, sha) for sha in grew_from), key=datetime.fromisoformat)
 
 
 def current_branch(root: Path) -> str | None:

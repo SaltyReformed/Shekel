@@ -199,12 +199,15 @@ def test_a_container_is_resolved_by_its_leaves_never_by_a_ships_naming_it():
 
 
 def test_a_leaf_inherits_the_waits_and_the_drop_of_every_step_above_it():
-    """R-BAL182 and R-BAL185: each is recorded once, on the step it was set on."""
+    """R-BAL182 and R-BAL185: each is recorded once, on the step it was set on.  The drop
+    is a PERSON's close of the split step: the tool's own close of one only shows its
+    leaves (R-BAL190, which changed this case from the tool's close)."""
     cards = _cards(_card(2), _card(7, blocked_by=(2,), children=(Child(8, "step", True),)),
                    _card(8, parent=7, children=(Child(9, "step", True),)), _card(9, parent=8))
     assert not workable(cards[9], cards, set(), {})
     assert workable(cards[9], cards, {2}, {}) and is_live(9, cards, {2})
-    cards[8] = _closed(8, reason="NOT_PLANNED", parent=7, children=cards[8].children)
+    cards[8] = _closed(8, by_tool=False, reason="NOT_PLANNED", parent=7,
+                       children=cards[8].children)
     assert not workable(cards[9], cards, {2}, {}) and not is_live(9, cards, {2})
     assert dropped_above(cards[9], cards, {2}).number == 8
     assert dropped_above(cards[7], cards, {2}) is None
@@ -367,3 +370,64 @@ def test_a_leaf_git_says_shipped_was_not_dropped_whoever_closed_it():
     assert dropped(7, cards, set()) and not dropped(7, cards, {8})
     plan = sync_plan(cards, shipped={8}, claims={}, ship_branches={})
     assert (plan.close, plan.drop) == ([7], [])
+
+
+def test_a_finding_whose_owner_is_outside_the_tracker_is_reported_once():
+    """Review cp4 L-9: it got the outside link's report AND "owner is missing"; it has an
+    owner, outside the tracker."""
+    finding = _card(3, "finding", outside=(OutsideLink("parent", "o/code#9"),))
+    reports = sync_plan(_cards(finding), set(), {}, {}).reports
+    assert len(reports) == 1 and "outside the tracker" in reports[0]
+
+
+def test_a_reopened_container_report_advises_a_remedy_the_tool_takes():
+    """Review cp4 L-6: it advised filing a new leaf, which the tool refuses under a step
+    whose leaves are all done."""
+    cards = _cards(_card(1, children=(Child(2, "step", False),), touched_by_hand=True),
+                   _closed(2, parent=1))
+    (report,) = sync_plan(cards, {2}, {}, {}).reports
+    assert "reopen the leaf it still needs" in report and "file a new leaf" not in report
+
+
+def test_the_findings_a_split_step_owns_decide_nothing_about_its_drop():
+    """Review cp4 M7: an open finding under a split step whose leaves were all dropped does
+    not keep it from counting as dropped (R-BAL177: only step children are leaves)."""
+    cards = _cards(_card(7, children=(Child(8, "step", False), Child(9, "finding", True))),
+                   _closed(8, reason="NOT_PLANNED", parent=7), _card(9, "finding", parent=7))
+    assert dropped(7, cards, set())
+
+
+def test_a_ships_naming_a_dropped_container_leaves_it_dropped():
+    """Review cp4 M62: git's answer counts only for work; a mistyped ``Ships:`` naming a
+    dropped split step must not revive it, nor the leaves under it."""
+    cards = _cards(_closed(7, by_tool=False, children=(Child(8, "step", True),)),
+                   _card(8, parent=7))
+    assert dropped(7, cards, {7}) and not workable(cards[8], cards, {7}, {})
+
+
+def test_a_split_steps_close_by_the_tool_only_shows_its_leaves():
+    """R-BAL190 (review cp4 MEDIUM-1): sync's close of a split step whose leaves were
+    all dropped latched it dropped, so a leaf a person revived was never offered and a leaf
+    that shipped left it "not planned".  The tool's close shows the leaves, both ways."""
+    leaves = (Child(8, "step", False), Child(10, "step", True))
+    revived = _card(10, parent=7, touched_by_hand=True)
+    cards = _cards(_closed(7, reason="NOT_PLANNED", children=leaves),
+                   _closed(8, reason="NOT_PLANNED", parent=7), revived, _card(11, blocked_by=(7,)))
+    assert workable(cards[10], cards, set(), {}) and not workable(cards[11], cards, set(), {})
+    plan = sync_plan(cards, set(), {}, {})
+    assert (plan.reopen, plan.close, plan.drop, plan.reports) == ([7], [], [], [])
+    cards[10] = _closed(10, parent=7)
+    plan = sync_plan(cards, {10}, {}, {})
+    assert (plan.reopen, plan.close, plan.drop) == ([], [7], [])
+    assert workable(cards[11], cards, {10}, {})
+    cards[7] = _closed(7, children=leaves)
+    plan = sync_plan(cards, {10}, {}, {})
+    assert not (plan.reopen or plan.close or plan.drop or plan.reports)
+
+
+def test_a_ships_naming_a_dropped_card_that_is_not_work_leaves_it_dropped():
+    """Review cp4 M62: git's answer counts only for work, so a mistyped ``Ships:`` naming an
+    untyped card a person closed (hand-linked as a parent) does not revive what is under it."""
+    cards = _cards(_closed(1, None, by_tool=False, children=(Child(2, "step", True),)),
+                   _card(2, parent=1))
+    assert dropped_above(cards[2], cards, {1}).number == 1

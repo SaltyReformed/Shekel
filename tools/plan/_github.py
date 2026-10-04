@@ -98,13 +98,14 @@ class GitHub:
         Asked for an issue number nobody filed, GitHub answers 200 with that
         field ``null`` beside the others and a ``NOT_FOUND`` error whose ``path``
         names it under the repository (measured 2026-10-04); this answers the
-        ``data`` with the field None.  A top-level object it cannot find -- the
-        repository itself -- is a ``NOT_FOUND`` too, with a one-step path, and
-        still raises, as does every other error.
+        ``data`` with the field None.  Only that two-step path is read as absent: a
+        top-level object it cannot find -- the repository itself, a one-step path
+        (measured 2026-10-04) -- and anything deeper, which no read has measured,
+        still raise, as does every other error.
         """
         payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})
         others = [e for e in payload.get("errors") or []
-                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) < 2]
+                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) != 2]
         if others or payload.get("data") is None:
             raise GitHubError(200, f"graphql: {json.dumps(payload.get('errors'))[:500]}")
         return payload["data"]

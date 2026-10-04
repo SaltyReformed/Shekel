@@ -1,12 +1,42 @@
 {
- "scratch": [
-  11,
-  12,
-  13,
-  14,
-  15,
-  16
- ],
+ "scratch": {
+  "numbers": [
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19
+  ],
+  "ids": [
+   5698643376,
+   5698680765,
+   5699076068,
+   5700108758,
+   5700129994,
+   5702033617,
+   5702406350,
+   5702418376,
+   5702998724
+  ],
+  "nodes": [
+   "I_kwDOU6wSSs8AAAABU-PQzg",
+   "I_kwDOU6wSSs8AAAABU-P_yA",
+   "I_kwDOU6wSSs8AAAABU-zaxA",
+   "I_kwDOU6wSSs8AAAABU6plsA",
+   "I_kwDOU6wSSs8AAAABU6r3vQ",
+   "I_kwDOU6wSSs8AAAABU7D_5A",
+   "I_kwDOU6wSSs8AAAABU8DB1g",
+   "I_kwDOU6wSSs8AAAABU8EUyg",
+   "I_kwDOU6wSSs8AAAABU94g0Q"
+  ],
+  "items": [
+   "PVTI_lADOFB5GWc4Bln4uzg-fa9A"
+  ]
+ },
  "exchanges": [
   {
    "method": "POST",
@@ -667,7 +697,7 @@
          },
          "parent": null,
          "subIssues": {
-          "totalCount": 4,
+          "totalCount": 7,
           "nodes": [
            {
             "number": 12,
@@ -700,6 +730,36 @@
            {
             "number": 15,
             "state": "OPEN",
+            "issueType": {
+             "name": "question"
+            },
+            "repository": {
+             "nameWithOwner": "saltyreformed-labs/shekel-plan"
+            }
+           },
+           {
+            "number": 16,
+            "state": "CLOSED",
+            "issueType": {
+             "name": "question"
+            },
+            "repository": {
+             "nameWithOwner": "saltyreformed-labs/shekel-plan"
+            }
+           },
+           {
+            "number": 17,
+            "state": "CLOSED",
+            "issueType": {
+             "name": "question"
+            },
+            "repository": {
+             "nameWithOwner": "saltyreformed-labs/shekel-plan"
+            }
+           },
+           {
+            "number": 18,
+            "state": "CLOSED",
             "issueType": {
              "name": "question"
             },
@@ -1066,7 +1126,7 @@
        },
        "parent": null,
        "subIssues": {
-        "totalCount": 4,
+        "totalCount": 7,
         "nodes": [
          {
           "number": 12,
@@ -1099,6 +1159,36 @@
          {
           "number": 15,
           "state": "OPEN",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 16,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 17,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 18,
+          "state": "CLOSED",
           "issueType": {
            "name": "question"
           },
@@ -1404,19 +1494,19 @@
    },
    "status": 201,
    "answer": {
-    "sha": "fa58350bf1b18def7fce2f85c35cf9cca0bbc9d0",
-    "node_id": "C_kwDOU6wSStoAKGZhNTgzNTBiZjFiMThkZWY3ZmNlMmY4NWMzNWNmOWNjYTBiYmM5ZDA",
+    "sha": "415297aad1e10a7eaa6613797eee38ba90387d78",
+    "node_id": "C_kwDOU6wSStoAKDQxNTI5N2FhZDFlMTBhN2VhYTY2MTM3OTdlZWUzOGJhOTAzODdkNzg",
     "url": "[redacted: not a scratch card]",
     "html_url": "[redacted: not a scratch card]",
     "author": {
      "name": "shekel-plan-tool[bot]",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:06Z"
+     "date": "2026-10-04T20:27:06Z"
     },
     "committer": {
      "name": "GitHub",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:06Z"
+     "date": "2026-10-04T20:27:06Z"
     },
     "tree": {
      "sha": "ebb55e0fb0cfb4b17404eb57c97e9298eba04e91",
@@ -1438,7 +1528,7 @@
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs",
    "body": {
     "ref": "refs/claims/11",
-    "sha": "fa58350bf1b18def7fce2f85c35cf9cca0bbc9d0"
+    "sha": "415297aad1e10a7eaa6613797eee38ba90387d78"
    },
    "status": 201,
    "answer": {
@@ -1446,7 +1536,7 @@
     "node_id": "REF_kwDOU6wSSq5yZWZzL2NsYWltcy8xMQ",
     "url": "[redacted: not a scratch card]",
     "object": {
-     "sha": "fa58350bf1b18def7fce2f85c35cf9cca0bbc9d0",
+     "sha": "415297aad1e10a7eaa6613797eee38ba90387d78",
      "type": "commit",
      "url": "[redacted: not a scratch card]"
     }
@@ -1513,19 +1603,19 @@
    },
    "status": 201,
    "answer": {
-    "sha": "017b2f83d612fd46737726a6ab16af840dc4d74e",
-    "node_id": "C_kwDOU6wSStoAKDAxN2IyZjgzZDYxMmZkNDY3Mzc3MjZhNmFiMTZhZjg0MGRjNGQ3NGU",
+    "sha": "f02b47571418384edf5b351af7659757c0fc7050",
+    "node_id": "C_kwDOU6wSStoAKGYwMmI0NzU3MTQxODM4NGVkZjViMzUxYWY3NjU5NzU3YzBmYzcwNTA",
     "url": "[redacted: not a scratch card]",
     "html_url": "[redacted: not a scratch card]",
     "author": {
      "name": "shekel-plan-tool[bot]",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:09Z"
+     "date": "2026-10-04T20:27:07Z"
     },
     "committer": {
      "name": "GitHub",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:09Z"
+     "date": "2026-10-04T20:27:07Z"
     },
     "tree": {
      "sha": "ebb55e0fb0cfb4b17404eb57c97e9298eba04e91",
@@ -1547,7 +1637,7 @@
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs",
    "body": {
     "ref": "refs/claims/11",
-    "sha": "017b2f83d612fd46737726a6ab16af840dc4d74e"
+    "sha": "f02b47571418384edf5b351af7659757c0fc7050"
    },
    "status": 422,
    "answer": {
@@ -1567,7 +1657,7 @@
      "node_id": "REF_kwDOU6wSSq5yZWZzL2NsYWltcy8xMQ",
      "url": "[redacted: not a scratch card]",
      "object": {
-      "sha": "fa58350bf1b18def7fce2f85c35cf9cca0bbc9d0",
+      "sha": "415297aad1e10a7eaa6613797eee38ba90387d78",
       "type": "commit",
       "url": "[redacted: not a scratch card]"
      }
@@ -1578,7 +1668,7 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c11: object(oid: \"fa58350bf1b18def7fce2f85c35cf9cca0bbc9d0\") { ... on Commit { message authoredDate } } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c11: object(oid: \"415297aad1e10a7eaa6613797eee38ba90387d78\") { ... on Commit { message authoredDate } } } }",
     "variables": {}
    },
    "status": 200,
@@ -1587,7 +1677,7 @@
      "repository": {
       "c11": {
        "message": "claim plan#11\n\nbranch: feat/plan-recording",
-       "authoredDate": "2026-10-04T18:25:06Z"
+       "authoredDate": "2026-10-04T20:27:06Z"
       }
      }
     }
@@ -1668,19 +1758,19 @@
    },
    "status": 201,
    "answer": {
-    "sha": "84f7b309e30db95ea6534280524500d889a9ddb0",
-    "node_id": "C_kwDOU6wSStoAKDg0ZjdiMzA5ZTMwZGI5NWVhNjUzNDI4MDUyNDUwMGQ4ODlhOWRkYjA",
+    "sha": "bf8848aebea8dbaec873de222c00cea618a8fa5f",
+    "node_id": "C_kwDOU6wSStoAKGJmODg0OGFlYmVhOGRiYWVjODczZGUyMjJjMDBjZWE2MThhOGZhNWY",
     "url": "[redacted: not a scratch card]",
     "html_url": "[redacted: not a scratch card]",
     "author": {
      "name": "shekel-plan-tool[bot]",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:12Z"
+     "date": "2026-10-04T20:27:10Z"
     },
     "committer": {
      "name": "GitHub",
      "email": "[redacted: not a scratch card]",
-     "date": "2026-10-04T18:25:12Z"
+     "date": "2026-10-04T20:27:10Z"
     },
     "tree": {
      "sha": "ebb55e0fb0cfb4b17404eb57c97e9298eba04e91",
@@ -1702,7 +1792,7 @@
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs",
    "body": {
     "ref": "refs/claims/recording-scratch",
-    "sha": "84f7b309e30db95ea6534280524500d889a9ddb0"
+    "sha": "bf8848aebea8dbaec873de222c00cea618a8fa5f"
    },
    "status": 201,
    "answer": {
@@ -1710,7 +1800,7 @@
     "node_id": "REF_kwDOU6wSSr1yZWZzL2NsYWltcy9yZWNvcmRpbmctc2NyYXRjaA",
     "url": "[redacted: not a scratch card]",
     "object": {
-     "sha": "84f7b309e30db95ea6534280524500d889a9ddb0",
+     "sha": "bf8848aebea8dbaec873de222c00cea618a8fa5f",
      "type": "commit",
      "url": "[redacted: not a scratch card]"
     }
@@ -1727,7 +1817,7 @@
      "node_id": "REF_kwDOU6wSSr1yZWZzL2NsYWltcy9yZWNvcmRpbmctc2NyYXRjaA",
      "url": "[redacted: not a scratch card]",
      "object": {
-      "sha": "84f7b309e30db95ea6534280524500d889a9ddb0",
+      "sha": "bf8848aebea8dbaec873de222c00cea618a8fa5f",
       "type": "commit",
       "url": "[redacted: not a scratch card]"
      }
@@ -1745,7 +1835,7 @@
    "method": "POST",
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs",
    "body": {
-    "ref": "refs/claims/99998",
+    "ref": "refs/claims/13",
     "sha": "1111111111111111111111111111111111111111"
    },
    "status": 422,
@@ -1788,7 +1878,7 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query($number: Int!, $after: String) { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") {\n  issue(number: $number) { body createdAt author { login }\n    userContentEdits(first: 100, after: $after) {\n      pageInfo { hasNextPage endCursor }\n      nodes { id editedAt editor { login } diff } } } } }",
+    "query": "query($number: Int!, $after: String) { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") {\n  issue(number: $number) { number body createdAt author { login }\n    userContentEdits(first: 100, after: $after) {\n      pageInfo { hasNextPage endCursor }\n      nodes { id editedAt editor { login } diff } } } } }",
     "variables": {
      "number": 11,
      "after": null
@@ -1799,6 +1889,7 @@
     "data": {
      "repository": {
       "issue": {
+       "number": 11,
        "body": "L2 probe body v3 (edited by the App again).\n\nline two v3\n",
        "createdAt": "2026-10-04T11:04:00Z",
        "author": {
@@ -1853,7 +1944,7 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query($number: Int!, $after: String) { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") {\n  issue(number: $number) { body createdAt author { login }\n    userContentEdits(first: 100, after: $after) {\n      pageInfo { hasNextPage endCursor }\n      nodes { id editedAt editor { login } diff } } } } }",
+    "query": "query($number: Int!, $after: String) { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") {\n  issue(number: $number) { number body createdAt author { login }\n    userContentEdits(first: 100, after: $after) {\n      pageInfo { hasNextPage endCursor }\n      nodes { id editedAt editor { login } diff } } } } }",
     "variables": {
      "number": 12,
      "after": null
@@ -1864,6 +1955,7 @@
     "data": {
      "repository": {
       "issue": {
+       "number": 12,
        "body": "Scratch child of #11 for an L2 measurement.",
        "createdAt": "2026-10-04T11:09:46Z",
        "author": {
@@ -1887,7 +1979,7 @@
    "body": null,
    "status": 200,
    "answer": {
-    "total_count": 5,
+    "total_count": 8,
     "incomplete_results": false,
     "items": [
      {
@@ -2228,9 +2320,9 @@
       "type": null,
       "active_lock_reason": null,
       "sub_issues_summary": {
-       "total": 4,
-       "completed": 1,
-       "percent_completed": 25
+       "total": 7,
+       "completed": 4,
+       "percent_completed": 57
       },
       "issue_dependencies_summary": {
        "blocked_by": 0,
@@ -2254,6 +2346,297 @@
       "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/11/timeline",
       "performed_via_github_app": null,
       "state_reason": null,
+      "pinned_comment": null,
+      "score": 1.0
+     },
+     {
+      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/18",
+      "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+      "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/18/labels{/name}",
+      "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/18/comments",
+      "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/18/events",
+      "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/18",
+      "id": 5702418376,
+      "node_id": "I_kwDOU6wSSs8AAAABU-P_yA",
+      "number": 18,
+      "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
+      "user": {
+       "login": "shekel-plan-tool[bot]",
+       "id": 337541023,
+       "node_id": "BOT_kgDOFB53nw",
+       "avatar_url": "[redacted: not a scratch card]",
+       "gravatar_id": "[redacted: not a scratch card]",
+       "url": "[redacted: not a scratch card]",
+       "html_url": "[redacted: not a scratch card]",
+       "followers_url": "[redacted: not a scratch card]",
+       "following_url": "[redacted: not a scratch card]",
+       "gists_url": "[redacted: not a scratch card]",
+       "starred_url": "[redacted: not a scratch card]",
+       "subscriptions_url": "[redacted: not a scratch card]",
+       "organizations_url": "[redacted: not a scratch card]",
+       "repos_url": "[redacted: not a scratch card]",
+       "events_url": "[redacted: not a scratch card]",
+       "received_events_url": "[redacted: not a scratch card]",
+       "type": "Bot",
+       "user_view_type": "[redacted: not a scratch card]",
+       "site_admin": false
+      },
+      "labels": [
+       {
+        "id": 12531478759,
+        "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+        "url": "[redacted: not a scratch card]",
+        "name": "balance",
+        "color": "[redacted: not a scratch card]",
+        "default": false,
+        "description": "[redacted: not a scratch card]",
+        "archived_at": null,
+        "archived_by": null
+       }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [],
+      "milestone": null,
+      "comments": 1,
+      "created_at": "2026-10-04T19:12:58Z",
+      "updated_at": "2026-10-04T19:13:08Z",
+      "closed_at": "2026-10-04T19:13:07Z",
+      "assignee": null,
+      "author_association": "NONE",
+      "issue_field_values": [],
+      "type": {
+       "id": 891387729,
+       "node_id": "IT_kwDOFB5GWc41IX9R",
+       "name": "question",
+       "description": "[redacted: not a scratch card]",
+       "color": "[redacted: not a scratch card]",
+       "created_at": "[redacted: not a scratch card]",
+       "updated_at": "[redacted: not a scratch card]",
+       "is_enabled": true
+      },
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+       "total": 0,
+       "completed": 0,
+       "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+       "blocked_by": 0,
+       "total_blocked_by": 0,
+       "blocking": 0,
+       "total_blocking": 0
+      },
+      "body": "Is this recorded?",
+      "reactions": {
+       "url": "[redacted: not a scratch card]",
+       "total_count": 0,
+       "+1": 0,
+       "-1": 0,
+       "laugh": 0,
+       "hooray": 0,
+       "confused": 0,
+       "heart": 0,
+       "rocket": 0,
+       "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/18/timeline",
+      "performed_via_github_app": null,
+      "state_reason": "not_planned",
+      "pinned_comment": null,
+      "score": 1.0
+     },
+     {
+      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/17",
+      "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+      "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/17/labels{/name}",
+      "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/17/comments",
+      "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/17/events",
+      "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/17",
+      "id": 5702406350,
+      "node_id": "I_kwDOU6wSSs8AAAABU-PQzg",
+      "number": 17,
+      "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
+      "user": {
+       "login": "shekel-plan-tool[bot]",
+       "id": 337541023,
+       "node_id": "BOT_kgDOFB53nw",
+       "avatar_url": "[redacted: not a scratch card]",
+       "gravatar_id": "[redacted: not a scratch card]",
+       "url": "[redacted: not a scratch card]",
+       "html_url": "[redacted: not a scratch card]",
+       "followers_url": "[redacted: not a scratch card]",
+       "following_url": "[redacted: not a scratch card]",
+       "gists_url": "[redacted: not a scratch card]",
+       "starred_url": "[redacted: not a scratch card]",
+       "subscriptions_url": "[redacted: not a scratch card]",
+       "organizations_url": "[redacted: not a scratch card]",
+       "repos_url": "[redacted: not a scratch card]",
+       "events_url": "[redacted: not a scratch card]",
+       "received_events_url": "[redacted: not a scratch card]",
+       "type": "Bot",
+       "user_view_type": "[redacted: not a scratch card]",
+       "site_admin": false
+      },
+      "labels": [
+       {
+        "id": 12531478759,
+        "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+        "url": "[redacted: not a scratch card]",
+        "name": "balance",
+        "color": "[redacted: not a scratch card]",
+        "default": false,
+        "description": "[redacted: not a scratch card]",
+        "archived_at": null,
+        "archived_by": null
+       }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [],
+      "milestone": null,
+      "comments": 1,
+      "created_at": "2026-10-04T19:11:47Z",
+      "updated_at": "2026-10-04T19:11:58Z",
+      "closed_at": "2026-10-04T19:11:57Z",
+      "assignee": null,
+      "author_association": "NONE",
+      "issue_field_values": [],
+      "type": {
+       "id": 891387729,
+       "node_id": "IT_kwDOFB5GWc41IX9R",
+       "name": "question",
+       "description": "[redacted: not a scratch card]",
+       "color": "[redacted: not a scratch card]",
+       "created_at": "[redacted: not a scratch card]",
+       "updated_at": "[redacted: not a scratch card]",
+       "is_enabled": true
+      },
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+       "total": 0,
+       "completed": 0,
+       "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+       "blocked_by": 0,
+       "total_blocked_by": 0,
+       "blocking": 0,
+       "total_blocking": 0
+      },
+      "body": "Is this recorded?",
+      "reactions": {
+       "url": "[redacted: not a scratch card]",
+       "total_count": 0,
+       "+1": 0,
+       "-1": 0,
+       "laugh": 0,
+       "hooray": 0,
+       "confused": 0,
+       "heart": 0,
+       "rocket": 0,
+       "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/17/timeline",
+      "performed_via_github_app": null,
+      "state_reason": "not_planned",
+      "pinned_comment": null,
+      "score": 1.0
+     },
+     {
+      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+      "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+      "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
+      "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
+      "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
+      "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
+      "id": 5702033617,
+      "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
+      "number": 16,
+      "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
+      "user": {
+       "login": "shekel-plan-tool[bot]",
+       "id": 337541023,
+       "node_id": "BOT_kgDOFB53nw",
+       "avatar_url": "[redacted: not a scratch card]",
+       "gravatar_id": "[redacted: not a scratch card]",
+       "url": "[redacted: not a scratch card]",
+       "html_url": "[redacted: not a scratch card]",
+       "followers_url": "[redacted: not a scratch card]",
+       "following_url": "[redacted: not a scratch card]",
+       "gists_url": "[redacted: not a scratch card]",
+       "starred_url": "[redacted: not a scratch card]",
+       "subscriptions_url": "[redacted: not a scratch card]",
+       "organizations_url": "[redacted: not a scratch card]",
+       "repos_url": "[redacted: not a scratch card]",
+       "events_url": "[redacted: not a scratch card]",
+       "received_events_url": "[redacted: not a scratch card]",
+       "type": "Bot",
+       "user_view_type": "[redacted: not a scratch card]",
+       "site_admin": false
+      },
+      "labels": [
+       {
+        "id": 12531478759,
+        "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+        "url": "[redacted: not a scratch card]",
+        "name": "balance",
+        "color": "[redacted: not a scratch card]",
+        "default": false,
+        "description": "[redacted: not a scratch card]",
+        "archived_at": null,
+        "archived_by": null
+       }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [],
+      "milestone": null,
+      "comments": 1,
+      "created_at": "2026-10-04T18:25:16Z",
+      "updated_at": "2026-10-04T18:25:26Z",
+      "closed_at": "2026-10-04T18:25:25Z",
+      "assignee": null,
+      "author_association": "NONE",
+      "issue_field_values": [],
+      "type": {
+       "id": 891387729,
+       "node_id": "IT_kwDOFB5GWc41IX9R",
+       "name": "question",
+       "description": "[redacted: not a scratch card]",
+       "color": "[redacted: not a scratch card]",
+       "created_at": "[redacted: not a scratch card]",
+       "updated_at": "[redacted: not a scratch card]",
+       "is_enabled": true
+      },
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+       "total": 0,
+       "completed": 0,
+       "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+       "blocked_by": 0,
+       "total_blocked_by": 0,
+       "blocking": 0,
+       "total_blocking": 0
+      },
+      "body": "Is this recorded?",
+      "reactions": {
+       "url": "[redacted: not a scratch card]",
+       "total_count": 0,
+       "+1": 0,
+       "-1": 0,
+       "laugh": 0,
+       "hooray": 0,
+       "confused": 0,
+       "heart": 0,
+       "rocket": 0,
+       "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+      "performed_via_github_app": null,
+      "state_reason": "not_planned",
       "pinned_comment": null,
       "score": 1.0
      },
@@ -2422,7 +2805,7 @@
        "id": 1161365223,
        "node_id": "R_kgDORTkG5w",
        "name": "Shekel",
-       "full_name": "[redacted: not a scratch card]",
+       "full_name": "SaltyReformed/Shekel",
        "private": false,
        "owner": {
         "login": "SaltyReformed",
@@ -2493,7 +2876,7 @@
        "clone_url": "[redacted: not a scratch card]",
        "svn_url": "[redacted: not a scratch card]",
        "homepage": null,
-       "size": 59789,
+       "size": 60023,
        "stargazers_count": 0,
        "watchers_count": 0,
        "language": "[redacted: not a scratch card]",
@@ -2557,7 +2940,7 @@
        "id": 1161365223,
        "node_id": "R_kgDORTkG5w",
        "name": "Shekel",
-       "full_name": "[redacted: not a scratch card]",
+       "full_name": "SaltyReformed/Shekel",
        "private": false,
        "owner": {
         "login": "SaltyReformed",
@@ -2628,7 +3011,7 @@
        "clone_url": "[redacted: not a scratch card]",
        "svn_url": "[redacted: not a scratch card]",
        "homepage": null,
-       "size": 59789,
+       "size": 60023,
        "stargazers_count": 0,
        "watchers_count": 0,
        "language": "[redacted: not a scratch card]",
@@ -2716,15 +3099,15 @@
    },
    "status": 201,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch finding, filed by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
@@ -2765,8 +3148,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 0,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:16Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:14Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -2807,7 +3190,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -2817,17 +3200,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch finding, filed by the recorder (delete me)",
        "state": "OPEN",
        "stateReason": null,
@@ -2888,7 +3271,7 @@
        },
        "parent": null,
        "subIssues": {
-        "totalCount": 4,
+        "totalCount": 7,
         "nodes": [
          {
           "number": 12,
@@ -2921,6 +3304,36 @@
          {
           "number": 15,
           "state": "OPEN",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 16,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 17,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "question"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         },
+         {
+          "number": 18,
+          "state": "CLOSED",
           "issueType": {
            "name": "question"
           },
@@ -2991,7 +3404,7 @@
    "method": "POST",
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/11/sub_issues",
    "body": {
-    "sub_issue_id": 5702033617
+    "sub_issue_id": 5702998724
    },
    "status": 201,
    "answer": {
@@ -3009,21 +3422,21 @@
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [],
@@ -3041,9 +3454,9 @@
     "type": null,
     "active_lock_reason": null,
     "sub_issues_summary": {
-     "total": 5,
-     "completed": 1,
-     "percent_completed": 20
+     "total": 8,
+     "completed": 4,
+     "percent_completed": 50
     },
     "issue_dependencies_summary": {
      "blocked_by": 0,
@@ -3061,70 +3474,70 @@
       "login": "saltyreformed-labs",
       "id": 337528409,
       "node_id": "O_kgDOFB5GWQ",
-      "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-      "gravatar_id": "",
-      "url": "https://api.github.com/users/saltyreformed-labs",
-      "html_url": "https://github.com/saltyreformed-labs",
-      "followers_url": "https://api.github.com/users/saltyreformed-labs/followers",
-      "following_url": "https://api.github.com/users/saltyreformed-labs/following{/other_user}",
-      "gists_url": "https://api.github.com/users/saltyreformed-labs/gists{/gist_id}",
-      "starred_url": "https://api.github.com/users/saltyreformed-labs/starred{/owner}{/repo}",
-      "subscriptions_url": "https://api.github.com/users/saltyreformed-labs/subscriptions",
-      "organizations_url": "https://api.github.com/users/saltyreformed-labs/orgs",
-      "repos_url": "https://api.github.com/users/saltyreformed-labs/repos",
-      "events_url": "https://api.github.com/users/saltyreformed-labs/events{/privacy}",
-      "received_events_url": "https://api.github.com/users/saltyreformed-labs/received_events",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
       "type": "Organization",
-      "user_view_type": "public",
+      "user_view_type": "[redacted: not a scratch card]",
       "site_admin": false
      },
-     "html_url": "https://github.com/saltyreformed-labs/shekel-plan",
-     "description": "Shekel's plan: each step, finding, ruling and question is one card.",
+     "html_url": "[redacted: not a scratch card]",
+     "description": "[redacted: not a scratch card]",
      "fork": false,
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-     "forks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/forks",
-     "keys_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/keys{/key_id}",
-     "collaborators_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/collaborators{/collaborator}",
-     "teams_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/teams",
-     "hooks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/hooks",
-     "issue_events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/events{/number}",
-     "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/events",
-     "assignees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/assignees{/user}",
-     "branches_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/branches{/branch}",
-     "tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/tags",
-     "blobs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/blobs{/sha}",
-     "git_tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/tags{/sha}",
-     "git_refs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs{/sha}",
-     "trees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/trees{/sha}",
-     "statuses_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/statuses/{sha}",
-     "languages_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/languages",
-     "stargazers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/stargazers",
-     "contributors_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contributors",
-     "subscribers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscribers",
-     "subscription_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscription",
-     "commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/commits{/sha}",
-     "git_commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/commits{/sha}",
-     "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/comments{/number}",
-     "issue_comment_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments{/number}",
-     "contents_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contents/{+path}",
-     "compare_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/compare/{base}...{head}",
-     "merges_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/merges",
-     "archive_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/{archive_format}{/ref}",
-     "downloads_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/downloads",
-     "issues_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues{/number}",
-     "pulls_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/pulls{/number}",
-     "milestones_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/milestones{/number}",
-     "notifications_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/notifications{?since,all,participating}",
-     "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels{/name}",
-     "releases_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/releases{/id}",
-     "deployments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/deployments",
-     "created_at": "2026-10-04T01:59:57Z",
-     "updated_at": "2026-10-04T02:00:02Z",
-     "pushed_at": "2026-10-04T18:25:13Z",
-     "git_url": "git://github.com/saltyreformed-labs/shekel-plan.git",
-     "ssh_url": "git@github.com:saltyreformed-labs/shekel-plan.git",
-     "clone_url": "https://github.com/saltyreformed-labs/shekel-plan.git",
-     "svn_url": "https://github.com/saltyreformed-labs/shekel-plan",
+     "url": "[redacted: not a scratch card]",
+     "forks_url": "[redacted: not a scratch card]",
+     "keys_url": "[redacted: not a scratch card]",
+     "collaborators_url": "[redacted: not a scratch card]",
+     "teams_url": "[redacted: not a scratch card]",
+     "hooks_url": "[redacted: not a scratch card]",
+     "issue_events_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "assignees_url": "[redacted: not a scratch card]",
+     "branches_url": "[redacted: not a scratch card]",
+     "tags_url": "[redacted: not a scratch card]",
+     "blobs_url": "[redacted: not a scratch card]",
+     "git_tags_url": "[redacted: not a scratch card]",
+     "git_refs_url": "[redacted: not a scratch card]",
+     "trees_url": "[redacted: not a scratch card]",
+     "statuses_url": "[redacted: not a scratch card]",
+     "languages_url": "[redacted: not a scratch card]",
+     "stargazers_url": "[redacted: not a scratch card]",
+     "contributors_url": "[redacted: not a scratch card]",
+     "subscribers_url": "[redacted: not a scratch card]",
+     "subscription_url": "[redacted: not a scratch card]",
+     "commits_url": "[redacted: not a scratch card]",
+     "git_commits_url": "[redacted: not a scratch card]",
+     "comments_url": "[redacted: not a scratch card]",
+     "issue_comment_url": "[redacted: not a scratch card]",
+     "contents_url": "[redacted: not a scratch card]",
+     "compare_url": "[redacted: not a scratch card]",
+     "merges_url": "[redacted: not a scratch card]",
+     "archive_url": "[redacted: not a scratch card]",
+     "downloads_url": "[redacted: not a scratch card]",
+     "issues_url": "[redacted: not a scratch card]",
+     "pulls_url": "[redacted: not a scratch card]",
+     "milestones_url": "[redacted: not a scratch card]",
+     "notifications_url": "[redacted: not a scratch card]",
+     "labels_url": "[redacted: not a scratch card]",
+     "releases_url": "[redacted: not a scratch card]",
+     "deployments_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "pushed_at": "[redacted: not a scratch card]",
+     "git_url": "[redacted: not a scratch card]",
+     "ssh_url": "[redacted: not a scratch card]",
+     "clone_url": "[redacted: not a scratch card]",
+     "svn_url": "[redacted: not a scratch card]",
      "homepage": null,
      "size": 0,
      "stargazers_count": 0,
@@ -3146,13 +3559,13 @@
      "is_template": false,
      "web_commit_signoff_required": false,
      "has_pull_requests": true,
-     "pull_request_creation_policy": "all",
+     "pull_request_creation_policy": "[redacted: not a scratch card]",
      "topics": [],
-     "visibility": "private",
+     "visibility": "[redacted: not a scratch card]",
      "forks": 0,
      "open_issues": 15,
      "watchers": 0,
-     "default_branch": "main",
+     "default_branch": "[redacted: not a scratch card]",
      "permissions": {
       "admin": false,
       "maintain": false,
@@ -3163,7 +3576,7 @@
     },
     "body": "L2 probe body v3 (edited by the App again).\n\nline two v3\n",
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/11/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3184,7 +3597,7 @@
    "method": "POST",
    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/13/sub_issues",
    "body": {
-    "sub_issue_id": 5702033617
+    "sub_issue_id": 5702998724
    },
    "status": 422,
    "answer": {
@@ -3197,17 +3610,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch finding, filed by the recorder (delete me)",
        "state": "OPEN",
        "stateReason": null,
@@ -3250,52 +3663,52 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "type": "question"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch finding, filed by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -3305,8 +3718,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 0,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:18Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:17Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -3315,10 +3728,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -3336,7 +3749,7 @@
     "body": "The recorder files this card to record GitHub's answers.",
     "closed_by": null,
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3347,7 +3760,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -3355,52 +3768,52 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -3410,8 +3823,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 0,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:19Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:18Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -3420,10 +3833,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -3441,7 +3854,7 @@
     "body": "The recorder files this card to record GitHub's answers.",
     "closed_by": null,
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3452,7 +3865,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -3460,52 +3873,52 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "body": "Is this recorded?"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -3515,8 +3928,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 0,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:19Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:19Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -3525,10 +3938,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -3546,7 +3959,7 @@
     "body": "Is this recorded?",
     "closed_by": null,
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3557,7 +3970,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -3565,44 +3978,44 @@
   },
   {
    "method": "POST",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
    "body": {
     "body": "A comment the recorder posts."
    },
    "status": 201,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments/5983037510",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16#issuecomment-5983037510",
-    "issue_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5983037510,
-    "node_id": "IC_kwDOU6wSSs8AAAABZJ3oRg",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments/5984068347",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19#issuecomment-5984068347",
+    "issue_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5984068347,
+    "node_id": "IC_kwDOU6wSSs8AAAABZK2i-w",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
-    "created_at": "2026-10-04T18:25:20Z",
-    "updated_at": "2026-10-04T18:25:20Z",
+    "created_at": "2026-10-04T20:27:19Z",
+    "updated_at": "2026-10-04T20:27:19Z",
     "author_association": "NONE",
     "body": "A comment the recorder posts.",
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments/5983037510/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3615,40 +4028,40 @@
     },
     "performed_via_github_app": {
      "id": 5181469,
-     "slug": "shekel-plan-tool",
+     "slug": "[redacted: not a scratch card]",
      "node_id": "A_kwHOFB5GWc4ATxAd",
      "owner": {
       "login": "saltyreformed-labs",
       "id": 337528409,
       "node_id": "O_kgDOFB5GWQ",
-      "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-      "gravatar_id": "",
-      "url": "https://api.github.com/users/saltyreformed-labs",
-      "html_url": "https://github.com/saltyreformed-labs",
-      "followers_url": "https://api.github.com/users/saltyreformed-labs/followers",
-      "following_url": "https://api.github.com/users/saltyreformed-labs/following{/other_user}",
-      "gists_url": "https://api.github.com/users/saltyreformed-labs/gists{/gist_id}",
-      "starred_url": "https://api.github.com/users/saltyreformed-labs/starred{/owner}{/repo}",
-      "subscriptions_url": "https://api.github.com/users/saltyreformed-labs/subscriptions",
-      "organizations_url": "https://api.github.com/users/saltyreformed-labs/orgs",
-      "repos_url": "https://api.github.com/users/saltyreformed-labs/repos",
-      "events_url": "https://api.github.com/users/saltyreformed-labs/events{/privacy}",
-      "received_events_url": "https://api.github.com/users/saltyreformed-labs/received_events",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
       "type": "Organization",
-      "user_view_type": "public",
+      "user_view_type": "[redacted: not a scratch card]",
       "site_admin": false
      },
      "name": "Shekel plan tool",
-     "description": "",
-     "external_url": "https://github.com/saltyreformed-labs/shekel-plan",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "created_at": "2026-10-04T01:58:44Z",
-     "updated_at": "2026-10-04T01:59:55Z",
+     "description": "[redacted: not a scratch card]",
+     "external_url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "permissions": {
-      "contents": "write",
-      "issues": "write",
-      "metadata": "read",
-      "organization_projects": "write"
+      "contents": "[redacted: not a scratch card]",
+      "issues": "[redacted: not a scratch card]",
+      "metadata": "[redacted: not a scratch card]",
+      "organization_projects": "[redacted: not a scratch card]"
      },
      "events": []
     },
@@ -3658,52 +4071,52 @@
   },
   {
    "method": "POST",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/dependencies/blocked_by",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/dependencies/blocked_by",
    "body": {
     "issue_id": 5698680765
    },
    "status": 201,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -3713,8 +4126,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:20Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:19Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -3723,10 +4136,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -3751,70 +4164,70 @@
       "login": "saltyreformed-labs",
       "id": 337528409,
       "node_id": "O_kgDOFB5GWQ",
-      "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-      "gravatar_id": "",
-      "url": "https://api.github.com/users/saltyreformed-labs",
-      "html_url": "https://github.com/saltyreformed-labs",
-      "followers_url": "https://api.github.com/users/saltyreformed-labs/followers",
-      "following_url": "https://api.github.com/users/saltyreformed-labs/following{/other_user}",
-      "gists_url": "https://api.github.com/users/saltyreformed-labs/gists{/gist_id}",
-      "starred_url": "https://api.github.com/users/saltyreformed-labs/starred{/owner}{/repo}",
-      "subscriptions_url": "https://api.github.com/users/saltyreformed-labs/subscriptions",
-      "organizations_url": "https://api.github.com/users/saltyreformed-labs/orgs",
-      "repos_url": "https://api.github.com/users/saltyreformed-labs/repos",
-      "events_url": "https://api.github.com/users/saltyreformed-labs/events{/privacy}",
-      "received_events_url": "https://api.github.com/users/saltyreformed-labs/received_events",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
       "type": "Organization",
-      "user_view_type": "public",
+      "user_view_type": "[redacted: not a scratch card]",
       "site_admin": false
      },
-     "html_url": "https://github.com/saltyreformed-labs/shekel-plan",
-     "description": "Shekel's plan: each step, finding, ruling and question is one card.",
+     "html_url": "[redacted: not a scratch card]",
+     "description": "[redacted: not a scratch card]",
      "fork": false,
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-     "forks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/forks",
-     "keys_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/keys{/key_id}",
-     "collaborators_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/collaborators{/collaborator}",
-     "teams_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/teams",
-     "hooks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/hooks",
-     "issue_events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/events{/number}",
-     "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/events",
-     "assignees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/assignees{/user}",
-     "branches_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/branches{/branch}",
-     "tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/tags",
-     "blobs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/blobs{/sha}",
-     "git_tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/tags{/sha}",
-     "git_refs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs{/sha}",
-     "trees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/trees{/sha}",
-     "statuses_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/statuses/{sha}",
-     "languages_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/languages",
-     "stargazers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/stargazers",
-     "contributors_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contributors",
-     "subscribers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscribers",
-     "subscription_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscription",
-     "commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/commits{/sha}",
-     "git_commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/commits{/sha}",
-     "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/comments{/number}",
-     "issue_comment_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments{/number}",
-     "contents_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contents/{+path}",
-     "compare_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/compare/{base}...{head}",
-     "merges_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/merges",
-     "archive_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/{archive_format}{/ref}",
-     "downloads_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/downloads",
-     "issues_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues{/number}",
-     "pulls_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/pulls{/number}",
-     "milestones_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/milestones{/number}",
-     "notifications_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/notifications{?since,all,participating}",
-     "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels{/name}",
-     "releases_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/releases{/id}",
-     "deployments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/deployments",
-     "created_at": "2026-10-04T01:59:57Z",
-     "updated_at": "2026-10-04T02:00:02Z",
-     "pushed_at": "2026-10-04T18:25:13Z",
-     "git_url": "git://github.com/saltyreformed-labs/shekel-plan.git",
-     "ssh_url": "git@github.com:saltyreformed-labs/shekel-plan.git",
-     "clone_url": "https://github.com/saltyreformed-labs/shekel-plan.git",
-     "svn_url": "https://github.com/saltyreformed-labs/shekel-plan",
+     "url": "[redacted: not a scratch card]",
+     "forks_url": "[redacted: not a scratch card]",
+     "keys_url": "[redacted: not a scratch card]",
+     "collaborators_url": "[redacted: not a scratch card]",
+     "teams_url": "[redacted: not a scratch card]",
+     "hooks_url": "[redacted: not a scratch card]",
+     "issue_events_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "assignees_url": "[redacted: not a scratch card]",
+     "branches_url": "[redacted: not a scratch card]",
+     "tags_url": "[redacted: not a scratch card]",
+     "blobs_url": "[redacted: not a scratch card]",
+     "git_tags_url": "[redacted: not a scratch card]",
+     "git_refs_url": "[redacted: not a scratch card]",
+     "trees_url": "[redacted: not a scratch card]",
+     "statuses_url": "[redacted: not a scratch card]",
+     "languages_url": "[redacted: not a scratch card]",
+     "stargazers_url": "[redacted: not a scratch card]",
+     "contributors_url": "[redacted: not a scratch card]",
+     "subscribers_url": "[redacted: not a scratch card]",
+     "subscription_url": "[redacted: not a scratch card]",
+     "commits_url": "[redacted: not a scratch card]",
+     "git_commits_url": "[redacted: not a scratch card]",
+     "comments_url": "[redacted: not a scratch card]",
+     "issue_comment_url": "[redacted: not a scratch card]",
+     "contents_url": "[redacted: not a scratch card]",
+     "compare_url": "[redacted: not a scratch card]",
+     "merges_url": "[redacted: not a scratch card]",
+     "archive_url": "[redacted: not a scratch card]",
+     "downloads_url": "[redacted: not a scratch card]",
+     "issues_url": "[redacted: not a scratch card]",
+     "pulls_url": "[redacted: not a scratch card]",
+     "milestones_url": "[redacted: not a scratch card]",
+     "notifications_url": "[redacted: not a scratch card]",
+     "labels_url": "[redacted: not a scratch card]",
+     "releases_url": "[redacted: not a scratch card]",
+     "deployments_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "pushed_at": "[redacted: not a scratch card]",
+     "git_url": "[redacted: not a scratch card]",
+     "ssh_url": "[redacted: not a scratch card]",
+     "clone_url": "[redacted: not a scratch card]",
+     "svn_url": "[redacted: not a scratch card]",
      "homepage": null,
      "size": 0,
      "stargazers_count": 0,
@@ -3836,13 +4249,13 @@
      "is_template": false,
      "web_commit_signoff_required": false,
      "has_pull_requests": true,
-     "pull_request_creation_policy": "all",
+     "pull_request_creation_policy": "[redacted: not a scratch card]",
      "topics": [],
-     "visibility": "private",
+     "visibility": "[redacted: not a scratch card]",
      "forks": 0,
      "open_issues": 15,
      "watchers": 0,
-     "default_branch": "main",
+     "default_branch": "[redacted: not a scratch card]",
      "permissions": {
       "admin": false,
       "maintain": false,
@@ -3853,7 +4266,7 @@
     },
     "body": "Is this recorded?",
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -3864,7 +4277,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -3874,17 +4287,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
        "state": "OPEN",
        "stateReason": null,
@@ -3934,50 +4347,50 @@
   },
   {
    "method": "DELETE",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/dependencies/blocked_by/5698680765",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/dependencies/blocked_by/5698680765",
    "body": null,
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -3987,8 +4400,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:20Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:19Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -3997,10 +4410,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -4025,70 +4438,70 @@
       "login": "saltyreformed-labs",
       "id": 337528409,
       "node_id": "O_kgDOFB5GWQ",
-      "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-      "gravatar_id": "",
-      "url": "https://api.github.com/users/saltyreformed-labs",
-      "html_url": "https://github.com/saltyreformed-labs",
-      "followers_url": "https://api.github.com/users/saltyreformed-labs/followers",
-      "following_url": "https://api.github.com/users/saltyreformed-labs/following{/other_user}",
-      "gists_url": "https://api.github.com/users/saltyreformed-labs/gists{/gist_id}",
-      "starred_url": "https://api.github.com/users/saltyreformed-labs/starred{/owner}{/repo}",
-      "subscriptions_url": "https://api.github.com/users/saltyreformed-labs/subscriptions",
-      "organizations_url": "https://api.github.com/users/saltyreformed-labs/orgs",
-      "repos_url": "https://api.github.com/users/saltyreformed-labs/repos",
-      "events_url": "https://api.github.com/users/saltyreformed-labs/events{/privacy}",
-      "received_events_url": "https://api.github.com/users/saltyreformed-labs/received_events",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
       "type": "Organization",
-      "user_view_type": "public",
+      "user_view_type": "[redacted: not a scratch card]",
       "site_admin": false
      },
-     "html_url": "https://github.com/saltyreformed-labs/shekel-plan",
-     "description": "Shekel's plan: each step, finding, ruling and question is one card.",
+     "html_url": "[redacted: not a scratch card]",
+     "description": "[redacted: not a scratch card]",
      "fork": false,
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-     "forks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/forks",
-     "keys_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/keys{/key_id}",
-     "collaborators_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/collaborators{/collaborator}",
-     "teams_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/teams",
-     "hooks_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/hooks",
-     "issue_events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/events{/number}",
-     "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/events",
-     "assignees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/assignees{/user}",
-     "branches_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/branches{/branch}",
-     "tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/tags",
-     "blobs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/blobs{/sha}",
-     "git_tags_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/tags{/sha}",
-     "git_refs_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/refs{/sha}",
-     "trees_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/trees{/sha}",
-     "statuses_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/statuses/{sha}",
-     "languages_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/languages",
-     "stargazers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/stargazers",
-     "contributors_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contributors",
-     "subscribers_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscribers",
-     "subscription_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/subscription",
-     "commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/commits{/sha}",
-     "git_commits_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/git/commits{/sha}",
-     "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/comments{/number}",
-     "issue_comment_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/comments{/number}",
-     "contents_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/contents/{+path}",
-     "compare_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/compare/{base}...{head}",
-     "merges_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/merges",
-     "archive_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/{archive_format}{/ref}",
-     "downloads_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/downloads",
-     "issues_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues{/number}",
-     "pulls_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/pulls{/number}",
-     "milestones_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/milestones{/number}",
-     "notifications_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/notifications{?since,all,participating}",
-     "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels{/name}",
-     "releases_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/releases{/id}",
-     "deployments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/deployments",
-     "created_at": "2026-10-04T01:59:57Z",
-     "updated_at": "2026-10-04T02:00:02Z",
-     "pushed_at": "2026-10-04T18:25:13Z",
-     "git_url": "git://github.com/saltyreformed-labs/shekel-plan.git",
-     "ssh_url": "git@github.com:saltyreformed-labs/shekel-plan.git",
-     "clone_url": "https://github.com/saltyreformed-labs/shekel-plan.git",
-     "svn_url": "https://github.com/saltyreformed-labs/shekel-plan",
+     "url": "[redacted: not a scratch card]",
+     "forks_url": "[redacted: not a scratch card]",
+     "keys_url": "[redacted: not a scratch card]",
+     "collaborators_url": "[redacted: not a scratch card]",
+     "teams_url": "[redacted: not a scratch card]",
+     "hooks_url": "[redacted: not a scratch card]",
+     "issue_events_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "assignees_url": "[redacted: not a scratch card]",
+     "branches_url": "[redacted: not a scratch card]",
+     "tags_url": "[redacted: not a scratch card]",
+     "blobs_url": "[redacted: not a scratch card]",
+     "git_tags_url": "[redacted: not a scratch card]",
+     "git_refs_url": "[redacted: not a scratch card]",
+     "trees_url": "[redacted: not a scratch card]",
+     "statuses_url": "[redacted: not a scratch card]",
+     "languages_url": "[redacted: not a scratch card]",
+     "stargazers_url": "[redacted: not a scratch card]",
+     "contributors_url": "[redacted: not a scratch card]",
+     "subscribers_url": "[redacted: not a scratch card]",
+     "subscription_url": "[redacted: not a scratch card]",
+     "commits_url": "[redacted: not a scratch card]",
+     "git_commits_url": "[redacted: not a scratch card]",
+     "comments_url": "[redacted: not a scratch card]",
+     "issue_comment_url": "[redacted: not a scratch card]",
+     "contents_url": "[redacted: not a scratch card]",
+     "compare_url": "[redacted: not a scratch card]",
+     "merges_url": "[redacted: not a scratch card]",
+     "archive_url": "[redacted: not a scratch card]",
+     "downloads_url": "[redacted: not a scratch card]",
+     "issues_url": "[redacted: not a scratch card]",
+     "pulls_url": "[redacted: not a scratch card]",
+     "milestones_url": "[redacted: not a scratch card]",
+     "notifications_url": "[redacted: not a scratch card]",
+     "labels_url": "[redacted: not a scratch card]",
+     "releases_url": "[redacted: not a scratch card]",
+     "deployments_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "pushed_at": "[redacted: not a scratch card]",
+     "git_url": "[redacted: not a scratch card]",
+     "ssh_url": "[redacted: not a scratch card]",
+     "clone_url": "[redacted: not a scratch card]",
+     "svn_url": "[redacted: not a scratch card]",
      "homepage": null,
      "size": 0,
      "stargazers_count": 0,
@@ -4110,13 +4523,13 @@
      "is_template": false,
      "web_commit_signoff_required": false,
      "has_pull_requests": true,
-     "pull_request_creation_policy": "all",
+     "pull_request_creation_policy": "[redacted: not a scratch card]",
      "topics": [],
-     "visibility": "private",
+     "visibility": "[redacted: not a scratch card]",
      "forks": 0,
      "open_issues": 15,
      "watchers": 0,
-     "default_branch": "main",
+     "default_branch": "[redacted: not a scratch card]",
      "permissions": {
       "admin": false,
       "maintain": false,
@@ -4127,7 +4540,7 @@
     },
     "body": "Is this recorded?",
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -4138,7 +4551,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": null,
     "pinned_comment": null
@@ -4146,53 +4559,53 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "state": "closed",
     "state_reason": "not_planned"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -4202,9 +4615,9 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:23Z",
-    "closed_at": "2026-10-04T18:25:23Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:21Z",
+    "closed_at": "2026-10-04T20:27:21Z",
     "assignee": null,
     "author_association": "NONE",
     "issue_field_values": [],
@@ -4212,10 +4625,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -4235,25 +4648,25 @@
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -4264,7 +4677,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": "not_planned",
     "pinned_comment": null
@@ -4274,17 +4687,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
        "state": "CLOSED",
        "stateReason": "NOT_PLANNED",
@@ -4334,52 +4747,52 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "state": "open"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -4389,8 +4802,8 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:24Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:23Z",
     "closed_at": null,
     "assignee": null,
     "author_association": "NONE",
@@ -4399,10 +4812,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -4420,7 +4833,7 @@
     "body": "Is this recorded?",
     "closed_by": null,
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -4431,7 +4844,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": "reopened",
     "pinned_comment": null
@@ -4441,17 +4854,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
        "state": "OPEN",
        "stateReason": "REOPENED",
@@ -4501,53 +4914,53 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "state": "closed",
     "state_reason": "completed"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -4557,9 +4970,9 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:25Z",
-    "closed_at": "2026-10-04T18:25:25Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:24Z",
+    "closed_at": "2026-10-04T20:27:24Z",
     "assignee": null,
     "author_association": "NONE",
     "issue_field_values": [],
@@ -4567,10 +4980,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -4590,25 +5003,25 @@
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -4619,7 +5032,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": "completed",
     "pinned_comment": null
@@ -4629,17 +5042,17 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
        "state": "CLOSED",
        "stateReason": "COMPLETED",
@@ -4689,53 +5102,53 @@
   },
   {
    "method": "PATCH",
-   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
    "body": {
     "state": "closed",
     "state_reason": "not_planned"
    },
    "status": 200,
    "answer": {
-    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16",
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
     "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
-    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/labels{/name}",
-    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/comments",
-    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/events",
-    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/16",
-    "id": 5702033617,
-    "node_id": "I_kwDOU6wSSs8AAAABU94g0Q",
-    "number": 16,
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
     "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
     "user": {
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "labels": [
      {
       "id": 12531478759,
       "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
-      "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/labels/balance",
+      "url": "[redacted: not a scratch card]",
       "name": "balance",
-      "color": "0e8a16",
+      "color": "[redacted: not a scratch card]",
       "default": false,
-      "description": "The balance arc",
+      "description": "[redacted: not a scratch card]",
       "archived_at": null,
       "archived_by": null
      }
@@ -4745,9 +5158,9 @@
     "assignees": [],
     "milestone": null,
     "comments": 1,
-    "created_at": "2026-10-04T18:25:16Z",
-    "updated_at": "2026-10-04T18:25:26Z",
-    "closed_at": "2026-10-04T18:25:25Z",
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:25Z",
+    "closed_at": "2026-10-04T20:27:24Z",
     "assignee": null,
     "author_association": "NONE",
     "issue_field_values": [],
@@ -4755,10 +5168,10 @@
      "id": 891387729,
      "node_id": "IT_kwDOFB5GWc41IX9R",
      "name": "question",
-     "description": "Something only Josh can answer.",
-     "color": "yellow",
-     "created_at": "2026-10-04T01:56:03Z",
-     "updated_at": "2026-10-04T01:56:03Z",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
      "is_enabled": true
     },
     "active_lock_reason": null,
@@ -4778,25 +5191,25 @@
      "login": "shekel-plan-tool[bot]",
      "id": 337541023,
      "node_id": "BOT_kgDOFB53nw",
-     "avatar_url": "https://avatars.githubusercontent.com/u/337528409?v=4",
-     "gravatar_id": "",
-     "url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D",
-     "html_url": "https://github.com/apps/shekel-plan-tool",
-     "followers_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/followers",
-     "following_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/following{/other_user}",
-     "gists_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/gists{/gist_id}",
-     "starred_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/starred{/owner}{/repo}",
-     "subscriptions_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/subscriptions",
-     "organizations_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/orgs",
-     "repos_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/repos",
-     "events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/events{/privacy}",
-     "received_events_url": "https://api.github.com/users/shekel-plan-tool%5Bbot%5D/received_events",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
      "type": "Bot",
-     "user_view_type": "public",
+     "user_view_type": "[redacted: not a scratch card]",
      "site_admin": false
     },
     "reactions": {
-     "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/reactions",
+     "url": "[redacted: not a scratch card]",
      "total_count": 0,
      "+1": 0,
      "-1": 0,
@@ -4807,7 +5220,7 @@
      "rocket": 0,
      "eyes": 0
     },
-    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/16/timeline",
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
     "performed_via_github_app": null,
     "state_reason": "not_planned",
     "pinned_comment": null
@@ -4817,20 +5230,208 @@
    "method": "POST",
    "url": "https://api.github.com/graphql",
    "body": {
-    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c16: issue(number: 16) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
     "variables": {}
    },
    "status": 200,
    "answer": {
     "data": {
      "repository": {
-      "c16": {
-       "id": "I_kwDOU6wSSs8AAAABU94g0Q",
-       "number": 16,
-       "fullDatabaseId": "5702033617",
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
        "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
        "state": "CLOSED",
        "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "question"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": {
+        "number": 11,
+        "repository": {
+         "nameWithOwner": "saltyreformed-labs/shekel-plan"
+        }
+       },
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "PATCH",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
+   "body": {
+    "state": "closed",
+    "state_reason": "completed"
+   },
+   "status": 200,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/19",
+    "id": 5702998724,
+    "node_id": "I_kwDOU6wSSs8AAAABU-zaxA",
+    "number": 19,
+    "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "closed",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 1,
+    "created_at": "2026-10-04T20:27:14Z",
+    "updated_at": "2026-10-04T20:27:26Z",
+    "closed_at": "2026-10-04T20:27:24Z",
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387729,
+     "node_id": "IT_kwDOFB5GWc41IX9R",
+     "name": "question",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 0,
+     "completed": 0,
+     "percent_completed": 0
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "body": "Is this recorded?",
+    "closed_by": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/19/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "completed",
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c19: issue(number: 19) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c19": {
+       "id": "I_kwDOU6wSSs8AAAABU-zaxA",
+       "number": 19,
+       "fullDatabaseId": "5702998724",
+       "title": "[L2 measurement] scratch question, retitled by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
        "issueType": {
         "name": "question"
        },
@@ -4997,7 +5598,7 @@
     "data": {
      "addProjectV2ItemById": {
       "item": {
-       "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ"
+       "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A"
       }
      }
     }
@@ -5010,7 +5611,7 @@
     "query": "mutation($p: ID!, $i: ID!, $a: ID!) { updateProjectV2ItemPosition(input: {projectId: $p, itemId: $i, afterId: $a}) { clientMutationId } }",
     "variables": {
      "p": "PVT_kwDOFB5GWc4Bln4u",
-     "i": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+     "i": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
      "a": "PVTI_lADOFB5GWc4Bln4uzg-aIIE"
     }
    },
@@ -5160,7 +5761,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5276,7 +5877,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5392,7 +5993,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5508,7 +6109,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5624,7 +6225,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5740,7 +6341,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5856,7 +6457,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -5972,7 +6573,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6088,7 +6689,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6204,7 +6805,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6320,7 +6921,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6436,7 +7037,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6552,7 +7153,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6668,7 +7269,7 @@
          }
         },
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6761,7 +7362,7 @@
     "query": "mutation($p: ID!, $i: ID!) { updateProjectV2ItemPosition(input: {projectId: $p, itemId: $i}) { clientMutationId } }",
     "variables": {
      "p": "PVT_kwDOFB5GWc4Bln4u",
-     "i": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ"
+     "i": "PVTI_lADOFB5GWc4Bln4uzg-fa9A"
     }
    },
    "status": 200,
@@ -6794,7 +7395,7 @@
        },
        "nodes": [
         {
-         "id": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ",
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-fa9A",
          "content": {
           "number": 11,
           "repository": {
@@ -6896,7 +7497,7 @@
     "query": "mutation($p: ID!, $i: ID!) { deleteProjectV2Item(input: {projectId: $p, itemId: $i}) { deletedItemId } }",
     "variables": {
      "p": "PVT_kwDOFB5GWc4Bln4u",
-     "i": "PVTI_lADOFB5GWc4Bln4uzg-ejgQ"
+     "i": "PVTI_lADOFB5GWc4Bln4uzg-fa9A"
     }
    },
    "status": 200,

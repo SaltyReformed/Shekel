@@ -121,6 +121,12 @@ def ruling_question(body: str | None, answer: str) -> str | None:
     return text[len(_QUESTION):len(text) - len(tail)].strip()
 
 
+def in_ruling_shape(body: str | None) -> bool:
+    """Whether a body reads as :func:`ruling_body`'s shape: ``Question: ``, then a blank line
+    and ``Answer: `` somewhere after it."""
+    return _ruling_parts(normalized(body)) is not None
+
+
 def _ruling_parts(text: str) -> tuple[str, str] | None:
     """``(question, answer)`` of a text in :func:`ruling_body`'s shape, each stripped;
     None when either mark is missing."""

@@ -10,7 +10,7 @@ import requests
 
 from _fake import FakeTracker, run, ship
 from _github import GitHubError
-from _tracker import Child, Claim
+from _tracker import Child, Claim, OutsideLink
 from check import ruling_body
 
 
@@ -512,3 +512,96 @@ def test_a_leaf_already_placed_is_left_where_the_developer_moved_it(code, tmp_pa
     assert run(tracker, code, *args, "--title", "second half") == 0
     assert tracker.writes == writes and tracker.board.items == [5, 1, 4, 3]
     assert "board: already on it" in capsys.readouterr().out
+
+
+def test_a_conversion_retried_with_another_answer_waits_until_its_question_is_back(code,
+                                                                                    tmp_path,
+                                                                                    capsys):
+    """Review cp4 M-2: the body landed and the retype failed; the developer corrected his
+    answer and the same filing ran again, and the tool's own earlier body was wrapped as
+    the question ("Question: Question: ... Answer: Yes. Answer: No.").  A body the tool's
+    edit saved in a ruling's shape with another answer is refused until the developer's
+    question is put back."""
+    answer = tmp_path / "a"
+    answer.write_text("Yes.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
+    _FailOnce(tracker, "retype")
+    args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
+            "--from-question", "plan#2", "--answer-file", str(answer))
+    assert run(tracker, code, *args) == 2
+    answer.write_text("No, tomorrow.")
+    writes = list(tracker.writes)
+    capsys.readouterr()
+    assert run(tracker, code, *args) == 1
+    assert "text is an earlier conversion's" in capsys.readouterr().err
+    assert tracker.writes == writes
+    assert run(tracker, code, "spec-revert", "plan#2", "--to", "E2.0") == 0
+    assert run(tracker, code, *args) == 0
+    assert tracker.bodies[2] == ruling_body("Ship it tonight?", "No, tomorrow.")
+    assert (tracker.cards_by_number[2].kind, tracker.cards_by_number[2].is_open) == ("ruling",
+                                                                                     False)
+
+
+def test_a_conversion_retried_over_a_question_saved_with_crlf_writes_its_body_once(code,
+                                                                                   tmp_path):
+    """Review cp4 M34: a question typed on the web may hold CRLF; the retry compares the body
+    it wrote with the one it would write as the rules read them, so it writes it once."""
+    answer = tmp_path / "a"
+    answer.write_text("Yes.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2, "question", body="Ship it\r\ntonight?", title="Tonight")
+    _FailOnce(tracker, "retype")
+    args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
+            "--from-question", "plan#2", "--answer-file", str(answer))
+    assert run(tracker, code, *args) == 2
+    assert run(tracker, code, *args) == 0
+    assert [write[0] for write in tracker.writes].count("set_body") == 1
+
+
+def test_a_question_under_an_issue_outside_the_tracker_is_refused_before_any_write(
+        code, tmp_path, capsys):
+    """Review cp4 L-7: the re-homing refusal read only a parent inside the tracker, so the
+    body, type and title were written before GitHub refused the second parent."""
+    answer = tmp_path / "a"
+    answer.write_text("Yes.")
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.add(2, "question", body="Ship it?", title="Ship",
+                outside=(OutsideLink("parent", "saltyreformed-labs/Shekel#5"),))
+    assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Ship",
+               "--owner", "plan#1", "--from-question", "plan#2",
+               "--answer-file", str(answer)) == 1
+    assert "a sub-issue of saltyreformed-labs/Shekel#5, outside the tracker" in (
+        capsys.readouterr().err)
+    assert not tracker.writes
+
+
+def test_a_leaf_whose_split_step_is_still_on_the_board_is_finished_into_its_place(code,
+                                                                                   tmp_path):
+    """Review cp4 M57: a filing cut short after the leaf joined the board but before the split
+    step left it; the retry must still put the leaf in its place and take the step off."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("Half.")
+    tracker = FakeTracker()
+    for number in (1, 2, 3):
+        tracker.add(number)
+    _FailOnce(tracker.board, "remove")
+    args = ("file", "step", "--arc", "balance", "--title", "half", "--parent", "plan#2",
+            "--body-file", str(spec))
+    assert run(tracker, code, *args) == 2
+    assert tracker.board.items == [1, 2, 4, 3]
+    assert run(tracker, code, *args) == 0
+    assert tracker.board.items == [1, 4, 3]
+
+
+def test_the_fake_tracker_fails_loudly_on_a_re_parent_outside_the_tracker():
+    """The fake's own promise (``_fake``): it never guesses GitHub's answer to a write the
+    tool must never send, a second parent outside the tracker included."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    card = tracker.add(2, "question", outside=(OutsideLink("parent", "o/code#5"),))
+    with pytest.raises(AssertionError, match="outside the tracker"):
+        tracker.add_child(1, card)

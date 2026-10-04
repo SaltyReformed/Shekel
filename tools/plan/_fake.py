@@ -7,10 +7,11 @@ It keeps what the commands depend on the way the recordings show GitHub keeping
 it -- a body edit saves a full version, and the first edit also saves the body
 as filed; a parent's read lists each sub-issue's kind and state as they stand
 now, not as they were when it was linked -- and FAILS LOUDLY on a write the
-tool must never send (re-parenting a card, adding a card already on the
-board), rather than guessing GitHub's answer to it.  Its board shows a
-placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
-itself is graded against a recording.  Nothing here calls GitHub.
+tool must never send (re-parenting a card, under a parent inside the tracker
+or out; adding a card already on the board), rather than guessing GitHub's
+answer to it.  Its board shows a placement at once unless told to lag
+(:attr:`FakeBoard.lagging`); the lag itself is graded against a recording.
+Nothing here calls GitHub.
 """
 from __future__ import annotations
 
@@ -181,9 +182,12 @@ class FakeTracker:
                   touched_by_hand=False)
 
     def add_child(self, parent, child):
-        """Make ``child`` a sub-issue of ``parent``; the tool never re-parents a card."""
-        held = self.cards_by_number[child.number].parent
-        assert held is None, f"plan#{child.number} already has parent plan#{held}"
+        """Make ``child`` a sub-issue of ``parent``; the tool never re-parents a card, in the
+        tracker or outside it."""
+        held = self.cards_by_number[child.number]
+        assert held.parent is None, f"plan#{child.number} already has parent plan#{held.parent}"
+        assert not [link for link in held.outside if link.what == "parent"], (
+            f"plan#{child.number} already has a parent outside the tracker")
         self.writes.append(("add_child", parent, child.number))
         held = self.cards_by_number[parent]
         self._set(parent, children=(*held.children, Child(child.number, child.kind, True)))

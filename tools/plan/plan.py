@@ -56,6 +56,7 @@ from _state import (
     is_live,
     is_work,
     leaf_placement,
+    leaves,
     missing,
     next_step,
     outside_reports,
@@ -63,7 +64,15 @@ from _state import (
     sync_plan,
 )
 from _tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
-from check import Draft, Owner, normalized, ruling_body, ruling_question, violations
+from check import (
+    Draft,
+    Owner,
+    in_ruling_shape,
+    normalized,
+    ruling_body,
+    ruling_question,
+    violations,
+)
 from setup_tracker import ARCS
 
 #: Branches a claim may never name: nothing is built on them directly.
@@ -145,6 +154,16 @@ def _release_hint(claim: Claim) -> str:
     return f"`plan release plan#{claim.card} {_release_flag(claim)}`"
 
 
+def _outside_text(card: Card) -> str:
+    """A card's links to issues outside the tracker, as a phrase."""
+    return ", ".join(f"its {link.what} {link.issue}" for link in card.outside)
+
+
+def _outside_parent(card: Card) -> str | None:
+    """The issue outside the tracker that ``card`` is a sub-issue of, if any."""
+    return next((link.issue for link in card.outside if link.what == "parent"), None)
+
+
 def _holder(claim: Claim) -> str:
     """Who holds ``claim``: its branch, quoted, or that its branch cannot be read."""
     return repr(claim.branch) if claim.branch is not None else "a branch that cannot be read"
@@ -178,6 +197,9 @@ def cmd_claim(args, tracker: Tracker, root: Path) -> int:
     if not card.is_open or not is_work(card):
         raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
                       "not a container)")
+    if card.outside:
+        raise Refused(f"{_label(card)} links {_outside_text(card)}, outside the tracker, so it "
+                      "is not offered as work until that link is removed (R-BAL188)")
     branch = _branch(root, args.branch)
     try:
         claim = tracker.claim(card.number, branch)
@@ -247,11 +269,15 @@ def _card_lines(card: Card, tracker: Tracker, shipped: dict) -> list[str]:
         f"  shipped (git): {ship}",
         f"  board: {place}",
         f"  claim: {claim.branch!r} since {claim.made}" if claim else "  claim: none",
-        f"  parent: plan#{card.parent}" if card.parent else "  parent: none",
+        (f"  parent: plan#{card.parent}" if card.parent else
+         f"  parent: {outside} (outside the tracker)" if (outside := _outside_parent(card))
+         else "  parent: none"),
     ]
     lines += [f"  child: plan#{child.number} ({child.kind}, "
               f"{'open' if child.is_open else 'closed'})" for child in card.children]
     lines += [f"  blocked by: plan#{blocker}" for blocker in card.blocked_by]
+    lines += [f"  {link.what} outside the tracker: {link.issue} -- not offered until it is "
+              "removed (R-BAL188)" for link in card.outside if link.what != "parent"]
     return lines
 
 
@@ -284,10 +310,12 @@ def _read(path: str) -> str:
 
 @dataclass(frozen=True)
 class _Asked:
-    """The question card a ruling is converted from, and its body as read."""
+    """The question card a ruling is converted from, its body as read, and whether that
+    body was last saved by the plan tool's own edit (not as filed, nor by a person)."""
 
     card: Card
     body: str
+    saved_by_tool: bool
 
 
 def _converted_body(asked: _Asked, answer: str) -> str:
@@ -295,15 +323,24 @@ def _converted_body(asked: _Asked, answer: str) -> str:
 
     A conversion cut short may already have written it (R-BAL186), so a body
     that is exactly what this conversion writes gives back its question, never
-    wrapped twice; any other body is the developer's question, word for word,
-    whatever marks it holds.  A card already typed a ruling whose body this
-    conversion did not write is refused: its answer is the developer's record,
-    and another answer is another ruling.
+    wrapped twice.  A body the tool's own edit saved in a ruling's shape with
+    ANOTHER answer is an earlier conversion's, not the developer's question, and
+    is refused, as is a card already typed a ruling with another answer: an
+    answer is the developer's record, and another answer is another ruling.  Any
+    other body is the developer's question, word for word, whatever marks it
+    holds -- so a question quoting a ruling's shape that the tool itself put
+    back (``spec-revert``) is refused too, and is put back on the web instead.
     """
     question = ruling_question(asked.body, answer)
     if question is None and asked.card.kind == "ruling":
         raise Refused(f"{_label(asked.card)} is already a ruling, and not with this answer: "
                       "its answer is the developer's record, so another answer is another ruling")
+    if question is None and asked.saved_by_tool and in_ruling_shape(asked.body):
+        number = asked.card.number
+        raise Refused(f"{_label(asked.card)}'s text is an earlier conversion's, with another "
+                      f"answer: put the developer's question back first (`plan spec-history "
+                      f"plan#{number}` lists its saved versions, `plan spec-revert plan#{number} "
+                      "--to EDIT_ID` restores one), then run this again")
     return ruling_body(asked.body if question is None else question, answer)
 
 
@@ -329,7 +366,9 @@ def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, 
         body = args.text
     elif args.from_question:
         card = _one(tracker, args.from_question)
-        asked = _Asked(card, tracker.body(card.number))
+        text, versions = tracker.edits(card.number)
+        last = versions[-1]
+        asked = _Asked(card, text, last.edit_id is not None and last.editor == tracker.app_login)
         body = _converted_body(asked, _read(args.answer_file))
     else:
         body = ruling_body(_read(args.question_file), _read(args.answer_file))
@@ -377,7 +416,11 @@ def _half_filed(tracker: Tracker, draft: Draft) -> Card | None:
 
 def _refuse_rehoming(card: Card, parent: Card | None) -> None:
     """Refuse to file ``card`` under ``parent`` (None: at the top level) when it is a
-    sub-issue of another card: re-homing a card is a person's call."""
+    sub-issue of another card, in the tracker or outside it: re-homing a card is a
+    person's call."""
+    if outside := _outside_parent(card):
+        raise Refused(f"{_label(card)} is a sub-issue of {outside}, outside the tracker: "
+                      "re-homing a card is done by hand")
     if card.parent is not None and card.parent != (parent.number if parent else None):
         where = f"plan#{parent.number}" if parent else "a top-level card, as this filing names"
         raise Refused(f"{_label(card)} is a sub-issue of plan#{card.parent}, not {where}: "
@@ -510,35 +553,53 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     return 0
 
 
-def _open_leaves_below(tracker: Tracker, card: Card) -> list[str]:
-    """Every open leaf below ``card`` -- under the steps it splits, under theirs, ... --
-    that is work (a step split again is not a leaf, its own leaves are)."""
-    leaves, wanted = [], [child.number for child in card.children if child.kind == "step"]
+def _open_leaves_below(tracker: Tracker, card: Card) -> list[Card]:
+    """Every open leaf below ``card`` that is work -- under the steps it splits, under
+    theirs, ... (a step split again is not a leaf; its own leaves are)."""
+    below, wanted = [], leaves(card)
     while wanted:
         found = tracker.cards(wanted)
-        leaves += [f"plan#{n}" for n, step in sorted(found.items())
-                   if step.is_open and is_work(step)]
-        wanted = [child.number for step in found.values() for child in step.children
-                  if child.kind == "step"]
-    return leaves
+        below += [step for _, step in sorted(found.items()) if step.is_open and is_work(step)]
+        wanted = [number for step in found.values() for number in leaves(step)]
+    return below
 
 
-def cmd_drop(args, tracker: Tracker, _root: Path) -> int:
-    """Retire a card with no code: the reason as a comment, then closed as not planned."""
-    card = _one(tracker, args.card)
-    if not card.is_open:
-        raise Refused(f"{_label(card)} is already closed")
-    tracker.comment(card.number, f"Dropped: {args.why}")
-    print(f"  commented: Dropped: {args.why}")
+def _drop(tracker: Tracker, card: Card, why: str) -> None:
+    """Drop one piece of work: the reason as a comment, then closed as not planned; each
+    write printed as it lands, and a claim on it named."""
+    tracker.comment(card.number, f"Dropped: {why}")
+    print(f"  commented on plan#{card.number}: Dropped: {why}")
     tracker.close(card.number, "not_planned")
     print(f"dropped {_label(card)}")
-    leaves = _open_leaves_below(tracker, card)
-    if leaves:
-        print(f"  its open leaves {', '.join(leaves)} are no longer offered: a leaf inherits "
-              "the drop of a step above it (R-BAL185)")
     claim = tracker.claims().get(card.number)
     if claim is not None:
         print(f"  its claim by {_holder(claim)} stays: {_release_hint(claim)}")
+
+
+def cmd_drop(args, tracker: Tracker, _root: Path) -> int:
+    """Retire work with no code: each card's reason as a comment, then closed as not planned.
+
+    A split step holds no decision of the tool's (R-BAL190): dropping one
+    drops every open leaf below it, each with the reason, and notes it on the
+    split step, whose own state shows its leaves at the next ``sync``.  Run
+    again after a failure, it drops the leaves still open.
+    """
+    card = _one(tracker, args.card)
+    if not card.is_container:
+        if not card.is_open:
+            raise Refused(f"{_label(card)} is already closed")
+        _drop(tracker, card, args.why)
+        return 0
+    below = _open_leaves_below(tracker, card)
+    if not below:
+        raise Refused(f"{_label(card)} has no open leaf below it to drop; its own state shows "
+                      "its leaves, which `plan sync` writes")
+    for leaf in below:
+        _drop(tracker, leaf, args.why)
+    dropped = ", ".join(f"plan#{leaf.number}" for leaf in below)
+    tracker.comment(card.number, f"Dropped: {args.why} (its open leaves {dropped})")
+    print(f"  commented on plan#{card.number}: its open leaves {dropped} were dropped; it shows "
+          "them at the next `plan sync`")
     return 0
 
 

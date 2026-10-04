@@ -233,6 +233,8 @@ def test_ruling_question_reads_back_only_what_this_answer_wrote_whatever_marks_i
     assert ruling_question(ruling_body("Where?", "Here."), "There.") is None
     assert ruling_question(ruling_body("Where?", "Here.\r\nAnd there."),
                            "Here.\nAnd there.") == "Where?"
+    for body in ("Question: Ship it? Yes.", "Ship it?\n\nAnswer: Yes."):
+        assert ruling_question(body, "Yes.") is None, body
 
 
 def test_a_card_under_a_parent_with_no_type_is_refused_never_read_as_having_none():

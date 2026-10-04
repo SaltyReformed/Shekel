@@ -93,12 +93,25 @@ _BOARD = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {
 
 _EDITS = (
     """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
-  issue(number: $number) { body createdAt author { login }
+  issue(number: $number) { number body createdAt author { login }
     userContentEdits(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes { id editedAt editor { login } diff } } } } }"""
     % (ORG, REPO)
 )
+
+
+#: The board's writes, the only GraphQL mutations the plan tool sends (a recording
+#: sends no other: ``_recorded.refusal``).  ``$p`` is the board, ``$c`` a card's node
+#: id, ``$i`` a board item, ``$a`` the item it goes after.
+BOARD_ADD = ("mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, "
+             "contentId: $c}) { item { id } } }")
+BOARD_REMOVE = ("mutation($p: ID!, $i: ID!) { deleteProjectV2Item(input: {projectId: $p, "
+                "itemId: $i}) { deletedItemId } }")
+BOARD_TOP = ("mutation($p: ID!, $i: ID!) { updateProjectV2ItemPosition(input: "
+             "{projectId: $p, itemId: $i}) { clientMutationId } }")
+BOARD_AFTER = ("mutation($p: ID!, $i: ID!, $a: ID!) { updateProjectV2ItemPosition(input: "
+               "{projectId: $p, itemId: $i, afterId: $a}) { clientMutationId } }")
 
 
 class TrackerError(RuntimeError):
@@ -281,32 +294,20 @@ class Board:
 
     def add(self, card: Card) -> str:
         """Put a card on the board (GitHub adds it at the bottom); its board item id."""
-        return self.github.graphql(
-            "mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, "
-            "contentId: $c}) { item { id } } }", p=self.board_id, c=card.node_id,
-        )["addProjectV2ItemById"]["item"]["id"]
+        answer = self.github.graphql(BOARD_ADD, p=self.board_id, c=card.node_id)
+        return answer["addProjectV2ItemById"]["item"]["id"]
 
     def remove(self, item: str) -> None:
         """Take a card off the board (the card itself is untouched)."""
-        self.github.graphql(
-            "mutation($p: ID!, $i: ID!) { deleteProjectV2Item(input: {projectId: $p, "
-            "itemId: $i}) { deletedItemId } }", p=self.board_id, i=item,
-        )
+        self.github.graphql(BOARD_REMOVE, p=self.board_id, i=item)
 
     def place(self, item: str, after: str | None) -> bool:
         """Move a board item to just after ``after`` (the top when None); whether the
         board shows it there within :data:`BOARD_WAIT_SECONDS`."""
         if after is None:
-            self.github.graphql(
-                "mutation($p: ID!, $i: ID!) { updateProjectV2ItemPosition(input: "
-                "{projectId: $p, itemId: $i}) { clientMutationId } }", p=self.board_id, i=item,
-            )
+            self.github.graphql(BOARD_TOP, p=self.board_id, i=item)
         else:
-            self.github.graphql(
-                "mutation($p: ID!, $i: ID!, $a: ID!) { updateProjectV2ItemPosition(input: "
-                "{projectId: $p, itemId: $i, afterId: $a}) { clientMutationId } }",
-                p=self.board_id, i=item, a=after,
-            )
+            self.github.graphql(BOARD_AFTER, p=self.board_id, i=item, a=after)
         return self.shows(item, after)
 
     def shows(self, item: str, after: str | None) -> bool:

@@ -302,17 +302,44 @@ def test_a_ships_naming_a_container_closes_nothing_and_unblocks_nothing(code, ca
 
 
 def test_dropping_a_split_step_takes_its_leaves_out_of_the_order(code, capsys):
-    """R-BAL185 (review L2): the drop is recorded once, on the split step; sync lists the
-    leaves left open under it."""
+    """R-BAL190 (narrowing R-BAL185 for ``plan drop``; review L2 first): ``plan drop``
+    on a split step drops each open leaf, each with the reason, and the split step shows
+    them at the next sync."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True),), on_board=False)
     tracker.add(2, parent=1)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert "its open leaves plan#2 are no longer offered" in capsys.readouterr().out
+    assert tracker.writes == [("comment", 2, "Dropped: superseded"), ("close", 2, "not_planned"),
+                              ("comment", 1, "Dropped: superseded (its open leaves plan#2)")]
+    capsys.readouterr()
+    assert run(tracker, code, "next") == 0
+    assert capsys.readouterr().out.startswith("next: nothing")
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes[-1] == ("close", 1, "not_planned")
+
+
+def test_a_split_step_a_person_closes_by_hand_takes_its_leaves_out_of_the_order(code, capsys):
+    """R-BAL185 as ruled for a person's close: recorded once, on the split step; its leaves
+    inherit it, and sync lists those left open under it."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", True),), on_board=False, is_open=False,
+                state_reason="NOT_PLANNED", touched_by_hand=True)
+    tracker.add(2, parent=1)
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: nothing")
     assert run(tracker, code, "sync") == 1
     assert "REPORT: plan#2 is open under plan#1, which was dropped" in capsys.readouterr().out
+    assert not tracker.writes
+
+
+def test_a_split_step_with_no_open_leaf_is_not_dropped_again(code, capsys):
+    """Its own state shows its leaves; with none open there is nothing to drop."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", False),), on_board=False)
+    tracker.add(2, parent=1, is_open=False, state_reason="NOT_PLANNED", closed_by_tool=True)
+    assert run(tracker, code, "drop", "plan#1", "--why", "again") == 1
+    assert "no open leaf below it" in capsys.readouterr().err
+    assert not tracker.writes
 
 
 
@@ -479,14 +506,18 @@ def test_a_card_linked_outside_the_tracker_is_never_offered_and_is_reported(code
 
 def test_dropping_a_step_names_every_open_leaf_below_it_and_no_container(code, capsys):
     """Review cp3: the note named only the dropped step's own children, and called a step
-    split again a leaf."""
+    split again a leaf; R-BAL190: every open leaf below is dropped, and no step split
+    again, whose state shows its own leaves."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
     tracker.add(2, parent=1, children=(Child(4, "step", True),), on_board=False)
     tracker.add(3, parent=1)
     tracker.add(4, parent=2)
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert "its open leaves plan#3, plan#4 are no longer offered" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "dropped plan#3 " in out and "dropped plan#4 " in out and "dropped plan#2 " not in out
+    assert ("close", 2, "not_planned") not in tracker.writes
+    assert ("comment", 1, "Dropped: superseded (its open leaves plan#3, plan#4)") in tracker.writes
 
 
 
@@ -508,3 +539,46 @@ def test_the_board_add_a_move_makes_is_printed_as_it_lands(code, capsys):
     assert run(tracker, code, "move", "plan#2", "--top") == 0
     assert capsys.readouterr().out.startswith("  board: added plan#2 ")
     assert tracker.writes == [("board_add", 2), ("board_place", 2, None)]
+
+
+def test_show_names_a_cards_links_outside_the_tracker(code, capsys):
+    """Review cp4 L-8: ``show`` said "parent: none" for a card whose parent is outside, and
+    named none of the links that keep it from being offered."""
+    tracker = FakeTracker()
+    tracker.add(1, outside=(OutsideLink("parent", "saltyreformed-labs/Shekel#5"),
+                            OutsideLink("blocker", "saltyreformed-labs/Shekel#6")))
+    assert run(tracker, code, "show", "plan#1") == 0
+    out = capsys.readouterr().out
+    assert "  parent: saltyreformed-labs/Shekel#5 (outside the tracker)" in out
+    assert "  blocker outside the tracker: saltyreformed-labs/Shekel#6" in out
+    assert "parent: none" not in out
+
+
+def test_a_card_linked_outside_the_tracker_cannot_be_claimed(code, capsys):
+    """Review cp4 L-11: R-BAL188 never offers it as work, yet ``claim`` took it."""
+    tracker = FakeTracker()
+    tracker.add(1, outside=(OutsideLink("blocker", "saltyreformed-labs/Shekel#6"),))
+    assert run(tracker, code, "claim", "plan#1") == 1
+    assert "outside the tracker" in capsys.readouterr().err
+    assert not tracker.writes
+
+
+def test_sync_dry_run_writes_no_close_as_not_planned(code, capsys):
+    """Review cp4 M54: the dry run must not write R-BAL187's close either."""
+    tracker = FakeTracker()
+    tracker.add(7, children=(Child(8, "step", False),), on_board=False)
+    tracker.add(8, parent=7, is_open=False, state_reason="NOT_PLANNED", closed_by_tool=True)
+    assert run(tracker, code, "sync", "--dry-run") == 0
+    assert "would close as not planned" in capsys.readouterr().out
+    assert not tracker.writes
+
+
+def test_dropping_a_claimed_card_names_the_claim_it_leaves(code, capsys):
+    """A drop writes no claim; the claim it leaves is named, with the command that releases it."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s1")
+    assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
+    assert ("its claim by 'feat/one' stays: `plan release plan#1 --branch feat/one`"
+            in capsys.readouterr().out)
+    assert 1 in tracker.held
