@@ -172,9 +172,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       its raise row carries no `version_id`, so a Save from a stale rail is last-write-wins on one
       column; the regeneration is handed one read pass per profile. Needs a RULING on the race
       first. `$0.00`.
-- [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**, closed 2026-10-04:
-      `balance:X-bi-6a`, `323400d9`, had moved the module off pylint's line ceiling). A PURE move
-      graded by AST (**R-PC74**'s shape), its own step because no live step edits the file. `$0.00`.
+- **S7 is DISSOLVED** (**R-SAL109**, 2026-10-04): its reason, **SAL-555**, closed at `S11-c-2a`'s
+  tick, and **SAL-560**, filed to it 2026-09-14, moved to `X-av-3b`, which rewrites those doors.
 - [ ] **S9 -- a blank start is STORED AS BLANK and means "since my paychecks began"** (finding
       **SAL-562**; ruling **R-SAL39**, 2026-09-18): `starts_on` NULL on the payroll arm alone, the
       template arms still NOT NULL by the CHECK, resolved at read time to the owner's true opening
@@ -220,7 +219,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         later entry holds "In your pay from <date>" (**R-SAL95**), asking the developer first how a
         held RECURRING raise reads. The create form shows the count in force on its default payday,
         the edit page none (**R-SAL97**); the "Next raise" chip gives a `PAY -` event a cut's
-        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows.
+        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows. Closes
+        **SAL-560** (**R-SAL109**): the raise doors validate once and build from the rows loaded.
   - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
         differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
         entry through `X-av-3b`'s Record door, one function both call. `$0.00` until used.
