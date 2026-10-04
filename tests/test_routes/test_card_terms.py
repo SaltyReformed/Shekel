@@ -89,10 +89,8 @@ def _rendered_values(page):
 def _without_csrf_tokens(page):
     """*page* with every CSRF token blanked, so two renders can be compared.
 
-    The token is time-salted, and the two renders below compare equal today
-    only because the test's one app context lets ``g`` carry a token across
-    requests (ledger row BAL-521); blanking it keeps the comparison honest
-    once that is fixed.
+    The token is time-salted and minted per request, so two renders can differ
+    in it whatever else they share; blanking it leaves the rest to compare.
     """
     page = re.sub(r'name="csrf_token" value="[^"]*"', 'name="csrf_token"', page)
     return re.sub(
@@ -261,12 +259,7 @@ class TestTheGates:
         """A rewrite aimed at the victim's row is refused before it reads the form.
 
         The victim's row is written directly rather than through a second
-        authenticated client, and ledger row **BAL-521** is why: the ``db``
-        fixture holds ONE app context across the test, Flask-Login caches the
-        loaded user on ``g``, and so a second client's requests run as the
-        FIRST client's user (measured 2026-09-18 while building this file).
-        Plan step ``balance:X-cr`` gives each test request its own app
-        context; until it ships, a two-client test measures one user.
+        authenticated client, so the case grades the attacker's refusal alone.
         """
         victim = _card(second_user, name="Other Visa")
         db.session.add(CreditCardParams(

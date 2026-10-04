@@ -49,8 +49,6 @@ bug.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from flask import g
-
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import (
@@ -130,27 +128,6 @@ def _restore_config_module():
     importlib.reload(config_module)
 
 
-def _reset_login_cache():
-    """Drop ``g._login_user`` so the next request re-runs ``load_user``.
-
-    Flask-Login caches the loaded user on ``g._login_user`` per app
-    context.  In production each HTTP request is its own app context,
-    so the cache is effectively per-request.  In the test suite the
-    autouse ``db`` fixture wraps every test in one ``app.app_context``,
-    so subsequent ``test_client`` calls re-use the same ``g`` and
-    would keep returning the user that was cached on the first
-    request -- defeating the point of every "the loader rejects this
-    cookie" test below.
-
-    Mirror of the helper in
-    ``tests/test_adversarial/test_session_invalidation.py``.  Kept
-    duplicated rather than imported because each adversarial file
-    exercises distinct invariants and a shared helper would couple
-    them at the wrong layer.
-    """
-    g.pop("_login_user", None)
-
-
 def _enable_mfa(user_id):
     """Persist an enabled MFA config with a known secret and codes.
 
@@ -169,12 +146,8 @@ def _enable_mfa(user_id):
 def _do_login_no_mfa(client):
     """Run a fresh password-only login on a test client.
 
-    Calls ``_reset_login_cache`` before the POST so the request sees
-    the cookie the test is exercising rather than a sibling client's
-    cached user.  Returns the login response so the caller can
-    assert on it.
+    Returns the login response so the caller can assert on it.
     """
-    _reset_login_cache()
     return client.post("/login", data={
         "email": "test@shekel.local",
         "password": "testpass",
@@ -346,7 +319,6 @@ class TestIdleTimeoutAcceptance:
             assert resp.status_code == 302
 
             # Subsequent protected request must succeed.
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 200, (
                 f"First request after login must pass; got "
@@ -368,7 +340,6 @@ class TestIdleTimeoutAcceptance:
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = recent
 
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 200
 
@@ -394,7 +365,6 @@ class TestIdleTimeoutRejection:
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = stale
 
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 302
             assert "/login" in check.headers.get("Location", ""), (
@@ -414,7 +384,6 @@ class TestIdleTimeoutRejection:
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = "not-an-iso-timestamp"
 
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 302
             assert "/login" in check.headers.get("Location", "")
@@ -432,7 +401,6 @@ class TestIdleTimeoutRejection:
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = naive
 
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 302
             assert "/login" in check.headers.get("Location", "")
@@ -464,7 +432,6 @@ class TestIdleTimeoutRejection:
             with client.session_transaction() as sess:
                 sess[SESSION_LAST_ACTIVITY_KEY] = future
 
-            _reset_login_cache()
             check = client.get("/dashboard", follow_redirects=False)
             assert check.status_code == 200, (
                 "Future-dated activity must be treated as fresh; got "
@@ -500,7 +467,6 @@ class TestActivityRefreshHook:
             # advance the stamp.  Use a sleep too small to be
             # noticeable but large enough to differ at microsecond
             # resolution -- we only need strict monotonic advance.
-            _reset_login_cache()
             client.get("/dashboard")
 
             with client.session_transaction() as sess:
@@ -641,7 +607,6 @@ class TestFreshLoginRequiredRedirects:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/accounts/{account_id}/hard-delete",
                 follow_redirects=False,
@@ -673,7 +638,6 @@ class TestFreshLoginRequiredRedirects:
             with auth_client.session_transaction() as sess:
                 sess.pop(FRESH_LOGIN_AT_KEY, None)
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/accounts/{account_id}/hard-delete",
                 follow_redirects=False,
@@ -703,7 +667,6 @@ class TestFreshLoginRequiredRedirects:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/settings/companions/{comp_id}/reactivate",
             )
@@ -733,7 +696,6 @@ class TestFreshLoginRequiredRedirects:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/accounts/{account_id}/hard-delete",
                 headers={"HX-Request": "true"},
@@ -1082,7 +1044,6 @@ class TestUpdateAccountIsNotStepUpGated:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/accounts/{account_id}",
                 data={
@@ -1177,7 +1138,6 @@ class TestHardDeleteTemplateIsNotStepUpGated:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/templates/{template_id}/hard-delete",
                 follow_redirects=False,
@@ -1264,7 +1224,6 @@ class TestHardDeleteTransferTemplateIsNotStepUpGated:
             with auth_client.session_transaction() as sess:
                 sess[FRESH_LOGIN_AT_KEY] = stale
 
-            _reset_login_cache()
             resp = auth_client.post(
                 f"/transfers/{template_id}/hard-delete",
                 follow_redirects=False,

@@ -355,10 +355,6 @@ def test_security_headers_on_an_anonymous_bounce(client):
     The gate answers from a ``before_request`` hook, which returns a
     response before any view runs; a hook skipped for that short-circuit
     would be the misconfiguration the 404 case catches, by another door.
-    Its own test rather than a second arm of that one: Flask-Login caches
-    the loaded user on ``g`` and the ``db`` fixture holds one app context
-    open across a test's requests, so a test that logged in cannot also
-    make an anonymous request.
     """
     bounced = client.get("/this-path-does-not-exist-anywhere")
     assert bounced.status_code == 302

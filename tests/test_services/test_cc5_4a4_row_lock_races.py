@@ -34,8 +34,8 @@ has read the row, and then reads the first click's committed work.
 :class:`TestTheOwnersLockComesFirst` grades that order door by door.
 
 **How a request race is staged** (:func:`_race`).  Each click is a request on
-a thread of its own, from a client signed in under an app context of its own,
-so each has its own session exactly as production gives each request.  The
+a thread of its own with no app context pushed, so the request pushes its own
+and has its own session, exactly as production gives each request.  The
 FIRST request runs until its COMMIT and is held there -- a ``before_commit``
 hook on that thread alone -- still holding everything it locked.  The SECOND
 starts, and the test waits until PostgreSQL shows it waiting for the owner's
@@ -227,28 +227,23 @@ def _race_statements(app, first: Callable[[], None], second: Callable[[], None])
 
 
 def _signed_in_clients(app, count=2):
-    """*count* clients, each signed in as the seed user under an app context of its own.
+    """*count* clients, each signed in as the seed user.
 
-    Signed in one context at a time because Flask-Login keeps a signed-in
-    user on ``g``, which the test's shared app context would hand the second
-    sign-in, and it would then redirect without signing in (finding
-    **BAL-521**, owner plan step ``balance:X-cr``).  Each sign-in's redirect
-    is checked not to be the sign-in page, so a race cannot quietly run one
-    client signed out.
+    Each sign-in's redirect is checked not to be the sign-in page, so a race
+    cannot quietly run one client signed out.
 
     Returns:
         The signed-in clients, in order.
     """
     clients = []
     for _ in range(count):
-        with app.app_context():
-            client = app.test_client()
-            response = client.post("/login", data={
-                "email": SEED_USER_EMAIL, "password": SEED_USER_PASSWORD,
-            })
-            assert response.status_code == 302, response.status_code
-            assert urlsplit(response.headers["Location"]).path != "/login"
-            clients.append(client)
+        client = app.test_client()
+        response = client.post("/login", data={
+            "email": SEED_USER_EMAIL, "password": SEED_USER_PASSWORD,
+        })
+        assert response.status_code == 302, response.status_code
+        assert urlsplit(response.headers["Location"]).path != "/login"
+        clients.append(client)
     return clients
 
 

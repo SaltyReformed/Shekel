@@ -213,13 +213,9 @@ class TestOnboardingBanner:
         A fact that dropped its ``user_id`` filter would read the first
         owner's rows, hide the second owner's banner and fail here.
 
-        Only the second owner requests a page.  With both clients requesting,
-        the second client's page came back without the second owner's name on
-        it -- measured while this test was written, the session interference
-        ``tests/test_integration/test_fixture_validation.py`` notes -- so the
-        precondition below pins who was served.  The first owner's hidden
-        banner is :meth:`test_banner_hidden_when_all_setup_complete`'s to
-        assert.
+        Only the second owner requests a page, and the precondition below pins
+        who was served.  The first owner's hidden banner is
+        :meth:`test_banner_hidden_when_all_setup_complete`'s to assert.
         """
         _complete_setup(seed_user)
 

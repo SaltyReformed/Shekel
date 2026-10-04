@@ -14,8 +14,6 @@ computation in response HTML, and empty state rendering.
 from datetime import date
 from decimal import Decimal
 
-from flask import g
-
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
@@ -395,12 +393,6 @@ class TestEntryIntegration:
         assert row.template.companion_visible is False
         assert row.visible_to_companion is False
 
-        # The owner's request above cached the owner on ``g._login_user``,
-        # and the ``db`` fixture holds ONE app context for the whole test,
-        # so the companion's requests below would be answered as the owner
-        # without this -- the trap ``test_adversarial/test_session_invalidation``
-        # names and resets the same way.
-        g.pop("_login_user", None)
         comp = _login_companion(app)
         resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
         assert resp.status_code == 200
