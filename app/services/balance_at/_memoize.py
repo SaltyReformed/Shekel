@@ -98,7 +98,7 @@ def _memoize_once(
     **The PLAN was a third example until plan step R16-a, and how it stopped being
     one is the better argument for the rule.**  ``loan_plan`` answered ``[]`` for a
     not-yet-configured or fully-retired loan; it now answers a
-    ``LoanForwardPlan(payments=[], charges=[], periods=[])``, which is unconditionally TRUTHY.
+    ``LoanForwardPlan(payments=[], calendar=None)``, which is unconditionally TRUTHY.
     The cache is no longer at risk there -- but a CONSUMER was, and silently:
     ``_secured_debt._debt_span_upper`` tested ``if not plan`` and took the
     wrong branch the moment the value stopped being a list, until it became

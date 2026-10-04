@@ -179,11 +179,13 @@ def due_date_for(closes: date, due_day: int) -> date:
 
     The clamp is the ONE clamp's; the two-line "which month's occurrence"
     comparison over it is also spelled by
-    :func:`app.services.rate_period_engine.monthly_due_date` (the first
-    occurrence ON OR AFTER a date, over PC-516's re-spelt clamp), and the
+    :func:`app.services.installment_calendar.monthly_due_date` (the first
+    occurrence ON OR AFTER a date) and, for the latest ON OR BEFORE,
+    :func:`~app.services.installment_calendar.installment_of`, both over the
+    one clamp since plan step recurrence:R16-c-2; and the
     fold of both onto one ``first_day_on_or_after`` beside
-    :func:`~app.utils.dates.clamped_day` is that ledger row's, owned by plan
-    step ``pay_calendar:C20-b``, which this function is reported to.
+    :func:`~app.utils.dates.clamped_day` is ledger row **REC-547**'s, owned by
+    plan step ``recurrence:R25``, which this function is reported to.
 
     Args:
         closes: The statement's close date (:attr:`CycleWindow.closes`).

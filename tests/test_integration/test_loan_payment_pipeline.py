@@ -143,7 +143,7 @@ class TestLoanPaymentPipeline:
             params = loan_params_for(db.session, mortgage.id)
             payments = get_payment_history(
                 mortgage.id, amount_basis_for_scenario(scenario.id),
-                params.payment_day,
+                params,
             )
             assert len(payments) > 0, "No payments returned from history"
             for payment in payments:

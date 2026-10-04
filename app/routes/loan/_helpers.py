@@ -8,6 +8,7 @@ once at import time so every handler reuses the same instance (Marshmallow
 contract), preserving the pre-split monolith's behaviour.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -42,7 +43,7 @@ from app.services import (
 )
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import LoanFigures, LoanTerms
-from app.services.loan_ledger import installment_slot
+from app.services.installment_calendar import installment_dates
 from app.services.loan_loaders import (
     latest_settled_payment_due_date,
     load_loan_anchor_facts,
@@ -106,8 +107,31 @@ def _load_loan_account(account_id):
     return account, params, account_type
 
 
-def render_loan_setup(account, account_type):
+def render_loan_setup(
+    account: Account,
+    account_type: AccountType,
+    submitted: Mapping[str, str] | None = None,
+) -> str:
     """Render the loan setup form for an account that has no ``LoanParams`` yet.
+
+    **A refused POST the form itself can remedy comes back exactly as typed**
+    (review 7c of plan step recurrence:R16-c-2): the schema's refusal, the
+    term cap's, the pre-origination one and the tracking-start one each pass
+    the POST's own form as *submitted*, and every field the template draws
+    reads its posted string from it.  Until then a refusal re-rendered the
+    defaults below over a blank form, so an owner who followed a refusal by
+    changing only the date re-submitted the prefilled balance instead of the
+    one typed -- measured: a prefilled ``0.00`` configured a loan owing
+    $0.00.  The defaults serve the form's FIRST showing only.  Three
+    answers redirect instead.  An account that is not a loan type goes to
+    ``savings.dashboard`` and a loan already configured to its own page
+    (``loan.dashboard``, which shows it configured): neither
+    has a setup form to re-render.  The standing payment's two refusals
+    (:func:`app.routes._standing_payment.sync_loan_payment_start_or_refuse`)
+    roll the whole setup back and redirect to the loan's page, which shows
+    this form's first showing, so what was typed is lost; their remedy is
+    the recurring transfer's while the typed contract is right, and a
+    mistyped origination can meet them too (REC-554).
 
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
@@ -126,6 +150,11 @@ def render_loan_setup(account, account_type):
     Args:
         account: The loan :class:`Account` being configured.
         account_type: Its :class:`AccountType` row (labels, icon, term cap).
+        submitted: The refused POST's form (``request.form``), or ``None``
+            for the form's first showing.  Passed through whole: the
+            template names its own fields, so no second list of them lives
+            here, and a field the POST lacked comes back empty.  Each value
+            is the raw posted string, autoescaped by the template.
 
     Returns:
         The rendered setup page.
@@ -139,11 +168,16 @@ def render_loan_setup(account, account_type):
         # HELD since plan step credit_card:CC-5-5b -- a car loan created owing
         # 5,000.00 holds -5,000.00 -- so the pre-fill crosses through the
         # door's one function (ruling R-CC52) and opens on 5,000.00.  Read
-        # raw, it would pre-fill a negative figure the box refuses.
-        anchor_balance=liability_sign.shown_figure(
-            account_type, cash_ledger.resolve_anchor(account).balance,
+        # raw, it would pre-fill a negative figure the box refuses.  Read for
+        # the first showing only: a refused POST re-renders what was typed.
+        anchor_balance=(
+            None if submitted is not None
+            else liability_sign.shown_figure(
+                account_type, cash_ledger.resolve_anchor(account).balance,
+            )
         ),
         today_iso=display_today().isoformat(),
+        submitted=submitted,
     )
 
 
@@ -432,9 +466,11 @@ def _forward_boundary(account_id, scenario_id):
     """Return the escrow forward-only guard boundary for a loan, or ``None``.
 
     The latest settled payment's DUE date
-    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- the
-    exact date the genesis split resolves each payment's escrow at (ruling D5's
-    contract time, finding N-34), so a new or edited escrow version strictly
+    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- on
+    or after the installment the genesis split resolves each payment's escrow
+    at (ruling D5's contract time, finding N-34, as ruling R-R104 amends it:
+    the installment the payment pays, wider than it needs to be for a payment
+    due off the loan's day, finding REC-544), so a new or edited escrow version strictly
     after it cannot move any settled payment's split.
     ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
     has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
@@ -453,54 +489,88 @@ def _forward_boundary(account_id, scenario_id):
     return latest_settled_payment_due_date(account_id, scenario_id)
 
 
-def band_chart_dates(scenarios, payoff, installments) -> list[date]:
-    """Return the band chart's x-axis: the contractual monthly grid, run to the payoff.
+def band_chart_dates(
+    scenarios, payoff, installments, params, start,
+) -> list[date]:
+    """Return the band chart's x-axis: the loan's installments, its record's start to the payoff.
 
-    One installment date per month from the loan's confirmed history through
-    the CONTRACT's last installment (the composer's ``history_rows`` and
-    ``original_forward``, one date each), extended month by month whenever the
-    seam's DERIVED payoff falls later -- an underpaying plan clears the loan
-    in the post-contractual extension, and the line must run to where the
-    balance actually reaches zero rather than stop at the last labelled tick.
-    A plan that never clears it runs to the plan's last installment instead;
-    a retired loan (no payoff, no plan) ends with its history.  The same grid
-    serves the lever's preview (:func:`accelerated_overlay`), which is what
-    keeps the overlay aligned to the band one point to one.
+    **Every installment the loan owes, whatever days its payments fall on**
+    (ruling **R-R110**, plan step recurrence:R16-c-2): the loan's own
+    installment calendar
+    (:func:`~app.services.installment_calendar.installment_dates`, the ONE
+    producer its charges are dated by, so a loan due on the 31st returns to
+    the month's end after a February) from the first installment AFTER the
+    day the app's record of the loan starts (*start*, ruling **R-R111**) --
+    an origination is never itself an installment, and a tracking-start
+    assertion dated on one already states the balance after it, since the
+    walk applies an assertion after its day's charge and payments -- through
+    the CONTRACT's last installment, extended month by month whenever
+    the seam's DERIVED payoff falls later -- an underpaying plan clears the
+    loan in the post-contractual extension, and the line must run to where
+    the balance actually reaches zero rather than stop at the last labelled
+    tick.  A plan that never clears it runs to the plan's last installment
+    instead; a retired loan (no payoff, no plan) ends with its history.  Each
+    point is the balance the ledger holds that day (:func:`build_band_chart`),
+    so a payment shows as the drop into the first installment after its money
+    moved, and two payments inside one installment's interval are one point.
+    The same grid serves the lever's preview (:func:`accelerated_overlay`),
+    which is what keeps the overlay aligned to the band one point to one.
 
-    Pure over values the caller already holds -- the pass's payoff figure
-    and the plan's installments -- so the grid costs the page no fold of its
-    own (the payoff is folded once per pass, ``balance_at.memoized_payoff``).
+    **The months were the rows' own dates until R-R110**: the confirmed rows'
+    then the contractual forward's.  Once ruling R-R109 dated a confirmed row
+    by the installment its payment pays, a payment due off the loan's day was
+    plotted at an installment before its money moved and never after it, and
+    the month after it vanished, because the forward starts from the
+    payment's own due date (``rate_period_engine.replay_schedule``); two
+    payments in one interval repeated a month, and a month nobody paid had no
+    point at all.
+
+    Pure over values the caller already holds -- the pass's payoff figure,
+    the plan's installments and the loan's terms -- so the grid costs the page
+    no fold of its own (the payoff is folded once per pass,
+    ``balance_at.memoized_payoff``).
 
     Args:
-        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`
-            (the confirmed history and the contractual forward).
+        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`;
+            its confirmed history and contractual forward say only where the
+            contract ends and whether there is anything to chart.
         payoff: The seam's derived payoff
             (:attr:`~app.routes.loan._helpers._RouteLoanContext.payoff_date`),
             ``None`` for a retired loan or a plan that never clears.
         installments: The plan as it stands
             (:func:`~app.services.balance_at.loan_installments`), for the
             never-clears case's last date.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, whose
+            origination and due day name its installment calendar.
+        start: The day the loan's record starts
+            (:attr:`~app.services.balance_at.LoanTerms.recorded_start`).
 
     Returns:
-        Ascending installment dates; empty for a loan whose history and
-        contract both hold no row (a retired loan the composer drops).
+        Ascending installment dates, one per month; empty for a loan whose
+        history and contract both hold no row (a retired loan the composer
+        drops), and empty when *start* is on or after the grid's last
+        installment (a tracking start recorded at or after a loan's end), so
+        no point ever falls past it.
     """
-    dates = [row.payment_date for row in scenarios.history_rows] + [
-        row.payment_date for row in scenarios.original_forward
-    ]
-    if not dates:
-        return dates
+    rows = [*scenarios.history_rows, *scenarios.original_forward]
+    if not rows:
+        return []
+    contract_end = rows[-1].payment_date
     if payoff is None:
-        payoff = installments[-1].due_date if installments else dates[-1]
-    # Each extension date steps from the contract's LAST installment by a
-    # month count, as the plan's own extension does (``_plan._charge_dates``),
-    # so a loan due on the 31st keeps the month's end rather than decaying to
-    # the 28th one step at a time -- and the grid's dates are the fold's.
-    contract_end = dates[-1]
-    months_out = 1
-    while dates[-1] < payoff:
-        dates.append(add_months(contract_end, months_out))
-        months_out += 1
+        payoff = installments[-1].due_date if installments else contract_end
+    # Through the contract's last installment, or the first installment on or
+    # after a later payoff (a payoff on a definition's own cadence can fall
+    # between two).  The end is tested whether or not an installment is
+    # charted, so a start on or after it charts nothing past it.
+    last = max(contract_end, payoff)
+    dates: list[date] = []
+    for due in installment_dates(
+        params.origination_date, params.payment_day, add_months(last, 1),
+    ):
+        if due > start:
+            dates.append(due)
+        if due >= last:
+            break
     return dates
 
 
@@ -684,6 +754,7 @@ def build_loan_band_chart(account, params):
         band_chart_dates(
             scenarios, ctx.payoff_date,
             balance_at.loan_installments(account, ctx.balance_ctx),
+            params, ctx.figures.terms.recorded_start,
         ),
     )
 
@@ -726,31 +797,25 @@ def _compute_schedule_totals(schedule, row_escrow):
     }
 
 
-def _period_slot(installment) -> tuple[int, int]:
-    """Return the ``(year, month)`` of the accrual period *installment* pays into.
-
-    The standing charge's month (:attr:`~app.services.loan_ledger.PaymentOutcome.charge_date`,
-    the contract's installment date of that period), or for a payment no
-    charge stands over -- one before the plan's first charge, paying what
-    stands -- the month it is paid in.
-    """
-    return installment_slot(
-        installment.charge_date or installment.visible_on,
-    )
-
-
 def planned_periods(installments) -> list[list]:
     """Group the plan's installments by accrual period, through the payoff.
 
     The ONE grouping the loan page reads the plan by: the schedule's
     month-by-month rows and the allocation bar's "this month" both take a
-    group from here, so a month is spelled once (:func:`_period_slot`, the
-    standing charge's period).  A tracking payment and a fixed sweep due the
-    same month are one period's payments; a catch-up -- an occurrence due
-    before the read that no row answers, which the plan pays the day after
-    it (ruling **R-R64**, the D1 clamp) -- belongs to the period whose
-    charge it meets, which for an overdue installment is that installment's
-    own month.  The plan runs past the payoff into the post-contractual
+    group from here, so a period is spelled once -- the installment whose
+    charge the payment meets
+    (:attr:`~app.services.loan_ledger.PaymentOutcome.charge_date`, ruling
+    **R-R89**'s contract interval; ``None`` for every payment before the
+    loan's first installment, which share that one interval).  Until plan
+    step recurrence:R16-c-2 it grouped by the charge's CALENDAR month (finding
+    **D55**'s key), which named the same groups for every charged payment and
+    split the first interval at a month boundary.  A tracking payment and a
+    fixed sweep due inside one interval are one period's payments; a
+    catch-up -- an occurrence due before the read that no row answers, which
+    the plan pays the day after it (ruling **R-R64**, the D1 clamp) --
+    belongs to the period whose charge it meets: its own installment's, or,
+    behind a later settled payment, the installment that payment cleared.
+    The plan runs past the payoff into the post-contractual
     extension (installments there carry a zero balance and pay nothing
     down), so the groups stop with the one whose balance reaches zero; a
     plan that never clears the loan yields every period of the extension,
@@ -765,8 +830,7 @@ def planned_periods(installments) -> list[list]:
     """
     periods: list[list] = []
     for installment in installments:
-        slot = _period_slot(installment)
-        if periods and _period_slot(periods[-1][0]) == slot:
+        if periods and periods[-1][0].charge_date == installment.charge_date:
             periods[-1].append(installment)
         else:
             periods.append([installment])

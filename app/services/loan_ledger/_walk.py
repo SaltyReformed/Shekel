@@ -57,6 +57,7 @@ from app.services import (
 )
 from app.services.loan_loaders import LoanAnchorFact
 
+from ._charges import LoanCalendar
 from ._events import confirmed_shadows_through, loan_event_stream
 from ._replay import LoanEventStream, PaymentOutcome, replay_loan_events
 from ._visible import anchor_visible_on
@@ -234,13 +235,34 @@ def load_loan_stream(
     has not happened for that pass, so a pass pinned to an earlier day
     answers what the loan looked like on that day rather than what was
     recorded after it (plan step ``recurrence:R7d-h``: the pass decides which
-    crossing answers).  The charge calendar is built from the payments that
-    enter, by the one producer, so a dropped payment drops or re-dates its
-    period's charge exactly as a never-recorded one would.  For a pass whose
+    crossing answers).  The charge calendar is the contract's through the
+    last fact that enters (:func:`._replay.with_contract_charges`, ruling
+    R-R100), so a dropped payment leaves its installment charged and unpaid
+    exactly as a never-recorded one would.  For a pass whose
     ``as_of`` is on or after every recorded fact -- every production pass,
     and the only shape the write doors admit (ruling R-EJ refuses a future
     settle day; the anchor doors bound their date) -- the bound drops nothing
     and this is the ledger's own stream.
+
+    **"Every production pass" is a CENSUS, not a construction** (2026-09-30,
+    plan step recurrence:R16-c-2's ruling R-R117): this function has two
+    callers, :func:`walk_loan_ledger` (no bound) and the seam's per-pass walk
+    (``BalanceContext.loan_walk``, bounded by the pass's ``as_of``), and every
+    production pass is built at today.  The census rests on what no code
+    enforces: ``BalanceContext.build`` accepts any ``as_of``; the tax report's
+    display-timezone today equals the server's only while production pins its
+    timezone; and a write request built just before midnight could meet a
+    tracking start committed just after it (untraced).
+
+    It matters beyond the balance.  A pass pinned BEFORE a loan's first
+    tracking start does not see that start, so a payment due before the start
+    whose money moved before the pass's day splits there as it did before
+    R-R117 (every unrecorded month since origination), while the ledger's
+    walk splits it by R-R117.  Such a payment needs money that moved before
+    the start, which the tracking-start doors refuse when they write it
+    (rulings R-R114, R-R115); it arises only from a settle day moved or
+    recorded earlier than the start after the start was written, or from a
+    row held before those refusals existed.
 
     Args:
         loan_account_id: The loan account whose facts to load.
@@ -278,6 +300,17 @@ def load_loan_stream(
     # since-removed version still applies to a historical period and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
+    # The loan's ONE calendar (ruling R-R100), built before the payments load
+    # because the visibility bound reads it too: a ``$0.00`` close is visible
+    # from the installment it skips (ruling R-BAL139), its interval's on this
+    # calendar (ruling R-R107) -- the installment the replay charges it
+    # against.
+    calendar = LoanCalendar(
+        origination_date=params.origination_date,
+        payment_day=params.payment_day,
+        periods=periods,
+        escrow_lines=escrow_lines,
+    )
     # The stream reads each settled payment's LEG: its parent's due date and
     # pay period (the producer loads the period as its sort key) and its
     # RECORD, the covering movement the producer's one join attaches (plan
@@ -291,12 +324,11 @@ def load_loan_stream(
         )
         if visible_by is None
         else confirmed_shadows_through(
-            loan_account_id, scenario_id, visible_by, params.payment_day,
+            loan_account_id, scenario_id, visible_by,
+            calendar.origination_date, calendar.payment_day,
         )
     )
-    return loan_event_stream(
-        anchor_facts, shadows, params.payment_day, periods, escrow_lines,
-    )
+    return loan_event_stream(anchor_facts, shadows, calendar)
 
 
 def walk_loan_ledger(
@@ -310,12 +342,16 @@ def walk_loan_ledger(
     (:func:`._replay.replay_loan_events`), which applies three kinds of fact in
     contract order:
 
-    * At a CHARGE (an accrual period began): accrue the period's interest on the
-      running balance and impound its escrow, so both stand against the loan
-      until cash clears them.  **One charge per accrual period the payments
-      occupy, not one per payment** (plan step X-au-g-2c-3b-2): a second payment
-      inside one period clears no fresh charge and pays pure principal, where
-      until this step it charged the loan a second month.
+    * At a CHARGE (an installment fell due): accrue the period's interest on
+      the running balance and impound its escrow, so both stand against the
+      loan until cash clears them.  **One charge per CONTRACTUAL installment
+      from origination, not one per payment** (plan step recurrence:R16-c-2,
+      rulings R-R72 and R-R100; one per occupied period since plan step
+      X-au-g-2c-3b-2): a month nobody paid is charged and the next payment
+      clears it first, and a second payment inside one installment's interval
+      clears no fresh charge and pays pure principal.  A month on or before the
+      loan's first balance, when that balance is a tracking start, is dropped
+      instead unless a payment of its own clears it (ruling R-R117).
     * At a settled PAYMENT -- INCLUDING one whose pay period has not yet begun
       (settlement is the confirming event; see
       :func:`~app.services.loan_loaders.settled_income_shadows`) -- allocate its
@@ -337,8 +373,8 @@ def walk_loan_ledger(
 
     **Takes no as-of, and reads no clock** (see the module docstring).  Each
     accrual period's rate and escrow are those IN EFFECT ON the period's own date
-    -- the earliest installment due in it (effective-dated, NO inflation, ruling
-    D5's contract time) -- so a later escrow or rate change never re-splits a past
+    -- its contractual installment (effective-dated, NO inflation, ruling D5's
+    contract time) -- so a later escrow or rate change never re-splits a past
     payment.  Reads only (no writes, no commit).
 
     Args:

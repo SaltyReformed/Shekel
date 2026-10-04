@@ -47,12 +47,13 @@ from app.services.transfer_service._loan_posting import (
 # account-anchor corrections (F1).
 #
 # ``due_date`` IS here, and its inclusion is load-bearing: on a LOAN payment the
-# due date is the installment the payment satisfies, which the genesis write walk
-# dates every payment by (``loan_ledger.loan_event_stream``), orders on
+# due date is a posting input.  The genesis write walk dates every payment by it
+# (``loan_ledger.loan_event_stream``), orders on it
 # (``loan_ledger.replay_loan_events``, which applies its strict
-# ``anchor_date < due_date`` post-anchor boundary against it) and keys its accrual
-# periods off -- so moving it changes which payments an anchor SUBSUMES, which
-# accrual period is charged, and therefore the POSTED balance.  Editing it
+# ``anchor_date < due_date`` post-anchor boundary against it), and the
+# installment interval it falls in names the charge the payment clears (ruling
+# R-R89) -- so moving it changes which payments an anchor SUBSUMES, which
+# installment's charge a payment clears, and therefore the POSTED balance.  Editing it
 # without a reconcile would leave the posted ledger disagreeing with every live
 # reader (the history rows, the payment
 # table, the resolver's replay), silently, until an unrelated chokepoint happened

@@ -45,11 +45,9 @@ from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_at, loan_loaders
 from app.services.balance_at._positions import memoized_payoff
-from app.services.balance_at._plan import (
-    LoanForwardPlan,
-    PlannedPayment,
-)
+from app.services.balance_at._plan import PlannedPayment
 from tests.oracles.loan_forward_fold import (
+    HandPlan,
     fold_forward,
     plan_interest_in_year,
     plan_payoff_date,
@@ -93,7 +91,8 @@ def _payment(due, cash, *, effective=None):
 def _plan(payments, *, rate="0.00", escrow="0.00"):
     """Bundle *payments* with one CHARGE per accrual period they occupy.
 
-    Stated by hand rather than taken from ``_plan._charges_for``, so these tests
+    Stated by hand rather than taken from the leaf's calendar
+    (``loan_ledger.contract_charges``, ruling R-R100), so these tests
     grade the FOLD against arithmetic anyone can check rather than against the
     derivation that feeds it.  One charge per ``(year, month)`` the payments
     occupy, dated at the earliest due in it -- which for the one-payment-a-month
@@ -104,15 +103,14 @@ def _plan(payments, *, rate="0.00", escrow="0.00"):
         slot = (payment.due_date.year, payment.due_date.month)
         if payment.due_date < opens.get(slot, date.max):
             opens[slot] = payment.due_date
-    return LoanForwardPlan(
+    return HandPlan(
         payments=list(payments),
         charges=[
             accrual_charge(on_date, Decimal(rate), Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
         # Every payment here has a charge standing over it (one per slot,
-        # dated at its earliest due), so the fold never asks the periods.
-        periods=[],
+        # dated at its earliest due), so the fold never asks for a calendar.
     )
 
 

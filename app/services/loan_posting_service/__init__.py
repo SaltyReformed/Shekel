@@ -117,6 +117,7 @@ from ._display import (
 from ._sync import (
     backfill_all_loan_postings,
     resync_user_loan_postings,
+    scenarios_with_loan_payments,
     sync_all_scenarios_or_duplicate,
     sync_loan_postings,
     sync_loan_postings_all_scenarios,
@@ -129,6 +130,7 @@ __all__ = [
     "confirmed_loan_payment_history",
     "loan_balance_anchor_history",
     "resync_user_loan_postings",
+    "scenarios_with_loan_payments",
     "sync_all_scenarios_or_duplicate",
     "sync_loan_postings",
     "sync_loan_postings_all_scenarios",

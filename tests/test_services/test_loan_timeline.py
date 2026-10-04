@@ -29,10 +29,9 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import balance_at, transfer_service
+from app.services import balance_at, loan_ledger, transfer_service
 from app.services.balance_at import BalanceContext
 from app.services.liability_sign import owed
-from app.services.loan_ledger import installment_slot
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -84,34 +83,50 @@ def _projected(seed_user, loan, period, due):
 
 
 class TestSkippedMonthsBehindASettledPayment:
-    """The plan's charges for skipped months interleave with their catch-ups.
+    """A later settled payment clears the skipped months first; the catch-ups pay principal.
+
+    Plan step recurrence:R16-c-2 (rulings **R-R72** part (1) and **R-R100**):
+    every contractual installment from origination is charged, in the posted
+    ledger's walk and a screen's alike, and a charge is never pushed behind
+    the recorded facts.  So a month skipped behind a later settled payment is
+    that payment's arrears -- cleared before it reaches principal, exactly as a
+    servicer's books apply it -- and the overdue catch-up rows, walked after
+    every fact (ruling D1), meet nothing standing and pay pure principal.
+    Until that step each skipped month's charge waited behind the facts for
+    its own catch-up; the developer approved the moved figures (rule 5).
 
     The seam's balance is HELD, negative when owed (ruling R-CC47), so each
     case reads what the loan owes through ``owed()``.
     """
 
-    def test_two_catch_ups_walk_charge_pay_charge_pay(
+    def test_the_latest_payment_clears_two_skipped_months_first(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
         """Feb, Mar, Jun paid; Apr and May skipped, rows projected; read 06-15.
 
-        The recorded facts, in contract order (6% is 0.5% a month):
+        The recorded facts, in contract order (6% is 0.5% a month), every
+        installment charged:
 
           Feb: charge 1,000.00 -> principal 500.00 -> 199,500.00
           Mar: charge   997.50 -> principal 502.50 -> 198,997.50
-          Jun: charge   994.99 -> principal 505.01 -> 198,492.49  (owed 06-15)
+          Apr: charge   994.99 (on 198,997.50; nothing pays it)
+          May: charge   994.99 (on 198,997.50; nothing pays it)
+          Jun: charge   994.99 -> 2,984.97 standing; the $1,500.00 payment
+               clears it and pays -1,484.97 of principal -> 200,482.47
+               (owed 06-15)
 
-        The two catch-ups land the day after the read (ruling D1), and the
-        plan's April and May charges land with them, each BEFORE its own
-        catch-up and AFTER the one before it:
+        The two catch-ups land the day after the read (ruling D1), walked
+        after every fact, with nothing standing:
 
-          Apr charge 992.46 -> Apr catch-up: principal 507.54 -> 197,984.95
-          May charge 989.92 -> May catch-up: principal 510.08 -> 197,474.87
+          Apr catch-up: principal 1,500.00 -> 198,982.47
+          May catch-up: principal 1,500.00 -> 197,482.47
 
-        Both charges applied first would accrue May's interest on a balance
-        April's catch-up had not reduced (992.46 + 992.46 = 1,984.92 standing,
-        the April catch-up paying -484.92 of principal), and the loan would
-        owe 197,477.41 on 06-16: the +2.54 the review measured.
+        Until plan step recurrence:R16-c-2 the April and May charges waited
+        behind the facts for their own catch-ups (992.46 and 989.92 there),
+        the loan owed 198,492.49 on 06-15 and 197,474.87 on 06-16: April and
+        May's interest accrued on balances the late catch-ups had reduced,
+        which they had not when those months fell.  Each catch-up now stands
+        under June's charge, the latest installment walked before it.
         """
         with app.app_context():
             freeze_today(monkeypatch, _AS_OF)
@@ -128,10 +143,18 @@ class TestSkippedMonthsBehindASettledPayment:
             ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
             assert owed(balance_at.balance_at(loan, ctx, _AS_OF)) == (
-                Decimal("198492.49")
+                Decimal("200482.47")
             )
             assert owed(balance_at.balance_at(loan, ctx, date(2026, 6, 16))) == (
-                Decimal("197474.87")
+                Decimal("197482.47")
+            )
+            # The posted ledger's walk books June's payment as the arrears'
+            # clearance: the three standing months, then negative principal.
+            june = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )[-1]
+            assert (june.due_date, june.interest, june.principal) == (
+                date(2026, 6, 1), Decimal("2984.97"), Decimal("-1484.97"),
             )
 
             april, may = balance_at.loan_installments(loan, ctx)[:2]
@@ -139,27 +162,32 @@ class TestSkippedMonthsBehindASettledPayment:
                 date(2026, 4, 1), date(2026, 6, 16),
             )
             assert (april.interest, april.principal, april.balance_after) == (
-                Decimal("992.46"), Decimal("507.54"), Decimal("197984.95"),
+                Decimal("0.00"), Decimal("1500.00"), Decimal("198982.47"),
             )
             assert (may.interest, may.principal, may.balance_after) == (
-                Decimal("989.92"), Decimal("510.08"), Decimal("197474.87"),
+                Decimal("0.00"), Decimal("1500.00"), Decimal("197482.47"),
             )
-            # Each catch-up's charge keeps ITS OWN date, however far behind the
-            # facts it is walked -- the loan page groups and prints it.
-            assert april.charge_date == date(2026, 4, 1)
-            assert may.charge_date == date(2026, 5, 1)
-            assert installment_slot(april.charge_date) == (2026, 4)
+            # Each catch-up stands under the latest installment walked before
+            # it -- June's, which the June payment cleared -- not its own month
+            # (how the schedule page should show that is finding REC-543's).
+            assert april.charge_date == date(2026, 6, 1)
+            assert may.charge_date == date(2026, 6, 1)
 
-    def test_one_catch_up_keeps_its_charge_date(
+    def test_the_latest_payment_clears_one_skipped_month_first(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
         """Feb, Mar, Apr, Jun paid; May skipped, row projected; read 06-15.
 
-        One skipped month is enough to reach the render: the catch-up's
-        ``charge_date`` is 05-01, the accrual period it pays into, and never
-        the day it is walked on (06-02, the boundary behind the June fact --
-        a day that is no installment date at all).  Owed 06-15: 197,984.95;
-        the catch-up clears May's 989.92 and pays 510.08 down: 197,474.87.
+        April's payment leaves 198,492.49.  May charges 992.46 on it and
+        nothing pays; June charges 992.46 more, so the $1,500.00 June payment
+        clears 1,984.92 and pays -484.92 of principal: owed 06-15 198,977.41.
+        The May catch-up, walked after every fact, meets nothing standing and
+        pays 1,500.00 down: 197,477.41.  Its ``charge_date`` is 06-01, the
+        latest installment walked before it, and never the day it is walked on
+        (06-02, the boundary behind the June fact -- a day that is no
+        installment date at all).  Until plan step recurrence:R16-c-2 the May
+        charge waited for the catch-up (owed 06-15 197,984.95; the catch-up
+        cleared 989.92 and paid 510.08 down to 197,474.87, charge date 05-01).
         """
         with app.app_context():
             freeze_today(monkeypatch, _AS_OF)
@@ -177,13 +205,19 @@ class TestSkippedMonthsBehindASettledPayment:
             ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
             assert owed(balance_at.balance_at(loan, ctx, _AS_OF)) == (
-                Decimal("197984.95")
+                Decimal("198977.41")
+            )
+            june = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )[-1]
+            assert (june.due_date, june.interest, june.principal) == (
+                date(2026, 6, 1), Decimal("1984.92"), Decimal("-484.92"),
             )
             [may, *_rest] = balance_at.loan_installments(loan, ctx)
             assert may.due_date == date(2026, 5, 1)
-            assert may.charge_date == date(2026, 5, 1)
+            assert may.charge_date == date(2026, 6, 1)
             assert (may.interest, may.principal, may.balance_after) == (
-                Decimal("989.92"), Decimal("510.08"), Decimal("197474.87"),
+                Decimal("0.00"), Decimal("1500.00"), Decimal("197477.41"),
             )
 
 

@@ -105,7 +105,7 @@ class TestConfirmedLoanPaymentHistory:
                 loan.id, scenario_id, _AS_OF,
             )
             assert rows == [LoanPaymentHistoryRow(
-                due_date=_P1_DUE,
+                installment=_P1_DUE,
                 cash=Decimal("1000.00"),
                 principal=Decimal("500.00"),
                 interest=Decimal("500.00"),
@@ -298,6 +298,148 @@ class TestConfirmedLoanPaymentHistory:
                 loan_posting_service.confirmed_loan_payment_history(
                     loan.id, seed_user["scenario"].id, date(2027, 6, 1),
                 )
+
+
+#: The off-day loan: $100,000.00 at 6% from 2026-01-22, due on the 22nd, so
+#: its installments fall 02-22 (#1), 03-22 (#2), ... and one month's interest
+#: on $100,000.00 is ``100000.00 * 0.06 / 12 = 500.00``.
+_OFF_DAY_ORIGINATION = date(2026, 1, 22)
+_FEB_22 = date(2026, 2, 22)
+_MAR_10 = date(2026, 3, 10)
+_MAR_22 = date(2026, 3, 22)
+
+
+class TestAPaymentIsNamedByTheInstallmentItPays:
+    """Rulings R-R108 and R-R109: the loan page names a payment by its installment.
+
+    A payment due off the loan's contractual day pays the installment whose
+    interval its due date falls in (ruling R-R104) -- a payment due 03-10 on a
+    loan due the 22nd pays 02-22's -- and the charge, the cash price, the
+    balance and the ledger already read that installment.  The loan page now
+    names it the same way: the payment-history card lists it under that
+    installment (R-R108), and the confirmed schedule dates and numbers its row
+    there (R-R109).  Until then both read the payment's own due date, so each
+    03-10 payment showed as ``Mar 2026`` and row ``#2 . 2026-03-10``.
+
+    Josh's pick, tested exactly: "Both Mar 10 payments show under 'Feb 2026'
+    on the history card and number as installment #1 on the confirmed
+    schedule; payments due on the due day are unchanged."
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the seed window so every settle is confirmed."""
+        freeze_today(monkeypatch, _FROZEN_TODAY)
+
+    @staticmethod
+    def _off_day_loan(seed_user, db_session):
+        """The $100,000.00 loan at 6% from 2026-01-22, due on the 22nd."""
+        loan = create_loan_account(
+            seed_user, db_session, name="Off Day Loan",
+            principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
+            origination_date=_OFF_DAY_ORIGINATION, payment_day=22,
+        )
+        db_session.commit()
+        return loan
+
+    def test_both_mar_10_payments_are_named_by_the_feb_22_installment(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Two payments due 03-10 read ``Feb 2026`` / #1; the 03-22 one is unchanged.
+
+        Walk (charges 02-22 and 03-22; the two 03-10 payments in recording
+        order, both in ``seed_periods[4]``):
+
+        * 02-22 charge: 500.00 of interest.
+        * 03-10, $1,000.00 moved: interest 500.00, principal 500.00; owed
+          99,500.00.
+        * 03-10, $0.00 (a close): the SECOND payment inside 02-22's interval,
+          so it clears nothing -- 0.00 / 0.00; owed 99,500.00.
+        * 03-22 charge: ``99500.00 * 0.06 / 12 = 497.50``.
+        * 03-22, $1,000.00: interest 497.50, principal 502.50; owed 98,997.50.
+
+        Both 03-10 payments pay 02-22 -- listed under it on the card, row #1
+        dated 02-22 on the schedule -- and the payment due ON the day keeps its
+        own date, 03-22, row #2.
+        """
+        with app.app_context():
+            loan = self._off_day_loan(seed_user, db.session)
+            scenario_id = seed_user["scenario"].id
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[4], amount=Decimal("1000.00"),
+                settled_on=_MAR_10, due_date=_MAR_10,
+            )
+            # Planned at $1,200.00 so the two 03-10 transfers are distinct
+            # ad-hoc rows (``uq_transfers_adhoc_dedupe``); it moves $0.00.
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[4], amount=Decimal("1200.00"),
+                settled_amount=Decimal("0.00"), settled_on=date(2026, 3, 12),
+                due_date=_MAR_10,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[5], amount=Decimal("1000.00"),
+                settled_on=_MAR_22, due_date=_MAR_22,
+            )
+            db.session.commit()
+
+            card = loan_posting_service.confirmed_loan_payment_history(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [
+                (row.installment, row.cash, row.interest, row.principal)
+                for row in card
+            ] == [
+                (_FEB_22, Decimal("1000.00"), Decimal("500.00"), Decimal("500.00")),
+                (_FEB_22, Decimal("0.00"), Decimal("0.00"), Decimal("0.00")),
+                (_MAR_22, Decimal("1000.00"), Decimal("497.50"), Decimal("502.50")),
+            ]
+
+            schedule = seam_confirmed_view(
+                loan.id, scenario_id, _AS_OF,
+            ).history_rows
+            assert [
+                (row.month, row.payment_date, row.remaining_balance)
+                for row in schedule
+            ] == [
+                (1, _FEB_22, Decimal("99500.00")),
+                (1, _FEB_22, Decimal("99500.00")),
+                (2, _MAR_22, Decimal("98997.50")),
+            ]
+
+    def test_a_payment_due_before_the_first_installment_keeps_its_own_date(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Due 01-28, before the 02-22 first installment: named 01-28, row #0.
+
+        Ruling R-C's early extra pays no installment, so there is none to name
+        it by: it keeps its own due date on the card and the schedule, and --
+        no charge standing yet -- its whole $1,000.00 is principal.  It falls
+        in the origination month, which the schedule numbers ``0``.
+        """
+        with app.app_context():
+            loan = self._off_day_loan(seed_user, db.session)
+            scenario_id = seed_user["scenario"].id
+            due = date(2026, 1, 28)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[1], amount=Decimal("1000.00"),
+                settled_on=due, due_date=due,
+            )
+            db.session.commit()
+
+            [row] = loan_posting_service.confirmed_loan_payment_history(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert (row.installment, row.interest, row.principal) == (
+                due, Decimal("0.00"), Decimal("1000.00"),
+            )
+            [confirmed] = seam_confirmed_view(
+                loan.id, scenario_id, _AS_OF,
+            ).history_rows
+            assert (confirmed.month, confirmed.payment_date) == (0, due)
 
 
 # ---------------------------------------------------------------------------

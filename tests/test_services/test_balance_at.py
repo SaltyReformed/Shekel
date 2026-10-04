@@ -316,10 +316,14 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
     Returns:
         The committed loan :class:`~app.models.account.Account`.
     """
+    # Originated the month before the first payment's 2026-02-01 installment
+    # (plan step recurrence:R16-c-2, ruling R-R101): every contractual
+    # installment from origination is charged now, so the 2025-01-01 it
+    # carried until then read as twelve unpaid months ahead of that payment.
     loan = create_loan_account(
         seed_user, db_session, name="Paid Then Trued",
         principal=Decimal("250000.00"), rate=Decimal("0.06000"),
-        term=360, origination_date=date(2025, 1, 1), payment_day=1,
+        term=360, origination_date=date(2026, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
     )
     # Settled payments due 2026-02-01 (period 1) and 2026-03-01 (period 3);
@@ -654,9 +658,7 @@ class TestBalanceMapLoan:
             )
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], bctx,
-            )[mortgage.id]
+            state = resolved_loan(mortgage, bctx).state
 
             seam = balance_at.balance_map(mortgage, bctx)
 
@@ -664,7 +666,7 @@ class TestBalanceMapLoan:
 
             anchor_date = date.today()
             first_payment = min(
-                row.payment_date for row in schedule.schedule
+                row.payment_date for row in state.schedule
             )
 
             # A period still open when the balance was asserted, and before the
@@ -723,15 +725,13 @@ class TestBalanceMapLoan:
             insert_trueup_event(params, Decimal("0.00"))
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], bctx,
-            )[loan.id]
+            state = resolved_loan(loan, bctx).state
 
             seam = balance_at.balance_map(loan, bctx)
 
             assert seam is not None
             # Paid off -> empty schedule -> $0 current balance everywhere.
-            assert schedule.schedule == []
+            assert state.schedule == []
             assert _owed_today(loan, bctx) == Decimal("0.00")
             assert seam[periods[0].id] == Decimal("0.00")
             assert seam[periods[-1].id] == Decimal("0.00")
@@ -769,13 +769,11 @@ class TestBalanceMapLoan:
             )
             db.session.commit()
 
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], bctx,
-            )[loan.id]
+            state = resolved_loan(loan, bctx).state
             seam = balance_at.balance_map(loan, bctx)
 
             first_payment = min(
-                row.payment_date for row in schedule.schedule
+                row.payment_date for row in state.schedule
                 if not row.is_confirmed
             )
             future = [
@@ -787,7 +785,7 @@ class TestBalanceMapLoan:
             # The last unconfirmed installment due by the period's end -- what the
             # forward walk reduces the balance to -- recomputed independently.
             due_by_end = [
-                row for row in schedule.schedule
+                row for row in state.schedule
                 if not row.is_confirmed and row.payment_date <= last_covered_day(fp)
             ]
             assert due_by_end, "expected an installment due by the future period"
@@ -814,11 +812,13 @@ class TestTheLoanGateIsOneQuestion:
 
     **What these cases lock, stated so the class is not over-trusted.**  The
     SHIPPED side calls the production predicate, so a mutation of it fires here.
-    The RETIRED side is rebuilt from ``generate_debt_schedules``, which is still
-    live for its other callers -- so the pair also fires if that producer ever
-    gains a filter the resolver lacks (dropping a loan with no schedule rows,
-    say), which is the drift that would otherwise surface only as a moved
-    balance on a screen.  What they do NOT lock is that the map and the band
+    The RETIRED side is rebuilt as the expression it stood for: membership in
+    ``generate_debt_schedules``' map, which held exactly the loans
+    ``resolved_loan`` resolves.  It was rebuilt FROM that producer, which also
+    made the pair fire if the producer gained a filter the resolver lacks, until
+    plan step recurrence:R16-c-2 deleted the producer with its last caller
+    (ruling R-R112); the retired side reads the resolution directly since, and
+    that second purpose went with the producer.  What they do NOT lock is that the map and the band
     still CALL the predicate: that is
     ``TestBalanceMapLoan`` / ``TestBrokenLoanFailsLoud``'s job, by value.
     """
@@ -829,7 +829,9 @@ class TestTheLoanGateIsOneQuestion:
 
         The retired spelling is rebuilt exactly as it stood -- the kind test AND
         membership in the schedule map, over the AMORTIZING-filtered subset the
-        assembly passed -- because dropping the kind conjunct would compare a
+        assembly passed; the map held a loan iff ``resolved_loan`` resolved it,
+        which is how it reads since that map's producer was deleted (plan step
+        recurrence:R16-c-2) -- because dropping the kind conjunct would compare a
         LOOSER rule and report a false divergence for a ``LoanParams`` row on a
         non-amortizing account, which is a data defect both surfaces are
         supposed to degrade identically.
@@ -840,9 +842,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         retired = (
             classify_account(account) is AccountProjectionKind.AMORTIZING
-            and account.id in net_worth_kernel.generate_debt_schedules(
-                [account], ctx,
-            )
+            and resolved_loan(account, ctx) is not None
         )
         return retired, configured_loan(account, ctx) is not None
 
@@ -985,7 +985,7 @@ class TestTheLoanGateIsOneQuestion:
 
         Every case above asserts the pair AGREES, and a pair of expressions that
         could never disagree would pass all four vacuously.  This one PATCHES
-        the retired spelling's producer to drop a loan whose schedule is empty
+        the retired spelling's resolution to drop a loan whose schedule is empty
         -- the exact filter a careless reimplementation would add -- and asserts
         ``_both_spellings`` then reports a DISAGREEMENT on the same fixture the
         case above found agreement on.  So the helper can return an unequal
@@ -1006,20 +1006,19 @@ class TestTheLoanGateIsOneQuestion:
             # patched result below is a change and not a fresh observation).
             assert self._both_spellings(loan, bctx) == (True, True)
 
-            real = net_worth_kernel.generate_debt_schedules
+            real = resolved_loan
 
-            def _schedule_rows_only(accounts, ctx):
+            def _schedule_rows_only(account, ctx):
                 """The careless filter: a loan with no rows is dropped."""
-                return {
-                    account_id: schedule
-                    for account_id, schedule in real(accounts, ctx).items()
-                    if schedule.schedule
-                }
+                resolved = real(account, ctx)
+                return resolved if resolved and resolved.state.schedule else None
 
-            monkeypatch.setattr(
-                net_worth_kernel, "generate_debt_schedules",
-                _schedule_rows_only,
-            )
+            # The retired spelling reads this MODULE's ``resolved_loan`` name;
+            # ``configured_loan`` resolves through its own module's, so only
+            # the retired side sees the filter.  It patched the retired side's
+            # producer, ``generate_debt_schedules``, until plan step
+            # recurrence:R16-c-2 deleted it.
+            monkeypatch.setitem(globals(), "resolved_loan", _schedule_rows_only)
 
             # The retired spelling now says "not a loan" while the shipped one
             # still says "loan" -- the divergence the agreement cases exist to
@@ -1664,9 +1663,7 @@ class TestBalanceAt:
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
-            schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], bctx,
-            )[mortgage.id]
+            state = resolved_loan(mortgage, bctx).state
             as_of = last_covered_day(periods[7])  # future under seed_periods_today
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
@@ -1674,7 +1671,7 @@ class TestBalanceAt:
             # Independent oracle: the retired forward walk credited EVERY
             # unconfirmed installment due by as_of, overdue ones included.
             forward_rows = sorted(
-                (r for r in schedule.schedule if not r.is_confirmed),
+                (r for r in state.schedule if not r.is_confirmed),
                 key=lambda r: r.payment_date,
             )
             due_by = [r for r in forward_rows if r.payment_date <= as_of]
@@ -1953,9 +1950,10 @@ class TestMultiLoanIsolation:
                 seam_maps[loan_b.id][earlier],
             ) == Decimal("180000.00")
 
-            # The FUTURE tail -- the only region that consumes the per-loan
-            # DebtSchedule bundle, and so the only one where a positional/shared
-            # mix-up can surface.  Each loan must still amortize down from its OWN
+            # The FUTURE tail -- the region that read the per-loan DebtSchedule
+            # bundle's seed until plan step recurrence:R16-c-1 (the bundle went
+            # at R16-c-2), and so the one where a positional/shared mix-up
+            # could surface.  Each loan must still amortize down from its OWN
             # trued-up balance, so A stays far above B and neither drifts toward the
             # other's schedule.
             future = [p for p in periods if p.start_date > anchor_date]
@@ -4808,11 +4806,9 @@ class TestLiabilityOwedAtDates:
             # the sign of the caller's figure.
             assert owed[acct.id][0] == Decimal("200000.00")
 
-            debt = net_worth_kernel.generate_debt_schedules(
-                [acct], bctx,
-            )[acct.id]
+            state = resolved_loan(acct, bctx).state
             forward_rows = sorted(
-                (row for row in debt.schedule if not row.is_confirmed),
+                (row for row in state.schedule if not row.is_confirmed),
                 key=lambda row: row.payment_date,
             )
             # The fixture really is in the hazardous state: a year of overdue
@@ -4862,11 +4858,9 @@ class TestLiabilityOwedAtDates:
             today = date.today()
             confirmed = Decimal("200000.00")
 
-            debt = net_worth_kernel.generate_debt_schedules(
-                [acct], bctx,
-            )[acct.id]
+            state = resolved_loan(acct, bctx).state
             forward_rows = sorted(
-                (row for row in debt.schedule if not row.is_confirmed),
+                (row for row in state.schedule if not row.is_confirmed),
                 key=lambda row: row.payment_date,
             )
             overdue = [row for row in forward_rows if row.payment_date <= today]
@@ -5441,8 +5435,17 @@ class TestBrokenLoanFailsLoud:
     behaviour of the fallback this deletes.
     """
 
-    def _broken_loan(self, seed_user, db_session, periods):
-        """A configured loan whose genesis POSTING ledger has been removed."""
+    def _broken_loan(
+        self, seed_user, db_session, periods, origination_date=date(2024, 9, 1),
+    ):
+        """A configured loan whose genesis POSTING ledger has been removed.
+
+        A case that settles a payment passes the month before that payment's
+        installment as *origination_date*: every contractual installment from
+        origination is charged since plan step recurrence:R16-c-2, so the
+        2024-09-01 default would have the payment clear the months before it
+        (ruling R-R103).
+        """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
         from tests._test_helpers import clear_loan_ledger, create_loan_account
@@ -5450,7 +5453,7 @@ class TestBrokenLoanFailsLoud:
         acct = create_loan_account(
             seed_user, db_session, name="Broken",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
-            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            term=360, origination_date=origination_date, payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
         # The ONE way to build a ledger-less loan: production cannot make one.
@@ -5554,11 +5557,19 @@ class TestBrokenLoanFailsLoud:
 
         with app.app_context():
             periods = seed_periods
-            acct = self._broken_loan(seed_user, db.session, periods)
+            # Originated the month before the payment's 2026-02-01 installment
+            # and settled on its period's first day, so nothing is left unpaid
+            # ahead of it (ruling R-R103; it was originated 2024-09-01 and
+            # settled 2024-10-01 until plan step recurrence:R16-c-2 began
+            # charging every installment from origination).
+            acct = self._broken_loan(
+                seed_user, db.session, periods,
+                origination_date=date(2026, 1, 1),
+            )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 periods[1], amount=Decimal("241200.00"),
-                settled_on=date(2024, 10, 1),
+                settled_on=periods[1].start_date,
             )
             db.session.commit()
             # Re-break the cache: settling re-synced the loan's postings.
@@ -5848,12 +5859,13 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
             periods = seed_periods
             loan = _paid_then_trued_loan(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
-            # ``debt_schedule_rows`` is the fence-clean accessor for an
-            # out-of-cluster reader: rows, carrying no balance.  Every balance
-            # below comes from the seam, which is the architecture this suite
-            # exists to defend.
+            # The loan's schedule rows, off the read pass's one resolution: rows
+            # carry no balance.  Every balance below comes from the seam, which
+            # is the architecture this suite exists to defend.  (They were read
+            # through the ``debt_schedule_rows`` accessor until plan step
+            # recurrence:R16-c-2 deleted it with its last caller.)
             rows = sorted(
-                net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id],
+                resolved_loan(loan, bctx).state.schedule,
                 key=lambda row: row.payment_date,
             )
             confirmed = [row for row in rows if row.is_confirmed]
@@ -6840,3 +6852,281 @@ class TestTheReadPassProjectsOverOneCalendar:
             assert len(ctx.calendar().projection_axis(
                 date(2026, 1, 1), date(2036, 1, 1),
             )) == 0
+
+
+class TestThePreTrackingEstimateReadsTheRecordedStart:
+    """Ruling R-R111: the property chart's pre-tracking estimate ends at the loan's recorded start.
+
+    A loan imported mid-life has no record before its ``tracking_start``
+    assertion, so the months before it take the contract's amortized balance
+    (``_secured_debt._back_projection_by_month``).  Until plan step
+    recurrence:R16-c-2 the reader took the FIRST schedule row's date as the
+    tracking start; ruling R-R109 dates a confirmed row by the installment its
+    payment pays, so a first payment due off the loan's day put that row
+    BEFORE the tracking start and the month between read the untracked
+    origination principal as ``confirmed``.
+
+    Made-up figures: ``$300,000.00`` at 6% for 360 months from 2024-01-22,
+    due the 22nd, level payment ``$1,798.65``; stepped month by month with
+    each month's interest rounded to the cent, installment 24 (2026-01-22)
+    leaves ``$292,404.74`` and installment 25 (2026-02-22) ``$292,068.11``.
+    Tracked from 2026-03-01 at ``$290,000.00``; the first payment is due and
+    paid Mar 10 -- installment 25's interval.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the payment (the seed periods run through 2026-05)."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import freeze_today
+        freeze_today(monkeypatch, date(2026, 3, 20))
+
+    def test_an_off_day_first_payment_does_not_move_the_start(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """February stays estimated at $292,068.11 though the first row reads Feb 22."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._resolution import resolved_loan
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            insert_tracking_start_event,
+            loan_params_for,
+        )
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported Mortgage",
+                principal=Decimal("300000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2024, 1, 22), payment_day=22,
+            )
+            db.session.commit()
+            insert_tracking_start_event(
+                loan_params_for(db.session, loan.id), Decimal("290000.00"),
+                date(2026, 3, 1),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[4], amount=Decimal("1798.65"),
+                settled_on=date(2026, 3, 10), due_date=date(2026, 3, 10),
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(
+                loan, BalanceContext.build(seed_user["user"].id, date(2026, 3, 20)),
+            )
+            assert resolved.recorded_start == date(2026, 3, 1)
+            assert resolved.state.schedule[0].payment_date == date(2026, 2, 22)
+            estimated = _back_projection_by_month(resolved)
+            assert (estimated[(2026, 1)], estimated[(2026, 2)]) == (
+                Decimal("292404.74"), Decimal("292068.11"),
+            )
+            assert (2026, 3) not in estimated
+
+    def test_a_loan_tracked_from_origination_estimates_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """No tracking start: the record starts at origination, so no month is estimated."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._resolution import resolved_loan
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import create_loan_account
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="In-app Mortgage",
+                principal=Decimal("300000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2026, 1, 22), payment_day=22,
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(
+                loan, BalanceContext.build(seed_user["user"].id, date(2026, 3, 20)),
+            )
+            assert resolved.recorded_start == date(2026, 1, 22)
+            assert _back_projection_by_month(resolved) == {}
+
+
+class TestNoPaymentMovesTheRecordedStart:
+    """Ruling R-R114: a loan's record starts at its tracking start, whatever payments are recorded.
+
+    Plan step recurrence:R16-c-2 built ruling R-R113 at its checkpoint 10 by
+    reading the payment feed here: the record started at the ORIGINATION
+    whenever a payment had settled before the tracking start.  Its review 5
+    measured two ways that misfired on a loan imported mid-life -- the class
+    above's mortgage, ``$300,000.00`` at 6% from 2024-01-22, due the 22nd,
+    tracked from 2026-03-01 at ``$290,000.00``.  A ``$0.00`` close due Mar 10
+    is dated by the installment it skips, Feb 22 (ruling R-R107), so it
+    counted as recorded before the statement; a ``$1,798.65`` payment settled
+    Feb 28 did too.  Either put the untracked ``$300,000.00`` in Dec, Jan and
+    Feb as ``confirmed`` where the contract estimates ``$292,739.69`` /
+    ``$292,404.74`` / ``$292,068.11`` (stepped month by month from the
+    level payment ``$1,798.65``, each month's interest rounded to the cent).
+
+    Ruling R-R114 ("Decide at the door") reads the statements alone and moves
+    the decision to the door that adds a tracking start later, which refuses
+    one dated on or before a recorded payment (``test_anchor_service.py``'s
+    ``TestRecordLoanTrackingStart`` and ``test_loan.py``'s
+    ``TestRecordTrackingStartRoute``).  So an owner correcting a loan kept in
+    the app from its origination records a TRUE-UP, which starts nothing, and
+    R-R113's own example reads the same as R-R113 built it.  That example,
+    hand-checked: ``$20,000.00`` at 6% for 24 months from 2025-12-22, due the
+    22nd, ``$2,000.00`` paid Jan 22, Feb 22 and Mar 22 2026.  Each month
+    charges the balance times 0.005, rounded to the cent: 20,000.00 + 100.00 -
+    2,000.00 = ``$18,100.00``; 18,100.00 + 90.50 - 2,000.00 = ``$16,190.50``;
+    16,190.50 + 80.95 - 2,000.00 = ``$14,271.45``.  A true-up on 2026-04-01 at
+    ``$15,000.00`` then corrects the balance.
+    """
+
+    @pytest.mark.parametrize(
+        ("period_index", "settled_on", "due_date", "settled_amount"),
+        [
+            # The day before the statement, for the Mar 22 installment.
+            (4, date(2026, 2, 28), date(2026, 3, 22), None),
+            # The statement's own day.
+            (4, date(2026, 3, 1), date(2026, 3, 22), None),
+            # A $0.00 close due after the statement, dated by Feb 22's interval.
+            (4, date(2026, 3, 10), date(2026, 3, 10), Decimal("0.00")),
+        ],
+        ids=["settled-day-before", "settled-same-day", "zero-close-due-after"],
+    )
+    def test_a_payment_around_the_statement_leaves_the_start(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+        period_index, settled_on, due_date, settled_amount,
+    ):
+        """The record starts Mar 1 and Dec-Feb keep the contract's estimates."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            freeze_today,
+            insert_tracking_start_event,
+            loan_params_for,
+        )
+        freeze_today(monkeypatch, date(2026, 3, 25))
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported Mortgage",
+                principal=Decimal("300000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2024, 1, 22), payment_day=22,
+            )
+            db.session.commit()
+            insert_tracking_start_event(
+                loan_params_for(db.session, loan.id), Decimal("290000.00"),
+                date(2026, 3, 1),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[period_index], amount=Decimal("1798.65"),
+                settled_amount=settled_amount,
+                settled_on=settled_on, due_date=due_date,
+            )
+            db.session.commit()
+
+            resolved = resolved_loan(loan, BalanceContext.build(seed_user["user"].id))
+
+            assert [
+                payment.dates.is_confirmed for payment in resolved.context.payments
+            ] == [True], "precondition: the payment is recorded"
+            assert resolved.recorded_start == date(2026, 3, 1)
+            estimated = _back_projection_by_month(resolved)
+            assert (
+                estimated[(2025, 12)], estimated[(2026, 1)], estimated[(2026, 2)],
+            ) == (
+                Decimal("292739.69"), Decimal("292404.74"), Decimal("292068.11"),
+            )
+
+    @staticmethod
+    def _corrected_loan(db, seed_user, seed_periods):
+        """Ruling R-R113's loan with its three payments, corrected by a TRUE-UP on Apr 1."""
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_loan_account,
+            create_settled_transfer,
+            insert_trueup_event,
+            loan_params_for,
+        )
+        loan = create_loan_account(
+            seed_user, db.session, name="Kept in the app",
+            principal=Decimal("20000.00"), rate=Decimal("0.06000"), term=24,
+            origination_date=date(2025, 12, 22), payment_day=22,
+        )
+        db.session.commit()
+        for period_index, paid_on in (
+            (1, date(2026, 1, 22)), (3, date(2026, 2, 22)), (5, date(2026, 3, 22)),
+        ):
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[period_index], amount=Decimal("2000.00"),
+                settled_on=paid_on, due_date=paid_on,
+            )
+        db.session.commit()
+        insert_trueup_event(
+            loan_params_for(db.session, loan.id), Decimal("15000.00"),
+            date(2026, 4, 1),
+        )
+        db.session.commit()
+        return loan
+
+    def test_a_corrected_loan_keeps_the_months_before_the_correction(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The record starts at 2025-12-22; Jan-Mar read the ledger, April the correction."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at._secured_debt import _back_projection_by_month
+        from tests._test_helpers import freeze_today
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            loan = self._corrected_loan(db, seed_user, seed_periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            assert resolved_loan(loan, bctx).recorded_start == date(2025, 12, 22)
+            assert _back_projection_by_month(resolved_loan(loan, bctx)) == {}
+            assert [
+                liability_sign.owed(balance_at.balance_at(loan, bctx, day))
+                for day in (
+                    date(2026, 1, 31), date(2026, 2, 28), date(2026, 3, 31),
+                    date(2026, 4, 20),
+                )
+            ] == [
+                Decimal("18100.00"), Decimal("16190.50"), Decimal("14271.45"),
+                Decimal("15000.00"),
+            ]
+
+    def test_the_property_chart_reads_the_ledger_for_a_corrected_loan(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The loan's debt line holds Jan-Mar at the ledger's figures, tiered confirmed.
+
+        Recorded as a tracking start instead (the state the door now refuses),
+        the months before Apr 1 would read the contract's estimate:
+        ``$19,213.59`` / ``$18,423.25`` / ``$17,628.96``, tiered ``estimated``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import property_equity_chart
+        from tests._test_helpers import create_account_of_type, freeze_today
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        with app.app_context():
+            loan = self._corrected_loan(db, seed_user, seed_periods)
+            house = create_account_of_type(
+                seed_user, db.session, AcctTypeEnum.PROPERTY.value, "House",
+                anchor_balance=Decimal("400000.00"),
+            )
+            db.session.flush()
+            loan.collateral_account_id = house.id
+            db.session.commit()
+
+            (series,) = balance_at.secured_loan_series(
+                house, BalanceContext.build(seed_user["user"].id),
+            )
+
+            confirmed = property_equity_chart.TIER_CONFIRMED
+            assert [
+                series.month_balances[month]
+                for month in ((2026, 1), (2026, 2), (2026, 3), (2026, 4))
+            ] == [
+                (Decimal("18100.00"), confirmed),
+                (Decimal("16190.50"), confirmed),
+                (Decimal("14271.45"), confirmed),
+                (Decimal("15000.00"), confirmed),
+            ]

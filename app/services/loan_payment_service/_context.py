@@ -175,7 +175,7 @@ def load_loan_context(
 
     # Payment history from the transfers into the loan.
     raw_payments = (
-        get_payment_history(account_id, basis, loan_params.payment_day)
+        get_payment_history(account_id, basis, loan_params)
         if basis is not None else []
     )
 
@@ -239,7 +239,7 @@ def load_loan_context(
 
 
 def get_payment_history(
-    account_id: int, basis: AmountBasis, payment_day: int,
+    account_id: int, basis: AmountBasis, params: LoanParams,
 ) -> list[PaymentRecord]:
     """Price a debt account's payment installments into the engine's feed.
 
@@ -370,7 +370,7 @@ def get_payment_history(
     taken WHOLE off its
     :class:`~app.services.loan_ledger.PaymentInstallment` and derived nowhere
     near here: ``period_start`` is the pay-period start (the funding basis),
-    ``due_date`` is the installment it satisfies, from the ONE derivation the
+    ``due_date`` is its own due date, from the ONE derivation the
     genesis write walk also uses
     (:func:`app.services.loan_loaders.loan_payment_due_date`), and
     ``settled_on`` is the day the cash moved, from the ONE derivation the
@@ -380,7 +380,7 @@ def get_payment_history(
     *two names for one fact -- until plan step* **balance:X-bl-2b** *made both
     types compose the dates.*
 
-    The ``due_date`` here is the payment's OWN installment, never the schedule
+    The ``due_date`` here is the payment's OWN due date, never the schedule
     slot :func:`app.services.amortization_engine.schedule_dates` may invent for it: the
     slot is assigned by :func:`._engine_prep.prepare_payments_for_engine`, after
     the escrow subtraction has keyed on the real one.
@@ -418,9 +418,10 @@ def get_payment_history(
             rows, so the feed and its figures cannot come from two scenarios --
             the pairing ``resolve_transaction_amount`` refuses a row for, made
             unconstructible here rather than checked.
-        payment_day: The loan's contractual day-of-month due day
-            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
-            to reconstruct the due date of a payment that stores none.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, handed
+            to :func:`app.services.loan_ledger.payment_installments`, which
+            reads its ``payment_day`` and ``origination_date`` to date each
+            payment (ruling **R-R107**).
 
     Returns:
         List of PaymentRecord instances sorted by payment date
@@ -462,7 +463,7 @@ def get_payment_history(
     # three dates; this function's whole remaining job is to price the rows it
     # hands back and pair each figure with its installment.
     installments = payment_installments(
-        account_id, basis.scenario_id, payment_day,
+        account_id, basis.scenario_id, params,
         # This function PRICES every payment it is handed, so it is this call
         # that states the eager sets (plan step balance:X-bl-2a).  The settled
         # half is valued from its RECORD and walks no relationship, so it
