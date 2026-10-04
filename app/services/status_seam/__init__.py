@@ -91,6 +91,7 @@ from app.services.status_seam._record import (
     honoured_correction,
     honoured_figure,
     movement_settlement,
+    recorded_leg_settlement,
     recorded_settlement,
     tender_account_id_of,
 )
@@ -131,6 +132,7 @@ __all__ = [
     "honoured_correction",
     "honoured_figure",
     "movement_settlement",
+    "recorded_leg_settlement",
     "recorded_settlement",
     "tender_account_id_of",
     "deleted_row_payment_refusal",

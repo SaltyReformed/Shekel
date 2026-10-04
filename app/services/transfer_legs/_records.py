@@ -15,7 +15,8 @@ the settled half's :func:`transfer_movement_rows` /
 :func:`recorded_transfer_legs`, the posting writer's
 :func:`transfer_family_movements`, the grid's
 :func:`covering_movements_by_leg` / :func:`grid_transfer_leg` /
-:func:`grid_transfer_legs`, the recurrence engine's
+:func:`grid_transfer_legs`, the transfer service's
+:func:`transfer_side_leg`, the recurrence engine's
 :func:`transfers_holding_records`, and every door's "this transfer holds a
 payment or purchase" (:func:`transfer_holds_a_movement` /
 :func:`held_transfer_entries`, over the join BARE, :func:`_entries_under_shadows`)
@@ -33,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import or_
+from sqlalchemy import not_, or_
 from sqlalchemy.orm import Query, contains_eager, joinedload
 from sqlalchemy.sql.expression import ColumnElement, Exists
 
@@ -484,8 +485,12 @@ def held_transfer_entries(*filters: ColumnElement) -> Query:
     :func:`transfer_holds_a_movement` as rows rather than a test: the
     archive aggregate (``archive_helpers.transfers_holding_movements``)
     reads WHICH kind each held entry is and counts the transfers holding
-    them, over the same scope -- any entry under any shadow.  Unordered,
-    because its one reader aggregates it.
+    them, over the same scope -- any entry under any shadow -- and since
+    leaf ``X-bi-6-4d-1`` the transfer's hard delete
+    (``transfer_service._delete``) hands the one removal act every entry its
+    transfer holds, the scope ``fk_transaction_entries_transaction_id``
+    would refuse the delete for.  Unordered: the aggregate needs no order
+    and the delete states its own.
 
     Args:
         *filters: Clauses over ``Transfer`` -- never the shadow's columns,
@@ -553,7 +558,9 @@ def movement_parent_loads() -> tuple:
 
     For a reader that resolves MANY loaded movements' parents -- the
     statement register folds every act on an account (leaf
-    ``X-bi-6-4c-1``) -- and must not lazy-load one transfer per member:
+    ``X-bi-6-4c-1``), and the loan posting probe names the transfer of
+    every stale movement it finds (``loan_posting_service._sync``, leaf
+    ``X-bi-6-4d-1``) -- and must not lazy-load one transfer per member:
     the movement's parent row and, for a transfer movement, that row's
     transfer, whose endpoints and status ride it (``lazy="joined"``).
     Published HERE rather than spelled by the reader because the chain
@@ -712,6 +719,55 @@ def grid_transfer_leg(transfer: Transfer, account_id: int) -> TransferLeg:
             (transfer.id, account_id),
         ),
     )
+
+
+def transfer_side_leg(transfer: Transfer, *, is_income: bool) -> TransferLeg:
+    """Return *transfer*'s leg on one SIDE with its record, keyed by the side alone.
+
+    How the transfer service reads what a side already RECORDS (leaf
+    ``X-bi-6-4d-1``): the settle's retained correction and carried record and
+    the update's echo comparison, off the expense side
+    (``transfer_service._validation.TransferRows.expense_leg``), and the
+    offer's retained correction, off the offered side
+    (``transfer_service._settle.settle_amount``) -- each of which read its
+    shadow's ``entries`` until then.
+
+    **Keyed by the SIDE and never by an account**, which is what makes it
+    safe inside an act that moves an endpoint: ``_endpoints._apply_endpoint_move``
+    assigns the transfer's account RELATIONSHIP, and ``from_account_id`` reads
+    the old account until a flush, so a read keyed by that column found the
+    record only when some lazy load happened to autoflush first (the leaf's
+    adversarial review measured the miss).  The side is the join's own
+    :func:`_leg_is_income` through the interval and the side link from
+    ``X-bi-6-4d`` (ruling **R-BAL88**), so this read never names an account.
+    It refuses a side holding two records (``one_or_none``), as
+    ``status_seam.covering_movement_of`` refuses a row holding two, where
+    :func:`covering_movements_by_leg`'s map would keep the last.
+
+    Args:
+        transfer: The parent.
+        is_income: ``True`` for the to-side, ``False`` for the from-side.
+
+    Returns:
+        The leg, its record the side's covering movement -- dated, or kept
+        un-dated across a revert -- or ``None`` when the side holds none.
+
+    Raises:
+        sqlalchemy.exc.MultipleResultsFound: When the side holds two covering
+            movements under live shadows -- a state no stored row can reach:
+            ``uq_transactions_transfer_type_active`` allows a transfer one
+            live shadow per type, which is one per side, and
+            ``uq_transaction_entries_one_settlement_record`` that shadow one
+            covering movement.  Stated as the refusal it would be rather than
+            left to :func:`covering_movements_by_leg`'s keep-the-last map.
+    """
+    side = _leg_is_income() if is_income else not_(_leg_is_income())
+    record = (
+        _covering_movements_query()
+        .filter(_leg_transfer_id() == transfer.id, side)
+        .one_or_none()
+    )
+    return _leg_on_side(transfer, is_income=is_income, record=record)
 
 
 def grid_transfer_legs(
