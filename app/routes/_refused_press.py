@@ -74,10 +74,13 @@ def answer_refused_press(
 
     **The "not found" is bare, and that is a known cost, not a design**: it
     carries no designed-fragment header, so htmx drops it and the press reads
-    as doing nothing.  It is reached only by a press refused as out of date
-    whose object another tab has ALSO changed -- deleted it, or moved the
-    transfer endpoint a leg's card was drawn for -- on the owner's own data,
-    moving no money.  Routing it through *refuse* instead was measured worse (the
+    as doing nothing.  It is reached by a press refused as out of date whose
+    object another tab has ALSO changed -- deleted it, or moved the transfer
+    endpoint a leg's card was drawn for -- on the owner's own data, moving no
+    money; and by a crafted transfer press naming a leg that is not the
+    transfer's (``_drawable_card`` refuses it where the leg resolver falls
+    back), which no page renders.  Routing it through *refuse* instead was
+    measured worse (the
     third review, 2026-10-04): the transaction door's refusal still answers a
     bare 404 (``_RowGone``), and the transfer door's would draw a soft-deleted
     transfer as live, which the card's own rule answers "not found"

@@ -17,6 +17,8 @@ a re-read.
 
 from __future__ import annotations
 
+import re
+from datetime import timedelta
 from decimal import Decimal
 
 from app.extensions import db
@@ -165,12 +167,8 @@ class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
             assert "and the 1 purchase under it?" in html, (
                 "R-CC131's picked question, word for word"
             )
-            # "... with the $12.34 shown": the redrawn card loads its purchase
-            # list, which prints each figure through the one `money` macro.
-            assert f'id="entry-list-{txn_id}"' in html
-            listed = auth_client.get(f"/transactions/{txn_id}/entries")
-            assert listed.status_code == 200
-            assert "$12.34" in listed.get_data(as_text=True)
+            # "... with the $12.34 shown".
+            assert "$12.34" in _the_cards_purchase_list(auth_client, html, txn_id)
             _committed()
             row = db.session.get(Transaction, txn_id)
             assert not row.is_deleted
@@ -277,6 +275,31 @@ class TestTheDeleteDialogIsCheckedAgainstThePurchasesItNamed:
 class TestTheRefusalSaysWhatChanged:
     """The refusal's sentence: only what the page did not name, then what is gone."""
 
+    def test_a_named_purchase_still_there_is_not_listed(
+        self, app, auth_client, seed_user,
+    ):
+        """The dialog named Kroger; Aldi was added: only Aldi is listed, nothing is gone."""
+        with app.app_context():
+            txn = _groceries(seed_user)
+            txn_id = txn.id
+            _kroger(seed_user, txn_id)
+            stale = _delete_vals(_popover(auth_client, txn_id), txn_id)
+            _bought(seed_user, txn_id, "Aldi", "8.00")
+
+            response = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=stale,
+            )
+
+            assert response.status_code == 400
+            body = response.get_data(as_text=True)
+            day = _day(seed_user)
+            assert (
+                "Groceries now holds 1 purchase the page did not name "
+                f"(Aldi, {day.month}/{day.day})." in body
+            )
+            assert "Kroger" not in body.split("Here it is as it is now")[0]
+            assert "no longer under" not in body
+
     def test_several_added_and_several_gone_are_counted_and_listed(
         self, app, auth_client, seed_user,
     ):
@@ -293,8 +316,11 @@ class TestTheRefusalSaysWhatChanged:
             entry_service.delete_entry(first, seed_user["user"].id)
             entry_service.delete_entry(second, seed_user["user"].id)
             db.session.commit()
+            # Two days, so the listed order is the purchases' own (entries
+            # are ordered by the day bought), not an accident of a tie.
+            later = _day(seed_user) + timedelta(days=1)
+            _bought(seed_user, txn_id, "Target", "45.00", on=later)
             _bought(seed_user, txn_id, "Costco", "300.00")
-            _bought(seed_user, txn_id, "Target", "45.00")
 
             response = auth_client.delete(
                 f"/transactions/{txn_id}", query_string=stale,
@@ -302,23 +328,38 @@ class TestTheRefusalSaysWhatChanged:
 
             assert response.status_code == 400
             day = _day(seed_user)
-            on = f"{day.month}/{day.day}"
             assert (
                 "Groceries now holds 2 purchases the page did not name "
-                f"(Costco, {on}; Target, {on}). 2 purchases the page named "
-                "are no longer under Groceries."
-                in response.get_data(as_text=True)
+                f"(Costco, {day.month}/{day.day}; Target, {later.month}/"
+                f"{later.day}). 2 purchases the page named are no longer under "
+                "Groceries." in response.get_data(as_text=True)
             )
             _committed()
             assert len(db.session.get(Transaction, txn_id).purchases) == 2
 
 
-def _bought(seed_user, txn_id, description, amount):
-    """A purchase of *amount* at *description* added under *txn_id*; its id."""
+def _the_cards_purchase_list(client, html, txn_id):
+    """The purchase list a drawn card loads, fetched as htmx would fire its loader.
+
+    The loader is read off the card itself (its ``hx-get`` on load), and the
+    list prints each figure through the one ``money`` macro.
+    """
+    loader = re.search(
+        rf'<div hx-get="([^"]+)"\s+hx-trigger="load"[^>]*'
+        rf'id="entry-list-{txn_id}"', html,
+    )
+    assert loader is not None, "the card loads no purchase list"
+    listed = client.get(loader.group(1))
+    assert listed.status_code == 200
+    return listed.get_data(as_text=True)
+
+
+def _bought(seed_user, txn_id, description, amount, on=None):
+    """A purchase of *amount* at *description* on *on* (default ``_day``) under *txn_id*."""
     entry = entry_service.create_entry(
         txn_id, seed_user["user"].id, entry_service.EntryDetails(
             figure=typed(Decimal(amount)), description=description,
-            purchased_on=_day(seed_user),
+            purchased_on=on or _day(seed_user),
         ),
     )
     db.session.commit()

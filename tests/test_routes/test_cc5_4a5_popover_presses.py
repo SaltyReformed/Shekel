@@ -775,6 +775,45 @@ class TestTheTransferPopover:
             )
 
 
+class TestARefusedPressWithNoCardToDraw:
+    """The no-card arm of the refused-press answer (``routes._refused_press``)."""
+
+    def test_it_answers_not_found_and_writes_nothing(
+        self, app, auth_client, seed_user,
+    ):
+        """A press refused as out of date whose card cannot be drawn: the card GET's "not found".
+
+        Reached here by a crafted leg that is not the transfer's (the leg
+        resolver falls back, the card's draw rule refuses).  Pinned because
+        routing this arm through the door's own refusal was measured worse --
+        a soft-deleted transfer drawn as live (the third review) -- and
+        nothing else would catch its return.
+        """
+        with app.app_context():
+            xfer, (line,) = _matched_transfer(seed_user, legs=("checking",))
+            xfer_id = xfer.id
+            fields = _form_fields(_transfer_popover(auth_client, xfer_id))
+            assert fields["shown_lines"] == str(line.id)
+            fields["settled_amount"] = "0.00"
+            fields["leg_account_id"] = "999999"
+            _undo_elsewhere(seed_user, line)
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer_id}", data=fields,
+            )
+
+            assert response.status_code == 404
+            assert response.get_data(as_text=True) == "Not found"
+            assert "Shekel-Designed-Fragment" not in response.headers
+            _committed()
+            assert db.session.get(Transfer, xfer_id).status_id == (
+                ref_cache.status_id(StatusEnum.DONE)
+            )
+            assert len(transfer_legs.covering_movements_by_leg([xfer_id])) == 2, (
+                "the refused $0.00 took neither leg's payment off"
+            )
+
+
 def transfer_service_revert(seed_user, xfer_id):
     """Set a transfer back to Projected, as the card's Status dropdown would."""
     transfer_service.update_transfer(
