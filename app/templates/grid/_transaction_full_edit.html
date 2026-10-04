@@ -107,11 +107,24 @@
 {% set zero_caption = withdraws_a_line and txn.status and txn.status.is_settled
    and correctable %}
 {% set tender_caption = withdraws_a_line and tender_picker %}
+{#- **The card's fifth caption: what leaving Credit frees** (plan step
+    credit_card:CC-5-4a-5, ruling R-CC80: "all three card-payback buttons
+    name the bank line before you press").  Undo CC, and a Save setting
+    Status back to Projected, delete the row's CC payback, and a match
+    naming that payback's payment is withdrawn; `payback_withdraws` is the
+    route's read of it (`credit_workflow.pending_for_credit_revert`), set
+    only for a Credit row. -#}
+{% set payback_caption = payback_withdraws is defined and payback_withdraws
+   and payback_withdraws.frees_a_line and txn.status_id == STATUS_CREDIT %}
 {#- What the card NAMED, the one value every press on it posts back as
-    `shown_lines`: the Save's hidden field, and Paid / Received's `hx-vals`
-    (the delete dialog names its own lines, below). -#}
+    `shown_lines`: the Save's hidden field, Paid / Received's and Undo CC's
+    `hx-vals` (the delete dialog names its own lines, below).  The two reads
+    never both name lines on one card: the four payment captions draw only
+    on a Projected or settled row (or beside a "Paid from" picker, drawn on
+    those alone), and the payback's only on a Credit row, which is neither. -#}
 {% set named_lines = shown_line_ids(payment_withdraws)
    if paid_caption or estimate_caption or zero_caption or tender_caption
+   else shown_line_ids(payback_withdraws) if payback_caption
    else '' %}
 {#- The card's root carries an id because a press refused as out of date
     REDRAWS it whole, retargeted here (ruling R-CC128, "Redraw all");
@@ -170,6 +183,7 @@
             hx-delete="{{ url_for('transactions.unmark_credit', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
+            hx-vals='{"shown_lines": "{{ named_lines }}"}'
             aria-label="Undo credit card">
       <i class="bi bi-x-circle"></i> Undo CC
     </button>
@@ -211,6 +225,15 @@
   {%- if paid_caption %}
   <div class="form-text mb-2" id="purchases-withdraws-{{ txn.id }}">
     {% if not correctable %}Marking this paid from its purchases{% else %}Marking this {{ 'received' if txn.is_income else 'paid' }} records $0.00 and{% endif %} {{ frees_lines(payment_withdraws) }}.
+  </div>
+  {%- endif %}
+  {#- **What Undo CC and Status leaving Credit WITHDRAW** (plan step
+      credit_card:CC-5-4a-5, ruling R-CC80), beside Undo CC, before either
+      press: one caption for both, because they are one act on the payback
+      (`credit_workflow.delete_payback_on_credit_revert`). -#}
+  {%- if payback_caption %}
+  <div class="form-text mb-2" id="payback-withdraws-{{ txn.id }}">
+    Undo CC, or setting Status back to Projected, deletes this row's CC payback and {{ frees_lines(payback_withdraws) }}.
   </div>
   {%- endif %}
 

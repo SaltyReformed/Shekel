@@ -403,7 +403,13 @@ class TestEveryDoorWithdrawsTheActItself:
             )
             db.session.commit()
 
-            entry_service.delete_entry(purchase.id, seed_user["user"].id)
+            # The X posts the lines its confirmation named (plan step
+            # CC-5-4a-5, ruling R-CC127), read through the list's own twin.
+            shown = entry_service.purchase_removals([envelope])[purchase.id]
+            entry_service.delete_entry(
+                purchase.id, seed_user["user"].id,
+                shown=match_withdrawal.Shown(shown.delete.line_ids),
+            )
             db.session.commit()
 
             assert db.session.get(StatementMatch, accepted.match_id) is None
@@ -426,8 +432,13 @@ class TestEveryDoorWithdrawsTheActItself:
             line = _line(seed_user, "-200.00", "CARD PAYMENT")
             accepted = _match(seed_user, line, payback)
 
+            # Undo CC posts the lines its caption named (plan step
+            # CC-5-4a-5, ruling R-CC127), read through the card's own twin.
             credit_workflow.delete_payback_on_credit_revert(
                 source, seed_user["user"].id,
+                shown=match_withdrawal.Shown(
+                    credit_workflow.pending_for_credit_revert(source).line_ids,
+                ),
             )
             db.session.commit()
 
@@ -504,7 +515,14 @@ class TestEveryDoorWithdrawsTheActItself:
             db.session.commit()
             assert db.session.get(StatementMatch, accepted.match_id) is not None
 
-            entry_service.delete_entry(purchase.id, seed_user["user"].id)
+            # The X posts the lines its confirmation named -- here the
+            # payback's, which the press deletes (plan step CC-5-4a-5, ruling
+            # R-CC80) -- read through the list's own twin.
+            shown = entry_service.purchase_removals([envelope])[purchase.id]
+            entry_service.delete_entry(
+                purchase.id, seed_user["user"].id,
+                shown=match_withdrawal.Shown(shown.delete.line_ids),
+            )
             db.session.commit()
 
             assert credit_workflow.get_active_payback(envelope.id) is None

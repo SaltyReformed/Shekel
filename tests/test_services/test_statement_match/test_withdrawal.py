@@ -344,7 +344,14 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
         _submit(seed_user, lines=[purchase_line], entries=[purchase])
         _submit(seed_user, lines=[kept_line], entries=[kept])
 
-        entry_service.delete_entry(purchase.id, seed_user["user"].id)
+        # The X posts the lines its confirmation named (plan step
+        # CC-5-4a-5, ruling R-CC127: "a test that submits exactly what the
+        # page shows"), read through the list's own twin.
+        shown = entry_service.purchase_removals([envelope])[purchase.id].delete
+        entry_service.delete_entry(
+            purchase.id, seed_user["user"].id,
+            shown=match_withdrawal.Shown(shown.line_ids),
+        )
         db.session.flush()
 
         matched = _matched_line_ids(seed_user)
@@ -375,8 +382,13 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
         _submit(seed_user, lines=[line], transactions=[payback])
         assert line.id in _matched_line_ids(seed_user)
 
+        # Undo CC posts the lines its caption named (plan step CC-5-4a-5,
+        # ruling R-CC127), read through the card's own twin.
         credit_workflow.delete_payback_on_credit_revert(
             source, seed_user["user"].id,
+            shown=match_withdrawal.Shown(
+                credit_workflow.pending_for_credit_revert(source).line_ids,
+            ),
         )
         db.session.flush()
 
@@ -627,7 +639,12 @@ class TestKeptRowsCountsWhatSURVIVES:
             "the envelope is not in the going set, so it STAYS"
         )
 
-        entry_service.delete_entry(purchase_id, seed_user["user"].id)
+        # The X posts what its confirmation named (plan step CC-5-4a-5, ruling
+        # R-CC127): the purchase's own lines, ``pending`` above.
+        entry_service.delete_entry(
+            purchase_id, seed_user["user"].id,
+            shown=match_withdrawal.Shown(pending.line_ids),
+        )
         db.session.flush()
 
         assert db.session.get(Transaction, envelope_id) is not None
