@@ -25,6 +25,19 @@ calibrated path (``S11-c``); the old calibration keeps pricing until then.
   the entry flow opens a held payday's stub instead);
 * a stub missing any of the four taxes (``$0.00`` is a figure, a blank is
   not: decomposition item 2, "the four taxes required");
+* a printed GROSS that base pay and the taxable earnings do not add up to, to
+  the cent (ruling **R-SAL99**, "Check the gross too", closing finding
+  **SAL-590**, which reads the printed gross as exactly that sum): a gross
+  typed into the Base pay box counts every taxable earning twice, and an
+  earning moved between taxable and after-tax moves the gross but not the
+  net, so only this check sees it -- typed once like the net, never stored.
+  On a job whose stub's gross also holds the after-tax earnings (ruling
+  **R-SAL102**, a yes/no on the profile, closing finding **SAL-592**) those
+  are added too, and that job's check cannot see the taxable / after-tax
+  slip.  How a miss is worded is read off the net's miss beside it, naming
+  the job's setting where the pair allows it (rulings **R-SAL104**,
+  **R-SAL106**, **R-SAL108**, **R-SAL110**, **R-SAL111**;
+  :mod:`app.services.pay_stub_gross`);
 * a printed net the lines do not add up to, to the cent (ruling **R-SAL42**,
   decomposition item 2: typed once as a check, never stored);
 * a one-off named like one of the profile's paycheck lines or a tax, or like
@@ -88,13 +101,13 @@ from app.models.pay_stub import (
 from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_line_kinds, withholding_kinds
-from app.services.pay_calendar import PayCalendar, span_starting_on_or_after
+from app.services.pay_stub_gross import gross_refusals
 from app.services.paycheck_calculator import waterfall_gross, waterfall_net
+from app.services.salary_paydays import paycheck_on, payday_refusal_for_door
 from app.utils.money import ZERO
 
 if TYPE_CHECKING:
     from app.services.balance_at import BalanceContext
-    from app.services.pay_calendar import DerivedPeriod
 
 
 # ── Values ─────────────────────────────────────────────────────────
@@ -131,8 +144,9 @@ class OneOffFigure:
 class StubFigures:
     """Everything a stub RECORDS, as the entry form states it.
 
-    The printed net is not here: it is a CHECK the door runs, not a figure the
-    stub keeps (rule 14 -- the net is derived from these).
+    The printed gross and net are not here: they are CHECKS the door runs
+    (:class:`PrintedTotals`), not figures the stub keeps (rule 14 -- both are
+    derived from these).
 
     Attributes:
         payday: The stub's date.
@@ -150,6 +164,25 @@ class StubFigures:
     withholdings: Mapping[int, Decimal]
     one_offs: tuple[OneOffFigure, ...]
     notes: str | None
+
+
+@dataclass(frozen=True)
+class PrintedTotals:
+    """The two totals a stub PRINTS, typed once at the door as checks and never stored.
+
+    What the stub's own figures must add up to (:class:`StubTotals`): the
+    gross (ruling **R-SAL99**) and the net (ruling **R-SAL42**).  Both are
+    derived from the figures, so keeping either would be a second home for
+    it (rule 14); they exist only for the one submission that checks them.
+
+    Attributes:
+        gross: The gross pay the stub prints, which R-SAL99 reads as base pay
+            plus every taxable earning, and R-SAL102 as that plus every
+            after-tax earning on a job whose stub prints them in its gross.
+        net: The net pay the stub prints.
+    """
+    gross: Decimal
+    net: Decimal
 
 
 @dataclass(frozen=True)
@@ -302,8 +335,9 @@ class FormLines:
 def payday_refusal(ctx: "BalanceContext", day: date, today: date) -> str | None:
     """Return why *day* cannot carry a stub, or ``None`` when it can.
 
-    The stub door's wording of :func:`payday_refusal_for_door`, the rule's one
-    home (ruling **R-SAL93**, "Each door names its own"): "A stub can be
+    The stub door's wording of
+    :func:`~app.services.salary_paydays.payday_refusal_for_door`, the rule's
+    one home (ruling **R-SAL93**, "Each door names its own"): "A stub can be
     entered up to your next payday, ...".
 
     Args:
@@ -315,86 +349,6 @@ def payday_refusal(ctx: "BalanceContext", day: date, today: date) -> str | None:
         The message to show, or ``None``.
     """
     return payday_refusal_for_door(ctx, day, today, door_words="A stub can be entered")
-
-
-def payday_refusal_for_door(
-    ctx: "BalanceContext", day: date, today: date, *, door_words: str,
-) -> str | None:
-    """Return why a salary door cannot take *day*, or ``None`` when it can.
-
-    **The one statement of which days a salary door takes** (rulings
-    **R-SAL49** and **R-SAL48**, the stub door's; ruling **R-SAL90** gave the
-    pay list's doors the same rule): the day must open a paycheck the app
-    holds or projects -- the calendar's span covering it STARTS on it -- and
-    must not be later than the owner's next payday (the first span opening on
-    or after *today*).  So on 2026-09-23 the 2026-09-24 payday is accepted
-    and the 2026-10-08 one is refused until 2026-09-24 has passed.
-
-    The rule is one; the words are each door's (ruling **R-SAL93**, "Each
-    door names its own", which amends R-SAL90's "and message"): the door says
-    what it takes, so the pay form never speaks of a stub.
-
-    Args:
-        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
-        day: The date the door would take.
-        today: The owner's civil today (the display timezone's).
-        door_words: What the door takes, as the refusal's second sentence
-            opens: ``"A stub can be entered"``, ``"Pay can be recorded"``.
-
-    Returns:
-        The message to show, or ``None``.
-    """
-    calendar = ctx.calendar()
-    refusal = not_a_payday(calendar, day)
-    if refusal is not None:
-        return refusal
-    upcoming = span_starting_on_or_after(calendar, today)
-    if upcoming is not None and day > upcoming.start_date:
-        return (
-            f"{day.isoformat()} has not been paid yet.  {door_words} up to your "
-            f"next payday, {upcoming.start_date.isoformat()}."
-        )
-    return None
-
-
-def not_a_payday(calendar: PayCalendar, day: date) -> str | None:
-    """Return why *day* is not a payday the app holds or projects, or ``None``.
-
-    **The one statement of "is this day a payday" for the salary doors that
-    take one** (ruling **R-SAL49** for a stub; plan step salary:X-av-3a's pay
-    list asks it too, rulings **R-SAL61** and **R-SAL90**): the calendar's
-    span covering *day* STARTS on it (:func:`_paycheck_on`).  A day below the
-    record is refused as the record's, since the calendar holds no paycheck
-    there.
-
-    Args:
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
-        day: The day asked about.
-
-    Returns:
-        The message to show, or ``None`` for a payday.
-    """
-    if _paycheck_on(calendar, day) is not None:
-        return None
-    opening = calendar.opening_bound()
-    if opening is not None and day < opening:
-        return (
-            f"The app holds no paycheck on {day.isoformat()}: your pay "
-            f"record starts {opening.isoformat()}."
-        )
-    return f"{day.isoformat()} is not one of your paydays."
-
-
-def _paycheck_on(calendar: PayCalendar, day: date) -> "DerivedPeriod | None":
-    """Return the paycheck period that opens on *day*, or ``None``.
-
-    Saved or projected forward (``span_containing``); nothing below the
-    record, where the calendar holds no paycheck.
-    """
-    span = calendar.span_containing(day)
-    if span is None or span.start_date != day:
-        return None
-    return span
 
 
 # ── Reads ──────────────────────────────────────────────────────────
@@ -572,7 +526,7 @@ def _app_paycheck(
     comparison shows what the grid and the cockpit show.  ``None`` when the
     app holds no paycheck on *day*.
     """
-    period = _paycheck_on(ctx.calendar(), day)
+    period = paycheck_on(ctx.calendar(), day)
     if period is None:
         return None
     breakdown = ctx.paychecks().for_profile(profile).at(period)
@@ -595,7 +549,7 @@ def _kind_label(kind_id: int) -> str:
 
 
 def record_stub(
-    profile: SalaryProfile, figures: StubFigures, printed_net: Decimal,
+    profile: SalaryProfile, figures: StubFigures, printed: PrintedTotals,
     ctx: "BalanceContext", today: date,
 ) -> PayStub:
     """Record a NEW stub for *figures.payday*; a payday already holding one is refused.
@@ -609,7 +563,7 @@ def record_stub(
     Args:
         profile: The owned profile.
         figures: The stub's figures (shape-checked by the entry schema).
-        printed_net: The net the stub prints, checked and discarded.
+        printed: The gross and net the stub prints, checked and discarded.
         ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
         today: The owner's civil today.
 
@@ -624,7 +578,7 @@ def record_stub(
     if not errors and stub_on(profile, figures.payday) is not None:
         errors["payday"] = held_payday_refusal(figures.payday)
     # A new stub holds no one-off yet: every one it prints is one it adds.
-    _refuse(profile, figures, printed_net, errors, held=frozenset())
+    _refuse(profile, figures, printed, errors, held=frozenset())
     stub = PayStub(salary_profile_id=profile.id, payday=figures.payday,
                    base_pay=figures.base_pay, notes=figures.notes)
     db.session.add(stub)
@@ -634,7 +588,7 @@ def record_stub(
 
 
 def edit_stub(
-    stub: PayStub, figures: StubFigures, printed_net: Decimal,
+    stub: PayStub, figures: StubFigures, printed: PrintedTotals,
     ctx: "BalanceContext", today: date,
 ) -> PayStub:
     """Rewrite a saved stub's figures, its payday included.
@@ -643,7 +597,7 @@ def edit_stub(
         stub: The saved stub, its ownership and version already checked by
             the route; its profile is the one its lines must belong to.
         figures: The stub's figures (shape-checked by the entry schema).
-        printed_net: The net the stub prints, checked and discarded.
+        printed: The gross and net the stub prints, checked and discarded.
         ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
         today: The owner's civil today.
 
@@ -670,7 +624,7 @@ def edit_stub(
     # R-SAL57: read BEFORE the write replaces them, so the clash check knows
     # which of the submitted one-offs the stub already holds.
     held = frozenset(name_key(one_off.name) for one_off in stub.one_offs)
-    _refuse(profile, figures, printed_net, errors, held=held)
+    _refuse(profile, figures, printed, errors, held=held)
     _write(stub, figures)
     db.session.flush()
     return stub
@@ -714,15 +668,15 @@ def _payday_errors(ctx: "BalanceContext", day: date, today: date) -> dict[str, s
 
 
 def _refuse(
-    profile: SalaryProfile, figures: StubFigures, printed_net: Decimal,
+    profile: SalaryProfile, figures: StubFigures, printed: PrintedTotals,
     errors: dict[str, str], *, held: frozenset[str],
 ) -> None:
-    """Add the tax, one-off and net refusals to *errors*; raise if any stand.
+    """Add the tax, one-off, gross and net refusals to *errors*; raise if any stand.
 
     Args:
         profile: The owned profile.
         figures: The stub's figures.
-        printed_net: The net the stub prints.
+        printed: The gross and net the stub prints.
         errors: The refusals found so far (the payday's), added to.
         held: The :func:`name_key` of every one-off the stub already holds --
             empty for a new stub -- for :func:`_one_off_errors`.
@@ -738,13 +692,17 @@ def _refuse(
             errors[f"tax-{kind_id}"] = f"Enter the stub's {label} ($0.00 if none)."
             missing_tax = True
     errors.update(_one_off_errors(profile, figures.one_offs, held))
+    totals = totals_of(profile, figures)
+    errors.update(gross_refusals(
+        figures.base_pay, totals, printed,
+        includes_after_tax=profile.stub_gross_includes_after_tax,
+    ))
     # The net is checked only over a COMPLETE set of taxes: without one, the
     # lines' sum leaves it out and the check would blame figures that are right.
-    net = totals_of(profile, figures).net
-    if not missing_tax and net != printed_net:
+    if not missing_tax and totals.net != printed.net:
         errors["printed_net"] = (
-            f"The lines add up to ${net:,.2f}, but the stub prints "
-            f"${printed_net:,.2f} (a difference of ${abs(net - printed_net):,.2f}).  "
+            f"The lines add up to ${totals.net:,.2f}, but the stub prints "
+            f"${printed.net:,.2f} (a difference of ${abs(totals.net - printed.net):,.2f}).  "
             f"Check each figure against the stub."
         )
     if errors:
@@ -951,6 +909,7 @@ __all__ = [
     "LineFigure",
     "OneOffFigure",
     "OneOffRow",
+    "PrintedTotals",
     "StubFigures",
     "StubReport",
     "StubSummary",
@@ -961,9 +920,7 @@ __all__ = [
     "held_payday_refusal",
     "line_delete_refusal",
     "name_key",
-    "not_a_payday",
     "payday_refusal",
-    "payday_refusal_for_door",
     "record_stub",
     "set_use_for_pricing",
     "stub_on",

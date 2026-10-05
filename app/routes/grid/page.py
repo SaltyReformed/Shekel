@@ -503,6 +503,10 @@ def _build_entry_maps(
             transactions, budgets,
             {period.period_id: period for period in all_periods},
             owner_cash_flow,
+            # The OWNER is looking: the grid is owner-only, so its purchase
+            # lists name the owner's bank lines (plan step
+            # ``credit_card:CC-5-4a-5``).
+            current_user.id,
         ),
     )
 

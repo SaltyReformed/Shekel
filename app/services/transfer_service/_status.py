@@ -47,6 +47,7 @@ through the rows' counters as well as their dirty state for that reason.)
 
 from app.models.transaction import Transaction
 from app.services import status_seam
+from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
 from app.services.planned_rows_books import reject_revert_below_the_books
 from app.services.settle_day import recorded_settle_day
 from app.services.state_machine import verify_transition
@@ -156,6 +157,7 @@ def apply_status_to_all_three(
     *,
     stated: PairDays = NO_DAYS,
     settlement: "status_seam.Settlement | None" = None,
+    shown: Shown | Silent = NOTHING_SHOWN,
 ) -> None:
     """Move a transfer and both shadows to one status, each side on its own day.
 
@@ -213,6 +215,12 @@ def apply_status_to_all_three(
             what moved" true of a transfer's rows as well as a plain one's.
             ``None`` on any other move leaves each shadow's existing record
             alone, and on the way OUT of the band the seam releases both.
+        shown: The bank lines the door's page named before the press, or
+            what lets it stay silent -- handed to BOTH shadows' seam calls
+            whole (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC127**).
+            A ``$0.00`` record takes each side's payment off the books, and
+            the act grades each call against the named lines on that side's
+            own account, so one posted set grades the pair exactly.
 
     Raises:
         ValidationError: If the transition is illegal for the transfer or for
@@ -260,7 +268,7 @@ def apply_status_to_all_three(
     for shadow, day in ((rows.expense, days.expense), (rows.income, days.income)):
         status_seam.apply_status_change(
             shadow, new_status_id,
-            settle_day=day, settlement=pair_settlement,
+            settle_day=day, settlement=pair_settlement, shown=shown,
         )
     # The parent carries neither a ``settled_on`` column nor a settlement
     # record, so it takes neither: a transfer's money moves on its two shadow

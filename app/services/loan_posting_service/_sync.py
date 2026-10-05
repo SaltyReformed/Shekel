@@ -25,10 +25,8 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders
@@ -40,7 +38,7 @@ from app.services.posting_service import (
     sync_transfer_postings,
 )
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.transfer_legs import movement_parent
+from app.services.transfer_legs import movement_parent, movement_parent_loads
 from app.services.user_write_lock import lock_every_user_writes
 from app.utils.db_errors import is_unique_violation
 from app.utils.money import round_money
@@ -272,7 +270,10 @@ def _reconcile_lineage_transfer_entries(
     # payment's, or one a legacy transfer OUT of the loan wrote -- names its
     # transfer through the ledger writer's ONE resolution of a movement's
     # parent (``transfer_legs.movement_parent``, plan step
-    # balance:X-bi-6-4b), over one load of all of them.  Every one resolves to
+    # balance:X-bi-6-4b), over one load of all of them with the loader
+    # options that resolution publishes (``transfer_legs.movement_parent_loads``
+    # since leaf balance:X-bi-6-4d-1, ledger row BAL-579: the chain walks the
+    # shadow, which is that package's to name).  Every one resolves to
     # a leg: only a transfer's movement posts under the transfer-movement
     # source, and a hard-deleted movement's residue was excluded above.  NOT
     # ``transfer_movement_rows``: it drops a movement under a DEAD shadow,
@@ -283,10 +284,7 @@ def _reconcile_lineage_transfer_entries(
         transfer_by_movement.update(
             (movement.id, movement_parent(movement).transfer.id)
             for movement in db.session.query(TransactionEntry)
-            .options(
-                joinedload(TransactionEntry.transaction)
-                .joinedload(Transaction.transfer),
-            )
+            .options(*movement_parent_loads())
             .filter(TransactionEntry.id.in_(unresolved))
         )
     transfers = (

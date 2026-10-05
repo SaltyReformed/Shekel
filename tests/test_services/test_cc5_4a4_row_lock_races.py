@@ -34,8 +34,8 @@ has read the row, and then reads the first click's committed work.
 :class:`TestTheOwnersLockComesFirst` grades that order door by door.
 
 **How a request race is staged** (:func:`_race`).  Each click is a request on
-a thread of its own, from a client signed in under an app context of its own,
-so each has its own session exactly as production gives each request.  The
+a thread of its own with no app context pushed, so the request pushes its own
+and has its own session, exactly as production gives each request.  The
 FIRST request runs until its COMMIT and is held there -- a ``before_commit``
 hook on that thread alone -- still holding everything it locked.  The SECOND
 starts, and the test waits until PostgreSQL shows it waiting for the owner's
@@ -86,6 +86,7 @@ from tests._test_helpers import (
 )
 from tests.conftest import SEED_USER_EMAIL, SEED_USER_PASSWORD
 from tests.test_routes._statement_forms import ReconcileFormReader
+from tests.test_routes.test_cc5_4a5_popover_presses import dialog_delete_values
 
 #: How long a race waits for a click to reach its commit, or the second click
 #: to block, before calling the harness broken.  The cluster's own
@@ -226,28 +227,23 @@ def _race_statements(app, first: Callable[[], None], second: Callable[[], None])
 
 
 def _signed_in_clients(app, count=2):
-    """*count* clients, each signed in as the seed user under an app context of its own.
+    """*count* clients, each signed in as the seed user.
 
-    Signed in one context at a time because Flask-Login keeps a signed-in
-    user on ``g``, which the test's shared app context would hand the second
-    sign-in, and it would then redirect without signing in (finding
-    **BAL-521**, owner plan step ``balance:X-cr``).  Each sign-in's redirect
-    is checked not to be the sign-in page, so a race cannot quietly run one
-    client signed out.
+    Each sign-in's redirect is checked not to be the sign-in page, so a race
+    cannot quietly run one client signed out.
 
     Returns:
         The signed-in clients, in order.
     """
     clients = []
     for _ in range(count):
-        with app.app_context():
-            client = app.test_client()
-            response = client.post("/login", data={
-                "email": SEED_USER_EMAIL, "password": SEED_USER_PASSWORD,
-            })
-            assert response.status_code == 302, response.status_code
-            assert urlsplit(response.headers["Location"]).path != "/login"
-            clients.append(client)
+        client = app.test_client()
+        response = client.post("/login", data={
+            "email": SEED_USER_EMAIL, "password": SEED_USER_PASSWORD,
+        })
+        assert response.status_code == 302, response.status_code
+        assert urlsplit(response.headers["Location"]).path != "/login"
+        clients.append(client)
     return clients
 
 
@@ -458,8 +454,14 @@ def _purchase(client, row_id):
 
 
 def _delete(client, row_id):
-    """Return the click: Delete on *row_id*."""
-    return lambda: client.delete(f"/transactions/{row_id}")
+    """Return the click: Delete on *row_id*, posting what its dialog names NOW.
+
+    The popover is drawn as the click is made ready -- before the race -- so
+    the dialog sends the bank lines and purchases the row held then (rulings
+    R-CC127 / R-CC131), as a card opened before the other click does.
+    """
+    query = dialog_delete_values(client, row_id)
+    return lambda: client.delete(f"/transactions/{row_id}", query_string=query)
 
 
 def _mark_paid(client, row_id):
@@ -599,8 +601,17 @@ class TestPurchaseAgainstDelete:
             assert _PURCHASE_REFUSED in _body(purchase)
             assert _state(row_id) == (True, 0)
 
-    def test_purchase_first_the_delete_takes_it_off_too(self, app, db, seed_user):
-        """Purchase lands first: the delete waits, then removes the row AND the $12.34 purchase."""
+    def test_purchase_first_the_delete_is_refused_naming_it(
+        self, app, db, seed_user,
+    ):
+        """Purchase lands first: the delete waits, then is refused -- its dialog named no purchase.
+
+        Ruling R-CC131 (developer 2026-10-04, "Refuse and redraw"), the
+        clause ruling R-CC96 promised: until it, this delete removed the row
+        AND the $12.34 purchase its dialog never named (rule-5 re-expression,
+        developer-ruled: this read ``delete.response.status_code == 200`` and
+        ``_state(row_id) == (True, 0)``).
+        """
         with app.app_context():
             _template, row_id = _groceries(seed_user)
             one, two = _signed_in_clients(app)
@@ -610,8 +621,11 @@ class TestPurchaseAgainstDelete:
             )
             assert purchase.response.status_code == 200
             assert delete.waited
-            assert delete.response.status_code == 200
-            assert _state(row_id) == (True, 0)
+            assert delete.response.status_code == 400
+            assert "Groceries now holds 1 purchase the page did not name" in (
+                _body(delete)
+            )
+            assert _state(row_id) == (False, 1)
 
 
 class TestMarkPaidAgainstDelete:

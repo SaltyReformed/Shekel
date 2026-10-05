@@ -8,8 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`X-av-3a` (`8e832d8e`, 2026-09-25) made the salary a dated pay list**, moving cents; `X-at-8`, the
-2027 law, is due before 2026-12-01 and `S11-c-2` MOVES MONEY. Archived: `historical/salary_*`.
+**`S11-c-2b` (`c43200af`, 2026-10-04) let each job say what its stub's gross holds**; `X-at-8`, the
+2027 law, is due before 2026-12-01 and `S11-c-2c` MOVES MONEY. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -116,35 +116,36 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 
 - [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41** and
       **R-SAL9** as amended by **R-SAL42**; **SAL-564**; absorbs `S1`'s **N-441**, **N-535**,
-      **N-530**): the DECOMPOSED parent of six leaves (2026-09-23), ticking with its last. Today one
-      dated stub's four EFFECTIVE rates price every paycheck; the row stores that date
-      (`pay_stub_date`) and only displays it; no pricing reader consults it; both calibration doors
-      destroy a row. A paycheck copies the latest same-lines stub's four taxes and the app's
+      **N-530**): the DECOMPOSED parent of eight leaves (2026-09-23, 2026-10-04), ticking with its
+      last. Today one dated stub's four EFFECTIVE rates price every paycheck; the row stores that
+      date (`pay_stub_date`) and only displays it; no pricing reader consults it; both calibration
+      doors destroy a row. A paycheck copies the latest same-lines stub's four taxes and the app's
       formulas, run on both sides, price the difference, superseding the spec's "federal bracket's
       marginal rate" (a fixed rate withholds tax his credits cancel). **S1's clauses, corrected:**
       nothing is RESTORED (an old row holds five figures and no line; the one entered 2026-08-28,
       deleted 2026-09-19, mis-read the 2026-08-27 stub), the history is TRANSCRIBED, and "all 12
       settled paychecks re-derive" becomes fork 8c's grade against each RECORD.
-  - [x] **S11-b** `1d3a2574` -- the door: the payday picked first (**R-SAL50**), one the app holds
-        up to the next (**R-SAL48**, **R-SAL49**; a kept date unchecked, **R-SAL53**), a new stub on
-        a payday already holding one refused (**R-SAL52**), the printed net checked, one-off clashes
-        refused (**R-SAL45**, **R-SAL51**), the comparison and the switch; `delete_line` refuses a
-        named line. `$0.00`; opened **SAL-567**, **SAL-568**.
+  - [x] **S11-b** `1d3a2574` -- the stub door (**R-SAL42**); opened **SAL-567**, **SAL-568**.
   - [ ] **S11-c -- the engine's calibrated path**: the DECOMPOSED parent of two leaves (the salary
         lane's decomposition, accepted by the coordinator 2026-09-23), ticking with its last.
-  - [x] **S11-c-1** `dff66c5e` -- a stub line records the kind it is printed under (**R-SAL58**,
-        retiring **R-SAL56**; migration `9b64df71cc34`), and the one-off clash asks only what a save
-        adds (**R-SAL57**). `$0.00`; closed **SAL-567**.
-  - [ ] **S11-c-2 -- the engine prices from the stubs**: the latest switched-on stub on or before
+  - [x] **S11-c-1** `dff66c5e` -- a stub line's own kind (**R-SAL58**); closed **SAL-567**.
+  - [ ] **S11-c-2 -- the engine prices from the stubs**: the DECOMPOSED parent of three leaves (the
+        salary lane's trace, granted by the coordinator 2026-10-04), ticking with its last.
+  - [x] **S11-c-2a** `cf2e59a4` -- the printed gross asked (**R-SAL99**); closed **SAL-590**.
+  - [x] **S11-c-2b** `c43200af` -- the gross setting per job (**R-SAL102**); closed **SAL-592**.
+  - [ ] **S11-c-2c -- the engine prices from the stubs**: the latest switched-on stub on or before
         the payday with the SAME LINES supplies the four taxes and the formulas the difference
         (`PricedLine`'s line identity shipped at `S11-b`); with no such stub, the latest switched-on
         stub on or before it, of ANY lines, and with none at all the formulas alone (**R-SAL54**,
         settling fork 8b); the stub's side priced by the kinds it records, never its lines' current
         ones (**R-SAL58**), on its own payday's tax year (**R-SAL77**); every priced tax floored at
-        `$0.00` (**R-SAL55**); every reader switched, the rates path and `calibrate_*` deleted.
-        **MOVES MONEY**, graded on a clone holding the stubs: fork 8c, the projected diff,
-        `tests/manual/measure_r18d_phone_line.py` before and after (within a cent of the pair), each
-        stub beside the old calibrations of its date (fork 9). Closes **SAL-565**.
+        `$0.00` (**R-SAL55**). Each priced paycheck names the stub that priced it, or none: the
+        formulas, and the cockpit, the Taxes tab and the breakdown say so, the old calibration
+        buttons becoming a link to the Pay stubs list (**R-SAL100**, `X-at-6`'s stub half). Every
+        reader switched; the rates path, `calibrate_*` and the calibration schemas deleted with
+        their door. **MOVES MONEY**, graded on a clone holding the stubs: fork 8c, the projected
+        diff, `tests/manual/measure_r18d_phone_line.py` before and after (within a cent of the
+        pair), each stub beside the old calibrations of its date (fork 9). Closes **SAL-565**.
   - [ ] **S11-d -- the old table goes**: a migration drops `salary.calibration_overrides` and every
         reference, REFUSING while any calibration the data has held (live, or deleted per the audit
         log) has no stub on its date, and printing any differing figures (fork 9).
@@ -169,9 +170,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       its raise row carries no `version_id`, so a Save from a stale rail is last-write-wins on one
       column; the regeneration is handed one read pass per profile. Needs a RULING on the race
       first. `$0.00`.
-- [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
-      PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
-      file. `$0.00`.
+- **S7 is DISSOLVED** (**R-SAL109**, 2026-10-04): its reason, **SAL-555**, closed at `S11-c-2a`'s
+  tick, and **SAL-560**, filed to it 2026-09-14, moved to `X-av-3b`, which rewrites those doors.
 - [ ] **S9 -- a blank start is STORED AS BLANK and means "since my paychecks began"** (finding
       **SAL-562**; ruling **R-SAL39**, 2026-09-18): `starts_on` NULL on the payroll arm alone, the
       template arms still NOT NULL by the CHECK, resolved at read time to the owner's true opening
@@ -198,24 +198,16 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       `compute_gap_net_biweekly` and the take-home-rate chip scale BASE by a net-over-gross ratio
       that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`
       until an earning line exists; its own step because R18's leaves were ruled.
-- [x] **R18** `0345fbae` -- a paycheck is BASE PAY plus a LIST OF LINES (**R-SAL38**, six forks);
-      closed **D59**. Its leaves `R18-a`..`R18-d` left this document and the index 2026-09-24 (rule
-      5); the span as it stood: `historical/salary_r18_as_built_2026-09-23.md`.
+- [x] **R18** `0345fbae` -- a paycheck is base pay plus its lines (**R-SAL38**); closed **D59**.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**, **R-SAL59**;
       findings **N-237**, **N-294**, **N-391**, **SAL-569**): the DECOMPOSED parent of four leaves
       (**R-SAL67**), ticking with its last; built beside `S11-c`, neither waiting (**R-SAL62**,
       amending **R-SAL43**'s order). The stub transcription (**R-SAL40**) subsumes the one-stub
       re-read that opened it; **N-240** moved to `S12`; **N-446** stays `balance:X-bp`'s.
-  - [x] **X-av-2** `89a56168` -- one engine walk for base pay at each payday's own rhythm
-        (**R-SAL66**, **R-SAL70**); closed **SAL-569**.
+  - [x] **X-av-2** `89a56168` -- each payday's own rhythm (**R-SAL66**); closed **SAL-569**.
   - [ ] **X-av-3 -- the pay list** (**R-SAL59**-**R-SAL61**, **R-SAL65**, **R-SAL68**): the
         DECOMPOSED parent of two leaves (**R-SAL83**, 2026-09-25), ticking with its last.
-  - [x] **X-av-3a** `8e832d8e` -- the switch: `salary.pay_entries`, migration `70680a4a7405` (one
-        entry per profile, `annual_salary` dropped), the engine's walk (**R-SAL82**), the pay-change
-        banners (**R-SAL84**, **R-SAL85**, **R-SAL89**), create and Fix (**R-SAL90**, **R-SAL93**).
-        On the 2026-09-25 05:59 production copy, 104 projected paychecks move by one cent, the first
-        on 2029-07-12, and no settled record moves; a rollback prices 130 a cent below their
-        pre-release figure (**R-SAL92**). Closed **N-391**'s app half, **SAL-572**, **D44**.
+  - [x] **X-av-3a** `8e832d8e` -- the pay list; closed **SAL-572**, **D44**, **N-391**'s app half.
   - [ ] **X-av-3b -- Record, Remove, the raise door** (**R-SAL96**; `$0.00` until used): its FIRST
         commit replaces the real pay figures X-av-3a's tests repeat with made-up ones and re-derives
         each expected value, after an honest rule-5 list to the developer (**R-SAL98**). Record
@@ -225,7 +217,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         later entry holds "In your pay from <date>" (**R-SAL95**), asking the developer first how a
         held RECURRING raise reads. The create form shows the count in force on its default payday,
         the edit page none (**R-SAL97**); the "Next raise" chip gives a `PAY -` event a cut's
-        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows.
+        colour, arrow and word (**R-SAL85**). Closes **N-237**; his pay history follows. Closes
+        **SAL-560** (**R-SAL109**): the raise doors validate once and build from the rows loaded.
   - [ ] **X-av-4 -- the stub screen offers its base as the pay** (**R-SAL61**): when a stub's base
         differs from the pay that payday prices at, "Use this as my pay from this payday" adds an
         entry through `X-av-3b`'s Record door, one function both call. `$0.00` until used.
@@ -244,11 +237,13 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       paycheck; convert each period the savings dashboard's monthly expense average
       (`_metrics._compute_avg_monthly_expenses`) averages at the rhythm it was paid at
       (`pay_calendar.cadence_on`). `$0.00` on production.
+- [ ] **S16 -- the W-4, filing status and state are dated** (**R-SAL101**; finding **SAL-591**):
+      like the pay list, each change to the W-4 entries, the filing status or the state is kept with
+      the payday it starts on, and a stub's side of the formulas is priced under the ones in force
+      on its payday, so a change reaches every estimate at once. After `S11-c-2c`.
 - [ ] **X-at -- the tax law has ONE home, and a year the app lacks is loud** (**R-SAL74**): the
       DECOMPOSED parent of eight leaves, ticking with its last; a new year's law waits on none.
-  - [x] **X-at-1** `42bb425d` -- the law's one home, `app/tax_law/`, each year citing its sources,
-        read with no query and written by no app door (**R-SAL74**; the tests' law, **R-SAL80**).
-        `$0.00`, byte-identical on a production clone; closed **N-236**, **SAL-574**.
+  - [x] **X-at-1** `42bb425d` -- the tax law's home (**R-SAL74**); closed **N-236**, **SAL-574**.
   - [ ] **X-at-2 -- the five tables go**: a migration drops `tax_bracket_sets`, `tax_brackets`,
         `state_tax_configs`, `fica_configs`, `state_child_deductions`, their models and audit
         triggers, REFUSING while a row differs from the law, its downgrade recreating them; the
@@ -264,9 +259,10 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
-  - [ ] **X-at-6 -- the salary pages say which rules or which stub** (**R-SAL75**'s second half),
-        after `S11-c-2` rewrites pricing: the priced paycheck carries its basis, and the cockpit,
-        the breakdown and the projection print it. Closes **N-235**.
+  - [ ] **X-at-6 -- the salary pages say which year's tax rules** (**R-SAL75**'s second half; the
+        stub half is `S11-c-2c`'s, **R-SAL100**), after `S11-c-2c` rewrites pricing: the priced
+        paycheck carries its tax year, and the cockpit, the breakdown and the projection print it.
+        Closes **N-235**.
   - [ ] **X-at-7 -- two law figures corrected to their sources** (**SAL-576**, **SAL-577**): 2025's
         standard deduction (P.L. 119-21) and 2026's head-of-household 24%/32% boundary (Rev. Proc.
         2025-32). **MOVES MONEY** (the 2025 Taxes tab); whether 2025 withholding keeps the old
@@ -297,4 +293,6 @@ eventually reach it, and a prefix that sequence cannot produce cannot collide wi
 
 **`conventions.md`, one copy for every arc**, graded by `tools/plan_gate/` through a pre-commit hook
 scoped to this file, so EDITING IT runs the gate; its caps (320 lines since the developer raised it
-on 2026-09-05, a 20-line signpost) live in the gate's constants beside the other arcs'.
+on 2026-09-05, a 20-line signpost) live in the gate's constants beside the other arcs'. **A finished
+step is a one-line pointer naming its commit, its full text moved word for word to `historical/` as
+it ships** (**R-SAL103**; the first seven: `historical/salary_shipped_entries_2026-10-04.md`).

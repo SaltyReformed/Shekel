@@ -301,6 +301,11 @@ class TestARowCannotBeHiddenHoldingMoney:
 
             outcome = transaction_service.delete_transaction(
                 row, seed_user["user"].id,
+                # The purchases the dialog names, as the card posts them back
+                # (plan step credit_card:CC-5-4a-5, ruling R-CC131).
+                purchases_named=(
+                    transaction_service.preview_deletion(row).purchase_ids
+                ),
             )
             db.session.commit()
 

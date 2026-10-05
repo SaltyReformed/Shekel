@@ -62,7 +62,9 @@ from app.schemas.validation import (
     PayStubPaydaySchema,
     PayStubSchema,
 )
-from app.services import paycheck_line_kinds, pay_stub_service, withholding_kinds
+from app.services import (
+    paycheck_line_kinds, pay_stub_gross, pay_stub_service, withholding_kinds,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404, get_owned_via_parent, require_owner
 from app.utils.db_errors import is_unique_violation
@@ -161,12 +163,12 @@ def record_stub(profile_id: int) -> ResponseReturnValue:
     if profile is None:
         abort(404)
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             stub = pay_stub_service.record_stub(
-                profile, figures, printed_net, ctx, display_today(),
+                profile, figures, printed, ctx, display_today(),
             )
             db.session.commit()
         except PayStubRefused as refused:
@@ -221,12 +223,12 @@ def edit_stub(stub_id: int) -> ResponseReturnValue:
             stale_ctx, submitted=submitted_version, current=stub.version_id,
         )
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             pay_stub_service.edit_stub(
-                stub, figures, printed_net, ctx, display_today(),
+                stub, figures, printed, ctx, display_today(),
             )
             db.session.commit()
         except PayStubRefused as refused:
@@ -332,7 +334,11 @@ def _first_messages(errors: Mapping[str, list[str]]) -> dict[str, str]:
 
 def _read_form(
     profile: SalaryProfile,
-) -> tuple[pay_stub_service.StubFigures | None, Decimal | None, dict[str, str]]:
+) -> tuple[
+    pay_stub_service.StubFigures | None,
+    pay_stub_service.PrintedTotals | None,
+    dict[str, str],
+]:
     """Read the entry form into the service's values, or into field errors.
 
     The line and tax inputs are read BY THE PROFILE'S OWN LINES AND THE FOUR
@@ -342,9 +348,11 @@ def _read_form(
     service's refusal, not this reader's.
 
     Returns:
-        ``(figures, printed_net, errors)`` -- ``figures`` is a
-        :class:`~app.services.pay_stub_service.StubFigures` when every field
-        loaded, else ``None`` with ``errors`` naming each bad field.
+        ``(figures, printed, errors)`` -- ``figures`` is a
+        :class:`~app.services.pay_stub_service.StubFigures` and ``printed``
+        the :class:`~app.services.pay_stub_service.PrintedTotals` the stub's
+        gross and net are checked against when every field loaded, else both
+        are ``None`` with ``errors`` naming each bad field.
     """
     form = request.form
     errors = {}
@@ -359,7 +367,10 @@ def _read_form(
         line_amounts=line_amounts, withholdings=withholdings,
         one_offs=one_offs, notes=scalars.get("notes"),
     )
-    return figures, scalars["printed_net"], errors
+    printed = pay_stub_service.PrintedTotals(
+        gross=scalars["printed_gross"], net=scalars["printed_net"],
+    )
+    return figures, printed, errors
 
 
 def _read_lines(
@@ -518,6 +529,9 @@ def _form_page(
 ) -> dict[str, Any]:
     """The stub form's page context: the line split, the report, the options.
 
+    ``gross_counts`` words which earnings the printed-gross check adds on this
+    job (ruling **R-SAL102**), the phrase the check's own refusals use.
+
     Args:
         profile: The owned profile.
         ctx: The request's :class:`~app.services.balance_at.BalanceContext`.
@@ -538,6 +552,9 @@ def _form_page(
         "lines": lines,
         "kind_options": paycheck_line_kinds.kind_options(),
         "tax_options": withholding_kinds.kind_options(),
+        "gross_counts": pay_stub_gross.gross_counts(
+            profile.stub_gross_includes_after_tax,
+        ),
     }
 
 

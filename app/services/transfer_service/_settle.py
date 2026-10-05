@@ -75,15 +75,16 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
 )
+from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
 from app.services.row_valuation import fixed_contribution
 from app.services.stated_figure import StatedFigure
 from app.services import status_seam
 from app.services.status_seam import (
     Settlement,
-    honoured_correction,
-    recorded_settlement,
+    honoured_figure,
+    recorded_leg_settlement,
 )
-from app.services.transfer_legs import TransferLeg
+from app.services.transfer_legs import TransferLeg, transfer_side_leg
 from app.services.transfer_service._side_days import PairDays
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import (
@@ -201,8 +202,12 @@ def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     # (``transaction_service.honoured_correction``); a draft honoured it only at
     # the WRITE, so the panel offered the plan and the settle booked the
     # human's figure.  Asked before the basis is built, so an honoured row runs
-    # no producer at all.
-    held = honoured_correction(shadow)
+    # no producer at all.  The record is the offered side's, reached through
+    # ``transfer_legs`` by SIDE (leaf ``balance:X-bi-6-4d-1``) rather than off
+    # the shadow's ``entries``, so the re-parent moves this read too.
+    held = honoured_figure(recorded_leg_settlement(
+        transfer_side_leg(shadow.transfer, is_income=shadow.is_income),
+    ))
     if held is not None:
         return held
     return _resolved_figure(shadow, basis)
@@ -266,6 +271,7 @@ def settle(
     *,
     submitted: StatedFigure | None,
     stated: PairDays,
+    shown: Shown | Silent = NOTHING_SHOWN,
 ) -> bool:
     """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
 
@@ -279,8 +285,8 @@ def settle(
     1. **The figure, decided but not yet written.**  :func:`_resolved_figure`
        is asked ONCE, before anything moves -- after the status flip it would
        answer from the settlement record this act is about to write.  A RETAINED
-       correction (:func:`~app.services.status_seam.honoured_correction`)
-       outranks that derivation, and a figure a HUMAN supplied NOW outranks
+       correction (:func:`~app.services.status_seam.honoured_figure` over the
+       expense side's record) outranks that derivation, and a figure a HUMAN supplied NOW outranks
        both: it is compared against what the row would book anyway and is a
        CORRECTION only if it differs.  A figure somebody read off a statement is
        a fact; a derivation is an inference.
@@ -357,6 +363,10 @@ def settle(
             statement's account.  A settle entering the band admits every
             stated day.  Empty derives both: each side borrows the owner's
             today, as a Paid press does.
+        shown: What the door's page named before the press, or what lets it
+            stay silent: a ``$0.00`` figure takes each leg's kept payment off
+            the books, and the act asks (ruling **R-CC127**;
+            :func:`~._status.apply_status_to_all_three`).
 
     Returns:
         Whether this settle booked a figure the caller supplied NOW -- what the
@@ -385,8 +395,11 @@ def settle(
     resolved = _resolved_figure(rows.expense, basis)
     # A RETAINED correction outranks the derivation, through the same published
     # rule :func:`settle_amount` offers from, so the pair's offer and its
-    # booking are one expression (plan step X-au-c3).
-    held = honoured_correction(rows.expense)
+    # booking are one expression (plan step X-au-c3).  The record is the
+    # expense side's, read once for the act (``rows.expense_leg``, through
+    # ``transfer_legs``) and carried into the settlement below.
+    retained = recorded_leg_settlement(rows.expense_leg)
+    held = honoured_figure(retained)
     booked = resolved if held is None else held
     correction = (
         submitted if submitted is not None and submitted.amount != booked
@@ -416,10 +429,8 @@ def settle(
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
     apply_status_to_all_three(
-        rows, new_status_id, stated=stated,
-        settlement=Settlement.from_settle(
-            booked, correction, recorded_settlement(rows.expense),
-        ),
+        rows, new_status_id, stated=stated, shown=shown,
+        settlement=Settlement.from_settle(booked, correction, retained),
     )
 
     # **``EVT_TRANSFER_AMOUNT_FROZEN`` WAS EMITTED HERE, AND IT IS DELETED

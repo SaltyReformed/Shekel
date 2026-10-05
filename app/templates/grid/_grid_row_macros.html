@@ -561,7 +561,7 @@
          ``entry_lists`` (built by ``entry_service.build_entry_lists_dict``
          on the route, passed via ``render_template`` context) carries
          ``entries`` / ``remaining`` / ``out_of_period_ids`` /
-         ``posted_ids`` / ``accounts`` for every
+         ``posted_ids`` / ``accounts`` / ``removals`` / ``owner_viewing`` for every
          envelope txn; the include uses those plus ``today`` (also from
          context) and the default ``editing_id=None`` to mirror what
          ``_render_entry_list`` in ``app/routes/entries.py`` produces per
@@ -601,6 +601,14 @@
              is 0 SILENTLY, which would hide the picker on every initial render
              while the HTMX refresh drew it. #}
           {% set accounts = _entry_data.accounts %}
+          {# What each purchase's X and CC un-tick would free, and whether the
+             session's user may be shown it (plan step credit_card:CC-5-4a-5).
+             The same trap again: `removals[entry.id]` over an Undefined
+             raises, and `owner_viewing` over one is False SILENTLY, which
+             would withhold the owner's own X captions on every initial render
+             while the HTMX refresh drew them. #}
+          {% set removals = _entry_data.removals %}
+          {% set owner_viewing = _entry_data.owner_viewing %}
           {% set editing_id = none %}
           {% set entry_list_host = id_prefix %}
           {% set entry_list_host_id = "entry-list-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}

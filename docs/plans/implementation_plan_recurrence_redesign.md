@@ -749,6 +749,18 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       worked dollars per option; its answer may change `balance:X-cu`'s build (the study's design
       s.3 M2).
 
+- [ ] **R28 -- the loan setup form answers its refusals in place** (**R-R119**, **R-R120**; findings
+      **REC-553**, **REC-554**). A refused setup does not help the owner fix it: the standing
+      payment's two refusals redirect and drop what was typed (`routes/loan/_helpers.py` says so,
+      naming REC-554), and the schema refusal flashes 'correct the highlighted errors' while
+      `loan/setup.html` marks no field. Every refusal answers on the form, keeping what was typed
+      and marking the field it names (**R-R120**). The form also opens with Balance today filled
+      from the account's balance and As of at today (`R20`'s default), and
+      `LoanParamsCreateSchema`'s balance admits zero, so an account at `$0.00` saved unread
+      configures a loan owing `$0.00`: the form refuses a `$0.00` opening balance with a message
+      saying so, the prefill kept for an account whose balance is right (**R-R119**). Its own step,
+      not `R6`'s, which edits the same form for the payment-day field. No money moves.
+
 - [ ] **R16-d -- the accrual CONVENTION becomes a value on the loan** (finding **D52**).
 
 `accrue_monthly_interest` hardcodes `balance x rate / 12`: a US fixed-rate mortgage's convention,

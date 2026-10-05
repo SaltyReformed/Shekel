@@ -119,6 +119,21 @@
                      placeholder="NC">
             </div>
           </div>
+
+          {# What this job's pay stub prints as its gross (plan step
+             salary:S11-c-2b, rulings R-SAL102 and R-SAL105), which the stub
+             form's printed-gross check adds up to.  A select, not a checkbox:
+             an unticked box submits nothing, and the update door reads an
+             absent field as "leave it", so "no" could never be saved. #}
+          {% set gross_includes_after_tax = profile and profile.stub_gross_includes_after_tax %}
+          <div class="mb-0">
+            <label for="stub_gross_includes_after_tax" class="form-label">What your pay stub's Gross Pay includes</label>
+            <select id="stub_gross_includes_after_tax" name="stub_gross_includes_after_tax" class="form-select">
+              <option value="false" {{ 'selected' if not gross_includes_after_tax }}>Base pay and taxable earnings</option>
+              <option value="true" {{ 'selected' if gross_includes_after_tax }}>Also untaxed pay, such as a mileage reimbursement</option>
+            </select>
+            <div class="form-text">The pay stub form uses this to check the Gross Pay you type.</div>
+          </div>
         </div>
       </div>
 
