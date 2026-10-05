@@ -55,7 +55,10 @@ yet in its place -- is never handed out or claimed, and ``next`` and ``sync``
 name it until the same command finishes it, or ``plan drop`` drops it (a leaf
 dropped while marked is first unlinked from its split step: it was never part
 of the split, ``R-BAL205``).  While a filing is still running its card is named
-too: no read can tell a filing running from one a failure cut short.
+too: no read can tell a filing running from one a failure cut short.  A leaf
+dropped while marked some other way -- closed by a person on the web, or with
+its split step -- is no leaf from its close, and ``sync`` unlinks it, putting a
+split step it leaves with no leaf back on the board (:func:`unsplit`).
 
 **A card linked to an issue outside the tracker is never offered**
 (``R-BAL188``): the plan reads only its own cards, so the link is reported
@@ -97,12 +100,21 @@ def leaves(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> tup
     by the L2 lane under R-BAL207 to a person's close of a still-marked leaf on the web,
     and to a read that lags ``plan drop``'s own unlink.  An OPEN marked leaf counts: its
     filing is under way, and its split step is not offered meanwhile.  A leaf git says
-    shipped counts however it was closed: its work is done.  ``cards`` holds every
-    card linked under ``card`` (:func:`missing`)."""
+    shipped counts however it was closed: its work is done.  ``sync`` unlinks a card this
+    rule leaves out (:func:`never_split`), so its mark stops deciding.  ``cards`` holds
+    every card linked under ``card`` (:func:`missing`)."""
     shipped = set(shipped)
     return tuple(number for number in card.step_children
                  if not (FILING in cards[number].labels and not cards[number].is_open
                          and dropped(number, cards, shipped)))
+
+
+def never_split(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> tuple[int, ...]:
+    """The steps linked under ``card`` that are no leaf of it (:func:`leaves`): each dropped
+    before its filing finished, so never part of the split (R-BAL205), and a link ``sync``
+    removes (:func:`unsplit`)."""
+    split = set(leaves(card, cards, shipped))
+    return tuple(number for number in card.step_children if number not in split)
 
 
 def is_container(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
@@ -424,6 +436,75 @@ def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int,
                      f"no other leaf of plan#{parent.number} is on the board to place it by")
 
 
+@dataclass(frozen=True)
+class Unsplit:
+    """R-BAL205's undo of a split that leaves whose filing never finished began.
+
+    ``step``: the card they are linked under.  ``unlink``: the leaves taken out of
+    it.  ``add``: whether ``step`` is put back on the board first, where GitHub adds
+    it, at the bottom.  ``after``: the leaf whose place on the board ``step`` then
+    takes, and that leaf's board item, which ``step`` is moved just after; None when
+    it is not moved.
+    """
+
+    step: int
+    unlink: tuple[int, ...]
+    add: bool
+    after: tuple[int, str] | None
+
+
+def unsplit(step: Card, out: Iterable[int], cards: Mapping[int, Card], shipped: Iterable[int],
+            board: Iterable[tuple[int, str]] | None) -> Unsplit:
+    """Take the leaves ``out`` out of the split of ``step`` (R-BAL205): each was never part of
+    it, and is unlinked last, so the same command run again still sees the link and
+    finishes every write before it.
+
+    ``board`` is the board's order (``(card number, item id)``, top first) when ``step``
+    will be open once the caller's other writes land, and None when it will not -- one a
+    person closed, or one the caller closes or drops -- which never goes back on it.
+    When no leaf of ``step`` is left without them (:func:`leaves`), a STEP that will be
+    open is a plain step again, offered as work only from the board, in the place its
+    split began: just after the one of ``out`` highest on the board.  So it is put on the
+    board when it is off it, and moved there; and when it is on it already but below that
+    leaf and not right after it -- a run whose move failed, or whose add lost its answer,
+    left it at the bottom -- it is moved there too.  One above that leaf stays: it never
+    left its place (a leaf's own failed move leaves the leaf below it), or a person put it
+    there.  With none of ``out`` on the board, an added step stays where GitHub adds it.
+    ``cards`` holds ``step`` and every card linked under it (:func:`missing`)."""
+    out = tuple(sorted(out))
+    order = list(board or ())
+    positions = [number for number, _ in order]
+    items = dict(order)
+    plain = (board is not None and step.kind == "step"
+             and set(leaves(step, cards, shipped)) <= set(out))
+    anchor = next(((number, items[number]) for number in positions if number in out), None)
+    add = plain and step.board_item is None
+    below = (step.board_item is not None and step.number in positions and anchor is not None
+             and positions.index(step.number) > positions.index(anchor[0]) + 1)
+    return Unsplit(step.number, out, add, anchor if plain and (add or below) else None)
+
+
+def drop_unlinks(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
+                 ending: set[int]) -> list[Unsplit]:
+    """What a drop of ``card`` unlinks (R-BAL205), so no link it leaves behind could ever
+    decide anything: under ``card`` and every step below it, each step linked there that is
+    no leaf once the drop has closed the unfinished filings in ``ending`` -- one of those,
+    or one already closed while still being filed (:func:`never_split`) -- and below each
+    of those too.  Unlinks only: no step they are linked under goes back on the board
+    (each is dropped, keeps a leaf, or shipped).  A card that is not a
+    step splits nothing: nothing is unlinked from it, nor from what hangs under it, which
+    its drop does not close.  ``cards`` holds them all (:func:`missing`)."""
+    undos, wanted = [], [card] if card.kind == "step" else []
+    while wanted:
+        step = wanted.pop(0)
+        stale = set(never_split(step, cards, shipped)) | ending
+        out = [number for number in step.step_children if number in stale]
+        if out:
+            undos.append(unsplit(step, out, cards, shipped, None))
+        wanted += [cards[number] for number in step.step_children]
+    return undos
+
+
 def stale_claims(claims: Mapping[int, Claim], now: datetime,
                  pushed: Callable[[str], bool]) -> list[Claim]:
     """Claims older than :data:`STALE_CLAIM` whose branch ``origin`` does not hold.
@@ -443,7 +524,8 @@ class SyncPlan:
     """What ``sync`` would write -- ``close`` as completed, ``drop`` (close as not
     planned), ``reopen``, ``release`` a claim; what it found and must leave to a
     person (``reports``); and what ``dev``'s history says wrongly that no tracker
-    write can change (``history``, R-BAL184)."""
+    write can change (``history``, R-BAL184).  Its undo of a split is
+    :func:`sync_unsplits`."""
 
     close: list[int] = field(default_factory=list)
     drop: list[int] = field(default_factory=list)
@@ -546,6 +628,38 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
             plan.reports.append(f"finding plan#{card.number}'s owner {lost}: give it an open "
                                 "step as its owner (R-BAL177)")
     return plan
+
+
+def sync_unsplits(cards: Mapping[int, Card], shipped: Iterable[int], plan: SyncPlan,
+                  order: Iterable[tuple[int, str]]) -> list[Unsplit]:
+    """R-BAL205's undo of every split in ``cards`` that a step closed while still being
+    filed is linked under (:func:`never_split`), each by :func:`unsplit`: what ``sync``
+    writes after ``plan``'s state writes, so no such link stays.
+
+    The link decides nothing while that step keeps its filing mark (:func:`leaves`),
+    but the mark is all that makes it no leaf: a person who removed the stale label
+    would make it a dropped leaf, and R-BAL187 would then drop a split step that was
+    never split, built or shipped as a plain step or not (review M4).  Whether the
+    split step will be open is read through ``plan``: open and not closed by it (as
+    completed, or as not planned), or reopened by it.  Only a step's links are undone:
+    a card that is not a step splits nothing, so its links decide nothing.
+
+    Such a link is left by a person's close on the web, or by a command a failure cut
+    short: the tool's own drops unlink what they close (:func:`drop_unlinks`).  ``sync``
+    reads every card still marked, closed or open, and so every such leaf and the step
+    above it (:func:`missing`): each link is undone at the next run, wherever its split
+    step stands.  A person who removes the label, or reopens the leaf, before that run
+    acts on the link as it stands.
+    """
+    shipped = set(shipped)
+    order = list(order)
+    undos = []
+    for card in sorted(cards.values(), key=lambda card: card.number):
+        if card.kind == "step" and (out := never_split(card, cards, shipped)):
+            opened = ((card.is_open and card.number not in plan.close + plan.drop)
+                      or card.number in plan.reopen)
+            undos.append(unsplit(card, out, cards, shipped, order if opened else None))
+    return undos
 
 
 def _owner_lost(card: Card, cards: Mapping[int, Card], shipped: set[int]) -> str | None:

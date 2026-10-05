@@ -1,0 +1,209 @@
+{
+ "scratch": {
+  "numbers": [
+   23,
+   24
+  ],
+  "ids": [
+   5705459375,
+   5705460158
+  ],
+  "nodes": [
+   "I_kwDOU6wSSs8AAAABVBJmrw",
+   "I_kwDOU6wSSs8AAAABVBJpvg"
+  ],
+  "items": [
+   "PVTI_lADOFB5GWc4Bln4uzg-ntGw"
+  ],
+  "board": "PVT_kwDOFB5GWc4Bln4u"
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c23: issue(number: 23) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } c24: issue(number: 24) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c23": {
+       "id": "I_kwDOU6wSSs8AAAABVBJmrw",
+       "number": 23,
+       "fullDatabaseId": "5705459375",
+       "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "number": 25,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "ruling"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      },
+      "c24": {
+       "id": "I_kwDOU6wSSs8AAAABVBJpvg",
+       "number": 24,
+       "fullDatabaseId": "5705460158",
+       "title": "[L2 measurement] scratch leaf L of step S, by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "name": "balance"
+         },
+         {
+          "name": "filing"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "DELETE",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/sub_issue",
+   "body": {
+    "sub_issue_id": 5705460158
+   },
+   "status": 403,
+   "answer": {
+    "message": "Resource not accessible by integration",
+    "documentation_url": "https://docs.github.com/rest/issues/sub-issues#remove-sub-issue",
+    "status": "403"
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, contentId: $c}) { item { id } } }",
+    "variables": {
+     "p": "PVT_kwDOFB5GWc4Bln4u",
+     "c": "I_kwDOU6wSSs8AAAABVBJmrw"
+    }
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "addProjectV2ItemById": {
+      "item": {
+       "id": "PVTI_lADOFB5GWc4Bln4uzg-ntGw"
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, contentId: $c}) { item { id } } }",
+    "variables": {
+     "p": "PVT_kwDOFB5GWc4Bln4u",
+     "c": "I_kwDOU6wSSs8AAAABVBJmrw"
+    }
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "addProjectV2ItemById": {
+      "item": {
+       "id": "PVTI_lADOFB5GWc4Bln4uzg-ntGw"
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "mutation($p: ID!, $i: ID!) { deleteProjectV2Item(input: {projectId: $p, itemId: $i}) { deletedItemId } }",
+    "variables": {
+     "p": "PVT_kwDOFB5GWc4Bln4u",
+     "i": "PVTI_lADOFB5GWc4Bln4uzg-ntGw"
+    }
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "deleteProjectV2Item": {
+      "deletedItemId": "[redacted: not a scratch card]"
+     }
+    }
+   }
+  }
+ ]
+}

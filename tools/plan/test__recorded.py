@@ -297,7 +297,8 @@ def test_a_create_github_refused_counts_nothing_as_scratch():
 #: redacted title on a card node): ``tracker.json`` read them; ``label_missing.json``
 #: read only its scratch card.  A recording added or removed must be named here (the next
 #: test).
-RECORDINGS_READ_REAL_CARDS = {"label_missing": False, "tracker": True}
+RECORDINGS_READ_REAL_CARDS = {"label_missing": False, "tracker": True, "twice": False,
+                              "unlink": False}
 
 
 def test_every_recording_is_in_the_census():

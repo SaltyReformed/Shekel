@@ -12,6 +12,7 @@ import pytest
 
 from _fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing, run,
                    ship)
+from _github import GitHubError
 from _tracker import Child, Claim
 from setup_tracker import FILING
 
@@ -438,18 +439,24 @@ def test_dropping_a_leaf_whose_filing_never_finished_undoes_the_split(code, tmp_
     assert run(tracker, code, "sync", "--dry-run") == 0
 
 
-def test_a_marked_leaf_dropped_with_its_split_step_is_not_unlinked(code, tmp_path):
+def test_a_marked_leaf_dropped_with_its_split_step_is_unlinked_before_the_step_closes(
+        code, tmp_path):
     """R-BAL205: dropping the split step itself is the decision; its marked leaf is dropped
-    with it, still linked.  Closed while marked, the leaf was never part of the split, so no
-    leaf carries the drop and the split step is closed itself (``left_bare``, leaf C)."""
+    with it.  Closed while marked, the leaf was never part of the split, so no leaf carries
+    the drop and the split step is closed itself (``left_bare``, leaf C).  Leaf C2 (review
+    M1) reverses leaf A's "not unlinked": the leaf is unlinked after its close and before
+    the step's, since no sync reaches a closed split step to do it, and a person reopening
+    the leaf would make it a leaf again and revive the dropped step."""
     tracker = FakeTracker()
     tracker.add(1)
     FailOnce(tracker.board, "add")
     assert run(tracker, code, *leaf_filing(tmp_path, "Trailer check")) == 2
+    writes = list(tracker.writes)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
-    assert not [write for write in tracker.writes if write[0] == "remove_child"]
-    assert tracker.cards_by_number[2].parent == 1 and not tracker.cards_by_number[2].is_open
+    assert [write[:2] for write in tracker.writes[len(writes):]] == [
+        ("comment", 1), ("comment", 2), ("close", 2), ("remove_child", 1), ("close", 1)]
     assert tracker.writes[-1] == ("close", 1, "not_planned")
+    assert tracker.cards_by_number[2].parent is None and not tracker.cards_by_number[2].is_open
 
 
 def test_a_marked_leaf_shows_its_filing_until_it_finishes(code, tmp_path, capsys):
@@ -566,15 +573,18 @@ def test_a_finished_leaf_a_lagging_listing_still_shows_marked_is_left_alone(code
         capsys.readouterr().out)
 
 
-def test_the_fake_tracker_fails_loudly_on_an_unlink_from_another_parent():
-    """The fake's own promise (``_fake``): the tool never unlinks a card from a step it is no
-    sub-issue of, so the fake refuses rather than guess GitHub's answer."""
+def test_the_fake_tracker_refuses_an_unlink_from_another_parent_as_github_does():
+    """The fake answers an unlink of a card that is no sub-issue of the parent named as
+    GitHub answered it (``recorded/unlink.json``): 403, and nothing written.  (Leaf C2:
+    it promised the tool never sends one, but a read lagging the tool's own unlink makes
+    ``sync`` send it.)"""
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(3)
     card = tracker.add(2, parent=3)
-    with pytest.raises(AssertionError, match="no sub-issue of plan#1"):
+    with pytest.raises(GitHubError, match="403"):
         tracker.remove_child(1, card)
+    assert not tracker.writes and tracker.cards_by_number[2].parent == 3
 
 
 def test_a_lone_leaf_dropped_after_its_split_step_left_the_board_puts_it_back(code, tmp_path,

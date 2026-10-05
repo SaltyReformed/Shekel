@@ -7,10 +7,13 @@ It keeps what the commands depend on the way the recordings show GitHub keeping
 it -- a body edit saves a full version, and the first edit also saves the body
 as filed; a parent's read lists each sub-issue's kind and state as they stand
 now, not as they were when it was linked; a mark removed from a card that
-does not carry it is answered as GitHub answers it, 404 -- and FAILS LOUDLY on
-a write the tool must never send (re-parenting a card, under a parent inside
-the tracker or out; adding a card already on the board), rather than guessing
-GitHub's answer to it.  Its board shows a
+does not carry it is answered as GitHub answers it, 404; a card added to the board
+again keeps the item it has (and, unmeasured, its place), and an unlink of a card
+that is no sub-issue of the parent named is refused 403, as GitHub answers both
+(``recorded/twice.json``, ``recorded/unlink.json``) -- and FAILS LOUDLY on a write
+the tool must never send
+(re-parenting a card, under a parent inside the tracker or out), rather than
+guessing GitHub's answer to it.  Its board shows a
 placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
 itself is graded against a recording.
 Nothing here calls GitHub.
@@ -41,10 +44,13 @@ class FakeBoard:
         return [(n, f"PVTI_{n}") for n in self.items]
 
     def add(self, card):
-        """Add a card at the bottom; the tool never adds one already on the board."""
-        assert card.number not in self.items, f"plan#{card.number} is already on the board"
+        """Add a card at the bottom; one already on the board keeps its item, as GitHub
+        answers a second add (``recorded/twice.json``: the same item, no new one) -- a read
+        that lags an add makes the tool send one.  That it keeps its place too is not
+        measured (the recording reads no order after the adds); the fake leaves it there."""
         self.writes.append(("board_add", card.number))
-        self.items.append(card.number)
+        if card.number not in self.items:
+            self.items.append(card.number)
         return f"PVTI_{card.number}"
 
     def remove(self, item):
@@ -222,10 +228,14 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
         self._set(child.number, parent=parent)
 
     def remove_child(self, parent, child):
-        """Unlink ``child`` from ``parent``; the tool never unlinks a card from a parent it
-        is not a sub-issue of."""
+        """Unlink ``child`` from ``parent``.  One that is no sub-issue of ``parent`` -- a read
+        that lags an unlink makes the tool send it -- is refused as GitHub refuses it, 403
+        "Resource not accessible by integration", open parent or closed
+        (``recorded/unlink.json``), and nothing is written."""
         held = self.cards_by_number[child.number]
-        assert held.parent == parent, f"plan#{child.number} is no sub-issue of plan#{parent}"
+        if held.parent != parent:
+            raise GitHubError(403, f"DELETE .../issues/{parent}/sub_issue -> 403: "
+                                   '{"message":"Resource not accessible by integration"}')
         self.writes.append(("remove_child", parent, child.number))
         above = self.cards_by_number[parent]
         self._set(parent, children=tuple(c for c in above.children if c.number != child.number))

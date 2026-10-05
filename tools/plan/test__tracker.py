@@ -631,3 +631,44 @@ def test_a_repository_github_cannot_find_is_an_error_not_a_card_read_as_absent()
     github = GitHub("token", Sent(200, answer["answer"]))
     with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
         Tracker(github, Board(github, "B"), APP).cards([1])
+
+
+def test_a_second_board_add_is_answered_with_the_item_the_card_has():
+    """Recorded 2026-10-05 08:00 EDT on scratch #23 (leaf C2, review M3): a read that lags a
+    board add makes the tool add the card again; GitHub answers with the SAME item and
+    makes no second one, so the repeat is harmless.  The recording also holds an unlink of
+    a card that is no sub-issue of the parent named (#24 from #23, then closed): 403."""
+    replay = Replay("twice")
+    github = GitHub("token", replay)
+    tracker = Tracker(github, Board(github, recording("twice")["scratch"]["board"]), APP)
+    cards = tracker.cards([23, 24])
+    with pytest.raises(GitHubError, match="403.*Resource not accessible by integration"):
+        tracker.remove_child(23, cards[24])
+    first = tracker.board.add(cards[23])
+    assert tracker.board.add(cards[23]) == first
+    tracker.board.remove(first)
+    assert replay.unused() == 0
+
+
+def test_an_unlink_of_a_card_not_linked_is_refused_and_a_closed_parent_is_not_why():
+    """Recorded 2026-10-05 08:02 EDT on scratch #23-#25 (leaf C2, review M3), separating
+    ``twice``'s 403: under the CLOSED #23 its sub-issue #25 is unlinked (200) and linked
+    again (201); with #23 reopened, an unlink of #24, which is no sub-issue of it, is
+    refused 403 "Resource not accessible by integration" -- the words of a permission
+    denial, which the App was not short of, since #25's unlink landed.  So the refusal
+    means "not linked"; the tool reads it as a failed call, never as done."""
+    replay = Replay("unlink")
+    github = GitHub("token", replay)
+    tracker = Tracker(github, Board(github, recording("unlink")["scratch"]["board"]), APP)
+    cards = tracker.cards([23, 24, 25])
+    assert not cards[23].is_open and cards[25].parent == 23
+    tracker.remove_child(23, cards[25])
+    tracker.add_child(23, cards[25])
+    tracker.reopen(23)
+    with pytest.raises(GitHubError, match="403.*Resource not accessible by integration"):
+        tracker.remove_child(23, cards[24])
+    tracker.close(23, "not_planned")
+    assert not [number for number, _ in tracker.board.order() if number in (23, 24, 25)]
+    end = tracker.cards([23, 24, 25])
+    assert (end[23].is_open, end[25].parent, end[24].parent) == (False, 23, None)
+    assert replay.unused() == 0

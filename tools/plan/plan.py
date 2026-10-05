@@ -54,7 +54,7 @@ import argparse
 import difflib
 import re
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -74,19 +74,24 @@ from _command import (
 from _filing import cmd_file
 from _github import GitHubError
 from _state import (
+    SyncPlan,
+    Unsplit,
+    drop_unlinks,
     filing_unfinished,
     is_container,
     is_work,
-    leaves,
     leaves_below,
     left_bare,
     never_offered,
+    never_split,
     next_step,
     outside_reports,
     resolved,
     stale_claims,
     sync_plan,
+    sync_unsplits,
     unfinished_reports,
+    unsplit,
 )
 from _tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
 from setup_tracker import ARCS, FILING
@@ -149,8 +154,12 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
     scope = f" in {args.arc}" if args.arc else ""
     print(f"next{scope}: {_label(answer.card)}" if answer.card else f"next{scope}: nothing")
     for card in answer.unplaced:
-        print(f"NOT ON THE BOARD, so in no order: {_label(card)} -- place it with "
-              f"`plan move plan#{card.number} --after plan#M` (or the board lags a fresh write)")
+        print(f"NOT ON THE BOARD, so in no order: {_label(card)} -- "
+              + ("`plan sync` puts it back on the board, unlinking the steps closed while "
+                 "still being filed under it (R-BAL205)"
+                 if never_split(card, cards, shipped) else
+                 f"place it with `plan move plan#{card.number} --after plan#M` (or the board "
+                 "lags a fresh write)"))
     for claim in stale_claims(claims, datetime.now(UTC), lambda b: _git.pushed(root, b)):
         print(f"STALE CLAIM: plan#{claim.card} by {_holder(claim)} since {claim.made or '?'}, "
               f"no pushed branch -- {_release_hint(claim)}")
@@ -229,9 +238,13 @@ def _resolve_reference(tracker: Tracker, text: str) -> int:
     return found[0]
 
 
-def _card_lines(card: Card, tracker: Tracker, shipped: dict) -> list[str]:
-    """What the tracker and git say about a card, one fact a line."""
+def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
+                shipped: dict) -> list[str]:
+    """What the tracker and git say about a card, one fact a line.  ``cards`` holds every
+    step linked below it (:func:`_steps_below`), so a step linked under it that is no leaf
+    of it says so (:func:`_state.never_split`), as ``next`` reads it."""
     claim = tracker.claims().get(card.number)
+    stale = set(never_split(card, cards, shipped))
     order = [n for n, _ in tracker.board.order()]
     state = "open" if card.is_open else f"closed ({card.state_reason})"
     ship = f"yes, {shipped[card.number][0].sha[:12]}" if card.number in shipped else "no"
@@ -247,7 +260,10 @@ def _card_lines(card: Card, tracker: Tracker, shipped: dict) -> list[str]:
          else "  parent: none"),
     ]
     lines += [f"  child: plan#{child.number} ({child.kind}, "
-              f"{'open' if child.is_open else 'closed'})" for child in card.children]
+              f"{'open' if child.is_open else 'closed'}"
+              + ("; no leaf: closed while still being filed, so never part of the split, "
+                 "R-BAL205" if child.number in stale else "") + ")"
+              for child in card.children]
     lines += [f"  blocked by: plan#{blocker}" for blocker in card.blocked_by]
     if filing_unfinished(card):
         lines.append("  filing: not finished (R-BAL202) -- never offered until its `plan file` "
@@ -258,12 +274,27 @@ def _card_lines(card: Card, tracker: Tracker, shipped: dict) -> list[str]:
     return lines
 
 
+def _steps_below(tracker: Tracker, card: Card) -> dict[int, Card]:
+    """``card`` and every step linked below it, read by number: all that the leaf rule
+    reads (:func:`_state.leaves` reads a linked step's own leaves, never a blocker or a
+    parent), so ``show`` reads no more than it says."""
+    cards, wanted = {card.number: card}, set(card.step_children)
+    while wanted:
+        found = tracker.cards(wanted)
+        if absent := sorted(wanted - set(found)):
+            raise TrackerError(f"plan#{absent[0]} is linked below plan#{card.number}, but a "
+                               "read by its number does not hold it: run show again")
+        cards.update(found)
+        wanted = {number for step in found.values() for number in step.step_children} - set(cards)
+    return cards
+
+
 def cmd_show(args, tracker: Tracker, root: Path) -> int:
     """A card, then the code repository's history for it."""
     number = _resolve_reference(tracker, args.card)
     card = _one(tracker, number)
     found, shipped, strays = _shipped(root)
-    print("\n".join(_card_lines(card, tracker, shipped)))
+    print("\n".join(_card_lines(card, tracker, _steps_below(tracker, card), shipped)))
     print()
     print(tracker.body(number))
     print()
@@ -348,28 +379,30 @@ def _close_dropped(tracker: Tracker, card: Card) -> None:
         print(f"  its claim by {_holder(claim)} stays: {_release_hint(claim)}")
 
 
-def _undo_split(tracker: Tracker, leaf: Card, cards: dict[int, Card],
-                shipped: Iterable[int]) -> None:
-    """Take a leaf whose filing never finished out of the split it began (R-BAL205), each
-    write printed as it lands.  When it is the only leaf of an open step (:func:`leaves`:
-    one dropped before its filing finished was never one), that step is a plain step
-    again, offered as work only from the board: if it is off the board, it is put on it
-    first -- just after the leaf when the leaf is on the board, else at the bottom --
-    before the unlink, so the same drop run again still sees the link and finishes; then
-    the leaf is unlinked.  ``cards`` holds the split step and every card linked under it
-    (:func:`_with_closure`)."""
-    split = cards[leaf.parent]
-    if (split.is_open and split.kind == "step" and split.board_item is None
-            and not [n for n in leaves(split, cards, shipped) if n != leaf.number]):
-        item = tracker.board.add(split)
-        print(f"  board: plan#{split.number} added back at the bottom, a plain step again")
-        if leaf.board_item is not None:
-            shown = tracker.board.place(item, leaf.board_item)
-            print(f"  board: plan#{split.number} moved into plan#{leaf.number}'s place"
-                  + ("" if shown else " (the board has not shown it yet)"))
-    tracker.remove_child(split.number, leaf)
-    print(f"  unlinked from plan#{split.number}: its filing never finished, so it was never "
-          "part of that split (R-BAL205)")
+def _unsplit(tracker: Tracker, undo: Unsplit, cards: dict[int, Card],
+             dry_run: bool = False) -> None:
+    """Take leaves whose filing never finished out of the split they began (R-BAL205,
+    :func:`_state.unsplit` decides), each write printed as it lands, or under ``dry_run``
+    printed as what would be written and not made: the split step put back on the board,
+    and moved into a leaf's place, when it is left a plain step; then each leaf unlinked.
+    ``cards`` holds the split step and every card linked under it
+    (:func:`_with_closure`); ``plan drop`` and ``plan sync`` both take a split apart
+    here."""
+    split, would = cards[undo.step], "would be " if dry_run else ""
+    item = split.board_item
+    if undo.add:
+        item = None if dry_run else tracker.board.add(split)
+        print(f"  board: plan#{split.number} {would}added back at the bottom, a plain step again")
+    if undo.after is not None:
+        leaf, after = undo.after
+        shown = dry_run or tracker.board.place(item, after)
+        print(f"  board: plan#{split.number} {would}moved into plan#{leaf}'s place"
+              + ("" if shown else " (the board has not shown it yet)"))
+    for number in undo.unlink:
+        if not dry_run:
+            tracker.remove_child(split.number, cards[number])
+        print(f"  plan#{number} {would}unlinked from plan#{split.number}: its filing never "
+              "finished, so it was never part of that split (R-BAL205)")
 
 
 def cmd_drop(args, tracker: Tracker, root: Path) -> int:
@@ -377,11 +410,17 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
 
     Work git says shipped is never dropped: undoing it is a ``Reopens:`` commit.
     A leaf dropped while its filing has not finished is first taken out of the
-    split it began (R-BAL205, :func:`_undo_split`): unlinked, and its split step,
+    split it began (R-BAL205, :func:`_unsplit`): unlinked, and its split step,
     if it was the only leaf, a plain step again, on the board (in the leaf's
     place when the leaf is on it).
-    A leaf dropped with its split step is not unlinked: the split step's own drop
-    is the decision.  A split step holds no decision of the tool's (R-BAL190):
+    No drop leaves a link that is no leaf behind it (:func:`_state.drop_unlinks`):
+    a step closed while still being filed and linked under the card dropped is
+    unlinked before the card is closed, and so is every leaf still being filed
+    that a split step's drop closes, after its close and before any step left
+    bare is closed.  Left linked, such a leaf could be reached by no ``sync``
+    once its split step was closed, and a person reopening it would make it a
+    leaf again and revive the step that was dropped (review C2 M1).  A split
+    step holds no decision of the tool's (R-BAL190):
     dropping one notes it on the split step first, then drops every leaf below
     it that is still work by git's answer -- not shipped and not dropped,
     whatever its card shows -- each with the reason, and names the shipped ones
@@ -401,7 +440,11 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
             raise Refused(f"{_label(card)} shipped in git: undo it with a commit carrying "
                           f"'Reopens: plan#{card.number}', not a drop")
         if card.kind == "step" and card.parent is not None and filing_unfinished(card):
-            _undo_split(tracker, card, cards, shipped)
+            split = cards[card.parent]
+            _unsplit(tracker, unsplit(split, (card.number,), cards, shipped,
+                                      tracker.board.order() if split.is_open else None), cards)
+        for undo in drop_unlinks(card, cards, shipped, set()):
+            _unsplit(tracker, undo, cards)
         _drop(tracker, card, args.why)
         return 0
     below = leaves_below(card, cards, shipped)
@@ -420,6 +463,8 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
           + ("" if card in bare else "; it shows them at the next `plan sync`"))
     for leaf in below:
         _drop(tracker, leaf, args.why)
+    for undo in drop_unlinks(card, cards, shipped, ending):
+        _unsplit(tracker, undo, cards)
     for step in bare:
         print(f"  plan#{step.number}: every leaf of it was still being filed, so no leaf "
               "carries its drop (R-BAL190): it is closed itself")
@@ -444,21 +489,39 @@ def _ship_branches(tracker: Tracker, root: Path, cards: dict[int, Card],
     }
 
 
+def _undo_splits(tracker: Tracker, cards: dict[int, Card], shipped: dict, changes: SyncPlan,
+                 dry_run: bool) -> None:
+    """``sync``'s undo of each split a leaf closed while still being filed is linked under
+    (:func:`_state.sync_unsplits`, R-BAL205, which reads the board's order and ``changes``,
+    the state writes ``sync`` makes): each named, then made by :func:`_unsplit` -- under
+    ``dry_run``, printed as what would be written and not made."""
+    for undo in sync_unsplits(cards, shipped, changes, tracker.board.order()):
+        names = ", ".join(f"plan#{number}" for number in undo.unlink)
+        print(f"{'would ' if dry_run else ''}undo the split of {_label(cards[undo.step])} by "
+              f"{names}, closed while still being filed (R-BAL205)")
+        _unsplit(tracker, undo, cards, dry_run)
+
+
 def cmd_sync(args, tracker: Tracker, root: Path) -> int:
-    """Write each step's and finding's open or closed state from git (display only).
+    """Write each step's and finding's open or closed state from git (display only), then
+    undo each split a leaf closed while still being filed is linked under (R-BAL205,
+    :func:`_undo_splits`): last, after every state write and every REPORT and HISTORY
+    line, so a failed undo costs none of them; run again, it finishes the undo.
 
     Prints a REPORT for each thing a person must fix in the tracker, which makes
     it exit 1, and a HISTORY line for each thing a commit already on ``dev`` says
     wrongly, which no tracker write can change and so never fails it (R-BAL184).
 
-    The listings of open and marked cards only FIND the cards it decides over; each
+    The listings of open cards and of EVERY card still marked (a filing unfinished, or
+    one closed while still being filed, whose link under its split step ``sync``
+    undoes wherever that step is) only FIND the cards it decides over; each
     is then read by its number, which decides, since a listing may still show a card
     as it was before a write: a leaf's close the listing lagged made its split step,
     which ``plan drop`` had just closed, read as split again, and sync reopened it.
     """
     found, shipped, strays = _shipped(root)
     named = {trailer.card for trailer in found.trailers}
-    listed = {**tracker.open_cards(), **_unfinished(tracker)}
+    listed = {**tracker.open_cards(), **tracker.marked()}
     cards = tracker.cards(named | set(listed))
     if unread := sorted(set(listed) - set(cards)):
         raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
@@ -492,6 +555,7 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
     history += changes.history + list(found.malformed) + [_stray(t) for t in strays]
     for line in history:
         print(f"HISTORY: {line}")
+    _undo_splits(tracker, cards, shipped, changes, args.dry_run)
     return 1 if changes.reports else 0
 
 

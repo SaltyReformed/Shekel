@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 
 from _state import (
     Placement,
+    Unsplit,
+    drop_unlinks,
     dropped,
     dropped_above,
     filing_unfinished,
@@ -18,12 +20,15 @@ from _state import (
     left_bare,
     missing,
     never_offered,
+    never_split,
     next_step,
     outside_reports,
     resolved,
     stale_claims,
     sync_plan,
+    sync_unsplits,
     unfinished_reports,
+    unsplit,
     withdrawn,
     workable,
 )
@@ -687,3 +692,124 @@ def test_an_open_marked_leaf_counts_however_its_own_leaves_ended():
     cards[3] = _closed(3, by_tool=False, reason="NOT_PLANNED", parent=2)
     assert leaves(cards[1], cards, set()) == (2,) and is_container(cards[1], cards, set())
     assert not next_step([], cards, set(), {}).unplaced
+
+
+# -- leaf C2: sync undoes a split a leaf closed while still marked began (R-BAL205) -------
+
+def test_never_split_is_every_linked_step_the_leaf_rule_leaves_out():
+    """``never_split`` is ``leaves``' complement among the linked steps, one rule: a step
+    closed while still marked and unshipped is in it; one open and marked (a filing under
+    way), one git says shipped, and one closed after its filing finished (a dropped leaf,
+    R-BAL187's) are not; a finding linked under the step is neither."""
+    cards = _split(_closed(2, by_tool=False, parent=1, labels=MARKED),
+                   _card(3, parent=1, labels=MARKED),
+                   _closed(4, by_tool=False, parent=1, labels=MARKED),
+                   _closed(5, reason="NOT_PLANNED", parent=1))
+    cards[1] = replace(cards[1], children=(*cards[1].children, Child(6, "finding", True)))
+    cards[6] = _card(6, "finding", parent=1, labels=MARKED)
+    assert never_split(cards[1], cards, {4}) == (2,)
+    assert leaves(cards[1], cards, {4}) == (3, 4, 5)
+
+
+def test_a_split_step_left_with_no_leaf_goes_back_into_the_place_of_its_highest_leaf():
+    """``unsplit``: an open step with no leaf left once the leaves taken out are goes back on
+    the board just after the one of them highest on it (review C2 LOW 1: not the lowest
+    number), else at the bottom; any other leaf keeps it split and off the board."""
+    cards = _split(_closed(4, by_tool=False, parent=1, labels=MARKED, board_item=None),
+                   _closed(5, by_tool=False, parent=1, labels=MARKED),
+                   _closed(6, by_tool=False, parent=1, labels=MARKED))
+    order = [(9, "I9"), (6, "I6"), (5, "I5")]
+    assert unsplit(cards[1], (6, 5, 4), cards, set(), order) == Unsplit(
+        1, (4, 5, 6), True, (6, "I6"))
+    assert unsplit(cards[1], (4, 5, 6), cards, set(), [(9, "I9")]) == Unsplit(
+        1, (4, 5, 6), True, None)
+    cards = _split(_card(2, parent=1, labels=MARKED), _card(3, parent=1))
+    assert unsplit(cards[1], (2,), cards, set(), [(2, "I2")]) == Unsplit(
+        1, (2,), False, None)
+
+
+def test_a_split_step_on_the_board_is_moved_only_from_below_its_leaf():
+    """Review C2 M2: a run whose move failed, or whose add lost its answer, left the step on
+    the board at the bottom; the next run moves it just after the leaf.  A step above the
+    leaf never left its place (a leaf's own failed move leaves the leaf below it) or was
+    put there by a person, and one right after it is placed: neither moves."""
+    cards = _split(_closed(2, by_tool=False, parent=1, labels=MARKED))
+    cards[1] = replace(cards[1], board_item="I1")
+    for order, moved in (([(9, "I9"), (2, "I2"), (8, "I8"), (1, "I1")], True),
+                         ([(1, "I1"), (9, "I9"), (2, "I2")], False),
+                         ([(9, "I9"), (2, "I2"), (1, "I1")], False)):
+        assert unsplit(cards[1], (2,), cards, set(), order) == Unsplit(
+            1, (2,), False, (2, "I2") if moved else None)
+
+
+def test_a_board_order_that_lags_the_steps_own_item_moves_nothing():
+    """C2 delta LOW 4: the step's card says it is on the board, but the board's order, which
+    lags a write, does not list it yet: nothing to compare, so no move (and no crash); a
+    later run, its order caught up, moves it if it is below its leaf."""
+    cards = _split(_closed(2, by_tool=False, parent=1, labels=MARKED))
+    cards[1] = replace(cards[1], board_item="I1")
+    assert unsplit(cards[1], (2,), cards, set(), [(2, "I2"), (9, "I9")]) == Unsplit(
+        1, (2,), False, None)
+
+
+def test_only_an_open_step_goes_back_on_the_board():
+    """``unsplit``: a step that will not be open (no board passed: a person's close, or the
+    caller's own close) and a card that is not a step are only unlinked from."""
+    leaf = _closed(2, by_tool=False, parent=1, labels=MARKED)
+    cards = _split(leaf)
+    assert unsplit(cards[1], (2,), cards, set(), None) == Unsplit(
+        1, (2,), False, None)
+    finding = _cards(_card(1, "finding", board_item=None, children=(Child(2, "step", False),)),
+                     leaf)
+    assert unsplit(finding[1], (2,), finding, set(), [(2, "I2")]) == Unsplit(
+        1, (2,), False, None)
+
+
+def test_sync_unsplits_by_the_state_its_own_writes_leave_the_split_step_in():
+    """Review M4, leaf C2: ``sync`` undoes every split a leaf closed while marked is still
+    linked under, and boards the split step only if it will be open after the state writes
+    ``sync_plan`` decided: an open one it leaves open, and a closed one it reopens (the tool
+    showed it completed as a plain step git does not ship); never one it closes as shipped
+    now, nor one a person closed.  Only a step's links are undone (review C2 LOW 3)."""
+    leaf = _closed(2, by_tool=False, parent=1, labels=MARKED)
+    order = [(2, "I2")]
+
+    def undos(cards, shipped=frozenset(), claims=None, branches=None):
+        plan = sync_plan(cards, shipped, claims or {}, branches or {})
+        return plan, sync_unsplits(cards, shipped, plan, order)
+
+    plan, found = undos(_split(leaf))
+    assert found == [Unsplit(1, (2,), True, (2, "I2"))]
+    assert not (plan.close or plan.drop or plan.reopen or plan.reports)
+    plan, found = undos(_split(leaf, is_open=False, state_reason="COMPLETED",
+                               closed_by_tool=True))
+    assert plan.reopen == [1] and found == [Unsplit(1, (2,), True, (2, "I2"))]
+    plan, found = undos(_split(leaf), {1}, {1: _claim(1, "feat/a")}, {1: {"feat/a"}})
+    assert plan.close == [1] and found == [Unsplit(1, (2,), False, None)]
+    plan, found = undos(_split(leaf, is_open=False, state_reason="NOT_PLANNED",
+                               touched_by_hand=True))
+    assert not plan.reopen and found == [Unsplit(1, (2,), False, None)]
+    assert not undos(_split(_card(2, parent=1, labels=MARKED)))[1]
+    finding = _cards(_card(1, "finding", children=(Child(2, "step", False),)), leaf)
+    assert not undos(finding)[1]
+
+
+def test_a_drop_unlinks_every_unfinished_leaf_it_closes_and_every_stale_link_below():
+    """``drop_unlinks`` (review C2 M1): under the card dropped and every step below it, the
+    leaves still being filed that the drop closes and the steps already closed while being
+    filed -- below a leaf it unlinks too (C2 delta LOW 1: a hand-made link under it) --
+    never a leaf that stays one, never from a card that is not a step, and an unlink only."""
+    cards = _cards(_card(1, children=(Child(2, "step", True), Child(3, "step", True))),
+                   _card(2, parent=1, labels=MARKED),
+                   _card(3, parent=1, children=(Child(4, "step", False), Child(5, "step", True))),
+                   _closed(4, by_tool=False, parent=3, labels=MARKED), _card(5, parent=3))
+    assert drop_unlinks(cards[1], cards, set(), {2}) == [Unsplit(1, (2,), False, None),
+                                                         Unsplit(3, (4,), False, None)]
+    assert drop_unlinks(cards[3], cards, set(), set()) == [Unsplit(3, (4,), False, None)]
+    cards[2] = replace(cards[2], children=(Child(6, "step", False),))
+    cards[6] = _closed(6, by_tool=False, parent=2, labels=MARKED)
+    assert drop_unlinks(cards[1], cards, set(), {2})[:2] == [Unsplit(1, (2,), False, None),
+                                                             Unsplit(2, (6,), False, None)]
+    finding = _cards(_card(1, "finding", children=(Child(4, "step", False),)),
+                     _closed(4, by_tool=False, parent=1, labels=MARKED))
+    assert not drop_unlinks(finding[1], finding, set(), set())

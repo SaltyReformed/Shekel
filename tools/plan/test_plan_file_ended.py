@@ -2,7 +2,9 @@
 beside R-BAL202..R-BAL206): ``plan file`` run again writes nothing over a filing an earlier
 run made -- a card still marked is found in any state, and a ruling among its owner's
 sub-issues -- and never files over one a decision ended; and a leaf closed while still
-marked is no leaf of its split step, unless git says it shipped (``_state.leaves``).  Over
+marked is no leaf of its split step, unless git says it shipped (``_state.leaves``) -- and,
+leaf C2, ``sync`` unlinks it, putting a split step it leaves bare back on the board
+(R-BAL205, ``_state.unsplit``).  Over
 :class:`_fake.FakeTracker` and a throwaway git repository (the ``code`` fixture,
 ``conftest.py``).  Nothing here calls GitHub.
 """
@@ -200,33 +202,48 @@ def test_a_person_closing_the_only_unfinished_leaf_leaves_a_plain_step(code, tmp
     """Review rbal202b LOW 11: a person closes plan#1's only leaf on the web while it is
     still marked.  It was never part of the split, so plan#1 is a plain step again: never
     closed as not planned by `sync` (R-BAL187 counted it a split step whose leaves were all
-    dropped), named by `next` as off the board, and put back on it by `plan move`."""
+    dropped).  Leaf C2: `sync` puts it back on the board in the leaf's place, then unlinks
+    the leaf (R-BAL205), so `next` offers it -- at leaf C it was named off the board until
+    a person ran `plan move`."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     _closed_by_hand(tracker, 2)
     writes = list(tracker.writes)
     capsys.readouterr()
     assert run(tracker, code, "sync") == 0
-    assert tracker.writes == writes
+    assert tracker.writes[len(writes):] == [("board_add", 1), ("board_place", 1, "PVTI_2"),
+                                            ("remove_child", 1, 2)]
+    assert tracker.cards_by_number[1].is_open and tracker.board.items == [2, 1]
+    capsys.readouterr()
     assert run(tracker, code, "next") == 0
-    assert "NOT ON THE BOARD, so in no order: plan#1 " in capsys.readouterr().out
-    assert run(tracker, code, "move", "plan#1", "--top") == 0
-    assert run(tracker, code, "next") == 0
-    assert capsys.readouterr().out.endswith("next: plan#1 [step, balance] card 1\n")
+    assert capsys.readouterr().out == "next: plan#1 [step, balance] card 1\n"
     assert run(tracker, code, "claim", "plan#1", "--branch", "feat/x") == 0
 
 
-def test_a_read_that_lags_a_drops_unlink_never_drops_the_split_step(code, tmp_path):
+def test_a_read_that_lags_a_drops_unlink_never_drops_the_split_step(code, tmp_path,
+                                                                     monkeypatch, capsys):
     """Round 4 LOW 6: `plan drop` of the only unfinished leaf unlinks it, then closes it; a
     `sync` whose read of plan#1 still lists the link saw a split step whose only leaf was
-    dropped, and closed it as not planned for good."""
+    dropped, and closed it as not planned for good.  Leaf C2 (review M3): that lagging read
+    makes `sync` send the unlink again, and GitHub refuses an unlink of a card that is no
+    sub-issue, 403 (``recorded/unlink.json``): a failed call, after every state write and
+    every REPORT and HISTORY line.  plan#1 is never closed, and the next `sync`, its read
+    caught up, writes nothing."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     assert run(tracker, code, "drop", "plan#2", "--why", "not splitting after all") == 0
-    lagging = tracker.cards_by_number[1]
-    tracker.cards_by_number[1] = replace(lagging, children=(Child(2, "step", False),))
-    tracker.cards_by_number[2] = replace(tracker.cards_by_number[2], parent=1)
+    assert tracker.cards_by_number[2].parent is None
+    lagging = {1: replace(tracker.cards([1])[1], children=(Child(2, "step", False),)),
+               2: replace(tracker.cards([2])[2], parent=1)}
+    real = tracker.cards
+    monkeypatch.setattr(tracker, "cards", lambda numbers: {
+        number: lagging.get(number, card) for number, card in real(list(numbers)).items()})
     writes = list(tracker.writes)
+    capsys.readouterr()
+    assert run(tracker, code, "sync") == 2
+    assert tracker.writes == writes and tracker.cards_by_number[1].is_open
+    assert "403" in capsys.readouterr().err
+    monkeypatch.setattr(tracker, "cards", real)
     assert run(tracker, code, "sync") == 0
     assert tracker.writes == writes and tracker.cards_by_number[1].is_open
 
@@ -261,8 +278,8 @@ def test_an_open_unfinished_leaf_still_splits_its_step(code, tmp_path, capsys):
 
 def test_dropping_a_split_step_beside_a_finished_leaf_leaves_its_close_to_sync(code, tmp_path):
     """R-BAL190: a finished leaf carries the split step's drop, so the drop closes only the
-    leaves; `sync` then closes plan#1 as not planned (R-BAL187), its unfinished leaf no
-    leaf of it once closed."""
+    leaves -- and, leaf C2 (review M1), unlinks the unfinished one after its close
+    (R-BAL205); `sync` then closes plan#1 as not planned (R-BAL187)."""
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, *leaf_filing(tmp_path, "First")) == 0
@@ -271,15 +288,17 @@ def test_dropping_a_split_step_beside_a_finished_leaf_leaves_its_close_to_sync(c
     writes = list(tracker.writes)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
     assert [write[:2] for write in tracker.writes[len(writes):]] == [
-        ("comment", 1), ("comment", 2), ("close", 2), ("comment", 3), ("close", 3)]
+        ("comment", 1), ("comment", 2), ("close", 2), ("comment", 3), ("close", 3),
+        ("remove_child", 1)]
+    writes = list(tracker.writes)
     assert run(tracker, code, "sync") == 0
-    assert tracker.writes[-1] == ("close", 1, "not_planned")
+    assert tracker.writes[len(writes):] == [("close", 1, "not_planned")]
 
 
 def test_a_split_step_left_bare_by_its_drop_is_closed_after_its_leaves(code, tmp_path):
     """No finished leaf carries the drop of a step split only by an unfinished leaf, so the
-    drop closes the step itself, last; if that close fails, the same drop run again finds
-    a plain step and drops it."""
+    drop closes the step itself, last, after unlinking the leaf (leaf C2, review M1); if
+    that close fails, the same drop run again finds a plain step and drops it."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     close = tracker.close
@@ -294,7 +313,7 @@ def test_a_split_step_left_bare_by_its_drop_is_closed_after_its_leaves(code, tmp
     writes = list(tracker.writes)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 2
     assert [write[:2] for write in tracker.writes[len(writes):]] == [
-        ("comment", 1), ("comment", 2), ("close", 2)]
+        ("comment", 1), ("comment", 2), ("close", 2), ("remove_child", 1)]
     assert tracker.cards_by_number[1].is_open
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
     assert tracker.writes[-2:] == [("comment", 1, "Dropped: replanned"),
@@ -303,8 +322,9 @@ def test_a_split_step_left_bare_by_its_drop_is_closed_after_its_leaves(code, tmp
 
 def test_a_step_left_bare_below_a_split_step_is_dropped_and_the_split_step_left_to_sync(
         code, tmp_path):
-    """A step left bare under a split step is dropped itself, with the reason, and the
-    split step above it, still split by it, is left to `sync` (R-BAL187)."""
+    """A step left bare under a split step is dropped itself, with the reason, after the
+    unfinished leaf is unlinked from it (leaf C2, review M1), and the split step above it,
+    still split by it, is left to `sync` (R-BAL187)."""
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, *leaf_filing(tmp_path, "Middle")) == 0
@@ -313,10 +333,12 @@ def test_a_step_left_bare_below_a_split_step_is_dropped_and_the_split_step_left_
     writes = list(tracker.writes)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
     assert [write[:2] for write in tracker.writes[len(writes):]] == [
-        ("comment", 1), ("comment", 3), ("close", 3), ("comment", 2), ("close", 2)]
+        ("comment", 1), ("comment", 3), ("close", 3), ("remove_child", 2), ("comment", 2),
+        ("close", 2)]
     assert tracker.cards_by_number[1].is_open
+    writes = list(tracker.writes)
     assert run(tracker, code, "sync") == 0
-    assert tracker.writes[-1] == ("close", 1, "not_planned")
+    assert tracker.writes[len(writes):] == [("close", 1, "not_planned")]
 
 
 def test_an_unfinished_leaf_beside_one_closed_while_marked_is_its_steps_only_leaf(code,
@@ -417,14 +439,15 @@ def test_a_sync_whose_open_listing_lags_a_leaf_closing_never_reopens_the_dropped
 
 def test_a_drop_never_writes_over_a_persons_close_of_the_split_step(code, tmp_path):
     """Review LOW 2 (P5): a split step a person already closed keeps their close; the drop
-    reaches its leaves only."""
+    reaches its leaves only -- closing the unfinished one, then unlinking it (leaf C2,
+    review M1)."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     _closed_by_hand(tracker, 1, "NOT_PLANNED")
     writes = list(tracker.writes)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
     assert [write[:2] for write in tracker.writes[len(writes):]] == [
-        ("comment", 1), ("comment", 2), ("close", 2)]
+        ("comment", 1), ("comment", 2), ("close", 2), ("remove_child", 1)]
     assert tracker.cards_by_number[1].touched_by_hand
 
 
@@ -479,7 +502,7 @@ def test_a_drop_closes_a_split_step_the_tool_had_shown_completed(code, tmp_path)
     tracker.cards_by_number[2] = replace(tracker.cards_by_number[2], is_open=True,
                                          state_reason="REOPENED", touched_by_hand=True)
     assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
-    assert tracker.writes[-1] == ("close", 1, "not_planned")
+    assert tracker.writes[-2:] == [("remove_child", 1, 2), ("close", 1, "not_planned")]
     writes = list(tracker.writes)
     assert run(tracker, code, "sync") == 0
     assert tracker.writes == writes and not tracker.cards_by_number[1].is_open
@@ -573,3 +596,230 @@ def test_a_stray_ships_trailer_never_decides_a_question_dropped_while_marked(cod
     assert run(tracker, code, *args) == 1
     assert "was closed as not planned before its filing finished" in capsys.readouterr().err
     assert tracker.writes == writes
+
+
+# -- leaf C2: sync undoes a split a leaf closed while still marked began (R-BAL205) -------
+
+def _unlabelled_by_hand(tracker, number):
+    """A person removes plan#``number``'s filing label on the web: a tidy-up of a closed
+    card nothing warns against."""
+    held = tracker.cards_by_number[number]
+    tracker.cards_by_number[number] = replace(
+        held, labels=tuple(label for label in held.labels if label != FILING))
+
+
+def test_a_stale_label_removed_after_sync_never_drops_a_step_that_shipped(code, tmp_path,
+                                                                           capsys):
+    """Review M4 (probe P4): a person closed plan#1's only leaf while it was still being
+    filed; plan#1, a plain step again, was built and shipped.  At leaf C the link stayed and
+    the label was all that kept the leaf out, so removing it made `sync` re-close the
+    shipped plan#1 "not planned, every leaf dropped" and call its Ships trailer a stale
+    number.  `sync` unlinks the leaf at its first run, so the label decides nothing."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    _closed_by_hand(tracker, 2)
+    assert run(tracker, code, "sync") == 0
+    assert tracker.cards_by_number[2].parent is None
+    assert run(tracker, code, "claim", "plan#1", "--branch", "feat/s") == 0
+    sha = ship(code, "Ships: plan#1")
+    tracker.pulls[sha] = {"feat/s"}
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes[-2:] == [("close", 1, "completed"), ("release", 1)]
+    _unlabelled_by_hand(tracker, 2)
+    writes = list(tracker.writes)
+    capsys.readouterr()
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes == writes and capsys.readouterr().out == ""
+
+
+def test_a_stale_label_removed_after_sync_releases_nothing_that_waits(code, tmp_path,
+                                                                      capsys):
+    """Review delta DM2 (probe D1): plan#1 not built yet, plan#3 waiting on it.  At leaf C,
+    removing the stale label made plan#1 a split step whose leaves were all dropped: `next`
+    offered plan#3, though plan#1 was never built, and `sync` closed plan#1 as not planned.
+    Unlinked by `sync`, the leaf decides nothing: plan#1 is offered and plan#3 waits."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    tracker.add(3, blocked_by=(1,))
+    _closed_by_hand(tracker, 2)
+    assert run(tracker, code, "sync") == 0
+    _unlabelled_by_hand(tracker, 2)
+    writes = list(tracker.writes)
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes == writes and tracker.cards_by_number[1].is_open
+    capsys.readouterr()
+    assert run(tracker, code, "next") == 0
+    assert capsys.readouterr().out == "next: plan#1 [step, balance] card 1\n"
+
+
+def test_sync_prints_the_undo_it_would_make_then_makes_it(code, tmp_path, capsys):
+    """Each write printed: under ``--dry-run`` as what would be written, with nothing
+    written; then as it lands."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    _closed_by_hand(tracker, 2)
+    writes = list(tracker.writes)
+    capsys.readouterr()
+    assert run(tracker, code, "sync", "--dry-run") == 0
+    assert tracker.writes == writes
+    assert capsys.readouterr().out == (
+        "would undo the split of plan#1 [step, balance] card 1 by plan#2, closed while still "
+        "being filed (R-BAL205)\n"
+        "  board: plan#1 would be added back at the bottom, a plain step again\n"
+        "  board: plan#1 would be moved into plan#2's place\n"
+        "  plan#2 would be unlinked from plan#1: its filing never finished, so it was never "
+        "part of that split (R-BAL205)\n")
+    assert run(tracker, code, "sync") == 0
+    assert capsys.readouterr().out == (
+        "undo the split of plan#1 [step, balance] card 1 by plan#2, closed while still being "
+        "filed (R-BAL205)\n"
+        "  board: plan#1 added back at the bottom, a plain step again\n"
+        "  board: plan#1 moved into plan#2's place\n"
+        "  plan#2 unlinked from plan#1: its filing never finished, so it was never part of "
+        "that split (R-BAL205)\n")
+
+
+def test_a_sync_whose_unlink_failed_is_finished_by_the_next_with_no_second_board_add(
+        code, tmp_path):
+    """The split step goes back on the board before the unlink, so a failed unlink leaves
+    the link for the next `sync`, which sees the step on the board and only unlinks."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    _closed_by_hand(tracker, 2)
+    FailOnce(tracker, "remove_child")
+    writes = list(tracker.writes)
+    assert run(tracker, code, "sync") == 2
+    assert tracker.writes[len(writes):] == [("board_add", 1), ("board_place", 1, "PVTI_2")]
+    assert tracker.cards_by_number[2].parent == 1
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes[len(writes):] == [("board_add", 1), ("board_place", 1, "PVTI_2"),
+                                            ("remove_child", 1, 2)]
+
+
+def test_a_split_step_a_person_closed_is_unlinked_from_and_stays_off_the_board(code,
+                                                                                tmp_path):
+    """A person's close of the split step is their decision: `sync` (which reads it through
+    plan#3, waiting on it) unlinks the leaf and never puts plan#1 back on the board."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    tracker.add(3, blocked_by=(1,))
+    _closed_by_hand(tracker, 2)
+    _closed_by_hand(tracker, 1, "NOT_PLANNED")
+    writes = list(tracker.writes)
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes[len(writes):] == [("remove_child", 1, 2)]
+    assert 1 not in tracker.board.items
+
+
+def test_a_leaf_reopened_as_sync_unlinked_it_is_relinked_by_its_own_command(code, tmp_path):
+    """A person reopens the leaf after `sync` unlinked it and put plan#1 back on the board
+    (or as it ran: a read that lags the reopen does the same).  The leaf, open, marked and
+    unlinked, is an unfinished filing of its own, like a leaf whose link failed (R-BAL202):
+    plan#1 is plain work meanwhile.  Its command run again links it again, moves it into
+    plan#1's place, takes plan#1 off the board and removes the mark -- the split it began,
+    finished."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    _closed_by_hand(tracker, 2)
+    assert run(tracker, code, "sync") == 0
+    assert tracker.board.items == [2, 1] and tracker.cards_by_number[2].parent is None
+    tracker.cards_by_number[2] = replace(tracker.cards_by_number[2], is_open=True,
+                                         state_reason="REOPENED", touched_by_hand=True)
+    writes = list(tracker.writes)
+    assert run(tracker, code, *leaf_filing(tmp_path, "Half")) == 0
+    assert tracker.writes[len(writes):] == [("add_child", 1, 2), ("board_place", 2, "PVTI_1"),
+                                            ("board_remove", 1), ("unmark", 2)]
+    assert tracker.board.items == [2] and tracker.cards_by_number[2].parent == 1
+
+
+def test_show_names_a_linked_step_that_is_no_leaf(code, tmp_path, capsys):
+    """`plan show` of the split step says the leaf a person closed while it was still being
+    filed is no leaf, so it agrees with `next`, which offers the step as plain work; an
+    open leaf still being filed, and the line once `sync` unlinked it, say nothing of it."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    capsys.readouterr()
+    assert run(tracker, code, "show", "plan#1") == 0
+    assert "\n  child: plan#2 (step, open)\n" in capsys.readouterr().out
+    _closed_by_hand(tracker, 2)
+    assert run(tracker, code, "show", "plan#1") == 0
+    assert ("\n  child: plan#2 (step, closed; no leaf: closed while still being filed, so "
+            "never part of the split, R-BAL205)\n") in capsys.readouterr().out
+    assert run(tracker, code, "sync") == 0
+    capsys.readouterr()
+    assert run(tracker, code, "show", "plan#1") == 0
+    assert "child:" not in capsys.readouterr().out
+
+
+def test_a_plain_steps_drop_unlinks_a_leaf_closed_while_still_being_filed(code, tmp_path):
+    """Review C2 M1: a person closed plan#1's only leaf while it was still being filed and no
+    `sync` has run since, so plain plan#1 still holds the link; its drop unlinks the leaf
+    before closing it, so no `sync` needs to reach the closed plan#1.  The same path
+    finishes a split step's drop whose unlink failed: run again, it finds a plain step."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    _closed_by_hand(tracker, 2)
+    writes = list(tracker.writes)
+    assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
+    assert tracker.writes[len(writes):] == [("remove_child", 1, 2),
+                                            ("comment", 1, "Dropped: replanned"),
+                                            ("close", 1, "not_planned")]
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    FailOnce(tracker, "remove_child")
+    writes = list(tracker.writes)
+    assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 2
+    assert [write[:2] for write in tracker.writes[len(writes):]] == [
+        ("comment", 1), ("comment", 2), ("close", 2)]
+    assert run(tracker, code, "drop", "plan#1", "--why", "replanned") == 0
+    assert [write[:2] for write in tracker.writes[len(writes):]][3:] == [
+        ("remove_child", 1), ("comment", 1), ("close", 1)]
+    assert tracker.cards_by_number[2].parent is None
+
+
+def test_next_says_sync_places_a_step_whose_leaf_closed_while_still_being_filed(code, tmp_path,
+                                                                                capsys):
+    """C2 delta DM1: `next` asked a person to `plan move` a step whose leaf a person closed
+    while it was still being filed, and the next `sync` moved it back after that leaf; it
+    now says `sync` puts it back.  A step off the board with no such link is still told to
+    `plan move`, and after the sync puts it back, `next` offers it."""
+    tracker = FakeTracker()
+    _split_by_an_unfinished_leaf(tracker, code, tmp_path)
+    tracker.add(3, on_board=False)
+    _closed_by_hand(tracker, 2)
+    capsys.readouterr()
+    assert run(tracker, code, "next") == 0
+    out = capsys.readouterr().out
+    assert ("NOT ON THE BOARD, so in no order: plan#1 [step, balance] card 1 -- `plan sync` puts "
+            "it back on the board, unlinking") in out
+    assert "plan#3 [step, balance] card 3 -- place it with `plan move plan#3 --after" in out
+    assert run(tracker, code, "sync") == 0
+    capsys.readouterr()
+    assert run(tracker, code, "next") == 0
+    assert capsys.readouterr().out.startswith("next: plan#1 ")
+
+
+def test_sync_finishes_an_undo_that_failed_after_its_own_close_of_the_split_step(code,
+                                                                                tmp_path):
+    """C2 delta DM2: plan#1's finished leaf is dropped and its other leaf, still being filed,
+    was closed by a person; `sync` closes plan#1 as not planned (R-BAL187) and its unlink
+    fails.  No open card links to the closed plan#1 any more, but `sync` reads every card
+    still marked, so the next run reaches the link and finishes the undo; a person
+    reopening the leaf afterwards leaves the dropped plan#1 dropped (with the link left,
+    it made plan#1 split again and `sync` reopened it)."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    assert run(tracker, code, *leaf_filing(tmp_path, "First")) == 0
+    FailOnce(tracker, "unmark")
+    assert run(tracker, code, *leaf_filing(tmp_path, "Second")) == 2
+    _closed_by_hand(tracker, 3)
+    assert run(tracker, code, "drop", "plan#2", "--why", "not needed") == 0
+    FailOnce(tracker, "remove_child")
+    assert run(tracker, code, "sync") == 2
+    assert ("close", 1, "not_planned") in tracker.writes and tracker.cards_by_number[3].parent == 1
+    assert run(tracker, code, "sync") == 0
+    assert tracker.writes[-1] == ("remove_child", 1, 3)
+    tracker.cards_by_number[3] = replace(tracker.cards_by_number[3], is_open=True,
+                                         state_reason="REOPENED", touched_by_hand=True)
+    assert run(tracker, code, "sync") == 1
+    assert ("reopen", 1) not in tracker.writes and not tracker.cards_by_number[1].is_open
