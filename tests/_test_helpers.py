@@ -10420,10 +10420,10 @@ def build_pay_stub_world(owner):
     """The pay stub entry door's worked example (plan step salary:S11-b), committed.
 
     A ``$75,000.00`` profile of *owner* (base pay ``$2,884.62`` at 26 a year)
-    with five flat lines: Health Insurance ``$310.00`` and Vision ``$12.00``
-    (pre-tax, every paycheck), Dental ``$40.00`` (pre-tax, 12 a year: a
+    with five flat lines: Health Insurance ``$280.00`` and Vision ``$12.00``
+    (pre-tax, every paycheck), Dental ``$35.00`` (pre-tax, 12 a year: a
     month's first paycheck), Roth IRA ``$100.00`` (post-tax) and Phone
-    Allowance ``$45.00`` (taxable earning).  Both of the door's suites
+    Allowance ``$60.00`` (taxable earning).  Both of the door's suites
     (``test_pay_stub_service.py``, ``test_salary_stubs.py``) price their
     worked example over it; the owner needs pay periods for the Dental rule.
 
@@ -10442,14 +10442,14 @@ def build_pay_stub_world(owner):
     db.session.flush()
     pre_tax = PaycheckLineKindEnum.PRE_TAX_DEDUCTION
     lines = {
-        "health": make_flat_paycheck_line(profile, "Health Insurance", "310.00", pre_tax),
+        "health": make_flat_paycheck_line(profile, "Health Insurance", "280.00", pre_tax),
         "vision": make_flat_paycheck_line(profile, "Vision", "12.00", pre_tax),
-        "dental": make_flat_paycheck_line(profile, "Dental", "40.00", pre_tax),
+        "dental": make_flat_paycheck_line(profile, "Dental", "35.00", pre_tax),
         "roth": make_flat_paycheck_line(
             profile, "Roth IRA", "100.00", PaycheckLineKindEnum.POST_TAX_DEDUCTION,
         ),
         "phone": make_flat_paycheck_line(
-            profile, "Phone Allowance", "45.00", PaycheckLineKindEnum.TAXABLE_EARNING,
+            profile, "Phone Allowance", "60.00", PaycheckLineKindEnum.TAXABLE_EARNING,
         ),
     }
     make_line_cadence_rule(db.session, lines["dental"], 12)

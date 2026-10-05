@@ -34,7 +34,7 @@ refusal, driven through the test client:
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
-gross of ``$2,984.62`` and nets ``$2,052.62``.  Today is frozen at 2026-03-20,
+gross of ``$2,999.62`` and nets ``$2,102.62``.  Today is frozen at 2026-03-20,
 so 03-27 is the next payday.
 """
 
@@ -104,7 +104,7 @@ def _tax_field(member):
     return f"tax-{ref_cache.withholding_kind_id(member)}"
 
 
-def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", printed_gross="2984.62",
+def _payload(world, *, payday=_PAYDAY, printed_net="2102.62", printed_gross="2999.62",
              roth="110.00", one_off=("Retro pay", "55.00")):
     """The worked example as the form posts it: every field the template emits.
 
@@ -119,11 +119,11 @@ def _payload(world, *, payday=_PAYDAY, printed_net="2052.62", printed_gross="298
     return {
         "payday": payday,
         "base_pay": "2884.62",
-        f"line-{lines['health']}": "310.00",
+        f"line-{lines['health']}": "280.00",
         f"line-{lines['vision']}": "",
-        f"line-{lines['dental']}": "40.00",
+        f"line-{lines['dental']}": "35.00",
         f"line-{lines['roth']}": roth,
-        f"line-{lines['phone']}": "45.00",
+        f"line-{lines['phone']}": "60.00",
         **{f"line-kind-{lines[key]}": str(world["kinds"][key]) for key in lines},
         _tax_field(WithholdingKindEnum.FEDERAL_INCOME): "150.00",
         _tax_field(WithholdingKindEnum.STATE_INCOME): "100.00",
@@ -263,16 +263,16 @@ class TestRecording:
         assert [o.name for o in stub.one_offs] == ["Retro pay"]
         page = auth_client.get(response.headers["Location"])
         assert page.status_code == 200
-        assert b"$2,052.62" in page.data
+        assert b"$2,102.62" in page.data
         assert b"3 paycheck lines" in page.data
 
     def test_a_wrong_printed_net_rerenders_the_typed_form_and_writes_nothing(
         self, auth_client, world,
     ):
-        """$2,052.63 is refused as a 422 that keeps every figure typed."""
-        response = _record(auth_client, world, printed_net="2052.63")
+        """$2,102.63 is refused as a 422 that keeps every figure typed."""
+        response = _record(auth_client, world, printed_net="2102.63")
         assert response.status_code == 422
-        assert b"The lines add up to $2,052.62, but the stub prints $2,052.63" in response.data
+        assert b"The lines add up to $2,102.62, but the stub prints $2,102.63" in response.data
         assert b'value="110.00"' in response.data
         assert b'value="Retro pay"' in response.data
         assert db.session.query(PayStub).count() == 0
@@ -280,26 +280,26 @@ class TestRecording:
     def test_a_gross_typed_as_base_pay_is_refused_with_its_reason(self, auth_client, world):
         """R-SAL99 (SAL-590): the printed gross in the Base pay box is named, nothing written.
 
-        Base pay 2984.62 + Phone 45.00 + Retro pay 55.00 = 3084.62 against the
-        printed 2984.62: the $100.00 of earnings is counted twice, and asked
+        Base pay 2999.62 + Phone 60.00 + Retro pay 55.00 = 3114.62 against the
+        printed 2999.62: the $115.00 of earnings is counted twice, and asked
         about with its twin, an earning the stub does not print (R-SAL111).
         """
         payload = _payload(world)
-        payload["base_pay"] = "2984.62"
+        payload["base_pay"] = "2999.62"
         response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
         assert response.status_code == 422
         html = response.data.decode()
         assert (
-            "Base pay plus your taxable lines make $3,084.62, but the stub prints "
-            "$2,984.62: $100.00 over, and the net is off by the same.  Is the gross in "
+            "Base pay plus your taxable lines make $3,114.62, but the stub prints "
+            "$2,999.62: $115.00 over, and the net is off by the same.  Is the gross in "
             "the Base pay box, or is an earning entered that the stub does not print?"
         ) in html
         gross_input = html[html.index('name="printed_gross"'):]
         gross_input = gross_input[:gross_input.index(">")]
         assert "is-invalid" in gross_input
-        assert 'value="2984.62"' in gross_input
+        assert 'value="2999.62"' in gross_input
         base_input = html[html.index('name="base_pay"'):]
-        assert 'value="2984.62"' in base_input[:base_input.index(">")]
+        assert 'value="2999.62"' in base_input[:base_input.index(">")]
         assert db.session.query(PayStub).count() == 0
 
     def test_a_form_without_its_printed_gross_is_refused_on_that_field(
@@ -327,7 +327,7 @@ class TestRecording:
     def test_a_one_off_named_like_a_line_is_refused_on_its_row(self, auth_client, world):
         """'health insurance' is refused, and the message sits in that row."""
         response = _record(auth_client, world, one_off=("health insurance", "0.00"),
-                           printed_net="1997.62", printed_gross="2929.62")
+                           printed_net="2047.62", printed_gross="2944.62")
         assert response.status_code == 422
         html = response.data.decode()
         row = html.index('value="health insurance"')
@@ -341,7 +341,7 @@ class TestRecording:
     ):
         """R-SAL52: a second 03-27 form (Roth 100) is refused; the stub keeps Roth 110."""
         _record(auth_client, world)
-        response = _record(auth_client, world, roth="100.00", printed_net="2062.62")
+        response = _record(auth_client, world, roth="100.00", printed_net="2112.62")
         assert response.status_code == 422
         html = response.data.decode()
         assert "Your 2026-03-27 stub was entered while this form was open" in html
@@ -361,7 +361,7 @@ class TestRecording:
         """Two records of 03-27 that both pass the check: the unique key answers R-SAL52."""
         _record(auth_client, world)
         monkeypatch.setattr(pay_stub_service, "stub_on", lambda profile, day: None)
-        response = _record(auth_client, world, roth="100.00", printed_net="2062.62")
+        response = _record(auth_client, world, roth="100.00", printed_net="2112.62")
         assert response.status_code == 422
         assert b"Your 2026-03-27 stub was entered while this form was open" in response.data
         monkeypatch.undo()
@@ -432,10 +432,10 @@ class TestEditing:
             assert 'value=""' in control[:control.index(">")], name
 
     def test_an_edit_rewrites_the_stub(self, auth_client, world):
-        """Roth 110 -> 100, so the stub nets $2,062.62."""
+        """Roth 110 -> 100, so the stub nets $2,112.62."""
         _record(auth_client, world)
         response = self._edit(auth_client, world, _stub(), roth="100.00",
-                              printed_net="2062.62")
+                              printed_net="2112.62")
         assert response.status_code == 302
         roth = world["lines"]["roth"]
         assert {r.paycheck_line_id: r.amount for r in _stub().line_amounts}[roth] == (
@@ -452,7 +452,7 @@ class TestEditing:
         _record(auth_client, world)
         stub = _stub()
         assert self._edit(auth_client, world, stub, roth="100.00",
-                          printed_net="2062.62").status_code == 302
+                          printed_net="2112.62").status_code == 302
         payload = _payload(world)
         payload["base_pay"] = "abc"
         payload["version_id"] = "1"
@@ -484,7 +484,7 @@ class TestEditing:
         """A form claiming version 7 of a version-1 stub is turned away."""
         _record(auth_client, world)
         response = self._edit(auth_client, world, _stub(), roth="100.00",
-                              printed_net="2062.62", version_id=7)
+                              printed_net="2112.62", version_id=7)
         assert response.status_code == 302
         roth = world["lines"]["roth"]
         assert {r.paycheck_line_id: r.amount for r in _stub().line_amounts}[roth] == (
@@ -558,7 +558,7 @@ class TestTheSwitch:
         assert page.status_code == 200
         assert b"Pay stubs" in page.data
         assert b"2026-03-27" in page.data
-        assert b"$2,052.62 net" in page.data
+        assert b"$2,102.62 net" in page.data
         assert b"Used for pricing: turn off" in page.data
 
 
@@ -586,7 +586,7 @@ class TestTheKindAStubPrints:
     ):
         """Phone posted as an AFTER-TAX earning: stored so, listed, and pre-set so on its page.
 
-        The net is $2,052.62 either way (an earning joins the deposit whether
+        The net is $2,102.62 either way (an earning joins the deposit whether
         taxed or not, once the taxes are typed), and R-SAL99 reads the printed
         gross as base pay plus the TAXABLE earnings, $2,939.62 here, so the
         record passes both checks and the REPORT is what shows the heading
@@ -606,28 +606,28 @@ class TestTheKindAStubPrints:
             r.paycheck_line_id: r.paycheck_line_kind_id for r in _stub().line_amounts
         }[phone] == after_tax
         page = auth_client.get(response.headers["Location"]).data.decode()
-        assert "$2,052.62" in page
+        assert "$2,102.62" in page
         assert "4 paycheck lines" in page
         assert "After-tax earning</span> on the stub" in page
         assert "kind differs" in page
         assert _selected(page, f"line-kind-{phone}") == [str(after_tax)]
 
     def test_a_line_whose_kind_and_figure_both_differ_says_so(self, auth_client, world):
-        """Phone printed as an AFTER-TAX earning of $50.00; the app takes $45.00 taxable.
+        """Phone printed as an AFTER-TAX earning of $65.00; the app takes $60.00 taxable.
 
-        gross 2884.62 + 55.00 = 2939.62; net 2939.62 - 350.00 - 472.00 - 110.00
-        + 50.00 = 2057.62: the printed gross and net the record carries.
+        gross 2884.62 + 55.00 = 2939.62; net 2939.62 - 315.00 - 472.00 - 110.00
+        + 65.00 = 2107.62: the printed gross and net the record carries.
         """
         phone = world["lines"]["phone"]
         payload = _printed_under(
-            world, _payload(world, printed_net="2057.62", printed_gross="2939.62"),
+            world, _payload(world, printed_net="2107.62", printed_gross="2939.62"),
             phone=PaycheckLineKindEnum.AFTER_TAX_EARNING,
         )
-        payload[f"line-{phone}"] = "50.00"
+        payload[f"line-{phone}"] = "65.00"
         response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
         assert response.status_code == 302
         page = auth_client.get(response.headers["Location"]).data.decode()
-        assert "$2,057.62" in page
+        assert "$2,107.62" in page
         assert "kind and figure differ" in page
 
     def test_a_filled_line_without_its_kind_is_refused_on_that_field(
@@ -648,7 +648,7 @@ class TestTheKindAStubPrints:
     def test_the_stub_page_keeps_its_kinds_after_its_line_is_re_kinded(
         self, auth_client, world,
     ):
-        """Finding SAL-567: Phone's LINE turns post-tax; the stub still nets $2,052.62.
+        """Finding SAL-567: Phone's LINE turns post-tax; the stub still nets $2,102.62.
 
         Its page lists the heading mismatch, and its form offers the kind the
         STUB recorded, not the line's new one.
@@ -661,7 +661,7 @@ class TestTheKindAStubPrints:
         )
         db.session.commit()
         page = auth_client.get(f"/salary/stubs/{_stub().id}").data.decode()
-        assert "$2,052.62" in page
+        assert "$2,102.62" in page
         assert "Taxable earning</span> on the stub" in page
         assert "Post-tax deduction</span> in the app" in page
         assert _selected(page, f"line-kind-{phone}") == [str(taxable)]
@@ -711,12 +711,12 @@ def _say_yes(world):
     db.session.commit()
 
 
-def _reimbursed_payload(world, printed_gross, *, roth="110.00", printed_net="2017.62"):
+def _reimbursed_payload(world, printed_gross, *, roth="110.00", printed_net="2067.62"):
     """The worked example with a $20.00 AFTER-TAX one-off "Reimbursement" for Retro pay.
 
-    gross (base + Phone) 2884.62 + 45.00 = 2929.62; net 2929.62 - 350.00 -
-    472.00 - 110.00 + 20.00 = 2017.62.  A stub whose gross holds the
-    reimbursement prints 2949.62.
+    gross (base + Phone) 2884.62 + 60.00 = 2944.62; net 2944.62 - 315.00 -
+    472.00 - 110.00 + 20.00 = 2067.62.  A stub whose gross holds the
+    reimbursement prints 2964.62.
     """
     payload = _payload(world, one_off=("Reimbursement", "20.00"), printed_net=printed_net,
                        printed_gross=printed_gross, roth=roth)
@@ -808,18 +808,18 @@ class TestTheJobsGrossSetting:
     """R-SAL102 and R-SAL104 to R-SAL110 at the stub door and on the profile page."""
 
     def test_a_refusal_naming_the_setting_links_to_it(self, auth_client, world):
-        """A "no" job, gross 2949.62 holding the reimbursement: a 422 asking both, with the link.
+        """A "no" job, gross 2964.62 holding the reimbursement: a 422 asking both, with the link.
 
         The setting's sentence and its link sit inside the printed gross's own
         feedback, and nothing is written.
         """
         response = auth_client.post(
             f"/salary/{world['profile_id']}/stubs",
-            data=_reimbursed_payload(world, "2949.62"),
+            data=_reimbursed_payload(world, "2964.62"),
         )
         assert response.status_code == 422
         page = unescape(response.data.decode())
-        start = page.index("Base pay plus your taxable lines make $2,929.62")
+        start = page.index("Base pay plus your taxable lines make $2,944.62")
         feedback = page[start:page.index("</div>", start)]
         assert (
             "$20.00 short, the same as your after-tax earnings.  Check the gross you "
@@ -835,18 +835,18 @@ class TestTheJobsGrossSetting:
     def test_a_yes_job_whose_gross_leaves_them_out_is_linked_to_the_setting(
         self, auth_client, world,
     ):
-        """"yes", the stub prints 2929.62 (no reimbursement in it), net exact.
+        """"yes", the stub prints 2944.62 (no reimbursement in it), net exact.
 
         The refusal names the typed gross or the setting, with the link.
         """
         _say_yes(world)
         response = auth_client.post(
             f"/salary/{world['profile_id']}/stubs",
-            data=_reimbursed_payload(world, "2929.62"),
+            data=_reimbursed_payload(world, "2944.62"),
         )
         assert response.status_code == 422
         page = unescape(response.data.decode())
-        start = page.index("Base pay plus your taxable and after-tax lines make $2,949.62")
+        start = page.index("Base pay plus your taxable and after-tax lines make $2,964.62")
         feedback = page[start:page.index("</div>", start)]
         assert (
             "$20.00 over, the same as your after-tax earnings, and your figures make "
@@ -865,10 +865,10 @@ class TestTheJobsGrossSetting:
         afresh.
         """
         url = f"/salary/{world['profile_id']}/stubs"
-        refused = auth_client.post(url, data=_reimbursed_payload(world, "2949.62"))
+        refused = auth_client.post(url, data=_reimbursed_payload(world, "2964.62"))
         assert refused.status_code == 422
         original = _rendered_controls(refused.data.decode(), url)
-        assert original["printed_gross"] == ["2949.62"]
+        assert original["printed_gross"] == ["2964.62"]
         _say(auth_client, world, "true")
         assert auth_client.post(url, data=original).status_code == 302
         assert [(o.name, o.amount) for o in _stub().one_offs] == [
@@ -878,16 +878,16 @@ class TestTheJobsGrossSetting:
     def test_an_edit_form_survives_the_setting_changed_elsewhere(self, auth_client, world):
         """R-SAL107 on the edit door: the stub's own version is all its form pins.
 
-        Recorded on "yes" (gross 2949.62).  Its page's form is read off the
+        Recorded on "yes" (gross 2964.62).  Its page's form is read off the
         page and typed into -- Roth 110 -> 100, which moves the net to
-        2027.62, and the gross a "no" job checks, base + Phone = 2929.62 --
+        2077.62, and the gross a "no" job checks, base + Phone = 2944.62 --
         then the job is switched to "no" elsewhere, and exactly that form is
         posted: saved, not stale.
         """
         _say_yes(world)
         url = f"/salary/{world['profile_id']}/stubs"
         assert auth_client.post(
-            url, data=_reimbursed_payload(world, "2949.62"),
+            url, data=_reimbursed_payload(world, "2964.62"),
         ).status_code == 302
         stub = _stub()
         edit_url = f"/salary/stubs/{stub.id}/edit"
@@ -895,8 +895,8 @@ class TestTheJobsGrossSetting:
             auth_client.get(f"/salary/stubs/{stub.id}").data.decode(), edit_url,
         )
         original[f"line-{world['lines']['roth']}"] = ["100.00"]
-        original["printed_gross"] = ["2929.62"]
-        original["printed_net"] = ["2027.62"]
+        original["printed_gross"] = ["2944.62"]
+        original["printed_net"] = ["2077.62"]
         _say(auth_client, world, "false")
         response = auth_client.post(edit_url, data=original)
         assert response.status_code == 302
@@ -906,11 +906,11 @@ class TestTheJobsGrossSetting:
         )
 
     def test_a_yes_job_records_that_stub(self, auth_client, world):
-        """The same form on a "yes" job saves: base + taxable + after-tax is 2949.62."""
+        """The same form on a "yes" job saves: base + taxable + after-tax is 2964.62."""
         _say_yes(world)
         response = auth_client.post(
             f"/salary/{world['profile_id']}/stubs",
-            data=_reimbursed_payload(world, "2949.62"),
+            data=_reimbursed_payload(world, "2964.62"),
         )
         assert response.status_code == 302
         assert [(o.name, o.amount) for o in _stub().one_offs] == [
