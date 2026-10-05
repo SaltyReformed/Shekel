@@ -161,7 +161,9 @@ def _derived(user_id, year=2026):
 def _project_sum(profile, year, periods):
     """Independent oracle: sum ``project_salary`` over *periods*.
 
-    Same configs SSOT and calibration-aware path as the producer.  For the
+    Same configs SSOT and engine as the producer (one year's law: no case
+    here seeds a pay stub, the only thing that reads another year's since
+    plan step salary:S11-c-2c, ruling **R-SAL77**).  For the
     flat, sub-cap, no-deduction scenarios here the full-context and
     subset-restart projections coincide (all figures below the 184,500 SS
     wage base and 200,000 Medicare surtax threshold), so this stays a
@@ -176,7 +178,6 @@ def _project_sum(profile, year, periods):
     configs = load_tax_configs_for_year(profile, year)
     breakdowns = paycheck_calculator.project_salary(
         payroll_basis(profile, periods), periods, configs,
-        calibration=profile.calibration,
     )
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),

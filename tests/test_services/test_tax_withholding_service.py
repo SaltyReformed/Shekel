@@ -33,9 +33,11 @@ these tests pin is:
 * the measured side taken VERBATIM from the checkpoint;
 * the gross figure, which is exactly computable (salary 130,000 / 26 =
   5,000.00 per period, no rounding residue); and
-* the four withholding lines on the CALIBRATION path, where each line is a
-  simple ``round(base * rate)`` (federal/state on taxable, medicare on
-  gross, SS capped) and is hand-computed in the test docstring.
+* the four withholding lines priced from a PAY STUB of the paycheck's own
+  lines and pay, where each line is the stub's figure and the formulas'
+  difference is ``$0.00`` -- hand-computed in the test docstring (the
+  CALIBRATION path's ``round(base * rate)`` until plan step
+  salary:S11-c-2c deleted it).
 
 Pay periods come from ``seed_periods`` (10 biweekly periods, all in 2026,
 starting 2026-01-02 with a 14-day cadence):
@@ -47,17 +49,18 @@ starting 2026-01-02 with a 14-day cadence):
 from datetime import date, timedelta
 from decimal import Decimal
 
+from app.enums import WithholdingKindEnum
 from app.extensions import db as _db
-from app.models.calibration_override import CalibrationOverride
 from app.models.pay_period import PayPeriod
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
 from app.services.tax_config_service import load_tax_configs_for_year
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
-from tests._test_helpers import start_test_pay_list
+from tests._test_helpers import add_test_pay_stub, start_test_pay_list
 
 from app.services.tax_withholding_service import (
     CheckpointFigures,
@@ -181,10 +184,13 @@ def _add_checkpoint(profile, as_of_date, **figures):
 def _expected_projected(basis, year, periods):
     """Sum ``project_salary`` over *periods* -- the independent oracle.
 
-    Same configs SSOT and calibration-aware path as the producer, over the
-    subset it is HANDED -- which is the whole of what it checks
-    independently, and is what the producer derives for itself from the
-    checkpoint.
+    Same configs SSOT and engine as the producer, over the subset it is
+    HANDED -- which is the whole of what it checks independently, and is
+    what the producer derives for itself from the checkpoint.  One year's
+    law, where the producer resolves it per year (ruling **R-SAL77**, plan
+    step salary:S11-c-2c): the two agree on a year's own periods, and only a
+    pay stub of another year could part them, which no case using this
+    oracle seeds.
 
     **Its cumulative context no longer restarts at zero**, and this docstring
     claimed it did until an adversarial review of plan step
@@ -197,9 +203,7 @@ def _expected_projected(basis, year, periods):
     which is where the context is graded.
     """
     configs = load_tax_configs_for_year(basis.profile, year)
-    breakdowns = paycheck_calculator.project_salary(
-        basis, periods, configs, calibration=basis.profile.calibration,
-    )
+    breakdowns = paycheck_calculator.project_salary(basis, periods, configs)
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),
         "federal": sum((b.taxes.federal for b in breakdowns), ZERO),
@@ -366,7 +370,7 @@ class TestComputeNoCheckpoint:
 
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         expected = _expected_projected(
             _oracle_basis(seed_user, profile), 2026,
@@ -418,7 +422,7 @@ class TestComputeWithCheckpoint:
         remainder = _derived(seed_user["user"].id)[1:]  # P1..P9
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         expected = _expected_projected(
             _oracle_basis(seed_user, profile), 2026, remainder,
@@ -460,7 +464,7 @@ class TestComputeWithCheckpoint:
         remainder = _derived(seed_user["user"].id)[2:]  # P2..P9
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         expected = _expected_projected(
             _oracle_basis(seed_user, profile), 2026, remainder,
@@ -480,7 +484,7 @@ class TestComputeWithCheckpoint:
 
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         expected = _expected_projected(
             _oracle_basis(seed_user, profile), 2026,
@@ -535,7 +539,7 @@ class TestComputeEmptyPeriods:
 
         result = compute_withholding_to_date(
             profile, 2099,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
         # Remainder is empty -> projected all zero.
@@ -556,7 +560,7 @@ class TestComputeEmptyPeriods:
         assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
         result = compute_withholding_to_date(
             profile, 2099,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
         assert result.total.gross == ZERO
         assert result.total.federal == ZERO
@@ -565,41 +569,42 @@ class TestComputeEmptyPeriods:
         assert result.checkpoint is None
 
 
-class TestCalibrationExactWithholding:
-    """The calibration path gives hand-computable per-line withholding."""
+class TestStubPricedWithholding:
+    """A pay stub gives hand-computable per-line withholding (plan step salary:S11-c-2c)."""
 
-    def test_calibrated_remainder_exact(self, app, db, seed_user, seed_periods):
-        """Active calibration, no pre-tax deductions -> exact per-line dollars.
+    def test_stub_priced_remainder_exact(self, app, db, seed_user, seed_periods):
+        """A stub of the paycheck's lines and pay -> its own four taxes, exactly.
 
-        Rates: federal 10%, state 5%, SS 6.2%, Medicare 1.45%.  With no
-        pre-tax deductions taxable == gross == 5,000.00, so per period:
-          federal  = round(5,000 * 0.10)   = 500.00
-          state    = round(5,000 * 0.05)   = 250.00
-          medicare = round(5,000 * 0.0145) =  72.50
-          SS       = round(5,000 * 0.062)  = 310.00  (cumulative << 176,100
-                     wage base over 2 periods, so uncapped)
-        Over the 2 modeled periods (no checkpoint):
+        RE-BASED by rulings **R-SAL42** and **R-SAL100** (plan step
+        salary:S11-c-2c): this case seeded an ACTIVE calibration (effective
+        rates 10% / 5% / 6.2% / 1.45%) until that path was deleted.  Its
+        subject -- the remainder's per-line sums and the measured + projected
+        identity -- is unchanged; the same dollars now come off a pay stub.
+
+        The stub, dated on the 2026-04-10 payday, prints base pay 5,000.00
+        and no paycheck line -- the profile holds none -- with federal
+        500.00, state 250.00, Social Security 310.00 and Medicare 72.50.
+        Both modeled paychecks (04-24, 05-08) pay the same 5,000.00 with the
+        same lines, so it prices both, and the formulas' difference between
+        its paycheck and each is $0.00 on every line: federal and state
+        annualise one paycheck's wages, which are equal, and the year-to-date
+        before each (35,000.00 / 40,000.00 / 45,000.00) is far below the
+        Social Security wage base and the Medicare surtax threshold.  Per
+        paycheck the four taxes are the stub's; over the 2 modeled paychecks:
           gross 10,000.00; federal 1,000.00; state 500.00; medicare 145.00;
           SS 620.00.
         """
         profile = _committed_profile(seed_user)
-        calibration = CalibrationOverride(
-            salary_profile_id=profile.id,
-            actual_gross_pay=Decimal("5000.00"),
-            actual_federal_tax=Decimal("500.00"),
-            actual_state_tax=Decimal("250.00"),
-            actual_social_security=Decimal("310.00"),
-            actual_medicare=Decimal("72.50"),
-            effective_federal_rate=Decimal("0.10"),
-            effective_state_rate=Decimal("0.05"),
-            effective_ss_rate=Decimal("0.062"),
-            effective_medicare_rate=Decimal("0.0145"),
-            pay_stub_date=date(2026, 1, 15),
-            is_active=True,
+        add_test_pay_stub(
+            profile, date(2026, 4, 10), "5000.00",
+            taxes={
+                WithholdingKindEnum.FEDERAL_INCOME: "500.00",
+                WithholdingKindEnum.STATE_INCOME: "250.00",
+                WithholdingKindEnum.SOCIAL_SECURITY: "310.00",
+                WithholdingKindEnum.MEDICARE: "72.50",
+            },
         )
-        db.session.add(calibration)
         db.session.commit()
-        db.session.refresh(profile)
 
         # TWO periods are modeled, and a CHECKPOINT is what leaves two --
         # this case sliced ``_derived(...)[:2]`` until plan step
@@ -629,7 +634,7 @@ class TestCalibrationExactWithholding:
 
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
 
         assert result.projected.gross == Decimal("10000.00")
@@ -656,7 +661,7 @@ class TestFullYearCapContext:
         """260,000 salary, checkpoint 2026-06-30, 26 periods -> capped SS.
 
         Setup: annual 260,000 / 26 = 10,000.00 gross per period exactly
-        (no residue); no deductions, no calibration; 2026 FICA seeds
+        (no residue); no deductions, no pay stub; 2026 FICA seeds
         ss_rate 0.0620, ss_wage_base 184,500, medicare_rate 0.0145,
         surtax 0.0090 above cumulative 200,000.
 
@@ -715,7 +720,7 @@ class TestFullYearCapContext:
 
         result = compute_withholding_to_date(
             profile, 2026,
-            calendar_for(seed_user["user"].id),
+            BalanceContext.build(seed_user["user"].id),
         )
 
         assert result.measured_through == date(2026, 6, 30)

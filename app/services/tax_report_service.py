@@ -71,11 +71,8 @@ from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.services import (
     balance_at,
-    paycheck_calculator,
     tax_calculator,
 )
-from app.services.pay_calendar import PayCalendar
-from app.services.payroll_basis import PayrollBasis
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
@@ -400,8 +397,8 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     periods = year_paydays(calendar, year)
     configs = load_tax_configs_for_year(primary, year)
 
-    withholding = _aggregate_withholding(year, profiles, calendar)
-    modeled_pretax = _aggregate_modeled_pretax(year, profiles, periods, calendar)
+    withholding = _aggregate_withholding(year, profiles, balance_ctx)
+    modeled_pretax = _aggregate_modeled_pretax(profiles, periods, balance_ctx)
 
     liability = compute_annual_liability(
         primary, year, withholding.total.gross, modeled_pretax,
@@ -434,7 +431,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 
 
 def _aggregate_withholding(
-    year: int, profiles: list, calendar: PayCalendar,
+    year: int, profiles: list, ctx: BalanceContext,
 ) -> WithholdingSummary:
     """Sum withholding-to-date across the active profiles (one filer).
 
@@ -448,10 +445,12 @@ def _aggregate_withholding(
     Args:
         year: The tax year.
         profiles: The active salary profiles.
-        calendar: The owner's pay calendar -- the paycheck count each
-            profile's projection divides its annual salary by, and the payday
-            set its year-cumulative state is counted over (plan steps R-F16
-            and balance:X-bh-1).
+        ctx: The report's read pass, whose calendar is the owner's pay
+            calendar -- the paycheck count each profile's projection divides
+            its annual salary by, and the payday set its year-cumulative
+            state is counted over (plan steps R-F16 and balance:X-bh-1) --
+            and whose pricer prices the modeled remainder (plan step
+            salary:S11-c-2c).
 
     Returns:
         The summed :class:`WithholdingSummary`.
@@ -463,7 +462,7 @@ def _aggregate_withholding(
     has_checkpoint = False
 
     for profile in profiles:
-        wtd = compute_withholding_to_date(profile, year, calendar)
+        wtd = compute_withholding_to_date(profile, year, ctx)
         totals.append(wtd.total)
         measures.append(wtd.measured)
         models.append(wtd.projected)
@@ -482,27 +481,34 @@ def _aggregate_withholding(
 
 
 def _aggregate_modeled_pretax(
-    year: int, profiles: list, periods: list, calendar: PayCalendar,
+    profiles: list, periods: list, ctx: BalanceContext,
 ) -> Decimal:
     """Sum the FULL-year modeled pre-tax across the active profiles.
 
     The checkpoint captures no pre-tax figure, so the annual pre-tax that
     reduces the liability's taxable base is modelled over EVERY one of the
-    year's periods (not just the remainder): ``project_salary`` is run over
+    year's periods (not just the remainder): the read pass's pricer prices
     the full period list and each breakdown's ``deductions.total_pre_tax``
-    is summed.  Calibration-aware (matching the withholding hybrid), though
-    calibration overrides only the tax lines, never the pre-tax deductions.
+    is summed.  A pay stub prices only the tax lines, never the pre-tax
+    deductions (plan step salary:S11-c-2c), so the stubs move nothing here.
+    **The pass's pricer since that step**, where it called ``project_salary``
+    with ONE year's tax configs: a stub is priced on its own payday's year
+    (ruling **R-SAL77**), and the per-year resolution that answers it has one
+    spelling, :class:`~app.services.income_service.ProfilePaychecks`; the
+    withholding remainder asks the same pricer, so each payday is priced once
+    per report.
 
     Args:
-        year: The tax year (one year of the law applies).
         profiles: The active salary profiles.
         periods: The year's pay periods.
-        calendar: The owner's pay calendar -- the paycheck count the
-            projection divides each annual salary by, and the payday set the
-            engine's month and year context is counted over (plan steps R-F16
-            and balance:X-bh-1).  Its cadence is resolvable whenever this loop
-            runs at all: the guard above returns before it when there are no
-            periods, and an owner with a period always resolves a cadence.
+        ctx: The report's read pass, whose pricer prices each profile's
+            paychecks against the owner's pay calendar -- the paycheck count
+            the projection divides each annual salary by, and the payday set
+            the engine's month and year context is counted over (plan steps
+            R-F16 and balance:X-bh-1).  Its cadence is resolvable whenever
+            this loop runs at all: the guard above returns before it when
+            there are no periods, and an owner with a period always resolves
+            a cadence.
 
     Returns:
         The summed modeled annual pre-tax (``ZERO`` when there are no
@@ -512,11 +518,7 @@ def _aggregate_modeled_pretax(
     if not periods:
         return total
     for profile in profiles:
-        tax_configs = load_tax_configs_for_year(profile, year)
-        breakdowns = paycheck_calculator.project_salary(
-            PayrollBasis(profile, calendar), periods, tax_configs,
-            calibration=profile.calibration,
-        )
+        breakdowns = ctx.paychecks().for_profile(profile).over(periods)
         total += sum(
             (bd.deductions.total_pre_tax for bd in breakdowns), ZERO,
         )

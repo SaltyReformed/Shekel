@@ -1,29 +1,28 @@
 """
-Shekel Budget App -- Paycheck engine: the four WITHHOLDING lines.
+Shekel Budget App -- Paycheck engine: the tax FORMULAS, the four withholding lines.
 
-The per-paycheck wage figures both tax paths read (:class:`_WageBasis`), the
-two paths themselves -- :func:`_calibrated_tax_lines`, effective rates from
-one real pay stub, and :func:`_bracket_tax_lines`, IRS Pub 15-T federal
+The per-paycheck wage figures the formulas read (:class:`_WageBasis`) and the
+formulas themselves, :func:`_bracket_tax_lines`: IRS Pub 15-T federal
 withholding (:func:`_bracket_federal`) plus the annualised state tax
-(:func:`_bracket_state`) plus FICA -- and :func:`_tax_lines`, which picks
-the path: the calibrated one when the profile carries an ACTIVE calibration,
-the bracket one otherwise (moved here from
-:func:`~._pricing.calculate_paycheck` at plan step salary:R18-b, when that
-function's earning steps crowded it).  Both paths enforce the Social
-Security wage-base cap from the same year-to-date cumulative
-(CRIT-03 / F-037), which is why the cumulative arrives on the value rather
-than being computed inside either path.
+(:func:`_bracket_state`) plus FICA, the Social Security wage-base cap enforced
+from the year-to-date cumulative the wage figures carry (CRIT-03 / F-037).
+
+**Since plan step salary:S11-c-2c the formulas are one path, and a pay stub is
+the other** (rulings **R-SAL42**, **R-SAL54**, **R-SAL55**): :mod:`._stubs`
+runs these formulas twice -- on the paycheck and on the stub that prices it --
+and adds their difference to the stub's own four taxes.  Until then this leaf
+also held a calibrated path, one stub's four EFFECTIVE RATES applied to every
+paycheck (``_calibrated_tax_lines``, through ``calibration_service``), and a
+``_tax_lines`` that picked between the two; both went with the rates.
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**).  Imports :mod:`._breakdown` and the tax services below the engine,
 and nothing else of the package.
 """
-
 from dataclasses import dataclass
 from decimal import Decimal
 
 from app.services import tax_calculator
-from app.services.calibration_service import apply_calibration
 from app.utils.money import ZERO, round_money
 
 from ._breakdown import TaxLines
@@ -33,12 +32,14 @@ from ._breakdown import TaxLines
 class _WageBasis:
     """The per-paycheck wage figures withholding is computed from.
 
-    The three wage figures travel together through both tax paths
-    (calibrated and bracket-based): the period gross, the period taxable
-    amount (gross less pre-tax deductions, floored at zero), and the
-    year-to-date cumulative gross that drives the FICA Social Security
-    wage-base cap.  The fourth field is the count the bracket path
-    annualises them by, which is a fact of the same paycheck.
+    The three wage figures travel together through the formulas: the period
+    gross, the period taxable amount (gross less pre-tax deductions, floored
+    at zero), and the year-to-date cumulative gross that drives the FICA
+    Social Security wage-base cap.  The fourth field is the count the
+    formulas annualise them by, which is a fact of the same paycheck.  Since
+    plan step **salary:S11-c-2c** a pay stub's own paycheck is one of these
+    too (:mod:`._stubs`): the stub's gross and taxable by the kinds it
+    records, the year-to-date and the count in force on ITS payday.
 
     Attributes:
         gross_biweekly: The period gross.
@@ -64,68 +65,12 @@ class _WageBasis:
     periods_per_year: Decimal
 
 
-def _tax_lines(basis, wages, total_pre_tax, tax_configs, calibration):
-    """Compute the four withholding lines by whichever path the profile takes.
-
-    Args:
-        basis: The :class:`~app.services.payroll_basis.PayrollBasis`, read by
-            the bracket path for the W-4 inputs.
-        wages: The per-paycheck :class:`_WageBasis`, whose count the bracket
-            path annualises by.
-        total_pre_tax: The paycheck's pre-tax deduction total, which the
-            bracket federal computation annualises.
-        tax_configs: dict with bracket_set, state_config, fica_config.
-        calibration: The profile's ``CalibrationOverride`` or ``None``; the
-            calibrated path is taken when it is present and ``is_active``.
-
-    Returns:
-        TaxLines from :func:`_calibrated_tax_lines` or
-        :func:`_bracket_tax_lines`.
-    """
-    if calibration is not None and getattr(calibration, "is_active", False):
-        return _calibrated_tax_lines(
-            wages, calibration, tax_configs.get("fica_config"),
-        )
-    return _bracket_tax_lines(basis, wages, total_pre_tax, tax_configs)
-
-
-def _calibrated_tax_lines(wages, calibration, fica_config):
-    """Compute the four withholding lines from effective calibrated rates.
-
-    The Social Security line inside :func:`apply_calibration` delegates to
-    ``capped_social_security`` so the wage-base cap is enforced identically
-    to the bracket path (CRIT-03 / F-037).
-
-    Args:
-        wages: The per-paycheck :class:`_WageBasis` (gross, taxable, and the
-            cumulative YTD gross that drives the SS wage-base cap).
-        calibration: An active CalibrationOverride with effective rates.
-        fica_config: The FicaConfig (or None) for the SS wage-base cap.
-
-    Returns:
-        TaxLines with the federal, state, social_security, and medicare
-        withholding amounts.
-    """
-    cal_taxes = apply_calibration(
-        wages.gross_biweekly,
-        wages.taxable_biweekly,
-        calibration,
-        cumulative_wages=wages.cumulative_wages,
-        fica_config=fica_config,
-    )
-    return TaxLines(
-        federal=cal_taxes["federal"],
-        state=cal_taxes["state"],
-        social_security=cal_taxes["ss"],
-        medicare=cal_taxes["medicare"],
-    )
-
-
 def _bracket_tax_lines(basis, wages, total_pre_tax, tax_configs):
     """Compute the four withholding lines from IRS Pub 15-T brackets plus FICA.
 
-    The cumulative YTD gross on ``wages`` feeds the FICA SS wage-base cap so
-    it is enforced identically to the calibration path (CRIT-03 / F-037).
+    The cumulative YTD gross on ``wages`` feeds the FICA SS wage-base cap
+    (CRIT-03 / F-037), so a paycheck past the cap is charged no Social
+    Security, and neither is a stub's paycheck priced past it.
 
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` -- read

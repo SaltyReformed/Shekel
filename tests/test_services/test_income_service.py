@@ -541,7 +541,6 @@ class TestLiveIncomeThroughBalanceResolver:
             breakdowns = paycheck_calculator.project_salary(
                 payroll_basis(profile, _derived(user_id)), _derived(user_id),
                 tax_configs,
-                calibration=profile.calibration,
             )
             expected_net = {
                 bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
@@ -884,7 +883,6 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                     payroll_basis(profile, _derived(user_id)),
                     _derived(user_id),
                     load_tax_configs_for_year(profile, 2027),
-                    calibration=profile.calibration,
                 )
             }[period_2027.id]
             net_2026_rate = {
@@ -893,7 +891,6 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                     payroll_basis(profile, _derived(user_id)),
                     _derived(user_id),
                     load_tax_configs_for_year(profile, 2026),
-                    calibration=profile.calibration,
                 )
             }[period_2027.id]
             # The two state rates genuinely diverge, so the test cannot
@@ -1000,12 +997,12 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
         withholding line collapsing to zero, which raises the net by their sum.
 
         On production only the Social Security line moved, because that
-        profile carries an ACTIVE calibration and the calibrated path takes
-        federal and state from stored effective rates; only SS still reads
-        ``fica_config``.  This fixture has no calibration, so it exercises the
-        bracket path and all three lines move.  Both are the same defect --
-        a config set that resolved to nothing -- seen through different tax
-        paths.
+        profile then carried an ACTIVE calibration and the calibrated path
+        (deleted at plan step salary:S11-c-2c) took federal and state from
+        stored effective rates; only SS read ``fica_config``.  This fixture
+        holds no pay stub, so the formulas alone price it and all three lines
+        move.  Both are the same defect -- a config set that resolved to
+        nothing -- seen through different tax paths.
         """
         with app.app_context():
             user_id = seed_user["user"].id

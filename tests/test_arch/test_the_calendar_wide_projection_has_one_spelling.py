@@ -31,14 +31,21 @@ two different questions rather than two spellings of one:
   MULTI-YEAR horizon over the owner's whole calendar needs.  This is N-443's
   subject and the thing that must have one spelling.
 * ``tax_configs=`` -- ONE config set for ONE tax year, correct over a year
-  SLICE.  ``tax_withholding_service`` prices a year's remainder that way and
-  ``tax_report_service`` sums one tax year's pre-tax total that way.
+  SLICE.  ``tax_withholding_service`` priced a year's remainder that way and
+  ``tax_report_service`` summed one tax year's pre-tax total that way.
 
 Both of those were checked by hand when this test was written (2026-09-03) and
-neither is a calendar-wide walk, so asserting "one caller of ``project_salary``"
-would have been a FALSE rule that fires on two correct sites.  A census is only
+neither was a calendar-wide walk, so asserting "one caller of ``project_salary``"
+would have been a FALSE rule that fired on two correct sites.  A census is only
 as good as its predicate, and this one is the narrow true predicate rather than
 the wide convenient one.
+
+*Both left at plan step salary:S11-c-2c*, when a pay stub began pricing a
+paycheck on its OWN payday's tax year (ruling **R-SAL77**): a year slice can
+need two years' law, which is the per-year resolution this test gives one
+spelling, so both now ask the read pass's pricer.  No ``app/`` site passes
+``tax_configs=`` today; the narrow predicate is kept, and the wide one it
+argued against has become true.
 
 Why AST, not grep
 -----------------
@@ -239,8 +246,9 @@ def test_the_scanner_fires_on_a_planted_second_spelling():
     halves and a test of only the first would pass while the second was
     inverted: the keyword arm must ACCEPT ``configs_by_year`` and REJECT
     ``tax_configs``.  Without the second plant a scanner that counted every
-    ``project_salary`` call would look identical here and would fail the real
-    census against the two legitimate year-slice callers.
+    ``project_salary`` call would look identical here and would have failed
+    the real census against the two year-slice callers it was written beside
+    (both on the pass's pricer since plan step salary:S11-c-2c).
     """
     calendar_wide = ast.parse(
         "paycheck_calculator.project_salary(\n"
@@ -373,9 +381,12 @@ _PER_PERIOD = "calculate_paycheck"
 #: line -- one payday priced outside the pricer, calibration dropped -- and
 #: NEITHER census matches it: the first reads ``configs_by_year=`` only, this
 #: one reads ``calculate_paycheck`` by name.  De-exporting the per-period
-#: entry would not close that door either; the two single-year callers
-#: (``tax_withholding_service``, ``tax_report_service``) are why it stays
-#: open, and a reviewer catches a third by eye.
+#: entry would not close that door either.  The two single-year callers that
+#: kept it open (``tax_withholding_service``, ``tax_report_service``) moved
+#: onto the pass's pricer at plan step salary:S11-c-2c, so no ``app/`` site
+#: calls ``project_salary`` outside the leaf today -- but the first census
+#: still reads ``configs_by_year=`` only, so a reviewer catches a new
+#: single-year caller by eye.
 _DIRECT_ENGINE_CALLERS: dict[str, int] = {}
 
 
@@ -452,8 +463,9 @@ def test_no_app_site_prices_a_paycheck_outside_the_pricer():
         "since plan step salary:C12 (ledger row P62): a single period is "
         "priced through the read pass's income_service.PaycheckPricing -- "
         "ctx.paychecks().for_profile(profile).at(period) -- because a direct "
-        "call resolves its own tax configs and can drop the profile's "
-        "calibration, which is how /retirement and /savings came to publish "
+        "call resolves its own tax configs, and until plan step "
+        "salary:S11-c-2c could drop the profile's calibration, which is how "
+        "/retirement and /savings came to publish "
         "a different paycheck from every other page. Route it through the "
         "pricer."
     )

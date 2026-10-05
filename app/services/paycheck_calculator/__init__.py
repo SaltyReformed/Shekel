@@ -22,8 +22,10 @@ import order: :mod:`._breakdown` (the six value types a priced paycheck IS),
 cadence, cap and escalation rules, and the one producer of the gross),
 :mod:`._calendar_questions` (the month-position and year-to-date reads the
 next section names; the year-to-date replays the gross producer),
-:mod:`._withholding` (the calibrated and the bracket tax paths) and
-:mod:`._pricing` (the two public entries, which compose the rest).  The
+:mod:`._withholding` (the tax formulas), :mod:`._stubs` (the four taxes,
+priced from the paycheck's pay stub through the formulas, since plan step
+salary:S11-c-2c) and :mod:`._pricing` (the two public entries, which compose
+the rest).  The
 engine sat at EXACTLY 1000 of pylint's 1000-line ceiling as one module on
 2026-08-17, ``recurrence:R-F16`` bought 127 lines
 of room two days later, and the steps since had spent all but three of them
@@ -209,6 +211,7 @@ from ._breakdown import (
     waterfall_net,
 )
 from ._pricing import calculate_paycheck, project_salary
+from ._stubs import StubTotals, stub_totals, tax_years_for
 
 __all__ = [
     "DeductionBreakdown",
@@ -216,9 +219,12 @@ __all__ = [
     "PaycheckBreakdown",
     "PeriodInfo",
     "PricedLine",
+    "StubTotals",
     "TaxLines",
     "calculate_paycheck",
     "project_salary",
+    "stub_totals",
+    "tax_years_for",
     "waterfall_gross",
     "waterfall_net",
 ]

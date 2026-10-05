@@ -10539,3 +10539,68 @@ def rendered_form_controls(html, action):
     reader.feed(html)
     assert reader.controls, f"no form posts to {action}"
     return reader.controls
+
+
+def add_test_pay_stub(profile, payday, base_pay, taxes, lines=()):
+    """Seed and flush one transcribed pay stub of *profile* (plan step salary:S11-c-2c).
+
+    The paycheck engine prices a paycheck's four taxes from a switched-on stub
+    on or before it (``paycheck_calculator._stubs``); this writes the rows that
+    pricing reads, around the entry door, so a case can seed a stub the door
+    would refuse (one missing a tax) and states every figure itself.  A case
+    wanting a one-off or the switch off sets it on the returned stub.
+
+    Args:
+        profile: The owning :class:`~app.models.salary_profile.SalaryProfile`.
+        payday: The stub's date.
+        base_pay: Its base pay, as a string.
+        taxes: ``{WithholdingKindEnum member: amount string}``; a member left
+            out records no figure for that tax.
+        lines: ``(paycheck_line, amount string)`` pairs, each recorded under
+            the line's own kind, or ``(paycheck_line, amount string, kind
+            member)`` to record it under another (ruling **R-SAL58**).
+
+    Returns:
+        The flushed :class:`~app.models.pay_stub.PayStub`, switched on.  The
+        profile's ``pay_stubs`` is expired, so the next read sees it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- the circular-dependency avoidance
+    # the loan helpers above state: this module loads before the app's models.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.extensions import db
+    from app.models.pay_stub import PayStub, PayStubWithholding
+
+    stub = PayStub(
+        salary_profile_id=profile.id, payday=payday, base_pay=Decimal(base_pay),
+        withholdings=[
+            PayStubWithholding(
+                withholding_kind_id=ref_cache.withholding_kind_id(member),
+                amount=Decimal(amount),
+            )
+            for member, amount in taxes.items()
+        ],
+        line_amounts=[_stub_line_amount(entry) for entry in lines],
+    )
+    db.session.add(stub)
+    db.session.flush()
+    db.session.expire(profile, ["pay_stubs"])
+    return stub
+
+
+def _stub_line_amount(entry):
+    """One :func:`add_test_pay_stub` line entry as its ``PayStubLineAmount`` row."""
+    # Pylint: ``import-outside-toplevel`` -- as :func:`add_test_pay_stub`.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.models.pay_stub import PayStubLineAmount
+
+    line, amount = entry[0], entry[1]
+    return PayStubLineAmount(
+        paycheck_line_id=line.id,
+        paycheck_line_kind_id=(
+            ref_cache.paycheck_line_kind_id(entry[2]) if len(entry) > 2
+            else line.paycheck_line_kind_id
+        ),
+        amount=Decimal(amount),
+    )

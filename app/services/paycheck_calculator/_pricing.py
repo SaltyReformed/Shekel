@@ -6,10 +6,10 @@ paycheck by composing the other leaves in the order its own numbered steps
 name -- the payday's base pay off the basis (the per-paycheck rate its pay
 list walks to, and the paychecks a year its rhythm pays), the
 taxable earning lines and the gross they make, the deduction
-passes, the wage figures, the withholding path, the after-tax earning lines,
-the net -- and :func:`project_salary`, the batch over a period list that is
-nothing but a loop over the first with the tax configs resolved per period
-year.
+passes, the after-tax earning lines, the four taxes (from the paycheck's pay
+stub, or the formulas alone: :mod:`._stubs`), the net -- and
+:func:`project_salary`, the batch over a period list that is nothing but a
+loop over the first with the tax configs resolved per period year.
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**).  This is the leaf that imports every other one; nothing else in
@@ -23,23 +23,26 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.payroll_basis import PayrollBasis
 from app.utils.money import ZERO
 
-from ._breakdown import Earnings, PaycheckBreakdown, PeriodInfo, waterfall_net
-from ._calendar_questions import (
-    _get_cumulative_wages,
-    _is_third_paycheck,
-    _month_ordinal,
+from ._breakdown import (
+    Earnings,
+    PaycheckBreakdown,
+    PeriodInfo,
+    every_priced_line,
+    waterfall_net,
+    waterfall_taxable,
 )
+from ._calendar_questions import _is_third_paycheck, _month_ordinal
 from ._lines import (
     _compute_deductions,
     _LineContext,
     priced_after_tax,
     priced_gross,
 )
-from ._withholding import _tax_lines, _WageBasis
+from ._stubs import Law, Pay, carried, priced_taxes
 
 
 def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
-                       *, calibration=None):
+                       *, configs_by_year=None):
     """Calculate a single paycheck for a given period.
 
     The BASE pay is what the profile's pay list pays on the payday: the entry
@@ -83,9 +86,18 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
                       - bracket_set: TaxBracketSet
                       - state_config: StateTaxConfig
                       - fica_config: FicaConfig
-        calibration:  Optional CalibrationOverride with effective rates.
-                      When provided and is_active is True, overrides
-                      bracket-based tax calculations with calibrated rates.
+        configs_by_year: ``{tax_year: configs dict}`` covering the year of
+                      every pay stub that may price the paycheck
+                      (:func:`~._stubs.tax_years_for`), or ``None`` when
+                      *tax_configs* is the only law the caller resolved -- a
+                      stub of another year then REFUSES (ruling **R-SAL77**:
+                      a stub is priced on its own year's law; plan step
+                      salary:S11-c-2c, which deleted the ``calibration``
+                      keyword the profile's effective rates arrived on).
+
+    Raises:
+        ValueError: A switched-on stub of a year no law was resolved for
+            prices the paycheck (:meth:`~._stubs.Law.for_stub`).
 
     Returns:
         PaycheckBreakdown dataclass.
@@ -120,28 +132,28 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # Steps 4 & 8: the pre- and post-tax deduction passes.
     deductions = _compute_deductions(line_ctx)
 
-    # Step 5: Taxable income (for display -- taxes computed via Pub 15-T).
-    taxable_biweekly = max(gross_biweekly - deductions.total_pre_tax, ZERO)
+    # Step 5: Taxable income (for display; the formulas compute their own
+    # from the same rule, on this paycheck and on a pricing stub's).
+    taxable_biweekly = waterfall_taxable(gross_biweekly, deductions.total_pre_tax)
 
-    # Steps 6-7: Tax calculation -- calibrated or bracket-based.  Both
-    # paths read the same wage figures; the cumulative YTD gross is
-    # computed once here and feeds the FICA SS wage-base cap on both paths
-    # (CRIT-03 / F-037: the calibration path used to skip this and
-    # over-charged SS after the cap on high earners).
-    taxes = _tax_lines(
-        basis,
-        _WageBasis(
-            gross_biweekly,
-            taxable_biweekly,
-            _get_cumulative_wages(basis, period),
-            base_pay.periods_per_year,
-        ),
-        deductions.total_pre_tax, tax_configs, calibration,
-    )
-
-    # Step 8b: the after-tax earning lines -- untaxed, joining the deposit
-    # after every deduction and withholding (plan step salary:R18-b).
+    # Step 5b: the after-tax earning lines -- untaxed, joining the deposit
+    # after every deduction and withholding (plan step salary:R18-b).  Priced
+    # BEFORE the taxes since plan step salary:S11-c-2c, which reads no figure
+    # off them but their identity: the four kinds' lines together are what a
+    # pay stub must carry to have this paycheck's lines.
     after_tax_lines = priced_after_tax(line_ctx)
+
+    # Steps 6-7: the four taxes, from the latest switched-on pay stub on or
+    # before the payday with these lines, else of any lines, else the
+    # formulas alone (plan step salary:S11-c-2c; rulings R-SAL42, R-SAL54).
+    # The year-to-date gross both sides read feeds the FICA SS wage-base cap
+    # (CRIT-03 / F-037).
+    taxes = priced_taxes(
+        basis,
+        Pay(period.start_date, gross_biweekly, deductions.total_pre_tax),
+        carried(every_priced_line(taxable_lines, deductions, after_tax_lines)),
+        Law(tax_configs, period.start_date.year, configs_by_year),
+    )
 
     # Step 9: Net pay, through the waterfall a transcribed pay stub shares.
     net_pay = waterfall_net(
@@ -168,23 +180,29 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
 
 
 def project_salary(basis: PayrollBasis, periods: Sequence[DerivedPeriod],
-                   tax_configs=None, *,
-                   configs_by_year=None, calibration=None):
+                   tax_configs=None, *, configs_by_year=None):
     """Generate paycheck breakdowns for all given periods.
 
     Exactly one tax-config source must be supplied:
 
     * ``tax_configs`` -- ONE config set applied to every period.  Correct
-      when every period is in the same tax year (the year-end summary, the
-      route previews, and the unit tests that hand-build a config dict).
+      when every period is in the same tax year AND no switched-on pay stub
+      of another year prices one of them: such a stub REFUSES (ruling
+      **R-SAL77**, :meth:`~._stubs.Law.for_stub`).  Since plan step
+      salary:S11-c-2c every production caller resolves per year; the unit
+      tests that hand-build a config dict are what this mode serves.
     * ``configs_by_year`` -- a ``{tax_year: config set}`` mapping; each
       period is calculated with ``configs_by_year[period.start_date.year]``.
       This is the multi-year projection path: a ~2-year horizon spans more
       than one tax year, so each period must use its own year's brackets
       and FICA wage base/cap, matching the recurrence engine that generates
-      the stored grid amounts (DH-#30).  Callers resolve the mapping via
-      :func:`app.services.tax_config_service.configs_by_year`
-      and pass it in -- this module performs no DB access (purity contract).
+      the stored grid amounts (DH-#30).  It must also cover the year of every
+      pay stub that may price a period (ruling **R-SAL77**), which is why
+      callers resolve it as
+      ``configs_by_year(series, tax_years_for(basis, periods))``
+      (:func:`app.services.tax_config_service.configs_by_year`,
+      :func:`~._stubs.tax_years_for`) and pass it in -- this module performs
+      no DB access (purity contract).
 
     Args:
         basis:            The :class:`~app.services.payroll_basis.PayrollBasis`
@@ -203,16 +221,17 @@ def project_salary(basis: PayrollBasis, periods: Sequence[DerivedPeriod],
         tax_configs:      dict with bracket_set, state_config, fica_config,
                           or ``None`` when ``configs_by_year`` is given.
         configs_by_year:  ``{tax_year: configs dict}`` mapping covering
-                          every year present in ``periods``, or ``None``
-                          when ``tax_configs`` is given.
-        calibration:      Optional CalibrationOverride for rate-based taxes.
+                          every year present in ``periods`` and every
+                          pricing stub's year, or ``None`` when
+                          ``tax_configs`` is given.
 
     Returns:
         List of PaycheckBreakdown, one per period.
 
     Raises:
         ValueError: if not exactly one of ``tax_configs`` /
-            ``configs_by_year`` is supplied.
+            ``configs_by_year`` is supplied, or a pricing stub's year has no
+            law (:meth:`~._stubs.Law.for_stub`).
     """
     if (tax_configs is None) == (configs_by_year is None):
         raise ValueError(
@@ -224,7 +243,7 @@ def project_salary(basis: PayrollBasis, periods: Sequence[DerivedPeriod],
             basis, period,
             tax_configs if tax_configs is not None
             else configs_by_year[period.start_date.year],
-            calibration=calibration,
+            configs_by_year=configs_by_year,
         )
         for period in periods
     ]

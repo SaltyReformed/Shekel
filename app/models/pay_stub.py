@@ -80,8 +80,10 @@ another owner's, whatever a writer passes.  It is the construction
 step.
 
 The one writer is the entry door (``S11-b``,
-:mod:`app.services.pay_stub_service`); nothing prices from these tables until
-the engine's calibrated path (``S11-c-2``).
+:mod:`app.services.pay_stub_service`).  Since plan step **salary:S11-c-2c** the
+paycheck engine prices each paycheck's four taxes from one switched-on stub
+(``paycheck_calculator._stubs``), reading a profile's stubs through
+``SalaryProfile.pay_stubs``, a read-only relationship.
 """
 
 from app.extensions import db
@@ -177,18 +179,22 @@ class PayStub(OptimisticLockMixin, TimestampMixin, db.Model):
     # one from its collection deletes it, which is how the entry door edits a
     # stub line by line.  ``line_amounts`` joins over BOTH columns of
     # ``fk_pay_stub_line_amounts_pay_stub``, so appending an amount copies the
-    # stub's profile into the amount's co-located key.
+    # stub's profile into the amount's co-located key.  Each loads WITH the
+    # stub, one query per collection for every stub loaded together
+    # (``selectin``), since plan step salary:S11-c-2c: the engine reads all
+    # three of a profile's every switched-on stub to choose and price one, so
+    # a lazy load per stub would cost three queries per stub per profile.
     line_amounts = db.relationship(
         "PayStubLineAmount", back_populates="pay_stub",
-        cascade="all, delete-orphan",
+        cascade="all, delete-orphan", lazy="selectin",
     )
     withholdings = db.relationship(
         "PayStubWithholding", back_populates="pay_stub",
-        cascade="all, delete-orphan",
+        cascade="all, delete-orphan", lazy="selectin",
     )
     one_offs = db.relationship(
         "PayStubOneOff", back_populates="pay_stub",
-        cascade="all, delete-orphan",
+        cascade="all, delete-orphan", lazy="selectin",
     )
 
     def __repr__(self):

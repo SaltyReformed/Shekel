@@ -178,8 +178,9 @@ class ProfilePaychecks:
 
         Args:
             profile: The :class:`~app.models.salary_profile.SalaryProfile` to
-                price.  Read for its owner, its calibration, and everything
-                the engine prices a paycheck from.
+                price.  Read for its owner and everything the engine prices
+                a paycheck from -- its pay stubs among them since plan step
+                salary:S11-c-2c, which replaced its calibration.
             calendar: The owner's
                 :class:`~app.services.pay_calendar.PayCalendar` -- the payday
                 set every calendar question the engine asks is answered from,
@@ -217,7 +218,6 @@ class ProfilePaychecks:
                 f"calendar its own owner is paid on, and pairing the two "
                 f"answers a plausible figure off the wrong schedule."
             )
-        self._profile = profile
         self._basis = PayrollBasis(profile, calendar, raise_terms)
         self._series = profile_tax_series(profile)
         self._by_payday: "dict[date, paycheck_calculator.PaycheckBreakdown]" = {}
@@ -291,12 +291,13 @@ class ProfilePaychecks:
                     # Tax configs resolve PER period year (DH-#30), the same
                     # per-year resolution the recurrence engine uses to
                     # GENERATE the stored amount, so the live figure and the
-                    # generated one cannot disagree for want of a bracket set.
+                    # generated one cannot disagree for want of a bracket set
+                    # -- and per pay stub year, each stub priced on its own
+                    # payday's law (ruling R-SAL77, plan step salary:S11-c-2c).
                     configs_by_year=configs_by_year(
                         self._series,
-                        (period.start_date.year for period in unpriced),
+                        paycheck_calculator.tax_years_for(self._basis, unpriced),
                     ),
-                    calibration=self._profile.calibration,
                 )
             )
         return [self._by_payday[period.start_date] for period in periods]
@@ -771,13 +772,17 @@ def salary_net_for(txn, pricing: SalaryPricing) -> Decimal | None:
 
     *It became the only spelling of the CALENDAR-WIDE projection at plan
     step* **salary:R14-a**, *which is finding* **N-443** *closed.*  The
-    qualifier is load bearing and a second adversarial review put it back:
-    ``tax_withholding_service`` and ``tax_report_service`` still run
+    qualifier was load bearing and a second adversarial review put it back:
+    ``tax_withholding_service`` and ``tax_report_service`` ran
     ``project_salary`` themselves over a single tax YEAR with
-    ``tax_configs=``, which is a different question and not a fourth
-    spelling -- the arch test's own predicate says so, and prose that
-    claims more than the test enforces is the wider claim this paragraph
-    was already corrected for once.
+    ``tax_configs=``, a different question and not a fourth spelling.  They
+    moved onto this pricer at plan step **salary:S11-c-2c**, when a pay stub
+    began pricing on its own payday's year (ruling **R-SAL77**) and a year
+    slice could need two years' law, so no ``app/`` site calls
+    ``project_salary`` but this one.  The arch test's census still matches
+    only the calendar-wide (``configs_by_year=``) form, so a new single-year
+    caller is caught by eye -- prose that claims more than the test enforces
+    is the wider claim this paragraph was already corrected for once.
     ``routes/salary/views`` and ``routes/salary/cockpit`` each built the same
     ``project_salary`` call over the same calendar, because they render the
     whole breakdown rather than the net -- so the shared leaf had to BE the
