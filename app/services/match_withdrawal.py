@@ -103,15 +103,24 @@ module adds is the CLEANUP and the DISCLOSURE: the act the press empties goes,
 and a door that discloses names the lines it frees before the press -- the row
 delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
 
-**And the act ASKS what the owner was shown** (plan step
-``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**).  Every
-caller of :func:`take_out_of_matches` passes the bank lines its page named
-(:class:`Shown`) or what lets it stay silent (:class:`Silent`), and a press
-whose freed lines differ from the named ones is refused before anything is
-written: a page drawn before a match existed, or a door that forgot its
-caption.  The owner's one-click Mark Paid is silent by ruling (**R-CC56**),
+**And the act ASKS what the owner was shown, ONCE PER SAVE** (plan step
+``credit_card:CC-5-4a-5``, rulings **R-CC81**, **R-CC127** and **R-CC135**).
+Every door opens ONE :class:`~app.services.match_press.Press` around its
+unit of work over the bank lines its page named
+(:class:`~app.services.match_press.Shown`) or what lets it stay silent
+(:class:`~app.services.match_press.Silent`), and threads it to every call of
+:func:`take_out_of_matches` the save makes: a call freeing a line the page
+did not name is refused at once, and before the door commits, what the whole
+save freed must equal what the page named -- a page drawn before a match
+existed or after another tab freed one, or a door that forgot its caption.
+Ruling **R-CC135** (developer 2026-10-04, "One check per save"): *"Every
+button that can undo a match checks once per save: undoing one the page did
+not name stops it at once, and before saving, what it undid must equal what
+the page named for what you ticked, or nothing saves and the page
+redraws"*.  The owner's one-click Mark Paid is silent by ruling (**R-CC56**),
 and a companion's is refused whenever it would free a line, because no page
-may show a companion the owner's statement (:class:`OwnerOnly`, ruling
+may show a companion the owner's statement
+(:class:`~app.services.match_press.OwnerOnly`, ruling
 **R-CC130**) -- as is its purchase X and CC un-tick (ruling **R-CC132**).
 The purchase X, the CC un-tick, Undo CC and Status leaving Credit name their
 lines first since plan step ``credit_card:CC-5-4a-5b`` (ruling **R-CC80**,
@@ -124,8 +133,11 @@ that leaf's tick).  Every other panel tick names nothing, so one that would
 free a line is refused; two can still take a payment off uncaptioned -- a
 ``$0.00``-figure row ticked with its box cleared, saved when its payment is
 unmatched (ledger row **BAL-596**), and two rows matched to one line ticked
-together, refused (finding **CC-384**).  Carry-forward names the open finding that owns its caption
-until ``CC-5-4a-5c-2`` (**R-CC76**; finding **CC-364**).
+together, refused until the panel names each match's lines for the rows it
+needs (finding **CC-384**).  Carry-forward names the open finding that owns
+its caption until ``CC-5-4a-5c-2`` (**R-CC76**; finding **CC-364**).  The
+declarations and the press live in :mod:`app.services.match_press`, split
+from here by subject at leaf 5c-2b.
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -145,17 +157,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Hashable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import partial
 from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app.exceptions import PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import transfer_legs
+from app.services.match_press import NOTHING_SHOWN, Press, Silent
 from app.services.transfer_legs import TransferLeg
 from app.utils.log_events import (
     BUSINESS,
@@ -164,6 +177,7 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass(frozen=True)
@@ -232,144 +246,12 @@ class MatchWithdrawal:
     def line_ids(self) -> "frozenset[int]":
         """Return the ids of the lines this frees -- what a caption naming them posts back.
 
-        The one spelling the page's posted field and the act's comparison
-        (:func:`_refuse_unshown`) share, so what a caption sends and what the
-        press is graded against cannot be two readings of one withdrawal
-        (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC127**).
+        The one spelling the page's posted field and the press's comparison
+        (:class:`Press`) share, so what a caption sends and what the save is
+        graded against cannot be two readings of one withdrawal (plan step
+        ``credit_card:CC-5-4a-5``, ruling **R-CC127**).
         """
         return frozenset(line.line_id for line in self.lines)
-
-
-@dataclass(frozen=True)
-class Shown:
-    """The bank lines a page NAMED before the press: what the owner was shown.
-
-    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** and **R-CC127**
-    (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
-    bank lines it named, and the function compares them with what it would
-    undo."*  The page posts back the ids its caption printed
-    (``_withdrawal_macros.frees_lines``) and the door hands them here; a
-    page that printed none posts none, which is :data:`NOTHING_SHOWN`.
-
-    Attributes:
-        line_ids: The ``bank_statement_lines.id`` values the caption named.
-            Owner input, so never trusted as a scope: :func:`_refuse_unshown`
-            reads only those on the accounts the press touches.
-    """
-
-    line_ids: "frozenset[int]"
-
-
-@dataclass(frozen=True)
-class Silent:
-    """A door that withdraws with NO caption, and what lets it.
-
-    Ruling **R-CC81**: a button may undo a match unannounced only by naming
-    the ruling that lets it stay silent, in its own code where a reviewer
-    sees it -- the grid's one-click Mark Paid (:data:`MARK_PAID`, ruling
-    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5c-2`` captions it,
-    carry-forward names the OPEN FINDING that owns its caption instead
-    (**CC-364**): today's behaviour, stated at its call site.  The purchase
-    X and the three Credit doors did too until ``CC-5-4a-5b`` captioned them
-    (finding **CC-367**), and the reconcile panel until ``CC-5-4a-5c-1``
-    (findings **CC-364**, **CC-378**).
-
-    Attributes:
-        because: The ruling or finding id, written to the withdrawal event.
-    """
-
-    because: str
-
-
-#: What a page that names no bank line shows, and what every settle verb
-#: assumes when its door says nothing: *"A button with no warning sends
-#: nothing"* (ruling **R-CC127**).  It refuses any press that would free a
-#: line, so a door added later cannot undo a match without declaring.
-NOTHING_SHOWN = Shown(frozenset())
-
-@dataclass(frozen=True)
-class OwnerOnly(Shown):
-    """A press by someone no page may show the owner's bank lines to: a companion.
-
-    Ruling **R-CC130** (developer 2026-10-04, "Companion refuses"): *"On the
-    companion page, a Mark Paid that would undo a match is refused: 'Hotel is
-    matched to a line on the bank statement, so only the account owner can
-    mark it paid.' Nothing changes"*.  A companion has no statement screen, so
-    its page names no line and never could: a press that would free one is
-    refused with *refusal* rather than as a page out of date, which the page
-    was not.  A :class:`Shown` naming nothing, so every signature that takes
-    what a page showed takes this, and the act compares it as one.
-
-    Attributes:
-        line_ids: Empty: what a companion's page names.
-        refusal: The sentence such a press is refused with -- the door's,
-            because it names the row and the act it refuses (ruling
-            **R-CC98**: the row's name, never an id).
-    """
-
-    line_ids: "frozenset[int]" = frozenset()
-    refusal: str = field(kw_only=True)
-
-
-#: The owner's one-click Mark Paid -- the grid's cell and its phone card --
-#: silent by ruling **R-CC56**.
-MARK_PAID = Silent("R-CC56")
-
-
-def _refuse_unshown(
-    shown: "Shown | Silent", entries, planned: MatchWithdrawal,
-) -> None:
-    """Refuse a press whose freed lines differ from the lines its page named.
-
-    **Compared PER ACCOUNT**: the lines this call frees against the named
-    lines on the accounts of the movements it takes.  A member is held to its
-    act's account and to its line's or movement's (the composite keys on
-    :class:`~app.models.statement_match.StatementMatchMember`), so a call can
-    free a line only on its own movements' accounts -- and a transfer's two
-    sides, on two accounts, are two calls of one press that one posted set
-    grades exactly, each against its own side's lines.  A named line on no
-    account this call touches is another call's, or (a payment re-pointed
-    in another tab since the page was drawn) a line already unexplained.
-
-    **Equality, both ways** (*"At 10:10 they differ, so nothing is saved"*):
-    a line freed and not named is the silent withdrawal the ruling forbids,
-    and a line named and not freed is a page out of date -- except for a
-    press whose page could name none (:class:`OwnerOnly`), whose refusal is
-    its own sentence (ruling **R-CC130**).
-
-    Args:
-        shown: What the door declared.
-        entries: The movements this call takes out of their matches.
-        planned: What it would withdraw (:func:`_summarise`).
-
-    Raises:
-        PageOutOfDate: When the two sets differ -- a ``ValidationError``, so
-            the door's existing refusal path renders it and its rollback
-            undoes the press; a full-edit popover redraws itself instead
-            (ruling **R-CC128**).
-        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
-            would free a line.
-    """
-    if isinstance(shown, Silent):
-        return
-    named = set()
-    if shown.line_ids:
-        named = {
-            row[0]
-            for row in db.session.query(BankStatementLine.id)
-            .filter(
-                BankStatementLine.id.in_(shown.line_ids),
-                BankStatementLine.account_id.in_(
-                    {entry.account_id for entry in entries},
-                ),
-            )
-            .all()
-        }
-    freed = planned.line_ids
-    if freed != named:
-        if isinstance(shown, OwnerOnly):
-            raise ValidationError(shown.refusal)
-        raise PageOutOfDate.over_lines(len(freed), len(named))
 
 
 def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":
@@ -641,19 +523,23 @@ RE_RECORDED = (
 
 
 def _withdraw(
-    acts, planned: MatchWithdrawal, owner_id: int, *, because: str, **fields,
+    acts, planned: MatchWithdrawal, owner_id: int, *, press: Press,
+    because: str, **fields,
 ) -> None:
-    """Delete the acts and record what that freed.
+    """Delete the acts, and owe the save the event recording what that freed.
 
     The members go with each act through the ORM cascade and the composite
     foreign key alike, which is what puts the lines back among the unexplained:
-    no member names them any more.
+    no member names them any more.  The event is logged at the save's close
+    (:class:`Press`, ruling **R-CC135**), so a save its door then refuses
+    logs no withdrawal its rollback undid.
 
     Args:
         acts: The acts to withdraw.
         planned: What :func:`_summarise` said they come to, so the event
             records the same figures the dialog printed.
         owner_id: The user the caller proved owns the account.
+        press: The save this call is part of.
         because: The event's sentence -- the DOOR's, since a delete, a
             re-record and a re-point withdraw for different reasons and the
             log is read.
@@ -665,15 +551,15 @@ def _withdraw(
     for act in acts:
         db.session.delete(act)
     db.session.flush()
-    log_event(
-        logger, logging.INFO, EVT_STATEMENT_MATCH_WITHDRAWN, BUSINESS,
-        because,
+    press.owe_event(partial(
+        log_event, logger, logging.INFO, EVT_STATEMENT_MATCH_WITHDRAWN,
+        BUSINESS, because,
         user_id=owner_id,
         match_count=planned.matches,
         freed_line_count=len(planned.lines),
         kept_row_count=planned.kept_rows,
         **fields,
-    )
+    ))
 
 
 def pending_for_rows(rows) -> MatchWithdrawal:
@@ -824,7 +710,7 @@ def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
 
 
 def take_out_of_matches(
-    entries, owner_id: int, *, because: str, shown: "Shown | Silent",
+    entries, owner_id: int, *, because: str, press: "Press | None",
     rows_leaving=(),
 ) -> MatchWithdrawal:
     """Take *entries* out of every act naming them; withdraw the acts that empties.
@@ -855,12 +741,13 @@ def take_out_of_matches(
     status seam run inside a caller's ``no_autoflush`` block (the
     carry-forward batch) writes no earlier than it did before this step.
 
-    **It asks what the owner was SHOWN** (plan step
-    ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): *shown* is
-    REQUIRED, and a press whose freed lines differ from what its page named
-    is refused before anything is written (:func:`_refuse_unshown`).  The
-    doors above the seam pass it down from the settle verbs, whose default
-    is :data:`NOTHING_SHOWN`.
+    **It asks what the owner was SHOWN, as one call of a save** (plan step
+    ``credit_card:CC-5-4a-5``, rulings **R-CC81**, **R-CC127**, **R-CC135**):
+    *press* is REQUIRED, a line this call frees that the page did not name is
+    refused before anything is written, and what it frees is recorded for the
+    save's close (:class:`Press`).  ``None`` is a settle verb's default --
+    its door said nothing -- and is a press of this one call naming nothing
+    (:data:`NOTHING_SHOWN`), opened and closed here.
 
     Does NOT commit -- the caller owns the session boundary.
 
@@ -871,8 +758,8 @@ def take_out_of_matches(
         owner_id: The owner under whose books the acts are filed.
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
-        shown: The lines the door's page named (:class:`Shown`), or what
-            lets it stay silent (:class:`Silent`).
+        press: The door's open :class:`Press`, or ``None`` for a door that
+            named nothing.
         rows_leaving: The rows going in the same press, soft or hard (a
             recurring occurrence's tombstone counts as gone, ruling
             **R-CC84**), when the caller is a row delete -- so a creation that
@@ -883,9 +770,25 @@ def take_out_of_matches(
         What was withdrawn, as the dialog's read would have printed it.
 
     Raises:
-        PageOutOfDate: When what this frees differs from *shown*.
+        PageOutOfDate: When this frees a line the press's page did not name.
         ValidationError: An :class:`OwnerOnly` press's own refusal, when it
             would free a line (ruling **R-CC130**).
+    """
+    if press is None:
+        with Press(NOTHING_SHOWN) as one_call:
+            return _take_out(entries, owner_id, because, one_call, rows_leaving)
+    return _take_out(entries, owner_id, because, press, rows_leaving)
+
+
+def _take_out(
+    entries, owner_id: int, because: str, press: Press, rows_leaving,
+) -> MatchWithdrawal:
+    """Take *entries* out of their matches as one call of *press*'s save.
+
+    The body of :func:`take_out_of_matches`, which states the contract.
+
+    Returns:
+        What was withdrawn.
     """
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
@@ -893,10 +796,10 @@ def take_out_of_matches(
     planned = _summarise(
         emptied, leaving_ids, entry_ids, _freed_lines(emptied),
     )
-    _refuse_unshown(shown, entries, planned)
+    press.take(planned)
     if emptied:
         _withdraw(
-            emptied, planned, owner_id, because=because,
+            emptied, planned, owner_id, press=press, because=because,
             # The PARENTS the movements were under, whether or not they leave
             # too -- a re-record's row stays, and the event is the only record
             # of which row a no-caption door (the grid's Mark Paid) touched.
@@ -904,7 +807,10 @@ def take_out_of_matches(
             transaction_entry_ids=sorted(entry_ids),
             freed_line_ids=[line.line_id for line in planned.lines],
             # What let a no-caption door withdraw (ruling **R-CC81**).
-            silent_by=shown.because if isinstance(shown, Silent) else None,
+            silent_by=(
+                press.shown.because if isinstance(press.shown, Silent)
+                else None
+            ),
         )
     taken = [
         (act, member) for act in surviving for member in act.members
@@ -918,7 +824,7 @@ def take_out_of_matches(
 
 
 def withdraw_for_moved_movement(
-    entry, owner_id: int, *, shown: "Shown | Silent",
+    entry, owner_id: int, *, press: "Press | None",
 ) -> MatchWithdrawal:
     """Take *entry* out of every act naming it; withdraw the acts that empties.
 
@@ -936,17 +842,17 @@ def withdraw_for_moved_movement(
     Args:
         entry: The covering movement about to be re-pointed.
         owner_id: The row's owner, under whose books the act is filed.
-        shown: What the door's page named, or what lets it stay silent
-            (:func:`take_out_of_matches`).
+        press: The door's open :class:`Press`, or ``None`` for a door that
+            named nothing (:func:`take_out_of_matches`).
 
     Returns:
         What was withdrawn.
 
     Raises:
-        PageOutOfDate: When what this frees differs from *shown*.
+        PageOutOfDate: When this frees a line the press's page did not name.
         ValidationError: An :class:`OwnerOnly` press's own refusal, when it
             would free a line (ruling **R-CC130**).
     """
     return take_out_of_matches(
-        [entry], owner_id, because=MOVED_ACCOUNTS, shown=shown,
+        [entry], owner_id, because=MOVED_ACCOUNTS, press=press,
     )

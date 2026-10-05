@@ -287,10 +287,11 @@ def _reject_parent_and_its_own_purchase(
     the ones that have not (ruling **R-FM**), so naming both sums that purchase
     in two terms.
 
-    **Both directions are checked ACROSS matches, and the cross-match half is
-    the one that actually moves money.**  Within one match the two sides are
-    priced together and refuse together.  Across two, each balances on its own
-    and the second one FALSIFIES the first: measured on a production clone,
+    **Both directions were checked ACROSS matches, because the cross-match
+    half was the one that moved money** while an envelope's leg included its
+    outstanding purchases.  Within one match the two sides are priced
+    together and refuse together.  Across two, each balanced on its own and
+    the second one FALSIFIED the first: measured on a production clone,
     envelope 2280 prices at `-265.69` (its four unposted purchases included)
     and its purchase 78 at `-18.64`; matching 2280 first and 78 second stamps
     78's posting day, which drops 2280's leg to `-247.05` -- so two matched
@@ -299,9 +300,30 @@ def _reject_parent_and_its_own_purchase(
     an envelope and its purchases side by side, so it is two clicks.  Found by
     adversarial financial review 2026-08-17.
 
-    **The cross-match half takes the claims its ACT read** (plan step
-    X-f6a-3c-2).  It ran its own query over ``statement_match_members`` until
-    this step, which was a second answer to the question
+    **A purchase whose envelope's PAYMENT a match names is NOT refused**
+    (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2b, finding **CC-385**).
+    That arm read every act of the owner's until then and refused the
+    purchase as counting money twice, but the one state it reached is an
+    envelope closed as one payment, matched, and set back to Projected: the
+    revert keeps that payment UN-DATED, so it counts nothing, and the
+    purchase's line is the only one explaining the purchase's money.  The
+    developer ruled the match allowed (2026-10-05, "Allow it, change test":
+    *"The match saves: the $30 purchase is dated 9/26 and Checking goes down
+    $30.00. The old $120 match stays flagged with its Undo."*), beside ruling
+    **R-CC141** for filing.  A DATED payment beside purchases is
+    unrepresentable (ruling **R-BAL78**: a row holding purchases settles from
+    them, and a settled row holding a payment takes no purchase).
+
+    **Both arms that remain are refused a tier earlier for every state a door
+    writes**, and the cases that once reached them now pin that: a row holding
+    purchases is worth ``0`` to the offer (ruling **R-BAL81**), so an envelope
+    named beside its own purchase, or beside a purchase a match names, is
+    refused as no longer available by :func:`~._valuation.repriced`
+    (``test_accept``'s envelope-and-its-own-purchase cases).
+
+    **The claims are the ones its ACT read** (plan step X-f6a-3c-2).  It ran
+    its own query over ``statement_match_members`` until this step, which
+    was a second answer to the question
     :func:`~._candidates.matched_subjects` already answers -- and the same read
     now also decides which rows and lines are still available, so all three
     refusals see one state.
@@ -320,8 +342,8 @@ def _reject_parent_and_its_own_purchase(
             act.
 
     Raises:
-        ValidationError: When a submitted purchase's parent is submitted or
-            already matched, or a submitted envelope holds a purchase that is.
+        ValidationError: When a submitted purchase's parent is submitted, or
+            a submitted envelope holds a purchase a match already names.
     """
     transaction_ids = {
         row.row_id for row in rows if row.kind is RowKind.TRANSACTION
@@ -333,9 +355,7 @@ def _reject_parent_and_its_own_purchase(
         db.or_(
             db.and_(
                 TransactionEntry.id.in_(entry_ids or {0}),
-                TransactionEntry.transaction_id.in_(
-                    (transaction_ids | matched.transactions) or {0},
-                ),
+                TransactionEntry.transaction_id.in_(transaction_ids or {0}),
             ),
             db.and_(
                 TransactionEntry.id.in_(matched.entries or {0}),

@@ -122,12 +122,8 @@ from app.services import (
     movement_removal,
     posting_service,
 )
-from app.services.match_withdrawal import (
-    NOTHING_SHOWN,
-    MatchWithdrawal,
-    Shown,
-    Silent,
-)
+from app.services.match_press import Press
+from app.services.match_withdrawal import MatchWithdrawal
 from app.services.transaction_service._row_rules import deletion_refusal
 from app.utils.balance_predicates import is_projected
 
@@ -354,7 +350,7 @@ def _refuse_unnamed_purchases(
 
 
 def delete_transaction(
-    txn: Transaction, owner_id: int, *, shown: Shown | Silent = NOTHING_SHOWN,
+    txn: Transaction, owner_id: int, *, press: Press | None = None,
     purchases_named: "frozenset[int]" = frozenset(),
 ) -> RowDeletion:
     """Remove *txn* from the books, soft or hard, with everything it holds.
@@ -371,12 +367,14 @@ def delete_transaction(
         owner_id: The user the caller proved owns it, recorded on the events
             AND reconciled against the row (step 0 of the module docstring's
             order, finding **N-373**).
-        shown: The bank lines the delete dialog named before the press
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            the bank lines the delete dialog named
             (:func:`preview_deletion`'s ``withdrawn``), posted back with it;
-            the act refuses a press whose freed lines differ (plan step
+            the act refuses a press freeing other lines (plan step
             ``credit_card:CC-5-4a-5``, ruling **R-CC127**).  The match
-            Undo's ``_release`` passes the default: it deletes and flushes
-            the act before it reaches here, so nothing is left to free.
+            Undo's ``_release`` passes the default, ``None``: it deletes and
+            flushes the act before it reaches here, so nothing is left to
+            free.
         purchases_named: The row's purchases the dialog named
             (:func:`preview_deletion`'s ``purchase_ids``), posted back with
             the press (ruling **R-CC131**).  The default names none, which is
@@ -440,7 +438,7 @@ def delete_transaction(
     # its place in the table and nothing it held, and counts as gone.
     withdrawn = movement_removal.remove_movements(
         [movement for row in rows for movement in row.entries],
-        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, shown=shown,
+        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, press=press,
         rows_leaving=rows,
     )
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)

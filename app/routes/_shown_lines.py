@@ -8,7 +8,8 @@ popover's Save and Paid (``routes/transfers/mutations.py``), and the purchase
 list's X and edit form (``routes/entries.py``).  The reconcile panel posts one
 set PER ROW (``shown_lines-<row id>``) and reads them itself
 (``routes.accounts.reconcile._submitted_shown_lines``, plan step
-``credit_card:CC-5-4a-5c-1``), because its act compares per account.
+``credit_card:CC-5-4a-5c-1``), because the save names only the lines under
+the rows the owner ticked (``reconcile_service.record_reconciliation``).
 
 **The act that takes a movement off the books asks what the owner was SHOWN**
 (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): the
@@ -38,7 +39,7 @@ reads are about the FORM, the shape of :mod:`app.routes._typed_figure`.
 
 from typing import NamedTuple
 
-from app.services.match_withdrawal import Shown, Silent
+from app.services.match_press import Shown, Silent
 
 #: The form field a full-edit popover posts its captions' bank lines under,
 #: declared on every schema those presses load
@@ -51,7 +52,7 @@ class Press(NamedTuple):
 
     Attributes:
         shown: What the removal act is told the page named
-            (:class:`~app.services.match_withdrawal.Shown`), or what lets the
+            (:class:`~app.services.match_press.Shown`), or what lets the
             door stay silent.
         from_popover: Whether the request posted the field -- which, of the
             transaction and transfer doors' surfaces, only a full-edit popover
@@ -72,8 +73,8 @@ def read_press(data: dict, *, absent: Shown | Silent) -> Press:
             every key it does not recognise, and the transfer door hands its
             payload to the service as keywords.
         absent: What the door means when its request carries no field --
-            :data:`~app.services.match_withdrawal.MARK_PAID` at Mark Paid,
-            :data:`~app.services.match_withdrawal.NOTHING_SHOWN` elsewhere.
+            :data:`~app.services.match_press.MARK_PAID` at Mark Paid,
+            :data:`~app.services.match_press.NOTHING_SHOWN` elsewhere.
 
     Returns:
         The :class:`Press`: ``Shown`` over the posted ids -- none, for the

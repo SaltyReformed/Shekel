@@ -36,6 +36,7 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.services import (
     bank_agreement,
+    match_press,
     match_withdrawal,
     pay_calendar,
     status_seam,
@@ -136,14 +137,15 @@ def _correct_tender(txn, account_id):
     Posting back the lines its "Paid from" caption names, as the popover does
     since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC127**).
     """
-    transaction_service.apply_requested_status(
-        txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
-        shown=match_withdrawal.Shown(
+    with match_press.Press(match_press.Shown(
             match_withdrawal.pending_for_movements(
                 txn.covering_movements,
             ).line_ids,
-        ),
-    )
+        )) as press:
+        transaction_service.apply_requested_status(
+            txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
+            press=press,
+        )
     db.session.commit()
 
 
@@ -1002,12 +1004,13 @@ class TestADeletedBillWithdrawsTheActNamingItsPaymentOnAnotherAccount:
             assert pending.matches == 1
             assert [freed.line_id for freed in pending.lines] == [line.id]
 
-            outcome = transaction_service.delete_transaction(
-                txn, seed_user["user"].id,
-                shown=match_withdrawal.Shown(
+            with match_press.Press(match_press.Shown(
                     transaction_service.preview_deletion(txn).withdrawn.line_ids,
-                ),
-            )
+                )) as press:
+                outcome = transaction_service.delete_transaction(
+                    txn, seed_user["user"].id,
+                    press=press,
+                )
             db.session.commit()
 
             assert outcome.soft is False

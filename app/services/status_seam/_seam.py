@@ -33,7 +33,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import pay_period_service
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.planned_rows_books import reject_revert_below_the_books
 from app.services.settle_day import (
     SettleDay,
@@ -330,7 +330,7 @@ def apply_status_change(
     *,
     settle_day: Optional[SettleDay] = None,
     settlement: Optional[Settlement] = None,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> None:
     """Apply a status transition -- the single status seam, for either row type.
 
@@ -480,15 +480,15 @@ def apply_status_change(
             above) and keeps what moved, because the two are different facts
             with different lifetimes; the comment at that assignment carries the
             argument.
-        shown: What the door's page NAMED before the press -- the bank lines
-            a ``$0.00`` or ``purchases`` record or a re-point would free --
-            or what lets the door stay silent (plan step
-            ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**).  It
-            rides to the act that takes the payment out of its matches,
-            which refuses a press whose freed lines differ.  It is a PRESS
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            what the door's page NAMED -- the bank lines a ``$0.00`` or
+            ``purchases`` record or a re-point would free -- or what lets the
+            door stay silent (plan step ``credit_card:CC-5-4a-5``, rulings
+            **R-CC81** / **R-CC127**).  It rides to the act that takes the
+            payment out of its matches, which refuses a line the page did not
+            name, and the save's close compares the rest.  It is a PRESS
             argument and not a field of *settlement*, which is also a value
-            read back off a movement.  Defaults to
-            :data:`~app.services.match_withdrawal.NOTHING_SHOWN`, Josh's own
+            read back off a movement.  Defaults to ``None``, Josh's own
             words: *"A button with no warning sends nothing"* -- so a door
             that says nothing frees nothing, and is refused if it would.
 
@@ -727,7 +727,7 @@ def apply_status_change(
             was_settled=was_settled,
             now_settled=new_status_id in settled_status_ids(),
             settlement=settlement,
-            shown=shown,
+            press=press,
         )
 
     db.session.expire(row, ["status"])

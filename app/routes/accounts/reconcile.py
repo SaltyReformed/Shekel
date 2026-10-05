@@ -165,10 +165,10 @@ def _submitted_shown_lines(form) -> "dict[int, frozenset[int]]":
     row whose tick would take a matched payment out of its matches prints a
     caption naming the bank lines it frees, and posts those ids back under
     its own hidden field (:attr:`~app.services.reconcile_service.TickForm.shown_prefix`
-    plus the row's id), so the act compares each tick with what was printed
-    under it.  PER ROW, because the act compares per account and one
-    panel-wide set fails that comparison once two rows on one account each
-    free a line.  Each value is read by the schema every other caption-bearing
+    plus the row's id).  PER ROW, because what the save named is the lines
+    under the rows TICKED, and the save's one press compares their union with
+    what the whole save frees (``reconcile_service.record_reconciliation``,
+    ruling **R-CC135**).  Each value is read by the schema every other caption-bearing
     door loads (``ShownLinesSchema``, over ``ShownIds``), so a posted id means
     here what it means there; an empty value is a caption that named nothing.
 

@@ -25,8 +25,9 @@ producers answer what an account COULD offer, which does not change while a
 review pass runs; :func:`matched_subjects` answers what a match has already
 claimed, which is exactly what the pass changes.  So the pass derives the offer
 sets ONCE -- 3.6 s on the developer's own account -- and every act inside it
-re-reads the claims for itself and narrows through :func:`unmatched_rows` /
-:func:`unmatched_destinations`.  Stating the narrowing once, outside the
+re-reads the claims for itself and narrows through :func:`unmatched_rows`
+(and the destinations through ``_destinations.current_destinations``, which
+re-asks the rows themselves).  Stating the narrowing once, outside the
 producers, is what stops a snapshot offering a row an earlier item in the same
 pass has just matched.
 
@@ -97,15 +98,14 @@ data in, frozen dataclasses out, no Flask import, no clock read.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app.extensions import db
-from app.models.account import Account
-from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
@@ -115,7 +115,6 @@ from app.utils.balance_predicates import (
     is_projected_clause,
 )
 
-from ._creations import PurchaseDestination
 from ._leg_valuation import leg_candidate, leg_loads, leg_price
 from ._subjects import CandidateRow, Candidates, HeldElsewhere, RowKind
 from ._valuation import (
@@ -146,33 +145,28 @@ class MatchedSubjects:
     them again to see an envelope whose purchase another match names.  Those
     are the same three sets, so a caller reads them once and threads them.
 
-    **A row is CLAIMED through its PAYMENT, by any act of the OWNER's** (plan
-    steps ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``, rulings **R-CC43**,
+    **A row is CLAIMED through its PAYMENT** (plan steps
+    ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``, rulings **R-CC43**,
     **R-CC45**): every act names the row's covering movement rather than the
-    row, and that movement may sit on ANOTHER account than the row since
-    ``credit_card:CC-5-3`` (a checking bill's payment on the card, matched on
-    the card's screen).  :attr:`transactions` holds the parents of those
-    movements across the owner's accounts, so a Projected row whose kept
-    movement an act still names is not offered again on ANY screen (the act
-    shows on that account's register as no longer holding, with its Undo);
-    and :func:`~._accept._reject_parent_and_its_own_purchase` reads one set
-    for "an envelope an act already names".  Read on one account alone (a
-    first cut of ``CC-5-4a-1``), a reverted card-paid bill was offered on
-    checking while the card's act still named its payment, and accepting it
-    there re-pointed the payment and withdrew the card's act through a door
-    that discloses nothing (that leaf's neutral review; ruling **R-CC46**
-    says disclosed).  **Since plan step ``credit_card:CC-5-4a-5`` (leaf
-    5c-2a, ruling R-CC137) the OWNER-wide reach decides no ROW offer**: such
-    a bill is withheld on Checking whether or not an act names its payment
-    (:func:`_transaction_candidates`), and every row a screen does offer has
-    its payment, if any, on that screen's account, where the account's own
-    acts claim it.  What the owner-wide reach still decides is the two
-    purchase readers, :func:`unmatched_destinations` and that guard, and
-    there it refuses an envelope whose lump an act names after the envelope
-    was set back to Projected -- which ruling **R-CC141** allows: finding
-    **CC-385**, this step's leaf 5c-2b.  :attr:`lines` and :attr:`entries` stay the account's
-    own: a line belongs to one account, and a movement is offered only where
-    it is.
+    row, so a Projected row whose kept movement an act still names is not
+    offered again (the act shows on the register as no longer holding, with
+    its Undo).  :attr:`transactions` holds the parents of the covering
+    movements among :attr:`entries` -- the ACCOUNT's own acts, every set here
+    the account's.  **It read the OWNER's acts until plan step
+    ``credit_card:CC-5-4a-5``** (leaf 5c-2b, finding **CC-385**): a payment
+    may sit on another account than its row since ``credit_card:CC-5-3``, and
+    a reverted card-paid bill was once offered on checking while the card's
+    act named its payment.  Since leaf 5c-2a (ruling **R-CC137**) such a bill
+    is withheld on Checking whether or not an act names its payment
+    (:func:`_transaction_candidates`), so every row a screen offers has its
+    payment, if any, on that screen's account, where the account's own acts
+    claim it; and the two purchase readers the owner-wide reach still decided
+    refused an envelope whose lump an act names after the envelope was set
+    back to Projected -- falsely, because the revert keeps that lump UN-DATED
+    and it counts nothing (ruling **R-CC141**, and the developer's
+    2026-10-05 answer allowing the match).  :attr:`lines` and :attr:`entries`
+    are the account's: a line belongs to one account, and a movement is
+    offered only where it is.
 
     **A transfer's LEG is claimed through its movement too** (leaf
     ``balance:X-bi-6-4c-1``): :attr:`legs` holds the transfers whose side on
@@ -186,9 +180,8 @@ class MatchedSubjects:
 
     Attributes:
         lines: The ``bank_statement_lines`` ids a match already explains.
-        transactions: The ``transactions`` ids a match of the owner's already
-            names through the row's covering movement, on any of the owner's
-            accounts.
+        transactions: The ``transactions`` ids whose covering movement a
+            match on this account already names.
         entries: The ``transaction_entries`` ids a match already names, a
             purchase's or a covering movement's.
         legs: The ``transfers`` ids whose side on this account a match
@@ -239,61 +232,46 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
     entries = frozenset(row[1] for row in rows if row[1] is not None)
     return MatchedSubjects(
         lines=frozenset(row[0] for row in rows if row[0] is not None),
-        transactions=_claimed_rows_of_the_owner(account_id),
+        transactions=_claimed_rows(entries),
         entries=entries,
         legs=_claimed_legs(entries),
     )
 
 
-def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
-    """Return every row an act of *account_id*'s OWNER names, through its payment.
+def _claimed_rows(entries: "frozenset[int]") -> "frozenset[int]":
+    """Return the rows one of *entries* is the covering movement of.
 
-    One scan of the owner's members naming a row's covering movement (ruling
-    **R-CC43**; every member since migration ``2eabfa596ee0``, ruling
-    **R-CC45**), whose parent is read through a join onto the entry and only
-    where that entry is a payment record -- a purchase member's parent is NOT
-    a claim on the envelope (the envelope's figure is its purchases;
-    ``_accept`` refuses the pairing itself).  The OWNER's acts rather than
-    the account's, for the reason :class:`MatchedSubjects` states: a payment
-    matched on the card claims its checking row.  The owner is the account's,
-    read in the query rather than taken as a second parameter that could name
-    someone else.
+    :attr:`MatchedSubjects.transactions`, read off the account's matched
+    entries as :func:`_claimed_legs` reads the legs: a parent is a claim only
+    where its entry is a payment record (ruling **R-CC43**; every member since
+    migration ``2eabfa596ee0``, ruling **R-CC45**) -- a purchase member's
+    parent is NOT a claim on the envelope, whose figure is its purchases.
 
     **A transfer's payment named by an act adds its shadow's id through the
-    interval** (``None`` from ``balance:X-bi-6-4d``), which no candidate's
-    :attr:`~._subjects.CandidateRow.transaction_id` can equal: a transfer's
-    side is a LEG or a leg's payment, whose ``transaction_id`` is ``None``,
-    and it is claimed through :attr:`MatchedSubjects.legs` and its
+    interval** (``None`` from ``balance:X-bi-6-4d``, dropped here), which no
+    candidate's :attr:`~._subjects.CandidateRow.transaction_id` can equal: a
+    transfer's side is a LEG or a leg's payment, whose ``transaction_id`` is
+    ``None``, and it is claimed through :attr:`MatchedSubjects.legs` and its
     movement's id instead (leaf ``balance:X-bi-6-4c-1``).
 
     Args:
-        account_id: The account whose owner's claims to read.
+        entries: The ``transaction_entries`` ids this account's acts name.
 
     Returns:
-        The claimed ``transactions`` ids.
+        The claimed ``transactions`` ids; empty without a query when
+        *entries* is.
     """
-    owner = (
-        db.session.query(Account.user_id)
-        .filter(Account.id == account_id)
-        .scalar_subquery()
-    )
+    if not entries:
+        return frozenset()
     rows = (
         db.session.query(TransactionEntry.transaction_id)
-        .join(
-            StatementMatchMember,
-            StatementMatchMember.transaction_entry_id == TransactionEntry.id,
-        )
-        .join(
-            StatementMatch,
-            StatementMatch.id == StatementMatchMember.match_id,
-        )
         .filter(
-            StatementMatch.user_id == owner,
+            TransactionEntry.id.in_(entries),
             status_seam.covering_clause(),
         )
         .all()
     )
-    return frozenset(row[0] for row in rows)
+    return frozenset(row[0] for row in rows if row[0] is not None)
 
 
 def _claimed_legs(entries: "frozenset[int]") -> "frozenset[int]":
@@ -337,12 +315,12 @@ def unmatched_rows(
     query for exactly that reason: the query is run once per pass and the claims
     move within it.
 
-    **A row is claimed through its PAYMENT, on any of the owner's accounts**
-    (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**): a TRANSACTION
-    candidate -- a Projected row, perhaps a reverted one whose kept movement
-    an act still names -- is claimed when its row is in
-    :attr:`MatchedSubjects.transactions`, and so is a SETTLEMENT, whose row
-    that set carries whichever account the act naming its movement is on.
+    **A row is claimed through its PAYMENT** (plan step
+    ``credit_card:CC-5-4a-1``, ruling **R-CC43**): a TRANSACTION candidate --
+    a Projected row, perhaps a reverted one whose kept movement an act still
+    names -- is claimed when its row is in
+    :attr:`MatchedSubjects.transactions`, and a SETTLEMENT by its movement's
+    own id.
     A PURCHASE is claimed by its own id alone: its envelope is a container,
     never named by it.  A LEG is claimed when an act names its side's
     covering movement (:attr:`MatchedSubjects.legs`), and a leg's payment by
@@ -371,33 +349,6 @@ def _is_claimed(row: CandidateRow, matched: MatchedSubjects) -> bool:
         row.transaction_id is not None
         and row.transaction_id in matched.transactions
     )
-
-
-def unmatched_destinations(
-    destinations: "Sequence[PurchaseDestination]", matched: MatchedSubjects,
-) -> "list[PurchaseDestination]":
-    """Return the purchase destinations no accepted match has claimed.
-
-    :func:`unmatched_rows`' twin, and the same rule for the same reason: an
-    envelope a match already names may not also take a new purchase, because
-    ``_accept._reject_parent_and_its_own_purchase`` refuses that pairing --
-    the envelope's figure already covers its own purchases -- so offering it
-    would render a chooser whose submission always fails.
-
-    Args:
-        destinations: The pass's derived destination set.  A SEQUENCE, because
-            :class:`~._scope.ReviewScope` holds a tuple and a ``list``
-            annotation made both callers copy 220 rows -- one of them once per
-            created purchase.
-        matched: The claims as of NOW.
-
-    Returns:
-        The destinations still offerable, in *destinations*' own order.
-    """
-    return [
-        destination for destination in destinations
-        if destination.transaction_id not in matched.transactions
-    ]
 
 
 def _transaction_candidates(

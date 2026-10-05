@@ -463,10 +463,9 @@ class ShownIds(fields.Field):
     that named nothing reads as present.  ``routes._shown_lines`` is the one
     reader of both answers for the bank lines.
 
-    The ids are OWNER INPUT, never a scope: the act compares only the named
-    lines on the accounts its movements are on
-    (``match_withdrawal._refuse_unshown``), and the delete compares the named
-    purchases with the row's own, as a set.
+    The ids are OWNER INPUT, never a scope: the save's press only compares
+    them, whole, with the lines the save frees (``match_press.Press``), and
+    the delete compares the named purchases with the row's own, as a set.
     """
 
     default_error_messages = {"invalid": "Not a valid list of ids."}

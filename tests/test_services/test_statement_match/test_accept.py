@@ -635,8 +635,9 @@ class TestEveryOtherRefusalFires:
         as unavailable, so there is no first match for the second to
         falsify; the purchase matches on its own, at its own figure.  The
         cross-match arm of ``_reject_parent_and_its_own_purchase`` is not
-        reached from THIS shape any more; its live shape is an envelope
-        matched EMPTY, reverted, and then given a purchase -- the case below.
+        reached from THIS shape any more; the one shape it still reached -- an
+        envelope matched EMPTY, reverted, and then given a purchase -- was a
+        false refusal, and matches since finding **CC-385** (the case below).
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -669,23 +670,24 @@ class TestEveryOtherRefusalFires:
         assert purchase.settled_on == bank_day
         assert envelope.settled_on is None
 
-    def test_a_purchase_under_a_REVERTED_matched_envelope_is_refused(
+    def test_a_purchase_under_a_REVERTED_matched_envelope_matches(
         self, app, db, seed_user,
     ):
-        """The cross-match guard's one live shape under ruling R-BAL81.
+        """The cross-match guard's last shape was a false refusal, and it matches.
 
         An EMPTY envelope is worth its plan and is matched WHOLE.  The owner
-        then reverts it: the match still names it (nothing in the status
-        seam touches ``statement_match_members``), its covering movement is
-        kept un-dated, and the row is Projected again, so a purchase may be
-        recorded against it.  Submitting THAT purchase is the pairing the
-        guard exists for -- the match already explains the envelope's money
-        against one bank line, and the purchase would explain part of it
-        against a second -- and it is refused by
-        ``_reject_parent_and_its_own_purchase``'s cross-match arm, which no
-        other case reaches now (adversarial review 2026-09-18 found the
-        guard's raise with no pin after the envelope-holding-purchases cases
-        became their negatives).
+        then reverts it: the match still names its covering movement (nothing
+        in the status seam touches ``statement_match_members``), the movement
+        is kept UN-DATED and counts nothing, and the row is Projected again,
+        so a purchase may be recorded against it.  This case pinned that
+        purchase's match as refused, "would count the same money twice"
+        (adversarial review 2026-09-18), until finding **CC-385** (plan step
+        ``credit_card:CC-5-4a-5``, leaf 5c-2b) measured the sentence false:
+        the purchase's line is the only line explaining the purchase's money.
+        Rewritten under the developer's rule-5 answer of 2026-10-05, "Allow
+        it, change test": *"The match saves: the $30 purchase is dated 9/26
+        and Checking goes down $30.00. The old $120 match stays flagged with
+        its Undo."* -- here a `$25.00` purchase under a `$100.00` envelope.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -711,10 +713,14 @@ class TestEveryOtherRefusalFires:
             sequence_in_group=1,
         )
 
-        with pytest.raises(ValidationError, match="count the same money twice"):
-            _submit(seed_user, lines=[purchase_line], entries=[purchase])
+        kept = envelope.covering_movements[0]
+        _submit(seed_user, lines=[purchase_line], entries=[purchase])
 
-        assert purchase.settled_on is None
+        assert purchase.settled_on == bank_day
+        assert kept.settled_on is None
+        assert db.session.query(StatementMatchMember).filter_by(
+            transaction_entry_id=kept.id,
+        ).count() == 1, "the old match still names the kept payment"
 
     def test_a_purchase_matched_SEPARATELY_from_its_envelope_is_refused(
         self, app, db, seed_user,

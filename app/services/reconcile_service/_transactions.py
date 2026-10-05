@@ -71,7 +71,8 @@ from app.services import (
 )
 from app.services.account_projection import is_revolving
 from app.services.cash_ledger import AmountBasis
-from app.services.match_withdrawal import MatchWithdrawal, Shown
+from app.services.match_press import Press
+from app.services.match_withdrawal import MatchWithdrawal
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -178,7 +179,7 @@ def _settle_one(
     txn: Transaction,
     submitted: StatedFigure | None,
     statement: _rows.Statement,
-    shown: Shown,
+    press: Press,
 ) -> bool:
     """Settle one row through the grid's own verb; say if a human's figure won.
 
@@ -227,12 +228,14 @@ def _settle_one(
             The booked account is pinned for Checking's own list and the
             card's "Paid from this account" list
             (``test_cc5_4a5c_reconcile_panel::TestEachListBooksOnTheStatementsAccount``).
-        shown: The bank lines the panel named under this row's tick (plan
-            step ``credit_card:CC-5-4a-5``, rulings **R-CC76** /
-            **R-CC127**), for the act that takes the row's kept payment out
-            of its matches.  After rulings **R-CC125** (a typed ``$0.00`` box
-            is refused before this runs) and **R-CC126** (no tick here moves
-            a payment between accounts) the tick the panel captions is a row
+        press: The panel save's press, over the bank lines the panel named
+            under every row ticked (plan step ``credit_card:CC-5-4a-5``,
+            rulings **R-CC76**, **R-CC127**, **R-CC135**;
+            ``_assemble.record_reconciliation``), for the act that takes the
+            row's kept payment out of its matches.  After rulings
+            **R-CC125** (a typed ``$0.00`` box is refused before this runs)
+            and **R-CC126** (no tick here moves a payment between accounts)
+            the tick the panel captions is a row
             holding purchases, which settles FROM them: that ``purchases``
             record takes the payment a revert kept
             (``status_seam._covering._withdraw``), and :data:`ARM`'s reader
@@ -242,8 +245,9 @@ def _settle_one(
             refused as out of date when its kept payment is matched (its page
             named nothing), and when it is not, saved with that payment taken
             off unannounced (ledger row **BAL-596**, balance:X-db's); and two
-            rows matched together to ONE bank line ticked in one press, where
-            the second empties the act and is refused (finding **CC-384**).
+            rows matched together to ONE bank line ticked in one save, where
+            the second empties the act, which no row's caption named, and is
+            refused (finding **CC-384**).
 
     Returns:
         Whether the verb booked *submitted* as a correction -- **answered by the
@@ -256,7 +260,7 @@ def _settle_one(
         (finding **N-231**), which is the shape they can no longer be.
     """
     corrected = transaction_service.settle_transaction(
-        txn, submitted=submitted, settle_day=statement.settle_day, shown=shown,
+        txn, submitted=submitted, settle_day=statement.settle_day, press=press,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

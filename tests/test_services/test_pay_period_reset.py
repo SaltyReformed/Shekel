@@ -694,7 +694,7 @@ class TestResetRefusals:
             movement_removal.remove_movements(
                 list(deleted.entries), user_id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.NOTHING_SHOWN,
+                press=None,
             )
             deleted.is_deleted = True
             db.session.commit()

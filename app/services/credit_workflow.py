@@ -18,6 +18,7 @@ from app.models.category import Category
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import (
+    match_press,
     match_withdrawal,
     movement_removal,
     posting_service,
@@ -130,9 +131,7 @@ def pending_for_credit_revert(
 
 def delete_payback_on_credit_revert(
     txn: Transaction, user_id: int, *,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
 ) -> None:
     """Delete the live auto-generated payback for a reverted credit row.
 
@@ -153,12 +152,12 @@ def delete_payback_on_credit_revert(
     Args:
         txn: The credit transaction being reverted to Projected.
         user_id: The owning user's ID, recorded on the audit event.
-        shown: The bank lines the card's caption named before the press
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            the bank lines the card's caption named
             (:func:`pending_for_credit_revert`), posted back by Undo CC and
             by the Save that sets Status back to Projected.  A caller whose
-            page names none sends :data:`~app.services.match_withdrawal
-            .NOTHING_SHOWN`, which refuses a press that would free a line
-            (ruling **R-CC127**).
+            page names none passes ``None``, which refuses a press that would
+            free a line (ruling **R-CC127**).
 
     Raises:
         PageOutOfDate: When the lines deleting the payback frees differ from
@@ -188,7 +187,7 @@ def delete_payback_on_credit_revert(
         movement_removal.remove_movements(
             list(payback.entries), user_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
-            shown=shown, rows_leaving=[payback],
+            press=press, rows_leaving=[payback],
         )
         db.session.delete(payback)
 
@@ -492,9 +491,7 @@ def mark_as_credit(transaction_id, user_id):
 
 def unmark_credit(
     transaction_id, user_id, *,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
 ):
     """Revert a transaction from 'credit' back to 'projected' and delete its payback.
 
@@ -528,7 +525,7 @@ def unmark_credit(
         user_id: The ID of the user who owns the transaction.
             Defense-in-depth: ownership is verified against the row's own
             ``user_id`` column.
-        shown: The bank lines Undo CC's caption named
+        press: The save's press over the bank lines Undo CC's caption named
             (:func:`delete_payback_on_credit_revert`).
 
     Raises:
@@ -569,7 +566,7 @@ def unmark_credit(
     # Delete the live payback + write the audit event.  Shared with the
     # transaction PATCH route's status-revert path via the single
     # cleanup helper so the two endpoints cannot disagree.
-    delete_payback_on_credit_revert(txn, user_id, shown=shown)
+    delete_payback_on_credit_revert(txn, user_id, press=press)
 
     # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row's
     # family as the final step (the transfer pattern: reconcile on every status

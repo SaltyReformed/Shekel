@@ -602,9 +602,10 @@ class HeldElsewhere:
         """Return the screen's sentence for this row, as ruling **R-CC140** picked it.
 
         Ruling **R-CC140** (developer 2026-10-04, "Short", replacing
-        **R-CC137**'s sentence): *"'Electric $135.00 is not listed here
-        because the app has it as paid from Visa. To change that, edit
-        Electric on the grid.' A refund: 'Refund $45.00 is not listed here
+        **R-CC137**'s sentence), with its made-up refund figure swapped here
+        for another (ruling **R-BAL132**): *"'Electric $135.00 is not listed
+        here because the app has it as paid from Visa. To change that, edit
+        Electric on the grid.' A refund: 'Refund $38.00 is not listed here
         because the app has it as received into Visa. To change that, edit
         Refund on the grid.'"*  The verb follows the row's direction
         (:attr:`is_income`), and the account is named as the owner named it,

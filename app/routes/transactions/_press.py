@@ -20,7 +20,7 @@ from flask_login import current_user
 from app.exceptions import NotFoundError
 from app.routes._refused_press import answer_refused_press
 from app.routes._shown_lines import Press, read_press
-from app.services.match_withdrawal import MARK_PAID, OwnerOnly
+from app.services.match_press import MARK_PAID, OwnerOnly
 from app.routes.transactions._helpers import _error_transaction_response
 from app.routes.transactions.forms import redraw_full_edit
 
@@ -67,7 +67,7 @@ def _mark_paid_press(txn, data):
     (ruling **R-CC130**, developer 2026-10-04, "Companion refuses").  Who
     pressed is the request's, so it is read here; what a press that frees a
     line it may not means is the removal act's
-    (:class:`~app.services.match_withdrawal.OwnerOnly`).
+    (:class:`~app.services.match_press.OwnerOnly`).
 
     **A companion's posted field is dropped, not read**: no companion surface
     renders it, so a request carrying one is crafted, and the owner's

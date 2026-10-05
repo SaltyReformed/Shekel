@@ -38,7 +38,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
-from app.services.match_withdrawal import NOTHING_SHOWN
+from app.services.match_press import NOTHING_SHOWN, Press
 from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
@@ -196,7 +196,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
     # Gate 3, purchase tracking is expense-only.
-    gate_error = (
+    # The refusal this request answers with: the gates' here, the fields' below.
+    refusal = (
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
         or _reject_tracking_on_income(txn, data)
@@ -206,8 +207,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
         # plan step X-au-e it is also what prices the row (balance:X-au-e).
         or _reject_generated_due_date_edit(txn, data)
     )
-    if gate_error is not None:
-        return gate_error
+    if refusal is not None:
+        return refusal
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -335,48 +336,51 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
     # three ``ValidationError`` siblings are in ``mark_as_credit`` /
     # ``unmark_credit``, which this path does not call).
     try:
-        if unlocks:
-            _apply_status_or_postings(txn, data, new_status_id, press.shown)
-        # Write the submitted fields, flag a template row as overridden, and
-        # refuse an amount the settle would discard -- three acts whose ORDER is
-        # load-bearing and is documented at the helper.  Extracted so this
-        # handler keeps one exit per concern rather than one per rule.
-        #
-        # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
-        # ``settles_from_entries``, which lazy-loads ``template`` (or
-        # ``entries``) and so autoflushes the ``setattr`` loop's staged
-        # mutations as the version-pinned UPDATE.  Left above the ``try`` that
-        # was the request's FIRST flush sitting outside its own exception net: a
-        # concurrent commit surfaced as a 500 instead of the designed 409, and a
-        # period move whose ``is_override`` had not yet been written tripped
-        # the generation index (then keyed on the paycheck, now
-        # ``idx_transactions_template_scenario_undated`` for an undated row)
-        # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
-        # claimed the three excepts covered the whole tail, and they covered the
-        # tail while the first flush had moved above it.
-        field_error = _apply_field_updates(
-            txn, data,
-            amount_authored=amount_authored, period_changed=period_changed,
-            target_period=target_period,
-        )
-        if field_error is not None:
-            return field_error
-        if not unlocks:
-            _apply_status_or_postings(txn, data, new_status_id, press.shown)
-        elif _POSTING_RELEVANT_FIELDS & data.keys():
-            posting_service.sync_transaction_postings(txn)
-        if reverts_credit:
-            # Inside the StaleDataError net deliberately: the payback
-            # lookup autoflushes the already-dirtied row (the
-            # version-pinned UPDATE), so a concurrent commit surfaces
-            # here as StaleDataError and must yield the 409 conflict
-            # cell, not a 500.  The helper does not commit -- the
-            # deletion joins this request's commit so the status flip
-            # and the payback removal land atomically, under what the card
-            # named for the payback (ruling **R-CC80**).
-            credit_workflow.delete_payback_on_credit_revert(
-                txn, current_user.id, shown=press.shown,
+        # ONE press for the save (R-CC135); a field refusal abandons it.
+        with Press(press.shown) as one_save:
+            if unlocks:
+                _apply_status_or_postings(txn, data, new_status_id, one_save)
+            # Write the submitted fields, flag a template row as overridden, and
+            # refuse an amount the settle would discard -- three acts whose ORDER is
+            # load-bearing and is documented at the helper.  Extracted so this
+            # handler keeps one exit per concern rather than one per rule.
+            #
+            # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
+            # ``settles_from_entries``, which lazy-loads ``template`` (or
+            # ``entries``) and so autoflushes the ``setattr`` loop's staged
+            # mutations as the version-pinned UPDATE.  Left above the ``try`` that
+            # was the request's FIRST flush sitting outside its own exception net: a
+            # concurrent commit surfaced as a 500 instead of the designed 409, and a
+            # period move whose ``is_override`` had not yet been written tripped
+            # the generation index (then keyed on the paycheck, now
+            # ``idx_transactions_template_scenario_undated`` for an undated row)
+            # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
+            # claimed the three excepts covered the whole tail, and they covered the
+            # tail while the first flush had moved above it.
+            refusal = _apply_field_updates(
+                txn, data,
+                amount_authored=amount_authored, period_changed=period_changed,
+                target_period=target_period,
             )
+            if refusal is not None:
+                one_save.abandon()
+                return refusal
+            if not unlocks:
+                _apply_status_or_postings(txn, data, new_status_id, one_save)
+            elif _POSTING_RELEVANT_FIELDS & data.keys():
+                posting_service.sync_transaction_postings(txn)
+            if reverts_credit:
+                # Inside the StaleDataError net deliberately: the payback
+                # lookup autoflushes the already-dirtied row (the
+                # version-pinned UPDATE), so a concurrent commit surfaces
+                # here as StaleDataError and must yield the 409 conflict
+                # cell, not a 500.  The helper does not commit -- the
+                # deletion joins this request's commit so the status flip
+                # and the payback removal land atomically, under what the card
+                # named for the payback (ruling **R-CC80**).
+                credit_workflow.delete_payback_on_credit_revert(
+                    txn, current_user.id, press=one_save,
+                )
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         # A "Paid from" account that is not the ROW's owner's (plan step
@@ -408,7 +412,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
     }
 
 
-def _apply_status_or_postings(txn, data, new_status_id, shown):
+def _apply_status_or_postings(txn, data, new_status_id, press):
     """Apply the status the payload asks for, else reconcile the edited row.
 
     The status half of :func:`_apply_regular_update`, in one place so the
@@ -424,7 +428,7 @@ def _apply_status_or_postings(txn, data, new_status_id, shown):
         txn: The Transaction being edited.
         data: The schema-loaded PATCH payload.
         new_status_id: The status the payload asks for, or the row's own.
-        shown: The bank lines the card named, for the verb's removal act.
+        press: The save's open press, for the verb's removal act (R-CC135).
     """
     # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
     # this form prefills the settle-day box, so an untouched Save re-submits
@@ -471,7 +475,7 @@ def _apply_status_or_postings(txn, data, new_status_id, shown):
                 figure=submitted_figure,
                 tender_account_id=tender_account_id,
             ),
-            shown=shown,
+            press=press,
         )
     elif _POSTING_RELEVANT_FIELDS & data.keys():
         # Posting ledger reconcile (Build-Order Step 3) for the edit that
@@ -662,10 +666,11 @@ def delete_transaction(txn_id):
     press = read_press(dialog, absent=NOTHING_SHOWN)
 
     try:
-        outcome = transaction_service.delete_transaction(
-            txn, current_user.id, shown=press.shown,
-            purchases_named=purchases_named,
-        )
+        with Press(press.shown) as one_save:
+            outcome = transaction_service.delete_transaction(
+                txn, current_user.id, press=one_save,
+                purchases_named=purchases_named,
+            )
         db.session.commit()
     except ValidationError as exc:
         return _refused(txn_id, exc, press)
@@ -748,10 +753,11 @@ def _mark_done_regular(txn, submitted, tender_account_id, press, target):
     # Read before the settle: a refusal's rollback expires the row.
     txn_id = txn.id
     try:
-        transaction_service.settle_transaction(
-            txn, submitted=submitted, tender_account_id=tender_account_id,
-            shown=press.shown,
-        )
+        with Press(press.shown) as one_save:
+            transaction_service.settle_transaction(
+                txn, submitted=submitted, tender_account_id=tender_account_id,
+                press=one_save,
+            )
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         # ONE arm, answered by the package's one refusal decision (``_refused``,
@@ -923,9 +929,10 @@ def unmark_credit(txn_id):
     )
 
     try:
-        credit_workflow.unmark_credit(
-            txn_id, current_user.id, shown=press.shown,
-        )
+        with Press(press.shown) as one_save:
+            credit_workflow.unmark_credit(
+                txn_id, current_user.id, press=one_save,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(

@@ -101,11 +101,12 @@ from __future__ import annotations
 
 from app.extensions import db
 from app.services import match_withdrawal, posting_service, transfer_legs
-from app.services.match_withdrawal import MatchWithdrawal, Shown, Silent
+from app.services.match_press import Press
+from app.services.match_withdrawal import MatchWithdrawal
 
 
 def remove_movements(
-    movements, owner_id: int, *, because: str, shown: Shown | Silent,
+    movements, owner_id: int, *, because: str, press: Press | None,
     rows_leaving=(),
 ) -> MatchWithdrawal:
     """Take *movements* off the books: reversed, out of their matches, deleted.
@@ -131,9 +132,9 @@ def remove_movements(
             the books it changed.
         because: The withdrawal event's sentence
             (``match_withdrawal.LEFT_THE_BOOKS`` / ``RE_RECORDED``).
-        shown: What the door's page named
-            (:class:`~app.services.match_withdrawal.Shown`), or what lets it
-            stay silent (:class:`~app.services.match_withdrawal.Silent`).
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            what the door's page named or what lets it stay silent; ``None``
+            when the door named nothing.
         rows_leaving: The rows the caller deletes in the same press, soft or
             hard (a recurring occurrence's tombstone counts, ruling
             **R-CC84**), when it is a row delete -- so a creation record naming
@@ -151,7 +152,7 @@ def remove_movements(
     for movement in movements:
         posting_service.reverse_purchase_postings_before_delete(movement)
     withdrawn = match_withdrawal.take_out_of_matches(
-        movements, owner_id, because=because, shown=shown,
+        movements, owner_id, because=because, press=press,
         rows_leaving=rows_leaving,
     )
     for movement in movements:

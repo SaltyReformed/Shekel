@@ -843,12 +843,13 @@ class ReconcileSubmission:
         shown_lines: ``{transaction id: bank line ids}`` -- what the panel's
             caption under each row's tick NAMED (:attr:`TickForm.shown_prefix`,
             plan step ``credit_card:CC-5-4a-5``, rulings **R-CC76** /
-            **R-CC127**), handed to both row scopes.  Owner input and never a
-            scope: the act compares only the named lines on the accounts its
-            movements are on.  A transfer's tick names none, so there is no
-            transfer twin.  **Defaults to EMPTY -- every tick named nothing**,
-            the default every settle verb under it already has
-            (``match_withdrawal.NOTHING_SHOWN``) for the ruled reason: *"A
+            **R-CC127**).  The lines under the rows TICKED are what the save's
+            one press names (``_assemble.record_reconciliation``, ruling
+            **R-CC135**).  Owner input and never a scope: the press only
+            compares it, whole, with what the save frees.  A transfer's tick
+            names none, so there is no transfer twin.  **Defaults to EMPTY --
+            every tick named nothing**, the default every settle verb under
+            it already has (``None``: nothing shown) for the ruled reason: *"A
             button with no warning sends nothing"* (ruling **R-CC127**), so a
             submission built without it refuses any tick that would free a
             line rather than freeing one unannounced.

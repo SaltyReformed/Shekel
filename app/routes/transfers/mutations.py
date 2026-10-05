@@ -34,7 +34,7 @@ from app.services import (
     transfer_legs,
     transfer_service,
 )
-from app.services.match_withdrawal import MARK_PAID, NOTHING_SHOWN
+from app.services.match_press import MARK_PAID, NOTHING_SHOWN, Press
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
@@ -602,9 +602,13 @@ def mark_done(xfer_id):
         # is finding N-146 through a second door; the verb closes it twice over
         # now -- it passes no day, and an already-settled transfer is an
         # idempotent no-op that writes nothing at all.
-        transfer_service.settle_transfer(
-            xfer.id, current_user.id, shown=press.shown,
-        )
+        #
+        # ONE press for the pair (ruling R-CC135): both sides' settles are
+        # calls of it, compared whole at its close, before the commit.
+        with Press(press.shown) as one_save:
+            transfer_service.settle_transfer(
+                xfer.id, current_user.id, press=one_save,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -865,12 +869,14 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # service reads as keywords and handed to it as its own: the removal act
     # refuses a save whose page named other lines than it frees, and a
     # request with no field named none.  Read HERE, beside the one call that
-    # uses it; none of the gates above reads it.
+    # uses it; none of the gates above reads it.  ONE press for the pair
+    # (ruling R-CC135), compared whole at its close, before the commit.
     press = read_press(data, absent=NOTHING_SHOWN)
     try:
-        transfer_service.update_transfer(
-            xfer.id, current_user.id, shown=press.shown, **data,
-        )
+        with Press(press.shown) as one_save:
+            transfer_service.update_transfer(
+                xfer.id, current_user.id, press=one_save, **data,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info("Stale-data conflict on update_transfer id=%d", xfer.id)

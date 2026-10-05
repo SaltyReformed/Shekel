@@ -33,7 +33,7 @@ from app.schemas.validation import (
 )
 from app.services import entry_credit_workflow, entry_service
 from app.services.cash_flow_set import purchase_accounts
-from app.services.match_withdrawal import NOTHING_SHOWN, OwnerOnly, Shown, Silent
+from app.services.match_press import NOTHING_SHOWN, OwnerOnly, Press, Shown, Silent
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
@@ -359,8 +359,8 @@ def _entry_press(
             ``entry_credit_workflow.payback_refusal``.
 
     Returns:
-        A :class:`~app.services.match_withdrawal.Shown` or
-        :class:`~app.services.match_withdrawal.OwnerOnly`.
+        A :class:`~app.services.match_press.Shown` or
+        :class:`~app.services.match_press.OwnerOnly`.
     """
     shown = read_press(data, absent=NOTHING_SHOWN).shown
     if txn.user_id == current_user.id:
@@ -659,12 +659,13 @@ def create_entry(txn_id):
         txn, data, refusal=entry_credit_workflow.payback_refusal(txn),
     )
     try:
-        entry_service.create_entry(
-            transaction_id=txn.id,
-            user_id=current_user.id,
-            details=entry_service.EntryDetails(**data),
-            shown=shown,
-        )
+        with Press(shown) as one_save:
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=current_user.id,
+                details=entry_service.EntryDetails(**data),
+                press=one_save,
+            )
         db.session.commit()
     except IntegrityError as exc:
         # Defensive backstop for commit C-19: see
@@ -708,9 +709,10 @@ def _execute_entry_update(
     the edit form named (:func:`_entry_press`).
     """
     try:
-        entry_service.update_entry(
-            entry_id, current_user.id, shown=shown, **data,
-        )
+        with Press(shown) as one_save:
+            entry_service.update_entry(
+                entry_id, current_user.id, press=one_save, **data,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -971,7 +973,8 @@ def _execute_entry_delete(
     the X's confirmation named (:func:`_entry_press`).
     """
     try:
-        entry_service.delete_entry(entry_id, current_user.id, shown=shown)
+        with Press(shown) as one_save:
+            entry_service.delete_entry(entry_id, current_user.id, press=one_save)
         db.session.commit()
     except StaleDataError:
         logger.info(

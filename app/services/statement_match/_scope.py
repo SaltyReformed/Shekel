@@ -20,8 +20,9 @@ rule for what this holds:
 **What is deliberately NOT here is what the pass DOES change**: which subjects
 a match has already claimed.  Every act re-reads that for itself
 (:func:`~._candidates.matched_subjects`) and narrows this scope through
-:func:`~._candidates.unmatched_rows` / :func:`~._candidates.unmatched_destinations`,
-so an item cannot be handed a row the item before it has just matched.  A scope
+:func:`~._candidates.unmatched_rows`, and re-asks the destinations' own rows
+(:func:`~._destinations.current_destinations`), so an item cannot be handed a
+row the item before it has just matched or settled.  A scope
 that had baked the claims in would have offered 15 of the developer's 91
 creatable lines an envelope an earlier proposal in the same pass claims.
 

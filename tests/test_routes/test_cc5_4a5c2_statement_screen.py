@@ -209,7 +209,7 @@ class TestTheScreenSaysWhatItWithholds:
             card = _card(seed_user)
             refund = generate_row_of(
                 make_income_template(
-                    db.session, seed_user, amount="45.00", name="Refund",
+                    db.session, seed_user, amount="38.00", name="Refund",
                 ),
                 seed_periods_today[0],
             )
@@ -221,12 +221,12 @@ class TestTheScreenSaysWhatItWithholds:
             body = _screen(auth_client, checking.id)
 
             assert (
-                f"Refund $45.00 is not listed here because the app has it as "
+                f"Refund $38.00 is not listed here because the app has it as "
                 f"received into {card.name}. To change that, edit Refund on the "
                 f"grid."
             ) in body
             (held,) = a_scope(seed_user).candidates.held_elsewhere
-            assert (held.figure, held.is_income) == (Decimal("45.00"), True)
+            assert (held.figure, held.is_income) == (Decimal("38.00"), True)
 
     def test_paid_from_checking_ends_the_note_and_a_match_moves_its_date(
         self, app, auth_client, seed_user, seed_periods_today,

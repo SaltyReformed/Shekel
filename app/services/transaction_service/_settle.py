@@ -43,7 +43,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     contribution_of,
 )
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import purchases_total
 from app.services.settle_day import SettleDay
@@ -334,7 +334,7 @@ def settle_transaction(
     submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
     tender_account_id: int | None = None,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
@@ -496,12 +496,13 @@ def settle_transaction(
             ignores *submitted*: an envelope's purchases are its record and
             each carries its own account; the popover renders no picker on
             such a row and the PATCH door refuses one.
-        shown: The bank lines the door's page named before the press, or
-            what lets it stay silent (plan step ``credit_card:CC-5-4a-5``,
-            rulings **R-CC81** / **R-CC127**): a settle that takes the row's
-            kept payment off the books (a ``$0.00`` figure, its purchases) or
-            re-points it frees a match, and the act refuses a press whose
-            freed lines differ.  The default says the page named none.
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            the bank lines the door's page named or what lets it stay silent
+            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** /
+            **R-CC127**): a settle that takes the row's kept payment off the
+            books (a ``$0.00`` figure, its purchases) or re-points it frees a
+            match, and the act refuses a line the page did not name.  The
+            default, ``None``, says the page named none.
 
     Returns:
         Whether this settle booked a HUMAN's figure -- what the reconcile
@@ -614,7 +615,7 @@ def settle_transaction(
 
     correction = None
     if settles_from_entries(txn):
-        settle_from_entries(txn, settle_day=settle_day, shown=shown)
+        settle_from_entries(txn, settle_day=settle_day, press=press)
     else:
         # The correction DECISION.  The echo rule -- a figure equal to what the row
         # would book anyway is not a correction -- is :func:`_is_correction`'s,
@@ -680,7 +681,7 @@ def settle_transaction(
             settlement=Settlement.from_settle(
                 booked, correction, recorded_settlement(txn), tender=tender,
             ),
-            shown=shown,
+            press=press,
         )
 
     posting_service.sync_transaction_postings(txn)
@@ -689,7 +690,7 @@ def settle_transaction(
 
 def settle_from_entries(
     txn: Transaction, *, settle_day: SettleDay | None = None,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
@@ -796,8 +797,8 @@ def settle_from_entries(
             that guards it (a future day, a day beside a non-settled status) is
             the seam's, so this helper adds no second opinion about a value it
             does not own.
-        shown: What the door's page named before the press, or what lets it
-            stay silent: a ``purchases`` record takes a kept payment off the
+        press: The save's press, or ``None`` when its door named nothing:
+            a ``purchases`` record takes a kept payment off the
             books, and the act asks (ruling **R-CC127**;
             :func:`settle_transaction`).
 
@@ -858,7 +859,7 @@ def settle_from_entries(
     # difference with no second write.
     apply_status_change(
         txn, new_status_id, settle_day=settle_day,
-        settlement=Settlement(amount=None, source=None), shown=shown,
+        settlement=Settlement(amount=None, source=None), press=press,
     )
 
     log_event(

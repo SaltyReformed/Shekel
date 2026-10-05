@@ -188,7 +188,7 @@ from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
@@ -557,7 +557,7 @@ def _record_onto(
 
 def _re_point(
     row: Transaction, movement: TransactionEntry, account_id: int,
-    shown: Shown | Silent,
+    press: Press | None,
 ) -> bool:
     """Move *movement* onto *account_id* if it is not there; say whether it moved.
 
@@ -617,7 +617,7 @@ def _re_point(
             written for this act.
         movement: Its covering movement.
         account_id: The account the record names, already gated.
-        shown: What the door's page named, or what lets it stay silent
+        press: The save's press, or ``None`` when its door named nothing
             (ruling **R-CC81**; :func:`sync_covering_movement`).
 
     Returns:
@@ -633,7 +633,7 @@ def _re_point(
     if row.settled_on is not None:
         reject_movement_before_books_open(account_id, row.settled_on)
     match_withdrawal.withdraw_for_moved_movement(
-        movement, row.user_id, shown=shown,
+        movement, row.user_id, press=press,
     )
     movement.reconciled_by_id = None
     row.reconciled_by_id = None
@@ -642,7 +642,7 @@ def _re_point(
 
 
 def _cover(
-    row: Transaction, settlement: Settlement, shown: Shown | Silent,
+    row: Transaction, settlement: Settlement, press: Press | None,
 ) -> None:
     """Ensure *row* holds exactly one covering movement mirroring *settlement*.
 
@@ -681,7 +681,7 @@ def _cover(
     relationship follows on this path.
     """
     if not settlement.amount:
-        _withdraw(row, shown)
+        _withdraw(row, press)
         return
     account_id = (
         settlement.account_id if settlement.account_id is not None
@@ -689,7 +689,7 @@ def _cover(
     )
     movement = covering_movement_of(row)
     if movement is not None:
-        re_pointed = _re_point(row, movement, account_id, shown)
+        re_pointed = _re_point(row, movement, account_id, press)
         if _record_onto(row, movement, settlement) or re_pointed:
             _record_moved(row)
         return
@@ -719,7 +719,7 @@ def _cover(
     _record_moved(row)
 
 
-def _withdraw(row: Transaction, shown: Shown | Silent) -> None:
+def _withdraw(row: Transaction, press: Press | None) -> None:
     """Take *row*'s covering movements off the books: a record that carries nothing.
 
     The two records that WITHDRAW a mirror rather than un-date it (module
@@ -752,7 +752,7 @@ def _withdraw(row: Transaction, shown: Shown | Silent) -> None:
         return
     movement_removal.remove_movements(
         movements, row.user_id, because=match_withdrawal.RE_RECORDED,
-        shown=shown,
+        press=press,
     )
     _record_moved(row)
 
@@ -876,7 +876,7 @@ def sync_covering_movement(
     was_settled: bool,
     now_settled: bool,
     settlement: Optional[Settlement],
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> None:
     """Keep *row*'s covering movement in step with the record the seam wrote.
 
@@ -915,11 +915,12 @@ def sync_covering_movement(
             assigned its new status.
         now_settled: Whether it is in the band after.
         settlement: The record the seam was handed for this act, or ``None``.
-        shown: What the door's page named before the press, or what lets it
-            stay silent: both arms that take a payment out of its matches
-            (:func:`_withdraw`, :func:`_re_point`) are reached through here
-            and the act asks it (plan step ``credit_card:CC-5-4a-5``, rulings
-            **R-CC81** / **R-CC127**).  Defaults to *nothing shown*, as
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            what the door's page named or what lets it stay silent: both arms
+            that take a payment out of its matches (:func:`_withdraw`,
+            :func:`_re_point`) are reached through here and the act asks it
+            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** /
+            **R-CC127**).  Defaults to ``None`` -- *nothing shown* -- as
             ``apply_status_change`` does, so a caller that says nothing is
             refused if the record would free a line.
     """
@@ -930,8 +931,8 @@ def sync_covering_movement(
         # refuses one without the other), and only such a record has anything
         # to mirror: a ``purchases`` record has neither.
         if settlement.source is not None:
-            _cover(row, settlement, shown)
+            _cover(row, settlement, press)
         else:
-            _withdraw(row, shown)
+            _withdraw(row, press)
         return
     _follow_assertion(row)

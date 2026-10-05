@@ -21,7 +21,7 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
-from app.services.match_withdrawal import Silent
+from app.services.match_press import Press, Silent
 from app.services.cash_ledger import resolve_transaction_amount
 from app.services.one_off import (
     due_date_after_move,
@@ -104,6 +104,22 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             than fixed here: making it skip-and-report is a behaviour change to
             carry-forward's batch semantics, not to the guard.
     """
+    # ONE press for the whole batch (plan step ``credit_card:CC-5-4a-5``,
+    # ruling R-CC135, "One check per save"): every envelope's settle is one
+    # call of it, and the withdrawals it makes are logged at its close, so a
+    # batch the route then rolls back logs none.  Silent, naming the open
+    # finding that owns its caption (CC-364, ruling R-CC81) until the
+    # step's next leaf captions each envelope (ruling R-CC76).
+    with Press(Silent("CC-364")) as press:
+        return _carry_forward(
+            source_period_id, target_period_id, scenario_id, balance_ctx,
+            press,
+        )
+
+
+def _carry_forward(source_period_id, target_period_id, scenario_id,
+                   balance_ctx, press):
+    """Run :func:`carry_forward_unpaid` inside its press, which it threads."""
     ctx = _build_carry_forward_context(
         source_period_id, target_period_id, scenario_id, balance_ctx,
     )
@@ -237,7 +253,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # session for batch atomicity.
         for txn in ctx.envelope_txns:
             _settle_source_and_roll_leftover(
-                txn, ctx.target_period, ctx.basis, ctx.schedule,
+                txn, ctx.target_period, ctx.basis, ctx.schedule, press,
             )
             count += 1
 
@@ -418,7 +434,7 @@ def _partition_discrete(ctx, target_period_id: int) -> _DiscretePartition:
 
 
 def _settle_source_and_roll_leftover(source_txn, target_period, basis,
-                                    schedule):
+                                    schedule, press):
     """Settle an envelope source row and roll its leftover into the target.
 
     Implements the envelope branch of Option F (see
@@ -497,6 +513,9 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
             (``ctx.basis``).  Its ``scenario_id`` scopes the target-row lookup
             and the recurrence-engine call so cross-scenario data is never
             touched, and it prices both ends of the rollover.
+        press: The batch's one Silent
+            :class:`~app.services.match_press.Press`
+            (:func:`carry_forward_unpaid`).
 
     Raises:
         ValidationError: On the ``AMBIGUOUS`` guard -- more than one mutable
@@ -574,12 +593,10 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
         target_row.is_override = True
 
     # Its ``purchases`` record takes a kept payment off the books, and the
-    # confirmation names nothing first (finding **CC-364**): named where the
-    # act asks (ruling **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s
-    # second leaf captions each envelope (ruling **R-CC76**).
-    transaction_service.settle_from_entries(
-        source_txn, shown=Silent("CC-364"),
-    )
+    # confirmation names nothing first (finding **CC-364**): the batch's
+    # Silent press says so where the act asks (ruling **R-CC81**,
+    # :func:`carry_forward_unpaid`).
+    transaction_service.settle_from_entries(source_txn, press=press)
 
 
 def _resolve_or_create_target_row(source_txn, target_period,

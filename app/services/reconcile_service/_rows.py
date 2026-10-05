@@ -70,7 +70,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import AnchorPoint
-from app.services.match_withdrawal import Shown
+from app.services.match_press import Press
 from app.services.stated_figure import StatedFigure
 from app.services.pay_calendar import DerivedPeriod, FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
@@ -317,16 +317,16 @@ class Arm:
             **Keyed by the id a tick posts**, so the id a form narrowed by and
             the id its amount box is read under are one value by construction:
             a row's own id, a leg's transfer id.
-        settle: ``(item, submitted, statement, shown) -> bool`` -- settles one
+        settle: ``(item, submitted, statement, press) -> bool`` -- settles one
             item through the arm's own service verb, *submitted* being the
             panel's figure and who wrote it
             (:class:`~app.services.stated_figure.StatedFigure`, always
             ``typed``: the amount boxes are a person's word) or ``None``, and
-            *shown* the bank lines the panel named under that item's tick
-            (:class:`~app.services.match_withdrawal.Shown`, plan step
-            ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**),
-            which the verb hands to the act that takes a payment out of its
-            matches.  Returns whether a HUMAN's figure was booked.  The bool is
+            *press* the panel save's one
+            :class:`~app.services.match_press.Press` (plan step
+            ``credit_card:CC-5-4a-5``, rulings **R-CC76**, **R-CC127**,
+            **R-CC135**), which the verb hands to the act that takes a
+            payment out of its matches.  Returns whether a HUMAN's figure was booked.  The bool is
             asked of the verb's own published
             predicate rather than read off the column afterwards, which is
             finding **N-231**: an envelope's close always writes
@@ -792,7 +792,7 @@ def record_settled(
     tick_ids: "set[int]",
     corrections: "dict[int, Decimal]",
     *,
-    shown_lines: "dict[int, frozenset[int]]",
+    press: Press,
 ) -> int:
     """Settle every item of *arm* the form ticked, and report what landed.
 
@@ -874,8 +874,8 @@ def record_settled(
             then counts.
         corrections: ``{tick id: amount}`` from the arm's amount boxes.  An id
             with no entry settles at the item's own figure.
-        shown_lines: ``{tick id: bank line ids}`` the panel named under each
-            tick.  An id with no entry named nothing.
+        press: The panel save's ONE press (``_assemble.record_reconciliation``,
+            ruling **R-CC135**), threaded to every item's settle.
 
     Returns:
         How many items settled -- what actually CHANGED, never what was asked
@@ -885,9 +885,9 @@ def record_settled(
     Raises:
         ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
             propagated from the arm's settle verb -- an illegal transition a
-            stale panel can still submit, or a press freeing other bank lines
-            than its tick named (``PageOutOfDate``, ruling **R-CC127**).  A 400
-            at the route.
+            stale panel can still submit, or a tick freeing a bank line no
+            ticked row's caption named (``PageOutOfDate``, rulings
+            **R-CC127** / **R-CC135**).  A 400 at the route.
         PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
     """
     if not tick_ids:
@@ -906,8 +906,7 @@ def record_settled(
             None if amount is None
             else StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
         )
-        shown = Shown(shown_lines.get(tick_id, frozenset()))
-        if arm.settle(item, submitted, statement, shown):
+        if arm.settle(item, submitted, statement, press):
             corrected += 1
 
     if items:
