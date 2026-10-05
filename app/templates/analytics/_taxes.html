@@ -17,7 +17,8 @@
 
    Basis honesty: every figure on this tab is a MODELED estimate (the
    audit's "modeled, labeled, calibrated" cell); the caption and the
-   assumptions card carry the calibration and measured-through anchors. #}
+   assumptions card carry the pay stubs that priced the estimate and the
+   measured-through anchor. #}
 
 {# ── Header: title + year selector ─────────────────────────────── #}
 <div class="d-flex align-items-center justify-content-between mb-3">
@@ -144,13 +145,33 @@
             {%- if report.liability.state.standard_deduction is not none %} after {{ money(report.liability.state.standard_deduction, cents=false) }}{% endif %}
             {%- else %} &middot; no state income tax priced{% endif %}
           </dd>
+          {# What priced the taxes of the year's ESTIMATED paychecks (those
+             after "Measured through"), per job, from the engine's answer
+             (``report.withholding.bases``): for one job the tax formulas come
+             first when they appear, because a paycheck takes them only when no
+             stub used for pricing is dated on or before it.  The job is named
+             only when more than one is active (plan step salary:S11-c-2c,
+             rulings R-SAL100 and, for the words, R-SAL121). #}
           <dt class="col-6 fw-normal">Withholding basis</dt>
           <dd class="col-6 text-end mb-1">
-            {%- if report.assumptions.disclosures.calibration_active -%}
-            calibrated {{ report.assumptions.disclosures.calibration_pay_stub_date.strftime('%b %-d, %Y') }}
+            {%- for basis in report.withholding.bases -%}
+            <div>
+            {%- if report.assumptions.active_profile_count > 1 %}{{ basis.job }}: {% endif -%}
+            {%- if basis.stub_paydays -%}
+            {%- if basis.formulas_priced %}the tax formulas, then {% endif -%}
+            your
+            {% for payday in basis.stub_paydays -%}
+            {{ payday.strftime('%b %-d, %Y') }}
+            {%- if loop.revindex == 2 %} and {% elif not loop.last %}, {% endif -%}
+            {%- endfor %}
+            pay stub{{ 's' if basis.stub_paydays|length > 1 }}
             {%- else -%}
-            bracket model
+            the tax formulas
             {%- endif -%}
+            </div>
+            {%- else -%}
+            nothing left to estimate
+            {%- endfor -%}
           </dd>
           <dt class="col-6 fw-normal">Measured through</dt>
           <dd class="col-6 text-end mb-1">

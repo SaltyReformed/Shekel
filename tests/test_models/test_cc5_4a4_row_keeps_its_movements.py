@@ -41,7 +41,7 @@ from app.extensions import db as _db
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import match_withdrawal, movement_removal
+from app.services import match_press, match_withdrawal, movement_removal
 from tests._test_helpers import (
     add_entry,
     create_account_of_type,
@@ -249,7 +249,7 @@ class TestTheOneActStillRemovesAMovement:
             movement_removal.remove_movements(
                 [purchase], seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.NOTHING_SHOWN,
+                press=None,
             )
             assert row.entries == []
             db.session.commit()
@@ -261,14 +261,15 @@ class TestTheOneActStillRemovesAMovement:
         with app.app_context():
             row, created = _home_improvement(seed_user)
             purchase = db.session.get(TransactionEntry, created.entry_id)
-            movement_removal.remove_movements(
-                [purchase],
-                seed_user["user"].id,
-                because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.Shown(
+            with match_press.Press(match_press.Shown(
                     match_withdrawal.pending_for_movements([purchase]).line_ids,
-                ),
-            )
+                )) as press:
+                movement_removal.remove_movements(
+                    [purchase],
+                    seed_user["user"].id,
+                    because=match_withdrawal.LEFT_THE_BOOKS,
+                    press=press,
+                )
             db.session.commit()
             assert db.session.get(TransactionEntry, created.entry_id) is None
             assert db.session.get(StatementMatch, created.match_id) is None

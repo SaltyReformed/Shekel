@@ -8,8 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S11-c-2b` (`c43200af`, 2026-10-04) let each job say what its stub's gross holds**; `X-at-8`, the
-2027 law, is due before 2026-12-01 and `S11-c-2c` MOVES MONEY. Archived: `historical/salary_*`.
+**`S11-c-2c` (`4447238b`, 2026-10-05) prices each paycheck's taxes from its pay stub**, which moves
+money; `X-at-8`, the 2027 law, is due before 2026-12-01. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -117,40 +117,29 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41** and
       **R-SAL9** as amended by **R-SAL42**; **SAL-564**; absorbs `S1`'s **N-441**, **N-535**,
       **N-530**): the DECOMPOSED parent of eight leaves (2026-09-23, 2026-10-04), ticking with its
-      last. Today one dated stub's four EFFECTIVE rates price every paycheck; the row stores that
-      date (`pay_stub_date`) and only displays it; no pricing reader consults it; both calibration
-      doors destroy a row. A paycheck copies the latest same-lines stub's four taxes and the app's
+      last. Until `S11-c-2c` one dated stub's four EFFECTIVE rates priced every paycheck; the row
+      stored that date (`pay_stub_date`) and only displayed it; no pricing reader consulted it; both
+      calibration doors destroyed a row. Since that step nothing prices from the table or shows it,
+      and `S11-d` drops it. A paycheck copies the latest same-lines stub's four taxes and the app's
       formulas, run on both sides, price the difference, superseding the spec's "federal bracket's
       marginal rate" (a fixed rate withholds tax his credits cancel). **S1's clauses, corrected:**
       nothing is RESTORED (an old row holds five figures and no line; the one entered 2026-08-28,
       deleted 2026-09-19, mis-read the 2026-08-27 stub), the history is TRANSCRIBED, and "all 12
       settled paychecks re-derive" becomes fork 8c's grade against each RECORD.
   - [x] **S11-b** `1d3a2574` -- the stub door (**R-SAL42**); opened **SAL-567**, **SAL-568**.
-  - [ ] **S11-c -- the engine's calibrated path**: the DECOMPOSED parent of two leaves (the salary
-        lane's decomposition, accepted by the coordinator 2026-09-23), ticking with its last.
+  - [x] **S11-c** `4447238b` -- the engine's calibrated path, ticked with its last leaf.
   - [x] **S11-c-1** `dff66c5e` -- a stub line's own kind (**R-SAL58**); closed **SAL-567**.
-  - [ ] **S11-c-2 -- the engine prices from the stubs**: the DECOMPOSED parent of three leaves (the
-        salary lane's trace, granted by the coordinator 2026-10-04), ticking with its last.
+  - [x] **S11-c-2** `4447238b` -- the engine prices from the stubs, ticked with its last leaf.
   - [x] **S11-c-2a** `cf2e59a4` -- the printed gross asked (**R-SAL99**); closed **SAL-590**.
   - [x] **S11-c-2b** `c43200af` -- the gross setting per job (**R-SAL102**); closed **SAL-592**.
-  - [ ] **S11-c-2c -- the engine prices from the stubs**: the latest switched-on stub on or before
-        the payday with the SAME LINES supplies the four taxes and the formulas the difference
-        (`PricedLine`'s line identity shipped at `S11-b`); with no such stub, the latest switched-on
-        stub on or before it, of ANY lines, and with none at all the formulas alone (**R-SAL54**,
-        settling fork 8b); the stub's side priced by the kinds it records, never its lines' current
-        ones (**R-SAL58**), on its own payday's tax year (**R-SAL77**); every priced tax floored at
-        `$0.00` (**R-SAL55**). Each priced paycheck names the stub that priced it, or none: the
-        formulas, and the cockpit, the Taxes tab and the breakdown say so, the old calibration
-        buttons becoming a link to the Pay stubs list (**R-SAL100**, `X-at-6`'s stub half). Every
-        reader switched; the rates path, `calibrate_*` and the calibration schemas deleted with
-        their door. **MOVES MONEY**, graded on a clone holding the stubs: fork 8c, the projected
-        diff, `tests/manual/measure_r18d_phone_line.py` before and after (within a cent of the
-        pair), each stub beside the old calibrations of its date (fork 9). Closes **SAL-565**.
+  - [x] **S11-c-2c** `4447238b` -- taxes priced from the stubs; closed **SAL-565**, **SAL-594**.
   - [ ] **S11-d -- the old table goes**: a migration drops `salary.calibration_overrides` and every
         reference, REFUSING while any calibration the data has held (live, or deleted per the audit
-        log) has no stub on its date, and printing any differing figures (fork 9).
+        log) has no stub on its date, and printing any differing figures (fork 9); its downgrade
+        recreates the table empty (**R-SAL124**).
   - [ ] **S11-e -- the FICA treatment** (fork 7): a pre-tax line says if it reduces FICA wages, stub
-        or no stub; the developer sets the backfill from his stubs. Closes **SAL-566**.
+        or no stub; the developer sets the backfill from his stubs. Closes **SAL-566**, and owns
+        **SAL-595**, **SAL-596** and **SAL-597**, filed at `S11-c-2c`'s tick.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates

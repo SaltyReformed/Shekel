@@ -111,6 +111,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._opened import OpenedAsk, OpenedMatch
     from ._reads import ReviewSet
     from ._scope import ReviewScope
+    from ._subjects import HeldElsewhere
 
 
 class Tab(enum.Enum):
@@ -300,21 +301,23 @@ class TabCount:
 class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- **eleven because the
-    page renders eleven distinct things**: which tab is open, WHICH KIND of
+    Pylint: ``too-many-instance-attributes`` (12/7) -- **twelve because the
+    page renders twelve distinct things**: which tab is open, WHICH KIND of
     card it holds, the hero, what the last import did, the holding chips, the
     tab bar, the cards, the sweeps, the footer's disclosure, what the
-    account's opening already accounts for, and the ONE card a scriptless
-    request asked to open.
+    account's opening already accounts for, the ONE card a scriptless
+    request asked to open, and the rows planned here whose payment is
+    recorded on another account.
     Every one of them is read by ``_statement_reconcile_body.html``, so the
     count is re-derivable rather than asserted; folding any pair would be the
     speculative nesting ``CLAUDE.md`` rule 13 forbids, and
     :class:`~._reads.ReviewSet` carries the same disable for the same reason.
     *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth, (9/7)
     until ``bank_import:X-gj-4c-2`` added the tenth, and (10/7) until
-    ``bank_import:X-gi-1`` added the eleventh* -- a count in a rationale is a
-    measurement, and the first of those went stale in the same commit that
-    made it stale.
+    ``bank_import:X-gi-1`` added the eleventh, and (11/7) until plan step
+    ``credit_card:CC-5-4a-5`` (leaf 5c-2a) added the twelfth* -- a count in a
+    rationale is a measurement, and the first of those went stale in the
+    same commit that made it stale.
 
     **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
     and NOTHING read it** -- not a template, not the route, not a test.  Every
@@ -381,6 +384,10 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             :class:`~._panel.VerbPanel` carried a ``MatchTab`` holding every
             card's rows until plan step ``bank_import:X-gj-1b`` deleted it for
             deriving 248 cards' worth of a value nobody read.
+        held_elsewhere: The rows this screen withholds because their payment
+            is recorded on another account (ruling **R-CC137**), each saying
+            its own sentence (:attr:`~._subjects.HeldElsewhere.said`).  Not
+            lines of :attr:`unexamined`: these were looked at and withheld.
     """
 
     tab: Tab
@@ -394,6 +401,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     unexamined: "tuple[str, ...]"
     books_bound: "BooksBound | None"
     opened: "OpenedMatch | None"
+    held_elsewhere: "tuple[HeldElsewhere, ...]"
 
     @property
     def is_done(self) -> bool:
@@ -879,6 +887,7 @@ def reconcile_page(
         # no act to sweep at all.
         sweeps=_sweeps(sections) if tab is Tab.TO_EXPLAIN else (),
         unexamined=_unexamined(review),
+        held_elsewhere=scope.candidates.held_elsewhere,
     )
 
 

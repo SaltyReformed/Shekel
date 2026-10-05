@@ -528,7 +528,13 @@ class TestATenderCorrectionOnASettledRow:
     def test_the_settle_verb_ignores_a_tender_on_the_entries_branch(
         self, app, seed_user, seed_periods,
     ):
-        """The panel's tick names the statement's account for every row; an envelope's close takes none."""
+        """An envelope's close takes no tender: a named one is dropped, as a stated figure is.
+
+        No door names one here since plan step ``credit_card:CC-5-4a-5``:
+        the reconcile panel's tick named the statement's account for every
+        row until its leaf 5c-1 (ruling **R-CC126**), and the popover renders
+        no 'Paid from' picker on a row settling from its purchases.
+        """
         with app.app_context():
             card = _card(seed_user)
             txn = _hotel_bill(seed_user, seed_periods[0], is_envelope=True)
@@ -787,17 +793,29 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             with pytest.raises(ValidationError, match=r"archived, so a payment"):
                 settle_transaction(other, tender_account_id=card.id)
 
-    def test_the_matchers_accept_forces_the_statements_account(
+    def test_the_matcher_never_moves_a_card_payment(
         self, app, seed_user,
     ):
-        """A bill reverted out of a card settle, matched to a CHECKING line: booked on checking.
+        """A bill reverted out of a card settle: checking's screen withholds it, the card's matches it.
 
-        The matcher's transaction arm names the pass's account as the tender
-        (ruling **R-CC15**): the bank line says checking's feed showed the
-        money, so the kept card movement is re-pointed onto checking rather
-        than kept there by the seam's default (**R-CC42**).
+        Rewritten under ruling **R-CC137** (developer 2026-10-04, "Only Paid
+        from, say why"; plan step ``credit_card:CC-5-4a-5``, leaf 5c-2a), the
+        rule-5 exception for a ruled change of behaviour: *"Checking's
+        statement screen does not offer Hotel while its payment is recorded on
+        the Visa (the reconcile panel's test, R-CC126), and says so on that
+        screen ... Matching on the Visa's screen instead dates it there, and
+        the Visa owes $120.00 more. A bill's payment then changes account only
+        through 'Paid from' ... and a match from a page drawn before the
+        payment moved is refused. Amends R-CC43."*  It was
+        ``test_the_matchers_accept_forces_the_statements_account``, which
+        pinned the matcher's transaction arm naming the pass's account as the
+        tender (ruling **R-CC15**) and re-pointing the kept card movement onto
+        checking.  Same staging: the bill settled from the card, reverted, a
+        checking line and now a card line beside it.
         """
-        # pylint: disable=import-outside-toplevel -- the matcher's own builders
+        # Pylint: ``import-outside-toplevel`` -- the matcher's own builders,
+        # imported where used, as this module's other matcher case does.
+        # pylint: disable=import-outside-toplevel
         from app.services import statement_match
         from tests.test_services.test_statement_match._builders import (
             a_bank_line, a_scope, a_submission, a_transaction, an_import,
@@ -806,10 +824,14 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             checking = seed_user["account"]
             card = _card(seed_user)
             db.session.commit()
-            statement = an_import(seed_user)
             bank_day = seed_user["bootstrap_period"].start_date
-            line = a_bank_line(
-                seed_user, statement, amount="-120.00", posted_on=bank_day,
+            checking_line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-120.00",
+                posted_on=bank_day,
+            )
+            card_line = a_bank_line(
+                seed_user, an_import(seed_user, card), amount="-120.00",
+                posted_on=bank_day, description="HOTEL",
             )
             txn = a_transaction(seed_user, name="Hotel", amount="120.00")
             db.session.commit()
@@ -818,17 +840,45 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             _revert(txn)
             assert _movement(txn).account_id == card.id
 
-            scope = a_scope(seed_user)
+            on_checking = a_scope(seed_user)
+            assert [
+                row for row in on_checking.candidates.rows
+                if row.transaction_id == txn.id
+            ] == []
+            (held,) = on_checking.candidates.held_elsewhere
+            assert (held.name, held.figure, held.recorded_on, held.is_income) == (
+                "Hotel", _HOTEL, card.name, False,
+            )
+            with pytest.raises(ValidationError, match="no longer available"):
+                statement_match.accept_match(
+                    a_submission(
+                        on_checking, lines=[checking_line], transactions=[txn],
+                    ),
+                    on_checking,
+                )
+            db.session.rollback()
+            movement = _movement(txn)
+            assert movement.account_id == card.id
+            assert movement.settled_on is None
+            scenario_id = seed_user["scenario"].id
+            assert bank_day not in _per_day(card.id, scenario_id)
+
+            on_card = a_scope(seed_user, card)
             accepted = statement_match.accept_match(
-                a_submission(scope, lines=[line], transactions=[txn]), scope,
+                a_submission(on_card, lines=[card_line], transactions=[txn]),
+                on_card,
             )
             db.session.commit()
 
             assert accepted.settled_count == 1
             movement = _movement(txn)
-            assert movement.account_id == checking.id
+            assert movement.account_id == card.id
             assert movement.settled_on == bank_day
             assert txn.settled_on == bank_day
+            # "the Visa owes $120.00 more": the card's fold carries the
+            # payment on the bank's day, and Checking's carries nothing.
+            assert _per_day(card.id, scenario_id).get(bank_day) == -_HOTEL
+            assert _per_day(checking.id, scenario_id) == {}
 
     def test_the_checking_panel_no_longer_moves_a_card_payment(
         self, app, seed_user, seed_periods,

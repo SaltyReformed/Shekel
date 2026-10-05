@@ -18,11 +18,13 @@ What this test enforces
 -----------------------
 
 For every ``.py`` file under ``app/``: exactly ONE ``ast.Call`` to
-``project_salary`` that passes the keyword ``configs_by_year``, and it is in
-``app/services/income_service.py``.
+``project_salary``, whatever its keywords, and it is in
+``app/services/income_service.py``.  **Every call counts since plan step
+salary:S11-c-2c**; until then only a call passing ``configs_by_year`` did,
+for the reason the next section gives and the step made untrue.
 
-Why THAT predicate and not "one caller of ``project_salary``"
--------------------------------------------------------------
+Why it read one keyword, and why it no longer does
+--------------------------------------------------
 
 ``project_salary`` takes exactly one of two tax-config sources, and they are
 two different questions rather than two spellings of one:
@@ -31,14 +33,23 @@ two different questions rather than two spellings of one:
   MULTI-YEAR horizon over the owner's whole calendar needs.  This is N-443's
   subject and the thing that must have one spelling.
 * ``tax_configs=`` -- ONE config set for ONE tax year, correct over a year
-  SLICE.  ``tax_withholding_service`` prices a year's remainder that way and
-  ``tax_report_service`` sums one tax year's pre-tax total that way.
+  SLICE.  ``tax_withholding_service`` priced a year's remainder that way and
+  ``tax_report_service`` summed one tax year's pre-tax total that way.
 
 Both of those were checked by hand when this test was written (2026-09-03) and
-neither is a calendar-wide walk, so asserting "one caller of ``project_salary``"
-would have been a FALSE rule that fires on two correct sites.  A census is only
+neither was a calendar-wide walk, so asserting "one caller of ``project_salary``"
+would have been a FALSE rule that fired on two correct sites.  A census is only
 as good as its predicate, and this one is the narrow true predicate rather than
 the wide convenient one.
+
+*Both left at plan step salary:S11-c-2c*, when a pay stub began pricing a
+paycheck on its OWN payday's tax year (ruling **R-SAL77**): a year slice can
+need two years' law, which is the per-year resolution this test gives one
+spelling, so both now ask the read pass's pricer.  No ``app/`` site passes
+``tax_configs=`` today, so the wide predicate it argued against became TRUE,
+and that step took it: a single-year caller -- the one-payday
+``project_salary(basis, [period], tax_configs)`` that was ledger row
+**P62**'s shape -- now fails this census as a second spelling does.
 
 Why AST, not grep
 -----------------
@@ -47,22 +58,22 @@ Why AST, not grep
 ten ``app/`` modules after this change (eleven before it, cockpit.py having
 dropped its mention), so a text search answers overwhelmingly with the
 documentation rather than with the callers.  Walking ``ast.Call`` sees only
-invocation, and reading the call's KEYWORDS is what separates the two modes
-above -- which a grep cannot do at all.
+invocation, which a grep cannot separate from prose at all.  (Until plan
+step salary:S11-c-2c it also read the call's KEYWORDS, to separate the two
+modes above.)
 
 What this census CANNOT see
 ---------------------------
 
 Stated because an unstated limit reads as no limit.
-:func:`test_the_blind_spots_are_the_ones_named` pins the FIRST FOUR of the
-five below, which are call shapes it can parse; the fifth is a different
+:func:`test_the_blind_spots_are_the_ones_named` pins the FIRST TWO of the
+three below, which are call shapes it can parse; the third is a different
 code shape entirely and no assertion over this scanner can pin it.  Each of
-the four was measured against this scanner:
+the two was measured against this scanner.  (A ``**`` unpacking --
+``project_salary(b, p, **kw)`` -- was a fourth, invisible to the keyword
+test, until plan step salary:S11-c-2c dropped the keyword test; the same
+test now pins that the scanner SEES it.)
 
-* ``project_salary(b, p, **{"configs_by_year": c})`` and
-  ``project_salary(b, p, **kw)`` -- a ``**`` unpacking is an
-  ``ast.keyword`` whose ``arg`` is ``None``, so the keyword test cannot see
-  the name.
 * ``f = paycheck_calculator.project_salary`` then ``f(...)`` -- an assignment
   alias, where :func:`_local_names` reads only ``ImportFrom``.
 * ``getattr(pc, "project_salary")(...)``.
@@ -73,14 +84,14 @@ the four was measured against this scanner:
   :func:`test_no_app_site_prices_a_paycheck_outside_the_pricer` is the second
   census that pins it, over ``calculate_paycheck`` itself.
 
-**The second census has the SAME first four blind spots**, because it uses the
-same matcher: a ``**`` unpacking is irrelevant to it (it reads no keyword), but
-an assignment alias, a ``getattr`` form and a name bound by anything other than
-``ImportFrom`` are all invisible to it exactly as they are here.
+**The second census has the SAME first two blind spots**, because it uses the
+same matcher: an assignment alias, a ``getattr`` form and a name bound by
+anything other than ``ImportFrom`` are all invisible to it exactly as they are
+here.
 :func:`test_the_per_period_blind_spots_are_the_ones_named` pins them, so the
 statement above is executable for both censuses rather than for one.
 
-The first four appear nowhere in ``app/`` today.  They are the shapes a
+The first two appear nowhere in ``app/`` today.  They are the shapes a
 reviewer must still catch by eye; this test is a floor, not a ceiling.  The census also
 reads only ``app/`` -- ``scripts/`` and ``tools/`` are clean, and
 ``tests/test_services/test_paycheck_calculator.py`` holds two legitimate
@@ -90,8 +101,9 @@ The negative case
 -----------------
 
 :func:`test_the_scanner_fires_on_a_planted_second_spelling` plants the
-violation as source and asserts the scanner finds it, and plants the
-year-slice form to prove it does NOT.  A census that
+violation as source and asserts the scanner finds it -- the calendar-wide
+form and, since plan step salary:S11-c-2c, the year-slice form too, which it
+planted until then to prove the scanner did NOT count it.  A census that
 returns "no violations" is indistinguishable from a census that looked in the
 wrong place; this repo has measured that failure many separate ways, so the
 passing claim is worth exactly what the firing proof is.
@@ -101,13 +113,9 @@ import ast
 from pathlib import Path
 
 
-#: The engine entry whose calendar-wide use is being constrained.
+#: The engine entry every ``app/`` use of which is being constrained: since
+#: plan step salary:S11-c-2c, a call of any keywords (the module docstring).
 _PROJECTION = "project_salary"
-
-#: The keyword that marks the MULTI-YEAR, whole-calendar mode.  Its presence
-#: is what makes a call an instance of N-443's rule; a call passing
-#: ``tax_configs`` instead is the year-slice mode and is not in scope.
-_CALENDAR_WIDE_KEYWORD = "configs_by_year"
 
 #: The ONE module allowed to spell it, relative to the repo root.
 _THE_LEAF = "app/services/income_service.py"
@@ -151,14 +159,16 @@ def _local_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def _calendar_wide_calls(tree: ast.AST) -> int:
-    """Return how many calendar-wide ``project_salary`` calls *tree* holds.
+def _projection_calls(tree: ast.AST) -> int:
+    """Return how many ``project_salary`` calls *tree* holds.
 
     A call counts when its callee resolves to the projection -- a bare name
     (including an ``import ... as`` alias, see :func:`_local_names`) or any
     attribute access ending in ``project_salary``, which is the
-    ``paycheck_calculator.project_salary(...)`` form -- AND it passes
-    ``configs_by_year`` by keyword.
+    ``paycheck_calculator.project_salary(...)`` form -- whatever keywords it
+    passes.  It was ``_calendar_wide_calls`` and counted only a call passing
+    ``configs_by_year`` until plan step salary:S11-c-2c (the module
+    docstring).
 
     Args:
         tree: The parsed module.
@@ -178,10 +188,7 @@ def _calendar_wide_calls(tree: ast.AST) -> int:
             matches = func.id in names
         else:
             matches = False
-        if not matches:
-            continue
-        if any(kw.arg == _CALENDAR_WIDE_KEYWORD for kw in node.keywords):
-            found += 1
+        found += matches
     return found
 
 
@@ -191,25 +198,27 @@ def _census(root: Path) -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in sorted(app_dir.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        hits = _calendar_wide_calls(tree)
+        hits = _projection_calls(tree)
         if hits:
             counts[str(path.relative_to(root))] = hits
     return counts
 
 
 def test_the_calendar_wide_projection_is_spelled_once():
-    """Only ``income_service`` runs the engine over the whole calendar.
+    """Only ``income_service`` runs the engine's projection, over any span.
 
-    The rule N-443 exists to make structural.  Asserted as the WHOLE census
-    rather than as "the other two sites are clean", so a FOURTH spelling
-    appearing in a module nobody thought to name fails this test too.
+    The rule N-443 exists to make structural, widened at plan step
+    salary:S11-c-2c to every call (the module docstring).  Asserted as the
+    WHOLE census rather than as "the other sites are clean", so a second
+    spelling appearing in a module nobody thought to name fails this test too.
     """
     census = _census(_repo_root())
     assert census == {_THE_LEAF: 1}, (
-        "The calendar-wide paycheck projection must be spelled exactly once, "
+        "The paycheck projection must be called exactly once in app/, "
         f"in {_THE_LEAF} (ProfilePaychecks.over). Census: {census}. "
-        "A new entry here is ledger row N-443 recurring: route it through "
-        "income_service.ProfilePaychecks instead of pairing "
+        "A new entry here is ledger row N-443 recurring -- or P62's one-payday "
+        "shape: route it through the read pass's pricer, "
+        "ctx.paychecks().for_profile(profile), instead of pairing "
         "a tax-config resolution with project_salary again."
     )
 
@@ -229,33 +238,33 @@ def test_the_engine_module_defines_it_without_calling_it():
     assert leaves, f"{_THE_ENGINE} holds no modules to read"
     for leaf in leaves:
         tree = ast.parse(leaf.read_text(encoding="utf-8"), filename=str(leaf))
-        assert _calendar_wide_calls(tree) == 0, leaf
+        assert _projection_calls(tree) == 0, leaf
 
 
 def test_the_scanner_fires_on_a_planted_second_spelling():
-    """The census FINDS a planted calendar-wide call, and ignores a slice one.
+    """The census FINDS a planted calendar-wide call, and a planted year-slice one.
 
-    Two plants rather than one, because this scanner's predicate has two
-    halves and a test of only the first would pass while the second was
-    inverted: the keyword arm must ACCEPT ``configs_by_year`` and REJECT
-    ``tax_configs``.  Without the second plant a scanner that counted every
-    ``project_salary`` call would look identical here and would fail the real
-    census against the two legitimate year-slice callers.
+    Two plants, one per mode, because the predicate dropped its keyword arm
+    at plan step salary:S11-c-2c and each mode is a call it must now count:
+    the year-slice plant is the MUTATION that proves the widening, since it
+    read ``0`` here until then -- the arm ACCEPTED ``configs_by_year`` and
+    REJECTED ``tax_configs``, for the two year-slice callers this census was
+    written beside (both on the pass's pricer since that step).
     """
     calendar_wide = ast.parse(
         "paycheck_calculator.project_salary(\n"
         "    PayrollBasis(profile, calendar), periods,\n"
-        "    configs_by_year=configs, calibration=profile.calibration,\n"
+        "    configs_by_year=configs,\n"
         ")\n"
     )
-    assert _calendar_wide_calls(calendar_wide) == 1
+    assert _projection_calls(calendar_wide) == 1
 
     year_slice = ast.parse(
         "paycheck_calculator.project_salary(\n"
-        "    basis, remainder, tax_configs, calibration=cal,\n"
+        "    basis, remainder, tax_configs,\n"
         ")\n"
     )
-    assert _calendar_wide_calls(year_slice) == 0
+    assert _projection_calls(year_slice) == 1
 
 
 def test_the_scanner_sees_an_aliased_import():
@@ -271,13 +280,13 @@ def test_the_scanner_sees_an_aliased_import():
         "from app.services.paycheck_calculator import project_salary as ps\n"
         "ps(basis, periods, configs_by_year=configs)\n"
     )
-    assert _calendar_wide_calls(aliased) == 1
+    assert _projection_calls(aliased) == 1
 
     direct = ast.parse(
         "from app.services.paycheck_calculator import project_salary\n"
         "project_salary(basis, periods, configs_by_year=configs)\n"
     )
-    assert _calendar_wide_calls(direct) == 1
+    assert _projection_calls(direct) == 1
 
     # A bare name that no import bound to the engine is NOT counted, where an
     # ATTRIBUTE ending in the name is -- the two arms are deliberately
@@ -286,28 +295,30 @@ def test_the_scanner_sees_an_aliased_import():
     unbound_bare_name = ast.parse(
         "ps(basis, periods, configs_by_year=configs)\n"
     )
-    assert _calendar_wide_calls(unbound_bare_name) == 0
+    assert _projection_calls(unbound_bare_name) == 0
 
     any_attribute = ast.parse(
         "anything.project_salary(basis, periods, configs_by_year=configs)\n"
     )
-    assert _calendar_wide_calls(any_attribute) == 1
+    assert _projection_calls(any_attribute) == 1
 
 
 def test_the_blind_spots_are_the_ones_named():
     """Each documented blind spot really is blind, and no other one is claimed.
 
-    The module docstring lists four call shapes this census cannot see.  A
+    The module docstring lists two call shapes this census cannot see.  A
     list like that is worth nothing unless it is executable: an unstated limit
     reads as no limit, and a STATED limit that has quietly been fixed sends
     the next reviewer hunting for a hole that is not there.  Both directions
-    fail here.
+    fail here -- and the two ``**`` forms it listed until plan step
+    salary:S11-c-2c, which the keyword arm could not read, are asserted SEEN.
     """
+    for unpacked in (
+        "project_salary(b, p, **{'configs_by_year': c})\n",
+        "project_salary(b, p, **kw)\n",
+    ):
+        assert _projection_calls(ast.parse(unpacked)) == 1, unpacked
     blind = {
-        "kwargs_literal":
-            "project_salary(b, p, **{'configs_by_year': c})\n",
-        "kwargs_variable":
-            "project_salary(b, p, **kw)\n",
         "assignment_alias":
             "f = paycheck_calculator.project_salary\n"
             "f(b, p, configs_by_year=c)\n",
@@ -315,7 +326,7 @@ def test_the_blind_spots_are_the_ones_named():
             "getattr(pc, 'project_salary')(b, p, configs_by_year=c)\n",
     }
     for label, source in blind.items():
-        assert _calendar_wide_calls(ast.parse(source)) == 0, (
+        assert _projection_calls(ast.parse(source)) == 0, (
             f"{label} is no longer a blind spot -- the scanner now sees it. "
             "That is an improvement, but the module docstring still lists it "
             "as unseen: delete that entry."
@@ -368,23 +379,24 @@ _PER_PERIOD = "calculate_paycheck"
 #: rule-8 fork for the developer (about ten test modules import it from the
 #: package), not this leaf's; until it is taken this census is the control.
 #:
-#: **What it cannot see, stated because an unstated limit reads as none**:
-#: ``project_salary(basis, [period], tax_configs)`` is P62's shape in one
-#: line -- one payday priced outside the pricer, calibration dropped -- and
-#: NEITHER census matches it: the first reads ``configs_by_year=`` only, this
-#: one reads ``calculate_paycheck`` by name.  De-exporting the per-period
-#: entry would not close that door either; the two single-year callers
-#: (``tax_withholding_service``, ``tax_report_service``) are why it stays
-#: open, and a reviewer catches a third by eye.
+#: **What it could not see, and since plan step salary:S11-c-2c the FIRST
+#: census does**: ``project_salary(basis, [period], tax_configs)`` is P62's
+#: shape in one line -- one payday priced outside the pricer -- and neither
+#: census matched it: the first read ``configs_by_year=`` only, this one
+#: reads ``calculate_paycheck`` by name.  The two single-year callers that
+#: kept that door open (``tax_withholding_service``, ``tax_report_service``)
+#: moved onto the pass's pricer at that step, the first census then counted
+#: every ``project_salary`` call, and the shape fails it as a second
+#: spelling.
 _DIRECT_ENGINE_CALLERS: dict[str, int] = {}
 
 
 def _per_period_calls(tree: ast.AST) -> int:
     """Return how many direct ``calculate_paycheck`` calls *tree* holds.
 
-    The same matcher :func:`_calendar_wide_calls` uses, over the per-period
-    name and with no keyword test: there is only one mode of this call, so
-    every one of them counts.
+    The same matcher :func:`_projection_calls` uses, over the per-period
+    name: there is only one mode of this call, so every one of them counts
+    (as every projection call has since plan step salary:S11-c-2c).
 
     Args:
         tree: The parsed module.
@@ -452,8 +464,9 @@ def test_no_app_site_prices_a_paycheck_outside_the_pricer():
         "since plan step salary:C12 (ledger row P62): a single period is "
         "priced through the read pass's income_service.PaycheckPricing -- "
         "ctx.paychecks().for_profile(profile).at(period) -- because a direct "
-        "call resolves its own tax configs and can drop the profile's "
-        "calibration, which is how /retirement and /savings came to publish "
+        "call resolves its own tax configs, and until plan step "
+        "salary:S11-c-2c could drop the profile's calibration, which is how "
+        "/retirement and /savings came to publish "
         "a different paycheck from every other page. Route it through the "
         "pricer."
     )

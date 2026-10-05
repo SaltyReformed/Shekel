@@ -43,7 +43,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     contribution_of,
 )
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import purchases_total
 from app.services.settle_day import SettleDay
@@ -334,7 +334,7 @@ def settle_transaction(
     submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
     tender_account_id: int | None = None,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
@@ -468,11 +468,19 @@ def settle_transaction(
             TENDER (plan step ``credit_card:CC-5-3``, ruling **R-CC15**: a
             bill charged to the card is settled with its covering movement
             on the card) -- when the CALLER names one: the "Paid from"
-            picker through ``mark_done`` and the popover, and the two
-            statement-driven doors, which FORCE the statement's own account
-            (the reconcile panel's tick, the matcher's transaction arm: a
-            statement showed the money on the account it is a statement
-            of).  An ECHO of what the row records -- the popover's picker
+            picker through ``mark_done`` and the popover, the ONE door that
+            moves a bill's payment between accounts (ruling **R-CC137**,
+            developer 2026-10-04: *"A bill's payment then changes account
+            only through 'Paid from'"*).  The two statement-driven doors
+            name none.  They FORCED the statement's own account (ruling
+            **R-CC15**) until plan step ``credit_card:CC-5-4a-5`` -- the
+            reconcile panel's tick at leaf 5c-1 (ruling **R-CC126**), the
+            matcher's transaction arm at leaf 5c-2a -- and each now offers a
+            row that settles from its figure only where its payment, if it
+            has one, is already on the statement's account, so the default
+            below books it there (a row settling from its purchases takes
+            the entries branch, which ignores a tender).  An
+            ECHO of what the row records -- the popover's picker
             untouched, which always shows the recorded tender -- names
             nothing new and is dropped (``status_seam.tender_for_status``,
             the one echo rule, shared with the identity arm); anything else
@@ -487,15 +495,14 @@ def settle_transaction(
             figure is).  **The entries branch ignores it**, exactly as it
             ignores *submitted*: an envelope's purchases are its record and
             each carries its own account; the popover renders no picker on
-            such a row and the PATCH door refuses one, so what reaches this
-            branch with a tender is the panel's tick, which names the
-            statement's account for every row it settles.
-        shown: The bank lines the door's page named before the press, or
-            what lets it stay silent (plan step ``credit_card:CC-5-4a-5``,
-            rulings **R-CC81** / **R-CC127**): a settle that takes the row's
-            kept payment off the books (a ``$0.00`` figure, its purchases) or
-            re-points it frees a match, and the act refuses a press whose
-            freed lines differ.  The default says the page named none.
+            such a row and the PATCH door refuses one.
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            the bank lines the door's page named or what lets it stay silent
+            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** /
+            **R-CC127**): a settle that takes the row's kept payment off the
+            books (a ``$0.00`` figure, its purchases) or re-points it frees a
+            match, and the act refuses a line the page did not name.  The
+            default, ``None``, says the page named none.
 
     Returns:
         Whether this settle booked a HUMAN's figure -- what the reconcile
@@ -608,7 +615,7 @@ def settle_transaction(
 
     correction = None
     if settles_from_entries(txn):
-        settle_from_entries(txn, settle_day=settle_day, shown=shown)
+        settle_from_entries(txn, settle_day=settle_day, press=press)
     else:
         # The correction DECISION.  The echo rule -- a figure equal to what the row
         # would book anyway is not a correction -- is :func:`_is_correction`'s,
@@ -674,7 +681,7 @@ def settle_transaction(
             settlement=Settlement.from_settle(
                 booked, correction, recorded_settlement(txn), tender=tender,
             ),
-            shown=shown,
+            press=press,
         )
 
     posting_service.sync_transaction_postings(txn)
@@ -683,7 +690,7 @@ def settle_transaction(
 
 def settle_from_entries(
     txn: Transaction, *, settle_day: SettleDay | None = None,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
@@ -790,8 +797,8 @@ def settle_from_entries(
             that guards it (a future day, a day beside a non-settled status) is
             the seam's, so this helper adds no second opinion about a value it
             does not own.
-        shown: What the door's page named before the press, or what lets it
-            stay silent: a ``purchases`` record takes a kept payment off the
+        press: The save's press, or ``None`` when its door named nothing:
+            a ``purchases`` record takes a kept payment off the
             books, and the act asks (ruling **R-CC127**;
             :func:`settle_transaction`).
 
@@ -852,7 +859,7 @@ def settle_from_entries(
     # difference with no second write.
     apply_status_change(
         txn, new_status_id, settle_day=settle_day,
-        settlement=Settlement(amount=None, source=None), shown=shown,
+        settlement=Settlement(amount=None, source=None), press=press,
     )
 
     log_event(

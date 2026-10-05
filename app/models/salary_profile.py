@@ -200,6 +200,19 @@ class SalaryProfile(
         cascade="all, delete-orphan", lazy="select",
         order_by="PaycheckLine.sort_order",
     )
+    # The profile's transcribed pay stubs (plan step salary:S11-c-2c), in
+    # payday order: the engine prices each paycheck's four taxes from one of
+    # them (``paycheck_calculator._stubs``), reading them as an attribute the
+    # caller loaded, as it reads the three collections above.  READ-ONLY,
+    # because no write may reach a stub through its profile:
+    # ``pay_stubs.salary_profile_id`` is RESTRICT, a trigger refuses a move,
+    # and every stub write is the entry door's (``pay_stub_service``), which
+    # writes ``PayStub`` rows rather than appending here.  ``PayStub``'s own
+    # three collections load together (``lazy="selectin"``), so pricing
+    # costs four queries per profile however many stubs it holds.
+    pay_stubs = db.relationship(
+        "PayStub", viewonly=True, lazy="select", order_by="PayStub.payday",
+    )
 
     def __repr__(self):
         return f"<SalaryProfile '{self.name}'>"

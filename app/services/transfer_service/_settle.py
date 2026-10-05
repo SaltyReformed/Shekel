@@ -75,7 +75,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
 )
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.row_valuation import fixed_contribution
 from app.services.stated_figure import StatedFigure
 from app.services import status_seam
@@ -271,7 +271,7 @@ def settle(
     *,
     submitted: StatedFigure | None,
     stated: PairDays,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> bool:
     """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
 
@@ -363,8 +363,8 @@ def settle(
             statement's account.  A settle entering the band admits every
             stated day.  Empty derives both: each side borrows the owner's
             today, as a Paid press does.
-        shown: What the door's page named before the press, or what lets it
-            stay silent: a ``$0.00`` figure takes each leg's kept payment off
+        press: The save's press, or ``None`` when its door named nothing:
+            a ``$0.00`` figure takes each leg's kept payment off
             the books, and the act asks (ruling **R-CC127**;
             :func:`~._status.apply_status_to_all_three`).
 
@@ -429,7 +429,7 @@ def settle(
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
     apply_status_to_all_three(
-        rows, new_status_id, stated=stated, shown=shown,
+        rows, new_status_id, stated=stated, press=press,
         settlement=Settlement.from_settle(booked, correction, retained),
     )
 

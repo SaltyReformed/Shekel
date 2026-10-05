@@ -65,6 +65,7 @@ def _pair(
     taxable="0", is_third=False, raise_event="",
     federal="0", state="0", ss="0", medicare="0",
     pre=(), post=(), taxable_lines=(), after_tax=(), cadence=_BIWEEKLY,
+    stub_payday=None,
 ):
     """Build a ``(period, breakdown)`` pair from plain values.
 
@@ -75,7 +76,9 @@ def _pair(
     here so the fake carries the engine's own identity.  Every monetary
     value is constructed from a string.  ``cadence`` is the rhythm the
     paycheck was priced at (ruling R-SAL70); biweekly unless a case crosses
-    an era change.
+    an era change.  ``stub_payday`` is the payday of the pay stub the
+    engine priced the four taxes from, ``None`` for the tax formulas (plan
+    step salary:S11-c-2c).
     """
     period = _fake_period(pid, start, end)
     breakdown = PaycheckBreakdown(
@@ -98,6 +101,7 @@ def _pair(
         taxes=TaxLines(
             federal=Decimal(federal), state=Decimal(state),
             social_security=Decimal(ss), medicare=Decimal(medicare),
+            stub_payday=stub_payday,
         ),
         deductions=DeductionBreakdown(
             pre_tax=[PricedLine(name=n, amount=Decimal(a)) for n, a in pre],
@@ -413,10 +417,10 @@ class TestBuildChips:
 class TestBuildComposition:
     """build_composition: segment totals + percentages of gross."""
 
-    def test_percentages_and_zero_federal_flag(self):
+    def test_percentages(self):
         """gross 2000 -> net 70%, pre-tax 10%, taxes 15%, post-tax 5%."""
         breakdown = _scenario()[2][1]  # gross 2000, net 1400, pre 200, tax 300, post 100
-        comp = svc.build_composition(breakdown, calibration_active=True)
+        comp = svc.build_composition(breakdown)
         assert comp["gross"] == Decimal("2000")
         assert comp["taxable"] == Decimal("1800")
         assert comp["net"] == Decimal("1400")
@@ -428,24 +432,31 @@ class TestBuildComposition:
         assert comp["pct_pre_tax"] == Decimal("10.0")
         assert comp["pct_taxes"] == Decimal("15.0")
         assert comp["pct_post_tax"] == Decimal("5.0")
-        # federal line is 0 and calibration is active -> honest-zero flag set.
-        assert comp["federal_zero_calibrated"] is True
 
-    def test_zero_federal_flag_off_without_calibration(self):
-        """Zero federal without an active calibration does NOT set the flag."""
-        breakdown = _scenario()[2][1]
-        comp = svc.build_composition(breakdown, calibration_active=False)
-        assert comp["federal_zero_calibrated"] is False
+    def test_names_the_stub_that_priced_the_taxes(self):
+        """The card carries the engine's pricing stub, read off the tax lines (R-SAL100)."""
+        breakdown = _pair(
+            1, date(2026, 6, 1), date(2026, 6, 14), "52000", "2000", "1400",
+            taxable="1800", state="150", ss="124", medicare="26",
+            stub_payday=date(2026, 5, 15),
+        )[1]
+        comp = svc.build_composition(breakdown)
+        assert comp["tax_stub_payday"] == date(2026, 5, 15)
+
+    def test_names_the_formulas_when_no_stub_priced_the_taxes(self):
+        """No stub on or before the payday: the key is None, the formulas' answer."""
+        comp = svc.build_composition(_scenario()[2][1])
+        assert comp["tax_stub_payday"] is None
 
     def test_zero_gross_percentages_are_zero(self):
         """A zero-gross period yields 0% segments (no division by zero)."""
         breakdown = _pair(1, date(2026, 1, 1), date(2026, 1, 14), "0", "0", "0")[1]
-        comp = svc.build_composition(breakdown, calibration_active=False)
+        comp = svc.build_composition(breakdown)
         assert comp["pct_net"] == Decimal("0")
 
     def test_no_earning_line_leaves_the_card_as_it_was(self):
         """Without an earning line the added keys are zero or equal net, and pct_net is of net."""
-        comp = svc.build_composition(_scenario()[2][1], calibration_active=False)
+        comp = svc.build_composition(_scenario()[2][1])
         assert comp["base"] == Decimal("2000")
         assert comp["taxable_earnings_total"] == Decimal("0")
         assert comp["after_tax_total"] == Decimal("0")
@@ -460,7 +471,7 @@ class TestBuildComposition:
             pre=[("401k", "200")], post=[("Roth", "100")],
             taxable_lines=[("Phone Allowance", "100")],
         )[1]
-        comp = svc.build_composition(breakdown, calibration_active=False)
+        comp = svc.build_composition(breakdown)
         assert comp["gross"] == Decimal("2000")
         assert comp["base"] == Decimal("1900")
         assert comp["taxable_earnings_total"] == Decimal("100")
@@ -477,7 +488,7 @@ class TestBuildComposition:
             pre=[("401k", "200")], post=[("Roth", "100")],
             after_tax=[("Reimbursement", "100")],
         )[1]
-        comp = svc.build_composition(breakdown, calibration_active=False)
+        comp = svc.build_composition(breakdown)
         assert comp["net"] == Decimal("1500")
         assert comp["after_tax_total"] == Decimal("100")
         assert comp["kept_from_gross"] == Decimal("1400")

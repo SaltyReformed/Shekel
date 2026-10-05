@@ -97,8 +97,10 @@ from flask import Flask
 from werkzeug.exceptions import HTTPException
 
 import app as shekel_app_package
+from app import ref_cache
+from app.enums import WithholdingKindEnum
 from app.models.account import Account
-from app.models.pay_stub import PayStub
+from app.models.pay_stub import PayStub, PayStubWithholding
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
@@ -386,9 +388,26 @@ def _build_baseline_less_owner(db):
     # ``/salary/stubs/<int:stub_id>``: dated on the world's period-4 payday and
     # constructed here as the pension and the goal are -- the entry door's
     # payday and net refusals are its own suites' subject, not this sweep's.
+    # It records the four taxes the door requires of every stub: since plan
+    # step salary:S11-c-2c a switched-on stub PRICES its profile's paychecks
+    # (ruling R-SAL42), and the engine refuses one missing a tax rather than
+    # price it, so the stubless shape this sweep seeded until then would 500
+    # every page that prices the profile.  Made-up figures.
     pay_stub = PayStub(
         salary_profile_id=salary_profile.id, payday=periods[4].start_date,
         base_pay=Decimal("2884.62"),
+        withholdings=[
+            PayStubWithholding(
+                withholding_kind_id=ref_cache.withholding_kind_id(member),
+                amount=Decimal(amount),
+            )
+            for member, amount in (
+                (WithholdingKindEnum.FEDERAL_INCOME, "250.00"),
+                (WithholdingKindEnum.STATE_INCOME, "110.00"),
+                (WithholdingKindEnum.SOCIAL_SECURITY, "178.85"),
+                (WithholdingKindEnum.MEDICARE, "41.83"),
+            )
+        ],
     )
     db.session.add(pay_stub)
     # A PROJECTED instance of each movement kind.  Projected rather than

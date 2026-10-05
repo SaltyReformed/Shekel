@@ -320,10 +320,18 @@ document.body.addEventListener("htmx:beforeSwap", function (event) {
 // project the response text into the modal's alert box ourselves.
 // On success the route returns 200 + HX-Trigger=gridRefresh which
 // reloads the page (handled above), tearing down the modal in the
-// process.
+// process.  A Confirm refused as OUT OF DATE is not projected here: its
+// response is a designed fragment, the modal's content drawn again over
+// the open modal (plan step credit_card:CC-5-4a-5, leaf 5c-2c-2, ruling
+// R-CC128), which the designed-fragment listener above swaps -- its HTML
+// is the redraw, never a message for the alert box.
 document.body.addEventListener("htmx:responseError", function(event) {
   var elt = event.detail.elt;
   if (!elt || !elt.matches || !elt.matches("[data-carry-forward-confirm]")) {
+    return;
+  }
+  if (event.detail.xhr &&
+      event.detail.xhr.getResponseHeader("Shekel-Designed-Fragment") === "1") {
     return;
   }
   var modal = elt.closest(".modal");

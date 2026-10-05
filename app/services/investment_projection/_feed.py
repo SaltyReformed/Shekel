@@ -76,7 +76,8 @@ class AccountPayrollFeed:
     construction, and every ORM relationship the engine reads is loaded
     before the first walk -- ``deductions`` by
     :func:`~app.services.projection_inputs._load_funding_profiles`'s
-    ``subqueryload`` and ``calibration`` by its own ``lazy="joined"``; the
+    ``subqueryload``, the pay stubs that price the taxes among them (their
+    lines by ``lazy="selectin"``, plan step salary:S11-c-2c); the
     raises are converted to :class:`~app.services.salary_raises.RaiseTerms`
     values at :meth:`~app.services.income_service.PaycheckPricing
     .for_profile`, inside the loader, with each type's name resolved from
@@ -88,7 +89,9 @@ class AccountPayrollFeed:
     .TestLoadPayrollFeeds.test_a_resolver_fired_past_the_loader_issues_NO_query``
     over a profile WITH a recurring raise inside the walked window, which
     fails on the deductions' lazy ``SELECT`` the moment the loader's
-    eager-load is removed.
+    eager-load is removed.  That profile records no pay stub, so the count
+    grades the deductions' half and not the stubs': the stubs' eager load is
+    read off the loader, not measured.
     The module's *no database access* contract is kept by the loader
     supplying the callables, which is the shape ruling **R-SAL15** took.
 

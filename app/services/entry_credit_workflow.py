@@ -20,7 +20,12 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import match_withdrawal, movement_removal, posting_service
+from app.services import (
+    match_press,
+    match_withdrawal,
+    movement_removal,
+    posting_service,
+)
 from app.services.amount_ownership import state_own_amount
 from app.services.row_valuation import settled_figure
 from app.services.pay_calendar import FiledRow, calendar_for
@@ -181,42 +186,41 @@ def payback_refusal(txn: Transaction) -> str:
     )
 
 
-def x_shown_for_payback(
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent",
+def x_press_for_payback(
+    press: match_press.Press | None,
     txn: Transaction,
     entry: TransactionEntry,
-) -> "match_withdrawal.Shown | match_withdrawal.Silent":
-    """Return a companion's declaration for an X that also deletes the payback.
+) -> match_press.Press | None:
+    """Return a companion's press for an X that also deletes the payback.
 
     A companion's X carries its door's refusal sentence for the PURCHASE
     (ruling **R-CC132**: *"Kroger is matched to a line on the bank statement,
     so only the account owner can delete it"*), and one removal act takes
     the purchase and its envelope's payback together.  Where the purchase's
     own matches free nothing, a refusal could only be over the PAYBACK's
-    line, so :func:`payback_refusal` is the true sentence.  Read inside the
-    request's owner lock, so it sees what the act will.  Any other press
-    keeps its declaration.
+    line, so :func:`payback_refusal` is the true sentence -- the same save,
+    reworded (:meth:`~app.services.match_press.Press.reworded`).  Read inside
+    the request's owner lock, so it sees what the act will.  Any other press
+    is returned as it is.
 
     Args:
-        shown: What the press declared.
+        press: The X's save.
         txn: The envelope.
         entry: The purchase pressed.
 
     Returns:
-        The declaration for the one removal act.
+        The press for the one removal act.
     """
-    if not isinstance(shown, match_withdrawal.OwnerOnly):
-        return shown
+    if press is None or not isinstance(press.shown, match_press.OwnerOnly):
+        return press
     if match_withdrawal.pending_for_movements([entry]).frees_a_line:
-        return shown
-    return match_withdrawal.OwnerOnly(refusal=payback_refusal(txn))
+        return press
+    return press.reworded(payback_refusal(txn))
 
 
 def sync_entry_payback(
     transaction_id: int, owner_id: int, *, moves_credit_total: bool = True,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
 ) -> Transaction | None:
     """Synchronize the aggregated CC Payback for a transaction's credit entries.
 
@@ -252,19 +256,18 @@ def sync_entry_payback(
             says so; the default is the safe answer for any other caller.
             It gates the settled-payback refusal below and nothing else --
             the link maintenance and the figure both run either way.
-        shown: The bank lines the press's page named
-            (:class:`~app.services.match_withdrawal.Shown`), for the removal
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            the bank lines its page named, for the removal
             act when the sync deletes a payback whose payment a match names
             (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC80**).  The
             edit form's CC un-tick names them (:func:`payback_deleted_by`).
             The X has already taken the payback's movements off in its own
             act (``entry_service._doors.delete_entry``), so for it this
             frees nothing.  A companion's edit and add are
-            :class:`~app.services.match_withdrawal.OwnerOnly` with
+            :class:`~app.services.match_press.OwnerOnly` with
             :func:`payback_refusal`'s sentence (ruling **R-CC132**); its X
             hands this whatever it declared, which frees nothing here.  An
-            owner's door that names none sends
-            :data:`~app.services.match_withdrawal.NOTHING_SHOWN`, which
+            owner's door that names none passes ``None``, which
             refuses a press that would free a line (ruling **R-CC127**) --
             the add form's card refund, and any edit whose new card total is
             exactly zero (a re-price, or a CC tick on a refund), which no
@@ -295,7 +298,7 @@ def sync_entry_payback(
         ValidationError: If a payback needs to be created but no next
             pay period exists.
         PageOutOfDate: When deleting the payback would free other bank
-            lines than *shown* names.
+            lines than *press* names.
     """
     txn = load_owned_transaction(transaction_id, owner_id)
 
@@ -465,7 +468,7 @@ def sync_entry_payback(
         movement_removal.remove_movements(
             list(existing_payback.entries), owner_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
-            shown=shown,
+            press=press,
             rows_leaving=[existing_payback],
         )
         db.session.delete(existing_payback)

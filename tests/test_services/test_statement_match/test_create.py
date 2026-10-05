@@ -111,11 +111,11 @@ def _offerable(seed_user):
     is the point:
     :func:`~app.services.statement_match.destinations_for` answers what the
     account COULD offer, which does not change while a review pass runs, and
-    :func:`~app.services.statement_match.matched_subjects` answers what a match
-    has already claimed, which is exactly what the pass changes.  A screen and
-    a write door both narrow the first by the second, each against the claims
-    it read for itself -- which is what stops a shared, once-derived offer set
-    handing a pass's fourth item an envelope its third has just matched.
+    :func:`~app.services.statement_match.current_destinations` re-asks each
+    row as it stands now, which is exactly what the pass changes.  A screen
+    and a write door both narrow the first by the second -- which is what stops
+    a shared, once-derived offer set handing a pass's fourth item an envelope
+    its third has just settled.
 
     Args:
         seed_user: The seeded user bundle.
@@ -124,12 +124,11 @@ def _offerable(seed_user):
         The offerable :class:`~app.services.statement_match.PurchaseDestination`
         values.
     """
-    return statement_match.unmatched_destinations(
+    return statement_match.current_destinations(
         statement_match.destinations_for(
             seed_user["account"].id,
             pay_calendar.calendar_for(seed_user["user"].id),
         ),
-        statement_match.matched_subjects(seed_user["account"].id),
     )
 
 

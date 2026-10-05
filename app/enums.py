@@ -130,7 +130,7 @@ class PaycheckLineKindEnum(enum.Enum):
 
     Sign and stage DERIVE from the kind, so the row carries one column for
     the fact.  A pre-tax deduction leaves the income-tax base and not the
-    FICA base (the calibration's effective Social Security rate absorbs a
+    FICA base (a pay stub's Social Security figure carries the employer's
     Section 125 base), while a taxable earning joins BOTH -- which is why
     the two sides are four kinds and not two axes.  Until R18-a this was
     ``DeductionTimingEnum`` over ``ref.deduction_timings`` (``pre_tax`` /

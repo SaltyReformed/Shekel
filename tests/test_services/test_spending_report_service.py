@@ -339,7 +339,7 @@ class TestBreakdown:
             movement_removal.remove_movements(
                 list(deleted.entries), seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.NOTHING_SHOWN,
+                press=None,
             )
             deleted.is_deleted = True
             _txn(db, seed_user, seed_periods[1], "Other", "Rent", "999.00")

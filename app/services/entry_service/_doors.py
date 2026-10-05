@@ -25,11 +25,11 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
 from app.exceptions import NotFoundError, ValidationError
-from app.services import match_withdrawal, movement_removal, posting_service
+from app.services import match_press, match_withdrawal, movement_removal, posting_service
 from app.services.entry_credit_workflow import (
     payback_a_removal_deletes,
     sync_entry_payback,
-    x_shown_for_payback,
+    x_press_for_payback,
 )
 from app.services.movement_account import admitted_movement_account_id
 from app.services.owned_transaction import load_owned_transaction
@@ -320,9 +320,7 @@ def create_entry(
     user_id: int,
     details: EntryDetails,
     *,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
 ) -> TransactionEntry:
     """Create a new purchase entry against a transaction.
 
@@ -337,9 +335,10 @@ def create_entry(
             with who wrote it, description, purchased_on, is_credit, and the
             posting day -- with the basis that says how it is known -- where
             the caller already has one).
-        shown: For the payback sync, the one place an add frees a line: an
-            owner's ``NOTHING_SHOWN`` (finding **CC-381**), a companion's
-            ``OwnerOnly`` (ruling **R-CC132**, plan step CC-5-4a-5).
+        press: The save's press, for the payback sync, the one place an add
+            frees a line: an owner's over nothing named (finding **CC-381**),
+            a companion's ``OwnerOnly`` (ruling **R-CC132**, plan step
+            CC-5-4a-5).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -553,7 +552,7 @@ def create_entry(
     sync_entry_payback(
         transaction_id, owner_id,
         moves_credit_total=bool(details.is_credit and details.figure.amount),
-        shown=shown,
+        press=press,
     )
     _resync_after_entry_change(txn)
 
@@ -586,9 +585,7 @@ def _posting_day_after(
 
 def update_entry(
     entry_id: int, user_id: int, *,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
     **kwargs,
 ) -> TransactionEntry:
     """Update an existing entry.
@@ -625,7 +622,8 @@ def update_entry(
     Args:
         entry_id: The entry to update.
         user_id: The requesting user's ID (owner or companion).
-        shown: The lines the edit form's CC caption named (plan step
+        press: The save's press over the lines the edit form's CC caption
+            named (plan step
             ``credit_card:CC-5-4a-5``, ruling **R-CC80**), or a companion's
             ``OwnerOnly`` (ruling **R-CC132**), for the payback sync -- the
             one place this door can free a line.
@@ -844,7 +842,7 @@ def update_entry(
     sync_entry_payback(
         entry.transaction_id, owner_id,
         moves_credit_total=moves_credit_total,
-        shown=shown,
+        press=press,
     )
     _resync_after_entry_change(entry.transaction)
 
@@ -853,9 +851,7 @@ def update_entry(
 
 def delete_entry(
     entry_id: int, user_id: int, *,
-    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
-        match_withdrawal.NOTHING_SHOWN
-    ),
+    press: match_press.Press | None = None,
 ) -> int:
     """Hard-delete an entry.
 
@@ -866,12 +862,13 @@ def delete_entry(
     Args:
         entry_id: The entry to delete.
         user_id: The requesting user's ID (owner or companion).
-        shown: The lines the X's confirmation named (plan step
-            ``credit_card:CC-5-4a-5``, rulings **R-CC80** / **R-CC127**) --
-            the purchase's own and, on the last card purchase, its payback's
-            -- or a companion's ``OwnerOnly`` (ruling **R-CC132**).  The
-            default is the match Undo's: ``statement_match._release`` removes
-            a purchase its act CREATED after withdrawing that act.
+        press: The save's press over the lines the X's confirmation named
+            (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC80** /
+            **R-CC127**) -- the purchase's own and, on the last card
+            purchase, its payback's -- or a companion's ``OwnerOnly`` (ruling
+            **R-CC132**).  The default, ``None``, is the match Undo's:
+            ``statement_match._release`` removes a purchase its act CREATED
+            after withdrawing that act.
 
     Returns:
         int -- the parent transaction_id.
@@ -884,7 +881,7 @@ def delete_entry(
             or an archived one -- or a companion's press would free a line
             (ruling **R-CC132**).
         PageOutOfDate: When the press would free other bank lines than
-            *shown* names.
+            *press*'s page named.
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:
@@ -942,10 +939,10 @@ def delete_entry(
     if doomed is not None:
         posting_service.reverse_postings_before_delete(doomed)
         movements, leaving = [entry, *doomed.entries], (doomed,)
-        shown = x_shown_for_payback(shown, txn, entry)
+        press = x_press_for_payback(press, txn, entry)
     movement_removal.remove_movements(
         movements, owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
-        shown=shown, rows_leaving=leaving,
+        press=press, rows_leaving=leaving,
     )
     db.session.flush()
 
@@ -960,7 +957,7 @@ def delete_entry(
 
     sync_entry_payback(
         transaction_id, owner_id, moves_credit_total=removed_credit,
-        shown=shown,
+        press=press,
     )
     _resync_after_entry_change(txn)
 

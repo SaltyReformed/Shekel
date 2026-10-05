@@ -337,7 +337,7 @@ class TestAnEarlierRhythmsPaycheck:
         basis = PayrollBasis(_profile(), calendar)
 
         assert _get_cumulative_wages(
-            basis, _period_on(calendar, date(2026, 7, 16)),
+            basis, date(2026, 7, 16),
         ) == Decimal("32307.69")
 
         paycheck = calculate_paycheck(
@@ -501,7 +501,7 @@ class TestTodaysPaycheckBecomesAMonthAtItsOwnRhythm:
     """Every reader turning today's paycheck into a month converts at its count.
 
     Ruling **R-SAL70**.  The owner is the savings page's own current-pay
-    owner (``TestTheCurrentPayIsThePassPricersCalibratedAndSummed``): a
+    owner (``TestTheCurrentPayIsThePassPricersStubPricedAndSummed``): a
     made-up $52,000.00 profile paid every 14 days, no deductions, priced under
     the made-up FICA-only law installed for tax year 2026 (federal and state
     tax $0.00), so the current paycheck is::

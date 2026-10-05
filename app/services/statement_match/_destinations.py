@@ -35,6 +35,8 @@ from app.utils.balance_predicates import balance_contributing_clause
 from ._creations import PurchaseDestination
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from collections.abc import Sequence
+
     from app.services.pay_calendar import PayCalendar
 
 
@@ -107,32 +109,41 @@ def destinations_for(
     ``Settled`` status is deleted, so both arms dropped the clause in one
     commit and still agree on what they offer.
 
-    **Whether it is ITSELF MATCHED is NOT a clause here**, and that is this
-    step's change rather than a relaxation: it is
-    :func:`~._candidates.unmatched_destinations`,
-    applied by the screen against the claims it read and by
-    :func:`~._container._existing_envelope` against the claims that ACT read.  The
-    rule is unchanged -- ``accept_match``'s
-    :func:`~._accept._reject_parent_and_its_own_purchase` refuses a purchase
-    whose parent another match already names, so offering such an envelope
-    would render a chooser whose submission always fails.  What changed is
-    WHEN it is asked, and it had to: measured on the developer's own statement,
-    4 envelopes (2225, 2228, 2389, 2581) are both named by a proposal and
-    offered as a destination, so **15 of the 91 creatable lines aim at an
-    envelope an earlier item in the same pass claims**.  A snapshot carrying
-    the clause baked in would have offered all 15 and refused them a tier
-    deeper, with the sentence about counting money twice rather than the one
-    about the envelope being gone.
+    **What a pass's own acts change is re-asked, not baked in** (plan step
+    ``bank_import:X-f6a-3c-2``): :func:`current_destinations` asks the same
+    clauses of each row as it stands NOW, for the screen and for
+    :func:`~._container._existing_envelope`.  Measured on the developer's own
+    statement, 4 envelopes (2225, 2228, 2389, 2581) are both named by a
+    proposal and offered as a destination, so **15 of the 91 creatable lines
+    aim at an envelope an earlier item in the same pass settles** -- and a
+    match settling an empty envelope writes a COVERING MOVEMENT, which the
+    money clause then refuses, with the sentence about the envelope being
+    gone rather than one from a tier deeper.  **Whether a match NAMES the row
+    is not a clause, and was until plan step ``credit_card:CC-5-4a-5``** (leaf
+    5c-2b, finding **CC-385**): an act naming an envelope's payment while the
+    envelope is Projected names a payment the revert kept UN-DATED, which
+    counts nothing, so a purchase filed beside it counts its own money once
+    -- ruling **R-CC141** (developer 2026-10-04, *"The user should be allowed
+    to add purchases from various sources to an envelope. The envelope is
+    typically the sum of the purchases."*), and an act naming a SETTLED
+    envelope's dated payment is the money clause's.
 
-    **Finding N-317 says this clause is wider than the money needs, and the
-    developer's ruling of 2026-08-19 is that it STAYS WHOLE**: a money guard is
-    not narrowed for a `$0.00` benefit.  The row is OPEN in ``ledger.md`` with
-    its diagnosis corrected -- an earlier closure argued the clause protects a
-    projected envelope holding no entries, whose leg moves `+111.02` when a
-    purchase is added, and adversarial review measured that shape unreachable
-    through this clause: a match SETTLES the envelope it names, and a
+    **The clause that hid an already-matched envelope is DELETED, and two
+    rulings amend the one that kept it.**  Finding **N-317** said it was
+    wider than the money needs, and ruling **bank_import:R-FY** (developer
+    2026-08-19) kept it WHOLE -- a money guard is not narrowed for a `$0.00`
+    benefit -- and retired N-317 the next day as a decision rather than work
+    owed.  Its one remaining reach was the Projected envelope above, whose
+    matched lump the revert keeps UN-DATED and counting nothing, so rulings
+    **R-CC141** (filing into it is allowed) and **R-CC143** (developer
+    2026-10-05, "Allow it, change test": the match saves and the purchase
+    counts once) amend R-FY's "stays whole" for it, and leaf 5c-2c-1's
+    ruling **R-CC144** amends the clause of R-FY that kept the accept door's
+    twin guard.  What the deleted clause once guarded beside that -- a
+    Projected envelope holding no entries, matched -- was already
+    unreachable through it: a match SETTLES the envelope it names, and a
     zero-entry settle at the bank's figure writes a COVERING MOVEMENT, which
-    the money clause above already refuses.
+    the money clause above refuses.
 
     Args:
         account_id: The cash account the statement is for.
@@ -206,9 +217,73 @@ def destinations_for(
             is_placed=txn.is_placed,
         )
         for txn in rows
-        if txn.tracks_purchases
-        and not txn.is_income
-        and (not txn.status.is_settled or not txn.covering_movements)
+        if takes_a_purchase(txn)
     ]
     offered.sort(key=lambda d: (d.period.start_date, d.label))
     return offered
+
+
+def takes_a_purchase(txn: Transaction) -> bool:
+    """Return whether a bank line may become a purchase under *txn* as it stands.
+
+    The Python clauses of :func:`destinations_for`'s scope -- it tracks
+    purchases, it is not income, and a settled row holds no covering movement
+    (the money clause) -- in ONE place, for the producer and for
+    :func:`current_destinations`' re-ask.
+
+    Args:
+        txn: The row, with ``entries`` and ``template`` loaded.
+
+    Returns:
+        ``True`` when a purchase may be filed under it.
+    """
+    return (
+        txn.tracks_purchases
+        and not txn.is_income
+        and (not txn.status.is_settled or not txn.covering_movements)
+    )
+
+
+def current_destinations(
+    destinations: "Sequence[PurchaseDestination]",
+) -> "list[PurchaseDestination]":
+    """Return the *destinations* whose row, as it stands NOW, still takes a purchase.
+
+    A pass derives :func:`destinations_for` once, and its own acts move rows
+    under it: a match settling an empty envelope writes a covering movement,
+    which the money clause refuses.  So the screen and the write door
+    (:func:`~._container._existing_envelope`) narrow the pass's set by
+    re-asking, in one statement and flushed state included, every clause of
+    the scope that the row's own state decides -- the shape
+    :func:`~._valuation.repriced` gives a row's price, which is total where
+    an enumeration of the acts that move a row would not be.
+
+    Args:
+        destinations: The pass's derived destination set.  A SEQUENCE, because
+            :class:`~._scope.ReviewScope` holds a tuple.
+
+    Returns:
+        The destinations still offerable, in *destinations*' own order.  No
+        query when there are none.
+    """
+    if not destinations:
+        return []
+    rows = (
+        db.session.query(Transaction)
+        .options(
+            joinedload(Transaction.template),
+            selectinload(Transaction.entries),
+        )
+        .filter(
+            Transaction.id.in_(
+                {destination.transaction_id for destination in destinations},
+            ),
+            balance_contributing_clause(),
+        )
+        .all()
+    )
+    taking = {txn.id for txn in rows if takes_a_purchase(txn)}
+    return [
+        destination for destination in destinations
+        if destination.transaction_id in taking
+    ]

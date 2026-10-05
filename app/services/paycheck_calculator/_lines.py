@@ -205,11 +205,13 @@ def _priced_lines(ctx, kind_id):
 
         # The row's identity rides with its price (plan step salary:S11-b), read
         # like ``target_account_id`` because the engine suite's line fakes
-        # carry no ``id``.
+        # carry no ``id``; its kind is the one this pass priced it as (plan
+        # step salary:S11-c-2c, the stub picker's taxed-kinds filter).
         priced.append(PricedLine(
             name=line.name, amount=amount,
             target_account_id=getattr(line, "target_account_id", None),
             paycheck_line_id=getattr(line, "id", None),
+            paycheck_line_kind_id=kind_id,
         ))
 
     return priced

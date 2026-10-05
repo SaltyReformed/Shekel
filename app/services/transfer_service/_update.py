@@ -46,7 +46,7 @@ from app.services.transfer_service._ownership import (
     _get_owned_category,
     _get_owned_period,
 )
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.services.row_valuation import leg_settled_figure
 from app.services.status_seam import (
     correction_record,
@@ -163,7 +163,8 @@ def _grade_submitted_figure(
 
 
 def _dispatch_settle(
-    rows: TransferRows, updates: "dict[str, object]", stated: PairDays, shown: Shown | Silent,
+    rows: TransferRows, updates: "dict[str, object]", stated: PairDays,
+    press: Press | None,
 ) -> "bool | None":
     """Run the SETTLE when *updates* moves this transfer into the settled band.
 
@@ -194,7 +195,7 @@ def _dispatch_settle(
         updates: The update kwargs as submitted.
         stated: The days stated by side, which a settle entering the band
             admits whole.
-        shown: What the door's page named, or its silence (:func:`update_transfer`).
+        press: The save's press, or ``None`` (:func:`update_transfer`).
 
     Returns:
         ``None`` when this update does not settle -- so the caller leaves every
@@ -210,13 +211,13 @@ def _dispatch_settle(
         return None
     return _settle.settle(
         rows, updates["status_id"],
-        submitted=updates.get("figure"), stated=stated, shown=shown,
+        submitted=updates.get("figure"), stated=stated, press=press,
     )
 
 
 def _apply_remaining_fields(
     rows: TransferRows, updates: "dict[str, object]", *,
-    stated: PairDays, date_moves: bool, shown: Shown | Silent,
+    stated: PairDays, date_moves: bool, press: Press | None,
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
@@ -244,7 +245,7 @@ def _apply_remaining_fields(
             occurrence follows its date (**R-BAL94**), decided by the caller
             before its first write beside the sibling refusal that shares
             it, so the two cannot part.
-        shown: What the door's page named, or its silence (:func:`update_transfer`).
+        press: The save's press, or ``None`` (:func:`update_transfer`).
 
     Note:
         It takes no ``user_id``: the two ownership refusals it used to make now
@@ -315,7 +316,7 @@ def _apply_remaining_fields(
     )
     if "status_id" in updates or correction is not None or stated != NO_DAYS:
         apply_status_to_all_three(
-            rows, new_status_id, stated=stated, settlement=correction, shown=shown,
+            rows, new_status_id, stated=stated, settlement=correction, press=press,
         )
 
     # ── pay_period_id ──────────────────────────────────────────────
@@ -530,7 +531,7 @@ def _bump_parent_version_if_a_leg_moved(
     flag_modified(rows.transfer, "status_id")
 
 
-def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False, shown):
+def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False, press):
     """Apply *kwargs* to a transfer and both shadows; report the settle's answer.
 
     **The body both public doors share** -- :func:`update_transfer`, which takes
@@ -556,7 +557,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
             returning ``False`` to say it had booked nothing.  A caller that
             genuinely means "edit these fields on a settled transfer" says so by
             calling :func:`update_transfer`.
-        shown: What the door's page named, or its silence (:func:`update_transfer`).
+        press: The save's press, or ``None`` (:func:`update_transfer`).
     """
     rows = load_transfer_rows(transfer_id, user_id)
     # Read at the load, before any write: the aggregate's lock below asks
@@ -695,7 +696,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     # the amount, the status and each side's day for all three rows; the three
     # kwargs it consumes are then dropped so the loop below cannot write any of
     # them a second time.
-    settled = _dispatch_settle(rows, updates, stated, shown)
+    settled = _dispatch_settle(rows, updates, stated, press)
     if settled is not None:
         remaining = _fields_the_settle_left(updates)
         stated = NO_DAYS
@@ -720,7 +721,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
         remaining = updates
 
     _apply_remaining_fields(
-        rows, remaining, stated=stated, date_moves=date_moves, shown=shown,
+        rows, remaining, stated=stated, date_moves=date_moves, press=press,
     )
 
     _bump_parent_version_if_a_leg_moved(rows, versions_before)
@@ -754,7 +755,7 @@ def settle_transfer(
     *,
     submitted: StatedFigure | None = None,
     side_days: "tuple[SideDay, ...]" = (),
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
 
@@ -794,8 +795,9 @@ def settle_transfer(
             on ``asserted``, the matcher's bank day on ``observed``, for the
             leg on the statement's account; the other side borrows it.  Empty
             on a Paid press: both sides borrow the owner's today.
-        shown: What the door's page named before the press, or its silence: a
-            ``$0.00`` settle takes each leg's kept payment off (:func:`update_transfer`).
+        press: The save's press, or ``None`` when its door named nothing: a
+            ``$0.00`` settle takes each leg's kept payment off
+            (:func:`update_transfer`).
 
     Returns:
         Whether the settle booked *submitted* as a human's CORRECTION --
@@ -819,12 +821,12 @@ def settle_transfer(
     if side_days:
         updates["side_days"] = side_days
     _, corrected = _apply_transfer_updates(
-        transfer_id, user_id, updates, settle_only=True, shown=shown,
+        transfer_id, user_id, updates, settle_only=True, press=press,
     )
     return corrected
 
 
-def update_transfer(transfer_id, user_id, *, shown=NOTHING_SHOWN, **kwargs):
+def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     """Update a transfer and propagate changes to shadow transactions.
 
     Enforces invariants 3-5: shadow amounts, statuses, and periods
@@ -934,8 +936,9 @@ def update_transfer(transfer_id, user_id, *, shown=NOTHING_SHOWN, **kwargs):
     Args:
         transfer_id: The primary key of the transfer to update.
         user_id:     The expected owner (defense-in-depth).
-        shown:       The bank lines the door's page named before the press, or
-                     what lets it stay silent (``match_withdrawal``, R-CC127).
+        press:       The save's press over the bank lines the door's page
+                     named, or ``None`` when it named nothing
+                     (``match_press.Press``, R-CC127, R-CC135).
         **kwargs:    The fields to update; see "Accepted kwargs" above.
                      Any key not listed there is silently ignored.
 
@@ -948,5 +951,5 @@ def update_transfer(transfer_id, user_id, *, shown=NOTHING_SHOWN, **kwargs):
         ValidationError: If validation fails (non-positive amount,
             wrong period owner, data integrity issues).
     """
-    xfer, _ = _apply_transfer_updates(transfer_id, user_id, kwargs, shown=shown)
+    xfer, _ = _apply_transfer_updates(transfer_id, user_id, kwargs, press=press)
     return xfer

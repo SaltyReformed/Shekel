@@ -85,8 +85,10 @@ def load_active_salary_profiles(
 
     Returns:
         The active :class:`~app.models.salary_profile.SalaryProfile` list,
-        ordered ``(sort_order, name)`` with ``raises``, ``lines`` and
-        ``pay_entries`` eager-loaded.
+        ordered ``(sort_order, name)`` with ``raises``, ``lines``,
+        ``pay_entries`` and ``pay_stubs`` eager-loaded (the stubs price the
+        taxes since plan step salary:S11-c-2c; each stub's own lines load
+        with it).
     """
     return (
         db.session.query(SalaryProfile)
@@ -94,6 +96,7 @@ def load_active_salary_profiles(
             subqueryload(SalaryProfile.raises),
             subqueryload(SalaryProfile.lines),
             subqueryload(SalaryProfile.pay_entries),
+            subqueryload(SalaryProfile.pay_stubs),
         )
         .filter(
             SalaryProfile.user_id == user_id,
@@ -646,6 +649,7 @@ def _load_funding_profiles(
             subqueryload(SalaryProfile.raises),
             subqueryload(SalaryProfile.lines),
             subqueryload(SalaryProfile.pay_entries),
+            subqueryload(SalaryProfile.pay_stubs),
         )
         .filter(
             SalaryProfile.id.in_(profile_ids),
