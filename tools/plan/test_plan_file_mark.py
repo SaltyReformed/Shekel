@@ -51,6 +51,44 @@ def test_a_leaf_and_a_ruling_are_created_marked_and_unmarked_by_their_last_write
                               ("add_child", 4, 5), ("close", 5, "completed"), ("unmark", 5)]
 
 
+class _HandUnmarks:
+    """``board.add`` after which a person removes the card's mark by hand on the web (as
+    ``plan show`` advises for a filing whose command is lost), while its command still runs."""
+
+    def __init__(self, tracker):
+        """Stand in for ``tracker.board.add``."""
+        self.tracker, self.real = tracker, tracker.board.add
+        tracker.board.add = self
+
+    def __call__(self, card):
+        """Add the card, then take its mark off."""
+        item = self.real(card)
+        held = self.tracker.cards_by_number[card.number]
+        self.tracker.cards_by_number[card.number] = replace(
+            held, labels=tuple(label for label in held.labels if label != FILING))
+        return item
+
+
+def test_a_mark_removed_by_hand_mid_filing_fails_its_unmark_and_the_same_command_ends_it(
+        code, tmp_path, capsys):
+    """Review rbal202b M1 (c), LOW 4: the tool's unmark finds the mark already gone (a person,
+    another session, or the label deleted) and GitHub answers 404, a failed call (exit 2)
+    after every other write landed; the same command run again finds the step filed and
+    writes nothing.  (For a RULING the same re-run files a second ruling today: leaf C.)"""
+    tracker = FakeTracker()
+    spec = tmp_path / "spec.md"
+    spec.write_text("Build it.")
+    args = ("file", "step", "--arc", "balance", "--title", "Alone", "--body-file", str(spec))
+    _HandUnmarks(tracker)
+    assert run(tracker, code, *args) == 2
+    assert "Label does not exist" in capsys.readouterr().err
+    assert tracker.writes == [("create", 1, "step", "Alone", ("balance", FILING)),
+                              ("board_add", 1)]
+    tracker.writes.clear()
+    assert run(tracker, code, *args) == 0
+    assert not tracker.writes and "filed already" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("failure", ["link", "add", "move", "read-back", "remove", "unmark"])
 def test_a_leaf_cut_short_after_its_create_is_never_offered_and_the_same_command_finishes_it(
         code, tmp_path, capsys, failure):

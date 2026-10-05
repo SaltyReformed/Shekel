@@ -509,8 +509,9 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
     finish one a failure cut short (R-BAL186).
 
     Every card is created marked, :data:`setup_tracker.FILING` sent in the call
-    that creates it (never through ``--label``, so :func:`check.violations` never
-    sees it), and the mark is removed last (R-BAL202).  So a card still marked is
+    that creates it (by :meth:`_tracker.Tracker.create`, never through ``--label``,
+    so :func:`check.violations` never sees it), and the mark is removed last
+    (R-BAL202).  So a card still marked is
     a filing some of whose writes may not have landed: run again, the same command
     makes every write of the filing that the card does not show done -- the link,
     the close, the board place, and for a leaf the move whenever it has a place to
@@ -550,7 +551,7 @@ def _created(kind: str, tracker: Tracker, draft: Draft) -> Card:
     """A new card filed from ``draft``, marked in the call that creates it (R-BAL202), as
     read back; a card that cannot be read back yet is a failed call, not a refusal: it
     was filed."""
-    number = tracker.create(kind, draft.title, draft.body, (*draft.labels, FILING))
+    number = tracker.create(kind, draft.title, draft.body, draft.labels)
     print(f"filed plan#{number}")
     card = tracker.cards([number]).get(number)
     if card is None:

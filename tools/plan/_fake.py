@@ -6,10 +6,11 @@ drive the commands against :class:`FakeTracker`, which keeps cards in memory.
 It keeps what the commands depend on the way the recordings show GitHub keeping
 it -- a body edit saves a full version, and the first edit also saves the body
 as filed; a parent's read lists each sub-issue's kind and state as they stand
-now, not as they were when it was linked -- and FAILS LOUDLY on a write the
-tool must never send (re-parenting a card, under a parent inside the tracker
-or out; adding a card already on the board; removing a mark the card does not
-carry), rather than guessing GitHub's answer to it.  Its board shows a
+now, not as they were when it was linked; a mark removed from a card that
+does not carry it is answered as GitHub answers it, 404 -- and FAILS LOUDLY on
+a write the tool must never send (re-parenting a card, under a parent inside
+the tracker or out; adding a card already on the board), rather than guessing
+GitHub's answer to it.  Its board shows a
 placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
 itself is graded against a recording.
 Nothing here calls GitHub.
@@ -17,6 +18,7 @@ Nothing here calls GitHub.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import plan
 from _github import GitHubError
@@ -150,10 +152,12 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
 
     # -- writes
     def create(self, kind, title, body, labels):
-        """File a card at the next number."""
+        """File a card at the next number, marked :data:`setup_tracker.FILING` beside
+        ``labels``, as :meth:`_tracker.Tracker.create` files every card."""
         number = max(self.cards_by_number, default=0) + 1
-        self.writes.append(("create", number, kind, title, tuple(sorted(labels))))
-        self.add(number, kind, body, on_board=False, title=title, labels=tuple(sorted(labels)))
+        labels = tuple(sorted({*labels, FILING}))
+        self.writes.append(("create", number, kind, title, labels))
+        self.add(number, kind, body, on_board=False, title=title, labels=labels)
         return number
 
     def retype(self, number, kind):
@@ -195,10 +199,13 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
                   touched_by_hand=False)
 
     def unmark(self, number):
-        """Remove a card's filing mark; the tool never removes one the card does not carry
-        (what GitHub answers to that is not measured)."""
+        """Remove a card's filing mark.  One the card no longer carries -- something outside
+        the tool removed it mid-filing -- is answered as GitHub answers it, 404 "Label does
+        not exist" (``test__tracker.py``), and nothing is written."""
         labels = self.cards_by_number[number].labels
-        assert FILING in labels, f"plan#{number} carries no {FILING!r} mark"
+        if FILING not in labels:
+            raise GitHubError(404, f'DELETE .../issues/{number}/labels/{FILING} -> 404: '
+                                   '{"message":"Label does not exist"}')
         self.writes.append(("unmark", number))
         self._set(number, labels=tuple(label for label in labels if label != FILING))
 
@@ -248,6 +255,23 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
         """Delete a claim."""
         self.writes.append(("release", number))
         del self.held[number]
+
+
+class Sent:
+    """A ``requests`` session that answers each request with ``status`` and ``answer``, for
+    a test of what :class:`_github.GitHub` or :class:`_recorded.Recorder` does with one
+    answer."""
+
+    def __init__(self, status, answer):
+        """Hold the answer; count what is sent."""
+        self.status, self.answer, self.sent = status, answer, []
+
+    def request(self, method, url, **kwargs):
+        """Answer, and remember what was sent."""
+        self.sent.append((method, url, kwargs.get("json")))
+        return type("Response", (), {"status_code": self.status,
+                                     "content": json.dumps(self.answer).encode(),
+                                     "json": lambda _self: self.answer})()
 
 
 class FailOnce:

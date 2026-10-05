@@ -110,7 +110,7 @@ LABELS = {
     ),
     FILING: (
         "bfdadc",
-        "Set by plan file until its filing's last write; an open card with it is never offered",
+        "The plan tool has not finished filing this card, so it is not offered as work",
     ),
 }
 

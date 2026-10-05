@@ -25,6 +25,13 @@ nothing about the plan (``_state`` does), it only reads and writes.
   the card where it was put (:data:`BOARD_WAIT_SECONDS`).
 - GitHub silently drops an issue's ``type`` when the writer lacks push access,
   so every write that sets one reads it back.
+- The listings of open cards and of marked cards (the :data:`setup_tracker.FILING`
+  label), and a card's sub-issues read by its number or in a listing, each
+  showed a create, a mark's removal or an unlink at the first read of it after
+  the write (2026-10-04 22:13, one sample each, on a quiet tracker; the delay
+  itself was not timed).  Nothing here waits for them, as it does for the board;
+  one sample does not show they never lag.  Removing a mark a card does not
+  carry is answered 404 "Label does not exist".
 
 **A link to an issue outside the tracker is carried, never followed**
 (ruling ``balance:R-BAL188``).  GitHub lets a parent, sub-issue or blocked-by
@@ -494,8 +501,17 @@ class Tracker:  # pylint: disable=too-many-public-methods
     # -- writes --------------------------------------------------------------
 
     def create(self, kind: str, title: str, body: str, labels: Iterable[str]) -> int:
-        """File a card; its number, once GitHub's answer shows the type and labels sent."""
-        labels = sorted(labels)
+        """File a card, marked :data:`setup_tracker.FILING` beside ``labels`` in this, its
+        first write (R-BAL202): every card the plan tool files is born marked, and its
+        filing's last write, :meth:`unmark`, removes the mark.  Its number, once GitHub's
+        answer shows the type and labels sent.
+
+        A create naming a label the tracker lacks makes that label (grey, no description;
+        measured 2026-10-04 on the mark itself, before it existed; ``setup_tracker.py
+        --apply`` then corrected it), so a card filed before the mark exists is still
+        born marked.
+        """
+        labels = sorted({*labels, FILING})
         issue = self.github.rest("POST", f"{_BASE}/issues",
                                  {"title": title, "body": body, "type": kind, "labels": labels})
         got = ((issue.get("type") or {}).get("name"), sorted(l["name"] for l in issue["labels"]))
