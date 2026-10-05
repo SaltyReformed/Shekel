@@ -24,7 +24,9 @@ refusal, driven through the test client:
   this job's gross counts, a refusal naming the setting ends in a link to it
   (**R-SAL104**, **R-SAL106**), and both links open a new tab (**R-SAL107**)
   -- changing the setting there leaves the open stub form submittable.  The
-  words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**).
+  words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**);
+* a saved stub's page says a one-off changes its taxes exactly when the
+  engine's picker treats it so (**R-SAL123**), in **R-SAL125**'s words.
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
@@ -768,6 +770,66 @@ class TestTheKindAStubPrints:
         assert "Taxable earning</span> on the stub" in page
         assert "Post-tax deduction</span> in the app" in page
         assert _selected(page, f"line-kind-{phone}") == [str(taxable)]
+
+
+#: Ruling R-SAL125's words (amending R-SAL123's), byte for byte: the stub page's
+#: sentence under a one-off that changes the stub's taxes.
+_ONE_OFF_SENTENCE = (
+    b"This stub's one-off changes its taxes, so it prices a paycheck only when no "
+    b"stub used for pricing with the same lines as that paycheck is dated on or "
+    b"before that payday."
+)
+
+
+class TestTheOneOffSentence:
+    """R-SAL123's rule on the saved stub's page, in R-SAL125's words (plan step S11-c-2c).
+
+    The page shows the sentence exactly when the engine's picker treats the
+    stub as one of other lines: a one-off of a kind a tax formula reads -- a
+    taxable earning or a pre-tax deduction -- carrying money.  The service flag
+    behind it is graded in ``test_pay_stub_service.py``; this grades what the
+    page RENDERS, which the delta review measured no test reading (three
+    template mutations survived every stub test).  Neither earlier wording is
+    on the page: fork 8b's "matches no normal paycheck" and R-SAL123's "with
+    your usual lines", which R-SAL125 replaced because it was false for a
+    switched-off stub and for a paycheck whose lines are not the usual ones.
+    """
+
+    @pytest.mark.parametrize(("kind", "amount", "gross", "net", "shown"), [
+        # gross 2884.62 + Phone 60.00 + 55.00 = 2999.62;
+        # net 2999.62 - 315.00 - 472.00 - 110.00 = 2102.62
+        (PaycheckLineKindEnum.TAXABLE_EARNING, "55.00", "2999.62", "2102.62", True),
+        # gross 2884.62 + 60.00 = 2944.62; net 2944.62 - 315.00 - 55.00 - 472.00 - 110.00
+        # = 1992.62
+        (PaycheckLineKindEnum.PRE_TAX_DEDUCTION, "55.00", "2944.62", "1992.62", True),
+        # gross 2944.62; net 2944.62 - 315.00 - 472.00 - 110.00 - 55.00 = 1992.62
+        (PaycheckLineKindEnum.POST_TAX_DEDUCTION, "55.00", "2944.62", "1992.62", False),
+        # gross 2944.62 (outside it on a "no" job); net 2944.62 - 315.00 - 472.00
+        # - 110.00 + 55.00 = 2102.62
+        (PaycheckLineKindEnum.AFTER_TAX_EARNING, "55.00", "2944.62", "2102.62", False),
+        # a $0.00 one-off moves no tax: gross 2944.62; net 2944.62 - 315.00 - 472.00
+        # - 110.00 = 2047.62
+        (PaycheckLineKindEnum.TAXABLE_EARNING, "0.00", "2944.62", "2047.62", False),
+    ])
+    def test_the_sentence_shows_only_under_a_one_off_that_changes_the_taxes(
+        self, auth_client, world, kind, amount, gross, net, shown,
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        """Recorded through the door with a one-off of *kind*, the saved page says so or not.
+
+        Pylint: ``too-many-arguments`` / ``too-many-positional-arguments`` --
+        two fixtures and the five columns of one parametrized case.
+        """
+        payload = _payload(world, one_off=("Thing", amount), printed_gross=gross,
+                           printed_net=net)
+        payload["one_off_kind"] = [str(ref_cache.paycheck_line_kind_id(kind)), ""]
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 302, response.data.decode()[:2000]
+        page = auth_client.get(response.headers["Location"])
+        assert page.status_code == 200
+        assert b"One-offs on this stub:" in page.data
+        assert (_ONE_OFF_SENTENCE in page.data) is shown
+        assert b"matches no normal paycheck" not in page.data
+        assert b"with your usual lines" not in page.data
 
 
 class TestTheLineDelete:

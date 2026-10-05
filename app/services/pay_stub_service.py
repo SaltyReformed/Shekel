@@ -268,11 +268,11 @@ class StubReport:
             payday, in the profile's line order.
         one_offs: The one-offs, in the order they were entered.
         one_off_changes_taxes: Whether a one-off changes the stub's taxes,
-            so that it prices a paycheck only when no stub of the paycheck's
-            lines is on or before it -- the engine picker's own answer
-            (:func:`app.services.paycheck_calculator.one_offs_change_taxes`,
+            so that it prices a paycheck only when no SWITCHED-ON stub of that
+            paycheck's own lines is on or before it -- the engine picker's own
+            answer (:func:`app.services.paycheck_calculator.one_offs_change_taxes`,
             ruling **R-SAL123**), which the page states rather than restating
-            the rule (plan step salary:S11-c-2c).
+            the rule (plan step salary:S11-c-2c), in **R-SAL125**'s words.
     """
     totals: StubTotals
     app_base_pay: Decimal | None

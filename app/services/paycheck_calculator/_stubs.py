@@ -283,7 +283,9 @@ def one_offs_change_taxes(one_offs) -> bool:
 
     "Only tax-changing one-offs": a one-off of a :data:`TAXED_KINDS` kind
     carrying money changes the stub's taxes, so the stub prices a paycheck
-    only when no stub of the paycheck's lines is on or before it; an
+    only when no SWITCHED-ON stub of that paycheck's own lines is on or
+    before it (a third paycheck that skips a twice-a-month line, say, has
+    lines a normal one does not); an
     after-tax or post-tax one-off, or one worth ``$0.00``, does not.  The
     picker's rule (:func:`_has_the_lines`) and the stub page's sentence
     (:attr:`app.services.pay_stub_service.StubReport.one_off_changes_taxes`)

@@ -261,7 +261,7 @@ class TestTheLatestStubOfItsKindPrices:
         assert breakdown.taxes.state == Decimal("155.00")
 
     def test_of_two_other_lines_stubs_the_later_prices(self, owner, db):
-        """Two Health-only stubs: 02-13 is priced from 01-30, ``141.00 + 143.00 - 140.00 = 144.00``.
+        """Two Health-only stubs: 02-13 priced from 01-30, ``141.00 + 143.00 - 140.00 = 144.00``.
 
         Each prints no Phone line, so neither has the paycheck's lines; both
         stubs' paychecks are ``3,000.00`` gross, ``2,800.00`` taxable, so the
@@ -389,11 +389,11 @@ class TestWithNoSameLinesStubTheLatestOfAnyLinesPrices:
         and R-SAL54's reading; plan step salary:S11-c-2c): a made-up
         ``$37.19`` after-tax "Mileage" one-off on the 01-30 stub changes no
         tax, so the 01-30 stub keeps the 02-13 paycheck's lines and, being the
-        later, prices it -- where the rule before it took the 01-16 stub.  By hand: the 01-30 stub's gross is
-        3,000.00 + Phone 60.00 = 3,060.00 (an after-tax earning is outside the
-        gross) and its taxable 2,860.00, the paycheck's own, so every formulas
-        difference is $0.00 and the four taxes are the stub's: 260.00 / 160.00
-        / 189.72 / 44.37.
+        later, prices it -- where the rule before it took the 01-16 stub.  By
+        hand: the 01-30 stub's gross is 3,000.00 + Phone 60.00 = 3,060.00 (an
+        after-tax earning is outside the gross) and its taxable 2,860.00, the
+        paycheck's own, so every formulas difference is $0.00 and the four
+        taxes are the stub's: 260.00 / 160.00 / 189.72 / 44.37.
         """
         _same_lines_stub(
             owner, date(2026, 1, 16), "3000.00",
@@ -507,7 +507,7 @@ class TestWithNoSameLinesStubTheLatestOfAnyLinesPrices:
         assert breakdown.taxes.state == Decimal("150.00")
 
     def test_a_pre_tax_line_capped_out_at_zero_is_not_a_different_line(self, owner, db):
-        """A taxed line its cap used up prices at $0.00; a stub without it has the paycheck's lines.
+        """A taxed line its cap used up prices at $0.00; a stub without it has the paycheck's.
 
         An HSA line (pre-tax, ``$100.00`` capped at ``$100.00`` a year) is
         taken on 01-02 and priced at ``$0.00`` from 01-16 on.  The 01-16 stub
