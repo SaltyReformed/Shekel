@@ -50,7 +50,7 @@ from _github import (
     app_jwt,
     installation_token,
 )
-from setup_tracker import ORG, REPO, find_board
+from setup_tracker import FILING, ORG, REPO, find_board
 
 _BASE = f"/repos/{ORG}/{REPO}"
 #: The tracker, as GitHub names a repository in a link (``nameWithOwner``).
@@ -84,6 +84,15 @@ _OPEN_CARDS = (
   issues(first: 100, after: $after, states: [OPEN]) {
     pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
     % (ORG, REPO, _CARD_FIELDS)
+)
+
+#: Every card carrying the :data:`setup_tracker.FILING` mark, open or closed: a
+#: ruling's filing closes it before its last write removes the mark.
+_MARKED_CARDS = (
+    """query($after: String) { repository(owner: "%s", name: "%s") {
+  issues(first: 100, after: $after, labels: ["%s"], states: [OPEN, CLOSED]) {
+    pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
+    % (ORG, REPO, FILING, _CARD_FIELDS)
 )
 
 _BOARD = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {
@@ -332,8 +341,16 @@ class Board:
             waited += _POLL_SECONDS
 
 
-class Tracker:
+class Tracker:  # pylint: disable=too-many-public-methods
     """The tracker as the App sees it: its cards and claims, and its :class:`Board`.
+
+    Pylint: ``too-many-public-methods`` (22/20) -- ``connect``, then **one
+    method per read or write the plan tool makes of the tracker** (most one
+    request, ``claim`` four; this module is the one place it speaks to
+    GitHub), the board's own writes already apart in :class:`Board`.  Two of
+    them, the filing mark's read and its removal (R-BAL202), took it past 20.
+    The claims' three (``claims``, ``claim``, ``release``: git references, not
+    cards) could stand apart the same way; that split is not this change's.
 
     ``github`` is any object with :class:`_github.GitHub`'s ``rest``,
     ``graphql`` and ``graphql_lookup``.
@@ -360,16 +377,26 @@ class Tracker:
 
     # -- reads ---------------------------------------------------------------
 
-    def open_cards(self) -> dict[int, Card]:
-        """Every open card, by number."""
+    def _listing(self, query: str) -> dict[int, Card]:
+        """Every card a listing ``query`` (:data:`_OPEN_CARDS`, :data:`_MARKED_CARDS`)
+        holds, by number, read page by page."""
         cards, after = {}, None
         while True:
-            page = self.github.graphql(_OPEN_CARDS, after=after)["repository"]["issues"]
+            page = self.github.graphql(query, after=after)["repository"]["issues"]
             for node in page["nodes"]:
                 cards[node["number"]] = card_from(node, self.board_id, self.app_login)
             if not page["pageInfo"]["hasNextPage"]:
                 return cards
             after = page["pageInfo"]["endCursor"]
+
+    def open_cards(self) -> dict[int, Card]:
+        """Every open card, by number."""
+        return self._listing(_OPEN_CARDS)
+
+    def marked(self) -> dict[int, Card]:
+        """Every card carrying the :data:`setup_tracker.FILING` mark, open or closed, by
+        number: each a filing the plan tool began and has not finished (R-BAL202)."""
+        return self._listing(_MARKED_CARDS)
 
     def cards(self, numbers: Iterable[int]) -> dict[int, Card]:
         """The cards numbered ``numbers``, open or closed; one that does not exist is
@@ -501,6 +528,10 @@ class Tracker:
     def reopen(self, number: int) -> None:
         """Reopen a card."""
         self.github.rest("PATCH", f"{_BASE}/issues/{number}", {"state": "open"})
+
+    def unmark(self, number: int) -> None:
+        """Remove a card's :data:`setup_tracker.FILING` mark: its filing's last write."""
+        self.github.rest("DELETE", f"{_BASE}/issues/{number}/labels/{FILING}")
 
     def add_child(self, parent: int, child: Card) -> None:
         """Make ``child`` a sub-issue of ``parent``."""

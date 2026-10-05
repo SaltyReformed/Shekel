@@ -45,7 +45,7 @@ from _tracker import (
     card_from,
     claim_message,
 )
-from setup_tracker import find_board
+from setup_tracker import FILING, find_board
 
 APP = "shekel-plan-tool"
 #: The code repository's commits the recording asks about: PR #506's last commit (merged
@@ -671,6 +671,10 @@ _REFS = f"https://api.github.com/repos/{TRACKER}/git/refs"
     ("POST", _REFS, {"ref": "refs/claims/11", "sha": "a" * 40, "force": True}),
     ("DELETE", f"{_REFS}/claims/11", {"x": 1}),
     ("PUT", f"{_ISSUES}/11/lock", None),
+    ("DELETE", f"{_ISSUES}/2/labels/{FILING}", None),
+    ("DELETE", f"{_ISSUES}/11/labels/balance", None),
+    ("DELETE", f"{_ISSUES}/11/labels", None),
+    ("DELETE", f"{_ISSUES}/11/labels/{FILING}", {"x": 1}),
 ])
 def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, url, body):
     """Review cp3 M-3 (d), (e) and review cp4 M-3: a text-writing GraphQL mutation slipped
@@ -695,6 +699,7 @@ def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, 
     ("POST", _REFS, {"ref": "refs/claims/11", "sha": "a" * 40}),
     ("POST", _REFS, {"ref": "refs/claims/recording-scratch", "sha": "a" * 40}),
     ("DELETE", f"{_REFS}/claims/11", None),
+    ("DELETE", f"{_ISSUES}/11/labels/{FILING}", None),
     ("POST", "https://api.github.com/graphql",
      {"query": BOARD_ADD, "variables": {"p": "PVT_1", "c": "S_11"}}),
     ("POST", "https://api.github.com/graphql",

@@ -8,9 +8,10 @@ it -- a body edit saves a full version, and the first edit also saves the body
 as filed; a parent's read lists each sub-issue's kind and state as they stand
 now, not as they were when it was linked -- and FAILS LOUDLY on a write the
 tool must never send (re-parenting a card, under a parent inside the tracker
-or out; adding a card already on the board), rather than guessing GitHub's
-answer to it.  Its board shows a placement at once unless told to lag
-(:attr:`FakeBoard.lagging`); the lag itself is graded against a recording.
+or out; adding a card already on the board; removing a mark the card does not
+carry), rather than guessing GitHub's answer to it.  Its board shows a
+placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
+itself is graded against a recording.
 Nothing here calls GitHub.
 """
 from __future__ import annotations
@@ -18,8 +19,10 @@ from __future__ import annotations
 import dataclasses
 
 import plan
+from _github import GitHubError
 from _scratch import run as _run
 from _tracker import Card, Child, Claim, ClaimTaken, Edit
+from setup_tracker import FILING
 
 
 class FakeBoard:
@@ -60,8 +63,14 @@ class FakeBoard:
 
 
 
-class FakeTracker:
-    """The tracker in memory: cards, bodies, claims, its board, and every write."""
+class FakeTracker:  # pylint: disable=too-many-public-methods
+    """The tracker in memory: cards, bodies, claims, its board, and every write.
+
+    Pylint: ``too-many-public-methods`` (22/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 21 reads and
+    writes (its own disable says why there are so many), and ``add``, which
+    puts a card in.
+    """
 
     app_login = "shekel-plan-tool"
 
@@ -108,6 +117,10 @@ class FakeTracker:
     def open_cards(self):
         """Every open card."""
         return {n: self._view(n) for n, c in self.cards_by_number.items() if c.is_open}
+
+    def marked(self):
+        """Every card carrying the filing mark, open or closed."""
+        return {n: self._view(n) for n, c in self.cards_by_number.items() if FILING in c.labels}
 
     def cards(self, numbers):
         """The cards that exist among ``numbers``."""
@@ -181,6 +194,14 @@ class FakeTracker:
         self._set(number, is_open=True, state_reason="REOPENED", closed_by_tool=False,
                   touched_by_hand=False)
 
+    def unmark(self, number):
+        """Remove a card's filing mark; the tool never removes one the card does not carry
+        (what GitHub answers to that is not measured)."""
+        labels = self.cards_by_number[number].labels
+        assert FILING in labels, f"plan#{number} carries no {FILING!r} mark"
+        self.writes.append(("unmark", number))
+        self._set(number, labels=tuple(label for label in labels if label != FILING))
+
     def add_child(self, parent, child):
         """Make ``child`` a sub-issue of ``parent``; the tool never re-parents a card, in the
         tracker or outside it."""
@@ -218,6 +239,40 @@ class FakeTracker:
         self.writes.append(("release", number))
         del self.held[number]
 
+
+class FailOnce:
+    """One write of ``owner`` (the tracker or its board) failing the first time, as a timeout
+    or a 502 would; it writes every time after."""
+
+    def __init__(self, owner, name):
+        """Stand in for ``owner.<name>``."""
+        self.real, self.failed = getattr(owner, name), False
+        setattr(owner, name, self)
+
+    def __call__(self, *args):
+        """Fail once, then write."""
+        if not self.failed:
+            self.failed = True
+            raise GitHubError(502, "bad gateway")
+        return self.real(*args)
+
+
+class ReadBackFailsOnce:
+    """``board.place`` whose move lands and whose read of the board back then fails once, as
+    one of :meth:`_tracker.Board.shows`'s reads can."""
+
+    def __init__(self, board):
+        """Stand in for ``board.place``."""
+        self.real, self.failed = board.place, False
+        board.place = self
+
+    def __call__(self, item, after):
+        """Move, then fail once."""
+        shown = self.real(item, after)
+        if not self.failed:
+            self.failed = True
+            raise GitHubError(502, "bad gateway")
+        return shown
 
 
 def ship(root, *trailers):

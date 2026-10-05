@@ -7,6 +7,7 @@ from _state import (
     Placement,
     dropped,
     dropped_above,
+    filing_unfinished,
     is_live,
     leaf_placement,
     missing,
@@ -16,9 +17,11 @@ from _state import (
     resolved,
     stale_claims,
     sync_plan,
+    unfinished_reports,
     workable,
 )
 from _tracker import Card, Child, Claim, OutsideLink
+from setup_tracker import FILING
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
@@ -218,14 +221,14 @@ def test_leaf_placement_holds_the_split_steps_place_then_follows_its_last_leaf()
     """R-BAL179, decided apart from the board writes (review L9); GitHub adds at the bottom."""
     order = [(1, "I1"), (2, "I2"), (3, "I3")]
     assert leaf_placement(order, _card(2, board_item="I2"), 4) == Placement(
-        "I2", "I2", "into plan#2's place")
+        True, "I2", "I2", "into plan#2's place")
     split = _card(2, board_item=None, children=(Child(5, "step", True), Child(4, "step", True),
                                                  Child(7, "finding", True)))
     order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
     assert leaf_placement(order, split, 6) == Placement(
-        "I5", None, "to just after plan#2's other leaves")
+        True, "I5", None, "to just after the leaves of plan#2 filed before it")
     assert leaf_placement(order, _card(2, board_item=None), 6) == Placement(
-        None, None, "at the bottom")
+        False, None, None, "no other leaf of plan#2 is on the board to place it by")
 
 
 def test_missing_reads_a_containers_leaves_not_the_findings_and_rulings_it_owns():
@@ -454,7 +457,56 @@ def test_a_leaf_is_placed_after_its_other_leaves_never_after_itself():
     split = _card(2, board_item=None, children=(Child(4, "step", True), Child(5, "step", True)))
     order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
     assert leaf_placement(order, split, 5) == Placement(
-        "I4", None, "to just after plan#2's other leaves")
+        True, "I4", None, "to just after the leaves of plan#2 filed before it")
+
+
+def test_a_leaf_with_no_earlier_leaf_on_the_board_goes_just_above_the_later_ones():
+    """R-BAL202, R-BAL204: a first leaf whose link failed was no leaf yet, so a later leaf
+    took the split step's place; its re-run puts it just above that leaf -- to the top when
+    that leaf is first, never after itself when it sits just above it already."""
+    split = _card(1, board_item=None, children=(Child(5, "step", True), Child(6, "step", True)))
+    assert leaf_placement([(6, "I6"), (4, "I4"), (5, "I5")], split, 5) == Placement(
+        True, None, None, "to just above the leaves of plan#1 filed after it")
+    assert leaf_placement([(4, "I4"), (5, "I5"), (6, "I6")], split, 5) == Placement(
+        True, "I4", None, "to just above the leaves of plan#1 filed after it")
+
+
+def test_filing_order_is_the_cards_numbers_not_the_sub_issue_lists():
+    """Review cp4e M1 (reordered sub-issues): a person may drag the split step's sub-issue
+    list; the leaves filed before a leaf are the lower numbers, wherever the list puts them."""
+    split = _card(1, board_item=None, children=(Child(2, "step", True), Child(5, "step", True),
+                                                 Child(3, "step", True)))
+    order = [(2, "I2"), (3, "I3"), (4, "I4"), (5, "I5")]
+    assert leaf_placement(order, split, 5).after == "I3"
+
+
+def test_a_marked_card_is_an_unfinished_filing_while_open_or_closed_by_its_own_filing():
+    """R-BAL202: a ruling's filing closes it, as completed, before the mark comes off; any
+    other card closed while marked -- a ruling dropped or closed by a person included -- was
+    dropped, and what its filing left undone is moot (review rbal202a M2)."""
+    marked = ("balance", FILING)
+    assert filing_unfinished(_card(1, labels=marked))
+    assert filing_unfinished(_closed(2, "ruling", labels=marked))
+    assert not filing_unfinished(_closed(3, labels=marked, reason="NOT_PLANNED"))
+    assert not filing_unfinished(_closed(4, "question", by_tool=False, labels=marked))
+    assert not filing_unfinished(_card(5))
+    assert not filing_unfinished(_closed(6, "ruling", labels=marked, reason="NOT_PLANNED"))
+    assert not filing_unfinished(_closed(7, "ruling", by_tool=False, labels=marked))
+
+
+def test_a_card_whose_filing_is_unfinished_is_never_offered_and_is_reported():
+    """R-BAL202: never handed out, never listed as merely off the board, and named by next
+    and sync -- with ``plan drop`` offered except for a ruling, which is a record."""
+    cards = _cards(_card(1, labels=("balance", FILING)), _card(2, labels=("balance", FILING),
+                                                               board_item=None),
+                   _closed(3, "ruling", labels=("balance", FILING)))
+    assert "its filing has not finished (R-BAL202)" in never_offered(cards[1], cards, set())
+    answer = next_step([1], cards, set(), {})
+    assert answer.card is None and not answer.unplaced
+    lines = unfinished_reports(cards)
+    assert [line.split("'")[0] for line in lines] == ["plan#1", "plan#2", "plan#3"]
+    assert lines[0].endswith(", or `plan drop` it") and lines[2].endswith("to finish it")
+    assert sync_plan(cards, set(), {}, {}).reports == lines
 
 
 def test_a_wait_or_a_drop_two_steps_up_holds_a_leaf_back():
@@ -465,3 +517,14 @@ def test_a_wait_or_a_drop_two_steps_up_holds_a_leaf_back():
     assert "plan#1 above it waits on o/code#1" in never_offered(cards[3], cards, set())
     cards[1] = _closed(1, by_tool=False, children=(Child(2, "step", True),))
     assert never_offered(cards[3], cards, set()) == "plan#1 above it was dropped (R-BAL185)"
+
+
+def test_an_open_ruling_is_reported_once_as_unfinished_or_as_open_by_hand():
+    """R-BAL202: an open ruling still marked is an unfinished filing, its one report naming the
+    command that finishes it; one with no mark (a person reopened it) is reported for a
+    person to close by hand -- its filing command would write nothing."""
+    cards = _cards(_card(1, "ruling", labels=("balance", FILING)), _card(2, "ruling"))
+    reports = sync_plan(cards, set(), {}, {}).reports
+    assert [line.split("'")[0].split(" is ")[0] for line in reports] == ["plan#1",
+                                                                       "ruling plan#2"]
+    assert reports[1].endswith(": close it by hand")

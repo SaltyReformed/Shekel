@@ -91,7 +91,12 @@ REPOSITORY = {
 ARCS = ("balance", "recurrence", "pay_calendar", "credit_card", "bank_import", "salary")
 _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 
-#: Every label the tracker carries: one per arc, and the two a release reads.
+#: The mark every card the plan tool files carries from the call that creates it
+#: until its filing's last write removes it (ruling ``balance:R-BAL202``).
+FILING = "filing"
+
+#: Every label the tracker carries: one per arc, the two a release reads, and
+#: the plan tool's :data:`FILING` mark.
 LABELS = {
     **{
         arc: (_ARC_COLORS[index % len(_ARC_COLORS)], f"The {arc.replace('_', '-')} arc")
@@ -102,6 +107,9 @@ LABELS = {
     ),
     "deploy-together": (
         "fbca04", "A parent whose leaves /release ships in one release, never split"
+    ),
+    FILING: (
+        "bfdadc", "Its filing is unfinished: never offered; the same plan file command finishes it"
     ),
 }
 

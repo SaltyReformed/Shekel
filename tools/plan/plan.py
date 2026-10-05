@@ -37,7 +37,8 @@ a file the command reads (the App's credentials, a ``--body-file``) -- or the
 command line itself is not one of the forms above (argparse's usage error),
 before anything is read.  Every write is printed as it lands, so after a
 failure the output says what was written; ``file`` run again finishes a filing
-a failure cut short (R-BAL186).
+a failure cut short (R-BAL186): every card it creates is marked ``filing``
+until its last write, and a marked card is never offered (R-BAL202).
 """
 from __future__ import annotations
 
@@ -55,6 +56,7 @@ import requests
 import _git
 from _github import GitHubError
 from _state import (
+    filing_unfinished,
     is_live,
     is_work,
     leaf_placement,
@@ -65,6 +67,7 @@ from _state import (
     resolved,
     stale_claims,
     sync_plan,
+    unfinished_reports,
 )
 from _tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
 from check import (
@@ -76,7 +79,7 @@ from check import (
     ruling_question,
     violations,
 )
-from setup_tracker import ARCS
+from setup_tracker import ARCS, FILING
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
@@ -170,9 +173,10 @@ def _holder(claim: Claim) -> str:
 # -- next, claim, release -----------------------------------------------------
 
 def cmd_next(args, tracker: Tracker, root: Path) -> int:
-    """The first open step in the board's order that is unclaimed, unshipped and unblocked."""
+    """The first open step in the board's order that is unclaimed, unshipped and unblocked;
+    then what it cannot offer that a person must act on."""
     _, shipped, _ = _shipped(root)
-    cards = _with_closure(tracker, tracker.open_cards())
+    cards = _with_closure(tracker, {**tracker.open_cards(), **_unfinished(tracker)})
     claims = tracker.claims()
     order = [number for number, _ in tracker.board.order()]
     answer = next_step(order, cards, shipped, claims, args.arc)
@@ -186,6 +190,8 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
               f"no pushed branch -- {_release_hint(claim)}")
     for line in outside_reports(cards):
         print(f"OUTSIDE LINK: {line}")
+    for line in unfinished_reports(cards):
+        print(f"UNFINISHED FILING: {line}")
     return 0
 
 
@@ -277,6 +283,10 @@ def _card_lines(card: Card, tracker: Tracker, shipped: dict) -> list[str]:
     lines += [f"  child: plan#{child.number} ({child.kind}, "
               f"{'open' if child.is_open else 'closed'})" for child in card.children]
     lines += [f"  blocked by: plan#{blocker}" for blocker in card.blocked_by]
+    if filing_unfinished(card):
+        lines.append("  filing: not finished (R-BAL202) -- never offered until its `plan file` "
+                     "command runs again; with that command lost, make its missing writes on "
+                     f"the web and remove its {FILING!r} label last")
     lines += [f"  {link.what} outside the tracker: {link.issue} -- not offered until it is "
               "removed (R-BAL188)" for link in card.outside if link.what != "parent"]
     return lines
@@ -358,6 +368,10 @@ def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, 
     """
     parent_number = getattr(args, "owner", None) or getattr(args, "parent", None)
     parent = _one(tracker, parent_number) if parent_number else None
+    if args.kind == "step" and parent is not None and filing_unfinished(parent):
+        raise Refused(f"{_label(parent)}'s own filing has not finished (R-BAL202): finish it "
+                      "with the same `plan file` command first, then split it -- a leaf under "
+                      "it would make it a split step its own filing puts on the board")
     owner = None
     if parent is not None:
         _, shipped, _ = _shipped(root)
@@ -381,63 +395,53 @@ def _draft_for(args, tracker: Tracker, root: Path) -> tuple[Draft, Card | None, 
     return Draft(args.kind, args.title, body, labels, owner), parent, asked
 
 
-def _left_at_the_bottom(order: list[tuple[int, str]], parent: Card, leaf: Card) -> str:
-    """A note when ``leaf`` sits where a board move a failure cut short leaves it -- last
-    on the board, below a card that is not one of the leaves filed before it -- naming the
-    move that puts it after the lowest of those, where its filing would have put it; empty
-    anywhere else, where a person may have put it, and while the board does not show it."""
-    numbers = [number for number, _ in order]
-    if not order or order[-1][1] != leaf.board_item or leaf.number not in parent.leaves:
-        return ""
-    earlier = parent.leaves[:parent.leaves.index(leaf.number)]
-    shown = [number for number in earlier if number in numbers]
-    if not shown or numbers[-2] in earlier:
-        return ""
-    anchor = max(shown, key=numbers.index)
-    return (f", but last, below plan#{numbers[-2]}, where a move a failure cut short leaves "
-            f"it: `plan move plan#{leaf.number} --after plan#{anchor}` puts it after "
-            f"plan#{parent.number}'s other leaves")
-
-
 def _place_leaf(tracker: Tracker, leaf: Card, parent: Card) -> None:
-    """Put a new leaf where the step it splits sat (R-BAL179), each board write printed as
-    it lands.  Under a split step that has left the board, a retry never moves a leaf
-    already on it (R-BAL186), since a person may have dragged it there; one left where a
-    move a failure cut short leaves it is reported, with the move that places it
-    (:func:`_left_at_the_bottom`)."""
-    order = tracker.board.order()
-    if leaf.board_item is not None and parent.board_item is None:
-        print("  board: already on it" + _left_at_the_bottom(order, parent, leaf))
-        return
-    where = leaf_placement(order, parent, leaf.number)
+    """Put a leaf where the step it splits sat (R-BAL179), each board write printed as it
+    lands: onto the board if it is not on it, moved to its place, and the split step off
+    the board if it is still on it.  A leaf is placed only while its filing is unfinished
+    (R-BAL202), so its move is made again on every run until its last write lands."""
+    where = leaf_placement(tracker.board.order(), parent, leaf.number)
     item = leaf.board_item
     if item is None:
         item = tracker.board.add(leaf)
         print("  board: added at the bottom")
-    if where.after is not None:
+    if where.move:
         shown = tracker.board.place(item, where.after)
         print(f"  board: moved {where.note}" + ("" if shown else
                                                 " (the board has not shown it yet)"))
+    else:
+        print(f"  board: not moved: {where.note}")
     if where.remove is not None:
         tracker.board.remove(where.remove)
         print(f"  board: plan#{parent.number} left it, as a container")
 
 
-def _half_filed(tracker: Tracker, draft: Draft) -> Card | None:
-    """The OPEN card with ``draft``'s kind, title and text, if one exists: a filing a
-    failure cut short, which the same command finishes instead of filing another
-    (R-BAL186).  Refused when its labels differ, or when two such cards exist."""
+def _unfinished(tracker: Tracker) -> dict[int, Card]:
+    """Every card whose filing has not finished (:func:`_state.filing_unfinished`), open or
+    a closed ruling, by number."""
+    return {number: card for number, card in tracker.marked().items()
+            if filing_unfinished(card)}
+
+
+def _half_filed(tracker: Tracker, draft: Draft, unfinished: dict[int, Card]) -> Card | None:
+    """The card with ``draft``'s kind, title and text, if one exists: an OPEN card, or one
+    in ``unfinished`` (a ruling's filing closes it before its last write).  The caller
+    finishes a filing cut short and files nothing over a finished one (R-BAL186,
+    R-BAL202).  Refused when its labels differ, the filing mark aside, or when two such
+    cards exist."""
+    candidates = {**tracker.open_cards(), **unfinished}
     same = [
-        card for card in tracker.open_cards().values()
+        card for _, card in sorted(candidates.items())
         if card.kind == draft.kind and card.title.strip() == draft.title.strip()
         and normalized(tracker.body(card.number)) == normalized(draft.body)
     ]
     if len(same) > 1:
-        raise Refused(f"{len(same)} open cards have this kind, title and text "
+        raise Refused(f"{len(same)} cards, open or unfinished, have this kind, title and text "
                       f"({', '.join(f'plan#{card.number}' for card in same)}): drop the extras")
-    if same and sorted(same[0].labels) != sorted(draft.labels):
+    labels = sorted(label for label in same[0].labels if label != FILING) if same else None
+    if same and labels != sorted(draft.labels):
         raise Refused(f"{_label(same[0])} has this kind, title and text but the labels "
-                      f"{sorted(same[0].labels)}, not {sorted(draft.labels)}: relabel it by hand")
+                      f"{labels}, not {sorted(draft.labels)}: relabel it by hand")
     return same[0] if same else None
 
 
@@ -466,41 +470,106 @@ def _attach(tracker: Tracker, card: Card, parent: Card | None) -> None:
     print(f"  a sub-issue of plan#{parent.number}")
 
 
+def _refuse_beside_unfinished(tracker: Tracker, parent: Card, leaf: Card | None) -> None:
+    """Refuse to file a leaf of ``parent`` -- a new one, or ``leaf``'s filing again -- while
+    another leaf of ``parent`` has an unfinished filing (R-BAL204): its place is not
+    known to be right, so no leaf is placed by it.  Each leaf's mark is read by its card
+    number, not from the listing of marked cards, which may lag its removal."""
+    others = [card for number, card in sorted(tracker.cards(parent.leaves).items())
+              if filing_unfinished(card) and (leaf is None or number != leaf.number)]
+    if others:
+        names = ", ".join(f"plan#{card.number}" for card in others)
+        raise Refused(f"the filing of {names}, of plan#{parent.number}'s leaves, has not "
+                      "finished (R-BAL204): finish it first -- run its `plan file` command again "
+                      "-- then file this leaf")
+
+
+def _filed_already(card: Card, parent: Card | None) -> int:
+    """Nothing is written over a filing that finished: ``card`` carries no filing mark, so
+    each of its filing's writes landed (R-BAL202), and a person may have moved or edited it
+    since.  Refused when it is not where this filing puts it, at the top level or under
+    ``parent``: re-homing a card is a person's call."""
+    if card.parent is None and parent is not None:
+        raise Refused(f"{_label(card)} has this kind, title and text, and its filing finished "
+                      f"at the top level, not under plan#{parent.number}: re-homing a card is "
+                      "done by hand")
+    print(f"{_label(card)} is filed already: an open card with this kind, title and text "
+          "exists and its filing finished (it carries no filing mark), so nothing is written "
+          "(R-BAL186, R-BAL202)")
+    return 0
+
+
 def cmd_file(args, tracker: Tracker, root: Path) -> int:
     """File a step, finding, ruling or question, after :func:`check.violations` passes;
-    finish one a failure cut short (R-BAL186)."""
+    finish one a failure cut short (R-BAL186).
+
+    Every card is created marked, :data:`setup_tracker.FILING` sent in the call
+    that creates it (never through ``--label``, so :func:`check.violations` never
+    sees it), and the mark is removed last (R-BAL202).  So a card still marked is
+    a filing some of whose writes may not have landed: run again, the same command
+    makes every write of the filing that the card does not show done -- the link,
+    the close, the board place, and for a leaf the move whenever it has a place to
+    go, since no read can tell the tool's move from a person's drag -- then
+    removes the mark.
+    """
     draft, parent, asked = _draft_for(args, tracker, root)
     problems = violations(draft)
     if problems:
         raise Refused("not filed:\n  " + "\n  ".join(problems))
     if asked is not None:
         return _convert_question(args, tracker, draft, parent, asked)
-    card = _half_filed(tracker, draft)
-    if card is None:
-        number = tracker.create(args.kind, draft.title, draft.body, draft.labels)
-        print(f"filed plan#{number}")
-        card = tracker.cards([number]).get(number)
-        if card is None:
-            raise TrackerError(f"plan#{number} was filed but cannot be read back yet: once "
-                               f"`plan show plan#{number}` reads it, run the same command again "
-                               "to finish it (R-BAL186)")
-        print(f"  {_label(card)}")
-    else:
+    card = _half_filed(tracker, draft, _unfinished(tracker))
+    if card is not None:
         _refuse_rehoming(card, parent)
-        print(f"finishing {_label(card)}: an open card with this kind, title and text exists, "
-              "so this filing finishes it rather than filing another (R-BAL186)")
+        if not filing_unfinished(card):
+            return _filed_already(card, parent)
+    if args.kind == "step" and parent is not None:
+        _refuse_beside_unfinished(tracker, parent, card)
+    if card is None:
+        card = _created(args.kind, tracker, draft)
+    else:
+        print(f"finishing {_label(card)}: its filing has not finished (it is still marked "
+              f"{FILING!r}), so this command finishes it rather than filing another (R-BAL186, "
+              "R-BAL202)")
+    _finish(args.kind, tracker, card, parent)
+    return 0
+
+
+def _created(kind: str, tracker: Tracker, draft: Draft) -> Card:
+    """A new card filed from ``draft``, marked in the call that creates it (R-BAL202), as
+    read back; a card that cannot be read back yet is a failed call, not a refusal: it
+    was filed."""
+    number = tracker.create(kind, draft.title, draft.body, (*draft.labels, FILING))
+    print(f"filed plan#{number}")
+    card = tracker.cards([number]).get(number)
+    if card is None:
+        raise TrackerError(f"plan#{number} was filed but cannot be read back yet: once "
+                           f"`plan show plan#{number}` reads it, run the same command again "
+                           "to finish it (R-BAL186, R-BAL202); run while GitHub's lists of "
+                           "open and marked cards do not hold it yet, it files a second card")
+    print(f"  {_label(card)}")
+    return card
+
+
+def _finish(kind: str, tracker: Tracker, card: Card, parent: Card | None) -> None:
+    """Every write of a filing after the create that ``card`` does not show done, each
+    printed as it lands, then its mark removed, last (R-BAL202): the link, a ruling's
+    close, a leaf's place, a top-level step's or question's board place."""
     _attach(tracker, card, parent)
-    if args.kind == "ruling":
+    if kind == "ruling" and card.is_open:
         tracker.close(card.number, "completed")
         print("  closed: a ruling is a record")
-    elif args.kind == "step" and parent is not None:
+    elif kind == "ruling":
+        print("  closed already")
+    elif kind == "step" and parent is not None:
         _place_leaf(tracker, card, parent)
-    elif args.kind in ON_BOARD and card.board_item is None:
+    elif kind in ON_BOARD and card.board_item is None:
         tracker.board.add(card)
         print("  board: added at the bottom")
-    elif args.kind in ON_BOARD:
+    elif kind in ON_BOARD:
         print("  board: already on it")
-    return 0
+    tracker.unmark(card.number)
+    print(f"  unmarked: plan#{card.number}'s filing is finished")
 
 
 def _convert_question(args, tracker: Tracker, draft: Draft, owner: Card, asked: _Asked) -> int:
@@ -514,6 +583,9 @@ def _convert_question(args, tracker: Tracker, draft: Draft, owner: Card, asked: 
     question = asked.card
     if not question.is_open or question.kind not in ("question", "ruling"):
         raise Refused(f"{_label(question)} is not an open question")
+    if filing_unfinished(question):
+        raise Refused(f"{_label(question)}'s filing has not finished (R-BAL202): finish it with "
+                      "the `plan file` command that filed it first, then convert it")
     if args.arc not in question.labels:
         raise Refused(f"{_label(question)} is not in the {args.arc} arc; pass its own --arc")
     _refuse_rehoming(question, owner)
@@ -563,6 +635,9 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     if card.kind not in ON_BOARD or not card.is_open or card.is_container:
         raise Refused(f"the board holds open steps and questions only, and no step split into "
                       f"leaves (R-BAL177, R-BAL179): {_label(card)}")
+    if filing_unfinished(card) and card.parent is not None:
+        raise Refused(f"{_label(card)}'s filing has not finished (R-BAL202): its `plan file` "
+                      "command places this leaf, and would move it again after this move")
     order = tracker.board.order()
     items = dict(order)
     if args.after is not None:
@@ -669,7 +744,7 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
     """
     found, shipped, strays = _shipped(root)
     named = {trailer.card for trailer in found.trailers}
-    cards = tracker.open_cards()
+    cards = {**tracker.open_cards(), **_unfinished(tracker)}
     cards.update(tracker.cards(named - set(cards)))
     history = [f"a trailer on {_git.DEV} names plan#{number}, which does not exist"
                for number in sorted(named - set(cards))]

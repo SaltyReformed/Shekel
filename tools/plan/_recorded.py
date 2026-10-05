@@ -69,7 +69,7 @@ import requests
 
 from _github import API
 from _tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from setup_tracker import ORG, PROJECT_TITLE, REPO
+from setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
 
 #: Where the recordings the tests replay are kept.
 RECORDINGS = Path(__file__).resolve().parent / "recorded"
@@ -166,6 +166,8 @@ _ROUTES: tuple[tuple[str, re.Pattern, _Allows], ...] = tuple(
          and body["issue_id"] in s.ids),
         ("DELETE", r"/issues/([0-9]+)/dependencies/blocked_by/([0-9]+)",
          lambda m, body, s: int(m[1]) in s.numbers and int(m[2]) in s.ids and not body),
+        ("DELETE", rf"/issues/([0-9]+)/labels/{FILING}",
+         lambda m, body, s: int(m[1]) in s.numbers and not body),
         ("POST", r"/git/commits",
          lambda _m, body, _s: set(body) == {"message", "tree", "parents"}
          and body["parents"] == []),

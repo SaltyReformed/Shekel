@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 import requests
 
-from _fake import FakeTracker, run, ship
-from _github import GitHubError
+from _fake import FailOnce, FakeTracker, run, ship
 from _tracker import Child, Claim, Edit, OutsideLink
 from check import ruling_body
+from setup_tracker import FILING
 
 
 # -- file ----------------------------------------------------------------------------------
@@ -29,13 +29,15 @@ def test_a_finding_that_fails_the_check_writes_nothing(code, capsys):
 
 
 def test_a_finding_is_filed_under_its_owner_and_kept_off_the_board(code):
-    """R-BAL177: findings are listed on their owner's card, not in the order."""
+    """R-BAL177: findings are listed on their owner's card, not in the order; R-BAL202: it
+    is created marked, and the mark comes off last."""
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, "file", "finding", "--arc", "balance", "--title", "Twice",
                 "--owner", "plan#1", "--text", "The report counts a refund twice.") == 0
-    assert tracker.writes == [("create", 2, "finding", "Twice", ("balance",)),
-                              ("add_child", 1, 2)]
+    assert tracker.writes == [("create", 2, "finding", "Twice", ("balance", FILING)),
+                              ("add_child", 1, 2), ("unmark", 2)]
+    assert tracker.cards_by_number[2].labels == ("balance",)
     assert tracker.board.items == [1]
 
 
@@ -108,24 +110,6 @@ def test_an_answered_question_becomes_its_ruling(code, tmp_path):
 
 # -- the review of checkpoint 2 ------------------------------------------------------------
 
-class _FailOnce:
-    """One tracker write that fails the first time, as a timeout or a 502 would."""
-
-    def __init__(self, tracker, name):
-        """Stand in for ``tracker.<name>``."""
-        self.real = getattr(tracker, name)
-        self.failed = False
-        setattr(tracker, name, self)
-
-    def __call__(self, *args):
-        """Fail once, then write."""
-        if not self.failed:
-            self.failed = True
-            raise GitHubError(502, "bad gateway")
-        return self.real(*args)
-
-
-
 def test_a_step_waiting_on_a_question_is_released_once_it_is_answered(code, tmp_path, capsys):
     """Review H1: the tool closes a ruling at birth and git never ships one, so a closed
     ruling is resolved; the step waiting on the question stayed blocked forever."""
@@ -190,7 +174,7 @@ def test_a_conversion_cut_short_is_finished_by_the_same_command(code, tmp_path, 
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
-    _FailOnce(tracker, failing)
+    FailOnce(tracker, failing)
     args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
             "--from-question", "plan#2", "--answer-file", str(answer))
     assert run(tracker, code, *args) == 2
@@ -212,7 +196,7 @@ def test_a_ruling_filing_cut_short_is_finished_not_filed_twice(code, tmp_path, f
     answer.write_text("Here.")
     tracker = FakeTracker()
     tracker.add(1)
-    _FailOnce(tracker, failing)
+    FailOnce(tracker, failing)
     args = ("file", "ruling", "--arc", "balance", "--title", "Home", "--owner", "plan#1",
             "--question-file", str(question), "--answer-file", str(answer))
     assert run(tracker, code, *args) == 2
@@ -223,8 +207,8 @@ def test_a_ruling_filing_cut_short_is_finished_not_filed_twice(code, tmp_path, f
 
 
 def test_the_same_finding_filed_twice_is_one_card(code, capsys):
-    """R-BAL186: an open card of the same kind, title and text is that card; the second run
-    writes nothing and says so."""
+    """R-BAL186: an open card of the same kind, title and text is that card; R-BAL202: its
+    filing finished (no mark), so the second run writes nothing and says so."""
     tracker = FakeTracker()
     tracker.add(1)
     args = ("file", "finding", "--arc", "balance", "--title", "Twice", "--owner", "plan#1",
@@ -234,8 +218,7 @@ def test_the_same_finding_filed_twice_is_one_card(code, capsys):
     capsys.readouterr()
     assert run(tracker, code, *args) == 0
     assert tracker.writes == writes
-    out = capsys.readouterr().out
-    assert out.startswith("finishing plan#2 ") and "already a sub-issue of plan#1" in out
+    assert capsys.readouterr().out.startswith("plan#2 [finding, balance] Twice is filed already")
 
 
 
@@ -260,17 +243,18 @@ def test_a_matching_card_under_another_owner_or_with_other_labels_is_refused_unw
 
 
 
-def test_a_top_level_card_is_added_at_the_bottom_with_one_write(code, tmp_path):
+def test_a_top_level_card_is_added_at_the_bottom_with_one_board_write(code, tmp_path):
     """Review L7: GitHub adds an item at the bottom; placing it after a lagging read's last
-    card could put it above the cards that read missed."""
+    card could put it above the cards that read missed.  R-BAL202: created marked, unmarked
+    last."""
     text = tmp_path / "q.md"
     text.write_text("Which day?")
     tracker = FakeTracker()
     tracker.add(1)
     assert run(tracker, code, "file", "question", "--arc", "recurrence", "--title", "Day",
                "--body-file", str(text)) == 0
-    assert tracker.writes == [("create", 2, "question", "Day", ("recurrence",)),
-                              ("board_add", 2)]
+    assert tracker.writes == [("create", 2, "question", "Day", (FILING, "recurrence")),
+                              ("board_add", 2), ("unmark", 2)]
 
 
 
@@ -281,7 +265,7 @@ def test_a_label_named_twice_files_the_card_once(code, tmp_path):
     tracker = FakeTracker()
     assert run(tracker, code, "file", "step", "--arc", "salary", "--title", "New",
                "--body-file", str(text), "--label", "moves-money", "--label", "moves-money") == 0
-    assert tracker.writes[0] == ("create", 1, "step", "New", ("moves-money", "salary"))
+    assert tracker.writes[0] == ("create", 1, "step", "New", (FILING, "moves-money", "salary"))
 
 
 
@@ -337,7 +321,7 @@ def test_two_open_cards_with_the_same_kind_title_and_text_are_refused(code, caps
                     on_board=False)
     assert run(tracker, code, "file", "finding", "--arc", "balance", "--title", "Twice",
                "--owner", "plan#1", "--text", "The report counts a refund twice.") == 1
-    assert "2 open cards have this kind, title and text (plan#2, plan#3)" in (
+    assert "2 cards, open or unfinished, have this kind, title and text (plan#2, plan#3)" in (
         capsys.readouterr().err)
     assert not tracker.writes
 
@@ -496,7 +480,8 @@ def test_an_open_card_of_another_kind_is_never_finished_as_this_filing(code, tmp
 
 def test_a_leaf_already_placed_is_left_where_the_developer_moved_it(code, tmp_path, capsys):
     """Review cp3 M-5: with the early return deleted, the retry of a leaf's filing moved it
-    back after its siblings, undoing the developer's drag."""
+    back after its siblings, undoing the developer's drag; R-BAL202: a leaf whose filing
+    finished carries no mark, and is never moved."""
     spec = tmp_path / "spec.md"
     spec.write_text("Half.")
     tracker = FakeTracker()
@@ -511,7 +496,7 @@ def test_a_leaf_already_placed_is_left_where_the_developer_moved_it(code, tmp_pa
     capsys.readouterr()
     assert run(tracker, code, *args, "--title", "second half") == 0
     assert tracker.writes == writes and tracker.board.items == [5, 1, 4, 3]
-    assert "board: already on it" in capsys.readouterr().out
+    assert "second half is filed already" in capsys.readouterr().out
 
 
 def test_a_conversion_retried_with_another_answer_waits_until_its_question_is_back(code,
@@ -527,7 +512,7 @@ def test_a_conversion_retried_with_another_answer_waits_until_its_question_is_ba
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
-    _FailOnce(tracker, "retype")
+    FailOnce(tracker, "retype")
     args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
             "--from-question", "plan#2", "--answer-file", str(answer))
     assert run(tracker, code, *args) == 2
@@ -553,7 +538,7 @@ def test_a_conversion_retried_over_a_question_saved_with_crlf_writes_its_body_on
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2, "question", body="Ship it\r\ntonight?", title="Tonight")
-    _FailOnce(tracker, "retype")
+    FailOnce(tracker, "retype")
     args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
             "--from-question", "plan#2", "--answer-file", str(answer))
     assert run(tracker, code, *args) == 2
@@ -588,7 +573,7 @@ def test_a_leaf_whose_split_step_is_still_on_the_board_is_finished_into_its_plac
     tracker = FakeTracker()
     for number in (1, 2, 3):
         tracker.add(number)
-    _FailOnce(tracker.board, "remove")
+    FailOnce(tracker.board, "remove")
     args = ("file", "step", "--arc", "balance", "--title", "half", "--parent", "plan#2",
             "--body-file", str(spec))
     assert run(tracker, code, *args) == 2
@@ -615,7 +600,7 @@ def test_a_conversion_a_person_touched_up_is_still_refused(code, tmp_path, capsy
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
-    _FailOnce(tracker, "retype")
+    FailOnce(tracker, "retype")
     args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
             "--from-question", "plan#2", "--answer-file", str(answer))
     assert run(tracker, code, *args) == 2
@@ -642,27 +627,11 @@ def test_a_question_blocked_from_outside_the_tracker_still_becomes_its_ruling(co
     assert tracker.cards_by_number[2].kind == "ruling"
 
 
-class _FailPlaceOnce:
-    """``board.place`` failing once (GitHub's 502 on the move)."""
-
-    def __init__(self, board):
-        """Stand in for ``board.place``."""
-        self.real, self.failed = board.place, False
-        board.place = self
-
-    def __call__(self, item, after):
-        """Fail once, then move."""
-        if not self.failed:
-            self.failed = True
-            raise GitHubError(502, "bad gateway")
-        return self.real(item, after)
-
-
-def test_a_leaf_whose_move_failed_is_left_on_the_board_and_its_place_named(code, tmp_path,
-                                                                          capsys):
-    """Review cp4c M1: the add landed and the move after the split step's other leaves
-    failed; the retry never moves a leaf already on the board (a person may have dragged
-    it), but says where it belongs and how to put it there."""
+def test_a_leaf_whose_move_failed_is_moved_into_its_place_by_the_same_command(code, tmp_path,
+                                                                              capsys):
+    """Review cp4c M1, R-BAL202: the add landed and the move after the split step's other
+    leaves failed; the leaf is still marked, so the same command makes the move, then
+    removes the mark, and a run after that writes nothing."""
     spec = tmp_path / "spec.md"
     spec.write_text("Build the trailer check.")
     tracker = FakeTracker()
@@ -670,21 +639,20 @@ def test_a_leaf_whose_move_failed_is_left_on_the_board_and_its_place_named(code,
     tracker.add(2, parent=1)
     tracker.add(3, parent=1)
     tracker.add(4)
-    _FailPlaceOnce(tracker.board)
+    FailOnce(tracker.board, "place")
     args = ("file", "step", "--parent", "plan#1", "--arc", "balance", "--title",
             "Trailer check", "--body-file", str(spec))
     assert run(tracker, code, *args) == 2
     assert tracker.board.items == [2, 3, 4, 5]
     capsys.readouterr()
     assert run(tracker, code, *args) == 0
-    assert ("board: already on it, but last, below plan#4, where a move a failure cut short "
-            "leaves it: `plan move plan#5 --after plan#3` puts it after plan#1's other leaves"
-            ) in capsys.readouterr().out
-    assert tracker.board.items == [2, 3, 4, 5]
-    assert run(tracker, code, "move", "plan#5", "--after", "plan#3") == 0
-    capsys.readouterr()
+    assert ("  board: moved to just after the leaves of plan#1 filed before it\n"
+            in capsys.readouterr().out)
+    assert tracker.board.items == [2, 3, 5, 4]
+    assert tracker.writes[-2:] == [("board_place", 5, "PVTI_3"), ("unmark", 5)]
+    writes = list(tracker.writes)
     assert run(tracker, code, *args) == 0
-    assert "  board: already on it\n" in capsys.readouterr().out
+    assert tracker.writes == writes
 
 
 def test_a_card_filed_but_not_yet_readable_is_a_failed_call_not_a_refusal(code, tmp_path,
@@ -734,9 +702,10 @@ def test_only_an_edit_of_the_tools_in_a_rulings_shape_marks_an_earlier_conversio
     assert tracker.bodies[2] == ruling_body(ruling_body("Ship it tonight!", "Yes."), "No.")
 
 
-def test_a_retry_names_no_move_for_a_leaf_a_later_leaf_follows(code, tmp_path, capsys):
+def test_a_finished_leaf_a_later_leaf_follows_is_never_moved(code, tmp_path, capsys):
     """Review cp4d M1: the note read the CURRENT last sibling, so a re-run for an earlier leaf,
-    after a later one was filed, advised a move swapping two leaves nobody touched."""
+    after a later one was filed, advised a move swapping two leaves nobody touched;
+    R-BAL202: the earlier leaf's filing finished, so the re-run writes nothing."""
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True), Child(3, "step", True)), on_board=False)
     tracker.add(2, parent=1)
@@ -751,15 +720,22 @@ def test_a_retry_names_no_move_for_a_leaf_a_later_leaf_follows(code, tmp_path, c
     assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
                "--title", "Second half", "--body-file", str(tmp_path / "second.md")) == 0
     assert tracker.board.items == [2, 3, 5, 6, 4]
+    writes = list(tracker.writes)
     capsys.readouterr()
     assert run(tracker, code, *first) == 0
-    assert "  board: already on it\n" in capsys.readouterr().out
+    assert "First half is filed already" in capsys.readouterr().out
+    assert tracker.writes == writes and tracker.board.items == [2, 3, 5, 6, 4]
 
 
-@pytest.mark.parametrize("board", [[5], [5, 4], [4, 2, 3, 5], [4, 5]])
-def test_a_retry_names_no_move_it_cannot_place(code, tmp_path, capsys, board):
-    """Review cp4d A1-A3, L5: alone on the board, with no earlier leaf on it, or below one of
-    the leaves filed before it, a leaf is where a person or its filing put it."""
+@pytest.mark.parametrize(("board", "moved"), [([5], False), ([5, 4], False),
+                                              ([4, 2, 3, 5], True), ([4, 5], False)])
+def test_a_marked_leaf_is_moved_only_by_a_leaf_filed_before_it_on_the_board(code, tmp_path,
+                                                                            capsys, board,
+                                                                            moved):
+    """Review cp4d A1-A3, L5, R-BAL202: a marked leaf is moved after the leaves filed before
+    it when the board shows one (here a move to where it already is, which no read can tell
+    from a person's drag); with none on the board -- alone, or beside another step -- there
+    is nothing to place it by, and it stays where it is."""
     spec = tmp_path / "spec.md"
     spec.write_text("Half.")
     tracker = FakeTracker()
@@ -768,36 +744,39 @@ def test_a_retry_names_no_move_it_cannot_place(code, tmp_path, capsys, board):
     tracker.add(2, parent=1, on_board=False)
     tracker.add(3, parent=1, on_board=False)
     tracker.add(4, on_board=False)
-    tracker.add(5, parent=1, body="Half.", title="half", on_board=False)
+    tracker.add(5, parent=1, body="Half.", title="half", on_board=False,
+                labels=("balance", FILING))
     tracker.board.items[:] = board
     assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
                "--title", "half", "--body-file", str(spec)) == 0
-    assert "  board: already on it\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert ("  board: moved to just after the leaves of plan#1 filed before it\n" in out) is moved
     assert tracker.board.items == board
+    assert tracker.writes == [("board_place", 5, "PVTI_3")] * moved + [("unmark", 5)]
 
 
 @pytest.mark.parametrize("shown", [[(2, "PVTI_2"), (4, "PVTI_4")], []])
-def test_a_retry_names_no_move_while_the_board_does_not_show_the_leaf(code, tmp_path, capsys,
-                                                                     monkeypatch, shown):
-    """Review cp4d L5, A3: a board read lagging behind the add holds no item for the leaf --
-    or none at all."""
+def test_a_marked_leaf_the_board_listing_does_not_show_is_never_added_again(
+        code, tmp_path, monkeypatch, shown):
+    """Review cp4d L5, A3, R-BAL202: a board read lagging behind the add holds no item for
+    the leaf -- or none at all; the card's own read says it is on the board, so the re-run
+    adds nothing, and moves it only by a leaf the listing shows."""
     spec = tmp_path / "spec.md"
     spec.write_text("Half.")
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "step", True), Child(5, "step", True)), on_board=False)
     tracker.add(2, parent=1)
     tracker.add(4)
-    tracker.add(5, parent=1, body="Half.", title="half")
+    tracker.add(5, parent=1, body="Half.", title="half", labels=("balance", FILING))
     monkeypatch.setattr(tracker.board, "order", lambda: shown)
     assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
                "--title", "half", "--body-file", str(spec)) == 0
-    assert "  board: already on it\n" in capsys.readouterr().out
+    assert tracker.writes == [("board_place", 5, "PVTI_2")] * bool(shown) + [("unmark", 5)]
 
 
-def test_a_leaf_left_at_the_bottom_is_placed_after_the_leaves_filed_before_it(code, tmp_path,
-                                                                              capsys):
-    """Review cp4d M1: its place is after the lowest of the leaves filed BEFORE it, where its
-    filing put it -- never after a leaf filed later."""
+def test_a_leaf_left_at_the_bottom_is_placed_after_the_leaves_filed_before_it(code, tmp_path):
+    """Review cp4d M1, R-BAL202: a marked leaf's place is after the lowest of the leaves
+    filed BEFORE it, where its filing put it -- never after a leaf filed later."""
     spec = tmp_path / "spec.md"
     spec.write_text("Half.")
     tracker = FakeTracker()
@@ -806,9 +785,10 @@ def test_a_leaf_left_at_the_bottom_is_placed_after_the_leaves_filed_before_it(co
     tracker.add(2, parent=1, on_board=False)
     tracker.add(3, parent=1, on_board=False)
     tracker.add(4, on_board=False)
-    tracker.add(5, parent=1, body="Half.", title="half", on_board=False)
+    tracker.add(5, parent=1, body="Half.", title="half", on_board=False,
+                labels=("balance", FILING))
     tracker.add(6, parent=1, on_board=False)
     tracker.board.items[:] = [2, 3, 6, 4, 5]
     assert run(tracker, code, "file", "step", "--parent", "plan#1", "--arc", "balance",
                "--title", "half", "--body-file", str(spec)) == 0
-    assert "`plan move plan#5 --after plan#3`" in capsys.readouterr().out
+    assert tracker.board.items == [2, 3, 5, 6, 4]

@@ -148,6 +148,12 @@ def test_every_arc_is_a_label():
     assert len(ARCS) == len(set(ARCS))
 
 
+def test_the_filing_mark_is_a_label_the_tracker_keeps():
+    """R-BAL202: every card ``plan file`` creates carries it, so ``--apply`` makes it and
+    never deletes it as a label nothing declares."""
+    assert setup_tracker.FILING in LABELS
+
+
 def test_a_missing_repository_is_created_private_with_a_first_commit():
     """A git reference (a claim) needs a commit to point at; ``auto_init`` makes one."""
     path = "/repos/saltyreformed-labs/shekel-plan"

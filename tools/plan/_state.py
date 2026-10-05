@@ -39,6 +39,16 @@ nothing is copied.  ``plan drop`` of a split step writes its drop on each leaf
 below it that is still work instead (``R-BAL190``: the tool records a decision
 only where the work is).
 
+**A card whose filing has not finished is never offered** (``R-BAL202``):
+every card ``plan file`` creates carries the filing mark from its first write
+until its last removes it (:func:`filing_unfinished`), so a card some of whose
+writes have not landed -- a leaf not yet linked under its split step, or not
+yet in its place -- is never handed out or claimed, and ``next`` and ``sync``
+name it until the same command finishes it, or ``plan drop`` drops it (a
+dropped leaf counts toward its split step's drop, ``R-BAL187``, as any leaf
+does).  While a filing is still running its card is named too: no read can
+tell a filing running from one a failure cut short.
+
 **A card linked to an issue outside the tracker is never offered**
 (``R-BAL188``): the plan reads only its own cards, so the link is reported
 until someone removes it, and a step blocked by an outside issue waits, as
@@ -59,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from _tracker import Card, Claim
+from setup_tracker import FILING
 
 #: The build plan: "``plan next`` reports a claim older than 3 days with no pushed branch".
 STALE_CLAIM = timedelta(days=3)
@@ -71,6 +82,17 @@ def is_work(card: Card) -> bool:
     """Whether a card is something a branch builds and a commit ships: a step or a
     finding, and not a container."""
     return card.kind in SHIPPABLE and not card.is_container
+
+
+def filing_unfinished(card: Card) -> bool:
+    """Whether ``card``'s filing has not finished (R-BAL202) -- one still running, or one a
+    failure cut short: it still carries the filing mark, and is open, or is a ruling its
+    own filing closed (the tool's close as completed, which comes before the last write
+    removes the mark).  Any other card closed while marked -- a ruling included -- was
+    dropped before its filing finished, by ``plan drop`` (closed as not planned) or by a
+    person, so what its filing left undone is moot."""
+    return FILING in card.labels and (card.is_open or (
+        card.kind == "ruling" and card.closed_by_tool and card.state_reason == "COMPLETED"))
 
 
 def _shown_shipped(card: Card) -> bool:
@@ -152,10 +174,14 @@ def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> b
 
 
 def never_offered(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
-    """Why a piece of work is never offered, whatever its own blockers: a link of its own
-    outside the tracker, a blocker outside the tracker on a step above it (R-BAL188), or a
-    step above it dropped (R-BAL185); None when none holds it back."""
+    """Why a piece of work is never offered, whatever its own blockers: its filing not
+    finished (R-BAL202), a link of its own outside the tracker, a blocker outside the tracker on a
+    step above it (R-BAL188), or a step above it dropped (R-BAL185); None when none holds
+    it back."""
     shipped = set(shipped)
+    if filing_unfinished(card):
+        return ("its filing has not finished (R-BAL202): unless a `plan file` command is "
+                "filing it now, the same command run again finishes it")
     if card.outside:
         links = ", ".join(f"its {link.what} {link.issue}" for link in card.outside)
         return f"it links {links}, outside the tracker (R-BAL188)"
@@ -198,6 +224,22 @@ def outside_reports(cards: Mapping[int, Card]) -> list[str]:
     ]
 
 
+def unfinished_reports(cards: Mapping[int, Card]) -> list[str]:
+    """Each card in ``cards`` whose filing has not finished (:func:`filing_unfinished`), as
+    a report line: it is never offered until the same command finishes it, or, while it is
+    open, ``plan drop`` drops it -- which, for a leaf, counts toward its split step's drop
+    like any leaf's (R-BAL187), so the line says so."""
+    return [
+        f"plan#{card.number}'s filing has not finished, so it is never offered (R-BAL202): "
+        "unless a `plan file` command is filing it now, run that command again to finish it"
+        + (", or `plan drop` it" if card.is_open else "")
+        + (f" (if it is plan#{card.parent}'s last leaf still work, that drops plan#{card.parent} "
+           "too, R-BAL187)" if card.is_open and card.kind == "step" and card.parent else "")
+        for card in sorted(cards.values(), key=lambda card: card.number)
+        if filing_unfinished(card)
+    ]
+
+
 @dataclass(frozen=True)
 class NextAnswer:
     """The first workable step in the board's order, and what the order cannot place."""
@@ -231,13 +273,15 @@ def next_step(order: Iterable[int], cards: Mapping[int, Card], shipped: Iterable
 
 @dataclass(frozen=True)
 class Placement:
-    """Where a new leaf goes on the board (R-BAL179).
+    """Where a leaf goes on the board (R-BAL179).
 
-    ``after``: the board item it goes just after; None leaves it where GitHub
-    adds it, at the bottom.  ``remove``: the split step's own item, which leaves
-    the board as the step becomes a container.
+    ``move``: whether it is moved; when not, it stays where it is, or where
+    GitHub adds it, at the bottom.  ``after``: the board item it goes just after
+    when it is moved, None for the top.  ``remove``: the split step's own item,
+    which leaves the board as the step becomes a container.
     """
 
+    move: bool
     after: str | None
     remove: str | None
     note: str
@@ -245,19 +289,35 @@ class Placement:
 
 def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) -> Placement:
     """Where leaf ``leaf`` of ``parent`` goes, given the board's ``order``
-    (``(card number, item id)``, top first): in the split step's place while it is
-    on the board, else just after its other leaves, else at the bottom."""
-    order = list(order)
+    (``(card number, item id)``, top first).
+
+    In the split step's place while it is on the board; else just after the
+    lowest of the leaves filed before it; else just above the highest of the
+    leaves filed after it (a leaf whose link failed was no leaf yet, so a later
+    leaf could take the split step's place before its filing finished); else
+    nowhere new: where it is, or where GitHub adds it, at the bottom.  Filing
+    order is the cards' numbers, never the sub-issue list's, which a person may
+    drag.  Every other leaf it is placed by is one whose filing finished: a leaf
+    is never filed while another of its split step's is unfinished (R-BAL204).
+    """
+    order = [(number, item) for number, item in order if number != leaf]
+    positions = [item for _, item in order]
     items = dict(order)
     if parent.board_item is not None:
-        return Placement(parent.board_item, parent.board_item,
+        return Placement(True, parent.board_item, parent.board_item,
                          f"into plan#{parent.number}'s place")
-    siblings = [items[number] for number in parent.leaves if number in items and number != leaf]
-    if siblings:
-        positions = [item for _, item in order]
-        return Placement(max(siblings, key=positions.index), None,
-                         f"to just after plan#{parent.number}'s other leaves")
-    return Placement(None, None, "at the bottom")
+    anchors = [number for number in parent.leaves if number in items]
+    earlier = [items[number] for number in anchors if number < leaf]
+    if earlier:
+        return Placement(True, max(earlier, key=positions.index), None,
+                         f"to just after the leaves of plan#{parent.number} filed before it")
+    later = [items[number] for number in anchors if number > leaf]
+    if later:
+        first = positions.index(min(later, key=positions.index))
+        return Placement(True, positions[first - 1] if first else None, None,
+                         f"to just above the leaves of plan#{parent.number} filed after it")
+    return Placement(False, None, None,
+                     f"no other leaf of plan#{parent.number} is on the board to place it by")
 
 
 def stale_claims(claims: Mapping[int, Claim], now: datetime,
@@ -349,13 +409,12 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
     requests into ``dev`` that merged its standing ``Ships:`` commits.
     """
     shipped = set(shipped)
-    plan = SyncPlan(reports=outside_reports(cards))
+    plan = SyncPlan(reports=outside_reports(cards) + unfinished_reports(cards))
     for card in sorted(cards.values(), key=lambda card: card.number):
-        if card.kind == "ruling" and card.is_open:
+        if card.kind == "ruling" and card.is_open and not filing_unfinished(card):
             plan.reports.append(
-                f"ruling plan#{card.number} is open, though a ruling is a record closed when "
-                "it is filed: finish it with the `plan file ruling` command that filed it, or "
-                "close it by hand"
+                f"ruling plan#{card.number} is open, though a ruling is a record its filing "
+                "closes: close it by hand"
             )
         if card.number in shipped and not is_work(card):
             plan.history.append(
