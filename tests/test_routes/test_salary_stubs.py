@@ -28,9 +28,10 @@ refusal, driven through the test client:
   wording, and the line stays;
 * the job's answer to "my stub's gross includes after-tax earnings"
   (**R-SAL102**) reaches the door, the line under the gross box says what
-  this job's gross counts, a refusal naming the setting links to it
+  this job's gross counts, a refusal naming the setting ends in a link to it
   (**R-SAL104**, **R-SAL106**), and both links open a new tab (**R-SAL107**)
-  -- changing the setting there leaves the open stub form submittable.
+  -- changing the setting there leaves the open stub form submittable.  The
+  words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**).
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
@@ -282,7 +283,9 @@ class TestRecording:
 
         Base pay 2999.62 + Phone 60.00 + Retro pay 55.00 = 3114.62 against the
         printed 2999.62: the $115.00 of earnings is counted twice, and asked
-        about with its twin, an earning the stub does not print (R-SAL111).
+        about with its twin, an earning the stub does not print (R-SAL111), by
+        the base pay the stub shows (R-SAL112; worded by R-SAL114 and
+        R-SAL117).
         """
         payload = _payload(world)
         payload["base_pay"] = "2999.62"
@@ -290,10 +293,11 @@ class TestRecording:
         assert response.status_code == 422
         html = response.data.decode()
         assert (
-            "Base pay plus your taxable lines make $3,114.62, but the stub prints "
-            "$2,999.62: $115.00 over, and the net is off by the same.  Is the gross in "
-            "the Base pay box, or is an earning entered that the stub does not print?"
-        ) in html
+            "Base pay plus your taxable earnings come to $3,114.62, but the stub's Gross "
+            "Pay is $2,999.62.  What base pay does the stub show?  $2,884.62: you typed "
+            "the Gross Pay into Base pay.  Type $2,884.62 there instead.  $2,999.62: you "
+            "entered extra pay this stub doesn't list.  Remove it."
+        ) in unescape(html)
         gross_input = html[html.index('name="printed_gross"'):]
         gross_input = gross_input[:gross_input.index(">")]
         assert "is-invalid" in gross_input
@@ -810,8 +814,9 @@ class TestTheJobsGrossSetting:
     def test_a_refusal_naming_the_setting_links_to_it(self, auth_client, world):
         """A "no" job, gross 2964.62 holding the reimbursement: a 422 asking both, with the link.
 
-        The setting's sentence and its link sit inside the printed gross's own
-        feedback, and nothing is written.
+        The setting's sentence ends in its link, then the full stop, inside
+        the printed gross's own feedback (rulings R-SAL114 to R-SAL116), and
+        nothing is written.
         """
         response = auth_client.post(
             f"/salary/{world['profile_id']}/stubs",
@@ -819,17 +824,14 @@ class TestTheJobsGrossSetting:
         )
         assert response.status_code == 422
         page = unescape(response.data.decode())
-        start = page.index("Base pay plus your taxable lines make $2,944.62")
-        feedback = page[start:page.index("</div>", start)]
+        start = page.index("Base pay plus your taxable earnings come to $2,944.62")
+        feedback = " ".join(page[start:page.index("</div>", start)].split())
         assert (
-            "$20.00 short, the same as your after-tax earnings.  Check the gross you "
-            "typed.  Is one of them taxed on your stub?"
+            "$20.00 less, the same as your untaxed earnings. Check the Gross Pay you "
+            "typed. If it's right, is one of those earnings taxed on your stub? Then "
+            "choose Taxable earning for it. Or, if your stub counts untaxed pay in its "
+            "Gross Pay, " + _setting_link(world, "change that on your salary profile") + "."
         ) in feedback
-        assert (
-            "If your stub's gross includes after-tax earnings, set that on your "
-            "salary profile."
-        ) in feedback
-        assert _setting_link(world, "Open the setting") in feedback
         assert db.session.query(PayStub).count() == 0
 
     def test_a_yes_job_whose_gross_leaves_them_out_is_linked_to_the_setting(
@@ -837,7 +839,8 @@ class TestTheJobsGrossSetting:
     ):
         """"yes", the stub prints 2944.62 (no reimbursement in it), net exact.
 
-        The refusal names the typed gross or the setting, with the link.
+        The refusal names the typed gross or the setting, the setting's
+        sentence ending in the link (worded by R-SAL114 and R-SAL115).
         """
         _say_yes(world)
         response = auth_client.post(
@@ -846,15 +849,15 @@ class TestTheJobsGrossSetting:
         )
         assert response.status_code == 422
         page = unescape(response.data.decode())
-        start = page.index("Base pay plus your taxable and after-tax lines make $2,964.62")
-        feedback = page[start:page.index("</div>", start)]
+        start = page.index(
+            "Base pay plus your earnings, taxable and untaxed, come to $2,964.62",
+        )
+        feedback = " ".join(page[start:page.index("</div>", start)].split())
         assert (
-            "$20.00 over, the same as your after-tax earnings, and your figures make "
-            "the stub's net: check the gross you typed, or your stub's gross leaves "
-            "after-tax earnings out."
+            "$20.00 more, the same as your untaxed earnings. Check the Gross Pay you "
+            "typed. If it's right, your stub leaves untaxed pay out of its Gross Pay: "
+            + _setting_link(world, "change that on your salary profile") + "."
         ) in feedback
-        assert "Set that on your salary profile." in feedback
-        assert _setting_link(world, "Open the setting") in feedback
 
     def test_a_new_stub_form_survives_the_setting_changed_elsewhere(self, auth_client, world):
         """R-SAL107: refused on "no", the job switched in another tab, the SAME form saves.
@@ -918,16 +921,28 @@ class TestTheJobsGrossSetting:
         ]
 
     def test_the_line_under_the_gross_box_says_what_this_job_counts(self, auth_client, world):
-        """"no": every taxable earning; "yes": taxable and after-tax; both link the setting."""
+        """"no": the taxable earnings; "yes": taxed and untaxed; both link the setting.
+
+        Worded by R-SAL114 (the approved list, R-SAL115).
+        """
         url = f"/salary/{world['profile_id']}/stubs/new?payday={_PAYDAY}"
         link = _setting_link(world, "change that")
+
+        def help_line(page):
+            """The line under the gross box, its whitespace collapsed."""
+            start = page.index("Checks your typing and isn't saved.")
+            return " ".join(page[start:page.index("</div>", start)].split())
+
+        opening = "Checks your typing and isn't saved. Base pay plus your "
+        closing = (
+            " should equal it, because your salary profile says that's what your "
+            f"stub's Gross Pay includes ({link})."
+        )
         page = auth_client.get(url).data.decode()
-        assert "base pay plus every taxable earning above" in page
-        assert link in page
+        assert help_line(page) == f"{opening}taxable earnings{closing}"
         _say_yes(world)
         page = auth_client.get(url).data.decode()
-        assert "base pay plus every taxable and after-tax earning above" in page
-        assert link in page
+        assert help_line(page) == f"{opening}earnings, taxable and untaxed,{closing}"
 
     def test_the_link_lands_on_the_setting(self, auth_client, world):
         """The profile page carries the control the link's fragment names."""

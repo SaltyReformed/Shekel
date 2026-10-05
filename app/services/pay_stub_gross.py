@@ -5,7 +5,9 @@ What a stub's figures must add up to against the gross it prints (ruling
 whose stub's gross also holds the after-tax earnings, ruling **R-SAL102**,
 closing **SAL-592**), and how a miss is worded (ruling **R-SAL106**, one rule
 read off the net, amending R-SAL104; R-SAL108, R-SAL110 and R-SAL111 name
-causes it had left out).  One rule of
+causes it had left out, R-SAL112 asks for the figure that tells two of them
+apart and R-SAL119 drops the question where that figure cannot be, and
+R-SAL114 to R-SAL117 put every message in plain words).  One rule of
 :mod:`app.services.pay_stub_service`'s door, held in its own module because
 that module reached pylint's 1000-line cap (plan step salary:S11-c-2b): the
 door asks :func:`gross_refusals` from ``_refuse`` beside the printed-net
@@ -30,23 +32,28 @@ if TYPE_CHECKING:
 def gross_counts(includes_after_tax: bool) -> str:
     """Word which earnings the printed-gross check adds to base pay.
 
-    ``"taxable"`` (ruling **R-SAL99**), or ``"taxable and after-tax"`` on a job
-    whose stub's gross also holds its after-tax earnings (ruling **R-SAL102**).
-    The one spelling the check's refusals and the entry form's line under the
-    gross box both read.
+    ``"taxable earnings"`` (ruling **R-SAL99**), or ``"earnings, taxable and
+    untaxed,"`` on a job whose stub's gross also holds its after-tax earnings
+    (ruling **R-SAL102**), in the plain words of rulings **R-SAL114** and
+    **R-SAL117**.  The one spelling the check's refusals and the entry form's
+    line under the gross box both read, each after "Base pay plus your".
 
     Args:
         includes_after_tax: The job's ``stub_gross_includes_after_tax``.
 
     Returns:
-        The phrase, to stand before "lines" or "earning".
+        The phrase, to stand between "Base pay plus your" and its verb; the
+        second carries its own closing comma.
     """
-    return "taxable and after-tax" if includes_after_tax else "taxable"
+    return "earnings, taxable and untaxed," if includes_after_tax else "taxable earnings"
 
 
 #: The refusal key that names the job's setting beside a printed-gross refusal
-#: (rulings R-SAL104 and R-SAL106): the setting's own field name, which the
-#: entry form renders with a link to it, because this module cannot build one.
+#: (rulings R-SAL104 and R-SAL106): the setting's own field name.  Its message
+#: is the opening of the sentence that ends in a link to the setting, which
+#: the entry form completes with "change that on your salary profile" and a
+#: full stop (rulings R-SAL114 and R-SAL115), because this module cannot build
+#: a URL.
 SETTING_KEY = "stub_gross_includes_after_tax"
 
 
@@ -72,8 +79,11 @@ def gross_refusals(
     **How a miss is worded: ONE rule, read off the net** (ruling
     **R-SAL106**, "One rule by the net", which amends R-SAL99's wording and
     R-SAL104's trigger; **R-SAL108** and **R-SAL110** name the typed gross
-    wherever the net is exact, and **R-SAL111** the earning the stub does not
-    print beside the Base pay box).  The door checks two printed totals, and
+    wherever the net is exact, **R-SAL111** the earning the stub does not
+    print beside the Base pay box, and **R-SAL112** asks the stub's base pay
+    to tell those two apart; **R-SAL114** to **R-SAL117** word every message
+    in plain words, changing neither what it checks nor when it appears).
+    The door checks two printed totals, and
     each single typing mistake moves them as a pair -- the gross miss (what
     the checked lines make less the printed gross) and the net miss (the
     lines' net less the printed net).  A refusal names the single-mistake
@@ -94,7 +104,11 @@ def gross_refusals(
       equals the printed gross -- the gross can then only be over -- the two
       single mistakes that make that pair are both asked: the gross typed
       into the Base pay box (R-SAL99's slip) and an earning of a kind the
-      check counts, entered on a stub that prints none (R-SAL111);
+      check counts, entered on a stub that prints none (R-SAL111).  They are
+      told apart by the base pay the stub shows (R-SAL112): base pay less
+      the miss for the first, base pay itself for the second.  Where base
+      pay less the miss is ``$0.00`` or less the first cannot be (a stub's
+      base pay is above zero), so only the second is named (R-SAL119);
     * **net off by twice** -- one amount on the wrong side: a deduction
       entered as an earning (gross over) or an earning entered as a
       deduction (gross short);
@@ -102,15 +116,16 @@ def gross_refusals(
 
     **A pair can belong to more than one cause, and two mistakes can make a
     single mistake's pair.**  Where one pair has several single-mistake
-    causes, the wording asks after each and the owner tells which.  The
-    wordings that state -- "so the amounts are right" (R-SAL108), "so an
-    amount is wrong" (R-SAL106) -- are the rulings' own words and are wrong
-    when two mistakes offset into the pair (base pay and a tax off by the
-    same amount read as net exact; both printed totals typed off by the
-    same read as an amount), and so is every cause the either/or of a net
-    exact miss of the after-tax total names: base pay and a tax both off by
-    exactly that total make it, and taking the setting's exit then saves
-    both mistakes.  The submit with one of them fixed reads true.
+    causes, the wording asks after each and the owner tells which.  Where
+    two mistakes offset into a single mistake's pair, the wording names that
+    mistake's causes and not theirs: base pay and a tax off by the same
+    amount read as net exact, and no cause a net exact wording names is
+    theirs; both printed totals typed off by the same read as an amount,
+    and the one wording that states a cause outright, "One amount is wrong"
+    (R-SAL106, worded by R-SAL114), is then false; base pay and a tax both off by
+    exactly the after-tax total make the pair the setting's exit answers,
+    and taking that exit then saves both mistakes.  The submit with one of
+    them fixed reads true.
     **A tax left out** is no gross figure but shifts the net miss by its
     amount: ``$0.00`` left out changes nothing, so every wording is as right
     as with every tax typed; a non-zero one moves the pair, which then reads
@@ -132,90 +147,90 @@ def gross_refusals(
     gross_miss = checked - printed.gross
     if gross_miss == ZERO:
         return {}
-    lines_make = (
-        f"Base pay plus your {gross_counts(includes_after_tax)} lines make "
-        f"${checked:,.2f}, but the stub prints ${printed.gross:,.2f}"
+    opening = (
+        f"Base pay plus your {gross_counts(includes_after_tax)} come to "
+        f"${checked:,.2f}, but the stub's Gross Pay is ${printed.gross:,.2f}"
     )
     net_miss = totals.net - printed.net
     if net_miss == ZERO:
-        return _net_exact(lines_make, gross_miss, totals.after_tax, includes_after_tax)
+        return _net_exact(opening, gross_miss, totals.after_tax, includes_after_tax)
     return {"printed_gross": _amount_miss(
-        lines_make, gross_miss, net_miss, gross_is_base=base_pay == printed.gross,
+        opening, gross_miss, net_miss, base_pay=base_pay, printed_gross=printed.gross,
     )}
 
 
 def _net_exact(
-    lines_make: str, gross_miss: Decimal, after_tax: Decimal, includes_after_tax: bool,
+    opening: str, gross_miss: Decimal, after_tax: Decimal, includes_after_tax: bool,
 ) -> dict[str, str]:
     """Word a gross miss beside an exact net: how the gross was typed, or what it holds.
 
     The first bullet of :func:`gross_refusals`' rule (rulings R-SAL104,
-    R-SAL106, R-SAL108, R-SAL110).
+    R-SAL106, R-SAL108, R-SAL110; worded by R-SAL114 to R-SAL116).
     """
     if not includes_after_tax and gross_miss == -after_tax:
         return {
             "printed_gross": (
-                f"{lines_make}: ${-gross_miss:,.2f} short, the same as your after-tax "
-                f"earnings.  Check the gross you typed.  Is one of them taxed on your "
-                f"stub?"
+                f"{opening}: ${-gross_miss:,.2f} less, the same as your untaxed "
+                f"earnings.  Check the Gross Pay you typed.  If it's right, is one of "
+                f"those earnings taxed on your stub?  Then choose Taxable earning for it."
             ),
-            SETTING_KEY: (
-                "If your stub's gross includes after-tax earnings, set that on your "
-                "salary profile."
-            ),
+            SETTING_KEY: "Or, if your stub counts untaxed pay in its Gross Pay,",
         }
     if includes_after_tax and gross_miss == after_tax:
         return {
             "printed_gross": (
-                f"{lines_make}: ${gross_miss:,.2f} over, the same as your after-tax "
-                f"earnings, and your figures make the stub's net: check the gross you "
-                f"typed, or your stub's gross leaves after-tax earnings out."
+                f"{opening}: ${gross_miss:,.2f} more, the same as your untaxed "
+                f"earnings.  Check the Gross Pay you typed."
             ),
-            SETTING_KEY: "Set that on your salary profile.",
+            SETTING_KEY: "If it's right, your stub leaves untaxed pay out of its Gross Pay:",
         }
     headings = "" if includes_after_tax else (
-        ", and which earnings are taxable and which after-tax"
+        ", and which earnings you marked Taxable earning and which After-tax earning"
     )
     return {"printed_gross": (
-        f"{lines_make} (a difference of ${abs(gross_miss):,.2f}).  Your figures make "
-        f"the stub's net, so the amounts are right: check the gross you typed{headings}."
+        f"{opening} (${abs(gross_miss):,.2f} apart).  Your amounts match the stub's "
+        f"Net Pay, so check the Gross Pay you typed{headings}."
     )}
 
 
 def _amount_miss(
-    lines_make: str, gross_miss: Decimal, net_miss: Decimal, *, gross_is_base: bool,
+    opening: str, gross_miss: Decimal, net_miss: Decimal, *,
+    base_pay: Decimal, printed_gross: Decimal,
 ) -> str:
     """Word a gross miss beside a net miss: an amount off, on the wrong side, or several.
 
     The last three bullets of :func:`gross_refusals`' rule (rulings R-SAL99,
-    R-SAL106, R-SAL111).
+    R-SAL106, R-SAL111, R-SAL112, R-SAL119; worded by R-SAL114 and R-SAL117).
     """
     if net_miss == gross_miss:
-        if gross_is_base:
+        if base_pay == printed_gross:
+            stub_base = base_pay - gross_miss
+            if stub_base <= ZERO:
+                return f"{opening}.  You entered extra pay this stub doesn't list.  Remove it."
             return (
-                f"{lines_make}: ${gross_miss:,.2f} over, and the net is off by the "
-                f"same.  Is the gross in the Base pay box, or is an earning entered "
-                f"that the stub does not print?"
+                f"{opening}.  What base pay does the stub show?  ${stub_base:,.2f}: "
+                f"you typed the Gross Pay into Base pay.  Type ${stub_base:,.2f} "
+                f"there instead.  ${base_pay:,.2f}: you entered extra pay this stub "
+                f"doesn't list.  Remove it."
             )
         return (
-            f"{lines_make} (a difference of ${abs(gross_miss):,.2f}).  The net is off "
-            f"by the same, so an amount is wrong: check the base pay and each "
-            f"earning's amount."
+            f"{opening} (${abs(gross_miss):,.2f} apart), and your amounts are "
+            f"${abs(net_miss):,.2f} apart from its Net Pay too.  One amount is wrong: "
+            f"check Base pay and each earning."
         )
     if net_miss == 2 * gross_miss:
         if gross_miss > ZERO:
             return (
-                f"{lines_make}: ${gross_miss:,.2f} over; the net is off by twice "
-                f"that.  Is a deduction entered as an earning?  Check each line's kind."
+                f"{opening}: ${gross_miss:,.2f} more, and your amounts come to "
+                f"${net_miss:,.2f} more than its Net Pay.  Is a deduction marked as "
+                f"an earning?  Check the kind chosen beside each amount."
             )
         return (
-            f"{lines_make}: ${-gross_miss:,.2f} short; the net is off by twice that.  "
-            f"Is an earning entered as a deduction?  Check each line's kind."
+            f"{opening}: ${-gross_miss:,.2f} less, and your amounts come to "
+            f"${-net_miss:,.2f} less than its Net Pay.  Is an earning marked as a "
+            f"deduction?  Check the kind chosen beside each amount."
         )
-    return (
-        f"{lines_make} (a difference of ${abs(gross_miss):,.2f}).  Check each figure "
-        f"against the stub."
-    )
+    return f"{opening} (${abs(gross_miss):,.2f} apart).  Check each amount against the stub."
 
 __all__ = [
     "SETTING_KEY",

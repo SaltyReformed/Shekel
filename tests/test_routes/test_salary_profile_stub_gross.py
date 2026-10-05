@@ -133,19 +133,30 @@ class TestTheSetting:
     """
 
     def test_the_new_form_offers_no_first_and_chooses_it(self, auth_client):
-        """Two options, "no" chosen; the words are the ruling's."""
+        """Two options, "no" chosen, under their label and help line.
+
+        The words are R-SAL114's (the approved list, R-SAL115).
+        """
         page = auth_client.get("/salary/new").data.decode()
         assert _options(page) == [
-            ("false", "Base pay plus taxable earnings", True),
-            ("true", "Also includes after-tax earnings, such as a reimbursement", False),
+            ("false", "Base pay and taxable earnings", True),
+            ("true", "Also untaxed pay, such as a mileage reimbursement", False),
         ]
+        assert (
+            f'<label for="{_FIELD}" class="form-label">What your pay stub\'s Gross Pay '
+            "includes</label>"
+        ) in page
+        assert (
+            '<div class="form-text">The pay stub form uses this to check the Gross Pay '
+            "you type.</div>"
+        ) in page
 
     def test_create_stores_what_the_form_posts(self, auth_client, seed_user):
         """The chosen option makes a "no" job; the other a "yes" one; a post without it, "no"."""
         page = auth_client.get("/salary/new").data.decode()
         user_id = seed_user["user"].id
         _create(auth_client, "Chosen", **{_FIELD: _value_of(page, "Base pay")})
-        _create(auth_client, "Other", **{_FIELD: _value_of(page, "Also includes")})
+        _create(auth_client, "Other", **{_FIELD: _value_of(page, "Also untaxed")})
         _create(auth_client, "Silent")
         assert _answer(user_id, "Chosen") is False
         assert _answer(user_id, "Other") is True
