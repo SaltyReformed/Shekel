@@ -864,7 +864,8 @@ class TestTheSourceFollowsWhoStatedTheFigure:
                 MovementFigureSourceEnum.RESOLVED,
             )
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=typed(Decimal("148.40")),
+                txn, txn.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("148.40"))),
             )
             db.session.flush()
             movement = _only_movement(txn)
@@ -896,7 +897,7 @@ class TestTheSourceFollowsWhoStatedTheFigure:
                     day=seed_periods[0].start_date,
                     basis=SettledDayBasisEnum.OBSERVED,
                 ),
-                submitted=observed(Decimal("148.40")),
+                stated=transaction_service.StatedRecord(figure=observed(Decimal("148.40"))),
             )
             db.session.flush()
             movement = _only_movement(txn)
@@ -1906,6 +1907,7 @@ class TestAKeptMovementIsNotAPurchase:
             listed = build_entry_lists_dict(
                 [envelope], budgets, periods,
                 resolve_owner_cash_flow_set(envelope.user_id),
+                envelope.user_id,
             )
             assert listed[envelope.id]["entries"] == []
             assert entry_service.get_entries_for_transaction(
@@ -2107,7 +2109,8 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             # from them whatever the flag says (``settles_from_entries``).
             with pytest.raises(ValidationError, match="takes its figure from the purchases"):
                 transaction_service.apply_requested_status(
-                    envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
+                    envelope, envelope.status_id,
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("999.99"))),
                 )
             # The SEAM refuses on its own, for a caller around the door.
             with pytest.raises(ValidationError, match="records its money as purchases"):
@@ -2204,7 +2207,8 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             _settle(txn)
             db.session.flush()
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=typed(Decimal("0.00")),
+                txn, txn.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
             )
             db.session.flush()
             assert txn.covering_movements == []

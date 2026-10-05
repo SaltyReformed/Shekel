@@ -212,8 +212,10 @@ def _apply_day(
         else transaction_service.settled_status_id(txn)
     )
     transaction_service.apply_requested_status(
-        txn, target_status_id, settle_day=settle_day, submitted=stated,
-        tender_account_id=scope.account_id,
+        txn, target_status_id, settle_day=settle_day,
+        stated=transaction_service.StatedRecord(
+            figure=stated, tender_account_id=scope.account_id,
+        ),
     )
     return outcome
 

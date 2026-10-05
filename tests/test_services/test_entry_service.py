@@ -2439,7 +2439,8 @@ class TestASettledRowMayStillGAINAPurchase:
             )
             self._close(txn)
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=typed(Decimal("0.00")),
+                txn, txn.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
             )
             db.session.flush()
             assert txn.covering_movements == []

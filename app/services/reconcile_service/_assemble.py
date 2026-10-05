@@ -549,8 +549,14 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         would be three numbers nobody adds up differently.
 
     Raises:
-        ValidationError: Propagated from a settle verb -- an illegal transition
-            a stale panel can still submit.
+        ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
+            propagated from a settle verb -- an illegal transition a stale
+            panel can still submit, or a tick freeing other bank lines than
+            the panel named under it (``PageOutOfDate``, ruling **R-CC127**:
+            *"on the reconcile panel, one out-of-date row means nothing on it
+            saves"*, which the caller's rollback makes true for a tick whose
+            settle reaches the match step; one whose purchase was deleted in
+            another tab reaches none and books, ledger row **BAL-597**).
         PostingError: Propagated from a verb's ledger reconcile.  Fails loud.
         RuntimeError: A ticked row names a pay period the submission's calendar
             does not hold
@@ -562,19 +568,29 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         statement, submission.entry_ids,
     )
     source_rows = sum(
-        _rows.record_settled(arm, statement, tick_ids, corrections)
-        for arm, tick_ids, corrections in (
+        _rows.record_settled(
+            arm, statement, tick_ids, corrections, shown_lines=shown_lines,
+        )
+        for arm, tick_ids, corrections, shown_lines in (
             (
                 _transactions.ARM,
                 submission.transaction_ids, submission.corrections,
+                submission.shown_lines,
             ),
             (
                 _transactions.SETTLEMENT_ARM,
                 submission.transaction_ids, submission.corrections,
+                submission.shown_lines,
             ),
             (
+                # A transfer's tick names no bank line: a leg holds no
+                # purchase, so once a typed ``$0.00`` box is refused (ruling
+                # R-CC125) the panel has no transfer tick to caption, and every
+                # leg's settle is told it named nothing -- which refuses one
+                # that would free a line (``_transfers._settle_one``).
                 _transfers.ARM,
                 submission.transfer_ids, submission.transfer_corrections,
+                {},
             ),
         )
     )

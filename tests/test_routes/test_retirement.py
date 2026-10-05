@@ -32,6 +32,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import (
     freeze_today, make_every_period_rule, make_recurring_raise, start_test_pay_list,
 )
+from tests.conftest import log_in_seed_user
 
 
 #: One recurring-raise row of the assumptions rail: ``(raise id, inner markup)``.
@@ -3304,6 +3305,11 @@ class TestTheRailSavesARaisesEndYear:
         # civil day so the comparison holds, the four UTC hours after a New
         # York midnight included.
         freeze_today(monkeypatch, date(2027, 3, 20))
+        # Sign in again on the moved date: ``auth_client`` signed in on the
+        # real clock, and the idle timeout measures against the clock this
+        # freeze moves, so on any real date more than the idle window away
+        # the old session is expired here, as a real one would be.
+        log_in_seed_user(auth_client)
         raise_id, effective, profile_id = self._seed_saveable_raise(
             seed_user, db, seed_periods_52, effective_month=2,
         )

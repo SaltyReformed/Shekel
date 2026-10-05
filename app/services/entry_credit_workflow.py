@@ -43,8 +43,180 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+def card_total(
+    purchases: "list[TransactionEntry]",
+    leaving_ids: "frozenset[int] | set[int]" = frozenset(),
+) -> Decimal:
+    """Return what an envelope's card purchases sum to -- what its payback repays.
+
+    ONE spelling for the sync below and for the screen that says, before a
+    press, whether that press deletes the payback (:func:`payback_deleted_by`).
+    The partition is the shared helper's, so "which entries are credits" has
+    one definition (DH-#75); the sum starts at ``Decimal("0")`` so an empty
+    one is a Decimal, not the integer ``sum()`` would give.
+
+    Args:
+        purchases: The envelope's PURCHASES (ruling R-BAL68: the seam's
+            covering movement is never a credit, so the partition agrees
+            either way, and the reading says what is being partitioned).
+        leaving_ids: Ids of purchases a press would take out of the card set
+            -- deleted, or un-ticked -- left out of the sum; empty for the sum
+            as it stands.
+
+    Returns:
+        The card total.
+    """
+    _, credit_entries = partition_entries(purchases)
+    return sum(
+        (e.amount for e in credit_entries if e.id not in leaving_ids),
+        Decimal("0"),
+    )
+
+
+def _settled_teardown_refusal(payback: Transaction) -> str | None:
+    """Return why a payback that has SETTLED may not be deleted, or ``None``.
+
+    The refusal :func:`sync_entry_payback` raises before it deletes a payback
+    whose money has moved, and the reason :func:`payback_deleted_by` answers
+    such a payback as kept: a press refused here deletes nothing, so a screen
+    must not name what deleting it would free.
+
+    Args:
+        payback: The live payback.
+
+    Returns:
+        The sentence, or ``None`` when the payback has not settled.
+    """
+    recorded = settled_figure(payback)
+    if recorded is None:
+        return None
+    return (
+        f"The payback '{payback.name}' has settled at "
+        f"${recorded:,.2f}, so it cannot be removed: that money has "
+        "already left the "
+        "account. Set the payback back to Projected first -- the "
+        "figure it recorded is kept -- and then remove the purchase."
+    )
+
+
+def payback_deleted_by(
+    txn: Transaction,
+    leaving_ids: "frozenset[int] | set[int]",
+    payback: Transaction | None,
+) -> Transaction | None:
+    """Return the payback a press taking *leaving_ids* off the card deletes, or ``None``.
+
+    The read twin of :func:`sync_entry_payback`'s delete arm, for the
+    purchase list's X on a card purchase and its CC un-tick (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC80**: *"deleting or
+    un-crediting an envelope's last credit purchase"* names the bank line
+    first).  The sync's three arms partition the card total by its sign --
+    above zero the payback is kept or re-priced, below zero the write is
+    refused (finding **N-411**), and at exactly zero a live payback is
+    deleted unless it has settled, which is refused instead -- so the press
+    deletes the payback exactly when the total it leaves is zero, a payback
+    is live, and the settled refusal has nothing to say.
+
+    Args:
+        txn: The envelope, its ``purchases`` accessible.
+        leaving_ids: Ids of the purchases the press takes off the card.
+        payback: The envelope's live payback
+            (:func:`~app.services.credit_workflow.active_paybacks`), or
+            ``None``.
+
+    Returns:
+        *payback* when the press deletes it, else ``None``.
+    """
+    if payback is None or card_total(txn.purchases, leaving_ids) != 0:
+        return None
+    if _settled_teardown_refusal(payback) is not None:
+        return None
+    return payback
+
+
+def payback_a_removal_deletes(
+    txn: Transaction, leaving_ids: "frozenset[int] | set[int]",
+) -> Transaction | None:
+    """Return the live payback a press taking *leaving_ids* off the card deletes.
+
+    :func:`payback_deleted_by` over the envelope's own live payback, for the
+    purchase delete, which must take the payback's movements off the books
+    in the SAME removal act as the purchase's (plan step
+    ``credit_card:CC-5-4a-5``): the act grades one press against what its
+    page named, and the payback is on the envelope's account, so a second
+    act would meet the first's line and refuse it.
+
+    Args:
+        txn: The envelope.
+        leaving_ids: Ids of the purchases the press takes off the card.
+
+    Returns:
+        The payback the press deletes, else ``None``.
+    """
+    return payback_deleted_by(txn, leaving_ids, get_active_payback(txn.id))
+
+
+def payback_refusal(txn: Transaction) -> str:
+    """Return the sentence a companion's press is refused with over the PAYBACK's line.
+
+    Rulings **R-CC130** / **R-CC132** (developer 2026-10-04, "Refuse, shown
+    first": *"The last-card-purchase case is refused on press the same
+    way"*): a companion may free no line, and where the line a press would
+    free is the envelope's CC payback's -- the last card purchase's X or its
+    CC un-tick, a card refund or re-price that brings the card total to
+    zero -- the sentence names the PAYBACK, by its envelope's name, never an
+    id (ruling **R-CC98**), and says what is refused: THIS change, not every
+    change to the envelope's card purchases (a companion may still add a
+    card charge, re-price one above zero, or re-describe one).
+
+    Args:
+        txn: The envelope whose payback the press would delete.
+
+    Returns:
+        The sentence.
+    """
+    return (
+        f"{txn.name}'s card payback is matched to a line on the bank "
+        "statement, so only the account owner can make this change."
+    )
+
+
+def x_shown_for_payback(
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent",
+    txn: Transaction,
+    entry: TransactionEntry,
+) -> "match_withdrawal.Shown | match_withdrawal.Silent":
+    """Return a companion's declaration for an X that also deletes the payback.
+
+    A companion's X carries its door's refusal sentence for the PURCHASE
+    (ruling **R-CC132**: *"Kroger is matched to a line on the bank statement,
+    so only the account owner can delete it"*), and one removal act takes
+    the purchase and its envelope's payback together.  Where the purchase's
+    own matches free nothing, a refusal could only be over the PAYBACK's
+    line, so :func:`payback_refusal` is the true sentence.  Read inside the
+    request's owner lock, so it sees what the act will.  Any other press
+    keeps its declaration.
+
+    Args:
+        shown: What the press declared.
+        txn: The envelope.
+        entry: The purchase pressed.
+
+    Returns:
+        The declaration for the one removal act.
+    """
+    if not isinstance(shown, match_withdrawal.OwnerOnly):
+        return shown
+    if match_withdrawal.pending_for_movements([entry]).frees_a_line:
+        return shown
+    return match_withdrawal.OwnerOnly(refusal=payback_refusal(txn))
+
+
 def sync_entry_payback(
     transaction_id: int, owner_id: int, *, moves_credit_total: bool = True,
+    shown: "match_withdrawal.Shown | match_withdrawal.Silent" = (
+        match_withdrawal.NOTHING_SHOWN
+    ),
 ) -> Transaction | None:
     """Synchronize the aggregated CC Payback for a transaction's credit entries.
 
@@ -80,6 +252,26 @@ def sync_entry_payback(
             says so; the default is the safe answer for any other caller.
             It gates the settled-payback refusal below and nothing else --
             the link maintenance and the figure both run either way.
+        shown: The bank lines the press's page named
+            (:class:`~app.services.match_withdrawal.Shown`), for the removal
+            act when the sync deletes a payback whose payment a match names
+            (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC80**).  The
+            edit form's CC un-tick names them (:func:`payback_deleted_by`).
+            The X has already taken the payback's movements off in its own
+            act (``entry_service._doors.delete_entry``), so for it this
+            frees nothing.  A companion's edit and add are
+            :class:`~app.services.match_withdrawal.OwnerOnly` with
+            :func:`payback_refusal`'s sentence (ruling **R-CC132**); its X
+            hands this whatever it declared, which frees nothing here.  An
+            owner's door that names none sends
+            :data:`~app.services.match_withdrawal.NOTHING_SHOWN`, which
+            refuses a press that would free a line (ruling **R-CC127**) --
+            the add form's card refund, and any edit whose new card total is
+            exactly zero (a re-price, or a CC tick on a refund), which no
+            static caption can foresee: refused as "out of date" though the
+            page was not, and again on every try (finding **CC-381**, filed
+            at this step's tick, owned by plan step ``credit_card:CC-7``,
+            which deletes this workflow).
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
@@ -102,6 +294,8 @@ def sync_entry_payback(
             belong to owner_id.
         ValidationError: If a payback needs to be created but no next
             pay period exists.
+        PageOutOfDate: When deleting the payback would free other bank
+            lines than *shown* names.
     """
     txn = load_owned_transaction(transaction_id, owner_id)
 
@@ -113,16 +307,10 @@ def sync_entry_payback(
     # the collection is expired by name.
     db.session.expire(txn, ["entries"])
 
-    # Partition via the shared helper so "which entries are credits" has
-    # one definition (DH-#75); sum with an explicit Decimal("0") start to
-    # avoid integer 0 from sum() on an empty iterator.  Over the row's
-    # PURCHASES (ruling R-BAL68): the seam's covering movement is never a
-    # credit, so the partition agrees either way, and the reading says
-    # what is being partitioned.
+    # The card total through the one spelling the screen's read shares
+    # (:func:`card_total`); the credit entries themselves are linked below.
     _, credit_entries = partition_entries(txn.purchases)
-    total_credit = sum(
-        (e.amount for e in credit_entries), Decimal("0"),
-    )
+    total_credit = card_total(txn.purchases)
 
     # Find the live payback (shared definition with credit_workflow;
     # excludes soft-deleted rows so a prior soft-deleted payback is not
@@ -245,16 +433,12 @@ def sync_entry_payback(
         # breaks: money that has moved is a record, and a record is undone by
         # reverting the row, never underneath it.  The remedy named here is the
         # one the source row's own refusal names
-        # (``entry_service._doors._reject_settled_parent``).
-        recorded = settled_figure(existing_payback)
-        if recorded is not None:
-            raise ValidationError(
-                f"The payback '{existing_payback.name}' has settled at "
-                f"${recorded:,.2f}, so it cannot be removed: that money has "
-                "already left the "
-                "account. Set the payback back to Projected first -- the "
-                "figure it recorded is kept -- and then remove the purchase.",
-            )
+        # (``entry_service._doors._reject_settled_parent``).  The sentence is
+        # :func:`_settled_teardown_refusal`'s, which the screen's read
+        # (:func:`payback_deleted_by`) asks too.
+        refusal = _settled_teardown_refusal(existing_payback)
+        if refusal is not None:
+            raise ValidationError(refusal)
         # DELETE: clear entry links before deleting the payback.
         deleted_payback_id = existing_payback.id
         for entry in txn.entries:
@@ -272,10 +456,16 @@ def sync_entry_payback(
         # payback stops being true when the row goes, so it is withdrawn and
         # its bank line is unexplained again (developer ruling 2026-08-25, plan
         # step ``bank_import:X-gb``) -- a reverted payback keeps its payment
-        # un-dated, and an act may still name it.
+        # un-dated, and an act may still name it.  The CC un-tick says so first
+        # since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC80**, closing
+        # finding **CC-367**), and the act compares what it named.  The last
+        # card purchase's X has already taken these movements off in ITS act
+        # (``entry_service._doors.delete_entry``), so here they are none and
+        # this frees nothing.
         movement_removal.remove_movements(
             list(existing_payback.entries), owner_id,
             because=match_withdrawal.LEFT_THE_BOOKS,
+            shown=shown,
             rows_leaving=[existing_payback],
         )
         db.session.delete(existing_payback)

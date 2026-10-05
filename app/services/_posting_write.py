@@ -8,9 +8,12 @@ The pieces every ledger WRITER composes -- the leg record
 below every writer, so the correction packages can import them without
 importing :mod:`app.services.posting_service` itself.  It also held the entry's
 civil-date rule as ``_utc_civil_date`` until ruling R-DH (2026-07-31) moved that
-day to the USER's timezone; the derivation now lives once in
-:func:`app.utils.balance_predicates.settled_day`, which every writer and both folds
-share.
+day to the USER's timezone.  The day is a stored column since plan step X-f1
+(ruling R-EC), and a ROW's is read through
+:func:`app.utils.balance_predicates.settled_day`.  *This said the derivation
+lived once there, "which every writer and both folds share", until leaf
+balance:X-bi-6-4d-1: the cash fold reads its movements' stored day directly,
+and the loan fold reads a leg's off the leg since that leaf.*
 
 Why a leaf and not the writer module: Build-Order Step 5's effect-time
 self-heal makes ``posting_service`` call into
@@ -85,12 +88,14 @@ def is_transfer_leg(parent) -> bool:
     parent :func:`app.services.transfer_legs.movement_parent` resolved, a
     plan row or a :class:`~app.services.transfer_legs.TransferLeg`, so no
     door of this writer reaches a movement's parent through
-    ``transaction.transfer_id``.  Two readers of the column remain beside it:
-    the loan ledger's stale-movement probe (``loan_posting_service._sync``)
-    still finds a movement's transfer through its shadow until leaf
-    ``X-bi-6-4b`` moves the loan family, and the deploy resync's row selector
-    keeps shadow rows out of its ROW arm (the fold's ``_movements_of`` twin)
-    until ``X-bi-6-5`` drops the column.  Through ``X-bi-6-3`` this was
+    ``transaction.transfer_id``.  One reader of the column remains beside it:
+    the deploy resync's row selector keeps shadow rows out of its ROW arm
+    (the fold's ``_movements_of`` twin) until ``X-bi-6-5`` drops the column.
+    The loan ledger's stale-movement probe (``loan_posting_service._sync``)
+    was a second until leaf ``X-bi-6-4b``, which gave it
+    :func:`~app.services.transfer_legs.movement_parent`, and spelled that
+    function's shadow chain as its own loader options until leaf
+    ``X-bi-6-4d-1`` (ledger row **BAL-579**).  Through ``X-bi-6-3`` this was
     ``txn.transfer_id is not None`` over the shadow row itself.
 
     Args:

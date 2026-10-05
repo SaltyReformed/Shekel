@@ -249,6 +249,7 @@ class TestTheOneActStillRemovesAMovement:
             movement_removal.remove_movements(
                 [purchase], seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
+                shown=match_withdrawal.NOTHING_SHOWN,
             )
             assert row.entries == []
             db.session.commit()
@@ -259,10 +260,14 @@ class TestTheOneActStillRemovesAMovement:
         """Out of the match FIRST, so the NO ACTION member key never meets it."""
         with app.app_context():
             row, created = _home_improvement(seed_user)
+            purchase = db.session.get(TransactionEntry, created.entry_id)
             movement_removal.remove_movements(
-                [db.session.get(TransactionEntry, created.entry_id)],
+                [purchase],
                 seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
+                shown=match_withdrawal.Shown(
+                    match_withdrawal.pending_for_movements([purchase]).line_ids,
+                ),
             )
             db.session.commit()
             assert db.session.get(TransactionEntry, created.entry_id) is None

@@ -125,7 +125,7 @@ def _latest_anchor(account_id):
 def _correct_tender(txn, account_id):
     """The full-edit popover's identity Save naming another 'Paid from' account."""
     transaction_service.apply_requested_status(
-        txn, txn.status_id, tender_account_id=account_id,
+        txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
     )
     db.session.commit()
 
@@ -468,7 +468,8 @@ class TestATenderCorrectionOnASettledRow:
 
             with pytest.raises(ValidationError, match=r"is not settling, so a 'Paid from'"):
                 transaction_service.apply_requested_status(
-                    txn, projected, tender_account_id=card.id,
+                    txn, projected,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -477,7 +478,8 @@ class TestATenderCorrectionOnASettledRow:
             assert _movement(fresh).account_id == checking.id
 
             transaction_service.apply_requested_status(
-                fresh, projected, tender_account_id=checking.id,
+                fresh, projected,
+                stated=transaction_service.StatedRecord(tender_account_id=checking.id),
             )
             db.session.commit()
             assert fresh.status_id == projected
@@ -503,7 +505,8 @@ class TestATenderCorrectionOnASettledRow:
             assert txn.covering_movements == []
             with pytest.raises(ValidationError, match=r"no single account its money moved through"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
 
     def test_a_tender_on_a_close_of_nothing_is_refused(
@@ -518,7 +521,8 @@ class TestATenderCorrectionOnASettledRow:
             assert txn.covering_movements == []
             with pytest.raises(ValidationError, match=r"records no payment movement"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
 
     def test_the_settle_verb_ignores_a_tender_on_the_entries_branch(
@@ -593,7 +597,8 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
 
             with pytest.raises(ValidationError, match=r"books open on"):
                 transaction_service.apply_requested_status(
-                    txn, txn.status_id, tender_account_id=card.id,
+                    txn, txn.status_id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -628,7 +633,7 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
             db.session.commit()
             transaction_service.apply_requested_status(
                 txn, txn.status_id, settle_day=the_day_after,
-                tender_account_id=card.id,
+                stated=transaction_service.StatedRecord(tender_account_id=card.id),
             )
             db.session.commit()
             movement = _movement(txn)
@@ -641,7 +646,7 @@ class TestTheBooksBoundaryIsTheTendersAccounts:
             with pytest.raises(ValidationError, match=r"books open on"):
                 transaction_service.apply_requested_status(
                     other, other.status_id, settle_day=on_the_opening,
-                    tender_account_id=card.id,
+                    stated=transaction_service.StatedRecord(tender_account_id=card.id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -825,15 +830,21 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             assert movement.settled_on == bank_day
             assert txn.settled_on == bank_day
 
-    def test_the_reconcile_panels_tick_forces_the_statements_account(
+    def test_the_checking_panel_no_longer_moves_a_card_payment(
         self, app, seed_user, seed_periods,
     ):
-        """A bill reverted out of a card settle, ticked on CHECKING's panel: booked on checking, linked.
+        """A bill reverted out of a card settle, ticked on CHECKING's panel: nothing lands, nothing moves.
 
-        The statement-driven settle names the statement's own account (ruling
-        **R-CC15**) rather than leaving the seam to its default, which would
-        keep the kept movement on the card (**R-CC42**) while checking's
-        statement is what the owner says showed it.
+        Ruling **R-CC126** (developer 2026-09-30, "Only the card offers it"):
+        *"Checking's list leaves it out ... Each list offers only money that
+        moved on its own account, so reconciling never moves a payment."*
+        Until plan step ``credit_card:CC-5-4a-5c-1`` this test pinned the
+        opposite -- the tick named Checking as the tender (ruling **R-CC15**)
+        and re-pointed the card's payment onto checking, withdrawing any
+        match on it unannounced (finding **CC-378**); the developer ruled
+        that behaviour changed.  The row is the card's "Paid from this
+        account" offer now, and a tick there books it where it is
+        (``test_reconcile_settlements``).
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -857,12 +868,13 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
                 ),
             )
             db.session.commit()
-            assert settled == 1
+            assert settled == 0
             movement = _movement(txn)
-            assert movement.account_id == checking.id
-            assert movement.settled_on == observed_on
-            assert movement.reconciled_by_id == statement.anchor.anchor_id
-            assert txn.reconciled_by_id == statement.anchor.anchor_id
+            assert movement.account_id == card.id
+            assert movement.settled_on is None
+            assert movement.reconciled_by_id is None
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.reconciled_by_id is None
 
 
 class TestAStatementScreenPricesARowWhereItsMoneyMoved:

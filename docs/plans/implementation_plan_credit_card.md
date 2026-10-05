@@ -180,22 +180,78 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       `settle_from_entries` would settle. Of the seam's doors only the grid's one-click Mark Paid
       stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
       purchase delete, Undo CC, the popover's Status leaving Credit, the last credit purchase's
-      delete or un-credit) are **CC-367**; the account and recurring-transfer permanent deletes
+      delete or un-credit) were **CC-367**; the account and recurring-transfer permanent deletes
       archive on a held leg since **R-CC65** and free nothing. **R-CC80** puts CC-367's doors in
       this step: each says it first, and the one removal act asks what the owner was shown
-      (**R-CC81**). Its `$0.00` captions are its own question at its start, under **R-BAL155**. A
-      row's own account's list, ticking a reopened bill whose kept payment is on another account (a
-      card, or Checking under `R-CC117`), re-points that payment (`status_seam._covering._re_point`)
-      and withdraws any match naming it through `match_withdrawal.withdraw_for_moved_movement` with
-      no caption (**CC-378**): its builder asks the developer whether that list captions such a row
-      (`paid from <account>`) or omits it. After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**,
-      **CC-378**.
+      (**R-CC81**). Its `$0.00` captions were its own question at its start, under **R-BAL155**
+      (ruled below). A row's own account's list, ticking a reopened bill whose kept payment is on
+      another account (a card, or Checking under `R-CC117`), re-pointed that payment
+      (`status_seam._covering._re_point`) and withdrew any match naming it through
+      `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its builder asked
+      the developer whether that list captions such a row (`paid from <account>`) or omits it (ruled
+      below). After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**, **CC-378**.
+      **Ruled at its start** (2026-09-30): the panel refuses a `$0.00` payment (**R-CC125**), a
+      reopened bill paid from another account is offered only on that account's list (**R-CC126**,
+      so the panel never re-points and **CC-378** closes unreachable), and the removal act checks
+      the page (**R-CC127**). **Built in four leaves, `Ships:` on the last one** (the coordinator,
+      2026-10-04). **4a-5a** `ff86849b` (done, no `Ships:`) -- the removal act takes the lines a
+      page showed or a named silence (**R-CC127**); every popover press posts the lines its captions
+      named (`shown_lines`), and a stale press redraws the whole card (**R-CC128**); Estimated's
+      caption on a reverted matched row lets one Save record `$0.00` (**R-CC129**); a companion's
+      Mark Paid that would free a line is refused (**R-CC130**); the delete dialog posts the
+      purchases it named (`shown_purchases`; **R-CC131**, fulfilling **R-CC96**'s clause);
+      `ShownIds` joins the row-id census; a hand-built hard DELETE of a pair whose leg is matched,
+      which withdrew the match silently, is refused (a designed 400; **R-CC127**). Applications, no
+      ruling of their own: `designed_error(retarget=)` for the redraw (**salary:R-SAL33**) and the
+      owner's one-click Mark Paid silent (**R-CC56**); a transfer `$0.00` Paid caption withdrawn (a
+      transfer prices `$0.00` only where a derived payment rounds to it, and there the popover's
+      Paid is refused as out of date). **4a-5b** `b3ff5bec` (done, no `Ships:`) -- **CC-367**'s
+      doors name what they free first and post it back (**R-CC80**, **R-CC127**): the purchase X's
+      confirmation asks in R-CC80's words and posts its lines as the DELETE's query string, a list
+      out of date refused and drawn again as it is now; on the envelope's last card purchase the X
+      names and takes the CC payback's line too, purchase and payback in ONE removal act
+      (`delete_entry`: two acts on one account refused the ordinary X as out of date); the edit
+      form's CC un-tick on that purchase names the payback's line in a caption and posts it; Undo CC
+      and Status leaving Credit share one caption beside Undo CC
+      (`credit_workflow.pending_for_credit_revert`), posted by Undo CC and the Save; one read serves
+      the purchase lists (`match_withdrawal.pending_for_each`, `entry_service._removals`), who is
+      looking taken from the session, never the posted `can_edit`. A companion is shown no line
+      (**R-CC132**): a purchase whose X would free its line has no X, the ruled note in its place, a
+      press that would free one anyway is refused with the ruled sentence, and one over the CC
+      payback's line (the last card purchase's X or un-tick, an add or an edit bringing the card
+      total to `$0.00`) with one sentence, an application: "Groceries's card payback is matched to a
+      line on the bank statement, so only the account owner can make this change." The grid's
+      statement-count test folds an `IN (...)` id list (**R-CC133**, rule 5). Closed **CC-367**.
+      **4a-5c**, split in two: **4a-5c-1** `bc0b02b3` (done, no `Ships:`) -- the reconcile panel. A
+      ticked `$0.00` box is refused before its arm settles anything, in the ruled sentence naming
+      the row or the leg (**R-CC125**, `_rows._refuse_a_zero_payment`, both arms). A row's own list
+      leaves out a row holding no purchase whose covering movement is on another account, of any
+      date (**R-CC126**, `_transactions._own_clauses`; any date is an application of the picked
+      description), so neither list re-points a payment (`status_seam._covering._re_point` changes
+      nothing), and its tick names no tender (**R-CC15**'s tender at the panel deleted as changing
+      nothing a tick books, an application; the booked account pinned per list). The one tick left
+      that takes a payment out of its matches, a row settling from its purchases over the payment a
+      revert kept, says so under its row ("Closing it from its purchases withdraws ...", the shared
+      `frees_lines` clause, an application of **R-CC56** and **R-CC80**) from ONE read
+      (`match_withdrawal.pending_for_each`), and posts those lines per row (`shown_lines-<row id>`)
+      to its own settle, since the act compares per account; a stale press redraws the panel with
+      the refusal's facts and "Here it is again -- tick what your statement shows." (**R-CC127**).
+      The panel's two `Silent` sites are deleted. Closed **CC-378**. Left open: a `$0.00`-figure row
+      ticked with its box cleared, uncaptioned (**balance:BAL-596**); two rows matched to one line
+      ticked together, refused (**CC-384**); a captioned tick whose last purchase another tab
+      deleted, saved uncompared (**balance:BAL-597**). **4a-5c-2**: carry-forward's caption per
+      envelope, the last `Silent` (`carry_forward_service/_execute.py`), the docstring sweep and
+      whether the statement matcher's own settles can free a line; it puts to the developer at its
+      start **CC-384**'s fork, **R-CC125**'s wording on money coming in (paychecks, a transfer's
+      incoming leg) and whether the matcher keeps moving a payment between accounts
+      (`statement_match._moving`, **R-CC43**), closes **CC-364**, and its last commit carries the
+      `Ships:`.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
       card" is `account_projection.is_revolving`, the type's `has_revolving_credit` flag and the one
       card predicate, where an id compare would be a second (`R-CC117`, rule 14). The row's own list
-      still offers it, by analogy to `R-CC43`'s matcher and never ruled for the panel (**CC-378**).
+      offered it, by analogy to `R-CC43`'s matcher, until **R-CC126** (**CC-378**).
 - [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
       balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
       parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given

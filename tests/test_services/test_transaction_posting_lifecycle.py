@@ -70,6 +70,7 @@ from tests._test_helpers import (
     reassert_balance_on,
     settle_instant_on,
 )
+from tests.test_routes.test_cc5_4a5_popover_presses import dialog_delete_values
 from app.services import cash_ledger
 
 
@@ -1115,7 +1116,12 @@ class TestDeleteReversesPostings:
             )
             assert _ledger_total(groceries_ledger) == Decimal("40.00")
 
-            resp = auth_client.delete(f"/transactions/{txn_id}")
+            # Pressed as the card's Delete sends it: the purchase its dialog
+            # names (plan step credit_card:CC-5-4a-5, ruling R-CC131).
+            resp = auth_client.delete(
+                f"/transactions/{txn_id}",
+                query_string=dialog_delete_values(auth_client, txn_id),
+            )
             assert resp.status_code == 200
 
             # Soft delete: the row survives holding nothing, and the pair nets
