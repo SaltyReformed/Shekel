@@ -16,7 +16,7 @@
    profile's stubs, so a screen cannot name a stub the engine did not use
    (plan step salary:S11-c-2c, rulings R-SAL100 and, for the words,
    R-SAL121, whose strip and card-foot sentences R-SAL122 amends to say
-   "used for pricing"). #}
+   "used for pricing", and whose strip R-SAL126 rewords). #}
 
 {% block content %}
 {% if empty_state == "no_profiles" %}
@@ -204,11 +204,18 @@
   </div>
 
   {# ── Pay stubs strip: how taxes are priced + the link to the stubs ─ #}
+  {# The words are ruling R-SAL126's, amending R-SAL122's "one with the same
+     lines first" (undefined, so it named the wrong stub in several cases, a
+     stub carrying a tax-changing one-off among them): the gist in plain
+     words, the card above naming each paycheck's actual stub.  The card's
+     title is quoted here and spelled in _anatomy.html's heading; a test reads
+     both off one rendered page. #}
   <div class="sal-stubstrip">
     <span class="sal-stubstrip__text">
       Each paycheck's taxes come from your latest pay stub used for pricing
-      on or before its payday, one with the same lines first.  With none,
-      they come from the tax formulas.
+      on or before its payday, preferring one that matches it.  With no stub,
+      the tax formulas.  The 'Where this paycheck goes' card shows which stub
+      each paycheck uses.
     </span>
     <a href="{{ url_for('salary.edit_profile', profile_id=profile.id, _anchor='stubs-section') }}"
        class="btn btn-sm btn-outline-secondary">

@@ -210,7 +210,10 @@ class TestProfileList:
             assert response.status_code == 200
             assert b"Day Job" in response.data
             assert b"Net per paycheck" in response.data
-            assert b"Where this paycheck goes" in response.data
+            # The card's own element, not its title: the pay stubs strip
+            # names the card by title too (ruling R-SAL126), so the title
+            # alone would pass with the card gone.
+            assert b'id="anatomy-composition"' in response.data
 
     def test_new_profile_form(self, app, auth_client, seed_user):
         """GET /salary/new renders the salary profile creation form."""
@@ -4219,7 +4222,11 @@ class TestStubPricingOnTheScreens:
     old Re-calibrate / Remove buttons become one link to the Pay stubs list.
     The words are ruling **R-SAL121**'s, approved as an old -> new list, with
     the card foot and the strip amended by **R-SAL122** the same morning to
-    say "used for pricing" (a switched-off stub dated earlier is not denied).  The
+    say "used for pricing" (a switched-off stub dated earlier is not denied),
+    and the strip reworded by **R-SAL126**: its "one with the same lines first"
+    named the wrong stub in several cases (a stub carrying a tax-changing
+    one-off, a taxed line shown at $0.00 or under another heading), so it now
+    gives the gist and points at the card, which names the real one.  The
     stub's figures are made up; the stub sits on the fifth payday
     (``seed_periods[4]``), before today's paycheck (today is frozen inside
     ``seed_periods[5]``), so today's paycheck is priced from it and the
@@ -4261,10 +4268,33 @@ class TestStubPricingOnTheScreens:
             ) in html
             assert (
                 "Each paycheck's taxes come from your latest pay stub used for "
-                "pricing on or before its payday, one with the same lines "
-                "first. With none, they come from the tax formulas."
+                "pricing on or before its payday, preferring one that matches "
+                "it. With no stub, the tax formulas. The 'Where this paycheck "
+                "goes' card shows which stub each paycheck uses."
             ) in html
+            assert "one with the same lines first" not in html
             assert "calibrat" not in html.lower()
+
+    def test_the_strip_names_the_card_by_its_own_heading(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The card the strip names (R-SAL126) is the heading the same page renders.
+
+        The title is spelled in two templates, the card's heading and the
+        strip's sentence, so a renamed card would leave the strip pointing at
+        nothing while every other assertion still passed; this reads both off
+        one rendered page.
+        """
+        with app.app_context():
+            _create_profile(seed_user)
+
+            html = auth_client.get("/salary").data.decode()
+            card = html[html.index('id="anatomy-composition"'):]
+            heading = re.search(r"</i>\s*([^<]+?)\s*</h6>", card).group(1)
+            strip = html[html.index('class="sal-stubstrip__text"'):]
+            strip = " ".join(strip[:strip.index("</span>")].split())
+
+            assert f"The '{heading}' card shows which stub each paycheck uses." in strip
 
     def test_the_strip_links_the_pay_stubs_list(
         self, app, auth_client, seed_user, seed_periods,
@@ -4467,7 +4497,9 @@ class TestButtonPlacement:
             )
 
             assert response.status_code == 200
-            assert b"Where this paycheck goes" in response.data
+            # The card's element, not its title, which the strip also
+            # carries since ruling R-SAL126.
+            assert b'id="anatomy-composition"' in response.data
 
     def test_projection_route_accessible_from_button(
         self, app, auth_client, seed_user, seed_periods

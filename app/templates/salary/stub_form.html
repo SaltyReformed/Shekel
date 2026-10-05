@@ -117,12 +117,13 @@
         </ul>
         {# Shown only when the engine's own one-off rule says the stub is one
            of other lines (plan step salary:S11-c-2c, ruling R-SAL123).  The
-           words are ruling R-SAL125's, which amended R-SAL123's: they hold
-           where a same-lines stub is switched off, and for a paycheck whose
-           lines are not the usual ones (a third paycheck in a month that skips
-           a twice-a-month line). #}
+           words are ruling R-SAL126's, which amended R-SAL125's: the gist in
+           plain words, true as read, with the exact answer left to the
+           engine's own display -- each paycheck's "Where this paycheck goes"
+           card names the stub it uses.  A full statement of the rule was
+           refused as too long for the page. #}
         {% if report.one_off_changes_taxes %}
-        <p class="text-muted small mb-0">This stub's one-off changes its taxes, so it prices a paycheck only when no stub used for pricing with the same lines as that paycheck is dated on or before that payday.</p>
+        <p class="text-muted small mb-0">This one-off can affect taxes, so this stub won't match any paycheck. Paychecks use a matching stub first.</p>
         {% endif %}
         {% endif %}
       </div>

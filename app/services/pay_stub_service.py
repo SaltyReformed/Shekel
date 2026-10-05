@@ -272,7 +272,7 @@ class StubReport:
             paycheck's own lines is on or before it -- the engine picker's own
             answer (:func:`app.services.paycheck_calculator.one_offs_change_taxes`,
             ruling **R-SAL123**), which the page states rather than restating
-            the rule (plan step salary:S11-c-2c), in **R-SAL125**'s words.
+            the rule (plan step salary:S11-c-2c), in **R-SAL126**'s words.
     """
     totals: StubTotals
     app_base_pay: Decimal | None

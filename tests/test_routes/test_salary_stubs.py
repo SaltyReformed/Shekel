@@ -25,8 +25,9 @@ refusal, driven through the test client:
   (**R-SAL104**, **R-SAL106**), and both links open a new tab (**R-SAL107**)
   -- changing the setting there leaves the open stub form submittable.  The
   words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**);
-* a saved stub's page says a one-off changes its taxes exactly when the
-  engine's picker treats it so (**R-SAL123**), in **R-SAL125**'s words.
+* a saved stub's page says a one-off can affect its taxes exactly when the
+  engine's picker treats it as one that does (**R-SAL123**), in **R-SAL126**'s
+  words.
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
@@ -772,27 +773,30 @@ class TestTheKindAStubPrints:
         assert _selected(page, f"line-kind-{phone}") == [str(taxable)]
 
 
-#: Ruling R-SAL125's words (amending R-SAL123's), byte for byte: the stub page's
-#: sentence under a one-off that changes the stub's taxes.
+#: Ruling R-SAL126's words (amending R-SAL125's, which amended R-SAL123's), byte
+#: for byte: the stub page's sentence under a one-off that changes the stub's taxes.
 _ONE_OFF_SENTENCE = (
-    b"This stub's one-off changes its taxes, so it prices a paycheck only when no "
-    b"stub used for pricing with the same lines as that paycheck is dated on or "
-    b"before that payday."
+    b"This one-off can affect taxes, so this stub won't match any paycheck. "
+    b"Paychecks use a matching stub first."
 )
 
 
 class TestTheOneOffSentence:
-    """R-SAL123's rule on the saved stub's page, in R-SAL125's words (plan step S11-c-2c).
+    """R-SAL123's rule on the saved stub's page, in R-SAL126's words (plan step S11-c-2c).
 
     The page shows the sentence exactly when the engine's picker treats the
     stub as one of other lines: a one-off of a kind a tax formula reads -- a
     taxable earning or a pre-tax deduction -- carrying money.  The service flag
     behind it is graded in ``test_pay_stub_service.py``; this grades what the
     page RENDERS, which the delta review measured no test reading (three
-    template mutations survived every stub test).  Neither earlier wording is
-    on the page: fork 8b's "matches no normal paycheck" and R-SAL123's "with
-    your usual lines", which R-SAL125 replaced because it was false for a
-    switched-off stub and for a paycheck whose lines are not the usual ones.
+    template mutations survived every stub test).  No earlier wording is on
+    the page: fork 8b's "matches no normal paycheck", R-SAL123's "with your
+    usual lines" (false for a switched-off stub and for a paycheck whose lines
+    are not the usual ones) and R-SAL125's "with the same lines as that
+    paycheck" (false where both stubs carry such a one-off).  R-SAL126 gives
+    the gist in plain words and leaves the exact answer to the card that
+    names each paycheck's stub; the developer refused a full statement of the
+    rule as too long for the page.
     """
 
     @pytest.mark.parametrize(("kind", "amount", "gross", "net", "shown"), [
@@ -830,6 +834,7 @@ class TestTheOneOffSentence:
         assert (_ONE_OFF_SENTENCE in page.data) is shown
         assert b"matches no normal paycheck" not in page.data
         assert b"with your usual lines" not in page.data
+        assert b"with the same lines as that paycheck" not in page.data
 
 
 class TestTheLineDelete:
