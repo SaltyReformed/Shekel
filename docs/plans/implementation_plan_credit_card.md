@@ -190,29 +190,30 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its builder asked
       the developer whether that list captions such a row (`paid from <account>`) or omits it (ruled
       below). After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**, **CC-378**, **CC-384**,
-      **CC-385**. **Ruled at its start** (2026-09-30): the panel refuses a `$0.00` payment
-      (**R-CC125**), a reopened bill paid from another account is offered only on that account's
-      list (**R-CC126**, so the panel never re-points and **CC-378** closes unreachable), and the
-      removal act checks the page (**R-CC127**). **Built in six leaves, `Ships:` on the last one**
-      (the coordinator, 2026-10-04). **4a-5a** `ff86849b` (done, no `Ships:`) -- the removal act
-      takes the lines a page showed or a named silence (**R-CC127**); every popover press posts the
-      lines its captions named (`shown_lines`), and a stale press redraws the whole card
-      (**R-CC128**); Estimated's caption on a reverted matched row lets one Save record `$0.00`
-      (**R-CC129**); a companion's Mark Paid that would free a line is refused (**R-CC130**); the
-      delete dialog posts the purchases it named (`shown_purchases`; **R-CC131**, fulfilling
-      **R-CC96**'s clause); `ShownIds` joins the row-id census; a hand-built hard DELETE of a pair
-      whose leg is matched, which withdrew the match silently, is refused (a designed 400;
-      **R-CC127**). Applications, no ruling of their own: `designed_error(retarget=)` for the redraw
-      (**salary:R-SAL33**) and the owner's one-click Mark Paid silent (**R-CC56**); a transfer
-      `$0.00` Paid caption withdrawn (a transfer prices `$0.00` only where a derived payment rounds
-      to it, and there the popover's Paid is refused as out of date). **4a-5b** `b3ff5bec` (done, no
-      `Ships:`) -- **CC-367**'s doors name what they free first and post it back (**R-CC80**,
-      **R-CC127**): the purchase X's confirmation asks in R-CC80's words and posts its lines as the
-      DELETE's query string, a list out of date refused and drawn again as it is now; on the
-      envelope's last card purchase the X names and takes the CC payback's line too, purchase and
-      payback in ONE removal act (`delete_entry`: two acts on one account refused the ordinary X as
-      out of date); the edit form's CC un-tick on that purchase names the payback's line in a
-      caption and posts it; Undo CC and Status leaving Credit share one caption beside Undo CC
+      **CC-385**, **CC-386**. **Ruled at its start** (2026-09-30): the panel refuses a `$0.00`
+      payment (**R-CC125**), a reopened bill paid from another account is offered only on that
+      account's list (**R-CC126**, so the panel never re-points and **CC-378** closes unreachable),
+      and the removal act checks the page (**R-CC127**).
+      **Built in seven leaves, `Ships:` on the last one** (the coordinator, 2026-10-04 and
+      2026-10-05). **4a-5a** `ff86849b` (done, no `Ships:`) -- the removal act takes the lines a
+      page showed or a named silence (**R-CC127**); every popover press posts the lines its captions
+      named (`shown_lines`), and a stale press redraws the whole card (**R-CC128**); Estimated's
+      caption on a reverted matched row lets one Save record `$0.00` (**R-CC129**); a companion's
+      Mark Paid that would free a line is refused (**R-CC130**); the delete dialog posts the
+      purchases it named (`shown_purchases`; **R-CC131**, fulfilling **R-CC96**'s clause);
+      `ShownIds` joins the row-id census; a hand-built hard DELETE of a pair whose leg is matched,
+      which withdrew the match silently, is refused (a designed 400; **R-CC127**). Applications, no
+      ruling of their own: `designed_error(retarget=)` for the redraw (**salary:R-SAL33**) and the
+      owner's one-click Mark Paid silent (**R-CC56**); a transfer `$0.00` Paid caption withdrawn (a
+      transfer prices `$0.00` only where a derived payment rounds to it, and there the popover's
+      Paid is refused as out of date). **4a-5b** `b3ff5bec` (done, no `Ships:`) -- **CC-367**'s
+      doors name what they free first and post it back (**R-CC80**, **R-CC127**): the purchase X's
+      confirmation asks in R-CC80's words and posts its lines as the DELETE's query string, a list
+      out of date refused and drawn again as it is now; on the envelope's last card purchase the X
+      names and takes the CC payback's line too, purchase and payback in ONE removal act
+      (`delete_entry`: two acts on one account refused the ordinary X as out of date); the edit
+      form's CC un-tick on that purchase names the payback's line in a caption and posts it; Undo CC
+      and Status leaving Credit share one caption beside Undo CC
       (`credit_workflow.pending_for_credit_revert`), posted by Undo CC and the Save; one read serves
       the purchase lists (`match_withdrawal.pending_for_each`, `entry_service._removals`), who is
       looking taken from the session, never the posted `can_edit`. A companion is shown no line
@@ -255,17 +256,31 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       **R-CC43** tests rewritten under rule 5 (**R-CC138**), and a fourth deleted, the lane's
       reading of R-CC138's "Make the tests match the code" (only the declined ask named the
       deletion). Filing a purchase into a lump-paid envelope stays allowed (**R-CC141**), except
-      where the owner-wide claims scan refuses it (**CC-385**). **4a-5c-2b**: **R-CC135**'s one
-      check per save at every door that can undo a match, the statement matcher's accept and undo
-      among them (its accept frees nothing, as only a `$0.00` or `purchases` record withdraws a kept
-      payment and the offer set holds no row worth `$0.00`, and CC-385's fix keeps the same-account
-      claim that stops a second act naming a kept payment; its undo reaches another act's line
-      through `take_out_of_matches` on **CC-380**'s path, refused today as out of date), and
-      **CC-385**, closed before the step's `Ships:`. **4a-5c-2c**: the per-match warnings,
-      carry-forward's warning naming each match once (**R-CC135**), with its post-back and redraw,
-      the last `Silent` (`carry_forward_service/_execute.py`) and the docstring sweep; it closes
-      **CC-364**, and **CC-384** and **balance:BAL-597** (owned by `balance:X-da`) only where a test
-      proves the end check closes it, and its last commit carries the `Ships:`.
+      where the owner-wide claims scan refuses it (**CC-385**). **4a-5c-2b** `2c7bb775` (done, no
+      `Ships:`) -- **R-CC135**'s one check per save: a door whose page names lines, or that is
+      silent by a ruling, opens ONE `match_press.Press` around its save, and a door whose page names
+      nothing has each call open one of its own over `NOTHING_SHOWN`; each call refuses at once a
+      line the page did not name, and the close compares what the whole save freed with what the
+      page named (a `Silent` press compares nothing) and logs the withdrawal events. A save that
+      reached no match step is graded only where its page promised what it named, the reconcile
+      panel (`promised`; closed **balance:BAL-597**). The statement matcher keeps the default press:
+      its accept frees nothing, and its undo frees no line another act holds, since an act that only
+      matched creates nothing to remove and a purchase an act created becomes its envelope's last
+      card purchase only by a CC tick, an edit the undo refuses. Its claims are the account's own
+      acts and a destination is re-asked of its row as it stands, so filing into, and matching a
+      purchase under, a reverted lump-paid envelope go ahead (**R-CC141**, **R-CC143**; closed
+      **CC-385**). Applications under **balance:R-BAL207**: the `promised` rule, a door's own
+      refusal abandoning its press, and carry-forward as one `Silent("CC-364")` press. Left open:
+      **CC-384**, **balance:BAL-599** (events logged before the commit, `balance:X-dc`) and
+      **balance:BAL-600** (BAL-597 at the single-row doors, `balance:X-da`). **4a-5c-2c**, split in
+      two (the coordinator, 2026-10-05): **4a-5c-2c-1** (no `Ships:`) -- **CC-386** first, a writer
+      enumeration and a deletion mutation (a deletion may need a developer ruling, as
+      **bank_import:R-FY** names `_accept._reject_parent_and_its_own_purchase`); **R-CC135**'s
+      per-match warnings on the reconcile panel, a shared act's line counting as named only when all
+      its rows are ticked, closing **CC-384**, pinned by the ruling's own example. **4a-5c-2c-2**
+      carries the `Ships:`: carry-forward's Confirm with its caption, post-back and redraw, its
+      `Silent("CC-364")` press a promised `Shown` one, closing **CC-364**; the `Silent` sweep and
+      the docstring rewrite.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
