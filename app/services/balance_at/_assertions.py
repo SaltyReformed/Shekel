@@ -195,7 +195,7 @@ def assertion_corrections(
     ``(observed_on, created_at, id)`` -- BUSINESS date first, which is what the
     coverage rule bisects and what makes "the FIRST is the opening" true -- and
     ``settled_cash_facts`` returns sources ascending by
-    ``(settled_on, transaction_id, entry_id)``, which keeps the replay
+    ``(settled_on, entry_id)``, which keeps the replay
     reproducible.  Neither is load-bearing for WHICH assertion absorbs what.
 
     **It is not the whole of what an assertion means, and plan step X-f3c is

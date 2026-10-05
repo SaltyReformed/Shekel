@@ -389,7 +389,8 @@ class TestTheUpgradeRefusesALossyRow:
         txn = _bill(seed_user, seed_periods[0], "45.00", name="Water", is_envelope=True)
         _settle(txn)
         transaction_service.apply_requested_status(
-            txn, txn.status_id, submitted=typed(Decimal("0.00")),
+            txn, txn.status_id,
+            stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
         )
         db.session.flush()
         create_entry(

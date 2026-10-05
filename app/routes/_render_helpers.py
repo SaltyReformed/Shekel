@@ -362,6 +362,42 @@ def transfer_settlement_amounts(
     )
 
 
+def settles_at_nothing(budget: Decimal, retained: "Decimal | None") -> bool:
+    """Return whether a settle stating no figure would record ``$0.00``.
+
+    Read off the two maps the bill popover already publishes, by the
+    contract :class:`RenderAmounts` states: ``retained`` is what a re-settle
+    would RE-BOOK, ``None`` where the plan on screen is what it books -- the
+    two arms of the settle verb's figure, a retained correction outranking
+    the resolved plan (``transaction_service.settle_amount``).  For a row
+    that settles from its PURCHASES neither map is what it books; the popover
+    asks that arm first (``amount_correctable``).
+
+    **Why the popover asks it** (plan step ``credit_card:CC-5-4a-5``): a
+    ``$0.00`` record moves nothing, so the status seam takes the kept
+    payment off the books and withdraws every match naming it.  Paid on such
+    a reverted row -- an estimate set to ``$0.00`` over a kept payment --
+    withdraws exactly as a ``$0.00`` typed in Actual does, and says so first
+    by the same ruling (**R-CC56**); without the caption, a page that named
+    no line would be refused at every press (ruling **R-CC127**).  The
+    transfer popover does not ask: a stated transfer price is positive by its
+    CHECKs, and a derived loan payment is ``$0.00`` only where its level P&I,
+    priced from the loan's original principal, rounds to zero with no escrow
+    or extra (``$1.00`` at 0% over 360 months).  On such a loan whose kept
+    payment was booked above zero and matched, the popover's Paid is refused
+    as out of date and the grid leg's one-click withdraws silently under
+    **R-CC56**.
+
+    Args:
+        budget: The row's PLAN -- ``budgets[id]``.
+        retained: ``retained[id]``.
+
+    Returns:
+        ``True`` when the figure such a settle books is zero.
+    """
+    return (budget if retained is None else retained) == 0
+
+
 #: How an EVIDENCED side's day is known, in the popover's words (ruling
 #: **R-BAL142**'s own wording: the bank showed it, you reconciled it, you typed
 #: it).  A ``borrowed`` side has no entry: its caption names what it borrows.

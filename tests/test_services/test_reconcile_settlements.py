@@ -29,6 +29,8 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
@@ -36,6 +38,7 @@ from app.enums import (
     SettledDayBasisEnum,
     StatusEnum,
 )
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
@@ -206,17 +209,22 @@ class TestTheListOffersAReopenedPaymentFromHere:
                 ),
             )
 
-    def test_the_rows_own_account_still_lists_it_as_a_bill(
+    def test_the_rows_own_account_leaves_it_out(
         self, app, seed_user, seed_periods,
     ):
-        """Checking offers the same row as a BILL, and the card as a settlement; one list each."""
+        """R-CC126 ("Only the card offers it"): Checking's list leaves it out; the card offers it.
+
+        Until plan step credit_card:CC-5-4a-5c-1 Checking offered the same
+        row as a BILL, and its tick re-pointed the card's payment onto
+        Checking with no caption (finding CC-378).  The developer ruled the
+        behaviour changed (R-CC126, 2026-09-30): "Checking's list leaves it
+        out ... Each list offers only money that moved on its own account".
+        """
         with app.app_context():
             card = _card(seed_user)
             txn = _paid_from_and_reopened(_row(seed_user, seed_periods[0]), card)
 
-            checking = _groups(seed_user, seed_user["account"].id)
-            assert checking[txn.id].kind is reconcile_service.OfferKind.BILL
-            assert txn.id not in _settlement_keys(seed_user, seed_user["account"].id)
+            assert txn.id not in _groups(seed_user, seed_user["account"].id)
             assert txn.id in _settlement_keys(seed_user, card.id)
 
     def test_a_row_planned_ON_this_account_is_a_bill_here_not_a_settlement(
@@ -653,20 +661,34 @@ class TestTheTick:
             assert payment.amount == _GROCERIES
             assert payment.settled_on == _OBSERVED_ON
 
-    def test_a_zero_tick_settles_the_row_and_links_nothing(
+    def test_a_zero_tick_is_refused_and_changes_nothing(
         self, app, seed_user, seed_periods,
     ):
-        """A typed $0.00 settles with no payment at all, so no fact is this statement's to link."""
+        """R-CC125 ("Refuse it now"): a typed $0.00 is refused; the row and its payment stay.
+
+        Until plan step credit_card:CC-5-4a-5c-1 a typed $0.00 settled the
+        row with no payment at all.  The developer ruled the behaviour
+        changed (R-CC125, 2026-09-30): "The panel refuses a $0.00 payment
+        today ... Nothing changes".
+        """
         with app.app_context():
             card = _card(seed_user)
             txn = _paid_from_and_reopened(_row(seed_user, seed_periods[0]), card)
 
-            assert _tick(seed_user, card.id, {txn.id}, {txn.id: Decimal("0.00")}) == 1
+            with pytest.raises(ValidationError) as refused:
+                _tick(seed_user, card.id, {txn.id}, {txn.id: Decimal("0.00")})
+            db.session.rollback()
 
-            db.session.expire_all()
+            assert str(refused.value) == (
+                "Groceries: a payment can't be $0.00. If it wasn't paid, "
+                "leave it unticked or cancel it on the grid."
+            )
+            payment = _payment(txn)
             row = db.session.get(Transaction, txn.id)
-            assert row.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert row.covering_movements == []
+            assert row.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert payment.account_id == card.id
+            assert payment.amount == _GROCERIES
+            assert payment.settled_on is None
             assert row.reconciled_by_id is None
 
 

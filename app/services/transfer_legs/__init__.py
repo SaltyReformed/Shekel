@@ -124,22 +124,34 @@ out of the list :func:`parent_entries` answers, and since leaf
 ``X-bi-6-4c-3`` (ruling **R-BAL142**, ledger row **BAL-568**) for "Remove
 earlier paychecks"' dated-money arm and the transfer popover's two day boxes,
 which read each side's own day off its movement
-(:func:`transfer_movement_rows`, :func:`covering_movements_by_leg`).
+(:func:`transfer_movement_rows`, :func:`covering_movements_by_leg`), and
+since leaf ``X-bi-6-4d-1`` for the transfer service's own reads of what a
+side RECORDS -- the settle's retained correction and carried record, the
+update's echo comparison and the offer's retained correction
+(:func:`transfer_side_leg`, keyed by side) -- for the transfer's hard
+delete, which hands
+the removal act every entry its transfer holds
+(:func:`held_transfer_entries`), and for the loan posting probe
+(``loan_posting_service._sync``, ledger row **BAL-579**), which loads the
+movements it resolves through :func:`movement_parent_loads` where it spelled
+that chain inline.  The loan walk's refusal of an un-dated settle
+(``loan_ledger._visible.payment_visible_on``) stopped reaching a movement
+through a shadow at that leaf too: it named the shadow's ``transaction_id``
+and names the transfer now, as its owner finds it in the app.
 **Other readers still reach it themselves until their leaf moves them** and
 ``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
 leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which
-DC-11's and BA-06's leg arms read); statement match's own reads of a
+DC-11's and BA-06's leg arms read); the transfer service's own mirror,
+which the step rewrites -- ``_endpoints._apply_endpoint_move`` walks each
+shadow's ``covering_movements`` to carry them to a moved endpoint, and
+``_status.apply_status_to_all_three`` repairs a drifted shadow from its
+sibling's ``recorded_settlement``; and statement match's own reads of a
 payment member's row -- ``_acts.named_rows``,
 ``_candidates._claimed_rows_of_the_owner`` and
 ``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
 ``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
 id, and ``_acts._WHOLE_ACT`` loads a payment member's row and its
-``entries``, for a transfer's payment its shadow; the loan walk's refusal
-of an un-dated settle (``loan_ledger._visible.payment_visible_on``), which
-names the movement's ``transaction_id``, the shadow's, in
-``UndatedSettleError``; and the loan posting probe
-(``loan_posting_service._sync``), which spells the chain
-:func:`movement_parent_loads` publishes inline.
+``entries``, for a transfer's payment its shadow.
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -200,6 +212,7 @@ from app.services.transfer_legs._records import (
     transfer_family_movements,
     transfer_holds_a_movement,
     transfer_movement_rows,
+    transfer_side_leg,
     transfers_holding_records,
 )
 
@@ -227,5 +240,6 @@ __all__ = [
     "transfer_family_movements",
     "transfer_holds_a_movement",
     "transfer_movement_rows",
+    "transfer_side_leg",
     "transfers_holding_records",
 ]

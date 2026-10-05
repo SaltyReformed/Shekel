@@ -8,7 +8,7 @@ the transaction detail popover and the companion view.
 
 import logging
 import re
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from flask import Blueprint, render_template, request
 from flask.typing import ResponseReturnValue
@@ -19,21 +19,27 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.routes._shown_lines import read_press
 from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import (
     fragment_amounts,
     fragment_cash_flow,
     render_transaction_cell,
 )
-from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
-from app.services import entry_service
+from app.schemas.validation import (
+    EntryCreateSchema,
+    EntryUpdateSchema,
+    ShownLinesSchema,
+)
+from app.services import entry_credit_workflow, entry_service
 from app.services.cash_flow_set import purchase_accounts
+from app.services.match_withdrawal import NOTHING_SHOWN, OwnerOnly, Shown, Silent
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
     submitted_settle_day,
 )
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import NotFoundError, PageOutOfDate, ValidationError
 from app.utils.auth_helpers import (
     get_accessible_transaction,
     get_accessible_transaction_or_deleted,
@@ -54,6 +60,8 @@ entries_bp = Blueprint("entries", __name__)
 # Marshmallow schema instances -- reused across requests.
 _create_schema = EntryCreateSchema()
 _update_schema = EntryUpdateSchema()
+# The X's: a DELETE, so what its confirmation named rides the query string.
+_shown_lines_schema = ShownLinesSchema()
 
 # Name of the partial unique index that backstops the duplicate CC
 # Payback bug closed in commit C-19.  ``entry_service.create_entry``,
@@ -118,12 +126,33 @@ def _entry_list_host_id(txn_id: int, host: str) -> str:
     return "entry-list-" + (host + "-" if host else "") + str(txn_id)
 
 
+class _Notice(NamedTuple):
+    """The ONE banner a purchase list draws about the last submission.
+
+    One typed value rather than a parameter per banner since plan step
+    ``credit_card:CC-5-4a-5`` added the third, so no caller can ask for two.
+
+    Attributes:
+        name: The template variable it sets --
+            ``conflict`` (the most recent edit was rejected by the
+            optimistic-lock check, commit C-18; :func:`_stale_entry_response`),
+            ``error`` (why the last submission was refused, the designed
+            error-fragment path; :func:`_error_entry_response`), or
+            ``page_refusal`` (:attr:`~app.exceptions.PageOutOfDate.facts`,
+            drawn above the list as it is now; ruling **R-CC128**'s shape,
+            :func:`_refused_entry_response`).
+        value: ``True`` for a conflict; the sentence otherwise.
+    """
+
+    name: Literal["conflict", "error", "page_refusal"]
+    value: "bool | str"
+
+
 def _render_entry_list(
     txn: Transaction,
     editing_id: int | None = None,
-    conflict: bool = False,
     host: str = "",
-    error: str | None = None,
+    notice: "_Notice | None" = None,
 ) -> str:
     """Render the entry list partial for a transaction.
 
@@ -135,17 +164,12 @@ def _render_entry_list(
         editing_id: Optional entry ID currently being edited.
             When set, the template shows an inline edit form
             for that entry instead of the display row.
-        conflict: When True, surface a warning banner that the
-            most recent edit was rejected by the optimistic-lock
-            check.  See commit C-18.
         host: The validated ``host`` id-prefix for this request
             (:func:`_request_host`), threaded through so the re-rendered
             partial keeps the DOM id of the element HTMX is swapping
             (:func:`_entry_list_host_id`).  ``""`` for the bare list.
-        error: Optional rejection message.  When set, the template
-            surfaces a danger banner naming why the last submission
-            was refused (the designed error-fragment path; see
-            :func:`_error_entry_response`).
+        notice: The ONE banner about the last submission (:class:`_Notice`),
+            or ``None``.
 
     Returns:
         Rendered HTML string.
@@ -211,9 +235,15 @@ def _render_entry_list(
     # (ruling R-CC11), so a companion's refresh carries the owner's picker.
     # Through the fragment producer the mobile card and the cell share, so
     # one request's fragments resolve the set by one rule.
+    # What each purchase's X and CC un-tick would leave unexplained on the
+    # statement screen, and whether the session's user may be shown it (plan
+    # step ``credit_card:CC-5-4a-5``, rulings **R-CC80** / **R-CC132**), read
+    # off the same row the list is: its purchases ARE ``entries``
+    # (``get_entries_for_transaction`` returns ``txn.purchases``).
     view = entry_service.entry_list_view(
         entries, budgets[txn.id], period,
         purchase_accounts(fragment_cash_flow(txn.user_id).purchases, txn),
+        entry_service.purchase_controls([txn], current_user.id)[txn.id],
     )
     return render_template(
         "grid/_transaction_entries.html",
@@ -227,10 +257,9 @@ def _render_entry_list(
         # rejects.
         today=display_today().isoformat(),
         editing_id=editing_id,
-        conflict=conflict,
-        error=error,
         entry_list_host=host,
         entry_list_host_id=_entry_list_host_id(txn.id, host),
+        **({notice.name: notice.value} if notice is not None else {}),
         **view,
     )
 
@@ -264,8 +293,79 @@ def _error_entry_response(
     """
     db.session.rollback()
     return designed_error(
-        _render_entry_list(txn, error=message, host=host), status,
+        _render_entry_list(txn, host=host, notice=_Notice("error", message)),
+        status,
     )
+
+
+def _refused_entry_response(
+    txn: Transaction, exc: ValidationError, host: str,
+) -> ResponseReturnValue:
+    """Roll back and answer a refused X or edit with the list as it is now.
+
+    :func:`_error_entry_response` for every refusal but one: a press refused
+    because its list named other bank lines than the press would free (ruling
+    **R-CC127**) is drawn with :attr:`~app.exceptions.PageOutOfDate.facts`
+    above the CURRENT list -- whose X and CC captions now name what is true
+    -- so pressing again goes ahead, where the plain sentence's "Reload the
+    page" would send the owner away from a list that is already current.
+    **Except for a press no caption can name**: an edit whose new card total
+    is exactly zero (a re-price, or a CC tick on a refund) deletes a payback
+    a match may name, the form named nothing, and the same refusal answers
+    every try (finding **CC-381**, owned by plan step ``credit_card:CC-7``).
+
+    Args:
+        txn: The parent Transaction whose entry list is re-rendered.
+        exc: What the service refused the press with.
+        host: The validated host prefix from :func:`_request_host`.
+
+    Returns:
+        A designed-fragment Flask response tuple at 400.
+    """
+    if not isinstance(exc, PageOutOfDate):
+        return _error_entry_response(txn, str(exc), host)
+    db.session.rollback()
+    return designed_error(
+        _render_entry_list(
+            txn, host=host, notice=_Notice("page_refusal", exc.facts),
+        ),
+        400,
+    )
+
+
+def _entry_press(
+    txn: Transaction, data: dict[str, Any], *, refusal: str,
+) -> Shown | Silent:
+    """Return what an X, an edit or an add declares about the bank lines it frees.
+
+    Plan step ``credit_card:CC-5-4a-5``.  The OWNER's list names what each
+    press would free before it -- the X's confirmation, the edit form's CC
+    caption (ruling **R-CC80**) -- and posts those lines back for the removal
+    act to compare (ruling **R-CC127**); a request without the field named
+    none, as the add form never has one.  A COMPANION's list names no bank
+    line and never could (rulings **R-CC130** / **R-CC132**, developer
+    2026-10-04, "Refuse, shown first"), so its press may free none, refused
+    with *refusal* where it would.  Who pressed is the request's, so it is
+    read here, as Mark Paid's door reads it
+    (``routes.transactions._press._mark_paid_press``); a companion's posted
+    field is dropped, not read, for the reason that door gives.
+
+    Args:
+        txn: The purchase's row, on a request the door has already admitted.
+        data: The schema-loaded payload; its ``shown_lines`` is taken out.
+        refusal: The companion's sentence -- the X's names the PURCHASE
+            (ruling **R-CC132**'s words); an edit's and an add's can free
+            only the payback's line, so theirs is
+            ``entry_credit_workflow.payback_refusal``.
+
+    Returns:
+        A :class:`~app.services.match_withdrawal.Shown` or
+        :class:`~app.services.match_withdrawal.OwnerOnly`.
+    """
+    shown = read_press(data, absent=NOTHING_SHOWN).shown
+    if txn.user_id == current_user.id:
+        return shown
+    return OwnerOnly(refusal=refusal)
 
 
 def _gone_entry_list_response(
@@ -428,7 +528,9 @@ def _stale_entry_response(
     fresh_txn = db.session.get(Transaction, txn.id) if txn is not None else None
     if fresh_txn is None:
         return "Not found", 404
-    return _render_entry_list(fresh_txn, conflict=True, host=host), 409
+    return _render_entry_list(
+        fresh_txn, host=host, notice=_Notice("conflict", True),
+    ), 409
 
 
 def _accessible_txn_and_entry(
@@ -549,11 +651,19 @@ def create_entry(txn_id):
             records_a_refund=data.pop("direction") == entry_service.REFUND,
         ),
     )
+    # An add frees a line only by deleting a payback (a card refund bringing
+    # the card total to zero), which the form cannot foresee: an owner's add
+    # names nothing (finding CC-381), a companion's is refused with the
+    # payback's sentence (ruling R-CC132; plan step credit_card:CC-5-4a-5).
+    shown = _entry_press(
+        txn, data, refusal=entry_credit_workflow.payback_refusal(txn),
+    )
     try:
         entry_service.create_entry(
             transaction_id=txn.id,
             user_id=current_user.id,
             details=entry_service.EntryDetails(**data),
+            shown=shown,
         )
         db.session.commit()
     except IntegrityError as exc:
@@ -581,21 +691,26 @@ def create_entry(txn_id):
 
 def _execute_entry_update(
     entry_id: int, txn: Transaction, data: dict[str, Any], host: str,
+    shown: Shown | Silent,
 ) -> ResponseReturnValue:
     """Run the entry update + commit, translating service outcomes to HTTP.
 
     ``StaleDataError`` at flush -> 409 conflict entry list; the C-19
     ``IntegrityError`` backstop -> the idempotent credit-payback response;
-    ``NotFoundError`` / ``ValidationError`` -> 400.  On success, the
+    ``NotFoundError`` / ``ValidationError`` -> 400, a list out of date drawn
+    as it is now (:func:`_refused_entry_response`).  On success, the
     shared mutation response (refreshed entry list + OOB cell on the
     popover surface + ``balanceChanged``).  Extracted so
     ``update_entry`` keeps only its ownership guards + form validation;
     this owns the service-call/commit/error-translation tail (the
     ``transfers._execute_transfer_update`` precedent).  ``host`` is the
-    validated surface prefix from :func:`_request_host`.
+    validated surface prefix from :func:`_request_host`; ``shown`` is what
+    the edit form named (:func:`_entry_press`).
     """
     try:
-        entry_service.update_entry(entry_id, current_user.id, **data)
+        entry_service.update_entry(
+            entry_id, current_user.id, shown=shown, **data,
+        )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -608,8 +723,10 @@ def _execute_entry_update(
         return _credit_payback_idempotent_response(
             exc, txn.id, f"update_entry id={entry_id}", host,
         )
-    except (NotFoundError, ValidationError) as exc:
+    except NotFoundError as exc:
         return _error_entry_response(txn, str(exc), host)
+    except ValidationError as exc:
+        return _refused_entry_response(txn, exc, host)
 
     return _entry_mutation_response(txn, host)
 
@@ -647,6 +764,11 @@ def update_entry(txn_id, entry_id):
         )
 
     data = _update_schema.load(request.form)
+    # What the form's CC caption named, taken out of the fields before they
+    # reach the door (plan step ``credit_card:CC-5-4a-5``).
+    shown = _entry_press(
+        txn, data, refusal=entry_credit_workflow.payback_refusal(txn),
+    )
 
     # Stale-form check (commit C-18 / F-010).
     submitted_version = data.pop("version_id", None)
@@ -663,7 +785,7 @@ def update_entry(txn_id, entry_id):
         return _error_entry_response(txn, refusal, host, status=422)
 
     _pair_the_posting_day(data, entry)
-    return _execute_entry_update(entry_id, txn, data, host)
+    return _execute_entry_update(entry_id, txn, data, host, shown)
 
 
 def _compose_the_amount(data: dict[str, Any]) -> "str | None":
@@ -804,15 +926,52 @@ def delete_entry(txn_id, entry_id):
     row's own payment record, reached only by a crafted id
     (``_refusals._reject_settlement_record``).  Each names its row and prints
     its dollars (ruling **R-CC98**; review 6, M3).
+
+    **The X names what it frees first, and sends it back** (plan step
+    ``credit_card:CC-5-4a-5``, rulings **R-CC80** / **R-CC127**): the
+    owner's confirmation names the bank lines the press would leave
+    unexplained -- the purchase's own, and its payback's where the press
+    deletes that -- and posts them as the DELETE's query string; a press
+    whose list is out of date is refused and the list drawn as it is now
+    (:func:`_refused_entry_response`).  A companion's X is withheld over a
+    purchase whose own line it would free, and a companion's press that
+    would free one anyway is refused (ruling **R-CC132**,
+    :func:`_entry_press`).
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:
         return "Not found", 404
-    txn, _entry = target
+    txn, entry = target
     host = _request_host()
+    errors = _shown_lines_schema.validate(request.args)
+    if errors:
+        return _error_entry_response(
+            txn, flatten_schema_errors(errors), host, status=422,
+        )
+    shown = _entry_press(
+        txn, _shown_lines_schema.load(request.args),
+        refusal=(
+            f"{entry.description} is matched to a line on the bank "
+            "statement, so only the account owner can delete it."
+        ),
+    )
+    return _execute_entry_delete(entry_id, txn, host, shown)
 
+
+def _execute_entry_delete(
+    entry_id: int, txn: Transaction, host: str, shown: Shown | Silent,
+) -> ResponseReturnValue:
+    """Run the entry delete + commit, translating service outcomes to HTTP.
+
+    :func:`_execute_entry_update`'s sibling, split from :func:`delete_entry`
+    at plan step ``credit_card:CC-5-4a-5`` -- whose posted-lines read gave
+    that handler one return past pylint's ceiling -- on the same precedent:
+    the handler keeps its ownership guard and form validation, this owns the
+    service call, the commit and the error translation.  ``shown`` is what
+    the X's confirmation named (:func:`_entry_press`).
+    """
     try:
-        entry_service.delete_entry(entry_id, current_user.id)
+        entry_service.delete_entry(entry_id, current_user.id, shown=shown)
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -831,6 +990,6 @@ def delete_entry(txn_id, entry_id):
         db.session.rollback()
         return str(exc), 404
     except ValidationError as exc:
-        return _error_entry_response(txn, str(exc), host)
+        return _refused_entry_response(txn, exc, host)
 
     return _entry_mutation_response(txn, host)

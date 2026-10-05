@@ -21,6 +21,7 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
+from app.services.match_withdrawal import Silent
 from app.services.cash_ledger import resolve_transaction_amount
 from app.services.one_off import (
     due_date_after_move,
@@ -572,7 +573,13 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
         )
         target_row.is_override = True
 
-    transaction_service.settle_from_entries(source_txn)
+    # Its ``purchases`` record takes a kept payment off the books, and the
+    # confirmation names nothing first (finding **CC-364**): named where the
+    # act asks (ruling **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s
+    # second leaf captions each envelope (ruling **R-CC76**).
+    transaction_service.settle_from_entries(
+        source_txn, shown=Silent("CC-364"),
+    )
 
 
 def _resolve_or_create_target_row(source_txn, target_period,

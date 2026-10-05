@@ -59,6 +59,7 @@ from tests._test_helpers import (
     read_pass,
     reassert_balance_on,
     restate_account_opening,
+    settle_cash_row,
     settle_day_columns,
 )
 from app.services.settle_day import record_settle_day
@@ -1794,3 +1795,52 @@ class TestTheSourceOrderIsLoadBearing:
         assert [fact.settled_on for fact in _money_facts(settled_cash_facts(
             account.id, scenario.id,
         ))] == [date(2026, 2, 10), date(2026, 2, 20)]
+
+
+class TestTheSameDayTieBreakIsTheMovementId:
+    """Two movements on ONE day are ordered by the movement's own id (leaf ``X-bi-6-4d-1``).
+
+    The declared change: ``settled_cash_facts`` broke a same-day tie on the
+    parent row's id first, ``(settled_on, transaction_id, entry_id)``, and a
+    transfer leg's ``transaction_id`` (its shadow's) is NULL once
+    ``X-bi-6-4d`` re-parents it, which does not sort beside an ``int``.  It
+    is ``(settled_on, entry_id)`` now.  The discriminating shape is a row
+    created FIRST and settled SECOND, so its row id is the lower and its
+    movement id the higher: the old key put it first, this one puts it
+    second.  No balance moves (the walk sums a day); the one reader that
+    shows the order is the bank-agreement listing.
+    """
+
+    def test_the_row_settled_second_sorts_second(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Electric created first and settled second, both on 02-10."""
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app import ref_cache
+        from app.enums import TxnTypeEnum
+
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _opened_at(account, _instant(2026, 1, 1))
+        first_created = one_off_row_of(
+            seed_periods[0], name="Electric", amount=Decimal("60.00"),
+            user_id=seed_user["user"].id, account_id=account.id,
+            scenario_id=scenario.id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        )
+        settled_first = create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("40.00"),
+            settled_on=date(2026, 2, 10), name="Water",
+        )
+        settle_cash_row(first_created, settled_on=date(2026, 2, 10))
+        db.session.commit()
+        assert first_created.id < settled_first.id
+
+        facts = [
+            fact for fact in settled_cash_facts(account.id, scenario.id)
+            if fact.settled_on == date(2026, 2, 10)
+        ]
+
+        assert [fact.transaction_id for fact in facts] == [
+            settled_first.id, first_created.id,
+        ]
+        assert facts[0].entry_id < facts[1].entry_id

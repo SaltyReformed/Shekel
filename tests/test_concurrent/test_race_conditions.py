@@ -584,26 +584,16 @@ class TestConcurrentRollingTopUp:
 
     @staticmethod
     def _two_signed_in_clients(app):
-        """Two clients, each signed in under an app context of its own.
-
-        :func:`_make_auth_client` signs in on the test's shared app context,
-        where Flask-Login keeps the first sign-in's user on ``g``: the second
-        client's sign-in then finds a signed-in user and redirects without
-        signing it in, and that client is turned away at the login gate once
-        a thread gives it a context of its own (finding **BAL-521** / N-550,
-        owner plan step ``balance:X-cr``; measured here 2026-09-29).  A fresh
-        app context per sign-in gives each its own ``g``, as production gives
-        each request.
+        """Two clients, each signed in as the concurrent user.
 
         Returns:
             ``(client_a, client_b)``, both signed in as the concurrent user.
         """
         clients = []
         for _ in range(2):
-            with app.app_context():
-                clients.append(_make_auth_client(
-                    app, "concurrent@shekel.local", "concurrent12",
-                ))
+            clients.append(_make_auth_client(
+                app, "concurrent@shekel.local", "concurrent12",
+            ))
         return clients[0], clients[1]
 
     def test_concurrent_topups_one_fills_one_noops(self, app, db):

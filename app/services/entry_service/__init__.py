@@ -23,7 +23,10 @@ shape was already there --
   must pass, create / update / delete, and the re-derivation every door
   triggers.  It writes;
 * :mod:`._sums` -- what a SET of purchases adds up to, and the contexts a
-  screen renders from those sums.  It does not.
+  screen renders from those sums.  It does not;
+* :mod:`._removals` -- what removing each purchase would withdraw from the
+  statement matches, the purchase list's captions (plan step
+  ``credit_card:CC-5-4a-5``).  It reads and never writes.
 
 -- and the arrow runs ONE way, ``_doors`` reading the reductions in
 :mod:`._sums` and ``_sums`` reading nothing back.  (It named
@@ -55,6 +58,12 @@ from ._doors import (
     update_entry,
 )
 from ._refusals import deleted_row_purchase_refusal, removal_refusal
+from ._removals import (
+    PurchaseControls,
+    PurchaseRemoval,
+    purchase_controls,
+    purchase_removals,
+)
 from ._sums import (
     build_entry_lists_dict,
     build_entry_sums_dict,
@@ -82,6 +91,10 @@ __all__ = [
     "get_entries_for_transaction",
     "pct_complete",
     "purchase_amount",
+    "PurchaseControls",
+    "PurchaseRemoval",
+    "purchase_controls",
+    "purchase_removals",
     "removal_refusal",
     "resolve_owner_id",
     "update_entry",

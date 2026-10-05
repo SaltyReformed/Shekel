@@ -128,9 +128,18 @@ def _revert(txn):
 
 
 def _correct_tender(txn, account_id):
-    """The full-edit popover's identity Save naming another 'Paid from' account."""
+    """The full-edit popover's identity Save naming another 'Paid from' account.
+
+    Posting back the lines its "Paid from" caption names, as the popover does
+    since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC127**).
+    """
     transaction_service.apply_requested_status(
-        txn, txn.status_id, tender_account_id=account_id,
+        txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
+        shown=match_withdrawal.Shown(
+            match_withdrawal.pending_for_movements(
+                txn.covering_movements,
+            ).line_ids,
+        ),
     )
     db.session.commit()
 
@@ -987,6 +996,9 @@ class TestADeletedBillWithdrawsTheActNamingItsPaymentOnAnotherAccount:
 
             outcome = transaction_service.delete_transaction(
                 txn, seed_user["user"].id,
+                shown=match_withdrawal.Shown(
+                    transaction_service.preview_deletion(txn).withdrawn.line_ids,
+                ),
             )
             db.session.commit()
 

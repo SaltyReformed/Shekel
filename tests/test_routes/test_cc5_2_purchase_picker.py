@@ -604,6 +604,19 @@ class TestTheChipIsOneRuleOverTheRowAndItsMovements:
         assert cell.count("account_chips(") == 1
 
 
+def _folded(text):
+    """Return *text* with each expanded ``IN (...)`` bind list folded to one spelling.
+
+    SQLAlchemy renders ``column.in_(ids)`` as ``IN (%(name_1)s, %(name_2)s,
+    ...)`` -- one bind per id -- so the SAME statement over more ids has a
+    longer text.  Folded, two renders' statements compare as statements
+    rather than as id counts (plan step credit_card:CC-5-4a-5b).
+    """
+    return re.sub(
+        r"IN \(%\((\w+?)_\d+\)s(?:, %\(\1_\d+\)s)*\)", r"IN (%(\1_*)s)", text,
+    )
+
+
 class TestTheChipsAccountReadCostsNoQuery:
     """The eager-load measurement: a movement on a set member reads its account from the identity map."""
 
@@ -681,8 +694,19 @@ class TestTheChipsAccountReadCostsNoQuery:
         # leaf): the one extra statement is the account's load by primary
         # key, bound to the card's id -- anything else with the same count
         # would be a per-render read this test was misattributing.
-        seen = [text for text, _ in before]
-        extra = [(text, params) for text, params in after if text not in seen]
+        #
+        # An expanded ``IN (...)`` bind list is FOLDED before the texts are
+        # compared (plan step credit_card:CC-5-4a-5b, ruling R-CC133 under
+        # rule 5, "Fold id lists"): the purchase list's one read of which
+        # purchases a match names binds every purchase id on the page, so its
+        # text grows with them while it stays ONE statement per render --
+        # measured 1 id before the swipes and 3 after.  The count and the
+        # account-load attribution below are unchanged.
+        seen = [_folded(text) for text, _ in before]
+        extra = [
+            (text, params) for text, params in after
+            if _folded(text) not in seen
+        ]
         assert len(after) == len(before) + 1 and len(extra) == 1, (
             f"{len(before)} statements without the swipes, {len(after)} with two "
             f"on an archived card; extra by text: {[t[:80] for t, _ in extra]}"

@@ -540,23 +540,30 @@ def register_transaction_boundary(app: Flask) -> None:
 
         **A request refused on ``request_started`` is left alone**: it never
         got a mode, so nothing is ended, and the uncommitted writes the refusal
-        declined to discard are still there when the caller looks.  **Planned
-        step ``balance:X-cr`` deletes the command arm** (R-CC123 added that to
-        its scope): once each test request runs in an app context of its own,
-        that context's teardown ends the transaction, as in production.
+        declined to discard are still there when the caller looks.  **The
+        command arm stays until planned step ``balance:X-di``** (ruling
+        **R-BAL200**).  Since plan step ``balance:X-cr`` each test-client
+        request runs on a ``flask.g`` of its own but still inside the test's
+        app context, and so on the test's database session, where a command's
+        open transaction would otherwise outlive its request.  Once each test
+        request runs in an app context and a session of its own, that
+        context's teardown ends the transaction, as in production, and this
+        arm is deleted.
 
         **The mode is retired either way, and the ACTOR and the OWNER with
-        it**, and under the test client that is the load-bearing half: ``flask.g`` lives on the
-        APP context, which the suite shares across a test and every request it
-        issues, so either left behind would follow the request out and govern
-        the test body's own transactions.  For the actor that means a row the
-        test body writes AFTER a request would be attributed to that request's
-        user, which is neither what production does -- ``g`` dies with the
-        request there -- nor what the ``SET LOCAL`` this replaced did, since a
-        transaction-scoped GUC died with the request's transaction.  For the
-        owner it would mean every later transaction of the test body taking
-        that owner's write lock, which a test racing two connections would
-        then wait on from its own main one.
+        it.**  A test-client request's ``g`` is discarded with the request
+        since ``balance:X-cr``, so for those this retires nothing that would
+        survive; it is load-bearing for a request context a test pushes
+        itself (``app.test_request_context()``), whose teardown runs on the
+        test's own ``g``, where either value left behind would govern the test
+        body's later transactions.  For the actor that means a row the test
+        body writes afterwards would be attributed to that user, which is
+        neither what production does -- ``g`` dies with the request there --
+        nor what the ``SET LOCAL`` this replaced did, since a transaction-scoped
+        GUC died with the request's transaction.  For the owner it would mean
+        every later transaction of the test body taking that owner's write
+        lock, which a test racing two connections would then wait on from its
+        own main one.
 
         Args:
             exc: The unhandled exception Flask is tearing down for, if any.
@@ -573,8 +580,9 @@ def register_transaction_boundary(app: Flask) -> None:
                 db.session.rollback()
         finally:
             # Retired even when the rollback raises (a dropped connection):
-            # under the shared test ``g`` a mode, actor or owner left behind
-            # would govern every later transaction of the test body.
+            # under a request context a test pushes itself ``g`` is the
+            # test's own, and a mode, actor or owner left behind would govern
+            # every later transaction of the test body.
             g.pop(_MODE_KEY, None)
             g.pop(_ACTOR_KEY, None)
             g.pop(_PENDING_OWNER_KEY, None)

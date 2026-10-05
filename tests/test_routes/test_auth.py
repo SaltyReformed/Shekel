@@ -643,7 +643,7 @@ class TestSessionManagement:
         """load_user() returns None for sessions created before invalidation.
 
         Tests the load_user callback directly with a simulated stale
-        session, avoiding g._login_user caching in the test environment.
+        session.
         """
         user = seed_user["user"]
         user.session_invalidated_at = datetime.now(timezone.utc)

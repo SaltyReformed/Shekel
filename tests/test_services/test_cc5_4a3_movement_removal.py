@@ -109,10 +109,23 @@ def _match(seed_user, line, *txns, transfers=()):
     return accepted
 
 
+def _what_its_page_names(movements):
+    """The lines a caption over *movements* names, as its page posts them back.
+
+    What the popovers read (``match_withdrawal.pending_for_movements``) and
+    send with the press since plan step ``credit_card:CC-5-4a-5`` (ruling
+    **R-CC127**): the act refuses a press whose freed lines differ.
+    """
+    return match_withdrawal.Shown(
+        match_withdrawal.pending_for_movements(movements).line_ids,
+    )
+
+
 def _record_zero(txn):
     """The popover's Actual box re-recorded at ``$0.00``, through its door."""
     transaction_service.apply_requested_status(
-        txn, txn.status_id, submitted=typed(Decimal("0.00")),
+        txn, txn.status_id, stated=transaction_service.StatedRecord(figure=typed(Decimal("0.00"))),
+        shown=_what_its_page_names(txn.covering_movements),
     )
     db.session.commit()
 
@@ -282,7 +295,9 @@ class TestPaidFromPurchasesTakesTheKeptPaymentOutOfItsMatch:
             )
             db.session.commit()
 
-            settle_transaction(hotel)
+            settle_transaction(
+                hotel, shown=_what_its_page_names(hotel.covering_movements),
+            )
             db.session.commit()
 
             db.session.expire_all()
@@ -321,6 +336,7 @@ class TestTheActWithdrawsWhatItsReadPrinted:
             movement_removal.remove_movements(
                 [payment], seed_user["user"].id,
                 because=match_withdrawal.RE_RECORDED,
+                shown=match_withdrawal.NOTHING_SHOWN,
             )
 
             assert len(act.members) == 2
@@ -342,6 +358,7 @@ class TestTheActWithdrawsWhatItsReadPrinted:
             done = movement_removal.remove_movements(
                 [payment], seed_user["user"].id,
                 because=match_withdrawal.RE_RECORDED,
+                shown=match_withdrawal.Shown(pending.line_ids),
             )
 
             assert done == pending
@@ -386,7 +403,13 @@ class TestEveryDoorWithdrawsTheActItself:
             )
             db.session.commit()
 
-            entry_service.delete_entry(purchase.id, seed_user["user"].id)
+            # The X posts the lines its confirmation named (plan step
+            # CC-5-4a-5, ruling R-CC127), read through the list's own twin.
+            shown = entry_service.purchase_removals([envelope])[purchase.id]
+            entry_service.delete_entry(
+                purchase.id, seed_user["user"].id,
+                shown=match_withdrawal.Shown(shown.delete.line_ids),
+            )
             db.session.commit()
 
             assert db.session.get(StatementMatch, accepted.match_id) is None
@@ -409,8 +432,13 @@ class TestEveryDoorWithdrawsTheActItself:
             line = _line(seed_user, "-200.00", "CARD PAYMENT")
             accepted = _match(seed_user, line, payback)
 
+            # Undo CC posts the lines its caption named (plan step
+            # CC-5-4a-5, ruling R-CC127), read through the card's own twin.
             credit_workflow.delete_payback_on_credit_revert(
                 source, seed_user["user"].id,
+                shown=match_withdrawal.Shown(
+                    credit_workflow.pending_for_credit_revert(source).line_ids,
+                ),
             )
             db.session.commit()
 
@@ -442,6 +470,7 @@ class TestEveryDoorWithdrawsTheActItself:
 
             transfer_service.delete_transfer(
                 xfer.id, seed_user["user"].id, soft=False,
+                shown=_what_its_page_names(shadow.covering_movements),
             )
             db.session.commit()
 
@@ -486,7 +515,14 @@ class TestEveryDoorWithdrawsTheActItself:
             db.session.commit()
             assert db.session.get(StatementMatch, accepted.match_id) is not None
 
-            entry_service.delete_entry(purchase.id, seed_user["user"].id)
+            # The X posts the lines its confirmation named -- here the
+            # payback's, which the press deletes (plan step CC-5-4a-5, ruling
+            # R-CC80) -- read through the list's own twin.
+            shown = entry_service.purchase_removals([envelope])[purchase.id]
+            entry_service.delete_entry(
+                purchase.id, seed_user["user"].id,
+                shown=match_withdrawal.Shown(shown.delete.line_ids),
+            )
             db.session.commit()
 
             assert credit_workflow.get_active_payback(envelope.id) is None
@@ -546,10 +582,16 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
         with app.app_context():
             xfer, shadow_id = self._a_matched_transfer(seed_user)
 
+            payments = [
+                movement for row in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id,
+                ) for movement in row.covering_movements
+            ]
             with _Events() as events:
                 transfer_service.update_transfer(
                     xfer.id, seed_user["user"].id,
                     figure=typed(Decimal("0.00")),
+                    shown=_what_its_page_names(payments),
                 )
                 db.session.commit()
 
@@ -572,9 +614,15 @@ class TestTheEventFilesATransfersPaymentUnderItsTransfer:
                 )
             )
 
+            payments = [
+                movement for row in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id,
+                ) for movement in row.covering_movements
+            ]
             with _Events() as events:
                 transfer_service.delete_transfer(
                     xfer.id, seed_user["user"].id, soft=False,
+                    shown=_what_its_page_names(payments),
                 )
                 db.session.commit()
 
@@ -609,6 +657,7 @@ class TestTheRemovedMovementLeavesItsParentsLoadedList:
             movement_removal.remove_movements(
                 [payment], seed_user["user"].id,
                 because=match_withdrawal.RE_RECORDED,
+                shown=match_withdrawal.NOTHING_SHOWN,
             )
 
             assert payment not in hotel.entries
@@ -644,6 +693,7 @@ class TestTheRemovedMovementLeavesItsParentsLoadedList:
             movement_removal.remove_movements(
                 [payment], seed_user["user"].id,
                 because=match_withdrawal.RE_RECORDED,
+                shown=match_withdrawal.NOTHING_SHOWN,
             )
 
             assert payment not in shadow.entries

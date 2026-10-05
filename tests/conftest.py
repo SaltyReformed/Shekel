@@ -710,6 +710,7 @@ def _clone_worker_database(db_name, admin_url, template=None):
 
 
 import pytest
+from flask import Flask
 
 from app import create_app, tax_law as app_tax_law
 from app.extensions import db as _db
@@ -757,6 +758,7 @@ from tests._test_helpers import (
     settle_day_columns,
     state_template_price,
 )
+from tests._per_request_globals import PerRequestGlobalsClient
 from tests._shard import SHARD_ENV, apply_shard, parse_shard
 
 
@@ -1301,6 +1303,32 @@ def _calendar_sweep():
         date.fromisoformat(fake), dt_time(12, 0), tzinfo=DISPLAY_TIMEZONE,
     )
     with time_machine.travel(target, tick=True):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def each_request_has_its_own_g():
+    """Give every test-client request a ``flask.g`` of its own, as production does.
+
+    The ``db`` fixture below runs each test inside ONE application context,
+    and a test-client request REUSES that context -- and its ``g`` -- rather
+    than pushing its own.  Flask-Login caches the signed-in user on ``g``, so
+    before this, once any request had cached one, every later request in the
+    test was answered as that user, whichever client sent it (ledger row
+    ``balance:BAL-521``, plan step ``balance:X-cr``).
+    :class:`tests._per_request_globals.PerRequestGlobalsClient` gives each
+    request a fresh ``g`` and puts the test's back afterwards; its module
+    docstring carries the measurement and the design.
+
+    **Set on the ``Flask`` CLASS, not on the session's app**, because the
+    suite builds more apps than that one: a test that calls
+    ``create_app("testing")`` itself and requests inside its own
+    ``with that_app.app_context():`` shares a ``g`` across those requests in
+    exactly the same way.  Session-scoped and autouse so it is in place before
+    any fixture or test makes a client, and undone when the session ends.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Flask, "test_client_class", PerRequestGlobalsClient)
         yield
 
 

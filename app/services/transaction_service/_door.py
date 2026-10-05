@@ -17,10 +17,11 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 ``request`` / ``session`` imports, no commit.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from app.exceptions import ValidationError
 from app.services import posting_service
+from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
 from app.models.transaction import Transaction
 from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import settled_figure
@@ -43,13 +44,56 @@ from app.services.transaction_service._status_rules import (
 from app.utils.balance_predicates import enters_settled_band
 
 
+@dataclass(frozen=True)
+class StatedRecord:
+    """What a DOOR states the settlement record IS: its figure and its tender.
+
+    The two facts of a row's record a submission can state or correct -- what
+    moved and the account it moved through -- which the settle arm hands the
+    verb and the identity arm turns into one corrected record
+    (:func:`_correction_for_status`).  One value because the two always
+    travel together through :func:`apply_requested_status`; it was two
+    keywords until plan step ``credit_card:CC-5-4a-5`` gave that door a
+    sixth argument (the parameter object a public function over the limit
+    takes).  The DAY is not in it: it is the assertion, not the record.
+
+    Attributes:
+        figure: The figure the door STATED and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`): ``typed``
+            from the popover, ``observed`` from the statement matcher's
+            transaction arm (plan step **X-bi-3e-1**, ruling **R-BAL61**).
+            Read by the SETTLE arm, which decides whether it is a correction
+            to record, and by the identity arm, which records it as one on a
+            row staying settled; ``None`` means nobody stated one, and the
+            settle records what it resolved instead.  Every other status
+            change ignores it, because a figure records what MOVED and
+            nothing else here moves money.
+        tender_account_id: The account the door named as the one the money
+            MOVED THROUGH (plan step ``credit_card:CC-5-3``): the popover's
+            "Paid from" picker, posted on every Save and preselected from
+            what the row records, or the statement matcher's own account.
+            Read by the SETTLE arm, which hands it to the verb, and by the
+            identity arm, which re-points a settled row's covering movement
+            when it names an account other than the recorded one; ``None``
+            means nobody named one.
+    """
+
+    figure: StatedFigure | None = None
+    tender_account_id: int | None = None
+
+
+#: A door that states nothing about the record -- a revert, a cancel, a
+#: status the door asked for with no figure and no tender.
+NOTHING_STATED = StatedRecord()
+
+
 def apply_requested_status(
     txn: Transaction,
     new_status_id: int,
     *,
     settle_day: SettleDay | None = None,
-    submitted: StatedFigure | None = None,
-    tender_account_id: int | None = None,
+    stated: StatedRecord = NOTHING_STATED,
+    shown: Shown | Silent = NOTHING_SHOWN,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
 
@@ -108,30 +152,18 @@ def apply_requested_status(
             the submission -- which is what stamps the ``entered`` basis on a
             day that came out of a date box.  ``None`` leaves the seam's rule in
             force.
-        submitted: The figure the door STATED and who wrote it
-            (:class:`~app.services.stated_figure.StatedFigure`): ``typed`` from
-            the popover, ``observed`` from the statement matcher's transaction
-            arm (plan step **X-bi-3e-1**, ruling **R-BAL61**).  Read by the
-            SETTLE arm, which decides whether it is a correction to record, and
-            by the identity arm, which records it as one on a row staying
-            settled; ``None`` means nobody stated one, and the settle records
-            what it resolved instead.  Every other status change ignores it,
-            because a figure records what MOVED and nothing else here moves
-            money.
-        tender_account_id: The account the door named as the one the money
-            MOVED THROUGH (plan step ``credit_card:CC-5-3``): the popover's
-            "Paid from" picker, posted on every Save and preselected from
-            what the row records, or the statement matcher's own account.
-            Read by the SETTLE arm, which hands it to the verb, and by the
-            identity arm, which re-points a settled row's covering movement
-            when it names an account other than the recorded one -- the
-            same shape the figure takes one parameter up; ``None`` means
-            nobody named one.
+        stated: The figure and the tender the door states for the record
+            (:class:`StatedRecord`, whose attributes say how each arm reads
+            them); :data:`NOTHING_STATED` when it states neither.
+        shown: The bank lines the door's page named before the press, or
+            what lets it stay silent; handed to whichever arm runs, and
+            asked by the act that takes the payment out of its matches
+            (``status_seam.apply_status_change``, ruling **R-CC127**).
 
     Raises:
         ValidationError: From an illegal transition, the seam's settle-day
             refusals, or the tender gate.  A 400 at the route.
-        NotFoundError: When *tender_account_id* names no account of the row's
+        NotFoundError: When *stated*'s tender names no account of the row's
             owner.  A 404 at the route.
         PostingError: From the reconcile, on a broken ledger invariant.
             Deliberately NOT a sibling of ``ValidationError`` -- it must fail
@@ -146,8 +178,8 @@ def apply_requested_status(
     if enters_settled_band(txn, new_status_id):
         reject_mismatched_settled_status(txn, new_status_id)
         settle_transaction(
-            txn, submitted=submitted, settle_day=settle_day,
-            tender_account_id=tender_account_id,
+            txn, submitted=stated.figure, settle_day=settle_day,
+            tender_account_id=stated.tender_account_id, shown=shown,
         )
         return
     # Everything else is ONE seam pass carrying every fact the door was given:
@@ -194,10 +226,11 @@ def apply_requested_status(
     # one, and the predicate went with the sharing: nothing here is released BY
     # KIND, because nothing here is released at all.
     settlement = _correction_for_status(
-        txn, new_status_id, submitted, tender_account_id,
+        txn, new_status_id, stated.figure, stated.tender_account_id,
     )
     apply_status_change(
         txn, new_status_id, settle_day=settle_day, settlement=settlement,
+        shown=shown,
     )
     posting_service.sync_transaction_postings(txn)
 
@@ -272,10 +305,10 @@ def _correction_for_status(
     # is refused rather than discarded.  It lives at the door rather than at the
     # route because only here is the row in hand, and the comparison is against
     # what the row RECORDS -- which is what the box was prefilled from.  The
-    # tender's reading is the same shape against the same record.
-    figure = figure_for_status(
-        txn, new_status_id, submitted, settled_figure(txn),
-    )
+    # tender's reading is the same shape against the same record.  Read ONCE:
+    # the echo rule below compares against the same figure.
+    recorded = settled_figure(txn)
+    figure = figure_for_status(txn, new_status_id, submitted, recorded)
     tender = tender_for_status(
         txn, new_status_id, tender_account_id, tender_account_id_of(txn),
     )
@@ -298,7 +331,9 @@ def _correction_for_status(
             "and no single account its money moved through. Record the "
             "purchase, or correct one that is already there.",
         )
-    record = correction_record(txn, figure) if figure is not None else None
+    record = (
+        correction_record(recorded, figure) if figure is not None else None
+    )
     if tender is None:
         return record
     tender = admitted_movement_account_id(txn, tender, movement="payment")

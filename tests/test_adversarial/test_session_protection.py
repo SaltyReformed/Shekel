@@ -37,8 +37,6 @@ every test in the file shares the same baseline:
   explicitly adds the header.
 """
 
-from flask import g
-
 from app.extensions import login_manager
 
 
@@ -56,29 +54,6 @@ _OTHER_FORWARDED_ADDR = "198.51.100.7"
 # A second User-Agent string that sha512-hashes to a different
 # identifier than the Werkzeug test-client default.
 _OTHER_USER_AGENT = "Mozilla/5.0 (TestProbe/1.0)"
-
-
-def _reset_login_cache() -> None:
-    """Force Flask-Login to re-evaluate ``current_user`` on the next
-    request.
-
-    Flask-Login caches the loaded user on ``g._login_user`` once per
-    request.  In production each HTTP request gets a fresh
-    ``app.app_context()`` (and therefore a fresh ``g``), so the cache
-    is effectively per-request.  The autouse ``db`` fixture in
-    ``tests/conftest.py`` holds a single app context across every
-    ``test_client`` call within a test, which means subsequent
-    requests would otherwise see the cached user even after the
-    session has been wiped by ``_session_protection_failed``.
-
-    Mirrors the helper in
-    ``tests/test_adversarial/test_secret_key_rotation.py`` -- the
-    same caching effect breaks tests that probe per-request session
-    state.  Kept duplicated rather than imported because the two
-    files exercise distinct invariants and a shared helper would tie
-    them together unnecessarily.
-    """
-    g.pop("_login_user", None)
 
 
 def _extract_remember_token(set_cookies: list[str]) -> str:
@@ -154,10 +129,6 @@ class TestStrongSessionProtection:
             f"identifier drift; got {pre.status_code}"
         )
 
-        # Drop the per-request user cache so load_user actually runs
-        # against the freshly-wiped session on the next request.
-        _reset_login_cache()
-
         # Request from a different IP.  The X-Forwarded-For header is
         # absent, so _get_remote_addr() falls back to REMOTE_ADDR.
         post = auth_client.get(
@@ -192,8 +163,6 @@ class TestStrongSessionProtection:
             "Setup failed: auth_client should be logged in before the "
             f"identifier drift; got {pre.status_code}"
         )
-
-        _reset_login_cache()
 
         post = auth_client.get(
             "/dashboard",
@@ -258,8 +227,6 @@ class TestStrongSessionProtection:
             f"session valid; got {same.status_code}"
         )
 
-        _reset_login_cache()
-
         # Drift X-Forwarded-For to a distinct address.  REMOTE_ADDR
         # is unchanged but does not feed the identifier when XFF is
         # present (see flask_login.utils._get_remote_addr).
@@ -297,8 +264,6 @@ class TestStrongSessionProtection:
         assert first.status_code == 200, (
             f"Baseline request failed with status {first.status_code}"
         )
-
-        _reset_login_cache()
 
         second = auth_client.get("/dashboard")
         assert second.status_code == 200, (
@@ -339,14 +304,6 @@ class TestStrongSessionProtection:
             assert "_id" in sess, (
                 "Setup failed: login_user did not set _id"
             )
-
-        # The auth_client fixture's POST /login populated
-        # ``g._login_user``; the test fixture's app context outlives
-        # the login request, so without resetting the cache the next
-        # request would skip ``_load_user`` (and therefore the
-        # session-protection check) entirely.  See
-        # ``_reset_login_cache`` for the reasoning.
-        _reset_login_cache()
 
         # Trigger drift on the next request.  We do not care about
         # the response itself here -- the strong-mode wipe happens
@@ -424,8 +381,6 @@ class TestStrongSessionProtection:
                 "Setup failed: login emitted an empty remember_token "
                 f"value: {login_directive!r}"
             )
-
-            _reset_login_cache()
 
             # Drift REMOTE_ADDR.  Strong mode should pop the session
             # AND schedule remember_token for clearing, so the
