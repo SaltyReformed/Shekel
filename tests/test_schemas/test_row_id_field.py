@@ -767,7 +767,7 @@ class TestNoIdFieldWasMissed:
         The difference :class:`~app.schemas.validation._helpers.ShownIds`'
         ``allow_none`` exists for (review finding H1's schema cases): a full
         popover posts the field empty, the grid's one-click posts none, and
-        ``routes._shown_lines.read_press`` reads the two differently.
+        ``routes._shown_lines.read_posted`` reads the two differently.
         """
         schema = _helpers.ShownLinesSchema()
         assert schema.load({"shown_lines": ""}) == {"shown_lines": None}

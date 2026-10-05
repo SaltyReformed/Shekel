@@ -8,7 +8,8 @@ popover's Save and Paid (``routes/transfers/mutations.py``), and the purchase
 list's X and edit form (``routes/entries.py``).  The reconcile panel posts one
 set PER ROW (``shown_lines-<row id>``) and reads them itself
 (``routes.accounts.reconcile._submitted_shown_lines``, plan step
-``credit_card:CC-5-4a-5c-1``), because its act compares per account.
+``credit_card:CC-5-4a-5c-1``), because the save names only the lines under
+the rows the owner ticked (``reconcile_service.record_reconciliation``).
 
 **The act that takes a movement off the books asks what the owner was SHOWN**
 (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): the
@@ -20,14 +21,14 @@ from a surface that renders no caption at all, and what that means is the
 DOOR's to say: Mark Paid's is silence under ruling **R-CC56** for the owner's
 one-click (the grid's cell and its phone card) and, for a companion's, a press
 that may free no line (ruling **R-CC130**,
-``routes.transactions._press._mark_paid_press``); every other door's is that
+``routes.transactions._press._mark_paid_posted``); every other door's is that
 it named nothing.
 
 **At the transaction and transfer doors only a full-edit popover posts the
 field, so there its presence also says WHERE a refusal is answered**: a
 popover's out-of-date press redraws the popover (ruling **R-CC128**), and any
 other surface's refusal is its ordinary error.  The purchase list's doors
-post it from the list itself and read only :attr:`Press.shown`: each answers
+post it from the list itself and read only :attr:`Posted.shown`: each answers
 a refusal by drawing that list again as it is now
 (``routes.entries._refused_entry_response``), but for a purchase or row that
 is gone, which is "not found".
@@ -38,7 +39,7 @@ reads are about the FORM, the shape of :mod:`app.routes._typed_figure`.
 
 from typing import NamedTuple
 
-from app.services.match_withdrawal import Shown, Silent
+from app.services.match_press import Shown, Silent
 
 #: The form field a full-edit popover posts its captions' bank lines under,
 #: declared on every schema those presses load
@@ -46,12 +47,12 @@ from app.services.match_withdrawal import Shown, Silent
 SHOWN_LINES_FIELD = "shown_lines"
 
 
-class Press(NamedTuple):
+class Posted(NamedTuple):
     """What a press's request said about the page it was made from.
 
     Attributes:
         shown: What the removal act is told the page named
-            (:class:`~app.services.match_withdrawal.Shown`), or what lets the
+            (:class:`~app.services.match_press.Shown`), or what lets the
             door stay silent.
         from_popover: Whether the request posted the field -- which, of the
             transaction and transfer doors' surfaces, only a full-edit popover
@@ -63,7 +64,7 @@ class Press(NamedTuple):
     from_popover: bool
 
 
-def read_press(data: dict, *, absent: Shown | Silent) -> Press:
+def read_posted(data: dict, *, absent: Shown | Silent) -> Posted:
     """Return what the press's page named, taking the field out of *data*.
 
     Args:
@@ -72,17 +73,17 @@ def read_press(data: dict, *, absent: Shown | Silent) -> Press:
             every key it does not recognise, and the transfer door hands its
             payload to the service as keywords.
         absent: What the door means when its request carries no field --
-            :data:`~app.services.match_withdrawal.MARK_PAID` at Mark Paid,
-            :data:`~app.services.match_withdrawal.NOTHING_SHOWN` elsewhere.
+            :data:`~app.services.match_press.MARK_PAID` at Mark Paid,
+            :data:`~app.services.match_press.NOTHING_SHOWN` elsewhere.
 
     Returns:
-        The :class:`Press`: ``Shown`` over the posted ids -- none, for the
+        The :class:`Posted`: ``Shown`` over the posted ids -- none, for the
         empty value ``ShownIds`` loads as ``None`` -- from a page that posts
         the field, or *absent* from any other surface.
     """
     if SHOWN_LINES_FIELD not in data:
-        return Press(shown=absent, from_popover=False)
-    return Press(
+        return Posted(shown=absent, from_popover=False)
+    return Posted(
         shown=Shown(data.pop(SHOWN_LINES_FIELD) or frozenset()),
         from_popover=True,
     )

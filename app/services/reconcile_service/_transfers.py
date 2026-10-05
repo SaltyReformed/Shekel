@@ -80,7 +80,7 @@ from app.exceptions import ValidationError
 from app.models.transfer import Transfer
 from app.services import transfer_legs, transfer_service
 from app.services.cash_ledger import AmountBasis, resolve_transfer_amount
-from app.services.match_withdrawal import Shown
+from app.services.match_press import Press
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     DamagedTransfer,
@@ -98,7 +98,7 @@ def _settle_one(
     leg: TransferLeg,
     submitted: StatedFigure | None,
     statement: _rows.Statement,
-    shown: Shown,
+    press: Press,
 ) -> bool:
     """Settle one leg's transfer through the service; say if a human's figure won.
 
@@ -123,10 +123,10 @@ def _settle_one(
             The leg on the other account borrows it unless it holds evidence
             of its own (ruling **R-BAL142**; it was stated for both legs until
             plan step ``balance:X-bi-6-4c-3``, like the link below never was).
-        shown: The bank lines the panel named under this tick -- always NONE
-            (the write union hands this arm no posted lines,
-            ``_assemble.record_reconciliation``; plan step
-            ``credit_card:CC-5-4a-5``).  A ``$0.00`` figure is the one
+        press: The panel save's press (``_assemble.record_reconciliation``,
+            ruling **R-CC135**), over the lines named under the ROWS ticked:
+            the panel captions no leg (plan step ``credit_card:CC-5-4a-5``).
+            A ``$0.00`` figure is the one
             transfer settle that takes a kept payment out of its matches, its
             shadows holding no purchase to settle from; ruling **R-CC125**
             refuses a typed one before this runs, and any other figure books
@@ -137,9 +137,9 @@ def _settle_one(
             series' (``ck_template_amount_versions_transfer_positive_amount``);
             whether a derive-mode loan payment's price can reach ``$0.00`` is
             not established -- which is ledger row **BAL-596**'s hole,
-            balance:X-db's.  The empty set refuses a tick
-            that would free a line rather than freeing it unannounced, so the
-            arm needs no caption and no named silence.
+            balance:X-db's.  A leg's tick that would free a line no row's
+            caption named is refused rather than freeing it unannounced, so
+            the arm needs no caption and no named silence.
 
     Returns:
         Whether the verb booked *submitted* as a human's correction -- the
@@ -155,7 +155,7 @@ def _settle_one(
         side_days=(
             transfer_service.SideDay(leg.account_id, statement.settle_day),
         ),
-        shown=shown,
+        press=press,
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
     # service because the leg's money still lands on a SHADOW row through the

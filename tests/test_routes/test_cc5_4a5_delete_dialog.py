@@ -37,6 +37,9 @@ from tests.test_routes.test_cc5_4a5_popover_presses import (
     _delete_vals,
     _redrawn,
 )
+from tests.test_routes.test_cc5_4a5b_purchase_and_credit_doors import (
+    _undone_in_another_tab,
+)
 # Pylint: ``shekel-private-module-import`` -- the statement-match builders are
 # the one way a test stages a bank line, a scope and an accepted act as the
 # app does; the convention ``test_statement_reconcile`` keeps.
@@ -102,6 +105,43 @@ class TestTheDeleteDialogPostsWhatItNamed:
             assert again.status_code == 200
             _committed()
             assert not _claimed(seed_user, line)
+
+    def test_a_delete_naming_a_line_another_tab_freed_is_redrawn(
+        self, app, auth_client, seed_user,
+    ):
+        """R-CC135: the dialog named the HOTEL line and another tab undid that match.
+
+        Refused and redrawn; the redrawn dialog names no line and goes ahead.
+        """
+        with app.app_context():
+            txn = a_transaction(
+                seed_user, name="Hotel", amount="120.00", template=False,
+            )
+            db.session.commit()
+            _settle(seed_user, txn)
+            line = _matched(seed_user, txn)
+            txn_id = txn.id
+            named = _delete_vals(_popover(auth_client, txn_id), txn_id)
+            assert named == {"shown_lines": str(line.id), "shown_purchases": ""}
+            _undone_in_another_tab(seed_user, line)
+
+            response = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=named,
+            )
+
+            html = _redrawn(response, f"txn-full-edit-{txn_id}")
+            _committed()
+            assert db.session.get(Transaction, txn_id) is not None
+
+            fresh = _delete_vals(html, txn_id)
+            assert fresh == {"shown_lines": "", "shown_purchases": ""}
+            again = auth_client.delete(
+                f"/transactions/{txn_id}", query_string=fresh,
+            )
+
+            assert again.status_code == 200
+            _committed()
+            assert db.session.get(Transaction, txn_id) is None
 
 
     def test_a_delete_without_the_field_is_refused(

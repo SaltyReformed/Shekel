@@ -507,8 +507,9 @@ def create_purchase_from_line(
     reject_ambiguous_destination(creation)
     reject_incomplete_new_envelope(creation)
     # ONE read of what this account's matches have claimed, for this act:
-    # the line refusal, the destination refusal and the double-count guard
-    # inside ``record_match`` all narrow with it, so they cannot disagree.
+    # the line refusal and the double-count guard inside ``record_match``
+    # both narrow with it, so they cannot disagree.  The destination refusal
+    # re-asks the row itself (``_destinations.current_destinations``).
     matched = matched_subjects(scope.account_id)
     line = _load_line(creation, matched, scope, answers)
     # **Before anything is staged**, and before the destination is even looked
@@ -567,7 +568,7 @@ def create_purchase_from_line(
     envelope, created = resolve_destination(
         creation, period,
         ActReads(
-            scope=scope, matched=matched, minted=minted,
+            scope=scope, minted=minted,
             placeable=answers.view.placeable_templates,
         ),
     )

@@ -660,6 +660,25 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     its first version released an act that had CREATED nothing and so never
     reached this function at all.
 
+    **The PURCHASE arm cannot take another act either, for a reason of its
+    own** (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2b).  Deleting an
+    envelope's last CARD purchase deletes its CC payback in the same removal
+    act (``entry_service._doors.delete_entry``), and a payback set back to
+    Projected keeps its payment un-dated, which a second act may still name.
+    But a purchase the create arm records is born a debit one
+    (:func:`~._create._born_purchase` states no card flag), and the card
+    total counts ``is_credit`` alone (``app.utils.entry_partition``), so it
+    becomes its envelope's last card purchase only by a CC tick -- an edit,
+    which moves its revision, and :func:`_subject_removal` refuses an edited
+    subject before anything is written.  Neither arm passes a press, so each
+    removal is a press of one call naming nothing, which refuses any line it
+    would free (``match_withdrawal.take_out_of_matches``, ruling
+    **R-CC127**): a fence the arguments above keep from firing.
+    ``test_release.TestTheUndoFreesNoLineAnotherActHolds`` grades that
+    through the doors, for an envelope the owner picked and one the act
+    minted; with the revision test deleted, both Undos reach the teardown and
+    are refused as out of date.
+
     **It removes the row it was HANDED, and does not look one up** (finding
     **N-371**, plan step ``bank_import:X-gf-3a``).  The transaction arm did
     ``db.session.get(Transaction, row.row_id)``, so the ownership of a row this

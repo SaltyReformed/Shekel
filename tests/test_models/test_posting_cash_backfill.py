@@ -283,7 +283,7 @@ class TestBackfillExclusions:
             movement_removal.remove_movements(
                 list(txn.entries), seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.NOTHING_SHOWN,
+                press=None,
             )
             txn.is_deleted = True
             _db.session.commit()

@@ -34,6 +34,7 @@ from werkzeug.datastructures import MultiDict
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -64,7 +65,7 @@ from tests.test_services.test_statement_match._builders import (
     a_transaction,
     an_import,
 )
-from app.services.statement_match import accept_match
+from app.services.statement_match import accept_match, release_match
 
 #: The bank's own words for the Kroger line -- distinct from the purchase's
 #: description, so a page that leaked the line would be caught naming it.
@@ -873,6 +874,123 @@ class TestLeavingCreditNamesThePaybacksLine:
             _committed()
             assert db.session.get(Transaction, payback.id) is None
             assert not _claimed(seed_user, line)
+
+
+def _undone_in_another_tab(seed_user, line):
+    """Another tab undoes the act naming *line*: the Undo's service door, ``release_match``."""
+    match_id = db.session.query(StatementMatchMember.match_id).filter(
+        StatementMatchMember.bank_statement_line_id == line.id,
+    ).scalar()
+    release_match(match_id, seed_user["user"].id, seed_user["account"].id)
+    db.session.commit()
+    assert not _claimed(seed_user, line)
+
+
+class TestALineAnotherTabFreedRedrawsTheDoor:
+    """R-CC135: *"a warning naming a line another tab has already freed now redraws"*.
+
+    Each door's page is drawn while the match stands, so its warning names
+    the line and posts it; another tab then undoes that match.  The press
+    frees nothing, which is not what its page named, so the save's close
+    refuses it and nothing changes.  These doors refused it before leaf
+    5c-2b too, by the per-call comparison inside their one match step: the
+    four here and the delete dialog's
+    ``test_cc5_4a5_delete_dialog::...::test_a_delete_naming_a_line_another_tab_freed_is_redrawn``
+    all pass on the pre-leaf tree, measured.  Since that leaf the CLOSE
+    refuses it, and these are the cases that grade the close at those five
+    doors.
+    """
+
+    def test_the_x_is_refused_and_the_redrawn_x_goes_ahead(
+        self, app, auth_client, seed_user,
+    ):
+        """Kroger's X named its line; the line is unexplained already: redrawn, then deleted."""
+        with app.app_context():
+            txn, kroger, line = _matched_kroger(seed_user)
+            path, query, vals = _x_press(
+                _list(auth_client, txn.id), txn.id, kroger.id,
+            )
+            assert vals == {"shown_lines": str(line.id)}
+            _undone_in_another_tab(seed_user, line)
+
+            refused = auth_client.delete(path, query_string=query)
+
+            assert refused.status_code == 400
+            body = refused.get_data(as_text=True)
+            assert "Nothing was saved: this page was out of date." in body
+            _committed()
+            assert db.session.get(TransactionEntry, kroger.id) is not None
+
+            path, query, vals = _x_press(body, txn.id, kroger.id)
+            assert vals == {"shown_lines": ""}
+            assert auth_client.delete(path, query_string=query).status_code == 200
+            _committed()
+            assert db.session.get(TransactionEntry, kroger.id) is None
+
+    def test_the_un_tick_is_refused(self, app, auth_client, seed_user):
+        """The edit form named the payback's line under CC; that match is gone: nothing changes."""
+        with app.app_context():
+            txn, card, payback, line = _card_payback_matched(seed_user)
+            fields, url = _edit_form(_list(auth_client, txn.id, editing=card.id))
+            assert ("shown_lines", str(line.id)) in fields
+            unticked = [pair for pair in fields if pair != ("is_credit", "true")]
+            _undone_in_another_tab(seed_user, line)
+
+            refused = auth_client.patch(url, data=MultiDict(unticked))
+
+            assert refused.status_code == 400
+            assert "Nothing was saved: this page was out of date." in (
+                refused.get_data(as_text=True)
+            )
+            _committed()
+            assert db.session.get(TransactionEntry, card.id).is_credit is True
+            assert db.session.get(Transaction, payback.id) is not None
+
+    def test_undo_cc_is_redrawn_and_the_redrawn_press_goes_ahead(
+        self, app, auth_client, seed_user,
+    ):
+        """The card named the CARD PAYMENT line beside Undo CC; that match is gone."""
+        with app.app_context():
+            source, payback, line = _credit_row_matched(seed_user)
+            path = f"/transactions/{source.id}/unmark-credit"
+            vals = _vals(_popover(auth_client, source.id), "delete", path)
+            assert vals == {"shown_lines": str(line.id)}
+            _undone_in_another_tab(seed_user, line)
+
+            refused = auth_client.delete(path, query_string=vals)
+
+            assert refused.status_code == 400
+            body = refused.get_data(as_text=True)
+            assert "Here it is as it is now; press again to go ahead." in body
+            _committed()
+            assert db.session.get(Transaction, payback.id) is not None
+
+            again = _vals(body, "delete", path)
+            assert again == {"shown_lines": ""}
+            assert auth_client.delete(path, query_string=again).status_code == 200
+            _committed()
+            assert db.session.get(Transaction, payback.id) is None
+
+    def test_status_leaving_credit_is_redrawn(self, app, auth_client, seed_user):
+        """The popover's Save, Status set to Projected, posted the line; that match is gone."""
+        with app.app_context():
+            source, payback, line = _credit_row_matched(seed_user)
+            fields = _form_fields(_popover(auth_client, source.id))
+            assert fields["shown_lines"] == str(line.id)
+            fields["status_id"] = str(ref_cache.status_id(StatusEnum.PROJECTED))
+            _undone_in_another_tab(seed_user, line)
+
+            refused = auth_client.patch(f"/transactions/{source.id}", data=fields)
+
+            assert refused.status_code == 400
+            assert "Here it is as it is now; press again to go ahead." in (
+                refused.get_data(as_text=True)
+            )
+            _committed()
+            assert db.session.get(Transaction, payback.id) is not None
+            assert db.session.get(Transaction, source.id).status_id == (
+                ref_cache.status_id(StatusEnum.CREDIT)
+            )
 
 
 class TestOneReadAnswersManyRemovals:
