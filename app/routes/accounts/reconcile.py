@@ -53,7 +53,7 @@ from flask import render_template, request
 from flask_login import current_user
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.exceptions import ValidationError
+from app.exceptions import PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
@@ -61,6 +61,7 @@ from app.routes.accounts._cash_page import (
     cash_detail_wrong_type,
     load_cash_account_or_404,
 )
+from app.schemas.validation import ShownLinesSchema
 from app.schemas.validation.transactions import MarkDoneSchema
 from app.services import cash_ledger, reconcile_service
 from app.services.pay_calendar import PayCalendar, calendar_for
@@ -157,12 +158,60 @@ def _submitted_corrections(
     return corrections
 
 
+def _submitted_shown_lines(form) -> "dict[int, frozenset[int]]":
+    """Return ``{row id: bank line ids}`` -- what each row's caption NAMED.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**: a
+    row whose tick would take a matched payment out of its matches prints a
+    caption naming the bank lines it frees, and posts those ids back under
+    its own hidden field (:attr:`~app.services.reconcile_service.TickForm.shown_prefix`
+    plus the row's id), so the act compares each tick with what was printed
+    under it.  PER ROW, because the act compares per account and one
+    panel-wide set fails that comparison once two rows on one account each
+    free a line.  Each value is read by the schema every other caption-bearing
+    door loads (``ShownLinesSchema``, over ``ShownIds``), so a posted id means
+    here what it means there; an empty value is a caption that named nothing.
+
+    Args:
+        form: The submitted ``request.form``.
+
+    Returns:
+        The named lines, keyed by row id; a row that posted no field is absent,
+        which the writer reads as having named nothing.
+
+    Raises:
+        ValidationError: On a value that is not a comma-joined list of ids,
+            flattened to this app's own exception as
+            :func:`_submitted_corrections` does.
+    """
+    shown: dict[int, frozenset[int]] = {}
+    schema = ShownLinesSchema()
+    prefix = reconcile_service.TickForm.ROW.shown_prefix
+    for field, raw in form.items():
+        if not field.startswith(prefix):
+            continue
+        row_id = parse_row_id(field[len(prefix):])
+        if row_id is None:
+            continue
+        errors = schema.validate({"shown_lines": raw})
+        if errors:
+            raise ValidationError(flatten_schema_errors(errors))
+        shown[row_id] = (
+            schema.load({"shown_lines": raw}).get("shown_lines") or frozenset()
+        )
+    return shown
+
+
+#: What the panel says after it is drawn again from CURRENT state, so the
+#: owner ticks again -- the remedy both of its out-of-date refusals share.
+_TICK_AGAIN = "Here it is again -- tick what your statement shows."
+
 #: What a concurrent edit reads as.  A statement is walked slowly and the grid
 #: is open on another device as often as not, so this is ordinary rather than
 #: exotic: the list re-renders from the CURRENT state and the user ticks again.
 _STALE_MESSAGE = (
     "Something on this list changed while you were reconciling, so nothing "
-    "was recorded.  Here it is again -- tick what your statement shows."
+    f"was recorded.  {_TICK_AGAIN}"
 )
 
 #: What a PARTLY-landed submission reads as.  Both arms drop an out-of-scope id
@@ -590,9 +639,20 @@ def record_reconciliation(account_id):
                 transfer_corrections=_submitted_corrections(
                     request.form, legs,
                 ),
+                shown_lines=_submitted_shown_lines(request.form),
             ),
         )
         db.session.commit()
+    except PageOutOfDate as exc:
+        # A tick whose settle frees other bank lines than the caption under
+        # it named (ruling R-CC127: "on the reconcile panel, one out-of-date
+        # row means nothing on it saves"; a tick that reaches no match step is
+        # not compared, ledger row BAL-597).  The panel is drawn again from
+        # current state below, so the refusal's facts are followed by the
+        # panel's own remedy rather than the reload a plain surface needs --
+        # the shape a popover's redraw has (ruling R-CC128).
+        db.session.rollback()
+        return _refusal(account, statement, f"{exc.facts} {_TICK_AGAIN}")
     except ValidationError as exc:
         db.session.rollback()
         return _refusal(account, statement, str(exc))

@@ -1,11 +1,14 @@
 """
 Shekel Budget App -- What a page NAMED before the press
 
-One translation, made identically by every door a page with withdrawal
-captions posts to: the transaction popover's Save, Paid / Received, Delete and
-Undo CC (``routes/transactions/mutations.py``), the transfer popover's Save and
-Paid (``routes/transfers/mutations.py``), and the purchase list's X and edit
-form (``routes/entries.py``).
+One translation, made identically by every door a page with ONE set of
+withdrawal captions posts to: the transaction popover's Save, Paid / Received,
+Delete and Undo CC (``routes/transactions/mutations.py``), the transfer
+popover's Save and Paid (``routes/transfers/mutations.py``), and the purchase
+list's X and edit form (``routes/entries.py``).  The reconcile panel posts one
+set PER ROW (``shown_lines-<row id>``) and reads them itself
+(``routes.accounts.reconcile._submitted_shown_lines``, plan step
+``credit_card:CC-5-4a-5c-1``), because its act compares per account.
 
 **The act that takes a movement off the books asks what the owner was SHOWN**
 (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): the

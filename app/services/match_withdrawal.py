@@ -115,9 +115,17 @@ may show a companion the owner's statement (:class:`OwnerOnly`, ruling
 **R-CC130**) -- as is its purchase X and CC un-tick (ruling **R-CC132**).
 The purchase X, the CC un-tick, Undo CC and Status leaving Credit name their
 lines first since plan step ``credit_card:CC-5-4a-5b`` (ruling **R-CC80**,
-finding **CC-367** closed); the reconcile panel and carry-forward name the
-open findings that own their captions until ``CC-5-4a-5c`` (**R-CC76**;
-findings **CC-364**, **CC-378**).
+finding **CC-367** closed), and the reconcile panel since ``CC-5-4a-5c-1``:
+the tick it captions -- a row settling from its purchases over a kept
+payment -- names its lines under the row, a typed ``$0.00`` box is refused
+(ruling **R-CC125**), and neither list offers a tick that would move a
+payment between accounts (ruling **R-CC126**; finding **CC-378** closes at
+that leaf's tick).  Every other panel tick names nothing, so one that would
+free a line is refused; two can still take a payment off uncaptioned -- a
+``$0.00``-figure row ticked with its box cleared, saved when its payment is
+unmatched (ledger row **BAL-596**), and two rows matched to one line ticked
+together, refused (finding **CC-384**).  Carry-forward names the open finding that owns its caption
+until ``CC-5-4a-5c-2`` (**R-CC76**; finding **CC-364**).
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -259,11 +267,12 @@ class Silent:
     Ruling **R-CC81**: a button may undo a match unannounced only by naming
     the ruling that lets it stay silent, in its own code where a reviewer
     sees it -- the grid's one-click Mark Paid (:data:`MARK_PAID`, ruling
-    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5c`` captions them,
-    the reconcile panel and carry-forward name the OPEN FINDING that owns
-    their caption instead (**CC-364**, **CC-378**): today's behaviour,
-    stated at each call site.  The purchase X and the three Credit doors
-    did too until ``CC-5-4a-5b`` captioned them (finding **CC-367**).
+    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5c-2`` captions it,
+    carry-forward names the OPEN FINDING that owns its caption instead
+    (**CC-364**): today's behaviour, stated at its call site.  The purchase
+    X and the three Credit doors did too until ``CC-5-4a-5b`` captioned them
+    (finding **CC-367**), and the reconcile panel until ``CC-5-4a-5c-1``
+    (findings **CC-364**, **CC-378**).
 
     Attributes:
         because: The ruling or finding id, written to the withdrawal event.

@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "_withdrawal_macros.html" import frees_lines, shown_line_ids %}
 {% macro period_span(period) -%}
 {#- WHICH paycheck a block belongs to, in this panel's narrow register.
 
@@ -45,42 +46,66 @@
    ``transfer_amount-<transfer id>``, because a transfer id can equal a row id.
    The offer derives all of them from its key (``TickForm``) and the route
    parses with the same members, so no name is written here.
+
+   **A tick that would take a matched payment out of its matches says so
+   under the row, and posts back what it said** (plan step
+   credit_card:CC-5-4a-5, rulings R-CC76 / R-CC127).  The one such tick is
+   a row settling FROM its purchases while holding the payment a revert kept;
+   ``group.settle.withdraws`` is the act's own twin over that payment, read
+   once for the panel.  The caption and the hidden field print from the SAME
+   withdrawal and only where it frees a line, and the field is PER ROW
+   (``group.settle.shown_field``), because the act compares per account.  The
+   caption sits on its own line under the row's one-line flex, where the
+   label's truncation cannot cut a bank line off, and the checkbox names it
+   as its description.
 #}
-<li class="list-group-item d-flex align-items-center gap-2">
-  <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
-         name="{{ group.settle.tick_form.ids_field }}" value="{{ group.settle.tick_id }}"
-         id="reconcile-{{ panel_id }}-{{ group.settle.control_id }}">
-  <label class="form-check-label flex-grow-1 text-truncate"
-         for="reconcile-{{ panel_id }}-{{ group.settle.control_id }}">
-    <span class="text-body-secondary fs-xs me-1">
-      {{ group.settle.attributed_on.strftime('%m/%d') }}
-    </span>
-    {{ label }}
-    {% if period %}
-    {{ period_span(period) }}
+{%- set withdraws = group.settle.withdraws %}
+{%- set names_lines = withdraws and withdraws.frees_a_line %}
+{%- set caption_id = 'reconcile-' ~ panel_id ~ '-' ~ group.settle.control_id ~ '-withdraws' %}
+<li class="list-group-item">
+  <div class="d-flex align-items-center gap-2">
+    <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
+           name="{{ group.settle.tick_form.ids_field }}" value="{{ group.settle.tick_id }}"
+           id="reconcile-{{ panel_id }}-{{ group.settle.control_id }}"{% if names_lines %}
+           aria-describedby="{{ caption_id }}"{% endif %}>
+    <label class="form-check-label flex-grow-1 text-truncate"
+           for="reconcile-{{ panel_id }}-{{ group.settle.control_id }}">
+      <span class="text-body-secondary fs-xs me-1">
+        {{ group.settle.attributed_on.strftime('%m/%d') }}
+      </span>
+      {{ label }}
+      {% if period %}
+      {{ period_span(period) }}
+      {% endif %}
+      {% if group.settle.cash_amount is not none %}
+      {# Finding N-226, widened by ruling R-FM.  An envelope books
+         ``sum(entries)`` over EVERY entry, and two kinds of those do not leave
+         checking at this tick: a card purchase (it leaves through its own CC
+         Payback) and one that has ALREADY posted on its own recorded day.  Both
+         figures are the producer's; this prints them and composes neither. #}
+      <span class="d-block text-body-secondary fw-normal fs-xs">
+        {{ money(group.settle.cash_amount) }} leaves your account now -- the rest is on a card or has already posted
+      </span>
+      {% endif %}
+    </label>
+    {% if group.settle.is_correctable %}
+    <div class="input-group input-group-sm flex-shrink-0 reconcile-amount">
+      <span class="input-group-text">$</span>
+      <input type="number" step="0.01" min="0"
+             class="form-control font-mono text-end"
+             name="{{ group.settle.amount_field }}"
+             value="{{ group.settle.amount }}"
+             aria-label="Amount for {{ label }}">
+    </div>
+    {% else %}
+    <span class="font-mono flex-shrink-0">{{ money(group.settle.amount) }}</span>
     {% endif %}
-    {% if group.settle.cash_amount is not none %}
-    {# Finding N-226, widened by ruling R-FM.  An envelope books
-       ``sum(entries)`` over EVERY entry, and two kinds of those do not leave
-       checking at this tick: a card purchase (it leaves through its own CC
-       Payback) and one that has ALREADY posted on its own recorded day.  Both
-       figures are the producer's; this prints them and composes neither. #}
-    <span class="d-block text-body-secondary fw-normal fs-xs">
-      {{ money(group.settle.cash_amount) }} leaves your account now -- the rest is on a card or has already posted
-    </span>
-    {% endif %}
-  </label>
-  {% if group.settle.is_correctable %}
-  <div class="input-group input-group-sm flex-shrink-0 reconcile-amount">
-    <span class="input-group-text">$</span>
-    <input type="number" step="0.01" min="0"
-           class="form-control font-mono text-end"
-           name="{{ group.settle.amount_field }}"
-           value="{{ group.settle.amount }}"
-           aria-label="Amount for {{ label }}">
   </div>
-  {% else %}
-  <span class="font-mono flex-shrink-0">{{ money(group.settle.amount) }}</span>
+  {% if names_lines %}
+  <div class="form-text mt-1" id="{{ caption_id }}">
+    Closing it from its purchases {{ frees_lines(withdraws) }}.
+  </div>
+  <input type="hidden" name="{{ group.settle.shown_field }}" value="{{ shown_line_ids(withdraws) }}">
   {% endif %}
 </li>
 {% endmacro %}

@@ -185,15 +185,15 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       this step: each says it first, and the one removal act asks what the owner was shown
       (**R-CC81**). Its `$0.00` captions were its own question at its start, under **R-BAL155**
       (ruled below). A row's own account's list, ticking a reopened bill whose kept payment is on
-      another account (a card, or Checking under `R-CC117`), re-points that payment
-      (`status_seam._covering._re_point`) and withdraws any match naming it through
+      another account (a card, or Checking under `R-CC117`), re-pointed that payment
+      (`status_seam._covering._re_point`) and withdrew any match naming it through
       `match_withdrawal.withdraw_for_moved_movement` with no caption (**CC-378**): its builder asked
       the developer whether that list captions such a row (`paid from <account>`) or omits it (ruled
       below). After 4a-4 (`R-CC76`). Closes **CC-364**, **CC-367**, **CC-378**.
       **Ruled at its start** (2026-09-30): the panel refuses a `$0.00` payment (**R-CC125**), a
       reopened bill paid from another account is offered only on that account's list (**R-CC126**,
       so the panel never re-points and **CC-378** closes unreachable), and the removal act checks
-      the page (**R-CC127**). **Built in three leaves, `Ships:` on the last one** (the coordinator,
+      the page (**R-CC127**). **Built in four leaves, `Ships:` on the last one** (the coordinator,
       2026-10-04). **4a-5a** `ff86849b` (done, no `Ships:`) -- the removal act takes the lines a
       page showed or a named silence (**R-CC127**); every popover press posts the lines its captions
       named (`shown_lines`), and a stale press redraws the whole card (**R-CC128**); Estimated's
@@ -222,14 +222,36 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       total to `$0.00`) with one sentence, an application: "Groceries's card payback is matched to a
       line on the bank statement, so only the account owner can make this change." The grid's
       statement-count test folds an `IN (...)` id list (**R-CC133**, rule 5). Closed **CC-367**.
-      **4a-5c**: the panel and carry-forward (**R-CC125**, **R-CC126**, a caption per row); closes
-      **CC-364**, **CC-378**.
+      **4a-5c**, split in two: **4a-5c-1** `bc0b02b3` (done, no `Ships:`) -- the reconcile panel. A
+      ticked `$0.00` box is refused before its arm settles anything, in the ruled sentence naming
+      the row or the leg (**R-CC125**, `_rows._refuse_a_zero_payment`, both arms). A row's own list
+      leaves out a row holding no purchase whose covering movement is on another account, of any
+      date (**R-CC126**, `_transactions._own_clauses`; any date is an application of the picked
+      description), so neither list re-points a payment (`status_seam._covering._re_point` changes
+      nothing), and its tick names no tender (**R-CC15**'s tender at the panel deleted as changing
+      nothing a tick books, an application; the booked account pinned per list). The one tick left
+      that takes a payment out of its matches, a row settling from its purchases over the payment a
+      revert kept, says so under its row ("Closing it from its purchases withdraws ...", the shared
+      `frees_lines` clause, an application of **R-CC56** and **R-CC80**) from ONE read
+      (`match_withdrawal.pending_for_each`), and posts those lines per row (`shown_lines-<row id>`)
+      to its own settle, since the act compares per account; a stale press redraws the panel with
+      the refusal's facts and "Here it is again -- tick what your statement shows." (**R-CC127**).
+      The panel's two `Silent` sites are deleted. Closed **CC-378**. Left open: a `$0.00`-figure row
+      ticked with its box cleared, uncaptioned (**balance:BAL-596**); two rows matched to one line
+      ticked together, refused (**CC-384**); a captioned tick whose last purchase another tab
+      deleted, saved uncompared (**balance:BAL-597**). **4a-5c-2**: carry-forward's caption per
+      envelope, the last `Silent` (`carry_forward_service/_execute.py`), the docstring sweep and
+      whether the statement matcher's own settles can free a line; it puts to the developer at its
+      start **CC-384**'s fork, **R-CC125**'s wording on money coming in (paychecks, a transfer's
+      incoming leg) and whether the matcher keeps moving a payment between accounts
+      (`statement_match._moving`, **R-CC43**), closes **CC-364**, and its last commit carries the
+      `Ships:`.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
       card" is `account_projection.is_revolving`, the type's `has_revolving_credit` flag and the one
       card predicate, where an id compare would be a second (`R-CC117`, rule 14). The row's own list
-      still offers it, by analogy to `R-CC43`'s matcher and never ruled for the panel (**CC-378**).
+      offered it, by analogy to `R-CC43`'s matcher, until **R-CC126** (**CC-378**).
 - [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
       balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
       parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given

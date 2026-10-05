@@ -65,10 +65,12 @@ from decimal import Decimal
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import AnchorPoint
+from app.services.match_withdrawal import Shown
 from app.services.stated_figure import StatedFigure
 from app.services.pay_calendar import DerivedPeriod, FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
@@ -315,13 +317,17 @@ class Arm:
             **Keyed by the id a tick posts**, so the id a form narrowed by and
             the id its amount box is read under are one value by construction:
             a row's own id, a leg's transfer id.
-        settle: ``(item, submitted, statement) -> bool`` -- settles one item
-            through the arm's own service verb, *submitted* being the panel's
-            figure and who wrote it
+        settle: ``(item, submitted, statement, shown) -> bool`` -- settles one
+            item through the arm's own service verb, *submitted* being the
+            panel's figure and who wrote it
             (:class:`~app.services.stated_figure.StatedFigure`, always
             ``typed``: the amount boxes are a person's word) or ``None``, and
-            returns whether a HUMAN's figure was booked.  The bool is asked of
-            the verb's own published
+            *shown* the bank lines the panel named under that item's tick
+            (:class:`~app.services.match_withdrawal.Shown`, plan step
+            ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**),
+            which the verb hands to the act that takes a payment out of its
+            matches.  Returns whether a HUMAN's figure was booked.  The bool is
+            asked of the verb's own published
             predicate rather than read off the column afterwards, which is
             finding **N-231**: an envelope's close always writes
             ``actual_amount``, so a column reading counts machine writes as
@@ -385,8 +391,8 @@ def outstanding_scope(statement: Statement, scope_clauses: tuple) -> list:
     and a user may hold more than one checking account, so a tick must book
     only money this account's statement could show.  The two scopes tie that
     money to this account two ways -- the row's own account for a row on it
-    (the tick books its payment here, the statement's account being the
-    tender), the kept PAYMENT's account for a row planned on another (a bill
+    (the tick books its payment here, the row's own account being where the
+    seam books it), the kept PAYMENT's account for a row planned on another (a bill
     paid from this card and reopened) -- and one clause here could state only
     the first.  They partition on the row's account (``=`` against ``<>``),
     which is what lets both read one form field (ruling **R-CC116**).
@@ -704,18 +710,93 @@ def outstanding_rows(
     return rows
 
 
+#: What the panel says to a ticked item whose amount box posted ``$0.00``
+#: (ruling **R-CC125**, developer 2026-09-30, "Refuse it now", verbatim as
+#: picked).  It names the ROW, never an id (ruling **R-CC98**); ``{name}`` is
+#: the item's own name -- a row's, or a leg's label.
+ZERO_PAYMENT_REFUSAL = (
+    "{name}: a payment can't be $0.00. If it wasn't paid, leave it unticked "
+    "or cancel it on the grid."
+)
+
+
+def _refuse_a_zero_payment(items: dict, corrections: "dict[int, Decimal]") -> None:
+    """Refuse the press when a TICKED item's amount box posted ``$0.00``.
+
+    Ruling **R-CC125** (developer 2026-09-30, "Refuse it now", amending
+    **R-CC76**'s ``$0.00`` half at this panel): *"The panel refuses a $0.00
+    payment today, as X-db will at every button ... Nothing changes"*.  A
+    ``$0.00`` record takes a kept payment off the books
+    (``status_seam._covering._withdraw``), and ruling **R-BAL155** refuses
+    ``$0.00`` payments everywhere once plan step ``balance:X-db`` moves the
+    refusal into the status seam and deletes this copy.  Until then the
+    popovers keep their ``$0.00`` and its caption (rulings **R-CC56**,
+    **R-CC59**, **R-CC129**) and this door refuses.
+
+    **Asked of the posted box, on a ticked item only**: an unticked item's box
+    is never read, and a row settling FROM its purchases carries no box
+    (ruling **R-FF**), so an envelope's close over its purchases is untouched
+    (R-BAL155's carry-over); an empty envelope settles from its figure and
+    has a box, refused at ``$0.00`` like a bill's.  It refuses BEFORE this
+    arm settles anything; an EARLIER arm of the same press has already
+    settled and logged, and the route's ``except`` arm rolls the whole press
+    back before ``reconcile._refusal`` redraws the panel, so nothing saves
+    (the log lines stay -- the shape every refusal raised mid-press has).  A
+    row whose own figure is ``$0.00`` ticked with its prefilled box CLEARED
+    posts no figure and is not refused here: it records ``$0.00``, which
+    takes a kept payment off the books (refused as out of date when that
+    payment is matched, the page having named nothing; deleted unannounced
+    when it is not).  Production held no such row by its stored inputs on
+    2026-10-04 (482 Projected live rows holding no purchase, none with a
+    ``$0.00`` stated or template figure; a figure an engine derives -- a
+    paycheck, a derive-mode loan payment -- was not resolved), and the hole
+    is ``balance:X-db``'s to close at every door at once (ledger row
+    **BAL-596**).
+
+    Args:
+        items: ``{tick id: item}``, what the arm loaded for the ticked ids --
+            each with a ``name`` (a row, or a leg).
+        corrections: ``{tick id: amount}`` from the arm's amount boxes.
+
+    Raises:
+        ValidationError: Naming the first such item, in the arm's order.
+    """
+    for tick_id, item in items.items():
+        amount = corrections.get(tick_id)
+        if amount is not None and amount == 0:
+            raise ValidationError(ZERO_PAYMENT_REFUSAL.format(name=item.name))
+
+
 def record_settled(
     arm: Arm,
     statement: Statement,
     tick_ids: "set[int]",
     corrections: "dict[int, Decimal]",
+    *,
+    shown_lines: "dict[int, frozenset[int]]",
 ) -> int:
     """Settle every item of *arm* the form ticked, and report what landed.
 
     **The WRITER, once, for both settle arms**, and what an arm keeps is
     :class:`Arm`.  Three things happen per item and none of them is a money
     rule: the arm's own settle runs, what it says about a human's figure is
-    counted, and the totals are logged once.
+    counted, and the totals are logged once.  One refusal precedes them, asked
+    of this arm's ticked items before it settles any: a ticked ``$0.00`` box
+    (:func:`_refuse_a_zero_payment`, ruling **R-CC125**).
+
+    **Each tick carries what the panel NAMED under it** (plan step
+    ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**): the bank
+    lines its caption printed, posted back per row, handed to the arm's settle
+    as a :class:`~app.services.match_withdrawal.Shown` and compared there by
+    the act that takes a payment out of its matches.  PER TICK, because that
+    act compares per ACCOUNT: one panel-wide set would be refused as out of
+    date the moment two rows on one account each freed a line.  A tick whose
+    page named nothing carries the empty set, which refuses any press that
+    would free one (*"A button with no warning sends nothing"*).  What is
+    compared is what a tick's settle FREES: a tick whose caption named a line
+    and whose settle reaches no match step -- its purchase deleted in another
+    tab, so it now settles from its figure -- is not compared, and books
+    (ledger row **BAL-597**, balance:X-da's).
 
     **Recording WHICH statement showed the item is the ARM's** (ruling
     **R-FL**), and that is not a preference: for the transfer arm the money
@@ -774,6 +855,8 @@ def record_settled(
             then counts.
         corrections: ``{tick id: amount}`` from the arm's amount boxes.  An id
             with no entry settles at the item's own figure.
+        shown_lines: ``{tick id: bank line ids}`` the panel named under each
+            tick.  An id with no entry named nothing.
 
     Returns:
         How many items settled -- what actually CHANGED, never what was asked
@@ -781,14 +864,18 @@ def record_settled(
         on items something else had already moved.
 
     Raises:
-        ValidationError: Propagated from the arm's settle verb -- an illegal
-            transition a stale panel can still submit.  A 400 at the route.
+        ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
+            propagated from the arm's settle verb -- an illegal transition a
+            stale panel can still submit, or a press freeing other bank lines
+            than its tick named (``PageOutOfDate``, ruling **R-CC127**).  A 400
+            at the route.
         PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
     """
     if not tick_ids:
         return 0
 
     items = arm.load(statement, tick_ids)
+    _refuse_a_zero_payment(items, corrections)
     corrected = 0
     for tick_id, item in items.items():
         # A figure out of the panel's amount box is a PERSON's statement of
@@ -800,7 +887,8 @@ def record_settled(
             None if amount is None
             else StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
         )
-        if arm.settle(item, submitted, statement):
+        shown = Shown(shown_lines.get(tick_id, frozenset()))
+        if arm.settle(item, submitted, statement, shown):
             corrected += 1
 
     if items:
