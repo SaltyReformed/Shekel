@@ -62,8 +62,8 @@ from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
-import psycopg2
-from psycopg2 import sql
+import psycopg
+from psycopg import sql
 
 # IMPORTANT: SECRET_KEY must be set in the environment BEFORE the
 # ``app`` package is imported, because ``app/config.py`` reads it at
@@ -398,7 +398,7 @@ def _bootstrap_worker_database():
         ``python scripts/build_test_template.py``.
 
     Clone verification:
-        After the clone, a fresh psycopg2 connection counts rows
+        After the clone, a fresh psycopg connection counts rows
         in ``ref.account_types``.  Anything other than the
         expected 19 means the template was corrupt at clone time
         and needs to be rebuilt; another actionable error message
@@ -440,7 +440,7 @@ def _bootstrap_worker_database():
         "TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL
     )
 
-    admin_conn = psycopg2.connect(admin_url)
+    admin_conn = psycopg.connect(admin_url)
     try:
         admin_conn.autocommit = True
         with admin_conn.cursor() as cur:
@@ -542,14 +542,14 @@ def _bootstrap_worker_database():
     finally:
         admin_conn.close()
 
-    # Verify the clone is intact -- a fresh psycopg2 connection
+    # Verify the clone is intact -- a fresh psycopg connection
     # bypasses any SQLAlchemy pool state from the admin connection
     # above.  A row count mismatch means the template itself was
     # corrupt; the message names the fix.
     per_session_url = urlunparse(
         urlparse(admin_url)._replace(path=f"/{db_name}")
     )
-    verify_conn = psycopg2.connect(per_session_url)
+    verify_conn = psycopg.connect(per_session_url)
     try:
         with verify_conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM ref.account_types")
@@ -597,7 +597,7 @@ else:
 
 
 def _drop_worker_database(db_name, admin_url):
-    """Drop the per-worker test database via an admin psycopg2 connection.
+    """Drop the per-worker test database via an admin psycopg connection.
 
     Phase 3b helper.  Called once per test by the ``db`` fixture
     (before ``_clone_worker_database`` re-creates it) and at session
@@ -606,7 +606,7 @@ def _drop_worker_database(db_name, admin_url):
     ``WITH (FORCE)`` (PostgreSQL 13+) terminates any leftover backend
     that escaped the previous test's ``_db.engine.dispose()``;
     without it a stuck transaction would block the drop.  Identifier
-    interpolation goes through :mod:`psycopg2.sql` so the
+    interpolation goes through :mod:`psycopg.sql` so the
     ``shekel_test_*`` name stays safely quoted even though it comes
     from a controlled f-string at module load time -- consistent
     with the rest of this module's admin-DSN access pattern.
@@ -617,7 +617,7 @@ def _drop_worker_database(db_name, admin_url):
             -- ``DROP DATABASE`` cannot run against the connection's
             own database).
     """
-    admin_conn = psycopg2.connect(admin_url)
+    admin_conn = psycopg.connect(admin_url)
     try:
         admin_conn.autocommit = True
         with admin_conn.cursor() as cur:
@@ -693,7 +693,7 @@ def _clone_worker_database(db_name, admin_url, template=None):
             way, a private database per test; only the content it starts with
             differs.
     """
-    admin_conn = psycopg2.connect(admin_url)
+    admin_conn = psycopg.connect(admin_url)
     try:
         admin_conn.autocommit = True
         with admin_conn.cursor() as cur:
@@ -1085,7 +1085,7 @@ def _build_seeded_snapshot(name, app):
             _db.engine.dispose()
 
     _drop_worker_database(snapshot, _WORKER_ADMIN_URL)
-    admin_conn = psycopg2.connect(_WORKER_ADMIN_URL)
+    admin_conn = psycopg.connect(_WORKER_ADMIN_URL)
     try:
         admin_conn.autocommit = True
         with admin_conn.cursor() as cur:
@@ -3712,7 +3712,7 @@ def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argumen
     bootstrap (``_BOOTSTRAP_RESULT`` is ``None``); only worker
     processes own a DB to drop.
 
-    Why psycopg2 directly (not SQLAlchemy):
+    Why psycopg directly (not SQLAlchemy):
         Flask-SQLAlchemy 3.x scopes ``db.session`` and ``db.engine``
         to the current app context, and the
         ``pytest_sessionfinish`` hook runs AFTER the session-scoped
@@ -3769,7 +3769,7 @@ def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argumen
         try:
             _drop_seeded_snapshots()
         finally:
-            admin_conn = psycopg2.connect(admin_url)
+            admin_conn = psycopg.connect(admin_url)
             try:
                 admin_conn.autocommit = True
                 with admin_conn.cursor() as cur:

@@ -51,7 +51,7 @@ sudo pacman -S python-pip
 ### Other System Packages
 
 ```bash
-# Required for psycopg2 (PostgreSQL adapter) to compile.
+# Required for psycopg's C module (psycopg-c, the PostgreSQL adapter) to compile.
 sudo pacman -S base-devel python
 
 # Required for bcrypt to compile.
@@ -93,36 +93,9 @@ which pip       # Should show ~/projects/budget-app/.venv/bin/pip
 
 ### Install Python Dependencies
 
-Create `requirements.txt`:
-
-```bash
-cat > requirements.txt << 'EOF'
-# Web framework
-Flask==3.1.0
-Flask-Login==0.6.3
-
-# Database
-Flask-SQLAlchemy==3.1.1
-Flask-Migrate==4.1.0
-SQLAlchemy==2.0.36
-psycopg2==2.9.10
-alembic==1.14.1
-
-# Validation
-marshmallow==3.23.2
-
-# Authentication
-bcrypt==4.2.1
-
-# Environment
-python-dotenv==1.0.1
-
-# Development & testing
-pytest==8.3.4
-pytest-flask==1.3.0
-pylint==3.3.3
-EOF
-```
+The repository's `requirements.txt` (production) and `requirements-dev.txt` (all of it, plus the
+test and lint tools) are the one statement of every pinned version. Install from them; this page
+used to carry a copy of the pins, and the copy went stale.
 
 ```bash
 pip install -r requirements-dev.txt

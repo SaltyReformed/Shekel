@@ -439,10 +439,16 @@ class TestAuditUserIdCapture:
         assert txn_row[-1]["user_id"] is None
 
     def test_set_local_is_transaction_scoped(self, app, db, seed_user):
-        """SET LOCAL resets after transaction commit -- next txn has no user_id."""
+        """A transaction-local setting resets after commit -- next txn has no user_id.
+
+        Set the way the application sets it (``app.audit_infrastructure``'s
+        ``set_config(..., true)``, ``SET LOCAL``'s function form).  ``SET LOCAL
+        ... = :uid`` itself cannot carry a bound parameter under psycopg 3's
+        server-side binding (plan step balance:X-dj, ruling R-BAL210).
+        """
         # Manually set the session variable, commit, then check it's gone.
         db.session.execute(
-            db.text("SET LOCAL app.current_user_id = :uid"),
+            db.text("SELECT set_config('app.current_user_id', :uid, true)"),
             {"uid": str(seed_user["user"].id)},
         )
         db.session.commit()

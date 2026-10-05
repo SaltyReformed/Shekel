@@ -46,7 +46,7 @@ from alembic import op
 from alembic.autogenerate import compare_metadata
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy.exc import IntegrityError, InternalError
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.audit_infrastructure import AUDITED_TABLES
@@ -65,7 +65,11 @@ from app.models.pay_stub import (
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import WithholdingKind
 from app.models.salary_profile import SalaryProfile
-from tests._test_helpers import load_migration_module, make_salary_profile
+from tests._test_helpers import (
+    load_migration_module,
+    make_salary_profile,
+    refused_by_database_rule,
+)
 
 _MIGRATION = load_migration_module("5641f7729b68_a_pay_stub_is_transcribed_line_by_line.py")
 
@@ -717,7 +721,7 @@ class TestNothingIsDeleted:
                 "REFERENCES salary.salary_profiles (id) ON DELETE CASCADE"
             ))
             savepoint = db.session.begin_nested()
-            with pytest.raises(InternalError, match="DELETE rejected"):
+            with refused_by_database_rule("DELETE rejected"):
                 db.session.execute(sqlalchemy.text(
                     "DELETE FROM salary.salary_profiles WHERE id = :id"
                 ), {"id": profile.id})
@@ -775,14 +779,14 @@ class TestAStubIsNeverDeletedOrMoved:
             health = _line(profile, "Health")
             stub_id = _whole_stub(profile, {health: Decimal("310.00")}).id
 
-            with pytest.raises(InternalError, match="DELETE rejected"):
+            with refused_by_database_rule("DELETE rejected"):
                 db.session.execute(sqlalchemy.text(
                     "DELETE FROM salary.pay_stubs WHERE id = :id"
                 ), {"id": stub_id})
             db.session.rollback()
 
             db.session.delete(db.session.get(PayStub, stub_id))
-            with pytest.raises(InternalError, match="DELETE rejected"):
+            with refused_by_database_rule("DELETE rejected"):
                 db.session.flush()
             db.session.rollback()
 
@@ -812,7 +816,7 @@ class TestAStubIsNeverDeletedOrMoved:
                 _withholding(WithholdingKindEnum.STATE_INCOME, Decimal("84.00")),
             )
             db.session.commit()
-            with pytest.raises(InternalError, match="moving it to"):
+            with refused_by_database_rule("moving it to"):
                 db.session.execute(sqlalchemy.text(
                     "UPDATE salary.pay_stubs SET salary_profile_id = :theirs "
                     "WHERE id = :id"
@@ -875,10 +879,7 @@ class TestAStubIsNeverDeletedOrMoved:
                 statement = "TRUNCATE salary.pay_stubs CASCADE"
             else:
                 statement = f"TRUNCATE ONLY salary.{table}"
-            with pytest.raises(
-                InternalError,
-                match=rf"salary\.{table} holds transcribed pay stubs; TRUNCATE rejected",
-            ):
+            with refused_by_database_rule(rf"salary\.{table} holds transcribed pay stubs; TRUNCATE rejected"):
                 db.session.execute(sqlalchemy.text(statement))
             db.session.rollback()
 

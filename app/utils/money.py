@@ -82,7 +82,7 @@ MONTHS_PER_YEAR = Decimal("12")
 #: bounded by the count of terms rather than by any one of them -- so the sum,
 #: and anything derived from it, needs the domain stated somewhere it can be
 #: compared against.  Reaching the database with a larger figure is
-#: ``psycopg2.errors.NumericValueOutOfRange``, which is an unhandled 500 and,
+#: ``NumericValueOutOfRange`` (SQLSTATE 22003), which is an unhandled 500 and,
 #: inside a batch, one that discards every item applied beside it.
 MONEY_COLUMN_MAX: Decimal = Decimal("9999999999.99")
 

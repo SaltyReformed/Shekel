@@ -657,9 +657,11 @@ def _decode(payload: bytes) -> str:
     Raises:
         StatementParseError: When the bytes are not text, or carry a NUL.  A
             NUL survives ``decode`` and ``csv.reader`` intact and only fails
-            deep inside psycopg2 with a ``ValueError`` that is not a
-            ``SQLAlchemyError``, so it escapes the route's handlers and becomes
-            a 500 rather than a sentence.
+            deep inside the driver, at the write: psycopg2 raised a bare
+            ``ValueError`` that escaped the route's ``SQLAlchemyError``
+            handlers as a 500, and psycopg 3 (since plan step balance:X-dj)
+            raises a ``DataError`` those handlers turn into a generic failure.
+            Neither is the sentence this gives.
     """
     try:
         text = payload.decode("utf-8-sig")

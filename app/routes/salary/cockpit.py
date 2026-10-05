@@ -23,6 +23,7 @@ from flask import abort, render_template, request
 from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
+from app.utils.digit_strings import integer_arg
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services.balance_at import BalanceContext
@@ -85,7 +86,7 @@ def _select_profile(profiles):
     Returns:
         The selected :class:`SalaryProfile`.
     """
-    requested = request.args.get("profile", type=int)
+    requested = request.args.get("profile", type=integer_arg)
     if requested is None:
         return profiles[0]
     profile = get_or_404(SalaryProfile, requested)
@@ -119,7 +120,7 @@ def _select_period(calendar, current_period):
     Returns:
         The selected :class:`~app.services.pay_calendar.DerivedPeriod`.
     """
-    requested = request.args.get("period", type=int)
+    requested = request.args.get("period", type=integer_arg)
     if requested is None:
         return (
             current_period if current_period is not None
@@ -294,7 +295,7 @@ def cockpit():
     calendar = ctx.calendar()
     periods = calendar.saved()
     current_period = calendar.period_containing(today)
-    requested_period_id = request.args.get("period", type=int)
+    requested_period_id = request.args.get("period", type=integer_arg)
     # Block when there is no period to focus: no periods at all, or no
     # period covering today and none explicitly requested.  A lone stale
     # anchor period (no current period) is not a usable biweekly schedule,

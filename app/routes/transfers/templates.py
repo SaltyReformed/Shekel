@@ -25,6 +25,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
+from app.utils.digit_strings import integer_arg
 from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
@@ -170,8 +171,8 @@ def new_transfer_template():
     current_period = calendar.period_containing(display_today())
 
     # Pre-fill account selection from query params (for quick-action links).
-    prefill_from = request.args.get("from_account", type=int)
-    prefill_to = request.args.get("to_account", type=int)
+    prefill_from = request.args.get("from_account", type=integer_arg)
+    prefill_to = request.args.get("to_account", type=integer_arg)
 
     return render_template(
         "transfers/form.html",

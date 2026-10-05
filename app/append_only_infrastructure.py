@@ -40,7 +40,7 @@ connects as the owner role: a door written to edit an assertion would pass
 locally and fail in production.  A trigger refuses the app, the suite, psql and
 a migration alike, so the suite proves the rule that ships rather than a weaker
 local copy of it.  The named Python exception the :mod:`app.models.append_only`
-listeners raise stays on top of it, because a ``psycopg2.errors.RaiseException``
+listeners raise stays on top of it, because the driver's ``RaiseException``
 naming a trigger is a worse thing for a developer to read than a Shekel
 exception naming the table and the remedy.
 

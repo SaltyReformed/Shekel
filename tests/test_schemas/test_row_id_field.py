@@ -135,6 +135,25 @@ class TestTheFieldRefusesWhatIntegerAccepted:
             with pytest.raises(ValidationError):
                 RowId().deserialize(below_floor)
 
+    def test_the_id_column_ceiling_applies_on_both_paths(self):
+        """A value no ``id`` column holds names no row, however it arrives.
+
+        Plan step balance:X-dj: psycopg 3 binds an id with a server-side
+        ``::INTEGER`` cast, so a number above
+        :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` that reached a
+        query would be refused by the cast as a 500 rather than matching no
+        row.  The ceiling itself still loads.
+        """
+        from app.utils.digit_strings import (  # pylint: disable=import-outside-toplevel
+            MAX_INTEGER_COLUMN,
+        )
+
+        assert RowId().deserialize(MAX_INTEGER_COLUMN) == MAX_INTEGER_COLUMN
+        assert RowId().deserialize(str(MAX_INTEGER_COLUMN)) == MAX_INTEGER_COLUMN
+        for beyond in (MAX_INTEGER_COLUMN + 1, str(MAX_INTEGER_COLUMN + 1)):
+            with pytest.raises(ValidationError):
+                RowId().deserialize(beyond)
+
     def test_a_non_integral_number_is_refused_rather_than_truncated(self):
         """``1.9`` does not name row 1.
 

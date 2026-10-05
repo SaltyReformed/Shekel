@@ -40,7 +40,7 @@ can only ever mean "say a new thing", never "erase the old one".
   moving (:func:`app.services.cash_ledger.reject_books_open_on_or_after_movements`,
   ruling **R-HG**).  That is the boundary this arc exists to hold, and the
   database holds it structurally; the service asks it so a date box gets a
-  sentence rather than a ``psycopg2`` abort at COMMIT.
+  sentence rather than a database driver's abort at COMMIT.
 * The books may not open on a day that has not happened
   (:func:`_reject_future_opening`).  An opening equity is what the account held
   at the CLOSE of its day, and nobody has seen the close of tomorrow.

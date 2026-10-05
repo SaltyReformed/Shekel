@@ -493,7 +493,7 @@ class TestTheTripleMustBeStorable:
 
         ``budget.recurrence_rules.interval_n`` is a Postgres ``integer``, so
         ``2147483648`` reaches the flush as an unhandled
-        ``psycopg2.errors.NumericValueOutOfRange``.  ``ck_recurrence_rules_
+        ``NumericValueOutOfRange`` (SQLSTATE 22003).  ``ck_recurrence_rules_
         positive_interval`` guards only the bottom of the domain; the type is
         the top, and nothing stated it -- ``is_authorable`` asks only that the
         interval be POSITIVE.

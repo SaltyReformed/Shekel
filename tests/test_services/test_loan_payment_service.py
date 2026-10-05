@@ -1209,7 +1209,7 @@ def _statements_issued():
 
     The same probe ``tests/test_arch`` uses, at the Engine level rather than a
     session's, so it sees what the PROCESS issued whichever session issued it.
-    It cannot see ``BEGIN`` / ``COMMIT`` / ``ROLLBACK`` -- psycopg2 issues those
+    It cannot see ``BEGIN`` / ``COMMIT`` / ``ROLLBACK`` -- psycopg issues those
     through the connection rather than a cursor -- which is why the assertion
     below names a TABLE rather than counting a total.
 

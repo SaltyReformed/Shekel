@@ -30,7 +30,6 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import InternalError
 
 from app import ref_cache
 from app.enums import PostingKindEnum, PostingSourceEnum
@@ -42,6 +41,7 @@ from app.posting_infrastructure import (
 from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
+    refused_by_database_rule,
 )
 
 
@@ -146,9 +146,8 @@ class TestBalancedTrigger:
         with app.app_context():
             entry_id = _insert_entry(_db.session, seed_user, period_id)
             _insert_leg(_db.session, entry_id, checking_ledger, Decimal("100.00"))
-            with pytest.raises(InternalError) as exc:
+            with refused_by_database_rule(r"posting\(s\)"):
                 _db.session.commit()
-            assert "posting(s)" in str(exc.value)
             _db.session.rollback()
 
     def test_unbalanced_two_legs_rejected_at_commit(self, app, db, seed_user, ledgers):
@@ -163,9 +162,8 @@ class TestBalancedTrigger:
             entry_id = _insert_entry(_db.session, seed_user, period_id)
             _insert_leg(_db.session, entry_id, checking_ledger, Decimal("100.00"))
             _insert_leg(_db.session, entry_id, savings_ledger, Decimal("50.00"))
-            with pytest.raises(InternalError) as exc:
+            with refused_by_database_rule("sum to"):
                 _db.session.commit()
-            assert "sum to" in str(exc.value)
             _db.session.rollback()
 
     def test_balanced_two_legs_accepted(self, app, db, seed_user, ledgers):
@@ -237,9 +235,8 @@ class TestBalancedTriggerOnUpdate:
                 "UPDATE budget.account_postings SET amount = amount + 50 "
                 " WHERE journal_entry_id = :e AND amount > 0"
             ), {"e": entry_id})
-            with pytest.raises(InternalError) as exc:
+            with refused_by_database_rule("sum to"):
                 _db.session.commit()
-            assert "sum to" in str(exc.value)
             _db.session.rollback()
 
     def test_balanced_update_accepted(self, app, db, seed_user, ledgers):
@@ -370,6 +367,6 @@ class TestApplyRemoveIdempotency:
             entry_id = _insert_entry(_db.session, seed_user, period_id)
             _insert_leg(_db.session, entry_id, checking_ledger, Decimal("100.00"))
             _insert_leg(_db.session, entry_id, savings_ledger, Decimal("50.00"))
-            with pytest.raises(InternalError):
+            with refused_by_database_rule("sum to"):
                 _db.session.commit()
             _db.session.rollback()

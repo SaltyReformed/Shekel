@@ -13,7 +13,7 @@
 # internal Docker bridge (``backend``) that no other tenant can reach,
 # so a public CA chain adds no security value but a real operational
 # cost (cert renewal, ACME bootstrap inside the container network).
-# psycopg2 is configured with ``sslmode=require`` -- the channel is
+# The app's libpq (psycopg) uses ``sslmode=require`` -- the channel is
 # encrypted and Postgres still authenticates the client password but
 # the cert chain itself is not validated.  Upgrading to
 # ``sslmode=verify-ca`` or ``verify-full`` requires committing
@@ -119,7 +119,7 @@ Examples:
         # Rotate to a fresh 1-year cert.
 
     sudo $(basename "$0") --cn db.example.internal
-        # Embed a custom CN (display only -- psycopg2 sslmode=require
+        # Embed a custom CN (display only -- libpq sslmode=require
         # does not validate the CN).
 EOF
 }
@@ -271,11 +271,11 @@ generate_cert_and_key() {
     #                   Fresh RSA-2048 keypair.  RSA chosen over
     #                   ECDSA because libpq's TLS support varies by
     #                   client version and RSA is the lowest-common-
-    #                   denominator that every supported psycopg2
+    #                   denominator that every supported libpq
     #                   release accepts under sslmode=require.
     #   -days ${DAYS}   Validity window.
     #   -subj /CN=...   Distinguished Name.  Only the CN is set;
-    #                   psycopg2 with sslmode=require does not
+    #                   libpq with sslmode=require does not
     #                   validate the CN, but a meaningful value
     #                   makes ``openssl x509 -text -in server.crt``
     #                   greppable for the deployment hostname.

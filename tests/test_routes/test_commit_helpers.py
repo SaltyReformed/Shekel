@@ -21,7 +21,7 @@ Tests use real blueprint endpoints for the redirect target (the
 session-scoped ``app`` fixture is frozen once a request has been
 handled; see ``test_recurrence_form_helpers.py``), and forge
 ``IntegrityError`` objects with the ``orig.diag.constraint_name``
-shape psycopg2 produces (the ``test_c19_credit_payback_unique.py``
+shape psycopg produces (the ``test_c19_credit_payback_unique.py``
 idiom) so :func:`app.utils.db_errors.is_unique_violation` discriminates
 exactly as it does against a live PostgreSQL error packet.
 """
@@ -85,7 +85,7 @@ def _spy_rollback(monkeypatch):
 def _forged_integrity_error(constraint_name: str) -> IntegrityError:
     """Build an IntegrityError reporting ``constraint_name`` via diag.
 
-    Mirrors the psycopg2 shape ``is_unique_violation`` inspects:
+    Mirrors the psycopg shape ``is_unique_violation`` inspects:
     ``exc.orig.diag.constraint_name`` (the structured PostgreSQL
     error-packet field), so the helpers under test discriminate the
     forged error exactly as they would a live unique violation.

@@ -970,10 +970,15 @@ def _seed_ref_tables():
     source of truth for ref-table seeding across the application
     factory (this function), the production deploy script, the test
     fixture stack, and the test-template builder.  The outer
-    ``try/except ProgrammingError`` is the only thing this wrapper
-    contributes -- it handles the boot-time race where the factory
-    runs the seed before tables exist (test setup, pre-migration
-    deploys).
+    tolerance of a SCHEMA BEHIND THE CODE is the only thing this
+    wrapper contributes -- it handles the boot-time race where the
+    factory runs the seed before a pending migration has created a
+    table or added a column (test setup, the development entrypoint,
+    ``flask db upgrade``).  It is read off the SQLSTATE
+    (:func:`~app.utils.db_errors.is_schema_behind_code`), not the
+    exception class, so a malformed statement, an absent privilege or a
+    trigger's refusal propagates instead of being skipped as a schema
+    that is merely behind (plan step balance:X-dj).
     """
     # Pylint: ``import-outside-toplevel`` -- ref_seeds (which imports the
     # ``app.models`` graph) is loaded only on the dev/test bootstrap path, not at
@@ -982,9 +987,12 @@ def _seed_ref_tables():
     from sqlalchemy.exc import ProgrammingError
 
     from app.ref_seeds import seed_reference_data
+    from app.utils.db_errors import is_schema_behind_code
 
     try:
         seed_reference_data(db.session)
         db.session.commit()
-    except ProgrammingError:
+    except ProgrammingError as exc:
         db.session.rollback()
+        if not is_schema_behind_code(exc):
+            raise

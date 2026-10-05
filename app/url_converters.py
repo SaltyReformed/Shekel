@@ -5,7 +5,8 @@ The routing layer's half of "what does a submitted digit string mean"
 (plan step X-ae, finding N-140).  :mod:`app.utils.digit_strings` answers it for
 form fields and owns the rule; this applies that rule to the PATH, so a row id
 has the same single spelling in a URL as in a form body.  (The query string is
-NOT yet covered -- 34 ``type=int`` sites, finding N-142.)
+NOT yet covered in SPELLING -- finding N-142; its RANGE is, through
+:func:`~app.utils.digit_strings.integer_arg`.)
 
 **Werkzeug's stock ``<int:>`` is lax in both of the ways this arc has already
 paid for**, and both were measured against this application:
@@ -64,7 +65,9 @@ class RowIdConverter(IntegerConverter):
     Registered as the application's ``int`` converter, so every
     ``<int:...>`` rule in the route tree consumes
     :func:`~app.utils.digit_strings.parse_row_id` -- the same function the
-    form and query doors use.
+    form doors use.  (The query string's integers read through
+    :func:`~app.utils.digit_strings.integer_arg`, which holds the range and
+    not the spelling.)
 
     Two layers, and both are load-bearing:
 
@@ -106,8 +109,10 @@ class RowIdConverter(IntegerConverter):
         Raises:
             ValidationError: *value* names no row -- it is zero, it carries
                 leading zeros (a second spelling of a row that already has
-                one), or it is too long for CPython to convert.  The rule
-                does not match and routing continues.
+                one), it is too long for CPython to convert, or it exceeds
+                what an ``id`` column holds
+                (:data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`).  The
+                rule does not match and routing continues.
         """
         row_id = parse_row_id(value)
         if row_id is None:
