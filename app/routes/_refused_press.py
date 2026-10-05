@@ -31,7 +31,7 @@ from flask.typing import ResponseReturnValue
 
 from app.exceptions import PageOutOfDate, ShekelError
 from app.extensions import db
-from app.routes._shown_lines import Press
+from app.routes._shown_lines import Posted
 from app.utils.error_fragments import designed_error
 
 
@@ -50,7 +50,7 @@ class RedrawnCard(NamedTuple):
 
 def answer_refused_press(
     exc: ShekelError,
-    press: Press,
+    posted: Posted,
     *,
     redraw: "Callable[[str], RedrawnCard | None]",
     refuse: "Callable[[], ResponseReturnValue]",
@@ -59,7 +59,7 @@ def answer_refused_press(
 
     Args:
         exc: What the service raised.
-        press: What the request said about its page (``read_press``).
+        posted: What the request said about its page (``read_posted``).
         redraw: Re-reads the press's object and draws its popover with the
             refusal's facts above it, AFTER this has rolled the press back;
             ``None`` when there is no card to draw.
@@ -87,7 +87,7 @@ def answer_refused_press(
     transfer as live, which the card's own rule answers "not found"
     (``routes.transfers.forms._drawable_card``).
     """
-    if not (isinstance(exc, PageOutOfDate) and press.from_popover):
+    if not (isinstance(exc, PageOutOfDate) and posted.from_popover):
         return refuse()
     db.session.rollback()
     db.session.expire_all()

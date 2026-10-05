@@ -14,6 +14,10 @@ that reaches it:
 * a reconcile-panel tick whose caption named a line its save never frees
   refuses the save (ledger row **BAL-597**): the per-call comparison ran only
   inside the match step, which that tick never reached.
+
+And what it KEEPS from that comparison: a call freeing a line the page did
+not name is still refused before it withdraws, so no later step's refusal
+masks the redraw.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import re
 
 import pytest
 
+from app.exceptions import PageOutOfDate
 from app.extensions import db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
@@ -90,6 +95,39 @@ class TestTheEventIsLoggedAtTheClose:
             assert db.session.get(StatementMatch, match_id) is not None
 
 
+class TestAnUnnamedLineStopsTheSaveAtOnce:
+    """R-CC135: *"undoing one the page did not name stops it at once"*, for an OWNER's press.
+
+    The close would refuse the same save, so what "at once" adds is WHICH
+    refusal the owner meets and what the call wrote first: the call that
+    frees a line its page did not name is refused before it withdraws
+    anything, so a later step's own refusal never masks the redraw.
+    """
+
+    def test_the_call_is_refused_before_it_withdraws(self, app, seed_user):
+        """Hotel's $0.00 would free HOTEL -$120.00, which the page never named.
+
+        Read BEFORE the rollback, so a withdrawal the call wrote and the
+        rollback then undid would still show here.
+        """
+        with app.app_context():
+            hotel, _line, match_id = _matched_hotel(seed_user)
+
+            with _Events() as events:
+                with pytest.raises(PageOutOfDate):
+                    with match_press.Press(match_press.NOTHING_SHOWN) as press:
+                        _record_zero(hotel, press=press)
+                        # A later step of the same save, refusing in its own
+                        # words: never reached.
+                        raise _AfterTheCall
+
+                assert db.session.get(StatementMatch, match_id) is not None
+                db.session.rollback()
+
+            assert not _withdrawals(events)
+            assert db.session.get(StatementMatch, match_id) is not None
+
+
 class TestAPressIsOpenedOnceAroundOneSave:
     """A door that forgot the ``with``, or reused a press, fails loud."""
 
@@ -121,6 +159,21 @@ class TestAPressIsOpenedOnceAroundOneSave:
                 with press:
                     _record_zero(hotel, press=press)
 
+            db.session.rollback()
+            assert db.session.get(StatementMatch, match_id) is not None
+
+    def test_a_closed_press_handed_to_a_later_call_refuses_it(self, app, seed_user):
+        """A press threaded past its ``with``: the next call fails loud, nothing withdrawn."""
+        with app.app_context():
+            hotel, line, match_id = _matched_hotel(seed_user)
+            press = match_press.Press(match_press.Shown(frozenset({line.id})))
+            with press:
+                pass
+
+            with pytest.raises(RuntimeError, match="outside an open press"):
+                _record_zero(hotel, press=press)
+
+            assert db.session.get(StatementMatch, match_id) is not None
             db.session.rollback()
             assert db.session.get(StatementMatch, match_id) is not None
 

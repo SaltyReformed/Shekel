@@ -55,12 +55,12 @@ from app.routes.transactions._gates import (
     _resolve_status_change,
     _stale_form_conflict,
 )
-from app.routes.transactions._press import _mark_paid_press, _refused
+from app.routes.transactions._press import _mark_paid_posted, _refused
 from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
 from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
-from app.routes._shown_lines import read_press
+from app.routes._shown_lines import read_posted
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
     _deleted_row_change_refusal,
@@ -136,7 +136,7 @@ _POSTING_RELEVANT_FIELDS = frozenset({
     "settled_on", "pay_period_id",
 })
 
-def _apply_regular_update(txn, txn_id, data, *, target_period, press):
+def _apply_regular_update(txn, txn_id, data, *, target_period, posted):
     """Apply a PATCH update to a transaction (the inline edit save).
 
     Runs the three pre-mutation gates, writes the submitted fields
@@ -171,8 +171,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
             :func:`_verify_owned_fks_in_update`'s answer, threaded so a
             one-off's re-placing (ruling **R-BAL33**) reads the paycheck's
             start off the derivation the FK probe already made.
-        press: What the card said about the bank lines this save frees
-            (``routes._shown_lines.read_press``), for the status verb's
+        posted: What the card said about the bank lines this save frees
+            (``routes._shown_lines.read_posted``), for the status verb's
             removal act and for answering its refusal (ruling **R-CC128**).
 
     Returns:
@@ -337,7 +337,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
     # ``unmark_credit``, which this path does not call).
     try:
         # ONE press for the save (R-CC135); a field refusal abandons it.
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             if unlocks:
                 _apply_status_or_postings(txn, data, new_status_id, one_save)
             # Write the submitted fields, flag a template row as overridden, and
@@ -389,7 +389,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
         # refusal is the 400 it always was, and a card out of date is
         # redrawn (ruling **R-CC128**).  One arm, because this handler is at
         # pylint's return ceiling.
-        return _refused(txn_id, exc, press)
+        return _refused(txn_id, exc, posted)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on update_transaction id=%d", txn_id,
@@ -412,7 +412,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period, press):
     }
 
 
-def _apply_status_or_postings(txn, data, new_status_id, press):
+def _apply_status_or_postings(txn, data, new_status_id, press: Press):
     """Apply the status the payload asks for, else reconcile the edited row.
 
     The status half of :func:`_apply_regular_update`, in one place so the
@@ -582,7 +582,7 @@ def update_transaction(txn, _target):
     data = schema.load(request.form)
     # Taken out here: it names no column, and the field loop below
     # ``setattr``s every key it does not recognise.
-    press = read_press(data, absent=NOTHING_SHOWN)
+    posted = read_posted(data, absent=NOTHING_SHOWN)
 
     # Route-boundary FK ownership (commit C-29 / F-029).  Reject
     # cross-user ``pay_period_id`` / ``category_id`` before the
@@ -607,7 +607,7 @@ def update_transaction(txn, _target):
         return conflict
 
     return _apply_regular_update(
-        txn, txn.id, data, target_period=target_period, press=press,
+        txn, txn.id, data, target_period=target_period, posted=posted,
     )
 
 
@@ -663,17 +663,17 @@ def delete_transaction(txn_id):
         )
     dialog = _delete_dialog_schema.load(request.values)
     purchases_named = dialog.pop("shown_purchases", None) or frozenset()
-    press = read_press(dialog, absent=NOTHING_SHOWN)
+    posted = read_posted(dialog, absent=NOTHING_SHOWN)
 
     try:
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             outcome = transaction_service.delete_transaction(
                 txn, current_user.id, press=one_save,
                 purchases_named=purchases_named,
             )
         db.session.commit()
     except ValidationError as exc:
-        return _refused(txn_id, exc, press)
+        return _refused(txn_id, exc, posted)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on delete_transaction id=%d", txn_id,
@@ -686,7 +686,7 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "gridRefresh"}
 
 
-def _mark_done_regular(txn, submitted, tender_account_id, press, target):
+def _mark_done_regular(txn, submitted, tender_account_id, posted, target):
     """Settle a transaction.
 
     **The rule this used to hold is now a SERVICE verb** --
@@ -737,7 +737,7 @@ def _mark_done_regular(txn, submitted, tender_account_id, press, target):
             ``credit_card:CC-5-3``), or ``None`` when the surface carried
             none -- the cell's checkmark, the mobile card -- and the verb's
             seam books on its default (ruling **R-CC42**).
-        press: What the surface said about the bank lines the settle frees:
+        posted: What the surface said about the bank lines the settle frees:
             the popover's captions, or the one-click's silence (ruling
             **R-CC56**).
         target: The :class:`_RenderTarget` describing the response
@@ -753,7 +753,7 @@ def _mark_done_regular(txn, submitted, tender_account_id, press, target):
     # Read before the settle: a refusal's rollback expires the row.
     txn_id = txn.id
     try:
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             transaction_service.settle_transaction(
                 txn, submitted=submitted, tender_account_id=tender_account_id,
                 press=one_save,
@@ -772,7 +772,7 @@ def _mark_done_regular(txn, submitted, tender_account_id, press, target):
         # that would free a line (ruling **R-CC130**) -- is the 400 fragment
         # showing current state plus the reason; a popover out of date is
         # redrawn (ruling **R-CC128**).
-        return _refused(txn_id, exc, press, target)
+        return _refused(txn_id, exc, posted, target)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on mark_done id=%d", txn_id,
@@ -864,7 +864,7 @@ def mark_done(txn, target):
         # What the popover's captions named; the owner's one-click posts
         # nothing and withdraws silently (ruling **R-CC56**), and a
         # companion's may free no line (ruling **R-CC130**).
-        _mark_paid_press(txn, mark_done_data),
+        _mark_paid_posted(txn, mark_done_data),
         target,
     )
 
@@ -924,12 +924,12 @@ def unmark_credit(txn_id):
         return _error_transaction_response(
             txn_id, flatten_schema_errors(errors), status=422,
         )
-    press = read_press(
+    posted = read_posted(
         _unmark_credit_schema.load(request.args), absent=NOTHING_SHOWN,
     )
 
     try:
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             credit_workflow.unmark_credit(
                 txn_id, current_user.id, press=one_save,
             )
@@ -948,7 +948,7 @@ def unmark_credit(txn_id):
         # e.g. attempting to unmark a Paid row.  The fragment names
         # the offending status so the user understands why; a card out of
         # date is redrawn instead (ruling **R-CC128**).
-        return _refused(txn_id, exc, press)
+        return _refused(txn_id, exc, posted)
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 

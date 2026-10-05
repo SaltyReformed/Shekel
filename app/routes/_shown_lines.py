@@ -21,14 +21,14 @@ from a surface that renders no caption at all, and what that means is the
 DOOR's to say: Mark Paid's is silence under ruling **R-CC56** for the owner's
 one-click (the grid's cell and its phone card) and, for a companion's, a press
 that may free no line (ruling **R-CC130**,
-``routes.transactions._press._mark_paid_press``); every other door's is that
+``routes.transactions._press._mark_paid_posted``); every other door's is that
 it named nothing.
 
 **At the transaction and transfer doors only a full-edit popover posts the
 field, so there its presence also says WHERE a refusal is answered**: a
 popover's out-of-date press redraws the popover (ruling **R-CC128**), and any
 other surface's refusal is its ordinary error.  The purchase list's doors
-post it from the list itself and read only :attr:`Press.shown`: each answers
+post it from the list itself and read only :attr:`Posted.shown`: each answers
 a refusal by drawing that list again as it is now
 (``routes.entries._refused_entry_response``), but for a purchase or row that
 is gone, which is "not found".
@@ -47,7 +47,7 @@ from app.services.match_press import Shown, Silent
 SHOWN_LINES_FIELD = "shown_lines"
 
 
-class Press(NamedTuple):
+class Posted(NamedTuple):
     """What a press's request said about the page it was made from.
 
     Attributes:
@@ -64,7 +64,7 @@ class Press(NamedTuple):
     from_popover: bool
 
 
-def read_press(data: dict, *, absent: Shown | Silent) -> Press:
+def read_posted(data: dict, *, absent: Shown | Silent) -> Posted:
     """Return what the press's page named, taking the field out of *data*.
 
     Args:
@@ -77,13 +77,13 @@ def read_press(data: dict, *, absent: Shown | Silent) -> Press:
             :data:`~app.services.match_press.NOTHING_SHOWN` elsewhere.
 
     Returns:
-        The :class:`Press`: ``Shown`` over the posted ids -- none, for the
+        The :class:`Posted`: ``Shown`` over the posted ids -- none, for the
         empty value ``ShownIds`` loads as ``None`` -- from a page that posts
         the field, or *absent* from any other surface.
     """
     if SHOWN_LINES_FIELD not in data:
-        return Press(shown=absent, from_popover=False)
-    return Press(
+        return Posted(shown=absent, from_popover=False)
+    return Posted(
         shown=Shown(data.pop(SHOWN_LINES_FIELD) or frozenset()),
         from_popover=True,
     )

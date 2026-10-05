@@ -105,14 +105,18 @@ delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
 
 **And the act ASKS what the owner was shown, ONCE PER SAVE** (plan step
 ``credit_card:CC-5-4a-5``, rulings **R-CC81**, **R-CC127** and **R-CC135**).
-Every door opens ONE :class:`~app.services.match_press.Press` around its
-unit of work over the bank lines its page named
-(:class:`~app.services.match_press.Shown`) or what lets it stay silent
-(:class:`~app.services.match_press.Silent`), and threads it to every call of
-:func:`take_out_of_matches` the save makes: a call freeing a line the page
-did not name is refused at once, and before the door commits, what the whole
-save freed must equal what the page named -- a page drawn before a match
-existed or after another tab freed one, or a door that forgot its caption.
+Every door whose page names lines, or that stays silent by a ruling, opens ONE
+:class:`~app.services.match_press.Press` around its unit of work over the
+bank lines its page named (:class:`~app.services.match_press.Shown`) or what
+lets it stay silent (:class:`~app.services.match_press.Silent`), and threads
+it to every call of :func:`take_out_of_matches` the save makes: a call
+freeing a line the page did not name is refused at once, and before the door
+commits, what the whole save freed must equal what the page named -- a page
+drawn before a match existed or after another tab freed one, or a door that
+forgot its caption.  A door that passes no press -- its page names
+nothing -- has each call open one of its own over :data:`NOTHING_SHOWN`,
+which refuses every line it would free: the same answer, one call at a
+time.
 Ruling **R-CC135** (developer 2026-10-04, "One check per save"): *"Every
 button that can undo a match checks once per save: undoing one the page did
 not name stops it at once, and before saving, what it undid must equal what
@@ -145,7 +149,8 @@ That package imports ``entry_service``, ``credit_workflow`` and
 living there could not be reached from any of them.  It imports the two match
 MODELS and, of ``app.services``, only :mod:`app.services.transfer_legs` -- the
 leaf below every service, which names a movement's parent for the event
-(plan step ``balance:X-bi-6-4c-4``) -- which is what lets the act and the
+(plan step ``balance:X-bi-6-4c-4``) -- and :mod:`app.services.match_press`,
+which imports no service at run time; that is what lets the act and the
 seam's move above it call one rule instead of a spelling each.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a

@@ -803,19 +803,21 @@ def record_settled(
     of this arm's ticked items before it settles any: a ticked ``$0.00`` box
     (:func:`_refuse_a_zero_payment`, ruling **R-CC125**).
 
-    **Each tick carries what the panel NAMED under it** (plan step
-    ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**): the bank
-    lines its caption printed, posted back per row, handed to the arm's settle
-    as a :class:`~app.services.match_press.Shown` and compared there by
-    the act that takes a payment out of its matches.  PER TICK, because that
-    act compares per ACCOUNT: one panel-wide set would be refused as out of
-    date the moment two rows on one account each freed a line.  A tick whose
-    page named nothing carries the empty set, which refuses any press that
-    would free one (*"A button with no warning sends nothing"*).  What is
-    compared is what a tick's settle FREES: a tick whose caption named a line
-    and whose settle reaches no match step -- its purchase deleted in another
-    tab, so it now settles from its figure -- is not compared, and books
-    (ledger row **BAL-597**, balance:X-da's).
+    **The panel's save is ONE press** (plan step ``credit_card:CC-5-4a-5``,
+    rulings **R-CC76** / **R-CC127** / **R-CC135**): the caller opens it over
+    every bank line printed under a row the owner TICKED, posted back per row
+    and joined (``_assemble.record_reconciliation``), and each item's settle
+    hands it to the act that takes a payment out of its matches.  Each such
+    call refuses at once a line no ticked row's caption named, and the
+    press's close refuses a save whose freed lines differ from what was
+    named -- PROMISED, so it compares a save that reached no match step too:
+    a ticked row whose caption named a line and whose settle went another
+    way, its purchase deleted in another tab so it now settles from its
+    figure, refuses the save (ledger row **BAL-597**).  It was a set PER TICK
+    until leaf 5c-2b, compared per ACCOUNT, which refused two rows matched to
+    one bank line ticked together on every try; the one press is half of
+    finding **CC-384**'s remedy, and a caption naming that shared line is
+    5c-2c's.
 
     **Recording WHICH statement showed the item is the ARM's** (ruling
     **R-FL**), and that is not a preference: for the transfer arm the money

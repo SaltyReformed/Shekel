@@ -47,7 +47,7 @@ from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
 from app.routes._refused_press import answer_refused_press
 from app.routes._render_helpers import render_transfer_cell, transfer_side_boxes
-from app.routes._shown_lines import read_press
+from app.routes._shown_lines import Posted, read_posted
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
@@ -576,7 +576,7 @@ def mark_done(xfer_id):
         return _error_transfer_response(
             xfer_id, flatten_schema_errors(errors), status=422,
         )
-    press = read_press(
+    posted = read_posted(
         _shown_lines_schema.load(request.form), absent=MARK_PAID,
     )
 
@@ -605,7 +605,7 @@ def mark_done(xfer_id):
         #
         # ONE press for the pair (ruling R-CC135): both sides' settles are
         # calls of it, compared whole at its close, before the commit.
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             transfer_service.settle_transfer(
                 xfer.id, current_user.id, press=one_save,
             )
@@ -622,7 +622,7 @@ def mark_done(xfer_id):
         # as a 500 instead of rendering a response (found during the
         # session-4 D2 sweep); now a designed 400 fragment.  A popover out
         # of date is redrawn (ruling **R-CC128**).
-        return _refused(xfer_id, exc, press)
+        return _refused(xfer_id, exc, posted)
     except IntegrityError:
         return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
@@ -676,7 +676,7 @@ def cancel_transfer(xfer_id):
     )
 
 
-def _refused(xfer_id, exc, press):
+def _refused(xfer_id, exc, posted: Posted):
     """Answer a press a service refused, on the surface the press came from.
 
     The transfer doors' call of the one decision
@@ -687,13 +687,13 @@ def _refused(xfer_id, exc, press):
     Args:
         xfer_id: The transfer the press named.
         exc: What the service raised.
-        press: What the request said about its page.
+        posted: What the request said about its page.
 
     Returns:
         A Flask response tuple.
     """
     return answer_refused_press(
-        exc, press,
+        exc, posted,
         redraw=partial(redraw_full_edit, xfer_id),
         refuse=lambda: _error_transfer_response(xfer_id, str(exc)),
     )
@@ -871,9 +871,9 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # request with no field named none.  Read HERE, beside the one call that
     # uses it; none of the gates above reads it.  ONE press for the pair
     # (ruling R-CC135), compared whole at its close, before the commit.
-    press = read_press(data, absent=NOTHING_SHOWN)
+    posted = read_posted(data, absent=NOTHING_SHOWN)
     try:
-        with Press(press.shown) as one_save:
+        with Press(posted.shown) as one_save:
             transfer_service.update_transfer(
                 xfer.id, current_user.id, press=one_save, **data,
             )
@@ -888,7 +888,7 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
         # transition from the grid transfer card) render as designed
         # fragments so the reason is visible (grid audit D2); a popover out
         # of date is redrawn (ruling **R-CC128**).
-        return _refused(xfer.id, exc, press)
+        return _refused(xfer.id, exc, posted)
     except IntegrityError:
         return _error_transfer_response(xfer.id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer.id)

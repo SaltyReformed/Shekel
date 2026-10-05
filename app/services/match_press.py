@@ -46,9 +46,10 @@ class Shown:
     Attributes:
         line_ids: The ``bank_statement_lines.id`` values the caption named.
             Owner input, so never trusted as a scope: :class:`Press` only
-            compares it, whole, with the lines the save frees, so an id the
-            save does not free -- another owner's, or one another tab has
-            already freed -- refuses the save rather than reaching a query.
+            compares it, whole, with the lines a GRADED save frees (one that
+            reached a match step, or whose page promised), so an id the save
+            does not free -- another owner's, or one another tab has already
+            freed -- refuses a graded save and never reaches a query.
     """
 
     line_ids: "frozenset[int]"

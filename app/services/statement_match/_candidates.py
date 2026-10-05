@@ -172,11 +172,12 @@ class MatchedSubjects:
     ``balance:X-bi-6-4c-1``): :attr:`legs` holds the transfers whose side on
     THIS account an act names through that side's covering movement -- a
     reverted transfer's kept, un-dated one -- so its still-planned leg is not
-    offered again while the act stands.  The account's own acts suffice,
-    where a row's claims need the owner's: a transfer's movement is always on
-    its own side's account (``transfer_service`` names no tender), and the
-    member key holds a member to the act's account.  Keyed by the transfer
-    alone because the account is this set's (ruling **R-BAL159**).
+    offered again while the act stands.  The account's own acts suffice, as
+    they do for a row's claims since finding **CC-385**: a transfer's
+    movement is always on its own side's account (``transfer_service`` names
+    no tender), and the member key holds a member to the act's account.
+    Keyed by the transfer alone because the account is this set's (ruling
+    **R-BAL159**).
 
     Attributes:
         lines: The ``bank_statement_lines`` ids a match already explains.

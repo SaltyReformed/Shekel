@@ -464,8 +464,9 @@ class ShownIds(fields.Field):
     reader of both answers for the bank lines.
 
     The ids are OWNER INPUT, never a scope: the save's press only compares
-    them, whole, with the lines the save frees (``match_press.Press``), and
-    the delete compares the named purchases with the row's own, as a set.
+    them, whole, with the lines a graded save frees (``match_press.Press``:
+    one that reached a match step, or whose page promised), and the delete
+    compares the named purchases with the row's own, as a set.
     """
 
     default_error_messages = {"invalid": "Not a valid list of ids."}
