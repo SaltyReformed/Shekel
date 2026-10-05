@@ -50,6 +50,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import baseline_amount_basis
+from app.services.match_press import Press, Shown
 from app.services.pay_calendar import DerivedPeriod, FiledRow
 from app.services.transfer_legs import key_order
 
@@ -551,12 +552,16 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     Raises:
         ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
             propagated from a settle verb -- an illegal transition a stale
-            panel can still submit, or a tick freeing other bank lines than
-            the panel named under it (``PageOutOfDate``, ruling **R-CC127**:
-            *"on the reconcile panel, one out-of-date row means nothing on it
-            saves"*, which the caller's rollback makes true for a tick whose
-            settle reaches the match step; one whose purchase was deleted in
-            another tab reaches none and books, ledger row **BAL-597**).
+            panel can still submit, or a save freeing other bank lines than
+            the panel named for the rows ticked (``NamedLines.for_ticks``:
+            a shared match's lines only when all its rows are;
+            ``PageOutOfDate``, ruling
+            **R-CC127**: *"on the reconcile panel, one out-of-date row means
+            nothing on it saves"*, and ruling **R-CC135**: compared ONCE, for
+            the whole save, at its close -- so a tick whose settle reaches no
+            match step, its purchase deleted in another tab, still refuses
+            the save when its row's caption named a line, ledger row
+            **BAL-597**).
         PostingError: Propagated from a verb's ledger reconcile.  Fails loud.
         RuntimeError: A ticked row names a pay period the submission's calendar
             does not hold
@@ -564,34 +569,41 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
             :func:`~._rows.attributed_on`'s share of the offer bound).
     """
     statement = submission.statement
-    purchases = _purchases.record_settled_days(
-        statement, submission.entry_ids,
-    )
-    source_rows = sum(
-        _rows.record_settled(
-            arm, statement, tick_ids, corrections, shown_lines=shown_lines,
+    # ONE press for the panel's save (ruling R-CC135, "One check per save"):
+    # what the page named is every line captioned under a row the owner
+    # TICKED, and every line of a shared match whose rows were ALL ticked
+    # (``NamedLines.for_ticks``), and what the whole save frees must equal it
+    # at the close.  A
+    # transfer's tick names no bank line -- a leg holds no purchase, so once
+    # a typed ``$0.00`` box is refused (ruling R-CC125) the panel has no
+    # transfer tick to caption -- so a leg's settle freeing a line no row
+    # named is refused (``_transfers._settle_one``).
+    # PROMISED: a row's caption names what ITS tick frees, so a ticked row
+    # whose save went another way refuses the save (ledger row BAL-597).
+    with Press(
+        Shown(submission.named.for_ticks(submission.transaction_ids)),
+        promised=True,
+    ) as press:
+        purchases = _purchases.record_settled_days(
+            statement, submission.entry_ids,
         )
-        for arm, tick_ids, corrections, shown_lines in (
-            (
-                _transactions.ARM,
-                submission.transaction_ids, submission.corrections,
-                submission.shown_lines,
-            ),
-            (
-                _transactions.SETTLEMENT_ARM,
-                submission.transaction_ids, submission.corrections,
-                submission.shown_lines,
-            ),
-            (
-                # A transfer's tick names no bank line: a leg holds no
-                # purchase, so once a typed ``$0.00`` box is refused (ruling
-                # R-CC125) the panel has no transfer tick to caption, and every
-                # leg's settle is told it named nothing -- which refuses one
-                # that would free a line (``_transfers._settle_one``).
-                _transfers.ARM,
-                submission.transfer_ids, submission.transfer_corrections,
-                {},
-            ),
+        source_rows = sum(
+            _rows.record_settled(
+                arm, statement, tick_ids, corrections, press=press,
+            )
+            for arm, tick_ids, corrections in (
+                (
+                    _transactions.ARM,
+                    submission.transaction_ids, submission.corrections,
+                ),
+                (
+                    _transactions.SETTLEMENT_ARM,
+                    submission.transaction_ids, submission.corrections,
+                ),
+                (
+                    _transfers.ARM,
+                    submission.transfer_ids, submission.transfer_corrections,
+                ),
+            )
         )
-    )
     return purchases + source_rows

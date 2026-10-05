@@ -212,10 +212,13 @@ class StatementMatchMember(db.Model):
     residual -- a row the act also NAMES.  The create-a-purchase arm creates
     two things, a purchase it names and often the budget line that HOLDS the
     purchase, and a container is not a member: naming it would claim the same
-    money twice (:func:`~app.services.statement_match._accept
-    ._reject_parent_and_its_own_purchase`) and would break
-    ``Sigma(lines) = Sigma(members)``.  A column on this table therefore had
-    nowhere to put the one subject the undo most needed to reach.
+    money twice and would break ``Sigma(lines) = Sigma(members)``, and no act
+    can.  A row holding a purchase is never offered: while Projected it is
+    worth ``$0.00`` to the matcher's offer
+    (:func:`~app.services.statement_match._valuation.transaction_price`,
+    ruling **R-BAL81**), and closed from its purchases it holds no payment to
+    name.  A column on this table therefore had nowhere to put the one
+    subject the undo most needed to reach.
 
     **Each subject belongs to at most ONE match, and that is structural.**  The
     two partial unique indexes below are what make "already matched" a
@@ -394,9 +397,11 @@ class StatementMatchCreation(db.Model):
     * a purchase recorded from a bank line is BOTH;
     * the ENVELOPE that purchase went into, when the act minted one, is
       created and NOT named -- naming an envelope beside its own purchase
-      counts the same money twice (ruling **R-FM**), which
-      :func:`~app.services.statement_match._accept
-      ._reject_parent_and_its_own_purchase` refuses outright.
+      counts the same money twice (ruling **R-FM**), and no act can: a row
+      holding a purchase is never offered (:class:`StatementMatchMember`
+      says why), so the accept door's refusal of that pairing was deleted as
+      unreachable (plan step ``credit_card:CC-5-4a-5``, finding **CC-386**,
+      ruling **R-CC144**).
 
     So the fact lived on ``statement_match_members.created_version_id`` while
     the residual was the only created subject, and had nowhere to put the

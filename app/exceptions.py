@@ -794,10 +794,11 @@ class PageOutOfDate(ValidationError):
     (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
     bank lines it named, and the function compares them with what it would
     undo. At 10:10 they differ, so nothing is saved"*.  Raised by
-    ``match_withdrawal.take_out_of_matches`` -- the match step of the one act
-    that takes a movement off the books, and of the seam's re-point -- before
-    it writes anything (:meth:`over_lines`); the door's rollback undoes
-    whatever the press staged before it.  Two causes reach it: a page drawn
+    ``match_press.Press`` -- per call of the match step of the one act
+    that takes a movement off the books, and of the seam's re-point, before
+    that call writes anything, and at the close of the save over everything
+    it freed (:meth:`over_lines`, ruling **R-CC135**); the door's rollback
+    undoes whatever the save staged.  Two causes reach it: a page drawn
     before a match was made or undone in another tab, and a door that forgot
     its caption.  **And by the row delete over the PURCHASES its dialog
     named** (ruling **R-CC131**, developer 2026-10-04, "Refuse and redraw",
@@ -847,8 +848,9 @@ class PageOutOfDate(ValidationError):
 
         Args:
             freed: How many bank lines the press would leave unexplained again.
-            named: How many of the lines its page named are on the accounts
-                the press touches.
+            named: How many lines its page named (plan step
+                ``credit_card:CC-5-4a-5``, ruling **R-CC135**: the whole
+                save's, compared whole).
 
         Returns:
             The exception, to raise.

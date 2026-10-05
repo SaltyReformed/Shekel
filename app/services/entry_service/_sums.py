@@ -107,9 +107,9 @@ def credit_total_moves(entry: TransactionEntry, valid_updates: dict) -> bool:
     test is what the first draft used -- "amount or is_credit was submitted"
     -- and it still refused a DEBIT row's amount edit, which cannot reach the
     credit sum at all.  Split out of ``_doors.update_entry`` at plan step
-    ``credit_card:CC-5-4a-5``, whose ``shown`` argument took that function
-    past pylint's local-variable ceiling; a reduction over one purchase, so
-    it lives with the others.
+    ``credit_card:CC-5-4a-5``, whose ``shown`` argument (``press`` since leaf
+    5c-2b) took that function past pylint's local-variable ceiling; a
+    reduction over one purchase, so it lives with the others.
 
     Args:
         entry: The purchase as stored, BEFORE the update is applied.

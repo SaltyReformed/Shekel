@@ -38,11 +38,8 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 
-from ._candidates import (
-    matched_subjects,
-    unmatched_destinations,
-    unmatched_rows,
-)
+from ._candidates import matched_subjects, unmatched_rows
+from ._destinations import current_destinations
 from ._offers import (
     BankLine,
     CandidateRow,
@@ -705,7 +702,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     )
     parts = leftovers(
         scope, unmatched,
-        unmatched_destinations(scope.destinations, matched),
+        current_destinations(scope.destinations),
         answers,
     )
     bounds = ReviewBounds(

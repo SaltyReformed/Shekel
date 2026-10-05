@@ -649,16 +649,37 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
       over its covering movement it is refused
       (``entry_service._refusals._reject_settled_addition``).  A purchase
       reaches it only after a revert, and the revert moves its revision, so
-      the undo refuses it as edited since; and a second act could not name
-      that purchase anyway, the double-count refusal
-      (:func:`~._accept._reject_parent_and_its_own_purchase`) holding it
-      while this act names the row;
+      the undo refuses it as edited since.  That refusal is what holds this
+      case now: nothing stops a second act naming that purchase since plan
+      step ``credit_card:CC-5-4a-5``'s leaf 5c-2b (finding **CC-385**, ruling
+      **R-CC143**) deleted the arm of the accept door's double-count refusal
+      that held it while this act named the row, and leaf 5c-2c-1 deleted the
+      rest of that refusal (finding **CC-386**, ruling **R-CC144**);
     * a created INCOME row takes no purchase at all (``create_entry``'s
       expense-only guard).
 
     ``TestReleasingAnActDoesNotWithdrawTwice`` grades the container case, and
     its first version released an act that had CREATED nothing and so never
     reached this function at all.
+
+    **The PURCHASE arm cannot take another act either, for a reason of its
+    own** (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2b).  Deleting an
+    envelope's last CARD purchase deletes its CC payback in the same removal
+    act (``entry_service._doors.delete_entry``), and a payback set back to
+    Projected keeps its payment un-dated, which a second act may still name.
+    But a purchase the create arm records is born a debit one
+    (:func:`~._create._born_purchase` states no card flag), and the card
+    total counts ``is_credit`` alone (``app.utils.entry_partition``), so it
+    becomes its envelope's last card purchase only by a CC tick -- an edit,
+    which moves its revision, and :func:`_subject_removal` refuses an edited
+    subject before anything is written.  Neither arm passes a press, so each
+    removal is a press of one call naming nothing, which refuses any line it
+    would free (``match_withdrawal.take_out_of_matches``, ruling
+    **R-CC127**): a fence the arguments above keep from firing.
+    ``test_release.TestTheUndoFreesNoLineAnotherActHolds`` grades that
+    through the doors, for an envelope the owner picked and one the act
+    minted; with the revision test deleted, both Undos reach the teardown and
+    are refused as out of date.
 
     **It removes the row it was HANDED, and does not look one up** (finding
     **N-371**, plan step ``bank_import:X-gf-3a``).  The transaction arm did

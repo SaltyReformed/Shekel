@@ -97,7 +97,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     entry_service,
-    match_withdrawal,
+    match_press,
     pay_period_gates,
     transaction_service,
     transfer_service,
@@ -597,13 +597,14 @@ class TestATombstoneCountsAsLeaving:
             assert envelope.recurs is True
 
             preview = transaction_service.preview_deletion(envelope)
-            outcome = transaction_service.delete_transaction(
-                envelope, seed_user["user"].id,
-                # What the dialog names, as the card posts it back (plan step
-                # credit_card:CC-5-4a-5, rulings R-CC127 / R-CC131).
-                shown=match_withdrawal.Shown(preview.withdrawn.line_ids),
-                purchases_named=preview.purchase_ids,
-            )
+            with match_press.Press(match_press.Shown(preview.withdrawn.line_ids)) as press:
+                outcome = transaction_service.delete_transaction(
+                    envelope, seed_user["user"].id,
+                    # What the dialog names, as the card posts it back (plan step
+                    # credit_card:CC-5-4a-5, rulings R-CC127 / R-CC131).
+                    press=press,
+                    purchases_named=preview.purchase_ids,
+                )
             db.session.commit()
             db.session.expire_all()
 

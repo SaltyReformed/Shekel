@@ -61,6 +61,7 @@ from app.services import (
     account_service,
     credit_workflow,
     entry_service,
+    match_press,
     match_withdrawal,
     statement_match,
     transaction_service,
@@ -160,12 +161,13 @@ def _delete(seed_user, txn):
     since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC127**: the act
     refuses a press whose freed lines differ from what the page named).
     """
-    shown = match_withdrawal.Shown(
+    shown = match_press.Shown(
         transaction_service.preview_deletion(txn).withdrawn.line_ids,
     )
-    outcome = transaction_service.delete_transaction(
-        txn, seed_user["user"].id, shown=shown,
-    )
+    with match_press.Press(shown) as press:
+        outcome = transaction_service.delete_transaction(
+            txn, seed_user["user"].id, press=press,
+        )
     db.session.flush()
     return outcome
 
@@ -348,10 +350,11 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
         # CC-5-4a-5, ruling R-CC127: "a test that submits exactly what the
         # page shows"), read through the list's own twin.
         shown = entry_service.purchase_removals([envelope])[purchase.id].delete
-        entry_service.delete_entry(
-            purchase.id, seed_user["user"].id,
-            shown=match_withdrawal.Shown(shown.line_ids),
-        )
+        with match_press.Press(match_press.Shown(shown.line_ids)) as press:
+            entry_service.delete_entry(
+                purchase.id, seed_user["user"].id,
+                press=press,
+            )
         db.session.flush()
 
         matched = _matched_line_ids(seed_user)
@@ -384,12 +387,13 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
 
         # Undo CC posts the lines its caption named (plan step CC-5-4a-5,
         # ruling R-CC127), read through the card's own twin.
-        credit_workflow.delete_payback_on_credit_revert(
-            source, seed_user["user"].id,
-            shown=match_withdrawal.Shown(
+        with match_press.Press(match_press.Shown(
                 credit_workflow.pending_for_credit_revert(source).line_ids,
-            ),
-        )
+            )) as press:
+            credit_workflow.delete_payback_on_credit_revert(
+                source, seed_user["user"].id,
+                press=press,
+            )
         db.session.flush()
 
         assert line.id not in _matched_line_ids(seed_user)
@@ -432,14 +436,15 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
         _submit(seed_user, lines=[line], transfers=[shadow.transfer])
         assert line.id in _matched_line_ids(seed_user)
 
-        transfer_service.delete_transfer(
-            xfer.id, seed_user["user"].id, soft=False,
-            shown=match_withdrawal.Shown(
+        with match_press.Press(match_press.Shown(
                 match_withdrawal.pending_for_movements(
                     shadow.covering_movements,
                 ).line_ids,
-            ),
-        )
+            )) as press:
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=False,
+                press=press,
+            )
         db.session.flush()
 
         assert line.id not in _matched_line_ids(seed_user)
@@ -641,10 +646,11 @@ class TestKeptRowsCountsWhatSURVIVES:
 
         # The X posts what its confirmation named (plan step CC-5-4a-5, ruling
         # R-CC127): the purchase's own lines, ``pending`` above.
-        entry_service.delete_entry(
-            purchase_id, seed_user["user"].id,
-            shown=match_withdrawal.Shown(pending.line_ids),
-        )
+        with match_press.Press(match_press.Shown(pending.line_ids)) as press:
+            entry_service.delete_entry(
+                purchase_id, seed_user["user"].id,
+                press=press,
+            )
         db.session.flush()
 
         assert db.session.get(Transaction, envelope_id) is not None

@@ -19,7 +19,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.routes._shown_lines import read_press
+from app.routes._shown_lines import read_posted
 from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import (
     fragment_amounts,
@@ -33,7 +33,7 @@ from app.schemas.validation import (
 )
 from app.services import entry_credit_workflow, entry_service
 from app.services.cash_flow_set import purchase_accounts
-from app.services.match_withdrawal import NOTHING_SHOWN, OwnerOnly, Shown, Silent
+from app.services.match_press import NOTHING_SHOWN, OwnerOnly, Press, Shown, Silent
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
@@ -334,7 +334,7 @@ def _refused_entry_response(
     )
 
 
-def _entry_press(
+def _entry_shown(
     txn: Transaction, data: dict[str, Any], *, refusal: str,
 ) -> Shown | Silent:
     """Return what an X, an edit or an add declares about the bank lines it frees.
@@ -348,7 +348,7 @@ def _entry_press(
     2026-10-04, "Refuse, shown first"), so its press may free none, refused
     with *refusal* where it would.  Who pressed is the request's, so it is
     read here, as Mark Paid's door reads it
-    (``routes.transactions._press._mark_paid_press``); a companion's posted
+    (``routes.transactions._press._mark_paid_posted``); a companion's posted
     field is dropped, not read, for the reason that door gives.
 
     Args:
@@ -360,10 +360,10 @@ def _entry_press(
             ``entry_credit_workflow.payback_refusal``.
 
     Returns:
-        A :class:`~app.services.match_withdrawal.Shown` or
-        :class:`~app.services.match_withdrawal.OwnerOnly`.
+        A :class:`~app.services.match_press.Shown` or
+        :class:`~app.services.match_press.OwnerOnly`.
     """
-    shown = read_press(data, absent=NOTHING_SHOWN).shown
+    shown = read_posted(data, absent=NOTHING_SHOWN).shown
     if txn.user_id == current_user.id:
         return shown
     return OwnerOnly(refusal=refusal)
@@ -656,16 +656,17 @@ def create_entry(txn_id):
     # the card total to zero), which the form cannot foresee: an owner's add
     # names nothing (finding CC-381), a companion's is refused with the
     # payback's sentence (ruling R-CC132; plan step credit_card:CC-5-4a-5).
-    shown = _entry_press(
+    shown = _entry_shown(
         txn, data, refusal=entry_credit_workflow.payback_refusal(txn),
     )
     try:
-        entry_service.create_entry(
-            transaction_id=txn.id,
-            user_id=current_user.id,
-            details=entry_service.EntryDetails(**data),
-            shown=shown,
-        )
+        with Press(shown) as one_save:
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=current_user.id,
+                details=entry_service.EntryDetails(**data),
+                press=one_save,
+            )
         db.session.commit()
     except IntegrityError as exc:
         # Defensive backstop for commit C-19: see
@@ -706,12 +707,13 @@ def _execute_entry_update(
     this owns the service-call/commit/error-translation tail (the
     ``transfers._execute_transfer_update`` precedent).  ``host`` is the
     validated surface prefix from :func:`_request_host`; ``shown`` is what
-    the edit form named (:func:`_entry_press`).
+    the edit form named (:func:`_entry_shown`).
     """
     try:
-        entry_service.update_entry(
-            entry_id, current_user.id, shown=shown, **data,
-        )
+        with Press(shown) as one_save:
+            entry_service.update_entry(
+                entry_id, current_user.id, press=one_save, **data,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -767,7 +769,7 @@ def update_entry(txn_id, entry_id):
     data = _update_schema.load(request.form)
     # What the form's CC caption named, taken out of the fields before they
     # reach the door (plan step ``credit_card:CC-5-4a-5``).
-    shown = _entry_press(
+    shown = _entry_shown(
         txn, data, refusal=entry_credit_workflow.payback_refusal(txn),
     )
 
@@ -937,7 +939,7 @@ def delete_entry(txn_id, entry_id):
     (:func:`_refused_entry_response`).  A companion's X is withheld over a
     purchase whose own line it would free, and a companion's press that
     would free one anyway is refused (ruling **R-CC132**,
-    :func:`_entry_press`).
+    :func:`_entry_shown`).
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:
@@ -949,7 +951,7 @@ def delete_entry(txn_id, entry_id):
         return _error_entry_response(
             txn, flatten_schema_errors(errors), host, status=422,
         )
-    shown = _entry_press(
+    shown = _entry_shown(
         txn, _shown_lines_schema.load(request.args),
         refusal=(
             f"{entry.description} is matched to a line on the bank "
@@ -969,10 +971,11 @@ def _execute_entry_delete(
     that handler one return past pylint's ceiling -- on the same precedent:
     the handler keeps its ownership guard and form validation, this owns the
     service call, the commit and the error translation.  ``shown`` is what
-    the X's confirmation named (:func:`_entry_press`).
+    the X's confirmation named (:func:`_entry_shown`).
     """
     try:
-        entry_service.delete_entry(entry_id, current_user.id, shown=shown)
+        with Press(shown) as one_save:
+            entry_service.delete_entry(entry_id, current_user.id, press=one_save)
         db.session.commit()
     except StaleDataError:
         logger.info(

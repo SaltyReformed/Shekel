@@ -10,7 +10,7 @@ here is spelled here -- the transaction popover's redraw
 error fragment of the cell or card the press targeted
 (:func:`~app.routes.transactions._helpers._error_transaction_response`) --
 and Mark Paid's declaration, the one door a companion presses
-(:func:`_mark_paid_press`).
+(:func:`_mark_paid_posted`).
 """
 
 from functools import partial
@@ -19,13 +19,13 @@ from flask_login import current_user
 
 from app.exceptions import NotFoundError
 from app.routes._refused_press import answer_refused_press
-from app.routes._shown_lines import Press, read_press
-from app.services.match_withdrawal import MARK_PAID, OwnerOnly
+from app.routes._shown_lines import Posted, read_posted
+from app.services.match_press import MARK_PAID, OwnerOnly
 from app.routes.transactions._helpers import _error_transaction_response
 from app.routes.transactions.forms import redraw_full_edit
 
 
-def _refused(txn_id, exc, press, target=None):
+def _refused(txn_id, exc, posted: Posted, target=None):
     """Answer a press a service refused, on the surface the press came from.
 
     The transaction doors' call of the one decision
@@ -38,7 +38,7 @@ def _refused(txn_id, exc, press, target=None):
     Args:
         txn_id: The row the press named.
         exc: What the service raised.
-        press: What the request said about its page.
+        posted: What the request said about its page.
         target: The
             :class:`~app.routes.transactions._helpers._RenderTarget`, or
             ``None`` for the desktop cell.
@@ -47,7 +47,7 @@ def _refused(txn_id, exc, press, target=None):
         A Flask response tuple.
     """
     return answer_refused_press(
-        exc, press,
+        exc, posted,
         redraw=partial(redraw_full_edit, txn_id),
         refuse=lambda: _error_transaction_response(
             txn_id, str(exc), target,
@@ -56,7 +56,7 @@ def _refused(txn_id, exc, press, target=None):
     )
 
 
-def _mark_paid_press(txn, data):
+def _mark_paid_posted(txn, data):
     """Return what a Mark Paid request declares about the bank lines it frees.
 
     Three presses reach the door.  The popover's Paid / Received posts the
@@ -67,7 +67,7 @@ def _mark_paid_press(txn, data):
     (ruling **R-CC130**, developer 2026-10-04, "Companion refuses").  Who
     pressed is the request's, so it is read here; what a press that frees a
     line it may not means is the removal act's
-    (:class:`~app.services.match_withdrawal.OwnerOnly`).
+    (:class:`~app.services.match_press.OwnerOnly`).
 
     **A companion's posted field is dropped, not read**: no companion surface
     renders it, so a request carrying one is crafted, and the owner's
@@ -78,13 +78,13 @@ def _mark_paid_press(txn, data):
         data: The schema-loaded payload; its ``shown_lines`` is taken out.
 
     Returns:
-        The :class:`~app.routes._shown_lines.Press`.
+        The :class:`~app.routes._shown_lines.Posted`.
     """
-    press = read_press(data, absent=MARK_PAID)
+    posted = read_posted(data, absent=MARK_PAID)
     if txn.user_id == current_user.id:
-        return press
+        return posted
     act = "received" if txn.is_income else "paid"
-    return Press(
+    return Posted(
         shown=OwnerOnly(
             refusal=(
                 f"{txn.name} is matched to a line on the bank statement, so "
