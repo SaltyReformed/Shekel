@@ -881,7 +881,7 @@ def delete_entry(
             or an archived one -- or a companion's press would free a line
             (ruling **R-CC132**).
         PageOutOfDate: When the press would free other bank lines than
-            *shown* names.
+            *press*'s page named.
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:

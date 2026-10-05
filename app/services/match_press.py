@@ -142,9 +142,10 @@ class Press:
     Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2b), ruling **R-CC135**
     (developer 2026-10-04, "One check per save").  A door opens it over what
     its page declared and threads it to every call of
-    :func:`take_out_of_matches` its save makes::
+    :func:`~app.services.match_withdrawal.take_out_of_matches` its save
+    makes::
 
-        with match_withdrawal.Press(shown) as press:
+        with match_press.Press(shown) as press:
             service_call(..., press=press)
         db.session.commit()
 
@@ -181,10 +182,11 @@ class Press:
     **A door's unit of work is one press**: a door making several calls opens
     one and threads it; a door making one opens one around it; a settle verb
     a door calls with none is told the page named nothing
-    (:func:`take_out_of_matches`, ruling **R-CC127**: *"A button with no
-    warning sends nothing"*).  A press that records state must not span a
-    savepoint its door rolls back alone -- the statement review's batch, the
-    one door that does, names nothing, so its calls record nothing.
+    (:func:`~app.services.match_withdrawal.take_out_of_matches`, ruling
+    **R-CC127**: *"A button with no warning sends nothing"*).  A press that
+    records state must not span a savepoint its door rolls back alone -- the
+    statement review's batch, the one door that does, names nothing, so its
+    calls record nothing.
 
     Not thread-safe and not reusable: one press, one save.
 
@@ -264,7 +266,8 @@ class Press:
         """Grade one call's withdrawal against the page, and record what it frees.
 
         Args:
-            planned: What the call would withdraw (:func:`_summarise`).
+            planned: What the call would withdraw
+                (``match_withdrawal._summarise``).
 
         Raises:
             RuntimeError: When the press is not open -- a door that forgot

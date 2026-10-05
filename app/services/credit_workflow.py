@@ -161,7 +161,7 @@ def delete_payback_on_credit_revert(
 
     Raises:
         PageOutOfDate: When the lines deleting the payback frees differ from
-            *shown* (``match_withdrawal.take_out_of_matches``).
+            what *press*'s page named (``match_withdrawal.take_out_of_matches``).
     """
     payback = get_active_payback(txn.id)
     deleted_payback_id = None
@@ -536,7 +536,7 @@ def unmark_credit(
             case the bespoke guard is bypassed) is not allowed by
             the state machine.
         PageOutOfDate: When deleting the payback would free other bank
-            lines than *shown* names.
+            lines than *press*'s page named.
     """
     # Defense-in-depth: ownership on the row's own owner column.
     txn = load_owned_transaction(transaction_id, user_id)

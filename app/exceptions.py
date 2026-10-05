@@ -794,7 +794,7 @@ class PageOutOfDate(ValidationError):
     (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
     bank lines it named, and the function compares them with what it would
     undo. At 10:10 they differ, so nothing is saved"*.  Raised by
-    ``match_withdrawal.Press`` -- per call of the match step of the one act
+    ``match_press.Press`` -- per call of the match step of the one act
     that takes a movement off the books, and of the seam's re-point, before
     that call writes anything, and at the close of the save over everything
     it freed (:meth:`over_lines`, ruling **R-CC135**); the door's rollback

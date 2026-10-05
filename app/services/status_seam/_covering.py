@@ -626,7 +626,7 @@ def _re_point(
     Raises:
         ValidationError: When the row's day is on or before the new
             account's opening, or when the matches the move withdraws free
-            other lines than *shown* names (ruling **R-CC127**).
+            other lines than *press*'s page named (ruling **R-CC127**).
     """
     if movement.account_id == account_id:
         return False
@@ -742,7 +742,7 @@ def _withdraw(row: Transaction, press: Press | None) -> None:
     record says what it frees first (ruling **R-CC56**: the full-edit
     popover's Actual box and its Paid button, reading
     ``match_withdrawal.pending_for_movements``) and posts back what it
-    named; the act refuses a press whose freed lines differ from *shown*
+    named; the act refuses a press whose freed lines differ from what its page named
     (plan step ``credit_card:CC-5-4a-5``, ruling **R-CC127**), so a door with
     no caption withdraws only by naming what lets it stay silent -- the
     grid's one-click Mark Paid, ruling **R-CC56**.

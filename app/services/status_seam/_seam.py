@@ -505,7 +505,7 @@ def apply_status_change(
             inside its books (propagated from
             :func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
             ruling **R-PC97**), or if the payment this act takes out of its
-            matches would free other bank lines than *shown* names (ruling
+            matches would free other bank lines than *press*'s page named (ruling
             **R-CC127**).
         ValueError: If a ``Transaction`` ENTERS the settled band with no
             *settlement*.  A programming error at the call site -- no form can

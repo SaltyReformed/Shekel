@@ -147,7 +147,7 @@ shadow's ``covering_movements`` to carry them to a moved endpoint, and
 ``_status.apply_status_to_all_three`` repairs a drifted shadow from its
 sibling's ``recorded_settlement``; and statement match's own reads of a
 payment member's row -- ``_acts.named_rows``,
-``_candidates._claimed_rows_of_the_owner`` and
+``_candidates._claimed_rows`` and
 ``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
 ``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
 id, and ``_acts._WHOLE_ACT`` loads a payment member's row and its

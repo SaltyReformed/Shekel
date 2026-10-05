@@ -806,7 +806,7 @@ def record_settled(
     **Each tick carries what the panel NAMED under it** (plan step
     ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**): the bank
     lines its caption printed, posted back per row, handed to the arm's settle
-    as a :class:`~app.services.match_withdrawal.Shown` and compared there by
+    as a :class:`~app.services.match_press.Shown` and compared there by
     the act that takes a payment out of its matches.  PER TICK, because that
     act compares per ACCOUNT: one panel-wide set would be refused as out of
     date the moment two rows on one account each freed a line.  A tick whose

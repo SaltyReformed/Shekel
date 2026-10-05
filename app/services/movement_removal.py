@@ -112,10 +112,11 @@ def remove_movements(
     """Take *movements* off the books: reversed, out of their matches, deleted.
 
     The module docstring carries the order and why each step is where it is.
-    *shown* is REQUIRED (ruling **R-CC81**): a door taking a payment or
-    purchase off the books says what its page named before the press, or
-    what lets it stay silent, and step 2 refuses a press whose freed lines
-    differ (``match_withdrawal.take_out_of_matches``, ruling **R-CC127**).
+    *press* is REQUIRED, a keyword with no default (ruling **R-CC81**): a
+    door taking a payment or purchase off the books says what its page named
+    before the press, or what lets it stay silent, and step 2 refuses at once
+    a line that page did not name (``match_withdrawal.take_out_of_matches``,
+    rulings **R-CC127**, **R-CC135**); the press's close compares the save.
     The refusal comes after step 1's reversal has flushed, so it is the
     door's rollback that undoes the press -- as for every refusal raised
     inside the status seam.
@@ -146,7 +147,8 @@ def remove_movements(
         when no act named any of them, which is nearly every removal.
 
     Raises:
-        ValidationError: When what the press frees differs from *shown*.
+        ValidationError: When step 2 frees a line *press*'s page did not
+            name.
     """
     movements = list(movements)
     for movement in movements:

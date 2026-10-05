@@ -405,7 +405,7 @@ def delete_transaction(
             reason this row may not be deleted on its own -- a transfer shadow
             or a CC payback.  It fires BEFORE anything is written, so a refused
             delete leaves the database exactly as it was.  Also when the
-            lines the press frees differ from *shown* (ruling **R-CC127**):
+            lines the press frees differ from what its page named (ruling **R-CC127**):
             that one is raised after the reversal has flushed, and the
             route's rollback undoes the press.  And as
             :class:`~app.exceptions.PageOutOfDate` when the row holds other
