@@ -1,8 +1,9 @@
 """The ``plan file`` command: a step, finding, ruling or question filed after
 :func:`check.violations` passes, a filing a failure cut short finished by the same
 command (R-BAL186), and nothing written over one an earlier run filed -- ruling
-``balance:R-BAL202``'s mark, its leaf rule (R-BAL204) and ruling closes (R-BAL206).
-``plan.py``'s module docstring is the command's usage.
+``balance:R-BAL202``'s mark, its leaf rule (R-BAL204) and ruling closes (R-BAL206) --
+and no leaf filed under a step a branch has claimed.  ``plan.py``'s module docstring is
+the command's usage.
 
 Split out of ``plan.py`` (X-cx L2, leaf C), which leaf C's change would otherwise take
 past the 1,000 lines ``too-many-lines`` allows.
@@ -24,9 +25,11 @@ from _command import (
 from _state import (
     filing_ended,
     filing_unfinished,
+    holder,
     is_live,
     leaf_placement,
     leaves,
+    release_hint,
     withdrawn_filing,
 )
 from _tracker import Card, Tracker, TrackerError
@@ -259,6 +262,42 @@ def _refuse_beside_unfinished(filing: _Filing, leaf: Card | None) -> None:
                       "(`plan show` shows its parent and board place)")
 
 
+def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) -> None:
+    """Refuse to file a leaf of ``filing``'s parent -- a new one, or ``leaf``'s filing again
+    -- while a claim names that parent (C2 review M4): a branch is building it as one piece
+    of work, and a step split into smaller steps is never shipped itself (R-BAL177), so a
+    split would leave the claim on a step no commit ships.  A run that finishes an earlier
+    filing is refused too: where its link has not landed (a leaf whose link failed,
+    R-BAL202, or one a person reopened after ``sync`` unlinked it), that link IS the
+    split; where it has, finishing would complete a split over the claim.  Refused, the
+    leaf stays marked, so it is never offered and ``next`` and ``sync`` name it.  The
+    refusal names the ways out: release the claim, or -- when ``leaf`` is a card an
+    earlier run created, git does not say it shipped, and no other leaf splits the step
+    -- drop it, which keeps the step whole (R-BAL205).
+
+    The claims are read here, before any write of the leaf's.  A claim this refusal
+    cannot see still lands on a split step: one made after this read and before the
+    link lands (GitHub has no conditional sub-issue write); one made while a leaf closed
+    while still being filed left the step plain, before a person reopened that leaf or
+    removed its stale mark; one older than this refusal; and a sub-issue a person links
+    under a claimed step on the web.  ``sync`` reports every such claim
+    (:func:`_state.sync_plan`)."""
+    parent = filing.parent
+    claim = tracker.claims().get(parent.number)
+    if claim is None:
+        return
+    others = set(leaves(parent, filing.cards, filing.shipped)) - {getattr(leaf, "number", None)}
+    keep = ("" if leaf is None or leaf.number in filing.shipped or others else
+            f"; or, to keep plan#{parent.number} whole, `plan drop plan#{leaf.number}`: its "
+            "filing never finished, so it was never part of the split (R-BAL205)")
+    raise Refused(f"plan#{parent.number} is claimed by {holder(claim)} since "
+                  f"{claim.made or '?'}: a branch is building it as one piece of work, and a step "
+                  "split into smaller steps is never shipped itself (R-BAL177), so no leaf is "
+                  "filed under it while it is claimed.  Release the claim first "
+                  f"({release_hint(claim)}, by the session that holds it, or once its work is "
+                  "abandoned), then run this again" + keep)
+
+
 def _ended_unfinished(card: Card) -> str:
     """Why nothing is filed over ``card``, whose filing a decision ended
     (:func:`_state.withdrawn_filing`), and how a person restores it: filing it again
@@ -314,7 +353,10 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
     """File a step, finding, ruling or question, after :func:`check.violations` passes;
     finish one a failure cut short (R-BAL186); write nothing over one the earlier run
     filed (:func:`_same_filing`): refused when a decision ended it
-    (:func:`_ended_unfinished`), else filed already (:func:`_filed_already`).
+    (:func:`_ended_unfinished`), else filed already (:func:`_filed_already`).  A leaf
+    whose filing would write anything is refused under a claimed step
+    (:func:`_refuse_under_a_claim`) and beside an unfinished sibling
+    (:func:`_refuse_beside_unfinished`).
 
     Every card is created marked, :data:`setup_tracker.FILING` sent in the call
     that creates it (by :meth:`_tracker.Tracker.create`, never through ``--label``,
@@ -347,6 +389,7 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
         if not filing_unfinished(card):
             return _filed_already(card, filing.parent)
     if args.kind == "step" and filing.parent is not None:
+        _refuse_under_a_claim(tracker, filing, card)
         _refuse_beside_unfinished(filing, card)
     if card is None:
         card = _created(args.kind, tracker, filing.draft)

@@ -386,6 +386,17 @@ def test_a_claim_whose_branch_cannot_be_read_is_released_by_saying_so(code, caps
     assert tracker.writes == [("release", 1)]
 
 
+def test_a_claim_refused_by_one_whose_branch_cannot_be_read_says_so(code, capsys):
+    """Leaf C3: the refusal named such a holder 'None since ' (no branch, no date); it names
+    it as every other line does."""
+    tracker = FakeTracker()
+    tracker.add(1)
+    tracker.held[1] = Claim(1, None, "", "s1")
+    assert run(tracker, code, "claim", "plan#1") == 1
+    assert capsys.readouterr().err == ("refused: plan#1 is already claimed by a branch that "
+                                       "cannot be read since ?\n")
+
+
 
 def test_sync_and_show_print_a_stray_reopens_and_act_on_neither(code, capsys):
     """R-BAL181 and R-BAL184 (review M2: both prints survived their deletion)."""

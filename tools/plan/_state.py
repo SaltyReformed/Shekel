@@ -76,7 +76,7 @@ change it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from _tracker import Card, Claim
@@ -172,6 +172,13 @@ def _shown_shipped(card: Card) -> bool:
     """Closed by the tool as completed: the tool's display that git says it shipped,
     which follows git and decides nothing."""
     return not card.is_open and card.closed_by_tool and card.state_reason == "COMPLETED"
+
+
+def unshipped_shown_done(card: Card, shipped: Iterable[int]) -> bool:
+    """Whether ``card``, as a piece of work, is shown shipped -- closed by the tool as
+    completed -- though git does not say it shipped (a ``Reopens:`` undid it, or it was a
+    split step left plain): :func:`shown_write` reopens it."""
+    return card.number not in set(shipped) and _shown_shipped(card)
 
 
 def _closed_dropped(card: Card) -> bool:
@@ -484,6 +491,48 @@ def unsplit(step: Card, out: Iterable[int], cards: Mapping[int, Card], shipped: 
     return Unsplit(step.number, out, add, anchor if plain and (add or below) else None)
 
 
+def shown_write(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
+    """The state write that makes the tool's display of ``card`` what git and its leaves
+    say -- ``"reopen"``, or a close as ``"completed"`` or as ``"not_planned"`` -- or None when
+    it shows that already.  A step split into smaller steps shows its leaves
+    (:func:`container_shown`, R-BAL190); a piece of work the tool showed shipped that git
+    does not say shipped is reopened (:func:`unshipped_shown_done`).  Open work git says
+    shipped is closed only by its claim (``_sync_shipped``), so this never decides it,
+    and no caller passes a card a person last closed or reopened, which holds their
+    decision: ``sync`` reports what it must (``_sync_container``), and ``plan drop`` writes
+    only a card the tool closed (:func:`drop_shows`).  ``sync`` writes it
+    (:func:`sync_plan`), and so does ``plan drop`` for the card it takes a leaf out of."""
+    shipped = set(shipped)
+    if is_container(card, cards, shipped):
+        wanted = container_shown(card, cards, shipped)
+        if (None if card.is_open else card.state_reason) == wanted:
+            return None
+        return {None: "reopen", "NOT_PLANNED": "not_planned", "COMPLETED": "completed"}[wanted]
+    return "reopen" if unshipped_shown_done(card, shipped) else None
+
+
+def drop_shows(split: Card, leaf: Card, cards: Mapping[int, Card],
+               shipped: Iterable[int]) -> str | None:
+    """The write ``plan drop`` makes to ``split``'s state before taking ``leaf`` -- a leaf of
+    it whose filing never finished -- out of its split (C2 review LOW 6): the one ``sync``
+    would make (:func:`shown_write`) to ``split`` as the drop leaves it, with ``leaf``
+    closed as not planned by the tool and still marked, so no leaf of it (:func:`leaves`).
+
+    Only for a card the TOOL closed: its state is the tool's display, and once the leaf
+    is unlinked, no card ``sync`` reads may lead to it again (unless one waits on it,
+    names it in a trailer or claims it), so the drop writes it.  Left a plain step (or a
+    finding a person linked the leaf under), it is reopened when it is shown done though
+    git never shipped it, and a plain step the tool closed as not planned (a drop) stays
+    dropped.  Still split by other leaves, it shows them: reopened while one is still
+    work, or closed again as they say.  An open card is read by every ``sync``, which
+    shows it; one a PERSON closed keeps their close (R-BAL185).  None: no write."""
+    if not split.closed_by_tool:
+        return None
+    gone = replace(leaf, is_open=False, state_reason="NOT_PLANNED", closed_by_tool=True,
+                   touched_by_hand=False)
+    return shown_write(split, {**cards, leaf.number: gone}, shipped)
+
+
 def drop_unlinks(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
                  ending: set[int]) -> list[Unsplit]:
     """What a drop of ``card`` unlinks (R-BAL205), so no link it leaves behind could ever
@@ -503,6 +552,21 @@ def drop_unlinks(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
             undos.append(unsplit(step, out, cards, shipped, None))
         wanted += [cards[number] for number in step.step_children]
     return undos
+
+
+def release_flag(claim: Claim) -> str:
+    """The ``release`` option naming ``claim``'s holder, read or not."""
+    return "--unreadable" if claim.branch is None else f"--branch {claim.branch}"
+
+
+def release_hint(claim: Claim) -> str:
+    """The command that releases ``claim``, whether or not its branch could be read."""
+    return f"`plan release plan#{claim.card} {release_flag(claim)}`"
+
+
+def holder(claim: Claim) -> str:
+    """Who holds ``claim``: its branch, quoted, or that its branch cannot be read."""
+    return repr(claim.branch) if claim.branch is not None else "a branch that cannot be read"
 
 
 def stale_claims(claims: Mapping[int, Claim], now: datetime,
@@ -550,11 +614,22 @@ def _sync_shipped(card: Card, plan: SyncPlan, claims: Mapping[int, Claim],
         plan.close.append(card.number)
         plan.release.append(card.number)
         return
-    named = f"its claim names {claim.branch!r}" if claim else "it has no claim"
+    named = f"its claim names {holder(claim)}" if claim else "it has no claim"
     plan.reports.append(
         f"plan#{card.number} shipped in git from {sorted(branches) or 'no pull request'}, "
         f"but {named}: not closed (a mistyped number must not close another's card)"
     )
+
+
+def container_shown(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
+    """The state the tool shows a container in, its display of its leaves (R-BAL190): open
+    (None) while one is still work, closed as not planned (``NOT_PLANNED``) once all were
+    dropped (R-BAL187), else closed as completed (``COMPLETED``).  ``sync`` writes it
+    (:func:`shown_write`)."""
+    shipped = set(shipped)
+    if not resolved(card.number, cards, shipped):
+        return None
+    return "NOT_PLANNED" if dropped(card.number, cards, shipped) else "COMPLETED"
 
 
 def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
@@ -566,9 +641,9 @@ def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
     A person's close is a drop, so the one state a person leaves that its leaves
     contradict is a container reopened by hand while its leaves are all done.
     """
-    done = resolved(card.number, cards, shipped)
+    wanted = container_shown(card, cards, shipped)
     if card.touched_by_hand:
-        if done and card.is_open:
+        if wanted is not None and card.is_open:
             plan.reports.append(
                 f"container plan#{card.number} was reopened by a person's hand, while its "
                 "leaves are all done: to put work back under it, reopen by hand a leaf that "
@@ -576,15 +651,31 @@ def _sync_container(card: Card, plan: SyncPlan, cards: Mapping[int, Card],
                 "shipped; to leave it, close it by hand, which records it dropped (R-BAL190)"
             )
         return
-    shown = None if card.is_open else card.state_reason
-    if not done:
-        wanted, writes = None, plan.reopen
-    elif dropped(card.number, cards, shipped):
-        wanted, writes = "NOT_PLANNED", plan.drop
-    else:
-        wanted, writes = "COMPLETED", plan.close
-    if shown != wanted:
-        writes.append(card.number)
+    _record(plan, card.number, shown_write(card, cards, shipped))
+
+
+def _record(plan: SyncPlan, number: int, write: str | None) -> None:
+    """Put :func:`shown_write`'s write for card ``number`` in ``plan``."""
+    if write is not None:
+        {"reopen": plan.reopen, "completed": plan.close, "not_planned": plan.drop}[write].append(
+            number)
+
+
+def _claimed_split(card: Card, claim: Claim, cards: Mapping[int, Card], shipped: set[int]) -> str:
+    """The REPORT for ``claim`` on ``card``, a step split into smaller steps: release the
+    claim -- or, when every leaf of ``card`` is still being filed and not shipped, drop
+    each of them, which keeps it whole (R-BAL205).  (``plan file``'s refusal under a claim
+    names that drop for its own leaf only, when no other leaf splits the step.)"""
+    split = leaves(card, cards, shipped)
+    filing = [number for number in split
+              if filing_unfinished(cards[number]) and number not in shipped]
+    keep = ("" if len(filing) < len(split) else
+            "; or, to keep it whole, " + " and ".join(f"`plan drop plan#{number}`"
+                                                      for number in filing)
+            + ": still being filed, so never part of the split (R-BAL205)")
+    return (f"plan#{card.number} is split into smaller steps, but {holder(claim)} still claims "
+            "it: a split step is never shipped itself, its smaller steps are the work "
+            f"(R-BAL177), so release the claim with {release_hint(claim)}" + keep)
 
 
 def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping[int, Claim],
@@ -593,6 +684,13 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
 
     ``ship_branches``: for each shipped card, the head branches of the pull
     requests into ``dev`` that merged its standing ``Ships:`` commits.
+
+    A claim on a step split into smaller steps is reported, never released: a
+    branch building that step whole would ship a ``Ships:`` that names a split
+    step, which no commit ships.  ``plan file`` refuses a leaf under a claimed
+    step (C2 review M4), but some claims it cannot see (its docstring names them)
+    still land on one.  ``cards`` holds every claimed card, so each such claim is
+    seen (:func:`_claimed_split`).
     """
     shipped = set(shipped)
     plan = SyncPlan(reports=outside_reports(cards) + unfinished_reports(cards, shipped))
@@ -609,14 +707,16 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
                 f"{'container' if container else card.kind or 'card with no type'}, "
                 "which no commit ships: a mistyped or stale number? It is not acted on"
             )
+        if container and (claim := claims.get(card.number)):
+            plan.reports.append(_claimed_split(card, claim, cards, shipped))
         if card.kind not in SHIPPABLE:
             continue
         if container:
             _sync_container(card, plan, cards, shipped)
         elif card.number in shipped and card.is_open:
             _sync_shipped(card, plan, claims, ship_branches)
-        elif card.number not in shipped and _shown_shipped(card):
-            plan.reopen.append(card.number)
+        else:
+            _record(plan, card.number, shown_write(card, cards, shipped))
         if card.kind == "step" and card.is_open and (gone := dropped_above(card, cards,
                                                                             shipped)):
             plan.reports.append(
