@@ -312,6 +312,10 @@ def _own_clauses(statement: _rows.Statement) -> tuple:
     leaves, and a DATED one under a Projected row is a drift no door writes
     which this list must not re-point either (production held 0 of either
     on 2026-09-30).  So the panel reaches ``_re_point`` from neither scope.
+    The clause is ``status_seam.payment_recorded_elsewhere_clause``, the ONE
+    predicate the statement matcher's offer asks too since leaf 5c-2a (ruling
+    **R-CC137**: *"Checking's statement screen does not offer Hotel while its
+    payment is recorded on the Visa (the reconcile panel's test, R-CC126)"*).
 
     Args:
         statement: The statement being reconciled.
@@ -322,30 +326,8 @@ def _own_clauses(statement: _rows.Statement) -> tuple:
     return (
         Transaction.account_id == statement.account_id,
         Transaction.transfer_id.is_(None),
-        ~and_(
-            _holds_no_purchase(),
-            Transaction.entries.any(and_(
-                status_seam.covering_clause(),
-                TransactionEntry.account_id != statement.account_id,
-            )),
-        ),
+        ~status_seam.payment_recorded_elsewhere_clause(statement.account_id),
     )
-
-
-def _holds_no_purchase():
-    """Return the clause "this row holds no purchase", the verb's own predicate in SQL.
-
-    ``transaction_service.settles_from_entries`` asks it of a loaded row
-    (:attr:`~app.models.transaction.Transaction.purchases`: the entries less
-    the seam's mark, ``status_seam.covering_clause``).  Both row scopes split
-    on it: :data:`SETTLEMENT_ARM` admits only such a row (ruling **R-CC113**)
-    and :data:`ARM` leaves one out when its payment is elsewhere (ruling
-    **R-CC126**) -- one spelling, so the two cannot come to cut differently.
-
-    Returns:
-        A SQLAlchemy clause over :class:`~app.models.transaction.Transaction`.
-    """
-    return ~Transaction.entries.any(~status_seam.covering_clause())
 
 
 def _scope_loader(
@@ -438,8 +420,9 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
       settles_from_entries``), ignoring the tender and withdrawing the very
       payment this list would show; its purchases are its figure, and the
       purchase arm offers a card swipe on the card.  Stated as the verb's own
-      predicate in SQL (:attr:`~app.models.transaction.Transaction.purchases`
-      is the entries less the seam's mark, ``status_seam.covering_clause``).
+      predicate in SQL (``status_seam.holds_no_purchase_clause``, the one
+      spelling :data:`ARM`'s R-CC126 clause and the statement matcher's
+      R-CC137 cut are built on).
 
     Args:
         statement: The statement being reconciled.
@@ -455,7 +438,7 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
             TransactionEntry.settled_on.is_(None),
             TransactionEntry.account_id == statement.account_id,
         )),
-        _holds_no_purchase(),
+        status_seam.holds_no_purchase_clause(),
     )
 
 

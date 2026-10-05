@@ -105,7 +105,7 @@ from app.utils.balance_predicates import (
 
 from ._creations import PurchaseDestination
 from ._leg_valuation import leg_candidate, leg_loads, leg_price
-from ._subjects import CandidateRow, Candidates, RowKind
+from ._subjects import CandidateRow, Candidates, HeldElsewhere, RowKind
 from ._valuation import (
     leg_settlement_candidate,
     purchase_candidate,
@@ -382,7 +382,7 @@ def _transaction_candidates(
     account_id: int, calendar: "PayCalendar",
     period_ids: "Collection[int]",
     basis: "cash_ledger.AmountBasis",
-) -> "tuple[list[CandidateRow], list[int]]":
+) -> "tuple[list[CandidateRow], list[tuple[RowKind, int]], tuple[HeldElsewhere, ...]]":
     """Return the PROJECTED transactions on *account_id* a statement could be showing.
 
     Scope, and every clause is load-bearing:
@@ -427,7 +427,21 @@ def _transaction_candidates(
       parent transfer stood (``_parent_transfer_stands``, the parent clause
       ``offerable_transfer_legs`` now carries); the exclusion survives
       ``X-bi-6-4d``, which deletes the shadows, as a clause that is true of
-      every row.
+      every row;
+    * its payment is NOT recorded on another account (plan step
+      ``credit_card:CC-5-4a-5``, leaf 5c-2a, ruling **R-CC137**, developer
+      2026-10-04: *"Checking's statement screen does not offer Hotel while
+      its payment is recorded on the Visa (the reconcile panel's test,
+      R-CC126), and says so on that screen"*).  A reopened bill planned here
+      whose kept payment is on the card is offered on the CARD's screen
+      (:func:`_settlement_candidates`), and matching it here would have moved
+      that payment onto this account; the matcher names no tender since that
+      leaf (``_moving._apply_day``), so 'Paid from' is the one door that moves
+      a bill's payment between accounts.  **Split rather than filtered**:
+      the clause (``status_seam.payment_recorded_elsewhere_clause``, the
+      reconcile panel's own) is SELECTED beside each row, and a row it holds
+      for is returned as :class:`~._subjects.HeldElsewhere` for the screen to
+      say -- one query, one spelling, and nothing left silent.
 
     **What is ALREADY MATCHED is NOT a clause here** (plan step
     ``bank_import:X-f6a-3c-2``); it is :func:`unmatched_rows`, applied by each
@@ -458,16 +472,20 @@ def _transaction_candidates(
             and never rebuilt under it.
 
     Returns:
-        ``(candidates, unpriceable)`` -- one
+        ``(candidates, unpriceable, held_elsewhere)`` -- one
         :class:`~._subjects.CandidateRow` per offerable row, by id (every row
         here is Projected and carries no day, so the id is the whole of the
         deterministic order the settled arm sorts its days ahead of; the
         proposals a screen shows must not depend on what the planner happened
-        to return), and the ``(kind, id)`` of the rows the amount model could
-        not price.
+        to return), the ``(kind, id)`` of the rows the amount model could
+        not price, and one :class:`~._subjects.HeldElsewhere` per row whose
+        payment is recorded on another account, by id.
     """
     rows = (
-        db.session.query(Transaction)
+        db.session.query(
+            Transaction,
+            status_seam.payment_recorded_elsewhere_clause(account_id),
+        )
         .options(
             selectinload(Transaction.entries),
             joinedload(Transaction.template),
@@ -479,11 +497,16 @@ def _transaction_candidates(
             Transaction.pay_period_id.in_(period_ids),
             Transaction.transfer_id.is_(None),
         )
+        .order_by(Transaction.id)
         .all()
     )
     candidates = []
     unpriceable = []
-    for txn in rows:
+    held_elsewhere = []
+    for txn, recorded_elsewhere in rows:
+        if recorded_elsewhere:
+            held_elsewhere.append(_held_elsewhere(txn))
+            continue
         amount = transaction_price(txn, basis)
         if amount is None:
             unpriceable.append((RowKind.TRANSACTION, txn.id))
@@ -492,7 +515,33 @@ def _transaction_candidates(
         if candidate is not None:
             candidates.append(candidate)
     candidates.sort(key=lambda row: row.row_id)
-    return candidates, unpriceable
+    return candidates, unpriceable, tuple(held_elsewhere)
+
+
+def _held_elsewhere(txn: Transaction) -> HeldElsewhere:
+    """Return what the screen says about *txn*, a row whose payment is on another account.
+
+    The facts ruling **R-CC137**'s sentence names (:class:`~._subjects.HeldElsewhere`),
+    read off the row and its one covering movement -- the payment
+    ``status_seam.payment_recorded_elsewhere_clause`` found on another account
+    (at most one per row, ``uq_transaction_entries_one_settlement_record``).
+    Both account names are read through lazy relationships: the shape is rare
+    (production held none on 2026-10-04), and an eager load on every candidate
+    row for it would be paid by every pass.
+
+    Args:
+        txn: A Projected row on the screen's account the clause held for.
+
+    Returns:
+        Its :class:`~._subjects.HeldElsewhere`.
+    """
+    (payment,) = txn.covering_movements
+    return HeldElsewhere(
+        name=txn.name,
+        amount=payment.amount,
+        planned_on=txn.account.name,
+        recorded_on=payment.account.name,
+    )
 
 
 def _settlement_candidates(
@@ -867,8 +916,8 @@ def candidates_for(
     leg_settlements = _leg_settlement_candidates(
         account_id, calendar, period_ids,
     )
-    transactions, unpriceable_transactions = _transaction_candidates(
-        account_id, calendar, period_ids, basis,
+    transactions, unpriceable_transactions, held_elsewhere = (
+        _transaction_candidates(account_id, calendar, period_ids, basis)
     )
     legs, unpriceable_legs = _leg_candidates(
         account_id, calendar, period_ids, basis,
@@ -883,4 +932,5 @@ def candidates_for(
             *unpriceable_settlements, *unpriceable_transactions,
             *unpriceable_legs,
         ),
+        held_elsewhere=held_elsewhere,
     )

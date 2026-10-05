@@ -81,19 +81,22 @@ def _apply_day(
       (:attr:`~._subjects.CandidateRow.transaction_id`), with the row's OWN
       status when it is already settled (an edit that changes only the day
       is an identity transition) and its type's settled status when it is
-      not -- **and with the pass's ACCOUNT as the tender** (plan step
-      ``credit_card:CC-5-3``, ruling **R-CC15**: a statement-driven settle
-      forces the statement's own account).  The bank line says this
-      account's feed showed the money, so the row's covering movement books
-      here; named rather than left to the seam's default because a Projected
-      row the owner reverted out of a card-tendered settle keeps that record
-      and the default would keep it on the card (ruling **R-CC42**).  A
-      TRANSACTION is one of this account's own rows, so the named tender is
-      the row's own account and passes the verb's gate by its first member;
-      a SETTLEMENT is a movement ON this account, so the named tender is the
-      account the kept or dated record already names, an echo the door drops
-      -- which is how a checking bill's payment matched on the CARD's screen
-      stays on the card, and the movement follows the row's new day
+      not -- **and naming NO tender** (plan step ``credit_card:CC-5-4a-5``,
+      leaf 5c-2a, ruling **R-CC137**, developer 2026-10-04: *"A bill's
+      payment then changes account only through 'Paid from'"*).  It named
+      the pass's account through that leaf (plan step ``credit_card:CC-5-3``,
+      ruling **R-CC15**), so a Projected row reverted out of a card-tendered
+      settle and matched on checking had its kept payment moved off the card
+      (``status_seam._covering._re_point``).  Such a row is not offered on
+      this account's screen any more (``_candidates._transaction_candidates``,
+      the reconcile panel's own clause), so the seam's default
+      (``status_seam.tender_account_id_of``: the kept payment's account, else
+      the row's) IS this account for every member an accept can reach, and
+      R-CC15 holds by the offer set's construction rather than by a named
+      tender: a TRANSACTION is this account's row with no payment elsewhere,
+      and a SETTLEMENT is a movement ON this account -- which is how a
+      checking bill's payment matched on the CARD's screen stays on the
+      card, and the movement follows the row's new day
       (``status_seam._covering._mirror_assertion``).
 
     Args:
@@ -213,9 +216,7 @@ def _apply_day(
     )
     transaction_service.apply_requested_status(
         txn, target_status_id, settle_day=settle_day,
-        stated=transaction_service.StatedRecord(
-            figure=stated, tender_account_id=scope.account_id,
-        ),
+        stated=transaction_service.StatedRecord(figure=stated),
     )
     return outcome
 

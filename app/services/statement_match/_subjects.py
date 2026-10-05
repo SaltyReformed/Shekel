@@ -554,12 +554,68 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class HeldElsewhere:
+    """A row planned on the screen's account whose payment is recorded on another.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2a), ruling **R-CC137**
+    (developer 2026-10-04, "Only Paid from, say why"): *"Checking's statement
+    screen does not offer Hotel while its payment is recorded on the Visa (the
+    reconcile panel's test, R-CC126), and says so on that screen: 'Hotel
+    $120.00 is planned on Checking but its payment is recorded on the Visa, so
+    it is not offered here. If Checking paid it, press Paid in Hotel's popover
+    with Paid from set to Checking.'"*  The FACTS that sentence names, carried
+    beside the offer set for the reason :attr:`Candidates.unpriceable` is:
+    a row the screen does not offer and does not mention leaves its bank line
+    looking unexplained, and recording that line as new spending would count
+    the money twice while the row stays Projected.
+
+    Attributes:
+        name: The row's name.
+        amount: The payment's own recorded figure -- what the sentence says is
+            recorded on the other account.  Read off the stored movement, so
+            it is total: no amount model is asked to price a row the screen
+            does not offer.
+        planned_on: The name of the account the row is planned on: the
+            screen's.
+        recorded_on: The name of the account its payment is recorded on.
+    """
+
+    name: str
+    amount: Decimal
+    planned_on: str
+    recorded_on: str
+
+    @property
+    def said(self) -> str:
+        """Return the screen's sentence for this row, as ruling **R-CC137** picked it.
+
+        Composed here beside the facts it names, the shape
+        :attr:`~._gaps.BooksBound.said` has, so the rows the offer set
+        withholds and the rows the screen names are one partition.  Each
+        account is named as the owner named it, with no article: the
+        ruling's "the Visa" was its example's prose, and one shape serves
+        every account name.
+
+        Returns:
+            The sentence.
+        """
+        return (
+            f"{self.name} ${self.amount:,.2f} is planned on {self.planned_on} "
+            f"but its payment is recorded on {self.recorded_on}, so it is not "
+            f"offered here. If {self.planned_on} paid it, press Paid in "
+            f"{self.name}'s popover with Paid from set to {self.planned_on}."
+        )
+
+
+@dataclass(frozen=True)
 class Candidates:
     """The rows a statement could be showing, and the ones nothing could price.
 
-    Two facts that must travel together: a screen listing what it could match
+    Facts that must travel together: a screen listing what it could match
     and saying nothing about what it could not read as a clean sweep, which is
-    the "no silent caps" discipline applied to a money screen.
+    the "no silent caps" discipline applied to a money screen.  Two kinds of
+    row are not offered and said: the ones nothing could price, and since
+    leaf 5c-2a the ones whose payment is recorded on another account.
 
     Attributes:
         rows: The offerable candidates: the settled records (SETTLEMENT --
@@ -577,7 +633,12 @@ class Candidates:
             transfer is damaged -- and live from the first per-kind cutover
             (plan step ``balance:X-au-d``).  They are NOT candidates: a
             matcher that offered a row it could not price would be guessing.
+        held_elsewhere: The rows planned on this account that are NOT offered
+            here because their payment is recorded on another account (ruling
+            **R-CC137**), one :class:`HeldElsewhere` each, in row-id order --
+            the second thing the screen must say about what it did not offer.
     """
 
     rows: "list[CandidateRow]"
     unpriceable: "tuple[tuple[RowKind, int], ...]"
+    held_elsewhere: "tuple[HeldElsewhere, ...]"

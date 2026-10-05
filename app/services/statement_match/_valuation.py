@@ -454,12 +454,23 @@ def row_is_offered_here(txn: Transaction, account_id: int) -> bool:
     kept movement whose row has since moved onto this account -- where the
     row is the candidate -- is declined rather than matched twice over.
 
+    **A Projected row on this account whose payment is recorded on ANOTHER
+    account is offered by neither arm here** (plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2a, ruling **R-CC137**): the row arm
+    withholds it (``status_seam.payment_recorded_elsewhere_clause``) and its
+    payment is the other account's subject.  This predicate needs no clause
+    for that case, because it is asked only of a movement ON the screen's
+    account (:func:`settlement_candidate` declines any other first), and a
+    row whose payment is here is not that row.  A clause for it would be a
+    guard no input reaches.
+
     Args:
         txn: The row.
         account_id: The screen's account.
 
     Returns:
-        ``True`` when the row itself is this screen's candidate.
+        ``True`` when the row is a Projected row on this screen's account --
+        the row arm's subject, unless its payment is recorded elsewhere.
     """
     return is_projected(txn) and txn.account_id == account_id
 
