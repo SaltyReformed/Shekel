@@ -8,8 +8,8 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S11-c-2a` (`cf2e59a4`, 2026-10-04) made the stub door ask the gross the stub prints**; `X-at-8`,
-the 2027 law, is due before 2026-12-01 and `S11-c-2c` MOVES MONEY. Archived: `historical/salary_*`.
+**`S11-c-2b` (`c43200af`, 2026-10-04) let each job say what its stub's gross holds**; `X-at-8`, the
+2027 law, is due before 2026-12-01 and `S11-c-2c` MOVES MONEY. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -132,9 +132,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [ ] **S11-c-2 -- the engine prices from the stubs**: the DECOMPOSED parent of three leaves (the
         salary lane's trace, granted by the coordinator 2026-10-04), ticking with its last.
   - [x] **S11-c-2a** `cf2e59a4` -- the printed gross asked (**R-SAL99**); closed **SAL-590**.
-  - [ ] **S11-c-2b -- each job says what its stub's gross holds** (**R-SAL102**; **SAL-592**): a NOT
-        NULL boolean on `salary.salary_profiles`, false by migration, and a salary-form control; on
-        a yes job the gross check adds non-taxable earnings, a no job keeping all of **R-SAL99**.
+  - [x] **S11-c-2b** `c43200af` -- the gross setting per job (**R-SAL102**); closed **SAL-592**.
   - [ ] **S11-c-2c -- the engine prices from the stubs**: the latest switched-on stub on or before
         the payday with the SAME LINES supplies the four taxes and the formulas the difference
         (`PricedLine`'s line identity shipped at `S11-b`); with no such stub, the latest switched-on

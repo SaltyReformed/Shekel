@@ -721,11 +721,13 @@ class PayStubRefused(ValidationError):
 
     Carries every refusal the SERVICE finds in one submission, keyed by what
     it is about (``"payday"``, ``"tax-<kind id>"``, ``"printed_gross"``,
-    ``"printed_net"``, ``"one_off:<index>"``), so the entry form marks each of
-    them at once.  A form the route could not read at all (a malformed figure)
-    is answered first and never reaches the service, so its refusals follow
-    on the next submit.  What each refusal is, and whose ruling, is
-    :mod:`app.services.pay_stub_service`'s module docstring.
+    ``"printed_net"``, ``"one_off:<index>"``, and
+    ``"stub_gross_includes_after_tax"``, the profile's setting, named beside
+    a printed-gross refusal by rulings R-SAL104 and R-SAL106), so the entry
+    form marks each of them at once.  A form the route could not read at all
+    (a malformed figure) is answered first and never reaches the service, so
+    its refusals follow on the next submit.  What each refusal is, and whose
+    ruling, is :mod:`app.services.pay_stub_service`'s module docstring.
 
     Attributes:
         errors: ``{key: message}``, never empty.

@@ -66,6 +66,7 @@ _PROFILE_UPDATE_FIELDS = {
     "name", "filing_status_id", "state_code",
     "qualifying_children", "other_dependents",
     "additional_income", "additional_deductions", "extra_withholding",
+    "stub_gross_includes_after_tax",
 }
 _RAISE_UPDATE_FIELDS = {
     "raise_type_id", "effective_month", "effective_year",
