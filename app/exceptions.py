@@ -794,10 +794,11 @@ class PageOutOfDate(ValidationError):
     (developer 2026-09-23 / 2026-09-30): *"Each warning also sends back the
     bank lines it named, and the function compares them with what it would
     undo. At 10:10 they differ, so nothing is saved"*.  Raised by
-    ``match_withdrawal.take_out_of_matches`` -- the match step of the one act
-    that takes a movement off the books, and of the seam's re-point -- before
-    it writes anything (:meth:`over_lines`); the door's rollback undoes
-    whatever the press staged before it.  Two causes reach it: a page drawn
+    ``match_press.Press`` -- per call of the match step of the one act
+    that takes a movement off the books, and of the seam's re-point, before
+    that call writes anything, and at the close of the save over everything
+    it freed (:meth:`over_lines`, ruling **R-CC135**); the door's rollback
+    undoes whatever the save staged.  Two causes reach it: a page drawn
     before a match was made or undone in another tab, and a door that forgot
     its caption.  **And by the row delete over the PURCHASES its dialog
     named** (ruling **R-CC131**, developer 2026-10-04, "Refuse and redraw",
@@ -837,18 +838,22 @@ class PageOutOfDate(ValidationError):
 
     @classmethod
     def over_lines(cls, freed: int, named: int) -> "PageOutOfDate":
-        """Return the refusal of a press freeing other bank lines than its page named.
+        """Return the refusal of a SAVE that freed other bank lines than its page named.
 
         Worded for any press -- a Save, Paid / Received, a Delete -- because
         every one of them reaches it (review finding L3: it said "Saving now"
         on a Delete).  It opens with ruling **R-CC128**'s banner words
         ("nothing was saved because the page was out of date"), which every
         out-of-date refusal shares, the delete's purchases one included.
+        Raised at the save's CLOSE (``match_press.Press``), which knows both
+        counts whole; a call refused AT ONCE knows neither, and says
+        :meth:`over_an_unnamed_line` instead.
 
         Args:
             freed: How many bank lines the press would leave unexplained again.
-            named: How many of the lines its page named are on the accounts
-                the press touches.
+            named: How many lines its page named (plan step
+                ``credit_card:CC-5-4a-5``, ruling **R-CC135**: the whole
+                save's, compared whole).
 
         Returns:
             The exception, to raise.
@@ -858,4 +863,26 @@ class PageOutOfDate(ValidationError):
             f"this press leaves {freed} bank line{'' if freed == 1 else 's'} "
             f"unexplained again on your statement screen, and the page named "
             f"{named}."
+        )
+
+    @classmethod
+    def over_an_unnamed_line(cls) -> "PageOutOfDate":
+        """Return the refusal of ONE call of a save freeing a bank line its page did not name.
+
+        Raised AT ONCE, before the call writes anything (ruling **R-CC135**:
+        *"undoing one the page did not name stops it at once"*), so it knows
+        only the lines freed so far and never the whole save's -- it states
+        the fact and no count.  It counted until plan step
+        ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2, its review's L1): two
+        envelopes each freeing a line under a page that named none read
+        "leaves 1 bank line", over a redraw naming two.  Opens with ruling
+        **R-CC128**'s banner words, as :meth:`over_lines` does.
+
+        Returns:
+            The exception, to raise.
+        """
+        return cls(
+            "Nothing was saved: this page was out of date. As things are now, "
+            "this press would leave a bank line unexplained that this page did "
+            "not mention."
         )

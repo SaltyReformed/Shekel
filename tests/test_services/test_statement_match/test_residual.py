@@ -1546,8 +1546,10 @@ class TestTheACTS_OWN_WRITES_CannotMoveAMemberUnderIt:
     the two sides are measured before any settle verb runs, and settling a
     matched PURCHASE re-derives a SIBLING CC Payback's ``estimated_amount``
     through ``sync_entry_payback`` -- a row ``_reject_parent_and_its_own_purchase``
-    cannot see, because it is the purchase's sibling under one envelope rather
-    than its parent.  A first version of this step carried a comment asserting
+    could not see, because it is the purchase's sibling under one envelope
+    rather than its parent (that guard is deleted since plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2c-1: finding **CC-386**, ruling
+    **R-CC144**).  A first version of this step carried a comment asserting
     no settle verb could do that, which is the claim ``_scope`` and
     ``_resolve`` both record as MEASURED FALSE one tier up.
     """

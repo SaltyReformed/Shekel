@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 
 from app.exceptions import ValidationError
 from app.services import posting_service
-from app.services.match_withdrawal import NOTHING_SHOWN, Shown, Silent
+from app.services.match_press import Press
 from app.models.transaction import Transaction
 from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import settled_figure
@@ -71,7 +71,9 @@ class StatedRecord:
         tender_account_id: The account the door named as the one the money
             MOVED THROUGH (plan step ``credit_card:CC-5-3``): the popover's
             "Paid from" picker, posted on every Save and preselected from
-            what the row records, or the statement matcher's own account.
+            what the row records -- the one door that names one since plan
+            step ``credit_card:CC-5-4a-5`` (leaf 5c-2a, ruling **R-CC137**),
+            when the statement matcher stopped naming its own account.
             Read by the SETTLE arm, which hands it to the verb, and by the
             identity arm, which re-points a settled row's covering movement
             when it names an account other than the recorded one; ``None``
@@ -93,7 +95,7 @@ def apply_requested_status(
     *,
     settle_day: SettleDay | None = None,
     stated: StatedRecord = NOTHING_STATED,
-    shown: Shown | Silent = NOTHING_SHOWN,
+    press: Press | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
 
@@ -155,8 +157,8 @@ def apply_requested_status(
         stated: The figure and the tender the door states for the record
             (:class:`StatedRecord`, whose attributes say how each arm reads
             them); :data:`NOTHING_STATED` when it states neither.
-        shown: The bank lines the door's page named before the press, or
-            what lets it stay silent; handed to whichever arm runs, and
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), or
+            ``None`` when its door named nothing; handed to whichever arm runs, and
             asked by the act that takes the payment out of its matches
             (``status_seam.apply_status_change``, ruling **R-CC127**).
 
@@ -179,7 +181,7 @@ def apply_requested_status(
         reject_mismatched_settled_status(txn, new_status_id)
         settle_transaction(
             txn, submitted=stated.figure, settle_day=settle_day,
-            tender_account_id=stated.tender_account_id, shown=shown,
+            tender_account_id=stated.tender_account_id, press=press,
         )
         return
     # Everything else is ONE seam pass carrying every fact the door was given:
@@ -230,7 +232,7 @@ def apply_requested_status(
     )
     apply_status_change(
         txn, new_status_id, settle_day=settle_day, settlement=settlement,
-        shown=shown,
+        press=press,
     )
     posting_service.sync_transaction_postings(txn)
 

@@ -17,9 +17,11 @@ Nothing changed on the way across.
 
 **The offer set is the SCREEN's, and that is the property everything here
 rests on.**  A destination this module will accept is one
-:func:`~._destinations.destinations_for` returns, narrowed by what the acting
-pass has already claimed -- so a row the screen may not offer cannot be reached
-by crafting a request, and a row it does offer cannot be refused a tier deeper.
+:func:`~._destinations.destinations_for` returns, narrowed to the rows that
+still take a purchase as the acting pass has left them
+(:func:`~._destinations.current_destinations`) -- so a row the screen may not
+offer cannot be reached by crafting a request, and a row it does offer cannot
+be refused a tier deeper.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, no
 Flask import, no clock read.  It MUTATES and does NOT commit -- the route owns
@@ -54,13 +56,13 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.scenario_resolver import require_baseline_scenario
 from app.services.settle_day import SettleDay
 
-from ._candidates import MatchedSubjects, unmatched_destinations
 from ._creations import (
     CreatedPurchase,
     NewEnvelope,
     PurchaseCreation,
     envelope_answer_key,
 )
+from ._destinations import current_destinations
 from ._scope import ReviewScope
 
 
@@ -259,7 +261,6 @@ def _existing_envelope(
     creation: PurchaseCreation,
     pay_period_id: int,
     scope: ReviewScope,
-    matched: MatchedSubjects,
 ) -> Transaction:
     """Return the chosen envelope, refusing one the screen could not offer.
 
@@ -267,19 +268,22 @@ def _existing_envelope(
     directly**, so the set this door may write into is exactly the set the
     screen may offer -- the same one-scope-for-reader-and-writer property
     :func:`~._resolve.resolve_rows` rests on.  An envelope belonging to another
-    user, another account, a cancelled or archived row, a settled row whose
-    figure is a stored number, or one already matched to a bank line is not a
-    destination and cannot be reached by crafting a request.
+    user, another account, a cancelled or archived row, or a settled row whose
+    figure is a stored number is not a destination and cannot be reached by
+    crafting a request.
 
-    **The already-matched half is asked of the claims THIS ACT read, not of the
-    scope** (plan step ``bank_import:X-f6a-3c-2``), and on the developer's own
+    **What the pass has moved is asked of the rows as they stand NOW, not of
+    the scope** (plan step ``bank_import:X-f6a-3c-2``;
+    :func:`~._destinations.current_destinations`), and on the developer's own
     data that is 15 lines rather than a hypothetical: 4 envelopes are both
     named by a proposal and offered as a destination, so a pass that accepts
     the proposals first leaves 15 creatable lines aimed at an envelope a match
-    now claims.  Asking here is what gives those 15 the sentence about the
-    envelope being gone rather than one about counting money twice from a tier
-    deeper -- and, in the other order, what keeps a purchase out of an envelope
-    whose own figure a match has already fixed.
+    has just settled at the bank's figure.  Asking here is what gives those
+    15 the sentence about the envelope being gone rather than a refusal from
+    a tier deeper.  **A match that merely NAMES the envelope refuses nothing
+    since plan step ``credit_card:CC-5-4a-5``** (leaf 5c-2b, finding
+    **CC-385**, ruling **R-CC141**): a Projected envelope's payment a match
+    names is one its revert kept un-dated, which counts nothing.
 
     **The PERIOD is part of that set and a first version left it out**, so the
     screen offered the line's own period and the door accepted any of them --
@@ -295,8 +299,6 @@ def _existing_envelope(
         pay_period_id: The period holding the day the purchase was made, which
             is the only one whose envelopes the screen offers for this line.
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
-        matched: What this account's matches have already claimed, as of this
-            act.
 
     Returns:
         The envelope.
@@ -307,9 +309,7 @@ def _existing_envelope(
     """
     offered = {
         destination.transaction_id
-        for destination in unmatched_destinations(
-            scope.destinations, matched,
-        )
+        for destination in current_destinations(scope.destinations)
         if destination.period.period_id == pay_period_id
     }
     if creation.transaction_id not in offered:
@@ -712,22 +712,19 @@ def close_container(
 class ActReads:
     """What ONE create act resolves its destination against.
 
-    Four reads the door already holds, bundled because the resolver is
-    PUBLIC and its arms need all four (this project's remedy for a public
+    Three reads the door already holds, bundled because the resolver is
+    PUBLIC and its arms need all three (this project's remedy for a public
     function over the argument bound).  Each is derived once and threaded,
     which is the rule :class:`MintedEnvelopes` states for itself.
 
     Attributes:
         scope: The pass (:class:`~._scope.ReviewScope`).
-        matched: What this account's matches have already claimed, as of
-            this act (:func:`~._candidates.matched_subjects`).
         minted: What this REQUEST has already minted or placed.
         placeable: The rule-less definitions a PLACE creation may name
             (:attr:`~._rules.RuleView.placeable_templates`).
     """
 
     scope: ReviewScope
-    matched: MatchedSubjects
     minted: MintedEnvelopes
     placeable: "frozenset[int]"
 
@@ -754,7 +751,7 @@ def resolve_destination(
             leaf 7b-3, because the one-off producer places a row by the
             paycheck's start and re-resolving that from an id would be a
             second derivation in one request.
-        act: The four reads this act resolves against (:class:`ActReads`).
+        act: The three reads this act resolves against (:class:`ActReads`).
 
     Returns:
         ``(envelope, created)`` -- the row, and whether this act made it.
@@ -767,9 +764,7 @@ def resolve_destination(
     """
     if creation.transaction_id is not None:
         return (
-            _existing_envelope(
-                creation, period.period_id, act.scope, act.matched,
-            ),
+            _existing_envelope(creation, period.period_id, act.scope),
             False,
         )
     if creation.template_id is not None:

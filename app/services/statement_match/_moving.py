@@ -81,19 +81,26 @@ def _apply_day(
       (:attr:`~._subjects.CandidateRow.transaction_id`), with the row's OWN
       status when it is already settled (an edit that changes only the day
       is an identity transition) and its type's settled status when it is
-      not -- **and with the pass's ACCOUNT as the tender** (plan step
-      ``credit_card:CC-5-3``, ruling **R-CC15**: a statement-driven settle
-      forces the statement's own account).  The bank line says this
-      account's feed showed the money, so the row's covering movement books
-      here; named rather than left to the seam's default because a Projected
-      row the owner reverted out of a card-tendered settle keeps that record
-      and the default would keep it on the card (ruling **R-CC42**).  A
-      TRANSACTION is one of this account's own rows, so the named tender is
-      the row's own account and passes the verb's gate by its first member;
-      a SETTLEMENT is a movement ON this account, so the named tender is the
-      account the kept or dated record already names, an echo the door drops
-      -- which is how a checking bill's payment matched on the CARD's screen
-      stays on the card, and the movement follows the row's new day
+      not -- **and naming NO tender** (plan step ``credit_card:CC-5-4a-5``,
+      leaf 5c-2a, ruling **R-CC137**, developer 2026-10-04: *"A bill's
+      payment then changes account only through 'Paid from'"*).  It named
+      the pass's account through that leaf (plan step ``credit_card:CC-5-3``,
+      ruling **R-CC15**), so a Projected row reverted out of a card-tendered
+      settle and matched on checking had its kept payment moved off the card
+      (``status_seam._covering._re_point``).  Such a row is not offered on
+      this account's screen any more, for two reasons that together cover
+      every row with a kept payment elsewhere: one holding no purchase is
+      withheld (``_candidates._transaction_candidates``, the reconcile
+      panel's own clause), and one holding purchases is worth ``0.00`` to
+      the offer (``_valuation.transaction_price``: its purchases are the
+      candidates) and is never offered as a row.  So the seam's default
+      (``status_seam.tender_account_id_of``: the kept payment's account, else
+      the row's) IS this account for every member an accept can reach, and
+      R-CC15 holds by the offer set's construction rather than by a named
+      tender: a TRANSACTION is this account's row with no payment elsewhere,
+      and a SETTLEMENT is a movement ON this account -- which is how a
+      checking bill's payment matched on the CARD's screen stays on the
+      card, and the movement follows the row's new day
       (``status_seam._covering._mirror_assertion``).
 
     Args:
@@ -213,9 +220,7 @@ def _apply_day(
     )
     transaction_service.apply_requested_status(
         txn, target_status_id, settle_day=settle_day,
-        stated=transaction_service.StatedRecord(
-            figure=stated, tender_account_id=scope.account_id,
-        ),
+        stated=transaction_service.StatedRecord(figure=stated),
     )
     return outcome
 
@@ -256,15 +261,28 @@ def move_members(
     purchase's posting day changes what its parent envelope's cash leg is worth
     (ruling **R-FM**), so settling a parent first and stamping its purchase
     afterwards would book the parent at a figure the purchase then moves.
-    :func:`~._accept._reject_parent_and_its_own_purchase` makes that pairing unreachable
-    in ONE match and across matches alike, so no submission this door accepts
-    can actually hit the interaction today.  **The order is kept anyway and the
-    reason is stated rather than invented**: a first draft justified it by "the
-    parent is in a different match accepted in the same request", which cannot
-    happen -- one POST accepts exactly one match.  What the order really buys
-    is that the rule survives the guard: if a later step widens what a match
-    may name, the sequence is already the safe one rather than something that
-    has to be rediscovered.
+    That pairing is unreachable in ONE match and across matches alike.  A row
+    holding a purchase is worth ``$0.00`` to the offer and is never offered
+    (ruling **R-BAL81**); a parent an earlier match settled on a payment takes
+    no purchase while it stays settled (ruling **R-BAL78**), and set back to
+    Projected its kept payment is un-dated and counts nothing (finding
+    **CC-385**, ruling **R-CC143**).  So no submission this door accepts can
+    actually hit the interaction today, and the accept door's guard against
+    the pairing was deleted as unreachable (plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding **CC-386**, ruling
+    **R-CC144**).  **The order is kept anyway and the reason is stated rather
+    than invented**: a first draft justified it by "the parent is in a
+    different match accepted in the same request", which cannot happen.  Not
+    because one POST accepts one match -- the statement review's batch
+    accepts several in one request (:func:`~._batch.apply_reviewed`), and
+    this paragraph said otherwise until leaf 5c-2c-2 -- but for the reason
+    above: no match of any request names a row holding a purchase as a row
+    (it is worth ``$0.00`` to the offer), so no two matches of one batch can
+    name a parent and its purchase between them.
+    What the order really buys is that the
+    rule does not rest on what the offer admits: if a later step widens what a
+    match may name, the sequence is already the safe one rather than something
+    that has to be rediscovered.
 
     Args:
         scope: The pass, for the owner every settle door is scoped by.

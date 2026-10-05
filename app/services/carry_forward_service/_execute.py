@@ -21,7 +21,7 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
-from app.services.match_withdrawal import Silent
+from app.services.match_press import NOTHING_SHOWN, Press, Shown
 from app.services.cash_ledger import resolve_transaction_amount
 from app.services.one_off import (
     due_date_after_move,
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
-                         *, balance_ctx):
+                         *, balance_ctx, shown: Shown = NOTHING_SHOWN):
     """Carry forward all projected items from source to target period.
 
     Steps:
@@ -76,6 +76,16 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             one).  It names the owner, so no ``user_id`` rides beside it, and
             a period id that is not in its calendar is not this owner's --
             which is how both periods are ownership-checked.
+        shown: The bank lines the confirmation NAMED before the press, as
+            its Confirm posts them back
+            (:attr:`~._preview.CarryForwardPreview.named_line_ids`, plan step
+            ``credit_card:CC-5-4a-5``, leaf 5c-2c-2; rulings **R-CC76**,
+            **R-CC127**, **R-CC135**).  The batch is ONE save, so its one
+            press compares everything it frees with this, whole, and refuses
+            with ``PageOutOfDate`` where they differ -- a match made or
+            undone in another tab since the modal was drawn.  The default is
+            a page that named nothing (*"A button with no warning sends
+            nothing"*), so a caller that says nothing withdraws no match.
 
     Returns:
         int -- the number of carried items (1 per source row processed).
@@ -103,6 +113,49 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             costs the rest of the batch, which is recorded as a finding rather
             than fixed here: making it skip-and-report is a behaviour change to
             carry-forward's batch semantics, not to the guard.
+        PageOutOfDate: When what the batch frees differs from what *shown*
+            named (the batch's one press).  A ``ValidationError`` too, so the
+            caller's rollback above covers it.
+    """
+    # ONE press for the whole batch (plan step ``credit_card:CC-5-4a-5``,
+    # ruling R-CC135, "One check per save"): every envelope's settle and
+    # every transfer's move is one call of it, and the withdrawals it makes
+    # are logged at its close, so a batch its press refuses logs none.
+    # PROMISED (leaf 5c-2c-2): the modal names exactly what the batch frees,
+    # with no kind of press to choose between, so a batch that reaches NO
+    # match step is compared too -- an envelope another tab closed since the
+    # modal was drawn refuses the page that named its line.  (A line another
+    # tab merely unmatched is refused without it: the envelope's kept payment
+    # still reaches the match step, which engages the press.)
+    with Press(shown, promised=True) as press:
+        count, carried = _carry_forward(
+            source_period_id, target_period_id, scenario_id, balance_ctx,
+            press,
+        )
+    # The batch's own event AFTER the press has closed, so a batch its close
+    # refuses does not report a carry it never made (the leaf's review, M1).
+    # It still precedes the route's commit, as every business event of a save
+    # does (ledger row balance:BAL-599).
+    if carried is not None:
+        log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
+                  "Carried forward unpaid items",
+                  user_id=carried.user_id,
+                  count=count, from_period_id=source_period_id,
+                  to_period_id=target_period_id,
+                  envelope_count=len(carried.envelope_txns),
+                  discrete_count=len(carried.discrete_txns),
+                  transfer_count=len(carried.transfers))
+    return count
+
+
+def _carry_forward(source_period_id, target_period_id, scenario_id,
+                   balance_ctx, press):
+    """Run :func:`carry_forward_unpaid` inside its press, which it threads.
+
+    Returns:
+        ``(count, ctx)`` -- the carried count and the batch's context, whose
+        partition the caller's event reports; ``(0, None)`` when the source
+        holds nothing to carry, which reports nothing.
     """
     ctx = _build_carry_forward_context(
         source_period_id, target_period_id, scenario_id, balance_ctx,
@@ -114,7 +167,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             and not ctx.discrete_txns):
         # Includes the same-period short-circuit and the
         # genuinely-nothing-to-carry case.  No flush needed.
-        return 0
+        return 0, None
 
     count = 0
 
@@ -237,7 +290,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # session for batch atomicity.
         for txn in ctx.envelope_txns:
             _settle_source_and_roll_leftover(
-                txn, ctx.target_period, ctx.basis, ctx.schedule,
+                txn, ctx.target_period, ctx.basis, ctx.schedule, press,
             )
             count += 1
 
@@ -267,7 +320,12 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         moved = {"pay_period_id": target_period_id}
         if transfer.recurs:
             moved["is_override"] = True
-        transfer_service.update_transfer(transfer.id, user_id, **moved)
+        # The batch's press, so the batch stays ONE save; a period move
+        # reaches no settle and no match step today (``_update.
+        # _apply_remaining_fields`` writes the period on the three rows).
+        transfer_service.update_transfer(
+            transfer.id, user_id, press=press, **moved,
+        )
         count += 1
 
     db.session.flush()
@@ -305,15 +363,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     for moved_txn in ctx.discrete_txns:
         posting_service.sync_transaction_postings(moved_txn)
 
-    log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
-              "Carried forward unpaid items",
-              user_id=user_id,
-              count=count, from_period_id=source_period_id,
-              to_period_id=target_period_id,
-              envelope_count=len(ctx.envelope_txns),
-              discrete_count=len(ctx.discrete_txns),
-              transfer_count=len(ctx.transfers))
-    return count
+    return count, ctx
 
 
 @dataclass(frozen=True)
@@ -418,7 +468,7 @@ def _partition_discrete(ctx, target_period_id: int) -> _DiscretePartition:
 
 
 def _settle_source_and_roll_leftover(source_txn, target_period, basis,
-                                    schedule):
+                                    schedule, press):
     """Settle an envelope source row and roll its leftover into the target.
 
     Implements the envelope branch of Option F (see
@@ -497,6 +547,8 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
             (``ctx.basis``).  Its ``scenario_id`` scopes the target-row lookup
             and the recurrence-engine call so cross-scenario data is never
             touched, and it prices both ends of the rollover.
+        press: The batch's one :class:`~app.services.match_press.Press`
+            (:func:`carry_forward_unpaid`).
 
     Raises:
         ValidationError: On the ``AMBIGUOUS`` guard -- more than one mutable
@@ -573,13 +625,11 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
         )
         target_row.is_override = True
 
-    # Its ``purchases`` record takes a kept payment off the books, and the
-    # confirmation names nothing first (finding **CC-364**): named where the
-    # act asks (ruling **R-CC81**) until plan step ``credit_card:CC-5-4a-5``'s
-    # second leaf captions each envelope (ruling **R-CC76**).
-    transaction_service.settle_from_entries(
-        source_txn, shown=Silent("CC-364"),
-    )
+    # Its ``purchases`` record takes a kept payment off the books, and any
+    # match left naming no row with it: the confirmation named those lines
+    # first (``_preview._what_each_close_frees``, ruling **R-CC76**), and the
+    # batch's press compares (:func:`carry_forward_unpaid`).
+    transaction_service.settle_from_entries(source_txn, press=press)
 
 
 def _resolve_or_create_target_row(source_txn, target_period,

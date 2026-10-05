@@ -307,8 +307,7 @@ def record_income_from_line(
             working from a stale page.
     """
     # ONE read of what this account's matches have claimed, for this act: the
-    # line refusal and the double-count guard inside ``record_match`` both
-    # narrow with it, so they cannot disagree.
+    # line refusal narrows with it.
     matched = matched_subjects(scope.account_id)
     line = _load_line(creation, matched, scope, view)
     amount = Decimal(str(line.amount))
@@ -397,7 +396,6 @@ def record_income_from_line(
             # is no container beside it to leave out.
             created=(CreatedSubject.of(candidate),),
         ),
-        matched,
         # **A rule CAN reach this door since plan step
         # ``bank_import:X-gj-2a``** (ruling **R-HT(a)**), where it was a
         # literal ``False`` on ruling **bank_import:R-GW**'s ground that a

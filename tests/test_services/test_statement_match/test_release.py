@@ -33,7 +33,7 @@ from sqlalchemy import event
 
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum, StatusEnum
-from app.exceptions import ValidationError
+from app.exceptions import PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
 from app.models.transaction import Transaction
@@ -41,6 +41,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
+    credit_workflow,
     entry_service,
     posting_service,
     statement_match,
@@ -84,6 +85,7 @@ from ._builders import (
     a_transaction,
     accepted_acts,
     an_answers,
+    an_envelope,
     an_import,
 )
 
@@ -1461,3 +1463,151 @@ class TestARevertedSubjectIsRefusedAsAnEdit:
         assert "can no longer work out what that row is worth" not in refusal
         # A refused act reports nothing to remove.
         assert row.cash_amount == Decimal("0.00")
+
+
+class TestTheUndoFreesNoLineAnotherActHolds:
+    """The one removal that could free ANOTHER act's line is refused as an edit.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2b), ruling **R-CC135**.  An
+    Undo names no bank line, so it opens no press of its own: each removal it
+    makes is a press of one call naming nothing, which refuses any line that
+    call would free (``match_withdrawal.take_out_of_matches``, ruling
+    **R-CC127**: *"A button with no warning sends nothing"*).  The one removal
+    that could reach a line ANOTHER act holds is the purchase arm's payback
+    teardown: deleting an envelope's last CARD purchase deletes its CC payback
+    in the same removal act (``entry_service._doors.delete_entry``), and a
+    payback set back to Projected keeps its payment un-dated, which an act may
+    still name.
+
+    **No door reaches it, measured through the doors below.**  A purchase the
+    create arm records is born a debit one (``_create._born_purchase`` states
+    no card flag), and the card total counts ``is_credit`` alone
+    (``app.utils.entry_partition``), so the purchase becomes its envelope's
+    last card purchase only by a CC tick -- an EDIT, which moves its revision,
+    and the Undo refuses an edited subject before it writes anything
+    (``_subject_removal``).  An envelope the act minted is settled and
+    refuses the tick until it is set back to Projected, another edit on the
+    way.  So the default press is a fence that does not fire here, and these
+    cases are what hold that: with the revision test deleted, each Undo
+    instead reaches the teardown and is refused as out of date.
+    """
+
+    @staticmethod
+    def _its_payback_matched_and_reverted(seed_user, created):
+        """Make the act's purchase the envelope's last card purchase, its payback matched.
+
+        Through the doors the owner has, on a Projected envelope: the
+        purchase ticked CC (its payback created in the next period), the
+        payback's payment matched to a CARD PAYMENT line by a SECOND act, and
+        the payback set back to Projected, which keeps that payment un-dated
+        and the second act on it -- the one shape in which deleting the last
+        card purchase deletes a payback a match still names.  Commits, so the
+        Undo is read against what the database holds.
+
+        Args:
+            seed_user: The seeded user bundle.
+            created: The create arm's result, its envelope Projected.
+
+        Returns:
+            ``(payback_id, payment_line_id)``.
+        """
+        projected = ref_cache.status_id(StatusEnum.PROJECTED)
+        envelope = db.session.get(Transaction, created.transaction_id)
+        assert envelope.status_id == projected
+        a_later_period(seed_user)
+        db.session.flush()
+        entry_service.update_entry(
+            created.entry_id, seed_user["user"].id, is_credit=True,
+        )
+        db.session.flush()
+        payback = credit_workflow.get_active_payback(envelope.id)
+        payment_line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date
+            + timedelta(days=6),
+            description="CARD PAYMENT",
+        )
+        db.session.flush()
+        statement_match.accept_match(
+            a_submission(
+                a_scope(seed_user), lines=[payment_line],
+                transactions=[payback],
+            ),
+            a_scope(seed_user),
+        )
+        transaction_service.apply_requested_status(payback, projected)
+        db.session.commit()
+        return payback.id, payment_line.id
+
+    @staticmethod
+    def _assert_refused_as_an_edit_and_nothing_moved(
+        seed_user, created, payback_id, payment_line_id,
+    ):
+        """Press the Undo; assert the edit sentence, and that both acts stand.
+
+        The session is COMMITTED after the refusal, so anything the door
+        wrote before refusing is in the database the re-reads see -- a
+        rollback here would hide exactly that.
+        """
+        with pytest.raises(ValidationError) as caught:
+            _release(seed_user, created.match_id)
+        assert not isinstance(caught.value, PageOutOfDate), str(caught.value)
+        assert "you have edited that row since" in str(caught.value)
+        db.session.commit()
+        db.session.expire_all()
+
+        assert db.session.get(StatementMatch, created.match_id) is not None
+        assert db.session.get(TransactionEntry, created.entry_id) is not None
+        assert db.session.get(Transaction, payback_id) is not None
+        payment_member = db.session.query(StatementMatchMember).filter(
+            StatementMatchMember.bank_statement_line_id == payment_line_id,
+        ).one()
+        assert payment_member.match_id != created.match_id
+
+    def test_a_purchase_filed_in_an_envelope_the_owner_PICKED(
+        self, app, db, seed_user,
+    ):
+        """Route 1: the line filed in an existing Groceries envelope."""
+        envelope = an_envelope(seed_user)
+        db.session.flush()
+        created = _record(seed_user, _a_swipe(seed_user), transaction_id=envelope.id)
+        db.session.commit()
+        payback_id, payment_line_id = self._its_payback_matched_and_reverted(
+            seed_user, created,
+        )
+
+        self._assert_refused_as_an_edit_and_nothing_moved(
+            seed_user, created, payback_id, payment_line_id,
+        )
+
+    def test_a_purchase_in_an_envelope_the_act_MINTED(
+        self, app, db, seed_user,
+    ):
+        """Route 2: the line recorded into a new envelope the act created.
+
+        The act closes the envelope it mints on the bank's day, and a settled
+        envelope refuses the CC tick (``is_credit`` re-costs its purchase), so
+        the owner sets the envelope back to Projected first.
+        """
+        created = _record(
+            seed_user, _a_swipe(seed_user),
+            new_envelope=_a_new_envelope(seed_user),
+        )
+        db.session.commit()
+        with pytest.raises(ValidationError, match="has settled"):
+            entry_service.update_entry(
+                created.entry_id, seed_user["user"].id, is_credit=True,
+            )
+        db.session.rollback()
+        transaction_service.apply_requested_status(
+            db.session.get(Transaction, created.transaction_id),
+            ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.commit()
+        payback_id, payment_line_id = self._its_payback_matched_and_reverted(
+            seed_user, created,
+        )
+
+        self._assert_refused_as_an_edit_and_nothing_moved(
+            seed_user, created, payback_id, payment_line_id,
+        )

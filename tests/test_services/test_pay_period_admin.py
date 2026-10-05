@@ -203,7 +203,7 @@ class TestClassifyPeriodLock:
             movement_removal.remove_movements(
                 list(deleted.entries), seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
-                shown=match_withdrawal.NOTHING_SHOWN,
+                press=None,
             )
             deleted.is_deleted = True
             assert _lock(periods[1], display_today()) is None

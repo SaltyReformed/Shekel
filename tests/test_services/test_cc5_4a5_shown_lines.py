@@ -30,7 +30,12 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
-from app.services import match_withdrawal, transaction_service, transfer_service
+from app.services import (
+    match_press,
+    match_withdrawal,
+    transaction_service,
+    transfer_service,
+)
 from app.services.settle_day import SettleDay
 from app.services.statement_match import accept_match
 from app.utils.log_events import EVT_STATEMENT_MATCH_WITHDRAWN
@@ -186,7 +191,8 @@ class TestThePressIsGradedAgainstWhatThePageNamed:
             )
             assert named.line_ids == frozenset({line.id})
 
-            _record_zero(hotel, shown=match_withdrawal.Shown(named.line_ids))
+            with match_press.Press(match_press.Shown(named.line_ids)) as press:
+                _record_zero(hotel, press=press)
             db.session.commit()
 
             assert db.session.get(StatementMatch, match_id) is None
@@ -207,9 +213,10 @@ class TestThePressIsGradedAgainstWhatThePageNamed:
             )
 
             with pytest.raises(ValidationError, match="out of date"):
-                _record_zero(
-                    hotel, shown=match_withdrawal.Shown(drawn.line_ids),
-                )
+                with match_press.Press(match_press.Shown(drawn.line_ids)) as press:
+                    _record_zero(
+                        hotel, press=press,
+                    )
 
             _still_standing(hotel.id, match_id)
 
@@ -223,17 +230,30 @@ class TestThePressIsGradedAgainstWhatThePageNamed:
             db.session.commit()
 
             with pytest.raises(ValidationError, match="out of date"):
-                _record_zero(
-                    hotel, shown=match_withdrawal.Shown(frozenset({line.id})),
-                )
+                with match_press.Press(match_press.Shown(frozenset({line.id}))) as press:
+                    _record_zero(
+                        hotel, press=press,
+                    )
 
             db.session.rollback()
             assert db.session.get(Transaction, hotel.id).covering_movements
 
-    def test_a_named_line_on_an_account_the_press_never_touches_is_not_graded(
+    def test_a_named_line_the_save_never_frees_refuses_it(
         self, app, seed_user,
     ):
-        """The posted ids are owner input: only lines on the movements' own accounts count."""
+        """A posted id the save does not free refuses the save, wherever its line is.
+
+        The posted ids are owner input, never a scope: the press only compares
+        them, whole, with what the save frees.  Until plan step
+        ``credit_card:CC-5-4a-5``'s leaf 5c-2b a named line on an account the
+        call never touched was not graded -- the per-account comparison a
+        transfer's two calls needed -- and this case pinned the save going
+        ahead.  Rewritten under ruling **R-CC135** (developer 2026-10-04, "One
+        check per save"): *"One-row buttons behave as now, except that a
+        warning naming a line another tab has already freed now redraws
+        instead of saving."*  A line the save does not free is that line, or
+        a crafted id: nothing saves.
+        """
         with app.app_context():
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Savings",
@@ -242,13 +262,16 @@ class TestThePressIsGradedAgainstWhatThePageNamed:
             )
             elsewhere = _line(seed_user, "-120.00", "ELSEWHERE", savings)
             hotel = _hotel(seed_user)
+            hotel_id = hotel.id
 
-            _record_zero(
-                hotel, shown=match_withdrawal.Shown(frozenset({elsewhere.id})),
-            )
-            db.session.commit()
+            with pytest.raises(ValidationError, match="out of date"):
+                with match_press.Press(
+                    match_press.Shown(frozenset({elsewhere.id})),
+                ) as press:
+                    _record_zero(hotel, press=press)
 
-            assert not db.session.get(Transaction, hotel.id).covering_movements
+            db.session.rollback()
+            assert db.session.get(Transaction, hotel_id).covering_movements
 
 
 class TestANamedSilence:
@@ -262,7 +285,8 @@ class TestANamedSilence:
             hotel, line, match_id = _matched_hotel(seed_user)
 
             with _Events() as events:
-                _record_zero(hotel, shown=match_withdrawal.MARK_PAID)
+                with match_press.Press(match_press.MARK_PAID) as press:
+                    _record_zero(hotel, press=press)
                 db.session.commit()
 
             assert db.session.get(StatementMatch, match_id) is None
@@ -276,9 +300,10 @@ class TestANamedSilence:
             hotel, line, _match_id = _matched_hotel(seed_user)
 
             with _Events() as events:
-                _record_zero(
-                    hotel, shown=match_withdrawal.Shown(frozenset({line.id})),
-                )
+                with match_press.Press(match_press.Shown(frozenset({line.id}))) as press:
+                    _record_zero(
+                        hotel, press=press,
+                    )
                 db.session.commit()
 
             (record,) = events.withdrawn()
@@ -310,10 +335,11 @@ class TestATransfersTwoSidesAreOnePress:
         with app.app_context():
             xfer, line, match_id = self._matched_transfer(seed_user)
 
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, figure=typed(Decimal("0.00")),
-                shown=match_withdrawal.Shown(frozenset({line.id})),
-            )
+            with match_press.Press(match_press.Shown(frozenset({line.id}))) as press:
+                transfer_service.update_transfer(
+                    xfer.id, seed_user["user"].id, figure=typed(Decimal("0.00")),
+                    press=press,
+                )
             db.session.commit()
 
             assert db.session.get(StatementMatch, match_id) is None
@@ -327,7 +353,7 @@ class TestATransfersTwoSidesAreOnePress:
                 transfer_service.update_transfer(
                     xfer.id, seed_user["user"].id,
                     figure=typed(Decimal("0.00")),
-                    shown=match_withdrawal.NOTHING_SHOWN,
+                    press=None,
                 )
 
             db.session.rollback()

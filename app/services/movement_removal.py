@@ -101,20 +101,22 @@ from __future__ import annotations
 
 from app.extensions import db
 from app.services import match_withdrawal, posting_service, transfer_legs
-from app.services.match_withdrawal import MatchWithdrawal, Shown, Silent
+from app.services.match_press import Press
+from app.services.match_withdrawal import MatchWithdrawal
 
 
 def remove_movements(
-    movements, owner_id: int, *, because: str, shown: Shown | Silent,
+    movements, owner_id: int, *, because: str, press: Press | None,
     rows_leaving=(),
 ) -> MatchWithdrawal:
     """Take *movements* off the books: reversed, out of their matches, deleted.
 
     The module docstring carries the order and why each step is where it is.
-    *shown* is REQUIRED (ruling **R-CC81**): a door taking a payment or
-    purchase off the books says what its page named before the press, or
-    what lets it stay silent, and step 2 refuses a press whose freed lines
-    differ (``match_withdrawal.take_out_of_matches``, ruling **R-CC127**).
+    *press* is REQUIRED, a keyword with no default (ruling **R-CC81**): a
+    door taking a payment or purchase off the books says what its page named
+    before the press, or what lets it stay silent, and step 2 refuses at once
+    a line that page did not name (``match_withdrawal.take_out_of_matches``,
+    rulings **R-CC127**, **R-CC135**); the press's close compares the save.
     The refusal comes after step 1's reversal has flushed, so it is the
     door's rollback that undoes the press -- as for every refusal raised
     inside the status seam.
@@ -131,9 +133,9 @@ def remove_movements(
             the books it changed.
         because: The withdrawal event's sentence
             (``match_withdrawal.LEFT_THE_BOOKS`` / ``RE_RECORDED``).
-        shown: What the door's page named
-            (:class:`~app.services.match_withdrawal.Shown`), or what lets it
-            stay silent (:class:`~app.services.match_withdrawal.Silent`).
+        press: The save's :class:`~app.services.match_press.Press` (ruling **R-CC135**), over
+            what the door's page named or what lets it stay silent; ``None``
+            when the door named nothing.
         rows_leaving: The rows the caller deletes in the same press, soft or
             hard (a recurring occurrence's tombstone counts, ruling
             **R-CC84**), when it is a row delete -- so a creation record naming
@@ -145,13 +147,14 @@ def remove_movements(
         when no act named any of them, which is nearly every removal.
 
     Raises:
-        ValidationError: When what the press frees differs from *shown*.
+        ValidationError: When step 2 frees a line *press*'s page did not
+            name.
     """
     movements = list(movements)
     for movement in movements:
         posting_service.reverse_purchase_postings_before_delete(movement)
     withdrawn = match_withdrawal.take_out_of_matches(
-        movements, owner_id, because=because, shown=shown,
+        movements, owner_id, because=because, press=press,
         rows_leaving=rows_leaving,
     )
     for movement in movements:

@@ -463,10 +463,13 @@ class ShownIds(fields.Field):
     that named nothing reads as present.  ``routes._shown_lines`` is the one
     reader of both answers for the bank lines.
 
-    The ids are OWNER INPUT, never a scope: the act compares only the named
-    lines on the accounts its movements are on
-    (``match_withdrawal._refuse_unshown``), and the delete compares the named
-    purchases with the row's own, as a set.
+    The ids are OWNER INPUT, never a scope: the save's press only compares
+    them, whole, with the lines a graded save frees (``match_press.Press``:
+    one that reached a match step, or whose page promised), the delete
+    compares the named purchases with the row's own, as a set, and the rows
+    a reconcile panel's shared match names (leaf 5c-2c-1) are only compared
+    with the rows ticked, to decide whether its lines count as named
+    (``reconcile_service.NamedLines.for_ticks``).
     """
 
     default_error_messages = {"invalid": "Not a valid list of ids."}
@@ -504,8 +507,14 @@ class ShownLinesSchema(BaseSchema):
     Undo CC (a DELETE too) -- and each row of the reconcile panel, whose form
     posts one ``shown_lines-<row id>`` field per captioned row and loads each
     value through this schema (``routes.accounts.reconcile.
-    _submitted_shown_lines``, plan step ``credit_card:CC-5-4a-5c-1``).  The
-    transfer instance DELETE reads no field: no
+    _submitted_shown_lines``, plan step ``credit_card:CC-5-4a-5c-1``), and
+    each half -- the lines, then the rows that must all be ticked -- of every
+    shared match's ``"<line ids>;<row ids>"`` value posted beside them
+    (``routes.accounts.reconcile._submitted_shared_lines``, leaf 5c-2c-1,
+    ruling **R-CC135**) -- and carry-forward's Confirm, which posts every
+    line its modal named for the batch's one press
+    (``routes.transactions.carry_forward``, leaf 5c-2c-2).  The transfer
+    instance DELETE reads no field: no
     template renders it, so every request it takes named nothing.  The
     transaction DELETE's dialog names its purchases too
     (``TransactionDeleteSchema``).

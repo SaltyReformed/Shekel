@@ -3,16 +3,24 @@
 ``preview_carry_forward`` mirrors ``carry_forward_unpaid``'s decision
 tree without mutating a single row, returning one ``CarryForwardPlan``
 per source row so the carry-forward modal can show the user exactly what
-would happen before any database writes.
+would happen before any database writes -- including the bank lines the
+batch would leave unexplained again (plan step ``credit_card:CC-5-4a-5``,
+leaf 5c-2c-2, rulings **R-CC76** and **R-CC135**), which the modal's Confirm
+posts back for the batch's one check.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import List, Optional
 
+from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     resolve_transaction_amount,
     resolve_transfer_amount,
+)
+from app.services.match_withdrawal import (
+    MatchWithdrawal,
+    pending_alone_and_together,
 )
 from app.services.one_off import due_date_for
 from app.services.row_valuation import purchases_total
@@ -48,6 +56,34 @@ BLOCK_CLOSED_TARGET = "closed_target"
 
 
 # ── Plan dataclasses ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SharedClose:
+    """One accepted match that only several envelopes' closes, made together, withdraw.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2), ruling **R-CC135**
+    (developer 2026-10-04, "One check per save"): *"Carry-forward's Confirm
+    is one save of every envelope and names each match once."*  A match
+    naming the kept payments of two envelopes in the batch is emptied only
+    when both close, so neither close frees its line alone
+    (``match_withdrawal.RemovalWithdrawals.alone``); every envelope closes in
+    the one save, so the match is withdrawn, and the modal names it ONCE, in
+    the panel's sentence (``_withdrawal_macros.shared_match``: *"Matched with
+    Dining to one bank line: closing both from their purchases withdraws that
+    match, so ... is unexplained again on your statement screen."*), under
+    the first of its envelopes the modal lists.
+
+    Attributes:
+        withdrawal: What withdrawing the match frees -- one act.
+        partners: The names of the OTHER envelopes it needs, in the order the
+            modal lists them.  A name alone, with no paycheck beside it:
+            every envelope in the batch is in the one paycheck the modal is
+            titled with.
+    """
+
+    withdrawal: MatchWithdrawal
+    partners: "tuple[str, ...]"
 
 
 @dataclass(frozen=True)
@@ -102,17 +138,29 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
             fresh override row is created to carry the leftover (inactive
             template, finalised-only or soft-deleted-only destination).
             ``False`` when an existing mutable row is bumped in place.
+        withdraws: Envelope-only.  The accepted matches this envelope's
+            close withdraws BY ITSELF, and the bank lines that leaves
+            unexplained again (plan step ``credit_card:CC-5-4a-5``, leaf
+            5c-2c-2, ruling **R-CC76**: *"carry forward's confirmation for
+            each envelope it would settle"*): the close takes the payment a
+            revert kept off the books (``status_seam._covering._withdraw``),
+            and any match left naming no row goes with it.  ``None`` for an
+            envelope holding no such payment, and for every other kind.
+        shared: Envelope-only.  The matches only this envelope's close and
+            others' in the batch withdraw together, named here because this
+            is the first of their envelopes the modal lists (ruling
+            **R-CC135**, :class:`SharedClose`); empty everywhere else.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- this is a cohesive
+    Pylint: ``too-many-instance-attributes`` (13/7) -- this is a cohesive
     value record -- one source row's planned carry-forward action -- read
     flat by its sole consumer, the carry-forward preview modal, which
     iterates ``preview.plans`` and renders one list item per plan.  The
     block metadata and the envelope rollover numbers are not read as
     separable units: the modal interleaves the rollover figures within a
     single rendered sentence and gates list-item styling on ``blocked``
-    apart from rendering ``block_reason``.  Every field is an irreducible
-    column of the row; splitting it would fragment one domain concept for
-    no design gain.
+    apart from rendering ``block_reason``, and prints the two withdrawal
+    fields under the same item.  Every field is an irreducible column of the
+    row; splitting it would fragment one domain concept for no design gain.
     """
 
     item: PlanItem
@@ -126,6 +174,8 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
     target_estimated_before: Optional[Decimal] = None
     target_estimated_after: Optional[Decimal] = None
     target_will_be_generated: bool = False
+    withdraws: Optional[MatchWithdrawal] = None
+    shared: "tuple[SharedClose, ...]" = ()
 
 
 @dataclass(frozen=True)
@@ -182,6 +232,25 @@ class CarryForwardPreview:
     def blocked_count(self) -> int:
         """Total number of blocked plans (always envelope rows)."""
         return sum(1 for p in self.plans if p.blocked)
+
+    @property
+    def named_line_ids(self) -> "frozenset[int]":
+        """Every bank line the modal names, which its Confirm posts back.
+
+        Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2), rulings
+        **R-CC127** and **R-CC135**: the batch is ONE save of every envelope,
+        so what the page named is one set -- each envelope's own lines and
+        each shared match's -- and the save's press compares it, whole, with
+        what the batch frees (``carry_forward_unpaid``).  Empty when no close
+        frees a line, which the Confirm posts as a page that named nothing.
+        """
+        return frozenset().union(
+            *(p.withdraws.line_ids for p in self.plans if p.withdraws),
+            *(
+                shared.withdrawal.line_ids
+                for p in self.plans for shared in p.shared
+            ),
+        )
 
 
 def preview_carry_forward(
@@ -248,13 +317,17 @@ def preview_carry_forward(
 
     # Envelope rollovers first: they are the only kind that can block
     # the batch, so showing them at the top of the modal puts the
-    # actionable failure cases in front of the user.
+    # actionable failure cases in front of the user.  Each says what its
+    # close frees, from ONE read for the batch (leaf 5c-2c-2).
+    frees = _what_each_close_frees(ctx.envelope_txns)
     for txn in ctx.envelope_txns:
-        plans.append(
+        withdraws, shared = frees.get(txn.id, (None, ()))
+        plans.append(replace(
             _build_envelope_plan(
                 txn, ctx.target_period, ctx.basis, ctx.schedule,
             ),
-        )
+            withdraws=withdraws, shared=shared,
+        ))
 
     for txn in ctx.discrete_txns:
         plans.append(_build_discrete_plan(txn, ctx.basis))
@@ -267,6 +340,62 @@ def preview_carry_forward(
         target_period=ctx.target_period,
         plans=plans,
     )
+
+
+def _what_each_close_frees(
+    envelope_txns: "list[Transaction]",
+) -> "dict[int, tuple[MatchWithdrawal, tuple[SharedClose, ...]]]":
+    """Return what each envelope's close withdraws, as plan fields, from ONE read.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2), rulings **R-CC76**
+    and **R-CC135**.  Every envelope the batch carries settles from its
+    purchases (``transaction_service.settle_from_entries``), and that
+    ``purchases`` record takes off the books whatever payment a revert kept
+    (``status_seam._covering._withdraw``, over
+    :attr:`~app.models.transaction.Transaction.covering_movements`) -- so
+    each close's removal is exactly those movements, read through the act's
+    own twin, ``match_withdrawal.pending_alone_and_together``, once for the
+    batch: one member query, and none at all when no envelope holds such a
+    payment (production held 0 un-dated covering movements under a
+    Projected row on 2026-09-30, the census behind ruling **R-CC125**).
+
+    A match one close empties by itself is that envelope's ``withdraws``.
+    A match only several closes empty together is ONE :class:`SharedClose`
+    under the first of them in *envelope_txns*' order -- the modal's -- since
+    every envelope closes in the one save (*"names each match once"*).  A
+    match naming a payment no close takes -- a discrete row's, which moves
+    whole, or a row outside the batch -- is neither: the batch only takes
+    its envelopes' payments out of it, and it stays.
+
+    Args:
+        envelope_txns: The batch's envelope rows, in the order the modal
+            lists them (``_build_carry_forward_context``).
+
+    Returns:
+        ``{transaction id: (withdraws, shared)}`` -- the plan's two fields --
+        for each envelope holding a kept payment; an envelope absent here
+        frees nothing and keeps the plan's defaults.
+    """
+    pending = pending_alone_and_together({
+        txn.id: txn.covering_movements
+        for txn in envelope_txns if txn.covering_movements
+    })
+    order = [txn.id for txn in envelope_txns]
+    names = {txn.id: txn.name for txn in envelope_txns}
+    frees = {}
+    for txn_id, each in pending.items():
+        frees[txn_id] = (each.alone, tuple(
+            SharedClose(
+                withdrawal=shared.withdrawal,
+                partners=tuple(
+                    names[key] for key in order
+                    if key in shared.keys and key != txn_id
+                ),
+            )
+            for shared in each.shared
+            if min(shared.keys, key=order.index) == txn_id
+        ))
+    return frees
 
 
 def _build_envelope_plan(source_txn, target_period, basis, schedule):
