@@ -805,19 +805,23 @@ def record_settled(
 
     **The panel's save is ONE press** (plan step ``credit_card:CC-5-4a-5``,
     rulings **R-CC76** / **R-CC127** / **R-CC135**): the caller opens it over
-    every bank line printed under a row the owner TICKED, posted back per row
-    and joined (``_assemble.record_reconciliation``), and each item's settle
-    hands it to the act that takes a payment out of its matches.  Each such
-    call refuses at once a line no ticked row's caption named, and the
-    press's close refuses a save whose freed lines differ from what was
-    named -- PROMISED, so it compares a save that reached no match step too:
-    a ticked row whose caption named a line and whose settle went another
-    way, its purchase deleted in another tab so it now settles from its
-    figure, refuses the save (ledger row **BAL-597**).  It was a set PER TICK
-    until leaf 5c-2b, compared per ACCOUNT, which refused two rows matched to
-    one bank line ticked together on every try; the one press is half of
-    finding **CC-384**'s remedy, and a caption naming that shared line is
-    5c-2c's.
+    what the page named for the rows the owner TICKED
+    (``_assemble.record_reconciliation``, :meth:`~._named.NamedLines.for_ticks`)
+    -- every bank line captioned under a ticked row, and every line of a
+    SHARED match (one naming the kept payments of several rows) only when ALL
+    of that match's rows were ticked -- and each item's settle hands it to the
+    act that takes a payment out of its matches.  Each such call refuses at
+    once a line that graded set does not hold, so a shared line printed under
+    a ticked row is refused there unless every one of its rows was ticked; and
+    the press's close refuses a save whose freed lines differ from the set --
+    PROMISED, so it compares a save that reached no match step too: a ticked
+    row whose caption named a line and whose settle went another way, its
+    purchase deleted in another tab so it now settles from its figure,
+    refuses the save (ledger row **BAL-597**).  It was a set PER TICK until
+    leaf 5c-2b, compared per ACCOUNT, which refused two rows matched to one
+    bank line ticked together on every try; the one press (5c-2b) and the
+    shared match named under each of its rows (leaf 5c-2c-1) are finding
+    **CC-384**'s remedy.
 
     **Recording WHICH statement showed the item is the ARM's** (ruling
     **R-FL**), and that is not a preference: for the transfer arm the money
@@ -887,9 +891,10 @@ def record_settled(
     Raises:
         ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
             propagated from the arm's settle verb -- an illegal transition a
-            stale panel can still submit, or a tick freeing a bank line no
-            ticked row's caption named (``PageOutOfDate``, rulings
-            **R-CC127** / **R-CC135**).  A 400 at the route.
+            stale panel can still submit, or a tick freeing a bank line the
+            page did not name for the rows ticked (``PageOutOfDate``, rulings
+            **R-CC127** / **R-CC135**; :meth:`~._named.NamedLines.for_ticks`).
+            A 400 at the route.
         PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
     """
     if not tick_ids:

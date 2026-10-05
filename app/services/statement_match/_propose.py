@@ -87,7 +87,7 @@ from itertools import combinations
 
 from ._near import near_misses
 from ._offers import BankLine, MatchProposal
-from ._subjects import CandidateRow, RowKind
+from ._subjects import CandidateRow
 from ._pairing import (
     DAY_WINDOW,
     day_distance,
@@ -617,33 +617,6 @@ def _day_sums(
     return sums, skipped
 
 
-def _holds_a_parent_and_its_child(
-    rows: "tuple[CandidateRow, ...]",
-) -> bool:
-    """Return whether *rows* names an envelope AND a purchase inside it.
-
-    The proposer's half of :func:`~._accept._reject_parent_and_its_own_purchase`.
-    That refusal exists because an envelope's cash leg already covers its own
-    outstanding purchases, so a group naming both counts one purchase twice --
-    and a proposer that could not see the relation offered exactly that.  Live
-    on the developer's own clone: 28 envelopes carrying 73 debit purchases, so
-    both sides sit in the candidate pool.
-
-    Args:
-        rows: A candidate group.
-
-    Returns:
-        Whether any purchase in it belongs to a transaction also in it.
-    """
-    transactions = {
-        row.row_id for row in rows if row.kind is RowKind.TRANSACTION
-    }
-    return any(
-        row.parent_id in transactions
-        for row in rows if row.kind is RowKind.PURCHASE
-    )
-
-
 def _groups(
     lines: "list[BankLine]", rows: "list[CandidateRow]",
 ) -> "tuple[list[MatchProposal], list[date]]":
@@ -695,13 +668,16 @@ def _groups(
             if abs((day - line.posted_on).days) > DAY_WINDOW:
                 continue
             for combo in day_sums.get(line.amount, ()):
-                # Every member must be legally datable to this line's day, and
-                # no two of them may be an envelope and a purchase inside it:
-                # the accept door refuses both, so offering either is an Accept
-                # button that cannot succeed.
+                # Every member must be legally datable to this line's day: the
+                # accept door refuses one that is not, so offering it is an
+                # Accept button that cannot succeed.  **No combo can hold an
+                # envelope and a purchase inside it** (plan step
+                # ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding
+                # **CC-386**, ruling **R-CC144**): a row holding a purchase
+                # is worth ``$0.00`` to the offer and is never a candidate
+                # (ruling **R-BAL81**), so the check this loop made for one
+                # is deleted with the accept door's.
                 if not all(within_window(row, line) for row in combo):
-                    continue
-                if _holds_a_parent_and_its_child(combo):
                     continue
                 found.setdefault(
                     frozenset((row.kind, row.row_id) for row in combo),

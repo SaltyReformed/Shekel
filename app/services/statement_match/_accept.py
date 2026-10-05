@@ -78,16 +78,22 @@ which the second one has to say twice because a line count is what FORCED it:
 every function in ``_variance`` reads the two SUMS and nothing here does, and
 every function in ``_moving`` calls a settle verb and nothing here does.
 
-**THREE refusals live in this module.**  Two are about the submission's
-SHAPE -- a side with nothing in it, and an envelope named beside a purchase
-inside it -- and neither reads a figure.  The third is
+**TWO refusals live in this module.**  One is about the submission's SHAPE
+-- a side with nothing in it -- and reads no figure.  The other is
 :func:`_reject_drifted_under_the_act`, which is about what the act's OWN writes
 did to a member's price.  *(The count is stated because this arc has shipped a
-taxonomy that did not add up before; a fourth added here is what has to change
-this sentence.  It was FOUR until plan step ``bank_import:X-f6f``, and the one
-that left is the UNDO's -- :mod:`._release` states its own now, beside the
-rest of that subject.  :mod:`._resolve` and :mod:`._variance` each state
-theirs.)*
+taxonomy that did not add up before; a third added here is what has to change
+this sentence.  It was FOUR until plan step ``bank_import:X-f6f``, when the
+UNDO's left -- :mod:`._release` states its own now, beside the rest of that
+subject -- and THREE until plan step ``credit_card:CC-5-4a-5``'s leaf
+5c-2c-1 deleted the refusal of an envelope named beside a purchase inside it
+(finding **CC-386**, ruling **R-CC144**, developer 2026-10-05, amending
+**bank_import:R-FY**): no door could reach it.  A row holding a purchase is
+worth ``$0.00`` to the offer and is never offered (ruling **R-BAL81**), a row
+whose payment an act names is claimed
+(:func:`~._candidates.matched_subjects`), the two building doors name only
+the row they built, and a batch runs every match before any creation.
+:mod:`._resolve` and :mod:`._variance` each state theirs.)*
 
 **Every refusal fires before anything is written.**  The ids are re-derived
 under the owner's own scope (:mod:`._resolve`) and reconciled with the state
@@ -97,11 +103,11 @@ leaves the database exactly as it was without depending on the rollback, the
 same discipline ``statement_import.record_statement`` states for itself.
 
 **What is ALREADY CLAIMED is read by the ACT, never by the scope.**  Every
-refusal here that asks "is this already matched" takes a
-:class:`~._candidates.MatchedSubjects` its caller read for this act alone, so a
-batch applying 215 items cannot hand its fourth item a row its third has just
-claimed.  One read serves the line refusal, the row refusal and the
-parent/child guard, where there were two queries answering the same question.
+refusal on this path that asks "is this already matched" takes a
+:class:`~._candidates.MatchedSubjects` :func:`accept_match` read for this act
+alone, so a batch applying 215 items cannot hand its fourth item a row its
+third has just claimed.  One read serves the line refusal and the row refusal
+(:mod:`._resolve`), where there were two queries answering the same question.
 
 **This door applies no DATE bound, and that asymmetry is deliberate.**  The
 proposer refuses to OFFER a pairing outside the row's own window
@@ -147,7 +153,6 @@ from app.models.statement_match import (
     StatementMatchMember,
 )
 from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.services import status_seam
 from app.utils.log_events import (
     BUSINESS,
@@ -155,7 +160,7 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._candidates import MatchedSubjects, matched_subjects
+from ._candidates import matched_subjects
 from ._creations import CreatedSubject
 from ._moving import move_members
 from ._offers import (
@@ -277,102 +282,6 @@ def _reject_empty_side(
         )
 
 
-def _reject_parent_and_its_own_purchase(
-    rows: "list[CandidateRow]", matched: MatchedSubjects,
-) -> None:
-    """Refuse an envelope and a purchase under it -- in this match OR another.
-
-    **It would count the same money twice**, and no schema can see it.  An
-    envelope's cash leg SUBTRACTS the purchases that have posted and INCLUDES
-    the ones that have not (ruling **R-FM**), so naming both sums that purchase
-    in two terms.
-
-    **Both directions were checked ACROSS matches, because the cross-match
-    half was the one that moved money** while an envelope's leg included its
-    outstanding purchases.  Within one match the two sides are priced
-    together and refuse together.  Across two, each balanced on its own and
-    the second one FALSIFIED the first: measured on a production clone,
-    envelope 2280 prices at `-265.69` (its four unposted purchases included)
-    and its purchase 78 at `-18.64`; matching 2280 first and 78 second stamps
-    78's posting day, which drops 2280's leg to `-247.05` -- so two matched
-    line-sets worth `-284.33` are backed by `-265.69` of ledger and the
-    projected balance reads `$18.64` HIGH.  The screen's hand-build form lists
-    an envelope and its purchases side by side, so it is two clicks.  Found by
-    adversarial financial review 2026-08-17.
-
-    **A purchase whose envelope's PAYMENT a match names is NOT refused**
-    (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2b, finding **CC-385**).
-    That arm read every act of the owner's until then and refused the
-    purchase as counting money twice, but the one state it reached is an
-    envelope closed as one payment, matched, and set back to Projected: the
-    revert keeps that payment UN-DATED, so it counts nothing, and the
-    purchase's line is the only one explaining the purchase's money.  The
-    developer ruled the match allowed (2026-10-05, "Allow it, change test":
-    *"The match saves: the $30 purchase is dated 9/26 and Checking goes down
-    $30.00. The old $120 match stays flagged with its Undo."*), beside ruling
-    **R-CC141** for filing.  A DATED payment beside purchases is
-    unrepresentable (ruling **R-BAL78**: a row holding purchases settles from
-    them, and a settled row holding a payment takes no purchase).
-
-    **Both arms that remain are refused a tier earlier for every state a door
-    writes**, and the cases that once reached them now pin that: a row holding
-    purchases is worth ``0`` to the offer (ruling **R-BAL81**), so an envelope
-    named beside its own purchase, or beside a purchase a match names, is
-    refused as no longer available by :func:`~._valuation.repriced`
-    (``test_accept``'s envelope-and-its-own-purchase cases).
-
-    **The claims are the ones its ACT read** (plan step X-f6a-3c-2).  It ran
-    its own query over ``statement_match_members`` until this step, which
-    was a second answer to the question
-    :func:`~._candidates.matched_subjects` already answers -- and the same read
-    now also decides which rows and lines are still available, so all three
-    refusals see one state.
-
-    **It is NOT what keeps a batch's prices honest**, and a first draft of this
-    step said it was.  That argument -- *the only way one item can move a row
-    another item names is by adding to or posting a purchase under it* -- was
-    measured false by adversarial financial review 2026-08-19 on a SIBLING
-    write (``sync_entry_payback``); the answer is that every act re-prices the
-    rows it names (:func:`~._valuation.repriced`), and this guard is left to
-    do the one job it can actually do.
-
-    Args:
-        rows: The submitted app rows, already priced.
-        matched: What this account's matches have already claimed, as of this
-            act.
-
-    Raises:
-        ValidationError: When a submitted purchase's parent is submitted, or
-            a submitted envelope holds a purchase a match already names.
-    """
-    transaction_ids = {
-        row.row_id for row in rows if row.kind is RowKind.TRANSACTION
-    }
-    entry_ids = {row.row_id for row in rows if row.kind is RowKind.PURCHASE}
-    if not transaction_ids and not entry_ids:
-        return
-    clash = db.session.query(TransactionEntry.id).filter(
-        db.or_(
-            db.and_(
-                TransactionEntry.id.in_(entry_ids or {0}),
-                TransactionEntry.transaction_id.in_(transaction_ids or {0}),
-            ),
-            db.and_(
-                TransactionEntry.id.in_(matched.entries or {0}),
-                TransactionEntry.transaction_id.in_(transaction_ids or {0}),
-            ),
-        )
-    ).first()
-    if clash is not None:
-        raise ValidationError(
-            "This match would count the same money twice: it names an "
-            "envelope and a purchase inside it -- here, or through a match "
-            "you have already accepted.  The envelope's figure already covers "
-            "its own purchases.  Match the envelope OR its purchases, not "
-            "both.  Nothing was changed."
-        )
-
-
 def _reject_drifted_under_the_act(
     scope: ReviewScope,
     lines: "list[BankStatementLine]",
@@ -393,7 +302,7 @@ def _reject_drifted_under_the_act(
     ``entry_service.update_entry`` re-derives the envelope's CC Payback through
     ``sync_entry_payback`` and WRITES its ``estimated_amount``; that payback is
     a candidate on the same account and a SIBLING of the purchase rather than
-    its parent, so :func:`_reject_parent_and_its_own_purchase` cannot see it.
+    its parent, so no reading of a parent and its own purchase sees it.
     ``_scope`` and ``_resolve`` both record that measurement (2026-08-19) as
     the reason a price is re-read per ACT; this is the same answer applied
     WITHIN one.
@@ -457,8 +366,9 @@ def _record(
     this act asserts are one movement, so their amounts have to add up; the
     CREATIONS are what it brought into existence, and the create-a-purchase
     arm's container is one of those without being a member -- naming an
-    envelope beside its own purchase counts the same money twice, which
-    :func:`_reject_parent_and_its_own_purchase` refuses outright.
+    envelope beside its own purchase would count the same money twice, and a
+    row holding a purchase is worth ``$0.00`` to the offer, so no act can
+    name one (ruling **R-BAL81**).
 
     **It takes the SCOPE rather than an owner and an account**, which is the
     correction :func:`record_match` above it already made and this function was
@@ -627,8 +537,7 @@ class MatchContent:
     bound is to name what the arguments are collectively rather than to
     disable the check.  They are collectively one thing -- the two sides of a
     correspondence, plus what the caller made and what the owner agreed to --
-    where *scope* is whose pass this is and *matched* is what the ACCOUNT has
-    already claimed, neither of which is content.
+    where *scope* is whose pass this is, which is not content.
 
     Attributes:
         lines: The bank lines this match explains, already scoped by
@@ -681,7 +590,6 @@ class MatchContent:
 def record_match(
     scope: ReviewScope,
     content: MatchContent,
-    matched: MatchedSubjects,
     *,
     applied_by_rule: bool,
 ) -> AcceptedMatch:
@@ -689,15 +597,22 @@ def record_match(
 
     **The ONE function that writes a match**, and the half of the old
     ``accept_match`` that does not care where its rows came from (plan step
-    X-f6a-3c-2).  Its two callers hold their rows for different reasons:
+    X-f6a-3c-2).  Its three callers hold their rows for different reasons:
     :func:`accept_match` resolved them from submitted ids under the pass's
-    scope, and :func:`~._create.create_purchase_from_line` just created the one
-    it names.  Both reach the same guards, the same day derivation, the same
+    scope, and :func:`~._create.create_purchase_from_line` and
+    :func:`~._income.record_income_from_line` just created the one each
+    names.  All reach the same guards, the same day derivation, the same
     settle verbs and the same record, which is what rulings **R-FT** and
     **R-FV** ask for.
 
+    **It takes no claims since plan step ``credit_card:CC-5-4a-5``'s leaf
+    5c-2c-1** (finding **CC-386**, ruling **R-CC144**): the one refusal here
+    that read them, an envelope named beside a purchase inside it, is deleted
+    as unreachable (module docstring), and each caller's claims already
+    narrowed the lines and rows it hands in.
+
     The order its refusals have to happen in: both sides are checked for
-    presence, for the double-count pairing and for what their difference means
+    presence and for what their difference means
     (:func:`~._variance.reject_unrecordable`); then the EARLIEST of the bank
     days is checked against the day the account's books open
     (:meth:`~._scope.ReviewScope.reject_line_before_books_open`, plan step
@@ -736,8 +651,6 @@ def record_match(
         content: What this act is made of (:class:`MatchContent`) -- the two
             sides, what the caller created, and the difference the owner
             agreed to.
-        matched: What this account's matches have already claimed, as of this
-            act.
         applied_by_rule: Whether a standing rule performed this act rather than
             a person ticking it (ruling **R-GT**).  **Keyword-only, required,
             and with no default anywhere on this path.**  Every act today is a
@@ -765,7 +678,6 @@ def record_match(
     """
     lines, rows = content.lines, content.rows
     _reject_empty_side(lines, rows)
-    _reject_parent_and_its_own_purchase(rows, matched)
     # ONE derivation of what the two halves come to, for the whole act -- the
     # refusal below and the residual it may let through are the same
     # subtraction, and summing money twice on the two sides of a gate is this
@@ -848,8 +760,8 @@ def record_match(
     # version of this comment claimed it could not.**  That claim is the one
     # ``_scope`` and ``_resolve`` both record as MEASURED FALSE on 2026-08-19:
     # settling a matched purchase runs ``entry_service.update_entry``, which
-    # re-derives a SIBLING CC Payback's ``estimated_amount`` -- a row
-    # ``_reject_parent_and_its_own_purchase`` cannot see.  So the sides are
+    # re-derives a SIBLING CC Payback's ``estimated_amount`` -- a row no
+    # reading of a parent and its own purchase sees.  So the sides are
     # re-derived below rather than argued about.  Found by two independent
     # adversarial reviews 2026-08-23.
     minted = (
@@ -969,7 +881,6 @@ def accept_match(
             ),
             attributed=submission.attributed_subject,
         ),
-        matched,
         # A TICK, always: this door exists because a person reviewed a proposal
         # and pressed Apply (ruling **R-FP**, amended by **R-GH** for the
         # CREATE class only).  No rule reaches it.

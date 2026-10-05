@@ -594,9 +594,11 @@ class TestEveryOtherRefusalFires:
         purchase in two terms and ``_reject_parent_and_its_own_purchase``
         stood between.  Under ruling **R-BAL81** a row that settles from its
         purchases is worth ``0`` to the offer and is not a candidate at all
-        -- its purchases are -- so the row is refused as unavailable before
-        that guard is asked, and the double count is unrepresentable rather
-        than refused.
+        -- its purchases are -- so the row is refused as unavailable, and the
+        double count is unrepresentable rather than refused.  That left this
+        arm of the guard unreachable, and plan step ``credit_card:CC-5-4a-5``,
+        leaf 5c-2c-1, deleted the guard (finding **CC-386**, ruling
+        **R-CC144**).
         """
         statement = an_import(seed_user)
         envelope = a_transaction(
@@ -634,10 +636,13 @@ class TestEveryOtherRefusalFires:
         is worth ``0`` to the offer while it holds purchases and is refused
         as unavailable, so there is no first match for the second to
         falsify; the purchase matches on its own, at its own figure.  The
-        cross-match arm of ``_reject_parent_and_its_own_purchase`` is not
-        reached from THIS shape any more; the one shape it still reached -- an
-        envelope matched EMPTY, reverted, and then given a purchase -- was a
-        false refusal, and matches since finding **CC-385** (the case below).
+        cross-match arm of ``_reject_parent_and_its_own_purchase`` was not
+        reached from THIS shape after that ruling; the one shape it still
+        reached -- an envelope matched EMPTY, reverted, and then given a
+        purchase -- was a false refusal, and matches since finding **CC-385**
+        (the case below).  The guard itself is deleted since plan step
+        ``credit_card:CC-5-4a-5``, leaf 5c-2c-1 (finding **CC-386**, ruling
+        **R-CC144**).
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date

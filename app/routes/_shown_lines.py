@@ -8,8 +8,15 @@ popover's Save and Paid (``routes/transfers/mutations.py``), and the purchase
 list's X and edit form (``routes/entries.py``).  The reconcile panel posts one
 set PER ROW (``shown_lines-<row id>``) and reads them itself
 (``routes.accounts.reconcile._submitted_shown_lines``, plan step
-``credit_card:CC-5-4a-5c-1``), because the save names only the lines under
-the rows the owner ticked (``reconcile_service.record_reconciliation``).
+``credit_card:CC-5-4a-5c-1``), and since leaf 5c-2c-1 one value PER SHARED
+MATCH beside them -- a match naming the kept payments of several rows,
+warned under each, posting ``"<line ids>;<row ids>"`` under
+``reconcile_service.SharedMatch.FIELD`` (``shared_lines``, read by
+``routes.accounts.reconcile._submitted_shared_lines``, ruling **R-CC135**).
+It reads them itself because the save names only the lines under the rows the
+owner ticked, and a shared match's lines only when all of its rows were
+ticked (``reconcile_service.record_reconciliation``,
+``NamedLines.for_ticks``).
 
 **The act that takes a movement off the books asks what the owner was SHOWN**
 (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): the

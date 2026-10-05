@@ -49,22 +49,35 @@ raises both terms by `X` and leaves `E`'s cash leg **unchanged to the cent** --
 so the books record `E` plus the new purchase against the bank's two lines, and
 no dollar is counted twice.
 
-**What it costs instead is the MATCH.**  The created purchase is a match member
-by ``transaction_entry_id``, so
-:func:`~._accept._reject_parent_and_its_own_purchase` refuses any later act
-naming `E` as a whole -- the proposal beside it becomes impossible to accept,
+**What it costs instead is the MATCH.**  `E` now holds a purchase, and a row
+holding a purchase is worth ``$0.00`` to the offer
+(``_valuation.transaction_price``, ruling **R-BAL81**), so
+:func:`~._resolve.resolve_rows` refuses any later act naming `E` as a whole as
+no longer available -- the proposal beside it becomes impossible to accept,
 and the bank line that proposal explained stays unexplained until the purchase
 is undone.  That is the sentence both registers carry now.
 
 **The same trace REFUTED this module's first stated backstop.**  It claimed the
 create-then-accept order is refused because :func:`~._valuation.repriced`
 re-prices every named row and finding **N-336** rejects an item whose row has
-moved.  N-336 cannot fire here: the price is invariant by the arithmetic above,
-and ``_container._close_day`` returns ``None`` on the existing-envelope arm so
-``version_id`` does not move either -- and those two coordinates are exactly
-what :meth:`~._submission.ReviewedRow.disagrees_with` compares.  The order IS
-refused, by ``_reject_parent_and_its_own_purchase``'s second arm.  The
-invariant held; the reason given for it was one unread call chain from false.
+moved.  N-336 could not fire here: the price was invariant by the arithmetic
+above, and ``_container._close_day`` returns ``None`` on the existing-envelope
+arm so ``version_id`` does not move either -- and those two coordinates are
+exactly what :meth:`~._submission.ReviewedRow.disagrees_with` compares.  The
+order WAS refused, by the second arm of the accept door's guard against an
+envelope named beside its own purchase.  The invariant held; the reason given
+for it was one unread call chain from false.  **That guard is deleted** (plan
+step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding **CC-386**, ruling
+**R-CC144**), because the order is refused a tier earlier, for the reason the
+MATCH paragraph above gives.  The create and the later accept are always TWO
+requests -- a batch runs every match before any creation
+(:func:`~._batch.apply_reviewed`), and the import's filing runs through that
+batch -- so the accept's offer set is a fresh candidate scan, and that scan
+never offers `E`: ``_valuation.transaction_price`` prices it ``0`` and
+``_valuation.transaction_candidate`` returns ``None`` for it.
+:func:`~._resolve.resolve_rows` therefore refuses the Accept as naming a row
+no longer available, before :func:`~._valuation.repriced` is reached for `E`
+and before N-336 is asked.
 
 **So this module adds a SENTENCE and not a refusal**, which is the consent
 split ruling **R-GH** made: the screen says what the automatic door saw, and
@@ -202,12 +215,12 @@ def _proposed_destinations(
     ``credit_card:CC-5-4a-1``).  A proposal naming a PURCHASE
     inside an envelope is not a claim on the envelope: the two acts name
     disjoint subjects, each match's members still sum to its own lines, and
-    ``_accept._reject_parent_and_its_own_purchase`` refuses only the pairing
-    where ONE act names both.  Measured on the developer's own statement: 33 of
-    the 80 lines a rule would file aim at an envelope holding a purchase a
-    proposal names, and withholding those would withhold the whole Groceries
-    case this step exists for.  **0** aim at an envelope a proposal names
-    directly, which is the population this function bounds.
+    no act can name both, a row holding a purchase being worth ``$0.00`` to
+    the offer (ruling **R-BAL81**).  Measured on the developer's own
+    statement: 33 of the 80 lines a rule would file aim at an envelope
+    holding a purchase a proposal names, and withholding those would withhold
+    the whole Groceries case this step exists for.  **0** aim at an envelope
+    a proposal names directly, which is the population this function bounds.
 
     Moved here from :mod:`._filing` at plan step ``bank_import:X-gf-3a``, with
     the decision that read it (finding **N-359**): the filing door and the

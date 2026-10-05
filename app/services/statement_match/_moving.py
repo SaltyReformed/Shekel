@@ -261,15 +261,22 @@ def move_members(
     purchase's posting day changes what its parent envelope's cash leg is worth
     (ruling **R-FM**), so settling a parent first and stamping its purchase
     afterwards would book the parent at a figure the purchase then moves.
-    :func:`~._accept._reject_parent_and_its_own_purchase` makes that pairing unreachable
-    in ONE match and across matches alike, so no submission this door accepts
-    can actually hit the interaction today.  **The order is kept anyway and the
-    reason is stated rather than invented**: a first draft justified it by "the
-    parent is in a different match accepted in the same request", which cannot
-    happen -- one POST accepts exactly one match.  What the order really buys
-    is that the rule survives the guard: if a later step widens what a match
-    may name, the sequence is already the safe one rather than something that
-    has to be rediscovered.
+    That pairing is unreachable in ONE match and across matches alike.  A row
+    holding a purchase is worth ``$0.00`` to the offer and is never offered
+    (ruling **R-BAL81**); a parent an earlier match settled on a payment takes
+    no purchase while it stays settled (ruling **R-BAL78**), and set back to
+    Projected its kept payment is un-dated and counts nothing (finding
+    **CC-385**, ruling **R-CC143**).  So no submission this door accepts can
+    actually hit the interaction today, and the accept door's guard against
+    the pairing was deleted as unreachable (plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding **CC-386**, ruling
+    **R-CC144**).  **The order is kept anyway and the reason is stated rather
+    than invented**: a first draft justified it by "the parent is in a
+    different match accepted in the same request", which cannot happen -- one
+    POST accepts exactly one match.  What the order really buys is that the
+    rule does not rest on what the offer admits: if a later step widens what a
+    match may name, the sequence is already the safe one rather than something
+    that has to be rediscovered.
 
     Args:
         scope: The pass, for the owner every settle door is scoped by.
