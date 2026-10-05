@@ -511,7 +511,10 @@ class ShownLinesSchema(BaseSchema):
     each half -- the lines, then the rows that must all be ticked -- of every
     shared match's ``"<line ids>;<row ids>"`` value posted beside them
     (``routes.accounts.reconcile._submitted_shared_lines``, leaf 5c-2c-1,
-    ruling **R-CC135**).  The transfer instance DELETE reads no field: no
+    ruling **R-CC135**) -- and carry-forward's Confirm, which posts every
+    line its modal named for the batch's one press
+    (``routes.transactions.carry_forward``, leaf 5c-2c-2).  The transfer
+    instance DELETE reads no field: no
     template renders it, so every request it takes named nothing.  The
     transaction DELETE's dialog names its purchases too
     (``TransactionDeleteSchema``).

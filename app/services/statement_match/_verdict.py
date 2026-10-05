@@ -40,31 +40,54 @@ wrong*.  Found by adversarial design review 2026-08-27.
 
 **What that second collision actually costs, measured rather than asserted.**
 It does NOT double-count, in either order, and a first version of this header
-said it did -- inheriting the wording ``X-ge`` gave the receipt.  Adversarial
-financial review 2026-08-27 traced the arithmetic: a purchase created from a
-bank line is born carrying the bank's posting day,
-:func:`~app.services.cash_ledger.posted_purchase_sum` counts exactly those, and
-the cash leg is ``gross - off_statement_sum``.  Filing `X` into envelope `E`
-raises both terms by `X` and leaves `E`'s cash leg **unchanged to the cent** --
-so the books record `E` plus the new purchase against the bank's two lines, and
-no dollar is counted twice.
+said it did -- inheriting the wording ``X-ge`` gave the receipt.  A purchase
+created from a bank line is born carrying the bank's posting day, so it is a
+cash movement of its own on that day, and filing `X` into envelope `E` takes
+`X` off what `E` still holds back (its budget less its purchases, floored at
+zero) in the same act: the account's projection moves only by any part of `X`
+beyond `E`'s remaining budget, and no dollar is counted twice.
+
+**`E`'s own figures do NOT hold still, and this paragraph said they did**
+until plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2).  It read "filing `X`
+raises both terms [``gross`` and
+:func:`~app.services.cash_ledger.off_statement_sum`] by `X` and leaves `E`'s
+cash leg unchanged to the cent", which holds only for an `E` that ALREADY held
+a purchase -- and the `E` a proposal names whole holds none (the next
+paragraph).  Its first purchase sends the settle down the purchases branch
+(``transaction_service.settles_from_entries``), so its settle figure falls
+from its budget to `X` and its cash leg to ``$0.00``.  Measured BY RUNNING the
+rule's own filing door (``file_new_swipes``) 2026-10-05: `E` budgeting
+`$125.00` and holding no purchase, `X` `$35.00` -- the settle figure
+`$125.00` to `$35.00`, the cash leg `$125.00` to `$0.00`; `E` already holding
+an un-dated `$85.00` -- both terms up `$35.00`, the cash leg `$85.00` both
+times; the projected period-end balance unmoved in both.  So the books record
+`X` INSIDE `E`'s budget, not beside it.  Where the bank also shows the line
+the proposal explained, `L`, the projection stays above the bank by the part
+of `L` that `E`'s remaining budget no longer covers until `L` is explained:
+that is the unexplained line's effect, the cost the next paragraph names, and
+explaining `L` -- filing it into `E`, which then settles from its purchases --
+closes it.
 
 **What it costs instead is the MATCH.**  `E` now holds a purchase, and a row
 holding a purchase is worth ``$0.00`` to the offer
 (``_valuation.transaction_price``, ruling **R-BAL81**), so
 :func:`~._resolve.resolve_rows` refuses any later act naming `E` as a whole as
 no longer available -- the proposal beside it becomes impossible to accept,
-and the bank line that proposal explained stays unexplained until the purchase
-is undone.  That is the sentence both registers carry now.
+and the bank line that proposal explained can no longer be matched to `E`: it
+stays unexplained until the purchase is undone, or until the line is itself
+filed into `E` (the paragraph above).  That is the sentence both registers
+carry now.
 
 **The same trace REFUTED this module's first stated backstop.**  It claimed the
 create-then-accept order is refused because :func:`~._valuation.repriced`
 re-prices every named row and finding **N-336** rejects an item whose row has
-moved.  N-336 could not fire here: the price was invariant by the arithmetic
-above, and ``_container._close_day`` returns ``None`` on the existing-envelope
-arm so ``version_id`` does not move either -- and those two coordinates are
-exactly what :meth:`~._submission.ReviewedRow.disagrees_with` compares.  The
-order WAS refused, by the second arm of the accept door's guard against an
+moved.  N-336 is never asked here, and the reason this paragraph gave for it
+was false: it said the price was invariant by the arithmetic above, which
+holds for none of the `E` a proposal names whole (the price falls to ``0``,
+the paragraph above).  What holds the order is that N-336 is never REACHED:
+:func:`~._resolve.resolve_rows` refuses an Accept naming `E` before
+:func:`~._valuation.repriced` runs for it (below).  It said too that the
+order WAS refused by the second arm of the accept door's guard against an
 envelope named beside its own purchase.  The invariant held; the reason given
 for it was one unread call chain from false.  **That guard is deleted** (plan
 step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding **CC-386**, ruling

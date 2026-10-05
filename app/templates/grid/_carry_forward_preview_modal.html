@@ -1,4 +1,3 @@
-{% from "_money_macros.html" import money %}
 {# Carry-Forward Preview Modal (Phase 5)
 
    HTMX partial: rendered into ``#modal-mount`` by the
@@ -6,27 +5,12 @@
    on swap via the ``data-modal-auto-show`` attribute (handled by
    ``app/static/js/app.js``).
 
-   Expected context:
-     preview         -- ``CarryForwardPreview`` from
-                        ``carry_forward_service.preview_carry_forward``.
-     source_period   -- ``DerivedPeriod`` the user clicked Carry Fwd on.
-     current_period  -- ``DerivedPeriod`` the items would land in.
-                        BOTH spell their id ``period_id``, NOT ``id`` (plan
-                        steps C2-f3a and C2-f3c): ``{{ current_period.id }}``
-                        renders EMPTY, silently.  The Confirm button's
-                        ``hx-post`` reads the id through ``url_for``, which
-                        RAISES on a missing one rather than rendering a broken
-                        URL, and ``test_carry_forward_preview.
-                        TestCarryForwardPreviewSuccess
-                        .test_returns_200_with_modal_html_for_owned_period``
-                        asserts the link it builds.
-
-   Confirm posts to the existing carry_forward route; on success the
-   route returns ``HX-Trigger: gridRefresh`` which reloads the page
-   (handled in ``app.js``).  On error (race-condition validation
-   failure) the response body is shown in the alert box at the top
-   of the modal -- handled by the ``data-carry-forward-confirm``
-   listener in ``app.js``.
+   The modal's FRAME only.  Its content is
+   ``grid/_carry_forward_preview_content.html``, one file rendered here and
+   alone, because a Confirm refused as out of date redraws the content over
+   the open modal rather than mounting a second one (plan step
+   credit_card:CC-5-4a-5, leaf 5c-2c-2, ruling R-CC128); the content's own
+   header names the context it expects.
 #}
 {# Each preview swap replaces the previous modal element.  Use a
    stable ID so the auto-show JS can find it; data-modal-auto-show
@@ -38,185 +22,6 @@
      data-modal-auto-show
      aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-scrollable modal-dialog-centered">
-    <div class="modal-content">
-
-      <div class="modal-header">
-        <h5 class="modal-title" id="carryForwardPreviewLabel">
-          <i class="bi bi-arrow-right-circle"></i>
-          Carry Forward {{ source_period.label }}
-        </h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"
-                aria-label="Close"></button>
-      </div>
-
-      <div class="modal-body">
-        {# Race-condition error display.  The Confirm button's
-           hx-post lands here on 4xx; otherwise stays hidden. #}
-        <div class="alert alert-danger d-none" role="alert"
-             data-carry-forward-error></div>
-
-        {% if preview.plans|length == 0 %}
-          {# Empty period: nothing to do.  Confirm button is disabled
-             below so the user can only Cancel. #}
-          <p class="mb-0 text-muted">
-            No projected items in {{ source_period.label }} to carry forward.
-          </p>
-        {% else %}
-          <p class="mb-3">
-            Carrying forward to
-            <strong>{{ current_period.label }}</strong>.
-            Each row below shows the action that will run if you confirm.
-            All actions execute together as a single batch -- if any
-            row is blocked, the whole batch is refused so no partial
-            state is left behind.
-          </p>
-
-          {% if preview.any_blocked %}
-            <div class="alert alert-warning d-flex align-items-start"
-                 role="alert">
-              <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
-              <div>
-                <strong>{{ preview.blocked_count }}
-                  {{ 'row is' if preview.blocked_count == 1 else 'rows are' }}
-                  blocked.</strong>
-                Resolve {{ 'it' if preview.blocked_count == 1 else 'them' }}
-                manually using the table below, then re-open this preview
-                to retry.
-              </div>
-            </div>
-          {% endif %}
-
-          <ul class="list-group mb-3">
-            {% for plan in preview.plans %}
-              <li class="list-group-item
-                  {% if plan.blocked %}list-group-item-warning{% endif %}">
-                <div class="d-flex justify-content-between align-items-start gap-2">
-                  <div class="flex-grow-1">
-                    <div class="d-flex align-items-center gap-2 flex-wrap">
-                      <strong>{{ plan.item.name }}</strong>
-                      {% if plan.kind == "envelope" %}
-                        <span class="badge text-bg-info">Envelope</span>
-                      {% elif plan.kind == "discrete" %}
-                        <span class="badge text-bg-secondary">Discrete</span>
-                      {% elif plan.kind == "transfer" %}
-                        <span class="badge text-bg-primary">Transfer</span>
-                      {% endif %}
-                      {% if plan.blocked %}
-                        <span class="badge text-bg-danger">
-                          <i class="bi bi-x-octagon-fill"></i> Blocked
-                        </span>
-                      {% endif %}
-                    </div>
-
-                    {# Action label -- per-kind branch. #}
-                    <div class="small text-body-secondary mt-1">
-                      {% if plan.kind == "envelope" %}
-                        {% if plan.leftover and plan.leftover > 0 %}
-                          {% if plan.target_will_be_generated %}
-                            {% if plan.target_estimated_before and plan.target_estimated_before > 0 %}
-                            Settle source at
-                            <strong>{{ money(plan.entries_sum) }}</strong>;
-                            create a row in {{ current_period.label }} at
-                            <strong>{{ money(plan.target_estimated_before) }}</strong>
-                            carrying
-                            <strong>{{ money(plan.leftover) }}</strong>
-                            forward (total
-                            <strong>{{ money(plan.target_estimated_after) }}</strong>).
-                            {% else %}
-                            Settle source at
-                            <strong>{{ money(plan.entries_sum) }}</strong>;
-                            create a row in {{ current_period.label }}
-                            carrying
-                            <strong>{{ money(plan.leftover) }}</strong>
-                            forward.
-                            {% endif %}
-                          {% elif plan.target_estimated_before is not none %}
-                            Settle source at
-                            <strong>{{ money(plan.entries_sum) }}</strong>;
-                            bump target from
-                            <strong>{{ money(plan.target_estimated_before) }}</strong>
-                            to
-                            <strong>{{ money(plan.target_estimated_after) }}</strong>
-                            (rolling
-                            <strong>{{ money(plan.leftover) }}</strong>
-                            forward).
-                          {% else %}
-                            {# Blocked envelope with leftover > 0 -- target
-                               estimated_before/after are None.  Show the
-                               intent so the user understands what failed. #}
-                            Would settle source at
-                            <strong>{{ money(plan.entries_sum) }}</strong>
-                            and roll
-                            <strong>{{ money(plan.leftover) }}</strong>
-                            forward.
-                          {% endif %}
-                        {% else %}
-                          Settle source at
-                          <strong>{{ money(plan.entries_sum) }}</strong>;
-                          no leftover to roll forward
-                          (estimate {{ money(plan.budget) }}).
-                        {% endif %}
-                      {% elif plan.kind == "discrete" %}
-                        Defer entire row
-                        ({{ money(plan.budget) }})
-                        to {{ current_period.label }}.
-                      {% elif plan.kind == "transfer" %}
-                        Move transfer
-                        ({{ money(plan.budget) }})
-                        and both linked shadow rows to {{ current_period.label }}.
-                      {% endif %}
-                    </div>
-
-                    {% if plan.blocked %}
-                      <div class="text-danger small mt-1">
-                        <i class="bi bi-x-circle"></i>
-                        {{ plan.block_reason }}
-                      </div>
-                    {% endif %}
-                  </div>
-                </div>
-              </li>
-            {% endfor %}
-          </ul>
-
-          {# Summary line.  Pluralised conditionally and matched to
-             the service's same-name properties.  Only counts
-             actionable plans -- blocked rows are not in any of the
-             three counts. #}
-          <div class="small text-body-secondary">
-            <i class="bi bi-info-circle"></i>
-            Summary:
-            <strong>{{ preview.envelope_count }}</strong>
-            envelope{{ '' if preview.envelope_count == 1 else 's' }}
-            settle and roll,
-            <strong>{{ preview.discrete_count }}</strong>
-            discrete defer{{ 's' if preview.discrete_count != 1 else '' }},
-            <strong>{{ preview.transfer_count }}</strong>
-            transfer{{ '' if preview.transfer_count == 1 else 's' }}
-            move.
-          </div>
-        {% endif %}
-      </div>
-
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary"
-                data-bs-dismiss="modal">
-          Cancel
-        </button>
-        <button type="button" class="btn btn-warning"
-                data-carry-forward-confirm
-                hx-post="{{ url_for('transactions.carry_forward', period_id=source_period.period_id) }}"
-                hx-swap="none"
-                hx-disabled-elt="this"
-                {% if preview.any_blocked or preview.plans|length == 0 %}
-                disabled
-                aria-disabled="true"
-                {% endif %}>
-          <i class="bi bi-check-circle"></i>
-          Confirm Carry Forward
-        </button>
-      </div>
-
-    </div>
+    {% include "grid/_carry_forward_preview_content.html" %}
   </div>
 </div>

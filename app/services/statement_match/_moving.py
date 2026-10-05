@@ -272,8 +272,14 @@ def move_members(
     ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, finding **CC-386**, ruling
     **R-CC144**).  **The order is kept anyway and the reason is stated rather
     than invented**: a first draft justified it by "the parent is in a
-    different match accepted in the same request", which cannot happen -- one
-    POST accepts exactly one match.  What the order really buys is that the
+    different match accepted in the same request", which cannot happen.  Not
+    because one POST accepts one match -- the statement review's batch
+    accepts several in one request (:func:`~._batch.apply_reviewed`), and
+    this paragraph said otherwise until leaf 5c-2c-2 -- but for the reason
+    above: no match of any request names a row holding a purchase as a row
+    (it is worth ``$0.00`` to the offer), so no two matches of one batch can
+    name a parent and its purchase between them.
+    What the order really buys is that the
     rule does not rest on what the offer admits: if a later step widens what a
     match may name, the sequence is already the safe one rather than something
     that has to be rediscovered.

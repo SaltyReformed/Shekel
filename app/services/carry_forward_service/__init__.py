@@ -49,7 +49,7 @@ This package keeps the shared period-validate + three-way partition in
 ``_context``, the read-only preview vocabulary, DTOs, and plan builders
 in ``_preview``, and the mutating execution in ``_execute``.  The public
 surface (the two entry points, the ``CarryForwardPlan`` / ``CarryForwardPreview``
-DTOs, and the ``PLAN_KIND_*`` / ``BLOCK_*`` constants) is re-exported
+/ ``SharedClose`` DTOs, and the ``PLAN_KIND_*`` / ``BLOCK_*`` constants) is re-exported
 here so ``from app.services import carry_forward_service`` and every
 ``carry_forward_service.X`` access keep working verbatim.
 """
@@ -63,6 +63,7 @@ from ._preview import (
     PLAN_KIND_TRANSFER,
     CarryForwardPlan,
     CarryForwardPreview,
+    SharedClose,
     preview_carry_forward,
 )
 
@@ -71,6 +72,7 @@ __all__ = [
     "preview_carry_forward",
     "CarryForwardPlan",
     "CarryForwardPreview",
+    "SharedClose",
     "PLAN_KIND_ENVELOPE",
     "PLAN_KIND_DISCRETE",
     "PLAN_KIND_TRANSFER",

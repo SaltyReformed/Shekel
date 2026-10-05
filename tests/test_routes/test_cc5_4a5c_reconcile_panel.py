@@ -441,7 +441,7 @@ class TestTheCheckingListLeavesOutACardPayment:
 
 
 class TestTheEnvelopeCloseNamesWhatItFrees:
-    """R-CC76 / R-CC127: the caption under the row, its posted lines, and the act graded per row."""
+    """R-CC76 / R-CC127: the caption under the row, its posted lines, one check per save (R-CC135)."""
 
     def test_the_caption_names_the_line_and_the_press_frees_exactly_it(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -513,9 +513,9 @@ class TestTheEnvelopeCloseNamesWhatItFrees:
             redrawn = response.data.decode()
             assert (
                 "Nothing was saved: this page was out of date. As things are "
-                "now, this press leaves 1 bank line unexplained again on your "
-                "statement screen, and the page named 0. Here it is again -- "
-                "tick what your statement shows."
+                "now, this press would leave a bank line unexplained that this "
+                "page did not mention. Here it is again -- tick what your "
+                "statement shows."
             ) in redrawn
             assert "Reload the page" not in redrawn
             assert "Closing it from its purchases withdraws 1 accepted match" in redrawn
@@ -559,7 +559,7 @@ class TestTheEnvelopeCloseNamesWhatItFrees:
     def test_two_closes_on_one_account_each_post_their_own_lines(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Two envelopes on checking, each freeing a line: both land, graded row by row."""
+        """Two envelopes on checking, each freeing a line: both land, one save graded on both lines."""
         with app.app_context():
             checking_id = seed_user["account"].id
             groceries, groceries_line, groceries_match = _kept_payment_envelope(

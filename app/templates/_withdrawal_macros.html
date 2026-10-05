@@ -13,11 +13,27 @@ withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so
 {%- endmacro %}
 {#- **The bank lines a withdrawal frees, as the owner recognises them**: day,
     what the bank called it, figure, semicolon-joined.  One spelling for
-    `frees_lines` and the reconcile panel's shared-match warning (plan step
-    credit_card:CC-5-4a-5, leaf 5c-2c-1, ruling R-CC135), so the two never
-    name one line two ways.  `lines` is a MatchWithdrawal's `lines`. -#}
+    `frees_lines` and `shared_match` (plan step credit_card:CC-5-4a-5, leaf
+    5c-2c-1, ruling R-CC135), so the two never name one line two ways.
+    `lines` is a MatchWithdrawal's `lines`. -#}
 {% macro line_facts(lines) -%}
 {% for line in lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}
+{%- endmacro %}
+{#- **Ruling R-CC135's warning for a match naming several rows' payments**
+    (developer 2026-10-04, "One check per save"): *"Matched with Dining to one
+    bank line: closing both from their purchases withdraws that match, so 9/24
+    PAYMENT -$205.00 is unexplained again on your statement screen."*  One
+    spelling for the two screens that say it (plan step credit_card:CC-5-4a-5):
+    the reconcile panel, under each row the match needs (leaf 5c-2c-1), and
+    carry-forward's confirmation, once for the batch (leaf 5c-2c-2).  `shared`
+    carries `withdrawal` (a MatchWithdrawal over the one act) and `partners`
+    (the OTHER rows it needs); the caller's block labels one partner, so each
+    screen names a row in its own register:
+    `{% call(partner) shared_match(shared) %}...{% endcall %}`. -#}
+{% macro shared_match(shared) -%}
+{%- set rows = shared.partners | length + 1 -%}
+{%- set lines = shared.withdrawal.lines | length -%}
+Matched with {% for partner in shared.partners %}{{ caller(partner) }}{% if not loop.last %}{{ ' and ' if loop.revindex == 2 else ', ' }}{% endif %}{% endfor %} to {{ 'one bank line' if lines == 1 else lines ~ ' bank lines' }}: closing {{ 'both' if rows == 2 else 'all ' ~ rows }} from their purchases withdraws that match, so {{ line_facts(shared.withdrawal.lines) }} {{ 'is' if lines == 1 else 'are' }} unexplained again on your statement screen.
 {%- endmacro %}
 {#- **The purchase X's confirmation sentence** (plan step
     credit_card:CC-5-4a-5, ruling R-CC80, "Every door warns": the X "would
@@ -51,9 +67,13 @@ The bank's {% for line in w.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ 
     makes true -- the card below is current, so pressing again goes ahead.
     Both full-edit popovers draw it from `PageOutOfDate.facts`, and so does
     the purchase list, which a refused X or edit draws again as it is now
-    (`routes.entries._refused_entry_response`). -#}
-{% macro page_refusal_banner(facts) -%}
+    (`routes.entries._refused_entry_response`), and carry-forward's
+    confirmation (leaf 5c-2c-2).  `can_press` false drops the instruction
+    where the redraw leaves nothing to press -- a carry-forward whose
+    batch is now empty or blocked, its Confirm disabled (the leaf's review,
+    L2). -#}
+{% macro page_refusal_banner(facts, can_press=true) -%}
 <div class="alert alert-warning py-1 px-2 mb-2 small" role="alert">
-  <i class="bi bi-exclamation-triangle"></i> {{ facts }} Here it is as it is now; press again to go ahead.
+  <i class="bi bi-exclamation-triangle"></i> {{ facts }} Here it is as it is now{% if can_press %}; press again to go ahead{% endif %}.
 </div>
 {%- endmacro %}
