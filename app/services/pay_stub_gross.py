@@ -6,8 +6,9 @@ whose stub's gross also holds the after-tax earnings, ruling **R-SAL102**,
 closing **SAL-592**), and how a miss is worded (ruling **R-SAL106**, one rule
 read off the net, amending R-SAL104; R-SAL108, R-SAL110 and R-SAL111 name
 causes it had left out, R-SAL112 asks for the figure that tells two of them
-apart and R-SAL119 drops the question where that figure cannot be, and
-R-SAL114 to R-SAL117 put every message in plain words).  One rule of
+apart, R-SAL119 drops the question where that figure cannot be and R-SAL120
+has both typed totals checked first, and R-SAL114 to R-SAL117 put every
+message in plain words).  One rule of
 :mod:`app.services.pay_stub_service`'s door, held in its own module because
 that module reached pylint's 1000-line cap (plan step salary:S11-c-2b): the
 door asks :func:`gross_refusals` from ``_refuse`` beside the printed-net
@@ -106,11 +107,12 @@ def gross_refusals(
       equals the printed gross -- the gross can then only be over -- the two
       single mistakes that make that pair are both asked: the gross typed
       into the Base pay box (R-SAL99's slip) and an earning of a kind the
-      check counts, entered on a stub that prints none (R-SAL111).  They are
-      told apart by the base pay the stub shows (R-SAL112): base pay less
-      the miss for the first, base pay itself for the second.  Where base
-      pay less the miss is ``$0.00`` or less the first cannot be (a stub's
-      base pay is above zero), so only the second is named (R-SAL119);
+      check counts, entered on a stub that prints none (R-SAL111).  Once the
+      two typed totals are checked (R-SAL120), they are told apart by the
+      base pay the stub shows (R-SAL112): base pay less the miss for the
+      first, base pay itself for the second.  Where base pay less the miss
+      is ``$0.00`` or less the first cannot be (a stub's base pay is above
+      zero), so only the second is named (R-SAL119);
     * **net off by twice** -- one amount on the wrong side: a deduction
       entered as an earning (gross over) or an earning entered as a
       deduction (gross short);
@@ -121,17 +123,20 @@ def gross_refusals(
     causes, the wording asks after each and the owner tells which.  Where
     two mistakes offset into a single mistake's pair, the wording names that
     mistake's causes and not theirs, so a wording that states a cause --
-    "One amount is wrong" (R-SAL106), R-SAL112's two answers and R-SAL119's
-    "You entered extra pay this stub doesn't list" -- can then be false:
+    "One amount is wrong" (R-SAL106, worded by R-SAL114), R-SAL112's two
+    answers and R-SAL119's "you entered extra pay this stub doesn't list" --
+    can then be false:
 
     * base pay and a tax off by the same amount read as net exact, and no
       cause a net exact wording names is theirs;
     * both printed totals typed off by the same read as an amount.  Where
       the gross box then holds the base pay -- and the net box is off by the
-      earnings the check counts -- those earnings read as extra pay, and
-      removing a real earning the stub DOES list then SAVES the stub without
-      it: R-SAL112's second answer, to an owner who reads the stub's base pay
-      right, and R-SAL119's only one;
+      earnings the check counts -- those earnings read as extra pay.  Each
+      such wording first has the owner check both typed totals (R-SAL120),
+      which finds both slips; only an owner who passes them as right goes on
+      to remove the earnings the check counts, real ones the stub DOES list
+      among them, and that SAVES the stub without them (R-SAL112's second
+      answer, read with the stub's base pay right, and R-SAL119's only one);
     * base pay and a tax both off by exactly the after-tax total make the
       pair the setting's exit answers, and taking that exit then saves both
       mistakes.
@@ -215,15 +220,19 @@ def _amount_miss(
     """Word a gross miss beside a net miss: an amount off, on the wrong side, or several.
 
     The last three bullets of :func:`gross_refusals`' rule (rulings R-SAL99,
-    R-SAL106, R-SAL111, R-SAL112, R-SAL119; worded by R-SAL114 and R-SAL117).
+    R-SAL106, R-SAL111, R-SAL112, R-SAL119, R-SAL120; worded by R-SAL114 and
+    R-SAL117).
     """
     if net_miss == gross_miss:
         if base_pay == printed_gross:
+            totals_first = (
+                f"{opening}.  Check the Gross Pay and Net Pay you typed.  If they're right,"
+            )
             stub_base = base_pay - gross_miss
             if stub_base <= ZERO:
-                return f"{opening}.  You entered extra pay this stub doesn't list.  Remove it."
+                return f"{totals_first} you entered extra pay this stub doesn't list.  Remove it."
             return (
-                f"{opening}.  What base pay does the stub show?  ${stub_base:,.2f}: "
+                f"{totals_first} what base pay does the stub show?  ${stub_base:,.2f}: "
                 f"you typed the Gross Pay into Base pay.  Type ${stub_base:,.2f} "
                 f"there instead.  ${base_pay:,.2f}: you entered extra pay this stub "
                 f"doesn't list.  Remove it."

@@ -284,10 +284,10 @@ class TestRecording:
         Base pay 2999.62 + Phone 60.00 + Retro pay 55.00 = 3114.62 against the
         printed 2999.62: the $115.00 of earnings is counted twice, and asked
         about with its twin, an earning the stub does not print (R-SAL111), by
-        the base pay the stub shows (R-SAL112; worded by R-SAL114 and
-        R-SAL117).  It names no setting, so the page draws no link to it: the
-        line under the gross box holds the page's only one (delta review
-        LOW-1).
+        the base pay the stub shows (R-SAL112) once both typed totals are
+        checked (R-SAL120; worded by R-SAL114 and R-SAL117).  It names no
+        setting, so the page draws no link to it: the line under the gross box
+        holds the page's only one (delta review LOW-1).
         """
         payload = _payload(world)
         payload["base_pay"] = "2999.62"
@@ -296,9 +296,10 @@ class TestRecording:
         html = response.data.decode()
         assert (
             "Base pay plus your taxable earnings come to $3,114.62, but the stub's Gross "
-            "Pay is $2,999.62.  What base pay does the stub show?  $2,884.62: you typed "
-            "the Gross Pay into Base pay.  Type $2,884.62 there instead.  $2,999.62: you "
-            "entered extra pay this stub doesn't list.  Remove it."
+            "Pay is $2,999.62.  Check the Gross Pay and Net Pay you typed.  If they're "
+            "right, what base pay does the stub show?  $2,884.62: you typed the Gross Pay "
+            "into Base pay.  Type $2,884.62 there instead.  $2,999.62: you entered extra "
+            "pay this stub doesn't list.  Remove it."
         ) in unescape(html)
         assert html.count(
             f'href="/salary/{world["profile_id"]}/edit#stub_gross_includes_after_tax"',

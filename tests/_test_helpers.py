@@ -10465,11 +10465,14 @@ class _FormControls(HTMLParser):
     an ``<input>`` submits its ``value`` and a ``<select>`` its ``selected``
     option, else its first, and a select with no option submits nothing.  A
     control without a name submits nothing.  It reads only those two shapes:
-    any other control inside the form -- a checkbox or radio, a
-    ``<textarea>``, a named button, a disabled input, a disabled or multiple
-    select, a disabled option, an option without a ``value`` (a browser posts
-    its text), or a disabled ``<fieldset>`` or ``<optgroup>`` -- fails the
-    reading loudly rather than being posted as a browser would not post it.
+    any other control inside the form -- an input of any type but hidden,
+    text, number or date (a checkbox or radio, say), a ``<textarea>``, a named
+    button, a disabled input, a disabled or multiple select, a disabled
+    option or an option without a ``value`` in a named select (a browser
+    posts such an option's text), or a disabled ``<fieldset>`` or
+    ``<optgroup>`` -- fails the reading loudly rather than being posted as a
+    browser would not post it.  A disabled fieldset fails whole, even a
+    control in its first legend, which a browser does post: the safe side.
     The reader of the pay stub form's and the stub setting's route suites
     (plan step salary:S11-c-2b, its delta review's LOW-3 and LOW-4).
     """

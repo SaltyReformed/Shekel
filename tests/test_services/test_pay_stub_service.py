@@ -21,9 +21,10 @@ What :mod:`app.services.pay_stub_service` decides, graded without a request:
   net exact names the typed gross, and beside it R-SAL104's question and the
   setting on a "no" job short by exactly the after-tax total, the setting on
   a "yes" job over by it, else the headings on a "no" job; net off by the
-  same names an amount, or -- when base pay is the printed gross -- asks the
-  base pay the stub shows, which tells the Base pay box from an earning the
-  stub does not print; twice names a line on the wrong side; anything else,
+  same names an amount, or -- when base pay is the printed gross -- has both
+  typed totals checked and asks the base pay the stub shows, which tells the
+  Base pay box from an earning the stub does not print (**R-SAL119**,
+  **R-SAL120**); twice names a line on the wrong side; anything else,
   the difference.  Every message is in the plain words of **R-SAL114** to
   **R-SAL117** (the approved list, **R-SAL115**);
 * the one-off name clash, ignoring capitals and extra spaces (**R-SAL45**,
@@ -346,16 +347,18 @@ class TestThePrintedGross:
         which makes the same pair (ruling R-SAL111 reworded R-SAL99's "is
         counted twice", which stated the first as fact), told apart by the
         base pay the stub shows: 2999.62 - 115.00 = 2884.62 for the first
-        (ruling R-SAL112; worded by R-SAL114 and R-SAL117).
+        (ruling R-SAL112, both typed totals checked first by R-SAL120; worded
+        by R-SAL114 and R-SAL117).
         """
         with pytest.raises(PayStubRefused) as refused:
             _record(world, _figures(world, base="2999.62"))
         assert refused.value.errors == {
             "printed_gross": (
                 "Base pay plus your taxable earnings come to $3,114.62, but the stub's "
-                "Gross Pay is $2,999.62.  What base pay does the stub show?  $2,884.62: "
-                "you typed the Gross Pay into Base pay.  Type $2,884.62 there instead.  "
-                "$2,999.62: you entered extra pay this stub doesn't list.  Remove it."
+                "Gross Pay is $2,999.62.  Check the Gross Pay and Net Pay you typed.  If "
+                "they're right, what base pay does the stub show?  $2,884.62: you typed "
+                "the Gross Pay into Base pay.  Type $2,884.62 there instead.  $2,999.62: "
+                "you entered extra pay this stub doesn't list.  Remove it."
             ),
             "printed_net": (
                 "The lines add up to $2,217.62, but the stub prints $2,102.62 (a "
@@ -494,8 +497,9 @@ class TestThePrintedGross:
         (the gross) and no Federal, so the lines make gross 3114.62 and net
         3114.62 - 315.00 - 322.00 - 110.00 = 2367.62: both miss by $115.00,
         exactly as with $0.00 typed, so the slip is asked about (ruling
-        R-SAL112's question, which amends R-SAL111's wording; worded by
-        R-SAL114 and R-SAL117) beside the missing tax's own refusal.
+        R-SAL112's question, which amends R-SAL111's wording, after R-SAL120's
+        check of both typed totals; worded by R-SAL114 and R-SAL117) beside the
+        missing tax's own refusal.
         """
         federal = _tax(WithholdingKindEnum.FEDERAL_INCOME)
         figures = _figures(world, base="2999.62")
@@ -506,9 +510,10 @@ class TestThePrintedGross:
             f"tax-{federal}": "Enter the stub's Federal income tax ($0.00 if none).",
             "printed_gross": (
                 "Base pay plus your taxable earnings come to $3,114.62, but the stub's "
-                "Gross Pay is $2,999.62.  What base pay does the stub show?  $2,884.62: "
-                "you typed the Gross Pay into Base pay.  Type $2,884.62 there instead.  "
-                "$2,999.62: you entered extra pay this stub doesn't list.  Remove it."
+                "Gross Pay is $2,999.62.  Check the Gross Pay and Net Pay you typed.  If "
+                "they're right, what base pay does the stub show?  $2,884.62: you typed "
+                "the Gross Pay into Base pay.  Type $2,884.62 there instead.  $2,999.62: "
+                "you entered extra pay this stub doesn't list.  Remove it."
             ),
         }
 
@@ -684,7 +689,8 @@ class TestTheJobSaysWhatItsGrossHolds:
         twice, and the net misses by the same (2147.62 against 2067.62): asked
         as the Base pay box or an earning the stub does not print (R-SAL111),
         by the base pay the stub shows, 2964.62 - 80.00 = 2884.62 for the
-        first (R-SAL112; worded by R-SAL114 and R-SAL117).
+        first (R-SAL112, after R-SAL120's check of both typed totals; worded by
+        R-SAL114 and R-SAL117).
         """
         _say_yes(world)
         with pytest.raises(PayStubRefused) as refused:
@@ -693,10 +699,11 @@ class TestTheJobSaysWhatItsGrossHolds:
         assert refused.value.errors == {
             "printed_gross": (
                 "Base pay plus your earnings, taxable and untaxed, come to $3,044.62, "
-                "but the stub's Gross Pay is $2,964.62.  What base pay does the stub "
-                "show?  $2,884.62: you typed the Gross Pay into Base pay.  Type "
-                "$2,884.62 there instead.  $2,964.62: you entered extra pay this stub "
-                "doesn't list.  Remove it."
+                "but the stub's Gross Pay is $2,964.62.  Check the Gross Pay and Net Pay "
+                "you typed.  If they're right, what base pay does the stub show?  "
+                "$2,884.62: you typed the Gross Pay into Base pay.  Type $2,884.62 there "
+                "instead.  $2,964.62: you entered extra pay this stub doesn't list.  "
+                "Remove it."
             ),
             "printed_net": (
                 "The lines add up to $2,147.62, but the stub prints $2,067.62 (a "
@@ -716,7 +723,8 @@ class TestTheJobSaysWhatItsGrossHolds:
         no longer fits it).  A stub that leaves the reimbursement out prints
         2884.62, typed right: the same $20.00 over, but the net balances at
         2007.62 -- the setting (or the typed gross).  Read without the net,
-        the first would name the setting.  Worded by R-SAL114 and R-SAL117.
+        the first would name the setting.  Both typed totals are checked first
+        (R-SAL120); worded by R-SAL114 and R-SAL117.
         """
         _say_yes(world)
         with pytest.raises(PayStubRefused) as doubled:
@@ -725,10 +733,11 @@ class TestTheJobSaysWhatItsGrossHolds:
         assert doubled.value.errors == {
             "printed_gross": (
                 "Base pay plus your earnings, taxable and untaxed, come to $2,924.62, "
-                "but the stub's Gross Pay is $2,904.62.  What base pay does the stub "
-                "show?  $2,884.62: you typed the Gross Pay into Base pay.  Type "
-                "$2,884.62 there instead.  $2,904.62: you entered extra pay this stub "
-                "doesn't list.  Remove it."
+                "but the stub's Gross Pay is $2,904.62.  Check the Gross Pay and Net Pay "
+                "you typed.  If they're right, what base pay does the stub show?  "
+                "$2,884.62: you typed the Gross Pay into Base pay.  Type $2,884.62 there "
+                "instead.  $2,904.62: you entered extra pay this stub doesn't list.  "
+                "Remove it."
             ),
             "printed_net": (
                 "The lines add up to $2,027.62, but the stub prints $2,007.62 (a "
@@ -788,33 +797,38 @@ class TestTheJobSaysWhatItsGrossHolds:
         and neither is stated (ruling R-SAL111; review round 3, MEDIUM-1,
         where "is counted twice" sent the owner to lower base pay and save).
         The stub shows 2884.62, the second answer, and not 2884.62 - 60.00 =
-        2824.62, the first (ruling R-SAL112; worded by R-SAL114 and R-SAL117).
+        2824.62, the first (ruling R-SAL112, after R-SAL120's check of both
+        typed totals; worded by R-SAL114 and R-SAL117).
         """
         with pytest.raises(PayStubRefused) as refused:
             _record(world, _figures(world, one_offs=()),
                     printed_net=Decimal("1987.62"), printed_gross=Decimal("2884.62"))
         assert refused.value.errors["printed_gross"] == (
             "Base pay plus your taxable earnings come to $2,944.62, but the stub's Gross "
-            "Pay is $2,884.62.  What base pay does the stub show?  $2,824.62: you typed "
-            "the Gross Pay into Base pay.  Type $2,824.62 there instead.  $2,884.62: you "
-            "entered extra pay this stub doesn't list.  Remove it."
+            "Pay is $2,884.62.  Check the Gross Pay and Net Pay you typed.  If they're "
+            "right, what base pay does the stub show?  $2,824.62: you typed the Gross Pay "
+            "into Base pay.  Type $2,824.62 there instead.  $2,884.62: you entered extra "
+            "pay this stub doesn't list.  Remove it."
         )
         assert set(refused.value.errors) == {"printed_gross", "printed_net"}
 
     @pytest.mark.parametrize(("phone", "message"), [
         ("6000.00", (
             "Base pay plus your taxable earnings come to $8,884.62, but the stub's Gross "
-            "Pay is $2,884.62.  You entered extra pay this stub doesn't list.  Remove it."
+            "Pay is $2,884.62.  Check the Gross Pay and Net Pay you typed.  If they're "
+            "right, you entered extra pay this stub doesn't list.  Remove it."
         )),
         ("2884.62", (
             "Base pay plus your taxable earnings come to $5,769.24, but the stub's Gross "
-            "Pay is $2,884.62.  You entered extra pay this stub doesn't list.  Remove it."
+            "Pay is $2,884.62.  Check the Gross Pay and Net Pay you typed.  If they're "
+            "right, you entered extra pay this stub doesn't list.  Remove it."
         )),
         ("2884.61", (
             "Base pay plus your taxable earnings come to $5,769.23, but the stub's Gross "
-            "Pay is $2,884.62.  What base pay does the stub show?  $0.01: you typed the "
-            "Gross Pay into Base pay.  Type $0.01 there instead.  $2,884.62: you entered "
-            "extra pay this stub doesn't list.  Remove it."
+            "Pay is $2,884.62.  Check the Gross Pay and Net Pay you typed.  If they're "
+            "right, what base pay does the stub show?  $0.01: you typed the Gross Pay "
+            "into Base pay.  Type $0.01 there instead.  $2,884.62: you entered extra pay "
+            "this stub doesn't list.  Remove it."
         )),
     ], ids=["above-the-base-pay", "the-whole-base-pay", "a-cent-under"])
     def test_an_earning_of_the_whole_base_pay_names_only_the_extra_pay(
@@ -830,7 +844,8 @@ class TestTheJobSaysWhatItsGrossHolds:
         would be 2884.62 less that amount: below zero for an earning larger
         than the whole base pay and 0.00 for one of exactly the base pay,
         neither a base pay, so only the extra pay is named; a cent under
-        leaves 0.01, a base pay, and the question stands.
+        leaves 0.01, a base pay, and the question stands.  Either way both
+        typed totals are checked first (R-SAL120).
         """
         figures = _figures(world, one_offs=())
         phone_line = world["lines"]["phone"]
