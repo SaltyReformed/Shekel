@@ -779,10 +779,9 @@ def salary_net_for(txn, pricing: SalaryPricing) -> Decimal | None:
     moved onto this pricer at plan step **salary:S11-c-2c**, when a pay stub
     began pricing on its own payday's year (ruling **R-SAL77**) and a year
     slice could need two years' law, so no ``app/`` site calls
-    ``project_salary`` but this one.  The arch test's census still matches
-    only the calendar-wide (``configs_by_year=``) form, so a new single-year
-    caller is caught by eye -- prose that claims more than the test enforces
-    is the wider claim this paragraph was already corrected for once.
+    ``project_salary`` but this one -- and the arch test's census has counted
+    every call of it since that step, so a new single-year caller fails it
+    as a second spelling does.
     ``routes/salary/views`` and ``routes/salary/cockpit`` each built the same
     ``project_salary`` call over the same calendar, because they render the
     whole breakdown rather than the net -- so the shared leaf had to BE the
