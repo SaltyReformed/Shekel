@@ -103,6 +103,54 @@ _ZERO_COMPONENTS = WithholdingComponents(ZERO, ZERO, ZERO, ZERO, ZERO)
 
 
 @dataclass(frozen=True)
+class WithholdingBasis:
+    """What priced the taxes of ONE job's modeled paychecks (plan step salary:S11-c-2c).
+
+    Ruling **R-SAL100**: the Taxes tab names the stubs that priced the
+    year's estimated paychecks.  It is kept PER JOB because each job's
+    paychecks are priced from that job's own stubs: a union across jobs
+    would say "the tax formulas, then <stub>" of a filer whose second job
+    the formulas priced all year (the leaf's review, MED-1).
+
+    Attributes:
+        job: The salary profile's name, which the tab shows only when more
+            than one profile is active.
+        stub_paydays: The paydays of the stubs that priced any of the job's
+            modeled paychecks, ascending.
+        formulas_priced: ``True`` when the tax formulas priced at least one
+            of them alone -- no stub used for pricing dated on or before it.
+            For one job those paychecks are always its earliest: every
+            payday after a switched-on stub has that stub on or before it,
+            so the formulas price none of them, and the tab can say "the
+            tax formulas, then <stubs>".
+    """
+
+    job: str
+    stub_paydays: tuple[date, ...]
+    formulas_priced: bool
+
+
+def _basis_of(job: str, priced_from: tuple[date | None, ...]) -> WithholdingBasis:
+    """Read one job's :class:`WithholdingBasis` off what priced its modeled paychecks.
+
+    Args:
+        job: The salary profile's name.
+        priced_from: :attr:`~app.services.tax_withholding_service
+            .WithholdingToDate.priced_from` -- one entry per modeled
+            paycheck: its pricing stub's payday, or ``None`` for the formulas.
+
+    Returns:
+        The job's basis: its distinct stub paydays ascending, and whether
+        the formulas priced any paycheck alone.
+    """
+    return WithholdingBasis(
+        job=job,
+        stub_paydays=tuple(sorted({day for day in priced_from if day is not None})),
+        formulas_priced=None in priced_from,
+    )
+
+
+@dataclass(frozen=True)
 class WithholdingSummary:
     """Per-filer withholding-to-date summed across the active profiles.
 
@@ -115,6 +163,12 @@ class WithholdingSummary:
     the multi-profile combined preview), or ``None`` when every profile is
     fully modeled.  ``has_checkpoint`` records whether ANY profile carried
     a checkpoint (the pre-tax-modelling disclosure keys off it).
+    ``bases`` is what priced each job's modeled paychecks, one
+    :class:`WithholdingBasis` per active profile with any paycheck modeled,
+    in the profiles' order (empty when nothing is modeled).  It is read off
+    the engine's breakdowns, never off the profiles' stubs: whether a stub is
+    used for pricing is the engine picker's question, so a screen naming the
+    stubs that priced a paycheck cannot name one the engine passed over.
     """
 
     total: WithholdingComponents
@@ -122,6 +176,7 @@ class WithholdingSummary:
     modeled: WithholdingComponents
     measured_through: date | None
     has_checkpoint: bool
+    bases: tuple[WithholdingBasis, ...]
 
 
 @dataclass(frozen=True)
@@ -269,11 +324,15 @@ class FilingInputs:
 class ModellingDisclosures:
     """The modelling caveats the assumptions card surfaces.
 
-    ``calibration_active`` / ``calibration_pay_stub_date`` describe the
-    primary profile's calibration; ``checkpoint_as_of_date`` is the measured
-    stub date (``None`` = fully modeled); ``pretax_modeled_for_elapsed`` is
-    ``True`` when a checkpoint exists (the elapsed withholding is measured
-    but its pre-tax is still modeled).  ``actc_modeled`` is always ``True``
+    The withholding basis -- what priced the modeled paychecks -- is not
+    here: it is :attr:`WithholdingSummary.bases`, per job, read off the
+    engine's breakdowns (plan step salary:S11-c-2c, ruling **R-SAL100**,
+    which deleted the primary profile's calibration state this carried).
+    ``checkpoint_as_of_date`` is the measured stub date (``None`` = fully
+    modeled);
+    ``pretax_modeled_for_elapsed`` is ``True`` when a checkpoint exists (the
+    elapsed withholding is measured but its pre-tax is still modeled).
+    ``actc_modeled`` is always ``True``
     (T-P5: the refundable Additional Child Tax Credit IS now modeled, so the
     liability's zero clamp no longer swallows a CTC-heavy household's refund);
     ``phase_out_not_modeled`` is always ``True`` (the CTC/ACTC MAGI phase-outs
@@ -281,8 +340,6 @@ class ModellingDisclosures:
     below them).
     """
 
-    calibration_active: bool
-    calibration_pay_stub_date: date | None
     checkpoint_as_of_date: date | None
     pretax_modeled_for_elapsed: bool
     actc_modeled: bool
@@ -440,7 +497,8 @@ def _aggregate_withholding(
     its full-year cumulative context) is owned by T-P2, not re-derived --
     and sums the ``total`` / ``measured`` / ``modeled`` sides component-wise.
     ``measured_through`` is the LATEST stub date any profile is measured
-    through (``None`` when all are fully modeled).
+    through (``None`` when all are fully modeled), and ``bases`` what priced
+    each profile's modeled paychecks (:func:`_basis_of`).
 
     Args:
         year: The tax year.
@@ -459,6 +517,7 @@ def _aggregate_withholding(
     measures: list[WithholdingComponents] = []
     models: list[WithholdingComponents] = []
     stub_dates: list[date] = []
+    bases: list[WithholdingBasis] = []
     has_checkpoint = False
 
     for profile in profiles:
@@ -470,6 +529,8 @@ def _aggregate_withholding(
             has_checkpoint = True
         if wtd.measured_through is not None:
             stub_dates.append(wtd.measured_through)
+        if wtd.priced_from:
+            bases.append(_basis_of(profile.name, wtd.priced_from))
 
     return WithholdingSummary(
         total=_sum_components(totals),
@@ -477,6 +538,7 @@ def _aggregate_withholding(
         modeled=_sum_components(models),
         measured_through=max(stub_dates) if stub_dates else None,
         has_checkpoint=has_checkpoint,
+        bases=tuple(bases),
     )
 
 
@@ -792,18 +854,13 @@ def _build_assumptions(
     checkpoint (the elapsed WITHHOLDING is measured but its pre-tax is not).
 
     Args:
-        primary: The primary :class:`SalaryProfile` (filing inputs + state +
-            calibration).
+        primary: The primary :class:`SalaryProfile` (filing inputs + state).
         withholding: The summed withholding (checkpoint presence + date).
         profiles: The active profiles (for the multi-profile disclosure).
 
     Returns:
         The populated :class:`TaxAssumptions`.
     """
-    calibration = getattr(primary, "calibration", None)
-    calibration_active = bool(
-        calibration is not None and getattr(calibration, "is_active", False)
-    )
     return TaxAssumptions(
         filing=FilingInputs(
             filing_status_id=int(primary.filing_status_id),
@@ -811,10 +868,6 @@ def _build_assumptions(
             state_code=primary.state_code,
         ),
         disclosures=ModellingDisclosures(
-            calibration_active=calibration_active,
-            calibration_pay_stub_date=(
-                calibration.pay_stub_date if calibration_active else None
-            ),
             checkpoint_as_of_date=withholding.measured_through,
             pretax_modeled_for_elapsed=withholding.has_checkpoint,
             actc_modeled=True,

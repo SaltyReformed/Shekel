@@ -1869,7 +1869,7 @@ def _seed_taxes_profile(seed_user, db):
     """Seed a 130k single/NC salary profile; it prices under the shipped law.
 
     The T-P4 route-test fixture: 130,000 / 26 = 5,000.00 gross per period
-    exactly (no rounding residue), no deductions, no calibration -- so every
+    exactly (no rounding residue), no deductions, no pay stub -- so every
     figure asserted below is hand-computable from the 2026 law.
     """
     from app.extensions import db as _db
@@ -1897,7 +1897,7 @@ class TestTaxesTab:
     """Pins for the Taxes tab (T-P4): hero, chips, ledger, W-2, Schedule A.
 
     Hand-computed baseline (130k single/NC profile, seed_periods = 10
-    paydays in 2026, no checkpoint, no calibration, no deductions):
+    paydays in 2026, no checkpoint, no pay stub, no deductions):
 
       per-period federal = round(19,934 / 26) = 766.69 -> x10 = 7,666.90
       per-period NC      = round(4,678.28 / 26) = 179.93 -> x10 = 1,799.30
@@ -1949,7 +1949,140 @@ class TestTaxesTab:
             # The YTD checkpoint card and assumptions card are present.
             assert "ytd-checkpoint-card" in html
             assert "Assumptions" in html
-            assert "bracket model" in html   # no calibration seeded
+            # No pay stub seeded: the tax formulas priced every estimated
+            # paycheck (R-SAL100, words R-SAL121; "bracket model" until plan
+            # step salary:S11-c-2c deleted the calibration it stood against).
+            text = " ".join(re.sub(r"<[^>]+>", " ", html).split())
+            assert "Withholding basis the tax formulas Measured through" in text
+
+    def test_taxes_tab_names_the_formulas_then_each_pricing_stub(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The Withholding basis row lists what priced the estimated paychecks.
+
+        Plan step salary:S11-c-2c, ruling R-SAL100 (its words R-SAL121).  Two
+        made-up stubs on the fourth and seventh paydays and no checkpoint: the
+        first three paydays take the tax formulas, the rest one stub or the
+        other, so the row reads "the tax formulas, then your <4th> and <7th>
+        pay stubs" -- the formulas first, the stubs in payday order.
+        """
+        # Pylint: import-outside-toplevel -- file-wide test convention.
+        from app.enums import WithholdingKindEnum  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import add_test_pay_stub  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            profile = _seed_taxes_profile(seed_user, db)
+            for period in (seed_periods[6], seed_periods[3]):
+                add_test_pay_stub(
+                    profile, period.start_date, "5000.00",
+                    taxes={
+                        WithholdingKindEnum.FEDERAL_INCOME: "600.00",
+                        WithholdingKindEnum.STATE_INCOME: "180.00",
+                        WithholdingKindEnum.SOCIAL_SECURITY: "290.00",
+                        WithholdingKindEnum.MEDICARE: "70.00",
+                    },
+                )
+            db.session.commit()
+            first, second = (
+                seed_periods[i].start_date.strftime("%b %-d, %Y") for i in (3, 6)
+            )
+
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            text = " ".join(re.sub(r"<[^>]+>", " ", resp.data.decode()).split())
+
+            assert resp.status_code == 200
+            assert (
+                f"Withholding basis the tax formulas, then your {first} and "
+                f"{second} pay stubs Measured through"
+            ) in text
+
+    def test_taxes_tab_names_each_job_when_two_are_active(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """With two active jobs each line of the row starts with its job (R-BAL207).
+
+        Plan step salary:S11-c-2c (the leaf review's MED-1): each job's
+        paychecks are priced from its own stubs, so the row is one line per
+        job, named only when more than one is active.  A made-up stub on the
+        fourth payday of the first job; the second job has none.
+        """
+        # Pylint: import-outside-toplevel -- file-wide test convention.
+        from app.enums import WithholdingKindEnum  # pylint: disable=import-outside-toplevel
+        from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import add_test_pay_stub  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            first = _seed_taxes_profile(seed_user, db)
+            second = SalaryProfile(
+                user_id=seed_user["user"].id, scenario_id=seed_user["scenario"].id,
+                name="Second Job", filing_status_id=first.filing_status_id,
+                state_code="NC", is_active=True, sort_order=1,
+            )
+            db.session.add(second)
+            start_test_pay_list(second, Decimal("1000.00"))
+            add_test_pay_stub(
+                first, seed_periods[3].start_date, "5000.00",
+                taxes={
+                    WithholdingKindEnum.FEDERAL_INCOME: "600.00",
+                    WithholdingKindEnum.STATE_INCOME: "180.00",
+                    WithholdingKindEnum.SOCIAL_SECURITY: "290.00",
+                    WithholdingKindEnum.MEDICARE: "70.00",
+                },
+            )
+            db.session.commit()
+            day = seed_periods[3].start_date.strftime("%b %-d, %Y")
+
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            text = " ".join(re.sub(r"<[^>]+>", " ", resp.data.decode()).split())
+
+            assert resp.status_code == 200
+            assert (
+                f"Withholding basis Taxes Tab Profile: the tax formulas, then "
+                f"your {day} pay stub Second Job: the tax formulas Measured through"
+            ) in text
+
+    def test_taxes_tab_says_nothing_is_left_to_estimate(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """A checkpoint covering every payday leaves no basis to name (R-SAL121).
+
+        Plan step salary:S11-c-2c.  The checkpoint is dated 2026-12-31, after
+        every seeded payday, so no paycheck is estimated and the row reads
+        "nothing left to estimate".  Its figures are made up and none is read.
+        """
+        # Pylint: import-outside-toplevel -- file-wide test convention.
+        from app.services import tax_withholding_service  # pylint: disable=import-outside-toplevel
+        from app.services.tax_withholding_service import CheckpointFigures  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            profile = _seed_taxes_profile(seed_user, db)
+            tax_withholding_service.save_checkpoint(
+                profile.id,
+                CheckpointFigures(
+                    as_of_date=date(2026, 12, 31),
+                    ytd_gross=Decimal("52341.18"),
+                    ytd_federal=Decimal("4127.66"),
+                    ytd_state=Decimal("1903.29"),
+                    ytd_social_security=Decimal("3245.07"),
+                    ytd_medicare=Decimal("761.14"),
+                ),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            text = " ".join(re.sub(r"<[^>]+>", " ", resp.data.decode()).split())
+
+            assert resp.status_code == 200
+            assert "Withholding basis nothing left to estimate Measured through" in text
 
     def test_taxes_tab_checkpoint_reanchors_withholding(self, app, auth_client, seed_user, seed_periods, db):
         """A saved checkpoint re-anchors the measured side of the refund.

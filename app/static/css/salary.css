@@ -6,7 +6,7 @@
    dashboard.css + accounts.css) for its hero band, per the locked D2
    "wide sky" direction (docs/design/salary_audit.md, Loop A record).
    This file carries only the salary-specific pieces: the composition
-   spine, the deduction bar-list, the salary-path card, the calibration
+   spine, the deduction bar-list, the salary-path card, the pay stubs
    strip, and the two-column card grid under the band.
    ============================================= */
 
@@ -53,7 +53,7 @@
   color: var(--shekel-done);
 }
 
-/* Calibrated marker inside the hero caption. */
+/* The done-color marker of a pay stub used for pricing (stub_form.html). */
 .sal-cal {
   color: var(--shekel-done);
   font-weight: 600;
@@ -62,7 +62,7 @@
 /* ---------------------------------------------
    Card grid under the band: composition spans both columns, the
    deduction bar-list holds the left column, and the right column is
-   ONE flex stack (salary-path card + calibration strip).  As loose
+   ONE flex stack (salary-path card + pay stubs strip).  As loose
    grid siblings the tall deduction list stretched the row heights and
    opened a dead band between the two right-column pieces (polish
    audit P-SA5); the stack pins the strip directly under the card.
@@ -324,9 +324,11 @@
 }
 
 /* ---------------------------------------------
-   Calibration status strip.
+   Pay stubs strip: how each paycheck's taxes are priced, and the link to
+   the profile's pay stubs (plan step salary:S11-c-2c, rulings R-SAL100 and
+   R-SAL121).  It carries no state, so it has no status dot.
    --------------------------------------------- */
-.sal-calstrip {
+.sal-stubstrip {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -338,26 +340,10 @@
   font-size: 0.8125rem;
 }
 
-.sal-calstrip__dot {
-  width: 0.5625rem;
-  height: 0.5625rem;
-  border-radius: 50%;
-  background: var(--shekel-done);
-  flex: 0 0 auto;
-}
-
-.sal-calstrip__dot--off {
-  background: var(--shekel-text-muted);
-}
-
-.sal-calstrip__text {
+.sal-stubstrip__text {
   flex: 1 1 12rem;
   min-width: 0;
   color: var(--shekel-text-secondary);
-}
-
-.sal-calstrip__text b {
-  color: var(--shekel-text-primary);
 }
 
 /* ---------------------------------------------

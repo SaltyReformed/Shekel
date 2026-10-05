@@ -28,7 +28,7 @@ year-periods query the producer runs):
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, WithholdingKindEnum
 from app.extensions import db as _db
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_line import PaycheckLine
@@ -49,6 +49,7 @@ from tests._test_helpers import (
     payroll_basis,
     create_loan_with_trueup,
     create_settled_transfer,
+    add_test_pay_stub,
     freeze_today,
     start_test_pay_list,
 )
@@ -188,11 +189,133 @@ def _project_sum(profile, year, periods):
     }
 
 
+# ── Withholding basis: what priced the modeled paychecks ──────────
+
+
+class TestWithholdingBasis:
+    """The assumptions card names the stubs that priced the ESTIMATED paychecks.
+
+    Plan step salary:S11-c-2c, ruling **R-SAL100** (its words **R-SAL121**):
+    the basis is read off the engine's breakdowns of the modeled remainder
+    (the paydays after the checkpoint), per job, so it names a stub exactly
+    when the engine priced one of that job's modeled paychecks from it.  The 26 paydays run
+    01-02 .. 12-18 every 14 days; the stubs' figures are made up and no
+    figure is asserted, only which basis priced which paycheck.
+    """
+
+    @staticmethod
+    def _stub(profile, payday):
+        """Record a switched-on stub of *profile* on *payday* (made-up taxes)."""
+        add_test_pay_stub(
+            profile, payday, "5000.00",
+            taxes={
+                WithholdingKindEnum.FEDERAL_INCOME: "600.00",
+                WithholdingKindEnum.STATE_INCOME: "180.00",
+                WithholdingKindEnum.SOCIAL_SECURITY: "290.00",
+                WithholdingKindEnum.MEDICARE: "70.00",
+            },
+        )
+
+    @staticmethod
+    def _checkpoint(profile, as_of):
+        """Record a checkpoint dated *as_of* (made-up figures; none is read here)."""
+        _db.session.add(YtdTaxCheckpoint(
+            salary_profile_id=profile.id, as_of_date=as_of,
+            ytd_gross=Decimal("1000.00"), ytd_federal=Decimal("100.00"),
+            ytd_state=Decimal("40.00"), ytd_social_security=Decimal("60.00"),
+            ytd_medicare=Decimal("15.00"),
+        ))
+
+    def _bases(self, seed_user):
+        """The report's per-job withholding bases for 2026, today 2026-03-01."""
+        _db.session.commit()
+        report = compute_tax_report(seed_user["user"].id, 2026, date(2026, 3, 1))
+        return report.withholding.bases
+
+    def test_the_formulas_then_the_stub(self, app, db, seed_user):
+        """A 03-13 stub: the five earlier paydays take the formulas, the rest the stub."""
+        profile = _committed_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(profile, date(2026, 3, 13))
+
+        (basis,) = self._bases(seed_user)
+
+        assert basis.stub_paydays == (date(2026, 3, 13),)
+        assert basis.formulas_priced is True
+
+    def test_every_pricing_stub_is_named_in_payday_order(self, app, db, seed_user):
+        """Two stubs: each prices the paychecks from its payday on, both are named."""
+        profile = _committed_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(profile, date(2026, 6, 19))
+        self._stub(profile, date(2026, 1, 2))
+
+        (basis,) = self._bases(seed_user)
+
+        assert basis.stub_paydays == (date(2026, 1, 2), date(2026, 6, 19))
+        assert basis.formulas_priced is False
+
+    def test_a_checkpoint_after_the_stub_leaves_only_the_stub(self, app, db, seed_user):
+        """The measured paydays are not estimated, so the formulas' paychecks drop out."""
+        profile = _committed_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(profile, date(2026, 3, 13))
+        self._checkpoint(profile, date(2026, 6, 19))
+
+        (basis,) = self._bases(seed_user)
+
+        assert basis.stub_paydays == (date(2026, 3, 13),)
+        assert basis.formulas_priced is False
+
+    def test_a_switched_off_stub_is_not_named(self, app, db, seed_user):
+        """The engine skips a stub switched off, so the card does not name it."""
+        profile = _committed_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(profile, date(2026, 3, 13))
+        profile.pay_stubs[0].use_for_pricing = False
+
+        (basis,) = self._bases(seed_user)
+
+        assert basis.stub_paydays == ()
+        assert basis.formulas_priced is True
+
+    def test_each_job_is_named_with_its_own_stubs(self, app, db, seed_user):
+        """Two jobs: the stub prices the first job's paychecks only (the review's MED-1).
+
+        The first job's 03-13 stub leaves its five earlier paydays to the
+        formulas; the second job has no stub, so the formulas price its whole
+        year.  A union of the two would read "the tax formulas, then your
+        03-13 stub" for a filer whose second job no stub ever priced.
+        """
+        first = _committed_profile(seed_user, name="First Job", sort_order=0)
+        _committed_profile(seed_user, name="Second Job", sort_order=1)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(first, date(2026, 3, 13))
+
+        bases = self._bases(seed_user)
+
+        assert [(b.job, b.stub_paydays, b.formulas_priced) for b in bases] == [
+            ("First Job", (date(2026, 3, 13),), True),
+            ("Second Job", (), True),
+        ]
+
+    def test_a_checkpoint_covering_the_year_leaves_nothing_estimated(
+        self, app, db, seed_user,
+    ):
+        """Every payday measured: no basis to name, and no formulas either."""
+        profile = _committed_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        self._stub(profile, date(2026, 3, 13))
+        self._checkpoint(profile, date(2026, 12, 31))
+
+        assert self._bases(seed_user) == ()
+
+
 # ── Anchor: single profile, fully modeled ─────────────────────────
 
 
 class TestSingleProfileFullyModeled:
-    """130,000 single/NC, no checkpoint, no calibration, 26 periods."""
+    """130,000 single/NC, no checkpoint, no pay stub, 26 periods."""
 
     def test_end_to_end_anchor(self, app, db, seed_user):
         """Refund, chips, W-2, and Schedule A on the locked anchor.
@@ -275,7 +398,12 @@ class TestSingleProfileFullyModeled:
         assert report.assumptions.filing.state_code == "NC"
         assert report.assumptions.active_profile_count == 1
         assert report.assumptions.filing_inputs_from is None
-        assert report.assumptions.disclosures.calibration_active is False
+        # No pay stub: the tax formulas priced every modeled paycheck
+        # (R-SAL100; the card read the calibration's state until plan step
+        # salary:S11-c-2c deleted it).
+        assert [(b.stub_paydays, b.formulas_priced) for b in report.withholding.bases] == [
+            ((), True),
+        ]
         assert report.assumptions.disclosures.checkpoint_as_of_date is None
         assert report.assumptions.disclosures.pretax_modeled_for_elapsed is False
         # T-P5: nonrefundable_credit_clamp retired in favour of the honest

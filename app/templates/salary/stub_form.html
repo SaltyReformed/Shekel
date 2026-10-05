@@ -115,7 +115,12 @@
           <li>{{ one_off.name }} ({{ one_off.kind_label }}): <span class="font-mono">{{ money(one_off.amount) }}</span></li>
           {% endfor %}
         </ul>
-        <p class="text-muted small mb-0">A stub with a one-off matches no normal paycheck.</p>
+        {# Shown only when the engine's own one-off rule says the stub is one
+           of other lines (plan step salary:S11-c-2c, ruling R-SAL123, which
+           also gave these words). #}
+        {% if report.one_off_changes_taxes %}
+        <p class="text-muted small mb-0">This stub's one-off changes its taxes, so it prices a paycheck only when no stub with your usual lines is on or before it.</p>
+        {% endif %}
         {% endif %}
       </div>
     </div>

@@ -83,23 +83,6 @@ def _pct_of_gross(value: Decimal, gross: Decimal) -> Decimal:
     return (value / gross * HUNDRED).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP)
 
 
-def _calibration_zero_federal(breakdown: PaycheckBreakdown, calibration_active: bool) -> bool:
-    """Return True when an active calibration withholds exactly zero federal.
-
-    Surfaces the honest-but-surprising "$0.00 federal withholding" case
-    (e.g. dependents that zero out withholding) so the composition card
-    can caption it rather than look like a bug.
-
-    Args:
-        breakdown: The focused period's breakdown.
-        calibration_active: Whether the profile's calibration is active.
-
-    Returns:
-        True iff a calibration is active AND the federal line is zero.
-    """
-    return calibration_active and breakdown.taxes.federal == ZERO
-
-
 def clean_raise_label(raw_label: str) -> str:
     """Return a display-clean version of a calculator ``raise_event`` string.
 
@@ -404,9 +387,7 @@ def build_chips(
     }
 
 
-def build_composition(
-    breakdown: PaycheckBreakdown, calibration_active: bool,
-) -> dict[str, object]:
+def build_composition(breakdown: PaycheckBreakdown) -> dict[str, object]:
     """Build the "where this paycheck goes" composition-card data.
 
     All figures are Decimals; the four segment percentages (of gross) are
@@ -424,16 +405,26 @@ def build_composition(
     line every added key is ``$0.00`` / equals ``net``, and the card renders
     exactly as before.
 
+    **The card names what priced the paycheck's taxes** (plan step
+    salary:S11-c-2c, ruling **R-SAL100**, its words **R-SAL121**):
+    ``tax_stub_payday`` is the payday
+    of the pay stub the engine priced the four taxes from, or ``None`` when no
+    stub is dated on or before the payday and the tax formulas priced them
+    alone.  It is read off the breakdown's tax lines, the engine's own answer,
+    so this card cannot name a stub the engine did not use.  It replaces the
+    ``federal_zero_calibrated`` flag, which captioned a ``$0.00`` federal line
+    under an active calibration: the basis is now stated on every paycheck,
+    so a ``$0.00`` federal line carries its reason either way.
+
     Args:
         breakdown: The focused period's breakdown.
-        calibration_active: Whether the profile's calibration is active.
 
     Returns:
         A dict with the gross/base/taxable/net/pre_tax_total/taxes_total/
         post_tax_total/taxable_earnings_total/after_tax_total/kept_from_gross
         Decimals, the ``pct_net`` (of ``kept_from_gross``) / ``pct_pre_tax``
         / ``pct_taxes`` / ``pct_post_tax`` one-decimal percentages of gross,
-        and the ``federal_zero_calibrated`` flag.
+        and ``tax_stub_payday`` (a :class:`~datetime.date` or ``None``).
     """
     gross = breakdown.earnings.gross_biweekly
     pre_tax_total = breakdown.deductions.total_pre_tax
@@ -457,7 +448,7 @@ def build_composition(
         "pct_pre_tax": _pct_of_gross(pre_tax_total, gross),
         "pct_taxes": _pct_of_gross(taxes_total, gross),
         "pct_post_tax": _pct_of_gross(post_tax_total, gross),
-        "federal_zero_calibrated": _calibration_zero_federal(breakdown, calibration_active),
+        "tax_stub_payday": breakdown.taxes.stub_payday,
     }
 
 

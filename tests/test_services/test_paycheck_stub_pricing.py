@@ -25,16 +25,19 @@ pre-tax Health line of ``$200.00`` and a taxable Phone allowance of
                                        Med    3,060.00 x 1.45% =  44.37
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from app import ref_cache
-from app.enums import PaycheckLineKindEnum, WithholdingKindEnum
+from app.enums import BusinessDayShiftEnum, PaycheckLineKindEnum, WithholdingKindEnum
 from app.models.pay_stub import PayStubOneOff
 from app.services import paycheck_calculator
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCalendar
+from app.services.pay_rhythm import Era, FixedDays, Monthly, Rhythm
 from app.services.payroll_basis import PayrollBasis
 from app.services.salary_paydays import paycheck_on
 from app.services.tax_config_service import (
@@ -51,6 +54,13 @@ from tests._test_helpers import (
     made_up_year,
     make_flat_paycheck_line,
     make_salary_profile,
+)
+from tests.test_services.test_paycheck_calculator import (
+    FakeBracket,
+    FakeBracketSet,
+    FakeFicaConfig,
+    FakeProfile,
+    FakeStateTaxConfig,
 )
 
 _FEDERAL = WithholdingKindEnum.FEDERAL_INCOME
@@ -208,8 +218,10 @@ class TestASameLinesStubPricesThePaycheck:
     def test_the_latest_same_lines_stub_beats_a_later_one_of_other_lines(self, owner, db):
         """A 01-30 stub with a one-off bonus has other lines; the 01-16 stub prices 02-13.
 
-        A one-off of a non-zero amount makes a stub's lines differ from
-        every paycheck's (R-SAL54: "A one-off stub is just one of those").
+        A one-off that changes the stub's taxes -- the Bonus is a taxable
+        earning -- makes a stub's lines differ from every paycheck's (R-SAL54:
+        "A one-off stub is just one of those", as R-SAL123 amends it: only a
+        tax-changing one-off does).
         """
         _same_lines_stub(
             owner, date(2026, 1, 16), "3000.00",
@@ -316,17 +328,35 @@ class TestWithNoSameLinesStubTheLatestOfAnyLinesPrices:
         db.session.commit()
         assert _priced(owner, date(2026, 2, 13)).taxes.stub_payday == date(2026, 1, 16)
 
-    def test_a_line_capped_out_at_zero_is_not_a_different_line(self, owner, db):
-        """A line its cap used up prices at $0.00; a stub without it has the paycheck's lines.
+    def test_a_post_tax_line_does_not_make_the_lines_differ(self, owner, db):
+        """A newer stub that differs only by a post-tax line is a same-lines stub.
 
-        Dues (post-tax, ``$100.00`` capped at ``$100.00`` a year) is taken on
-        01-02 and priced at ``$0.00`` from 01-16 on.  The 01-16 stub prints
-        Health and Phone; the LATER 01-30 stub also prints a Dues charge of
-        ``$25.00``, so its lines carry money the paycheck's do not.  The
-        02-13 paycheck carries money on Health and Phone alone, so the 01-16
-        stub is its same-lines stub (an application of balance:R-BAL207:
-        comparing recorded keys alone would read the $0.00 Dues line as a
-        difference and take the 01-30 stub).
+        RE-DERIVED at plan step salary:S11-c-2c, when "the same lines" was
+        narrowed to the taxed kinds (the leaf's review, LOW-3; the coordinator
+        under balance:R-BAL207): until then this case was
+        ``test_a_line_capped_out_at_zero_is_not_a_different_line`` and
+        expected the 01-16 stub (state ``$150.00``), because the 01-30 stub's
+        post-tax Dues charge made its lines differ.  No tax formula reads a
+        post-tax line, so the 01-30 stub now has the 02-13 paycheck's lines --
+        its taxed lines are Health and Phone, as the paycheck's are -- and,
+        being the later, it prices it.  Worked by hand:
+
+            02-13 paycheck   gross 3,000.00 + Phone 60.00 = 3,060.00
+                             taxable 3,060.00 - Health 200.00 = 2,860.00
+                             (Dues, post-tax, capped at $100.00 and taken
+                             on 01-02, is $0.00 and moves no tax)
+            01-30 stub       base 3,000.00, Phone 60.00, Health 200.00:
+                             the same gross and taxable
+            formulas, both   state 2,860.00 x 5% = 143.00, SS 3,060.00 x
+                             6.2% = 189.72, Medicare 3,060.00 x 1.45% = 44.37,
+                             federal $0.00 (the module's law)
+            priced           the stub's figure + 0.00 on every line:
+                             federal 260.00, state 160.00, SS 189.72,
+                             Medicare 44.37
+
+        The capped-out half this case used to carry -- a line the engine prices
+        at ``$0.00`` is not a different line -- is the next case's, on a
+        pre-tax line, where the comparison still reads it.
         """
         dues = make_flat_paycheck_line(
             owner["profile"], "Dues", "100.00", PaycheckLineKindEnum.POST_TAX_DEDUCTION,
@@ -347,6 +377,170 @@ class TestWithNoSameLinesStubTheLatestOfAnyLinesPrices:
         db.session.commit()
         breakdown = _priced(owner, date(2026, 2, 13))
         assert [line.amount for line in breakdown.deductions.post_tax] == [Decimal("0.00")]
+        assert breakdown.taxes.stub_payday == date(2026, 1, 30)
+        assert _four(breakdown) == (
+            Decimal("260.00"), Decimal("160.00"), Decimal("189.72"), Decimal("44.37"),
+        )
+
+    def test_an_after_tax_one_off_does_not_make_the_lines_differ(self, owner, db):
+        """A newer stub whose only difference is an after-tax one-off is a same-lines stub.
+
+        Ruling R-SAL123 ("Only tax-changing one-offs", amending R-SAL42 fork 8b
+        and R-SAL54's reading; plan step salary:S11-c-2c): a made-up
+        ``$37.19`` after-tax "Mileage" one-off on the 01-30 stub changes no
+        tax, so the 01-30 stub keeps the 02-13 paycheck's lines and, being the
+        later, prices it -- where the rule before it took the 01-16 stub.  By hand: the 01-30 stub's gross is
+        3,000.00 + Phone 60.00 = 3,060.00 (an after-tax earning is outside the
+        gross) and its taxable 2,860.00, the paycheck's own, so every formulas
+        difference is $0.00 and the four taxes are the stub's: 260.00 / 160.00
+        / 189.72 / 44.37.
+        """
+        _same_lines_stub(
+            owner, date(2026, 1, 16), "3000.00",
+            _taxes("250.00", "150.00", "189.72", "44.37"),
+        )
+        _same_lines_stub(
+            owner, date(2026, 1, 30), "3000.00",
+            _taxes("260.00", "160.00", "189.72", "44.37"),
+        ).one_offs.append(PayStubOneOff(
+            name="Mileage", amount=Decimal("37.19"),
+            paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                PaycheckLineKindEnum.AFTER_TAX_EARNING,
+            ),
+        ))
+        db.session.commit()
+        breakdown = _priced(owner, date(2026, 2, 13))
+        assert breakdown.taxes.stub_payday == date(2026, 1, 30)
+        assert _four(breakdown) == (
+            Decimal("260.00"), Decimal("160.00"), Decimal("189.72"), Decimal("44.37"),
+        )
+
+    def test_a_post_tax_one_off_does_not_make_the_lines_differ(self, owner, db):
+        """R-SAL123: a post-tax one-off changes no tax either, so the later stub prices.
+
+        The 01-30 stub carries a made-up ``$23.61`` post-tax "Union assessment"
+        one-off beside the paycheck's two lines; its gross (3,060.00) and
+        taxable (2,860.00) are the paycheck's, so every difference is $0.00 and
+        02-13 takes its four taxes, 260.00 / 160.00 / 189.72 / 44.37.
+        """
+        _same_lines_stub(
+            owner, date(2026, 1, 16), "3000.00",
+            _taxes("250.00", "150.00", "189.72", "44.37"),
+        )
+        _same_lines_stub(
+            owner, date(2026, 1, 30), "3000.00",
+            _taxes("260.00", "160.00", "189.72", "44.37"),
+        ).one_offs.append(PayStubOneOff(
+            name="Union assessment", amount=Decimal("23.61"),
+            paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                PaycheckLineKindEnum.POST_TAX_DEDUCTION,
+            ),
+        ))
+        db.session.commit()
+        breakdown = _priced(owner, date(2026, 2, 13))
+        assert breakdown.taxes.stub_payday == date(2026, 1, 30)
+        assert _four(breakdown) == (
+            Decimal("260.00"), Decimal("160.00"), Decimal("189.72"), Decimal("44.37"),
+        )
+
+    def test_a_pre_tax_one_off_still_makes_the_lines_differ(self, owner, db):
+        """R-SAL123: a pre-tax one-off changes the stub's taxes, so the earlier stub prices.
+
+        The 01-30 stub carries a made-up ``$23.61`` pre-tax "Retro HSA"
+        one-off: its taxable wage is 2,860.00 - 23.61 = 2,836.39, so it is a
+        stub of other lines and the 01-16 stub, of the paycheck's lines,
+        prices 02-13 at its own pay: state ``150.00``.  Were the one-off read
+        as changing no tax, the 01-30 stub would price it at ``160.00 + 143.00
+        - 141.82 = 161.18`` (its side's state 2,836.39 x 5% = 141.8195 ->
+        141.82).
+        """
+        _same_lines_stub(
+            owner, date(2026, 1, 16), "3000.00",
+            _taxes("250.00", "150.00", "189.72", "44.37"),
+        )
+        _same_lines_stub(
+            owner, date(2026, 1, 30), "3000.00",
+            _taxes("260.00", "160.00", "189.72", "44.37"),
+        ).one_offs.append(PayStubOneOff(
+            name="Retro HSA", amount=Decimal("23.61"),
+            paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
+            ),
+        ))
+        db.session.commit()
+        breakdown = _priced(owner, date(2026, 2, 13))
+        assert breakdown.taxes.stub_payday == date(2026, 1, 16)
+        assert breakdown.taxes.state == Decimal("150.00")
+
+    def test_the_paycheck_side_compares_its_taxed_lines_alone(self, owner, db):
+        """A post-tax line carrying money on the PAYCHECK is not compared either.
+
+        The narrowed rule's other side (plan step salary:S11-c-2c): a Roth
+        line (post-tax, ``$50.00`` every paycheck) carries money on the 02-13
+        paycheck, and the 01-16 stub records it beside Health and Phone, so
+        the stub's taxed lines are the paycheck's and it prices 02-13 at its
+        own pay: every difference $0.00, state ``150.00``.  The later 01-30
+        stub prints Health alone, other lines.  Were the paycheck's Roth
+        compared while the stub's is not, neither stub would have the lines and
+        the later 01-30 would price it: ``140.00 + 143.00 - 140.00 = 143.00``
+        (its side: gross 3,000.00, taxable 2,800.00, state 140.00).
+        """
+        roth = make_flat_paycheck_line(
+            owner["profile"], "Roth", "50.00", PaycheckLineKindEnum.POST_TAX_DEDUCTION,
+        )
+        db.session.flush()
+        add_test_pay_stub(
+            owner["profile"], date(2026, 1, 16), "3000.00",
+            taxes=_taxes("250.00", "150.00", "189.72", "44.37"),
+            lines=(
+                (owner["health"], "200.00"), (owner["phone"], "60.00"), (roth, "50.00"),
+            ),
+        )
+        add_test_pay_stub(
+            owner["profile"], date(2026, 1, 30), "3000.00",
+            taxes=_taxes("250.00", "140.00", "186.00", "43.50"),
+            lines=((owner["health"], "200.00"),),
+        )
+        db.session.commit()
+        breakdown = _priced(owner, date(2026, 2, 13))
+        assert breakdown.taxes.stub_payday == date(2026, 1, 16)
+        assert breakdown.taxes.state == Decimal("150.00")
+
+    def test_a_pre_tax_line_capped_out_at_zero_is_not_a_different_line(self, owner, db):
+        """A taxed line its cap used up prices at $0.00; a stub without it has the paycheck's lines.
+
+        An HSA line (pre-tax, ``$100.00`` capped at ``$100.00`` a year) is
+        taken on 01-02 and priced at ``$0.00`` from 01-16 on.  The 01-16 stub
+        prints Health and Phone; the LATER 01-30 stub also prints an HSA
+        charge of ``$25.00``, so its taxed lines carry money the paycheck's do
+        not.  The 02-13 paycheck carries money on Health and Phone alone, so
+        the 01-16 stub is its same-lines stub (an application of
+        balance:R-BAL207: comparing recorded keys alone would read the $0.00
+        HSA line as a difference and take the 01-30 stub, pricing state at
+        ``160.00 + 143.00 - 141.75 = 161.25``).  The 01-16 stub's pay is the
+        paycheck's, so every difference is $0.00 and state is its ``150.00``.
+        """
+        hsa = make_flat_paycheck_line(
+            owner["profile"], "HSA", "100.00", PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
+        )
+        hsa.annual_cap = Decimal("100.00")
+        db.session.flush()
+        _same_lines_stub(
+            owner, date(2026, 1, 16), "3000.00",
+            _taxes("250.00", "150.00", "189.72", "44.37"),
+        )
+        add_test_pay_stub(
+            owner["profile"], date(2026, 1, 30), "3000.00",
+            taxes=_taxes("260.00", "160.00", "189.72", "44.37"),
+            lines=(
+                (owner["health"], "200.00"), (owner["phone"], "60.00"), (hsa, "25.00"),
+            ),
+        )
+        db.session.commit()
+        breakdown = _priced(owner, date(2026, 2, 13))
+        assert {line.name: line.amount for line in breakdown.deductions.pre_tax}["HSA"] == (
+            Decimal("0.00")
+        )
         assert breakdown.taxes.stub_payday == date(2026, 1, 16)
         assert breakdown.taxes.state == Decimal("150.00")
 
@@ -594,3 +788,92 @@ class TestAStubMissingATaxIsRefused:
         db.session.commit()
         with pytest.raises(ValueError, match="MEDICARE"):
             _priced(owner, date(2026, 2, 13))
+
+
+class TestTheStubSideTakesTheRhythmOnItsOwnPayday:
+    """A stub paid under another rhythm is priced at ITS rhythm (review L3, plan step S11-c-2c).
+
+    ``_stubs._formulas`` reads the paychecks-a-year in force on the payday it
+    is handed, so the stub's side runs at the rhythm of the STUB's payday and
+    the paycheck's side at the paycheck's.  Every case above has one rhythm,
+    where the two agree; this one crosses an era, in memory: monthly paydays
+    from 2026-01-01, then every 14 days from Thursday 2026-07-02, a made-up
+    ``$4,800.00`` paid monthly (``$57,600.00`` a year), so the 07-02 paycheck
+    is ``57,600.00 / 26 = 2,215.3846 -> $2,215.38``.  Made-up law: federal at
+    a 0% rate (so federal is the stub's figure), state a flat 4.5% after a
+    ``$12,000.00`` standard deduction -- annualised over the rhythm's count,
+    so the count is visible in the figure -- and FICA at 6.2% / 1.45%.
+
+    The stub, dated 2026-06-01 (monthly, 12 a year), prints base pay
+    ``$4,800.00`` and made-up taxes 0.00 / 180.00 / 301.11 / 70.42::
+
+        paycheck 07-02 at 26   state  0.045 x (2,215.38 x 26 - 12,000) / 26
+                                      = 0.045 x 45,599.88 / 26 = 78.92
+                               SS     2,215.38 x 0.062  = 137.35
+                               Med    2,215.38 x 0.0145 =  32.12
+        stub 06-01 at 12       state  0.045 x (4,800 x 12 - 12,000) / 12 = 171.00
+                               SS     4,800.00 x 0.062  = 297.60
+                               Med    4,800.00 x 0.0145 =  69.60
+        priced                 state  180.00 + 78.92 - 171.00 =  87.92
+                               SS     301.11 + 137.35 - 297.60 = 140.86
+                               Med     70.42 +  32.12 -  69.60 =  32.94
+
+    The stub's side priced at the PAYCHECK's 26 instead reads state
+    ``0.045 x (4,800 x 26 - 12,000) / 26 = 195.23`` and prices ``63.69``.
+    """
+
+    def test_a_monthly_stub_prices_a_biweekly_paycheck_at_twelve_a_year(self, app):
+        """State $87.92: the stub's side annualised over 12, the paycheck's over 26."""
+        none = BusinessDayShiftEnum.NONE
+        calendar = PayCalendar.from_paydays(
+            [
+                (index + 1, payday) for index, payday in enumerate(
+                    [date(2026, month, 1) for month in range(1, 7)]
+                    + [date(2026, 7, 2) + timedelta(days=14 * step) for step in range(4)]
+                )
+            ],
+            (
+                Era(effective_from=date(2026, 1, 1), rhythm=Rhythm(Monthly(1), none)),
+                Era(effective_from=date(2026, 7, 2), rhythm=Rhythm(FixedDays(14), none)),
+            ),
+            user_id=1,
+            history_opens_on=None,
+        )
+        profile = FakeProfile(
+            pay=Decimal("4800.00"), pay_from=date(2026, 1, 1), created_at=date(2026, 1, 1),
+        )
+        profile.pay_stubs = [SimpleNamespace(
+            payday=date(2026, 6, 1), base_pay=Decimal("4800.00"), use_for_pricing=True,
+            line_amounts=[], one_offs=[],
+            withholdings=[
+                SimpleNamespace(
+                    withholding_kind_id=ref_cache.withholding_kind_id(kind),
+                    amount=Decimal(amount),
+                )
+                for kind, amount in (
+                    (_FEDERAL, "0.00"), (_STATE, "180.00"),
+                    (_SS, "301.11"), (_MEDICARE, "70.42"),
+                )
+            ],
+        )]
+        state = FakeStateTaxConfig(flat_rate="0.045")
+        state.standard_deduction = Decimal("12000.00")
+        configs = {
+            "bracket_set": FakeBracketSet(
+                standard_deduction=Decimal("0"),
+                brackets=[FakeBracket(Decimal("0"), None, Decimal("0"), 0)],
+            ),
+            "state_config": state,
+            "fica_config": FakeFicaConfig(),
+        }
+        period = next(p for p in calendar.periods if p.start_date == date(2026, 7, 2))
+
+        paycheck = paycheck_calculator.calculate_paycheck(
+            PayrollBasis(profile, calendar), period, configs,
+        )
+
+        assert paycheck.earnings.gross_biweekly == Decimal("2215.38")
+        assert paycheck.taxes.stub_payday == date(2026, 6, 1)
+        assert _four(paycheck) == (
+            Decimal("0.00"), Decimal("87.92"), Decimal("140.86"), Decimal("32.94"),
+        )

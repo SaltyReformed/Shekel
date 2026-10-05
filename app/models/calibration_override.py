@@ -2,8 +2,12 @@
 Shekel Budget App -- Calibration Override Models (salary schema)
 
 Stores effective tax and deduction rates derived from a real pay stub.
-When active, the paycheck calculator uses these rates instead of
-bracket-based estimates for more accurate projections.
+**Nothing reads them since plan step salary:S11-c-2c** (ruling **R-SAL100**):
+each paycheck's taxes are priced from the profile's transcribed pay stubs
+(``app.services.paycheck_calculator._stubs``), and the door that wrote these
+rows is deleted.  The table, this model and the ``calibration`` backref stay
+until plan step ``S11-d`` drops them, in a migration that refuses while any
+calibration the data has held has no pay stub on its date.
 """
 
 from app.extensions import db
@@ -20,8 +24,9 @@ class CalibrationOverride(
     """Effective tax rates derived from a real pay stub.
 
     One calibration per salary profile.  Stores both the raw actual
-    amounts (for audit trail) and the derived effective rates used
-    by the paycheck calculator.
+    amounts (for audit trail) and the derived effective rates the paycheck
+    calculator applied until plan step salary:S11-c-2c; no code reads either
+    now (the module docstring).
     """
 
     __tablename__ = "calibration_overrides"
@@ -52,9 +57,9 @@ class CalibrationOverride(
         ),
         # F-077 / C-24: Effective rates derived from a real pay
         # stub; persisted as decimal fractions in
-        # ``Numeric(12, 10)`` columns and fed straight into the
-        # paycheck calculator's tax computation.  CHECK pins each
-        # to ``[0, 1]``; a value outside that window would corrupt
+        # ``Numeric(12, 10)`` columns, which the paycheck calculator's
+        # tax computation read until plan step salary:S11-c-2c.  CHECK
+        # pins each to ``[0, 1]``; a value outside that window corrupted
         # the calibrated paycheck projection silently.
         db.CheckConstraint(
             "effective_federal_rate >= 0 AND effective_federal_rate <= 1",
@@ -84,7 +89,8 @@ class CalibrationOverride(
     actual_social_security = db.Column(db.Numeric(10, 2), nullable=False)
     actual_medicare = db.Column(db.Numeric(10, 2), nullable=False)
 
-    # Derived effective rates (used by the paycheck calculator).
+    # Derived effective rates (the paycheck calculator's until plan step
+    # salary:S11-c-2c; read by nothing since).
     # 10 decimal places to avoid penny rounding errors when the rate is
     # multiplied back against the taxable/gross base.
     effective_federal_rate = db.Column(db.Numeric(12, 10), nullable=False)

@@ -211,7 +211,7 @@ from ._breakdown import (
     waterfall_net,
 )
 from ._pricing import calculate_paycheck, project_salary
-from ._stubs import StubTotals, stub_totals, tax_years_for
+from ._stubs import StubTotals, one_offs_change_taxes, stub_totals, tax_years_for
 
 __all__ = [
     "DeductionBreakdown",
@@ -223,6 +223,7 @@ __all__ = [
     "TaxLines",
     "calculate_paycheck",
     "project_salary",
+    "one_offs_change_taxes",
     "stub_totals",
     "tax_years_for",
     "waterfall_gross",

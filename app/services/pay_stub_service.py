@@ -104,7 +104,11 @@ from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_line_kinds, withholding_kinds
 from app.services.pay_stub_gross import gross_refusals
-from app.services.paycheck_calculator import StubTotals, stub_totals
+from app.services.paycheck_calculator import (
+    StubTotals,
+    one_offs_change_taxes,
+    stub_totals,
+)
 from app.services.salary_paydays import paycheck_on, payday_refusal_for_door
 
 if TYPE_CHECKING:
@@ -263,12 +267,19 @@ class StubReport:
         lines: Every paycheck line the stub prints or the app takes that
             payday, in the profile's line order.
         one_offs: The one-offs, in the order they were entered.
+        one_off_changes_taxes: Whether a one-off changes the stub's taxes,
+            so that it prices a paycheck only when no stub of the paycheck's
+            lines is on or before it -- the engine picker's own answer
+            (:func:`app.services.paycheck_calculator.one_offs_change_taxes`,
+            ruling **R-SAL123**), which the page states rather than restating
+            the rule (plan step salary:S11-c-2c).
     """
     totals: StubTotals
     app_base_pay: Decimal | None
     base_gap: Decimal | None
     lines: tuple[LineComparison, ...]
     one_offs: tuple[OneOffRow, ...]
+    one_off_changes_taxes: bool
 
     @property
     def disagreements(self) -> int:
@@ -468,6 +479,7 @@ def stub_report(profile: SalaryProfile, stub: PayStub, ctx: "BalanceContext") ->
             )
             for one_off in figures.one_offs
         ),
+        one_off_changes_taxes=one_offs_change_taxes(figures.one_offs),
     )
 
 

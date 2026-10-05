@@ -53,16 +53,36 @@ year's included, until a stub of the new year is entered.  The Medicare
 surtax threshold shares it.  It moves ``$0.00`` for pay that never reaches
 the base, and ``S11-e`` owns the row.
 
-**What "the same lines" means, decided here** (an application of
+**A worker Social Security does not cover is ledger row SAL-596** (owner
+``S11-e``, beside SAL-595).  The formulas always charge 6.2%, so a stub that
+prints ``$0.00`` Social Security prices every later paycheck at 6.2% of its
+pay above the stub's (``0.00 + formulas(paycheck) - formulas(stub)``, floored),
+and every paycheck before the first stub at the full 6.2%, where the deleted
+calibration priced ``$0.00``.  It moves ``$0.00`` for a worker the tax covers.
+
+**What "the same lines" means, decided here** (applications of
 **balance:R-BAL207**, the developer's standing rule that behaviour he cannot
 see is decided by the best from-scratch design): a stub has the paycheck's
-lines when the paycheck lines it records at a NON-ZERO amount are exactly
-the ones the engine prices at a non-zero amount that payday, and it records
-no one-off of a non-zero amount (:func:`_has_the_lines`).  A line worth
-``$0.00`` moves no tax on either side, and the engine prices a line its
-annual cap has used up at ``$0.00`` where no stub prints it, so comparing the
-recorded keys alone would pass over a correct same-lines stub for one of
-other lines at exactly the paycheck a cap runs out.
+lines when the TAXED lines it records at a NON-ZERO amount -- its taxable
+earnings and pre-tax deductions, each by the kind the stub records it under
+(:data:`TAXED_KINDS`) -- are exactly the ones the engine prices at a non-zero
+amount that payday, and it records no one-off of those kinds carrying money
+(:func:`_has_the_lines`, through ONE filter, :func:`_taxed`, on all three).
+The one-off half is ruling **R-SAL123** ("Only tax-changing one-offs",
+amending R-SAL42 fork 8b and R-SAL54's reading, :func:`one_offs_change_taxes`):
+a one-off of a taxed kind still makes a stub one of other lines, and one that
+changes no tax -- an after-tax reimbursement, a post-tax deduction -- does not,
+so it no longer sends the picker to an older stub.  Only those two kinds for
+the paycheck lines too (an application of R-BAL207), because the question is whether
+the stub's taxes describe this paycheck and no tax formula reads a post-tax
+deduction or an after-tax earning: comparing them too would pass over a
+newer stub that differs only in such a line for an older one, losing what
+the newer stub's taxes reflect (the leaf's review, LOW-3; narrowed by the
+coordinator under R-BAL207, 2026-10-05).  Only NON-ZERO amounts, because a
+line worth ``$0.00`` moves no tax on either side, and the engine prices a
+line its annual cap has used up at ``$0.00`` where no stub prints it, so
+comparing the recorded keys alone would pass over a correct same-lines stub
+for one of other lines at exactly the paycheck a cap runs out.
 
 **One producer of what a stub adds up to.**  :func:`stub_totals` sums a
 stub's figures by the kind each records and runs the waterfall the engine's
@@ -74,8 +94,8 @@ door's module imports the engine and the engine may not import it back.
 
 Imports :mod:`._breakdown`, :mod:`._calendar_questions` and
 :mod:`._withholding`.  :mod:`._pricing` composes it, and the package
-re-exports the three names a caller outside it reads (:class:`StubTotals`,
-:func:`stub_totals`, :func:`tax_years_for`).
+re-exports the names a caller outside it reads (:class:`StubTotals`,
+:func:`stub_totals`, :func:`tax_years_for`, :func:`one_offs_change_taxes`).
 """
 
 from collections.abc import Iterable, Mapping
@@ -90,6 +110,13 @@ from app.utils.money import ZERO, round_money
 from ._breakdown import TaxLines, waterfall_gross, waterfall_net, waterfall_taxable
 from ._calendar_questions import _get_cumulative_wages
 from ._withholding import _bracket_tax_lines, _WageBasis
+
+
+#: The kinds whose lines a tax formula reads -- the gross holds the taxable
+#: earnings and the taxable wage is the gross less the pre-tax deductions --
+#: and so the kinds "the same lines" compares (the module docstring).  A
+#: post-tax deduction and an after-tax earning move no tax.
+TAXED_KINDS = (PaycheckLineKindEnum.TAXABLE_EARNING, PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
 
 
 @dataclass(frozen=True)
@@ -229,32 +256,75 @@ class Pay:
     pre_tax: Decimal
 
 
-def carried(lines) -> frozenset:
-    """Return the paycheck lines a priced paycheck or a stub carries money on.
+def _taxed(rows) -> list:
+    """Return the *rows* of a :data:`TAXED_KINDS` kind carrying money.
 
-    The ``paycheck_line_id`` of each line at a non-zero amount: what both
-    sides of "the same lines" (this module's docstring) are compared on, the
-    paycheck's in :mod:`._pricing` and a stub's in :func:`_has_the_lines`,
-    which adds the one-off half of the rule.
+    The ONE filter "the same lines" reads (the module docstring), on every
+    row it compares: a priced paycheck's lines by the kind the engine priced
+    each as, and a stub's line amounts and one-offs by the kind the STUB
+    records each under (**R-SAL58**); a row worth ``$0.00`` moves no tax and
+    is dropped too.
 
     Args:
-        lines: Priced lines or a stub's line amounts -- anything with a
-            ``paycheck_line_id`` and an ``amount``.
+        rows: Anything with a ``paycheck_line_kind_id`` and an ``amount``.
+
+    Returns:
+        The rows kept, in order.
+    """
+    taxed = {ref_cache.paycheck_line_kind_id(kind) for kind in TAXED_KINDS}
+    return [
+        row for row in rows
+        if row.paycheck_line_kind_id in taxed and row.amount != ZERO
+    ]
+
+
+def one_offs_change_taxes(one_offs) -> bool:
+    """Whether a stub's *one_offs* make it a stub of other lines (ruling **R-SAL123**).
+
+    "Only tax-changing one-offs": a one-off of a :data:`TAXED_KINDS` kind
+    carrying money changes the stub's taxes, so the stub prices a paycheck
+    only when no stub of the paycheck's lines is on or before it; an
+    after-tax or post-tax one-off, or one worth ``$0.00``, does not.  The
+    picker's rule (:func:`_has_the_lines`) and the stub page's sentence
+    (:attr:`app.services.pay_stub_service.StubReport.one_off_changes_taxes`)
+    both read it, so the page cannot say what the picker does not do.
+
+    Args:
+        one_offs: A stub's one-offs (rows or figures), each with a
+            ``paycheck_line_kind_id`` and an ``amount``.
+
+    Returns:
+        ``True`` when any of them changes the stub's taxes.
+    """
+    return bool(_taxed(one_offs))
+
+
+def _carried(lines) -> frozenset:
+    """Return the taxed paycheck lines a priced paycheck or a stub carries money on.
+
+    The ``paycheck_line_id`` of each :func:`_taxed` line: what both sides of
+    "the same lines" are compared on, the paycheck's in :func:`priced_taxes`
+    and a stub's in :func:`_has_the_lines`, which adds the one-off half of
+    the rule.
+
+    Args:
+        lines: Priced lines or a stub's line amounts, of any kind.
 
     Returns:
         The line ids.
     """
-    return frozenset(line.paycheck_line_id for line in lines if line.amount != ZERO)
+    return frozenset(line.paycheck_line_id for line in _taxed(lines))
 
 
-def priced_taxes(basis, pay: Pay, lines: frozenset, law: Law) -> TaxLines:
+def priced_taxes(basis, pay: Pay, lines, law: Law) -> TaxLines:
     """Price a paycheck's four taxes: from its pay stub, or the formulas alone.
 
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis`; its
             profile's ``pay_stubs`` are the candidates.
         pay: The paycheck's :class:`Pay`.
-        lines: :func:`carried` of the paycheck's priced lines.
+        lines: The paycheck's priced lines, of any kind; :func:`_carried`
+            keeps the taxed ones.
         law: The :class:`Law` the paycheck and its stub are priced under.
 
     Returns:
@@ -262,7 +332,7 @@ def priced_taxes(basis, pay: Pay, lines: frozenset, law: Law) -> TaxLines:
         them, or ``None`` there for the formulas alone.
     """
     formulas = _formulas(basis, pay, law.paycheck)
-    stub = _pricing_stub(basis.profile.pay_stubs, pay.payday, lines)
+    stub = _pricing_stub(basis.profile.pay_stubs, pay.payday, _carried(lines))
     if stub is None:
         return formulas
     printed = _printed_taxes(stub)
@@ -298,7 +368,7 @@ def _pricing_stub(stubs, payday: date, lines: frozenset):
     Args:
         stubs: The profile's stubs.
         payday: The paycheck's payday.
-        lines: :func:`carried` of the paycheck.
+        lines: :func:`_carried` of the paycheck.
 
     Returns:
         The stub, or ``None`` when no switched-on stub is on or before it.
@@ -313,20 +383,19 @@ def _pricing_stub(stubs, payday: date, lines: frozenset):
 def _has_the_lines(stub, lines: frozenset) -> bool:
     """Whether *stub* has the paycheck's lines: the module docstring's rule, whole.
 
-    Its paycheck lines carrying money are exactly *lines*, and no one-off of
-    a non-zero amount (R-SAL54: "A one-off stub is just one of those" -- a
-    stub of other lines).
+    Its paycheck lines carrying money under a :data:`TAXED_KINDS` kind -- the
+    kind the STUB records each under (R-SAL58) -- are exactly *lines*, and no
+    one-off of it changes its taxes (:func:`one_offs_change_taxes`, ruling
+    R-SAL123).
 
     Args:
         stub: A candidate stub.
-        lines: :func:`carried` of the paycheck.
+        lines: :func:`_carried` of the paycheck.
 
     Returns:
         ``True`` when the stub is a same-lines stub for the paycheck.
     """
-    return carried(stub.line_amounts) == lines and not any(
-        one_off.amount != ZERO for one_off in stub.one_offs
-    )
+    return _carried(stub.line_amounts) == lines and not one_offs_change_taxes(stub.one_offs)
 
 
 def _printed_taxes(stub) -> TaxLines:

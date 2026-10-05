@@ -512,6 +512,30 @@ class TestEditing:
 class TestTheReport:
     """Each line beside the app's figure that payday, and the base-pay gap."""
 
+    def test_the_report_says_whether_a_one_off_changes_the_taxes(self, world):
+        """The stub page's one-off sentence follows the picker's rule (ruling R-SAL123).
+
+        Plan step salary:S11-c-2c: the worked example with a ``$20.00``
+        after-tax "Reimbursement" in place of its taxable "Retro pay" (gross 2,944.62, net
+        2,944.62 - 315.00 - 472.00 - 110.00 + 20.00 = 2,067.62) does not.
+        """
+        untaxed = _record(
+            world,
+            _figures(world, one_offs=(
+                OneOffFigure("Reimbursement", _kind(PaycheckLineKindEnum.AFTER_TAX_EARNING),
+                             Decimal("20.00")),
+            )),
+            printed_net=Decimal("2067.62"), printed_gross=Decimal("2944.62"),
+        )
+        report = pay_stub_service.stub_report(world["profile"], untaxed, _ctx(world))
+        assert report.one_off_changes_taxes is False
+
+    def test_a_taxable_one_off_is_reported_as_changing_the_taxes(self, world):
+        """The worked example's taxable "Retro pay" one-off: the sentence shows (R-SAL123)."""
+        stub = _record(world)
+        report = pay_stub_service.stub_report(world["profile"], stub, _ctx(world))
+        assert report.one_off_changes_taxes is True
+
     def test_each_line_is_set_beside_the_apps_figure(self, world):
         """Health and Phone agree; Roth differs; Dental is not taken; Vision is not on the stub."""
         stub = _record(world)

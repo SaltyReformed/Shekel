@@ -6,7 +6,9 @@ CRUD (``latest_checkpoint`` / ``save_checkpoint``) and the
 withholding-to-date producer (``compute_withholding_to_date``).
 
 The producer's rule is "measured checkpoint + calibrated projection for the
-remainder", computed with FULL-YEAR engine context: the projection runs
+remainder" (the audit's words; the projection prices each paycheck's taxes
+from the profile's pay stubs since plan step salary:S11-c-2c, which deleted
+the calibration), computed with FULL-YEAR engine context: the projection runs
 over the entire year's period list (so cumulative wages drive the SS
 wage-base cap and the Medicare surtax threshold, and month grouping drives
 monthly-capped deductions) and only the remainder periods' breakdowns are
@@ -405,17 +407,24 @@ class TestComputeWithCheckpoint:
         remainder is P1..P9 (start_date > 2026-01-15), i.e. 9 periods.
 
         Measured = the checkpoint's five figures verbatim.
-        projected.gross = 5,000.00 * 9 = 45,000.00; projected withholding ==
+        projected.gross = 4,812.34 * 9 = 43,311.06; projected withholding ==
         oracle over P1..P9.  total.<line> = measured + projected.
+
+        Made-up figures, swapped at plan step salary:S11-c-2c (strict ruling
+        balance:R-BAL132): this case paid the module's $5,000.00 and measured
+        6.2% of it, a production salary amount.  It now pays ``$4,812.34``
+        and measures made-up figures that are no tax rate of it (a
+        checkpoint's figures are whatever the stub printed; none is 10%, 4%,
+        6.2% or 1.45% of the base).
         """
-        profile = _committed_profile(seed_user)
+        profile = _committed_profile(seed_user, pay="4812.34")
         cp = _add_checkpoint(
             profile, date(2026, 1, 15),
-            ytd_gross=Decimal("5000.00"),
-            ytd_federal=Decimal("500.00"),
-            ytd_state=Decimal("200.00"),
-            ytd_social_security=Decimal("310.00"),
-            ytd_medicare=Decimal("72.50"),
+            ytd_gross=Decimal("4812.34"),
+            ytd_federal=Decimal("503.17"),
+            ytd_state=Decimal("186.42"),
+            ytd_social_security=Decimal("301.66"),
+            ytd_medicare=Decimal("71.03"),
         )
         db.session.commit()
 
@@ -432,23 +441,23 @@ class TestComputeWithCheckpoint:
         assert result.checkpoint.id == cp.id
         assert result.measured_through == date(2026, 1, 15)
         # Measured taken verbatim from the checkpoint.
-        assert result.measured.gross == Decimal("5000.00")
-        assert result.measured.federal == Decimal("500.00")
-        assert result.measured.state == Decimal("200.00")
-        assert result.measured.social_security == Decimal("310.00")
-        assert result.measured.medicare == Decimal("72.50")
+        assert result.measured.gross == Decimal("4812.34")
+        assert result.measured.federal == Decimal("503.17")
+        assert result.measured.state == Decimal("186.42")
+        assert result.measured.social_security == Decimal("301.66")
+        assert result.measured.medicare == Decimal("71.03")
         # Projected == oracle over P1..P9 (P0 excluded).
         _assert_projected_equals(result.projected, expected)
-        assert result.projected.gross == Decimal("5000.00") * 9
+        assert result.projected.gross == Decimal("4812.34") * 9
         # Split identity, component-wise.
-        assert result.total.gross == Decimal("5000.00") + expected["gross"]
-        assert result.total.federal == Decimal("500.00") + expected["federal"]
-        assert result.total.state == Decimal("200.00") + expected["state"]
+        assert result.total.gross == Decimal("4812.34") + expected["gross"]
+        assert result.total.federal == Decimal("503.17") + expected["federal"]
+        assert result.total.state == Decimal("186.42") + expected["state"]
         assert (
             result.total.social_security
-            == Decimal("310.00") + expected["social_security"]
+            == Decimal("301.66") + expected["social_security"]
         )
-        assert result.total.medicare == Decimal("72.50") + expected["medicare"]
+        assert result.total.medicare == Decimal("71.03") + expected["medicare"]
 
     def test_on_payday_boundary(self, app, db, seed_user, seed_periods):
         """Checkpoint dated exactly ON P1's payday (2026-01-16).
@@ -581,27 +590,32 @@ class TestStubPricedWithholding:
         subject -- the remainder's per-line sums and the measured + projected
         identity -- is unchanged; the same dollars now come off a pay stub.
 
-        The stub, dated on the 2026-04-10 payday, prints base pay 5,000.00
-        and no paycheck line -- the profile holds none -- with federal
-        500.00, state 250.00, Social Security 310.00 and Medicare 72.50.
-        Both modeled paychecks (04-24, 05-08) pay the same 5,000.00 with the
+        The profile pays ``$4,812.34`` a paycheck and the stub, dated on the
+        2026-04-10 payday, prints base pay 4,812.34 and no paycheck line --
+        the profile holds none -- with federal 487.31, state 233.17, Social
+        Security 298.43 and Medicare 69.79: made-up figures, no rate of the
+        base (a stub's figures are its own), swapped at plan step
+        salary:S11-c-2c, with the base, to equal no production salary amount
+        (strict ruling balance:R-BAL132; this case paid the module's
+        $5,000.00 and printed 6.2% of it, which equals one).
+        Both modeled paychecks (04-24, 05-08) pay the same 4,812.34 with the
         same lines, so it prices both, and the formulas' difference between
         its paycheck and each is $0.00 on every line: federal and state
         annualise one paycheck's wages, which are equal, and the year-to-date
-        before each (35,000.00 / 40,000.00 / 45,000.00) is far below the
+        before each (33,686.38 / 38,498.72 / 43,311.06) is far below the
         Social Security wage base and the Medicare surtax threshold.  Per
         paycheck the four taxes are the stub's; over the 2 modeled paychecks:
-          gross 10,000.00; federal 1,000.00; state 500.00; medicare 145.00;
-          SS 620.00.
+          gross 9,624.68; federal 974.62; state 466.34; medicare 139.58;
+          SS 596.86.
         """
-        profile = _committed_profile(seed_user)
+        profile = _committed_profile(seed_user, pay="4812.34")
         add_test_pay_stub(
-            profile, date(2026, 4, 10), "5000.00",
+            profile, date(2026, 4, 10), "4812.34",
             taxes={
-                WithholdingKindEnum.FEDERAL_INCOME: "500.00",
-                WithholdingKindEnum.STATE_INCOME: "250.00",
-                WithholdingKindEnum.SOCIAL_SECURITY: "310.00",
-                WithholdingKindEnum.MEDICARE: "72.50",
+                WithholdingKindEnum.FEDERAL_INCOME: "487.31",
+                WithholdingKindEnum.STATE_INCOME: "233.17",
+                WithholdingKindEnum.SOCIAL_SECURITY: "298.43",
+                WithholdingKindEnum.MEDICARE: "69.79",
             },
         )
         db.session.commit()
@@ -615,11 +629,11 @@ class TestStubPricedWithholding:
         # measures through 04-10 and leaves 04-24 and 05-08 modeled.
         _add_checkpoint(
             profile, date(2026, 4, 15),
-            ytd_gross=Decimal("40000.00"),
-            ytd_federal=Decimal("4000.00"),
-            ytd_state=Decimal("2000.00"),
-            ytd_social_security=Decimal("2480.00"),
-            ytd_medicare=Decimal("580.00"),
+            ytd_gross=Decimal("38498.72"),
+            ytd_federal=Decimal("3851.23"),
+            ytd_state=Decimal("1925.61"),
+            ytd_social_security=Decimal("2391.47"),
+            ytd_medicare=Decimal("561.08"),
         )
         db.session.commit()
 
@@ -637,14 +651,18 @@ class TestStubPricedWithholding:
             BalanceContext.build(seed_user["user"].id),
         )
 
-        assert result.projected.gross == Decimal("10000.00")
-        assert result.projected.federal == Decimal("1000.00")
-        assert result.projected.state == Decimal("500.00")
-        assert result.projected.medicare == Decimal("145.00")
-        assert result.projected.social_security == Decimal("620.00")
-        # The split identity: total == measured + projected, component-wise.
-        assert result.total.federal == Decimal("5000.00")
-        assert result.total.gross == Decimal("50000.00")
+        assert result.projected.gross == Decimal("9624.68")
+        assert result.projected.federal == Decimal("974.62")
+        assert result.projected.state == Decimal("466.34")
+        assert result.projected.medicare == Decimal("139.58")
+        assert result.projected.social_security == Decimal("596.86")
+        # The split identity: total == measured + projected, component-wise
+        # (federal 3,851.23 measured + 974.62 modeled; gross 38,498.72 +
+        # 9,624.68).
+        assert result.total.federal == Decimal("4825.85")
+        assert result.total.gross == Decimal("48123.40")
+        # Both modeled paychecks were priced from the 04-10 stub (R-SAL100).
+        assert result.priced_from == (date(2026, 4, 10), date(2026, 4, 10))
 
 
 class TestFullYearCapContext:

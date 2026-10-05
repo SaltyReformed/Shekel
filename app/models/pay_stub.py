@@ -338,10 +338,15 @@ class PayStubOneOff(db.Model):
     Fork 8b, "Keep it as a one-off": a line that appeared on one stub only (a
     bonus, a one-time adjustment) is stored on the stub under its own name and
     one of the four paycheck-line kinds (``ref.paycheck_line_kinds``).  What that
-    means for pricing is the ruling's, verbatim, and is ``S11-c``'s to build:
-    *"That stub then matches no normal paycheck, so it prices a paycheck only
-    when no stub with matching lines exists, and the formulas price the one-off
-    out."*  The name is unique within the stub
+    meant for pricing was the ruling's, verbatim: *"That stub then matches no
+    normal paycheck, so it prices a paycheck only when no stub with matching
+    lines exists, and the formulas price the one-off out."*  Ruling
+    **R-SAL123** ("Only tax-changing one-offs", 2026-10-05) amends it, and plan
+    step salary:S11-c-2c builds the amended rule
+    (``app.services.paycheck_calculator.one_offs_change_taxes``): only a
+    one-off that changes the stub's taxes -- a taxable earning or a pre-tax
+    deduction, carrying money -- does that; an after-tax or post-tax one-off
+    does not.  The name is unique within the stub
     (``uq_pay_stub_one_offs_stub_name``) and never blank; a name that clashes
     with one of the profile's paycheck lines or a tax is the entry door's to
     refuse (ruling **R-SAL45**), not this table's.

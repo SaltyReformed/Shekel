@@ -43,11 +43,19 @@ class PricedLine:
     this key, never on the display name.  The engine copies the priced line's
     ``id``; it is ``None`` only for a line that carries none -- the engine
     suite's duck-typed line fakes and the display fakes tests build by hand.
+
+    ``paycheck_line_kind_id`` is the kind the line was priced AS, since plan
+    step **salary:S11-c-2c**: the engine's stub picker keeps the taxed kinds'
+    lines by it, on the paycheck's side and the stub's alike, so the set of
+    kinds a tax formula reads is written once (``_stubs.TAXED_KINDS``).  The
+    engine sets it on every line it prices; it is ``None`` only on a display
+    fake a test builds by hand.
     """
     name: str
     amount: Decimal
     target_account_id: int = None
     paycheck_line_id: int | None = None
+    paycheck_line_kind_id: int | None = None
 
 
 def waterfall_gross(base_pay: Decimal, taxable_earnings: Decimal) -> Decimal:
@@ -121,11 +129,9 @@ def every_priced_line(taxable, deductions, after_tax) -> tuple:
     """Return every line a paycheck priced, all four kinds, in waterfall order.
 
     The taxable earnings, the pre-tax and post-tax deductions, then the
-    after-tax earnings.  Written once for its two readers since plan step
-    **salary:S11-c-2c**: the engine, which compares the lines a paycheck
-    carries money on against a pay stub's (:mod:`._stubs`), and the pay stub
-    door's report, which sets each stub line beside the app's
-    (:attr:`PaycheckBreakdown.priced_lines`).
+    after-tax earnings: what the pay stub door's report sets each stub line
+    beside (:attr:`PaycheckBreakdown.priced_lines`, plan step
+    **salary:S11-c-2c**).
 
     Args:
         taxable: The taxable earning lines.

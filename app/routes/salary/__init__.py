@@ -20,8 +20,7 @@ Module map:
 * :mod:`app.routes.salary._helpers` -- shared Marshmallow schema
   singletons, form-field allowlists, unique-constraint name constants,
   and the private helpers used across handlers
-  (``_regenerate_salary_transactions``, ``_compute_total_pre_tax``,
-  ``_reject_if_rates_inconsistent``, the
+  (``_regenerate_salary_transactions``, the
   ``_render_*_partial`` / ``_respond_after_*_change`` HTMX responders,
   ``_get_investment_accounts``).
 * :mod:`app.routes.salary.cockpit` -- the ``GET /salary`` cockpit landing
@@ -33,13 +32,14 @@ Module map:
   (the two parallel salary line-item families, co-located).
 * :mod:`app.routes.salary.views` -- projection view + retired-breakdown
   redirect stubs into the cockpit.
-* :mod:`app.routes.salary.calibration` -- the pay-stub calibration flow
-  (form/preview/confirm/delete).
 * :mod:`app.routes.salary.checkpoint` -- the analytics Taxes tab's YTD
   tax-checkpoint upsert (update-from-stub).
 * :mod:`app.routes.salary.stubs` -- the transcribed pay stub's entry door
   (plan step salary:S11-b): the payday step, record, the stub's page, edit
-  and its "Use for pricing" switch.
+  and its "Use for pricing" switch.  Since plan step salary:S11-c-2c the
+  switched-on stubs price the paychecks' taxes, and the calibration flow
+  this map listed (form, preview, confirm, delete) is deleted with the
+  pricing path it fed (ruling R-SAL100).
 * :mod:`app.routes.salary.tax_config` -- the old tax-configuration URL,
   redirected to the read-only Settings tax section.
 """
@@ -57,7 +57,6 @@ from app.routes.salary import cockpit  # noqa: F401, E402
 from app.routes.salary import profiles  # noqa: F401, E402
 from app.routes.salary import items  # noqa: F401, E402
 from app.routes.salary import views  # noqa: F401, E402
-from app.routes.salary import calibration  # noqa: F401, E402
 from app.routes.salary import checkpoint  # noqa: F401, E402
 from app.routes.salary import stubs  # noqa: F401, E402
 from app.routes.salary import tax_config  # noqa: F401, E402

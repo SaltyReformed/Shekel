@@ -13,7 +13,6 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_line import PaycheckLine
-from app.models.calibration_override import CalibrationOverride
 from app.services import pay_list_service, pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -28,7 +27,9 @@ from app.models.ref import (
     RaiseType, TransactionType,
 )
 from app import ref_cache
-from app.enums import PaycheckLineKindEnum, PeriodPlacementEnum, RecurrenceUnitEnum
+from app.enums import (
+    PaycheckLineKindEnum, PeriodPlacementEnum, RecurrenceUnitEnum, WithholdingKindEnum,
+)
 from app.schemas.validation import end_bound_before_start_message
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
@@ -40,6 +41,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    add_test_pay_stub,
     rhythm_of,
     all_periods,
     create_account_of_type,
@@ -4208,733 +4210,164 @@ class TestNetBiweeklyMismatchFixes:
             )
 
 
-class TestCalibration:
-    """Tests for paycheck calibration routes (section 3.10)."""
+class TestStubPricingOnTheScreens:
+    """Each screen names the pay stub that priced a paycheck's taxes (R-SAL100).
 
-    def test_calibrate_form_renders(self, app, auth_client, seed_user, seed_periods):
-        """GET /salary/<id>/calibrate returns the calibration form."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            resp = auth_client.get(f"/salary/{profile.id}/calibrate")
-            assert resp.status_code == 200
-            assert b"Calibrate from Pay Stub" in resp.data
-            assert b'name="actual_gross_pay"' in resp.data
-
-    def test_calibrate_saves_and_regenerates(
-        self, app, auth_client, seed_user, seed_periods, tax_law
-    ):
-        """Full calibration workflow: preview then confirm saves overrides."""
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            tax_law(state_and_fica_law())
-            db.session.commit()
-
-            # Step 1: Preview -- derive rates.
-            resp = auth_client.post(
-                f"/salary/{profile.id}/calibrate",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "200.00",
-                    "actual_state_tax": "100.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "pay_stub_date": "2026-03-14",
-                },
-            )
-            assert resp.status_code == 200
-            assert b"Confirm Calibration" in resp.data
-            assert b"effective_federal_rate" in resp.data
-
-            # Extract the hidden field values from the confirmation form.
-            html = resp.data.decode()
-            import re
-            fed_rate = re.search(
-                r'name="effective_federal_rate" value="([^"]+)"', html
-            ).group(1)
-            state_rate = re.search(
-                r'name="effective_state_rate" value="([^"]+)"', html
-            ).group(1)
-            ss_rate = re.search(
-                r'name="effective_ss_rate" value="([^"]+)"', html
-            ).group(1)
-            med_rate = re.search(
-                r'name="effective_medicare_rate" value="([^"]+)"', html
-            ).group(1)
-
-            # Step 2: Confirm -- save to DB.
-            resp2 = auth_client.post(
-                f"/salary/{profile.id}/calibrate/confirm",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "200.00",
-                    "actual_state_tax": "100.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "effective_federal_rate": fed_rate,
-                    "effective_state_rate": state_rate,
-                    "effective_ss_rate": ss_rate,
-                    "effective_medicare_rate": med_rate,
-                    "pay_stub_date": "2026-03-14",
-                },
-                follow_redirects=True,
-            )
-            assert resp2.status_code == 200
-            assert b"Paycheck calibration saved" in resp2.data
-
-            # Verify DB record.
-            cal = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).first()
-            assert cal is not None
-            assert cal.is_active is True
-            assert cal.actual_gross_pay == Decimal("2884.62")
-            assert cal.effective_federal_rate == Decimal(fed_rate)
-
-    def test_calibrate_delete_reverts_to_brackets(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """POST /salary/<id>/calibrate/delete removes calibration."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-
-            # Manually create a calibration.
-            cal = CalibrationOverride(
-                salary_profile_id=profile.id,
-                actual_gross_pay=Decimal("2884.62"),
-                actual_federal_tax=Decimal("200.00"),
-                actual_state_tax=Decimal("100.00"),
-                actual_social_security=Decimal("178.85"),
-                actual_medicare=Decimal("41.83"),
-                effective_federal_rate=Decimal("0.07000"),
-                effective_state_rate=Decimal("0.03500"),
-                effective_ss_rate=Decimal("0.06200"),
-                effective_medicare_rate=Decimal("0.01450"),
-                pay_stub_date=date(2026, 3, 14),
-                is_active=True,
-            )
-            db.session.add(cal)
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/salary/{profile.id}/calibrate/delete",
-                follow_redirects=True,
-            )
-            assert resp.status_code == 200
-            assert b"Calibration removed" in resp.data
-
-            # Verify DB record is gone.
-            remaining = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).first()
-            assert remaining is None
-
-    def test_calibrate_regenerates_grid_transactions(
-        self, app, auth_client, seed_user, seed_periods, tax_law
-    ):
-        """After calibration, grid income transactions use calibrated net pay."""
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            tax_law(state_and_fica_law())
-            db.session.commit()
-
-            # Get a transaction amount before calibration.
-            txn_before = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-            amount_before = txn_before.estimated_amount if txn_before else None
-
-            # Calibrate with rates that produce different taxes.
-            cal = CalibrationOverride(
-                salary_profile_id=profile.id,
-                actual_gross_pay=Decimal("2884.62"),
-                actual_federal_tax=Decimal("500.00"),
-                actual_state_tax=Decimal("200.00"),
-                actual_social_security=Decimal("178.85"),
-                actual_medicare=Decimal("41.83"),
-                effective_federal_rate=Decimal("0.1862000000"),
-                effective_state_rate=Decimal("0.0745000000"),
-                effective_ss_rate=Decimal("0.0620000000"),
-                effective_medicare_rate=Decimal("0.0145000000"),
-                pay_stub_date=date(2026, 3, 14),
-                is_active=True,
-            )
-            db.session.add(cal)
-            db.session.flush()
-            db.session.refresh(profile)
-
-            from app.services import recurrence_engine, pay_period_service
-            periods = all_periods(user.id)
-            try:
-                recurrence_engine.regenerate_for_template(
-                    profile.template, GenerationSchedule.for_period_ids(
-                        BalanceContext.build(profile.template.user_id), {p.id for p in periods},
-                    ), seed_user["scenario"].id,
-                )
-            except Exception:
-                pass
-            db.session.commit()
-
-            db.session.expire_all()
-            txn_after = (
-                db.session.query(Transaction)
-                .filter_by(
-                    template_id=profile.template_id,
-                    scenario_id=seed_user["scenario"].id,
-                )
-                .first()
-            )
-
-            assert txn_after is not None
-            if amount_before is not None:
-                assert txn_after.estimated_amount != amount_before, (
-                    "Transaction amount should change after calibration"
-                )
-
-    def test_recalibrate_replaces_existing(
-        self, app, auth_client, seed_user, seed_periods, tax_law
-    ):
-        """Re-calibrating replaces the old calibration, not creates a second."""
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            tax_law(state_and_fica_law())
-            db.session.commit()
-
-            # First calibration.
-            resp1 = auth_client.post(
-                f"/salary/{profile.id}/calibrate",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "200.00",
-                    "actual_state_tax": "100.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "pay_stub_date": "2026-03-14",
-                },
-            )
-            assert resp1.status_code == 200
-            html1 = resp1.data.decode()
-            import re
-            fields = {}
-            for name in ("effective_federal_rate", "effective_state_rate",
-                         "effective_ss_rate", "effective_medicare_rate"):
-                fields[name] = re.search(
-                    rf'name="{name}" value="([^"]+)"', html1
-                ).group(1)
-
-            auth_client.post(
-                f"/salary/{profile.id}/calibrate/confirm",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "200.00",
-                    "actual_state_tax": "100.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "pay_stub_date": "2026-03-14",
-                    **fields,
-                },
-                follow_redirects=True,
-            )
-
-            # Second calibration with different amounts.
-            resp2 = auth_client.post(
-                f"/salary/{profile.id}/calibrate",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "250.00",
-                    "actual_state_tax": "120.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "pay_stub_date": "2026-03-28",
-                },
-            )
-            html2 = resp2.data.decode()
-            fields2 = {}
-            for name in ("effective_federal_rate", "effective_state_rate",
-                         "effective_ss_rate", "effective_medicare_rate"):
-                fields2[name] = re.search(
-                    rf'name="{name}" value="([^"]+)"', html2
-                ).group(1)
-
-            auth_client.post(
-                f"/salary/{profile.id}/calibrate/confirm",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "250.00",
-                    "actual_state_tax": "120.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "pay_stub_date": "2026-03-28",
-                    **fields2,
-                },
-                follow_redirects=True,
-            )
-
-            # Must be exactly one calibration, not two.
-            count = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).count()
-            assert count == 1, (
-                f"Expected exactly 1 calibration after re-calibrate, got {count}"
-            )
-
-            cal = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).one()
-            assert cal.actual_federal_tax == Decimal("250.00"), (
-                "Calibration should reflect the second submission's data"
-            )
-            assert cal.pay_stub_date == date(2026, 3, 28)
-
-    def test_calibrate_preview_validation_rejects_zero_gross(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Preview with zero gross pay is rejected by the schema."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            resp = auth_client.post(
-                f"/salary/{profile.id}/calibrate",
-                data={
-                    "actual_gross_pay": "0",
-                    "actual_federal_tax": "0",
-                    "actual_state_tax": "0",
-                    "actual_social_security": "0",
-                    "actual_medicare": "0",
-                    "pay_stub_date": "2026-03-14",
-                },
-                follow_redirects=True,
-            )
-            assert resp.status_code == 200
-            assert b"Please correct" in resp.data
-
-    def test_calibrate_preview_validation_rejects_missing_fields(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Preview with missing required fields is rejected."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            resp = auth_client.post(
-                f"/salary/{profile.id}/calibrate",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    # Missing all other fields.
-                },
-                follow_redirects=True,
-            )
-            assert resp.status_code == 200
-            assert b"Please correct" in resp.data
-
-    def test_calibrate_delete_when_none_exists(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Deleting calibration when none exists shows info message."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            resp = auth_client.post(
-                f"/salary/{profile.id}/calibrate/delete",
-                follow_redirects=True,
-            )
-            assert resp.status_code == 200
-            assert b"No calibration to remove" in resp.data
-
-    def test_calibrate_confirm_idor_blocked(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """POST confirm on another user's profile returns 404 (security)."""
-        with app.app_context():
-            other = _create_other_user_profile()
-            resp = auth_client.post(
-                f"/salary/{other['profile'].id}/calibrate/confirm",
-                data={
-                    "actual_gross_pay": "2884.62",
-                    "actual_federal_tax": "200.00",
-                    "actual_state_tax": "100.00",
-                    "actual_social_security": "178.85",
-                    "actual_medicare": "41.83",
-                    "effective_federal_rate": "0.07000",
-                    "effective_state_rate": "0.03500",
-                    "effective_ss_rate": "0.06200",
-                    "effective_medicare_rate": "0.01450",
-                    "pay_stub_date": "2026-03-14",
-                },
-            )
-            assert resp.status_code == 404
-
-            # No calibration should exist for the victim's profile.
-            count = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=other["profile"].id,
-            ).count()
-            assert count == 0, (
-                "IDOR attack created calibration on victim's profile!"
-            )
-
-    def test_calibrate_delete_idor_blocked(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """POST delete on another user's calibration is rejected."""
-        with app.app_context():
-            other = _create_other_user_profile()
-            # Create calibration on other user's profile.
-            cal = CalibrationOverride(
-                salary_profile_id=other["profile"].id,
-                actual_gross_pay=Decimal("2884.62"),
-                actual_federal_tax=Decimal("200.00"),
-                actual_state_tax=Decimal("100.00"),
-                actual_social_security=Decimal("178.85"),
-                actual_medicare=Decimal("41.83"),
-                effective_federal_rate=Decimal("0.0700000000"),
-                effective_state_rate=Decimal("0.0350000000"),
-                effective_ss_rate=Decimal("0.0620000000"),
-                effective_medicare_rate=Decimal("0.0145000000"),
-                pay_stub_date=date(2026, 3, 14),
-                is_active=True,
-            )
-            db.session.add(cal)
-            db.session.commit()
-
-            resp = auth_client.post(
-                f"/salary/{other['profile'].id}/calibrate/delete",
-            )
-            assert resp.status_code == 404
-
-            # Victim's calibration must still exist.
-            db.session.expire_all()
-            remaining = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=other["profile"].id,
-            ).first()
-            assert remaining is not None, (
-                "IDOR attack deleted victim's calibration!"
-            )
-
-    def test_calibrate_form_other_user_blocked(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """GET /salary/<id>/calibrate for another user's profile returns 404 (security)."""
-        with app.app_context():
-            other = _create_other_user_profile()
-            resp = auth_client.get(
-                f"/salary/{other['profile'].id}/calibrate",
-            )
-            assert resp.status_code == 404
-
-
-class TestCalibrationServerDerivedSnapshot:
-    """HIGH-03 / Q-25 / E-20 (audit 2026-05-19): confirm route re-derives
-    the four effective rates server-side from stored actual_* + taxable
-    base; the schema FICA cross-check and the route federal/state
-    cross-check jointly reject tampered or stale rate posts as 422.
-
-    Hand-computed arithmetic for the canonical fixture below (profile
-    has no pre-tax deductions, so taxable == gross == 2884.62, biweekly
-    of a $75,000 annual salary at 26 periods):
-
-      derive_effective_rates inputs:
-        gross   = 2884.62
-        federal = 200.00,   rate = 200.00 / 2884.62 = 0.0693332224
-        state   = 100.00,   rate = 100.00 / 2884.62 = 0.0346666112
-        ss      = 178.85,   rate = 178.85 / 2884.62 = 0.0620012341
-        medicare=  41.83,   rate =  41.83 / 2884.62 = 0.0145010435
-
-      apply_calibration on the same gross + taxable (no cap activity
-      under $176,100 wage base at this salary):
-        federal = 2884.62 * 0.0693332224 = 200.0000 -> 200.00
-        state   = 2884.62 * 0.0346666112 = 100.0000 -> 100.00
-        ss      = capped_social_security(2884.62, 0, fica,
-                                         ss_rate=0.0620012341)
-                = 2884.62 * 0.0620012341 = 178.8500 -> 178.85
-                (effective_ss_rate IS consumed as the per-period SS rate
-                 -- SS calibration fix 2026-06-01, symmetric with medicare;
-                 the statutory cap still bounds the annual total)
-        medicare= 2884.62 * 0.0145010435 = 41.8302 -> 41.83
+    Plan step salary:S11-c-2c deleted the calibration door these screens
+    described; ruling **R-SAL100** ("Name the pricing stub") has each one name
+    the stub the ENGINE priced a paycheck from, or the tax formulas, and the
+    old Re-calibrate / Remove buttons become one link to the Pay stubs list.
+    The words are ruling **R-SAL121**'s, approved as an old -> new list, with
+    the card foot and the strip amended by **R-SAL122** the same morning to
+    say "used for pricing" (a switched-off stub dated earlier is not denied).  The
+    stub's figures are made up; the stub sits on the fifth payday
+    (``seed_periods[4]``), before today's paycheck (today is frozen inside
+    ``seed_periods[5]``), so today's paycheck is priced from it and the
+    first payday, before it, from the formulas.
     """
 
-    _DERIVED_FEDERAL_RATE = Decimal("0.0693332224")
-    _DERIVED_STATE_RATE = Decimal("0.0346666112")
-    _DERIVED_SS_RATE = Decimal("0.0620012341")
-    _DERIVED_MEDICARE_RATE = Decimal("0.0145010435")
+    @staticmethod
+    def _seed_stub(profile, payday):
+        """Record one switched-on stub of *profile* on *payday* (made-up taxes)."""
+        add_test_pay_stub(
+            profile, payday, "2884.62",
+            taxes={
+                WithholdingKindEnum.FEDERAL_INCOME: "250.00",
+                WithholdingKindEnum.STATE_INCOME: "120.00",
+                WithholdingKindEnum.SOCIAL_SECURITY: "178.85",
+                WithholdingKindEnum.MEDICARE: "41.83",
+            },
+        )
+        db.session.commit()
 
     @staticmethod
-    def _canonical_actuals():
-        """Return the canonical actual_* form payload (no rates)."""
-        return {
-            "actual_gross_pay": "2884.62",
-            "actual_federal_tax": "200.00",
-            "actual_state_tax": "100.00",
-            "actual_social_security": "178.85",
-            "actual_medicare": "41.83",
-            "pay_stub_date": "2026-03-14",
-        }
+    def _text(response):
+        """The response's HTML with every run of whitespace collapsed to one space."""
+        return " ".join(response.data.decode().split())
 
-    def _post_confirm(self, auth_client, profile_id, overrides=None):
-        """POST to /salary/<id>/calibrate/confirm with canonical fields.
-
-        ``overrides`` selectively replaces fields (used to inject
-        tampered values).  Defaults are the canonical derived rates
-        that would round-trip cleanly through derive_effective_rates.
-        """
-        payload = dict(self._canonical_actuals())
-        payload["effective_federal_rate"] = str(self._DERIVED_FEDERAL_RATE)
-        payload["effective_state_rate"] = str(self._DERIVED_STATE_RATE)
-        payload["effective_ss_rate"] = str(self._DERIVED_SS_RATE)
-        payload["effective_medicare_rate"] = str(self._DERIVED_MEDICARE_RATE)
-        if overrides:
-            payload.update(overrides)
-        return auth_client.post(
-            f"/salary/{profile_id}/calibrate/confirm",
-            data=payload,
-            follow_redirects=False,
-        )
-
-    def test_confirm_rederives_server_side(
-        self, app, auth_client, seed_user, seed_periods
+    def test_without_a_stub_every_paycheck_names_the_tax_formulas(
+        self, app, auth_client, seed_user, seed_periods,
     ):
-        """C19-1: stored rates are the server-derived values, posted ignored.
-
-        Posts rate fields whose last digits are perturbed within the
-        one-cent tolerance (sub-cent of withholding at this taxable
-        base) so the schema FICA cross-check and the route federal/
-        state cross-check both pass.  The DB row must hold the
-        server-derived canonical 10dp values, not the perturbed posted
-        ones -- proving the route re-derives and discards the posted
-        rate fields rather than trusting them for storage.
-
-        Arithmetic (sub-cent perturbations, all within 1c tolerance
-        at taxable=2884.62):
-          posted federal  = 0.0693332300 (derived 0.0693332224;
-                            diff 7.6e-9 * 2884.62 ~= $2.2e-5)
-          posted state    = 0.0346666200 (derived 0.0346666112;
-                            diff 8.8e-9 * 2884.62 ~= $2.5e-5)
-          posted ss       = 0.0620012400 (derived 0.0620012341;
-                            diff 5.9e-9 * 2884.62 ~= $1.7e-5)
-          posted medicare = 0.0145010500 (derived 0.0145010435;
-                            diff 6.5e-9 * 2884.62 ~= $1.9e-5)
-        """
+        """No stub: the caption and the card say the formulas; the strip links the stubs."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            resp = self._post_confirm(
-                auth_client, profile.id,
-                overrides={
-                    "effective_federal_rate": "0.0693332300",
-                    "effective_state_rate": "0.0346666200",
-                    "effective_ss_rate": "0.0620012400",
-                    "effective_medicare_rate": "0.0145010500",
-                },
-            )
 
-            assert resp.status_code == 302
+            html = self._text(auth_client.get("/salary"))
+
+            assert "taxes from the tax formulas" in html
             assert (
-                f"/salary/{profile.id}/edit" in resp.headers["Location"]
-            ), (
-                "Successful confirm should redirect to the edit page, "
-                f"got Location={resp.headers.get('Location')}"
-            )
+                "Taxes from the tax formulas: no pay stub used for pricing "
+                "is dated on or before this payday"
+            ) in html
+            assert (
+                "Each paycheck's taxes come from your latest pay stub used for "
+                "pricing on or before its payday, one with the same lines "
+                "first. With none, they come from the tax formulas."
+            ) in html
+            assert "calibrat" not in html.lower()
 
-            db.session.expire_all()
-            cal = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).one()
-
-            # Stored values must be the SERVER-derived canonical rates,
-            # not the perturbed posted values (HIGH-03 / E-20).
-            assert cal.effective_federal_rate == self._DERIVED_FEDERAL_RATE
-            assert cal.effective_state_rate == self._DERIVED_STATE_RATE
-            assert cal.effective_ss_rate == self._DERIVED_SS_RATE
-            assert cal.effective_medicare_rate == self._DERIVED_MEDICARE_RATE
-
-    def test_confirm_rejects_inconsistent_pair(
-        self, app, auth_client, seed_user, seed_periods
+    def test_the_strip_links_the_pay_stubs_list(
+        self, app, auth_client, seed_user, seed_periods,
     ):
-        """C19-2: federal rate way off from actual/base -> 422.
+        """The Pay stubs button's URL routes to the profile page's stubs card.
 
-        Posts a tampered effective_federal_rate (0.05) against a
-        canonical actual_federal_tax (200.00) on gross 2884.62.
-        Derived federal rate is 0.0693332224; posted 0.05 differs by
-        0.0193332224, times taxable 2884.62 = $55.76 mismatch >> 1c
-        tolerance, so the route returns 422.
-
-        FICA rates are left at their canonical (derived) values so the
-        schema cross-check passes -- this test isolates the federal/
-        state route-layer cross-check.
+        A link whose door moved would still render, so the URL is followed:
+        it answers 200 and carries the anchor the button names.
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            resp = self._post_confirm(
-                auth_client, profile.id,
-                overrides={"effective_federal_rate": "0.0500000000"},
-            )
+            link = f"/salary/{profile.id}/edit#stubs-section"
 
-            assert resp.status_code == 422, (
-                f"Tampered federal rate must be rejected as 422, got "
-                f"{resp.status_code}"
-            )
+            html = auth_client.get("/salary").data.decode()
+            target = auth_client.get(link.split("#", maxsplit=1)[0])
 
-            db.session.expire_all()
-            persisted = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).all()
-            assert persisted == [], (
-                "422 rejection must not persist any calibration row "
-                "(rollback expected)"
-            )
+            assert f'href="{link}"' in html
+            assert target.status_code == 200
+            assert 'id="stubs-section"' in target.data.decode()
 
-    def test_schema_rejects_inconsistent_fica(
-        self, app, auth_client, seed_user, seed_periods
+    def test_a_stub_on_or_before_todays_payday_is_named(
+        self, app, auth_client, seed_user, seed_periods,
     ):
-        """C19-2 (schema half): tampered FICA rate -> schema fails -> 422.
+        """Today's paycheck is priced from the stub, and both places say which."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            stub_day = seed_periods[4].start_date
+            self._seed_stub(profile, stub_day)
+            named = stub_day.strftime("%b %-d, %Y")
 
-        Posts effective_ss_rate=0.05 against actual_social_security=
-        178.85 on gross 2884.62.  Schema cross-check computes
-        0.05 * 2884.62 = $144.23; expected $178.85; diff $34.62 >> 1c.
-        Schema raises ValidationError, route returns 422 (the entire
-        confirm form is server-generated; any validation failure is
-        treated as tampering).
+            response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
+            html = self._text(response)
+
+            assert ctx["composition"]["tax_stub_payday"] == stub_day
+            assert f"taxes from your {named} pay stub" in html
+            assert f"Taxes from your {named} pay stub" in html
+            assert "taxes from the tax formulas" not in html
+
+    def test_a_switched_off_stub_leaves_the_formulas_named(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A stub dated before today's payday but switched off prices nothing.
+
+        Ruling R-SAL122 (amending R-SAL121): the card says no stub USED FOR
+        PRICING is dated on or before the payday, which stays true with a
+        switched-off stub sitting before it.
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            resp = self._post_confirm(
-                auth_client, profile.id,
-                overrides={"effective_ss_rate": "0.0500000000"},
-            )
-
-            assert resp.status_code == 422, (
-                f"Schema-detected FICA inconsistency must be 422, got "
-                f"{resp.status_code}"
-            )
-
-            db.session.expire_all()
-            assert db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).count() == 0
-
-    def test_snapshot_immutable_on_profile_edit(
-        self, app, auth_client, seed_user, seed_periods, tax_law
-    ):
-        """C19-3: editing pre-tax deductions after confirm leaves snapshot intact.
-
-        Confirms calibration with no pre-tax deductions (so the rate
-        snapshot is derived against taxable = gross = 2884.62).  Then
-        adds a $200 pre-tax 401k deduction, which would shift taxable
-        to 2684.62 if the snapshot were re-derived.  The stored
-        effective_federal_rate must remain at the original derivation
-        (0.0693332224 = 200.00 / 2884.62) -- if it were silently
-        recomputed against the new taxable base, it would now equal
-        200.00 / 2684.62 = 0.0744944091.  The audit's
-        stale-on-upstream-edit drift surface (HIGH-03 / Q-25) is
-        closed by storing an immutable pay-stub snapshot.
-        """
-        with app.app_context():
-            user = seed_user["user"]
-            profile = _create_profile(seed_user)
-            tax_law(state_and_fica_law())
+            self._seed_stub(profile, seed_periods[4].start_date)
+            profile.pay_stubs[0].use_for_pricing = False
             db.session.commit()
 
-            resp = self._post_confirm(auth_client, profile.id)
-            assert resp.status_code == 302, (
-                f"Confirm should succeed, got {resp.status_code} "
-                f"location={resp.headers.get('Location')}"
-            )
+            html = self._text(auth_client.get("/salary"))
 
-            db.session.expire_all()
-            cal = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).one()
-            snapshot_federal = cal.effective_federal_rate
-            snapshot_state = cal.effective_state_rate
-            snapshot_ss = cal.effective_ss_rate
-            snapshot_medicare = cal.effective_medicare_rate
+            assert "taxes from the tax formulas" in html
+            assert (
+                "Taxes from the tax formulas: no pay stub used for pricing "
+                "is dated on or before this payday"
+            ) in html
 
-            # Pre-tax deduction added AFTER calibration would shift the
-            # taxable divisor from 2884.62 to 2684.62 if the snapshot
-            # were re-derived; the snapshot must not move.
-            pre_tax = db.session.query(PaycheckLineKind).filter_by(
-                name="pre_tax_deduction"
-            ).one()
-            flat_method = db.session.query(CalcMethod).filter_by(
-                name="flat"
-            ).one()
-            deduction = PaycheckLine(
-                salary_profile_id=profile.id,
-                paycheck_line_kind_id=pre_tax.id,
-                calc_method_id=flat_method.id,
-                name="401k",
-                amount=Decimal("200.00"),
-            )
-            db.session.add(deduction)
-            db.session.commit()
-
-            db.session.expire_all()
-            cal_after = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).one()
-
-            # Hand-check that the recomputed rate would have moved if
-            # the snapshot were not immutable: 200/2684.62 = 0.0744944...
-            # which is distinct from the original 200/2884.62 = 0.0693...
-            assert cal_after.effective_federal_rate == snapshot_federal
-            assert cal_after.effective_state_rate == snapshot_state
-            assert cal_after.effective_ss_rate == snapshot_ss
-            assert cal_after.effective_medicare_rate == snapshot_medicare
-            # And concretely: stored rate must NOT be the post-edit
-            # derivation (200.00 / 2684.62 = 0.0744944091).
-            post_edit_rate = (
-                Decimal("200.00") / Decimal("2684.62")
-            ).quantize(Decimal("0.0000000001"))
-            assert cal_after.effective_federal_rate != post_edit_rate
-
-    def test_rate_consistency_invariant(
-        self, app, auth_client, seed_user, seed_periods
+    def test_the_card_names_each_paychecks_own_basis(
+        self, app, auth_client, seed_user, seed_periods,
     ):
-        """C19-4: stored effective_x * base reproduces actual_x to the cent.
-
-        Confirms a calibration via the full preview -> confirm flow.
-        Each stored rate, when multiplied against the base it was
-        derived from (taxable for federal/state, gross for FICA),
-        must equal the stored actual_x to within $0.01 -- the E-20
-        snapshot invariant.
-
-        Hand-computed:
-          federal_rate * taxable   = 0.0693332224 * 2884.62 = 200.0000
-          state_rate   * taxable   = 0.0346666112 * 2884.62 = 100.0000
-          ss_rate      * gross     = 0.0620012341 * 2884.62 = 178.8500
-          medicare_rate* gross     = 0.0145010435 * 2884.62 =  41.8300
-        """
+        """Stepping the card: before the stub the formulas, on and after it the stub."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            resp = self._post_confirm(auth_client, profile.id)
-            assert resp.status_code == 302
+            stub_day = seed_periods[4].start_date
+            self._seed_stub(profile, stub_day)
+            named = stub_day.strftime("%b %-d, %Y")
 
-            db.session.expire_all()
-            cal = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile.id,
-            ).one()
+            before = self._text(auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[0].id}"
+            ))
+            on_it = self._text(auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[4].id}"
+            ))
 
-            gross = cal.actual_gross_pay
-            taxable = gross  # no pre-tax deductions in _create_profile.
-            one_cent = Decimal("0.01")
+            assert (
+                "Taxes from the tax formulas: no pay stub used for pricing "
+                "is dated on or before this payday"
+            ) in before
+            assert f"Taxes from your {named} pay stub" in on_it
 
-            assert abs(
-                cal.effective_federal_rate * taxable
-                - cal.actual_federal_tax
-            ) <= one_cent
-            assert abs(
-                cal.effective_state_rate * taxable
-                - cal.actual_state_tax
-            ) <= one_cent
-            assert abs(
-                cal.effective_ss_rate * gross
-                - cal.actual_social_security
-            ) <= one_cent
-            assert abs(
-                cal.effective_medicare_rate * gross
-                - cal.actual_medicare
-            ) <= one_cent
+    def test_the_profile_page_has_no_calibration_card(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The calibration card is gone; the empty stubs card says stubs price taxes."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            html = self._text(auth_client.get(f"/salary/{profile.id}/edit"))
+
+            assert "Pay Stub Calibration" not in html
+            assert "calibrat" not in html.lower()
+            assert (
+                "No pay stubs yet. Enter one line by line: the app checks your "
+                "paycheck lines against it and takes your paychecks' taxes "
+                "from it."
+            ) in html
+
 
 
 # ── Button Placement ──────────────────────────────────────────────

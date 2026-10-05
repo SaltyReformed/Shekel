@@ -139,6 +139,15 @@ class WithholdingToDate:
     measured figures run through) or ``None`` when the year is fully
     modeled; ``checkpoint`` is the source row (or ``None``) for the card's
     "as of <date>" caption and the deferred estimate-convergence history.
+
+    ``priced_from`` names what priced each MODELED paycheck's taxes, one
+    entry per paycheck of the remainder in payday order: the payday of the
+    pay stub the engine priced it from, or ``None`` where no stub is dated
+    on or before it and the tax formulas priced it alone (plan step
+    salary:S11-c-2c, ruling **R-SAL100**).  It is read off each breakdown's
+    tax lines, the engine's own answer, from the one pricing of the
+    remainder that also produced ``projected``.  Empty when nothing is
+    modeled.
     """
 
     total: WithholdingComponents
@@ -146,6 +155,7 @@ class WithholdingToDate:
     projected: WithholdingComponents
     measured_through: date | None
     checkpoint: YtdTaxCheckpoint | None
+    priced_from: tuple[date | None, ...]
 
 
 def latest_checkpoint(profile_id: int, year: int) -> YtdTaxCheckpoint | None:
@@ -315,15 +325,16 @@ def compute_withholding_to_date(
 
     Returns:
         The populated :class:`WithholdingToDate` (totals + measured /
-        projected split + the source checkpoint).
+        projected split + the source checkpoint + what priced each modeled
+        paycheck).
     """
     checkpoint = latest_checkpoint(profile.id, year)
     measured = _measured_components(checkpoint)
     remainder = _remainder_periods(year_paydays(ctx.calendar(), year), checkpoint)
-    projected = (
+    projected, priced_from = (
         _project_remainder(ctx.paychecks().for_profile(profile), remainder)
         if remainder
-        else _ZERO_COMPONENTS
+        else (_ZERO_COMPONENTS, ())
     )
 
     total = WithholdingComponents(
@@ -339,6 +350,7 @@ def compute_withholding_to_date(
         projected=projected,
         measured_through=checkpoint.as_of_date if checkpoint is not None else None,
         checkpoint=checkpoint,
+        priced_from=priced_from,
     )
 
 
@@ -403,7 +415,7 @@ def _remainder_periods(
 def _project_remainder(
     pricer: "ProfilePaychecks",
     remainder: tuple,
-) -> WithholdingComponents:
+) -> tuple[WithholdingComponents, tuple[date | None, ...]]:
     """Price the remainder's paychecks and sum their withholding.
 
     **It projects ONLY the remainder since plan step balance:X-bh-1**, and the
@@ -432,10 +444,13 @@ def _project_remainder(
             :func:`_remainder_periods`.
 
     Returns:
-        The summed modeled remainder as a :class:`WithholdingComponents`.
+        The summed modeled remainder as a :class:`WithholdingComponents`,
+        and, off the same breakdowns, what priced each paycheck's taxes
+        (``taxes.stub_payday``: a stub's payday, or ``None`` for the tax
+        formulas), in payday order -- :attr:`WithholdingToDate.priced_from`.
     """
     breakdowns = pricer.over(remainder)
-    return WithholdingComponents(
+    components = WithholdingComponents(
         gross=sum((bd.earnings.gross_biweekly for bd in breakdowns), ZERO),
         federal=sum((bd.taxes.federal for bd in breakdowns), ZERO),
         state=sum((bd.taxes.state for bd in breakdowns), ZERO),
@@ -444,3 +459,4 @@ def _project_remainder(
         ),
         medicare=sum((bd.taxes.medicare for bd in breakdowns), ZERO),
     )
+    return components, tuple(bd.taxes.stub_payday for bd in breakdowns)

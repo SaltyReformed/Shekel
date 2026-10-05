@@ -97,7 +97,8 @@ def projection(profile_id):
     # N-443).  This site wrote the tax-config resolution +
     # ``project_salary`` pair out longhand, as did the other two, over the
     # same calendar; the per-period-year tax resolution (DH-#30) and the
-    # calibration argument live in that one producer now.
+    # profile's pay stubs, which price its taxes since plan step
+    # salary:S11-c-2c, live in that one producer now.
     breakdowns = ctx.paychecks().for_profile(profile).over(periods)
 
     # Pair periods with breakdowns
