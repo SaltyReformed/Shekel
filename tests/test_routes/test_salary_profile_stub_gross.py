@@ -20,14 +20,13 @@ template whose option values the schema cannot read fails here.
 
 import re
 from datetime import date
-from html.parser import HTMLParser
 
 import pytest
 
 from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, rendered_form_controls
 
 _FIELD = "stub_gross_includes_after_tax"
 
@@ -48,53 +47,6 @@ def _options(html):
             r'<option value="([^"]*)"\s*(selected)?\s*>([^<]*)</option>', select,
         )
     ]
-
-
-class _FormControls(HTMLParser):
-    """The controls of the ONE form posting to *action*, at what a browser submits.
-
-    An ``<input>`` submits its ``value``; a ``<select>`` the option marked
-    ``selected``, else its first.  The salary form holds no checkbox or radio.
-    """
-
-    def __init__(self, action):
-        super().__init__()
-        self.action = action
-        self.controls = {}
-        self._inside = False
-        self._select = None
-        self._first = None
-
-    def handle_starttag(self, tag, attrs):
-        """Open the form, record an input, or read a select's options."""
-        attributes = dict(attrs)
-        if tag == "form":
-            self._inside = attributes.get("action") == self.action
-        elif self._inside and tag == "input" and attributes.get("name"):
-            self.controls[attributes["name"]] = attributes.get("value") or ""
-        elif self._inside and tag == "select":
-            self._select, self._first = attributes.get("name"), None
-        elif self._select is not None and tag == "option":
-            if self._first is None:
-                self._first = attributes.get("value", "")
-            if "selected" in attributes:
-                self.controls[self._select] = attributes.get("value", "")
-
-    def handle_endtag(self, tag):
-        """Close a select (its first option when none is selected) or the form."""
-        if tag == "select" and self._select is not None:
-            self.controls.setdefault(self._select, self._first or "")
-            self._select = None
-        elif tag == "form":
-            self._inside = False
-
-
-def _rendered_form(html, action):
-    """What the form posting to *action* submits as rendered on *html*."""
-    reader = _FormControls(action)
-    reader.feed(html)
-    assert reader.controls, f"no form posts to {action}"
-    return reader.controls
 
 
 def _value_of(html, label_start):
@@ -175,9 +127,9 @@ class TestTheSetting:
         ).one()
         page = auth_client.get(f"/salary/{profile.id}/edit").data.decode()
         assert [value for value, _, chosen in _options(page) if chosen] == ["true"]
-        controls = _rendered_form(page, f"/salary/{profile.id}")
-        assert controls[_FIELD] == "true"
-        controls[_FIELD] = _value_of(page, "Base pay")
+        controls = rendered_form_controls(page, f"/salary/{profile.id}")
+        assert controls[_FIELD] == ["true"]
+        controls[_FIELD] = [_value_of(page, "Base pay")]
         response = auth_client.post(f"/salary/{profile.id}", data=controls)
         assert response.status_code == 302
         assert _answer(user_id, "Day Job") is False

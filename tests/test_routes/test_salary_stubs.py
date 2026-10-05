@@ -43,7 +43,6 @@ import re
 from datetime import date
 from decimal import Decimal
 from html import unescape
-from html.parser import HTMLParser
 
 import pytest
 
@@ -59,6 +58,7 @@ from tests._test_helpers import (
     freeze_today,
     make_flat_paycheck_line,
     make_salary_profile,
+    rendered_form_controls,
 )
 
 _PAYDAY = "2026-03-27"
@@ -285,7 +285,9 @@ class TestRecording:
         printed 2999.62: the $115.00 of earnings is counted twice, and asked
         about with its twin, an earning the stub does not print (R-SAL111), by
         the base pay the stub shows (R-SAL112; worded by R-SAL114 and
-        R-SAL117).
+        R-SAL117).  It names no setting, so the page draws no link to it: the
+        line under the gross box holds the page's only one (delta review
+        LOW-1).
         """
         payload = _payload(world)
         payload["base_pay"] = "2999.62"
@@ -298,6 +300,9 @@ class TestRecording:
             "the Gross Pay into Base pay.  Type $2,884.62 there instead.  $2,999.62: you "
             "entered extra pay this stub doesn't list.  Remove it."
         ) in unescape(html)
+        assert html.count(
+            f'href="/salary/{world["profile_id"]}/edit#stub_gross_includes_after_tax"',
+        ) == 1
         gross_input = html[html.index('name="printed_gross"'):]
         gross_input = gross_input[:gross_input.index(">")]
         assert "is-invalid" in gross_input
@@ -740,64 +745,6 @@ def _setting_link(world, words):
     )
 
 
-class _FormControls(HTMLParser):
-    """Every control of the ONE form posting to *action*, as a browser submits it.
-
-    Repeated names (the one-off rows) keep every value in order; an
-    ``<input>`` submits its ``value`` and a ``<select>`` its ``selected``
-    option, else its first.  A control without a name submits nothing.  It
-    reads only those two shapes, the stub form's: any other control inside
-    the form (a checkbox or radio, a ``<textarea>``, a named button, a
-    disabled control) fails the reading loudly rather than being posted as a
-    browser would not post it.
-    """
-
-    #: Input types a browser posts by their ``value`` alone.
-    _PLAIN_INPUTS = frozenset({"hidden", "text", "number", "date"})
-
-    def __init__(self, action):
-        super().__init__()
-        self.action = action
-        self.controls: "dict[str, list[str]]" = {}
-        self._inside = False
-        self._select = None
-        self._chosen = None
-
-    def handle_starttag(self, tag, attrs):
-        """Open the form, record an input, or read a select's options."""
-        attributes = dict(attrs)
-        if tag == "form":
-            self._inside = attributes.get("action") == self.action
-        elif self._inside and tag in ("textarea", "button") and attributes.get("name"):
-            raise AssertionError(f"the reader does not post a named <{tag}>")
-        elif self._inside and tag == "input" and attributes.get("name"):
-            plain = attributes.get("type", "text") in self._PLAIN_INPUTS
-            if not plain or "disabled" in attributes:
-                raise AssertionError(f"the reader does not post {attributes}")
-            self.controls.setdefault(attributes["name"], []).append(attributes.get("value") or "")
-        elif self._inside and tag == "select":
-            self._select, self._chosen = attributes.get("name"), None
-        elif self._select is not None and tag == "option":
-            if self._chosen is None or "selected" in attributes:
-                self._chosen = attributes.get("value", "")
-
-    def handle_endtag(self, tag):
-        """Close a select, submitting its choice, or close the form."""
-        if tag == "select" and self._select is not None:
-            self.controls.setdefault(self._select, []).append(self._chosen or "")
-            self._select = None
-        elif tag == "form":
-            self._inside = False
-
-
-def _rendered_controls(html, action):
-    """What the form posting to *action* submits, read off *html*."""
-    reader = _FormControls(action)
-    reader.feed(html)
-    assert reader.controls, f"no form posts to {action}"
-    return reader.controls
-
-
 def _say(client, world, answer):
     """Switch the job's answer through the PROFILE's own door, as another tab would."""
     profile = db.session.get(SalaryProfile, world["profile_id"])
@@ -809,7 +756,10 @@ def _say(client, world, answer):
 
 
 class TestTheJobsGrossSetting:
-    """R-SAL102 and R-SAL104 to R-SAL110 at the stub door and on the profile page."""
+    """R-SAL102, R-SAL104 to R-SAL107 and R-SAL110 at the stub door and on the profile page.
+
+    In the words of R-SAL114 to R-SAL116.
+    """
 
     def test_a_refusal_naming_the_setting_links_to_it(self, auth_client, world):
         """A "no" job, gross 2964.62 holding the reimbursement: a 422 asking both, with the link.
@@ -870,7 +820,7 @@ class TestTheJobsGrossSetting:
         url = f"/salary/{world['profile_id']}/stubs"
         refused = auth_client.post(url, data=_reimbursed_payload(world, "2964.62"))
         assert refused.status_code == 422
-        original = _rendered_controls(refused.data.decode(), url)
+        original = rendered_form_controls(refused.data.decode(), url)
         assert original["printed_gross"] == ["2964.62"]
         _say(auth_client, world, "true")
         assert auth_client.post(url, data=original).status_code == 302
@@ -894,7 +844,7 @@ class TestTheJobsGrossSetting:
         ).status_code == 302
         stub = _stub()
         edit_url = f"/salary/stubs/{stub.id}/edit"
-        original = _rendered_controls(
+        original = rendered_form_controls(
             auth_client.get(f"/salary/stubs/{stub.id}").data.decode(), edit_url,
         )
         original[f"line-{world['lines']['roth']}"] = ["100.00"]
