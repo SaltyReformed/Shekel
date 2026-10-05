@@ -291,22 +291,24 @@ class FailOnce:
         return self.real(*args)
 
 
-class ReadBackFailsOnce:
-    """``board.place`` whose move lands and whose read of the board back then fails once, as
-    one of :meth:`_tracker.Board.shows`'s reads can."""
+class AnswerLostOnce:
+    """One write of ``owner`` (the tracker or its board) that LANDS and whose answer is then
+    lost, the first time -- a 502 or a timeout after GitHub made the write; it writes and
+    answers every time after.  For ``board.place``: the move lands, and a read of the board
+    back then fails, as one of :meth:`_tracker.Board.shows`'s reads can."""
 
-    def __init__(self, board):
-        """Stand in for ``board.place``."""
-        self.real, self.failed = board.place, False
-        board.place = self
+    def __init__(self, owner, name):
+        """Stand in for ``owner.<name>``."""
+        self.real, self.failed = getattr(owner, name), False
+        setattr(owner, name, self)
 
-    def __call__(self, item, after):
-        """Move, then fail once."""
-        shown = self.real(item, after)
+    def __call__(self, *args):
+        """Write, then fail once."""
+        answer = self.real(*args)
         if not self.failed:
             self.failed = True
             raise GitHubError(502, "bad gateway")
-        return shown
+        return answer
 
 
 def ship(root, *trailers):
@@ -317,6 +319,25 @@ def ship(root, *trailers):
     _run(root, "update-ref", "refs/remotes/origin/dev", sha)
     return sha
 
+
+
+def leaf_filing(tmp_path, title, parent="plan#1"):
+    """``plan file step`` filing a leaf named ``title`` under ``parent``, its spec written to
+    a file."""
+    spec = tmp_path / f"{title}.md"
+    spec.write_text(f"Build {title}.")
+    return ("file", "step", "--parent", parent, "--arc", "balance", "--title", title,
+            "--body-file", str(spec))
+
+
+def ruling_filing(tmp_path, owner):
+    """``plan file ruling`` filing the ruling "Home" under ``owner``, its question and answer
+    written to files."""
+    question, answer = tmp_path / "q", tmp_path / "a"
+    question.write_text("Where?")
+    answer.write_text("Here.")
+    return ("file", "ruling", "--arc", "balance", "--title", "Home", "--owner", owner,
+            "--question-file", str(question), "--answer-file", str(answer))
 
 
 def run(tracker, root, *argv):

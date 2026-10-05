@@ -1,6 +1,7 @@
 """The plan's decisions -- next, resolved, stale claims, sync -- over hand-built cards."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from _state import (
@@ -8,8 +9,13 @@ from _state import (
     dropped,
     dropped_above,
     filing_unfinished,
+    is_container,
     is_live,
+    is_work,
     leaf_placement,
+    leaves,
+    leaves_below,
+    left_bare,
     missing,
     never_offered,
     next_step,
@@ -18,6 +24,7 @@ from _state import (
     stale_claims,
     sync_plan,
     unfinished_reports,
+    withdrawn,
     workable,
 )
 from _tracker import Card, Child, Claim, OutsideLink
@@ -46,6 +53,12 @@ def _closed(number, kind="step", by_tool=True, reason="COMPLETED", **changes):
 def _cards(*cards):
     """Cards by number."""
     return {card.number: card for card in cards}
+
+
+def _linked(split):
+    """``split`` and each step linked under it, as an open unmarked card: the cards
+    ``leaf_placement`` reads to know ``split``'s leaves."""
+    return _cards(split, *(_card(number, parent=split.number) for number in split.step_children))
 
 
 def _claim(number, branch="feat/x", made="2026-10-04T11:00:00Z"):
@@ -77,11 +90,11 @@ def test_a_container_is_resolved_when_every_step_child_is():
     parent = _card(1, children=(Child(2, "step", True), Child(3, "step", True),
                                 Child(4, "finding", True)))
     cards = _cards(parent, _card(2), _card(3), _card(4, "finding"))
-    assert parent.is_container
+    assert is_container(parent, cards, set())
     assert not resolved(1, cards, shipped={2})
     assert resolved(1, cards, shipped={2, 3})
     owner = _card(6, children=(Child(4, "finding", True), Child(7, "ruling", False)))
-    assert not owner.is_container
+    assert not is_container(owner, _cards(owner), set())
 
 
 def test_next_is_the_first_workable_step_in_board_order():
@@ -220,14 +233,16 @@ def test_a_leaf_inherits_the_waits_and_the_drop_of_every_step_above_it():
 def test_leaf_placement_holds_the_split_steps_place_then_follows_its_last_leaf():
     """R-BAL179, decided apart from the board writes (review L9); GitHub adds at the bottom."""
     order = [(1, "I1"), (2, "I2"), (3, "I3")]
-    assert leaf_placement(order, _card(2, board_item="I2"), 4) == Placement(
+    on_board = _card(2, board_item="I2")
+    assert leaf_placement(order, on_board, 4, _linked(on_board), set()) == Placement(
         True, "I2", "I2", "into plan#2's place")
     split = _card(2, board_item=None, children=(Child(5, "step", True), Child(4, "step", True),
                                                  Child(7, "finding", True)))
     order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
-    assert leaf_placement(order, split, 6) == Placement(
+    assert leaf_placement(order, split, 6, _linked(split), set()) == Placement(
         True, "I5", None, "to just after the leaves of plan#2 filed before it")
-    assert leaf_placement(order, _card(2, board_item=None), 6) == Placement(
+    off_board = _card(2, board_item=None)
+    assert leaf_placement(order, off_board, 6, _linked(off_board), set()) == Placement(
         False, None, None, "no other leaf of plan#2 is on the board to place it by")
 
 
@@ -306,8 +321,8 @@ def test_a_card_that_is_not_a_step_is_no_container_whatever_hangs_under_it():
     resolved by its leaves; it is resolved by its own state."""
     for kind in (None, "finding"):
         card = _card(1, kind, children=(Child(2, "step", True),))
-        assert not card.is_container
         cards = _cards(card, _card(2, parent=1))
+        assert not is_container(card, cards, set())
         assert resolved(1, cards, shipped={1}) is (kind == "finding")
         assert not resolved(1, cards, shipped={2})
 
@@ -332,10 +347,10 @@ def test_a_container_whose_leaves_were_all_dropped_counts_as_dropped():
 def test_a_container_shown_completed_whose_leaves_are_now_all_dropped_is_shown_not_planned():
     """R-BAL187: a leaf reopened and dropped between two syncs leaves the container closed as
     completed though nothing shipped; sync re-closes it as not planned, then leaves it."""
-    leaves = (Child(8, "step", False),)
-    cards = _cards(_closed(7, children=leaves), _closed(8, reason="NOT_PLANNED", parent=7))
+    linked = (Child(8, "step", False),)
+    cards = _cards(_closed(7, children=linked), _closed(8, reason="NOT_PLANNED", parent=7))
     assert sync_plan(cards, shipped=set(), claims={}, ship_branches={}).drop == [7]
-    cards[7] = _closed(7, reason="NOT_PLANNED", children=leaves)
+    cards[7] = _closed(7, reason="NOT_PLANNED", children=linked)
     plan = sync_plan(cards, shipped=set(), claims={}, ship_branches={})
     assert not (plan.drop or plan.close or plan.reopen or plan.reports)
 
@@ -420,9 +435,9 @@ def test_a_split_steps_close_by_the_tool_only_shows_its_leaves():
     """R-BAL190 (review cp4 MEDIUM-1): sync's close of a split step whose leaves were
     all dropped latched it dropped, so a leaf a person revived was never offered and a leaf
     that shipped left it "not planned".  The tool's close shows the leaves, both ways."""
-    leaves = (Child(8, "step", False), Child(10, "step", True))
+    linked = (Child(8, "step", False), Child(10, "step", True))
     revived = _card(10, parent=7, touched_by_hand=True)
-    cards = _cards(_closed(7, reason="NOT_PLANNED", children=leaves),
+    cards = _cards(_closed(7, reason="NOT_PLANNED", children=linked),
                    _closed(8, reason="NOT_PLANNED", parent=7), revived, _card(11, blocked_by=(7,)))
     assert workable(cards[10], cards, set(), {}) and not workable(cards[11], cards, set(), {})
     plan = sync_plan(cards, set(), {}, {})
@@ -431,7 +446,7 @@ def test_a_split_steps_close_by_the_tool_only_shows_its_leaves():
     plan = sync_plan(cards, {10}, {}, {})
     assert (plan.reopen, plan.close, plan.drop) == ([], [7], [])
     assert workable(cards[11], cards, {10}, {})
-    cards[7] = _closed(7, children=leaves)
+    cards[7] = _closed(7, children=linked)
     plan = sync_plan(cards, {10}, {}, {})
     assert not (plan.reopen or plan.close or plan.drop or plan.reports)
 
@@ -456,7 +471,7 @@ def test_a_leaf_is_placed_after_its_other_leaves_never_after_itself():
     there is never its own anchor."""
     split = _card(2, board_item=None, children=(Child(4, "step", True), Child(5, "step", True)))
     order = [(1, "I1"), (4, "I4"), (5, "I5"), (3, "I3")]
-    assert leaf_placement(order, split, 5) == Placement(
+    assert leaf_placement(order, split, 5, _linked(split), set()) == Placement(
         True, "I4", None, "to just after the leaves of plan#2 filed before it")
 
 
@@ -465,9 +480,11 @@ def test_a_leaf_with_no_earlier_leaf_on_the_board_goes_just_above_the_later_ones
     took the split step's place; its re-run puts it just above that leaf -- to the top when
     that leaf is first, never after itself when it sits just above it already."""
     split = _card(1, board_item=None, children=(Child(5, "step", True), Child(6, "step", True)))
-    assert leaf_placement([(6, "I6"), (4, "I4"), (5, "I5")], split, 5) == Placement(
+    assert leaf_placement([(6, "I6"), (4, "I4"), (5, "I5")], split, 5, _linked(split),
+                          set()) == Placement(
         True, None, None, "to just above the leaves of plan#1 filed after it")
-    assert leaf_placement([(4, "I4"), (5, "I5"), (6, "I6")], split, 5) == Placement(
+    assert leaf_placement([(4, "I4"), (5, "I5"), (6, "I6")], split, 5, _linked(split),
+                          set()) == Placement(
         True, "I4", None, "to just above the leaves of plan#1 filed after it")
 
 
@@ -477,7 +494,7 @@ def test_filing_order_is_the_cards_numbers_not_the_sub_issue_lists():
     split = _card(1, board_item=None, children=(Child(2, "step", True), Child(5, "step", True),
                                                  Child(3, "step", True)))
     order = [(2, "I2"), (3, "I3"), (4, "I4"), (5, "I5")]
-    assert leaf_placement(order, split, 5).after == "I3"
+    assert leaf_placement(order, split, 5, _linked(split), set()).after == "I3"
 
 
 def test_a_marked_card_is_an_unfinished_filing_while_open_or_a_ruling_closed_as_completed():
@@ -545,7 +562,7 @@ def test_a_leaf_goes_just_above_the_topmost_of_several_leaves_filed_after_it():
     split = _card(1, board_item=None, children=(Child(5, "step", True), Child(6, "step", True),
                                                  Child(7, "step", True)))
     order = [(4, "I4"), (7, "I7"), (9, "I9"), (6, "I6"), (5, "I5")]
-    assert leaf_placement(order, split, 5).after == "I4"
+    assert leaf_placement(order, split, 5, _linked(split), set()).after == "I4"
 
 
 def test_a_wait_or_a_drop_two_steps_up_holds_a_leaf_back():
@@ -567,3 +584,106 @@ def test_an_open_ruling_is_reported_once_as_unfinished_or_as_open_by_hand():
     assert [line.split("'")[0].split(" is ")[0] for line in reports] == ["plan#1",
                                                                        "ruling plan#2"]
     assert reports[1].endswith(": close it by hand")
+
+
+# -- leaf C: a leaf closed while still marked (balance:R-BAL207 applications) ------------
+
+MARKED = ("balance", FILING)
+
+
+def _split(*leaf_cards, **changes):
+    """plan#1, off the board, with ``leaf_cards`` linked under it, and them."""
+    split = _card(1, board_item=None, children=tuple(
+        Child(leaf.number, "step", leaf.is_open) for leaf in leaf_cards), **changes)
+    return _cards(split, *leaf_cards)
+
+
+def test_a_leaf_closed_while_still_marked_and_unshipped_is_no_leaf():
+    """It was never part of the split: plan#1 is a plain step again -- work, not dropped,
+    offered when on the board -- whoever closed the leaf and however (a person, as
+    completed or not planned; `plan drop`, whose unlink a read may lag)."""
+    for by_tool, reason in ((False, "COMPLETED"), (False, "NOT_PLANNED"), (True, "NOT_PLANNED")):
+        cards = _split(_closed(2, by_tool=by_tool, reason=reason, parent=1, labels=MARKED))
+        assert not leaves(cards[1], cards, set())
+        assert not is_container(cards[1], cards, set()) and is_work(cards[1], cards, set())
+        assert not dropped(1, cards, set()) and not resolved(1, cards, set())
+        on_board = {**cards, 1: replace(cards[1], board_item="PVTI_1")}
+        assert workable(on_board[1], on_board, set(), {})
+        plan = sync_plan(cards, set(), {}, {})
+        assert not (plan.drop or plan.close or plan.reopen)
+
+
+def test_a_step_left_with_no_leaf_is_shipped_as_work_only_by_its_own_claim():
+    """No longer split, plan#1 is work: git saying it shipped closes it only through a claim
+    on the branch that shipped it, as for any step -- never as a container's display."""
+    cards = _split(_closed(2, by_tool=False, parent=1, labels=MARKED))
+    plan = sync_plan(cards, {1}, {}, {1: {"feat/a"}})
+    assert not plan.close and any("but it has no claim: not closed" in line
+                                  for line in plan.reports)
+    assert sync_plan(cards, {1}, {1: _claim(1, "feat/a")}, {1: {"feat/a"}}).close == [1]
+
+
+def test_a_marked_leaf_counts_while_open_or_once_git_says_it_shipped():
+    """Review rbal202b3 M-C: an open marked leaf is a filing under way, so its split step is
+    no work meanwhile; review rbal202b2 M-B(1): one that shipped counts however it was
+    closed, so its split step is done and closed as completed."""
+    cards = _split(_card(2, parent=1, labels=MARKED))
+    assert leaves(cards[1], cards, set()) == (2,) and not workable(cards[1], cards, set(), {})
+    assert not next_step([], cards, set(), {}).unplaced
+    cards = _split(_closed(2, by_tool=False, parent=1, labels=MARKED))
+    assert leaves(cards[1], cards, {2}) == (2,) and resolved(1, cards, {2})
+    assert sync_plan(cards, {2}, {}, {}).close == [1]
+
+
+def test_a_leaf_closed_while_marked_neither_drops_nor_keeps_its_split_step():
+    """R-BAL187 counts only the leaves: one dropped after its filing finished drops plan#1
+    though another was closed while marked; one reopened counts again."""
+    cards = _split(_closed(2, reason="NOT_PLANNED", parent=1),
+                   _closed(3, by_tool=False, parent=1, labels=MARKED))
+    assert leaves(cards[1], cards, set()) == (2,) and dropped(1, cards, set())
+    cards[3] = _card(3, parent=1, labels=MARKED)
+    assert leaves(cards[1], cards, set()) == (2, 3) and not dropped(1, cards, set())
+
+
+def test_no_leaf_is_placed_by_one_closed_while_still_marked():
+    """A leaf closed while marked may sit where a failed move left it; it is no leaf, so no
+    anchor: the new leaf is placed by the leaves of plan#1 alone."""
+    cards = _split(_closed(4, by_tool=False, parent=1, labels=MARKED), _card(5, parent=1))
+    order = [(4, "I4"), (9, "I9"), (5, "I5")]
+    assert leaf_placement(order, cards[1], 6, cards, set()).after == "I5"
+    cards[5] = _closed(5, by_tool=False, parent=1, labels=MARKED)
+    assert not leaf_placement(order, cards[1], 6, cards, set()).move
+
+
+def test_a_ruling_is_withdrawn_by_any_close_but_one_as_completed():
+    """R-BAL206: a ruling closed as not planned or as a duplicate was withdrawn; open, or
+    closed as completed, it was not; no other kind of card is ever withdrawn."""
+    assert withdrawn(_closed(1, "ruling", reason="NOT_PLANNED"))
+    assert withdrawn(_closed(1, "ruling", by_tool=False, reason="DUPLICATE"))
+    assert not withdrawn(_closed(1, "ruling", by_tool=False, reason="COMPLETED"))
+    assert not withdrawn(_card(1, "ruling"))
+    assert not withdrawn(_closed(1, "step", reason="NOT_PLANNED"))
+
+
+def test_a_step_split_only_by_leaves_being_dropped_now_is_left_bare():
+    """``left_bare``: a step every leaf of which is an unfinished filing dropped now carries
+    its own drop; a step that keeps another leaf is left to its leaves."""
+    cards = _split(_card(2, parent=1, labels=MARKED))
+    assert [step.number for step in left_bare(cards[1], cards, set(), {2})] == [1]
+    assert not left_bare(cards[1], cards, set(), set())
+    cards = _split(_card(2, parent=1, labels=MARKED), _card(3, parent=1))
+    assert not left_bare(cards[1], cards, set(), {2})
+    cards = _split(_card(2, parent=1, children=(Child(3, "step", True),)))
+    cards[3] = _card(3, parent=2, labels=MARKED)
+    assert [step.number for step in left_bare(cards[1], cards, set(), {3})] == [2]
+    assert [leaf.number for leaf in leaves_below(cards[1], cards, set())] == [3]
+
+
+def test_an_open_marked_leaf_counts_however_its_own_leaves_ended():
+    """Review M2 (P3): ``dropped`` holds for an OPEN container whose leaves were all
+    dropped, so the rule excluded an open marked leaf split below by hand; only a CLOSED
+    marked leaf is excluded."""
+    cards = _split(_card(2, parent=1, labels=MARKED, children=(Child(3, "step", False),)))
+    cards[3] = _closed(3, by_tool=False, reason="NOT_PLANNED", parent=2)
+    assert leaves(cards[1], cards, set()) == (2,) and is_container(cards[1], cards, set())
+    assert not next_step([], cards, set(), {}).unplaced

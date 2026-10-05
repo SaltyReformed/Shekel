@@ -171,6 +171,10 @@ class Card:  # pylint: disable=too-many-instance-attributes
     reopened it, it was the plan tool -- so its state is the tool's display of
     git, not a person's decision.  ``touched_by_hand``: the last close or reopen
     was a person's.
+
+    A card holds only what GitHub says of it.  Which of its sub-issues are LEAVES
+    of the plan, and so whether it is a container, reads its children's own marks
+    and git too, so the plan decides it (``_state.leaves``), never the card.
     """
 
     number: int
@@ -190,16 +194,10 @@ class Card:  # pylint: disable=too-many-instance-attributes
     outside: tuple[OutsideLink, ...]
 
     @property
-    def leaves(self) -> tuple[int, ...]:
-        """The steps this card splits into, the one spelling (R-BAL177: the findings and
-        rulings it owns decide nothing)."""
+    def step_children(self) -> tuple[int, ...]:
+        """The steps linked under this card, as GitHub lists them: each a leaf of it unless
+        the plan says otherwise (``_state.leaves``, the one spelling of a leaf)."""
         return tuple(child.number for child in self.children if child.kind == "step")
-
-    @property
-    def is_container(self) -> bool:
-        """A step split into steps (a card that is not a step is no container, whatever
-        hangs under it)."""
-        return self.kind == "step" and bool(self.leaves)
 
 
 @dataclass(frozen=True)

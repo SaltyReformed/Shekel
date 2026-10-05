@@ -10,8 +10,11 @@ Whether a card SHIPPED is git's answer, never the card's state: a commit on
 ``dev`` carrying ``Ships: plan#N``, with no later ``Reopens: plan#N``
 (:mod:`_git`).  The card's open or closed state is display, which ``sync``
 writes from git.  So every command that asks git -- ``next``, ``show``,
-``claim``, ``drop``, ``sync``, and ``file`` given an owner or a parent -- first
-runs ``git fetch origin dev``, which moves this checkout's ``origin/dev``.
+``claim``, ``move``, ``drop``, ``sync``, and ``file`` given an owner or a
+parent or finding a card of its own closed while still marked -- first runs
+``git fetch origin dev``, which moves this checkout's ``origin/dev``.  (``move``
+and ``drop`` ask it whether a step is split: a leaf dropped before its filing
+finished is no leaf unless git says it shipped, ``_state.leaves``.)
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
@@ -38,7 +41,12 @@ command line itself is not one of the forms above (argparse's usage error),
 before anything is read.  Every write is printed as it lands, so after a
 failure the output says what was written; ``file`` run again finishes a filing
 a failure cut short (R-BAL186): every card it creates is marked ``filing``
-until its last write, and a marked card is never offered (R-BAL202).
+until its last write, and a marked card is never offered (R-BAL202).  Run
+again, it writes nothing over a card the earlier run filed that is still open,
+still marked (refused when a person's or `plan drop`'s close ended it, unless it
+is work git says shipped), or -- for a ruling, which its own filing closes -- linked under
+its owner; a card closed after its filing finished is not looked for, so the
+command files another (unless a listing that lags its close still shows it open).
 """
 from __future__ import annotations
 
@@ -46,7 +54,7 @@ import argparse
 import difflib
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -67,7 +75,11 @@ from _filing import cmd_file
 from _github import GitHubError
 from _state import (
     filing_unfinished,
+    is_container,
     is_work,
+    leaves,
+    leaves_below,
+    left_bare,
     never_offered,
     next_step,
     outside_reports,
@@ -152,11 +164,11 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
 def cmd_claim(args, tracker: Tracker, root: Path) -> int:
     """Claim a card for the branch that will ship it."""
     card = _one(tracker, args.card)
-    if not card.is_open or not is_work(card):
-        raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
-                      "not a container)")
     _, shipped, _ = _shipped(root)
     cards = _with_closure(tracker, {card.number: card})
+    if not card.is_open or not is_work(card, cards, shipped):
+        raise Refused(f"{_label(card)} is not work a branch ships (open step or finding, "
+                      "not a container)")
     if why := never_offered(card, cards, shipped):
         raise Refused(f"{_label(card)} is never offered as work: {why}")
     if card.number in shipped:
@@ -285,10 +297,12 @@ def cmd_block(args, tracker: Tracker, _root: Path) -> int:
     return 0
 
 
-def cmd_move(args, tracker: Tracker, _root: Path) -> int:
+def cmd_move(args, tracker: Tracker, root: Path) -> int:
     """Put a step or question at a place in the board's order."""
     card = _one(tracker, args.card)
-    if card.kind not in ON_BOARD or not card.is_open or card.is_container:
+    _, shipped, _ = _shipped(root)
+    cards = _with_closure(tracker, {card.number: card})
+    if card.kind not in ON_BOARD or not card.is_open or is_container(card, cards, shipped):
         raise Refused(f"the board holds open steps and questions only, and no step split into "
                       f"leaves (R-BAL177, R-BAL179): {_label(card)}")
     if filing_unfinished(card) and card.kind == "step":
@@ -316,22 +330,17 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     return 0
 
 
-def _leaves_below(tracker: Tracker, card: Card) -> list[Card]:
-    """Every leaf below ``card`` that is work, in any state -- under the steps it splits,
-    under theirs, ... (a step split again is not a leaf; its own leaves are)."""
-    below, wanted = [], list(card.leaves)
-    while wanted:
-        found = tracker.cards(wanted)
-        below += [step for _, step in sorted(found.items()) if is_work(step)]
-        wanted = [number for step in found.values() for number in step.leaves]
-    return below
-
-
 def _drop(tracker: Tracker, card: Card, why: str) -> None:
     """Drop one piece of work: the reason as a comment, then closed as not planned; each
     write printed as it lands, and a claim on it named."""
     tracker.comment(card.number, f"Dropped: {why}")
     print(f"  commented on plan#{card.number}: Dropped: {why}")
+    _close_dropped(tracker, card)
+
+
+def _close_dropped(tracker: Tracker, card: Card) -> None:
+    """Close a card whose reason is already on it as not planned, printed as it lands,
+    and name a claim on it."""
     tracker.close(card.number, "not_planned")
     print(f"dropped {_label(card)}")
     claim = tracker.claims().get(card.number)
@@ -339,16 +348,19 @@ def _drop(tracker: Tracker, card: Card, why: str) -> None:
         print(f"  its claim by {_holder(claim)} stays: {_release_hint(claim)}")
 
 
-def _undo_split(tracker: Tracker, leaf: Card) -> None:
+def _undo_split(tracker: Tracker, leaf: Card, cards: dict[int, Card],
+                shipped: Iterable[int]) -> None:
     """Take a leaf whose filing never finished out of the split it began (R-BAL205), each
-    write printed as it lands.  When it is the only leaf of an open step, that step is a
-    plain step again, offered as work only from the board: if it is off the board, it is
-    put on it first -- just after the leaf when the leaf is on the board, else at the
-    bottom -- before the unlink, so the same drop run again still sees the link and
-    finishes; then the leaf is unlinked."""
-    split = _one(tracker, leaf.parent)
+    write printed as it lands.  When it is the only leaf of an open step (:func:`leaves`:
+    one dropped before its filing finished was never one), that step is a plain step
+    again, offered as work only from the board: if it is off the board, it is put on it
+    first -- just after the leaf when the leaf is on the board, else at the bottom --
+    before the unlink, so the same drop run again still sees the link and finishes; then
+    the leaf is unlinked.  ``cards`` holds the split step and every card linked under it
+    (:func:`_with_closure`)."""
+    split = cards[leaf.parent]
     if (split.is_open and split.kind == "step" and split.board_item is None
-            and not [n for n in split.leaves if n != leaf.number]):
+            and not [n for n in leaves(split, cards, shipped) if n != leaf.number]):
         item = tracker.board.add(split)
         print(f"  board: plan#{split.number} added back at the bottom, a plain step again")
         if leaf.board_item is not None:
@@ -373,36 +385,48 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     dropping one notes it on the split step first, then drops every leaf below
     it that is still work by git's answer -- not shipped and not dropped,
     whatever its card shows -- each with the reason, and names the shipped ones
-    it leaves; its own state shows its leaves at the next ``sync``.  Run again after a failure, it
-    notes the split step again and drops the leaves still work (a leaf whose
-    comment landed but not its close gets the reason twice).
+    it leaves; its own state shows its leaves at the next ``sync``.  A step
+    every leaf of which was still being filed is closed too, after them: closed
+    while marked, they were never its leaves (:func:`_state.left_bare`).  Run again
+    after a failure, it notes the split step again and drops the leaves still
+    work (a leaf whose comment landed but not its close gets the reason twice).
     """
     card = _one(tracker, args.card)
     _, shipped, _ = _shipped(root)
-    if not card.is_container:
+    cards = _with_closure(tracker, {card.number: card})
+    if not is_container(card, cards, shipped):
         if not card.is_open:
             raise Refused(f"{_label(card)} is already closed")
-        if is_work(card) and card.number in shipped:
+        if is_work(card, cards, shipped) and card.number in shipped:
             raise Refused(f"{_label(card)} shipped in git: undo it with a commit carrying "
                           f"'Reopens: plan#{card.number}', not a drop")
         if card.kind == "step" and card.parent is not None and filing_unfinished(card):
-            _undo_split(tracker, card)
+            _undo_split(tracker, card, cards, shipped)
         _drop(tracker, card, args.why)
         return 0
-    below = _leaves_below(tracker, card)
+    below = leaves_below(card, cards, shipped)
     done = [leaf for leaf in below if leaf.number in shipped]
-    below = [leaf for leaf in below if not resolved(leaf.number, {leaf.number: leaf}, shipped)]
+    below = [leaf for leaf in below if not resolved(leaf.number, cards, shipped)]
     for leaf in done:
         print(f"  plan#{leaf.number} shipped in git, so it is not dropped")
     if not below:
         raise Refused(f"{_label(card)} has no leaf below it that is still work; its own state "
                       "shows its leaves, which `plan sync` writes")
     names = ", ".join(f"plan#{leaf.number}" for leaf in below)
+    ending = {leaf.number for leaf in below if filing_unfinished(leaf)}
+    bare = left_bare(card, cards, shipped, ending)
     tracker.comment(card.number, f"Dropped: {args.why} (its leaves still work: {names})")
-    print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}; it "
-          "shows them at the next `plan sync`")
+    print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}"
+          + ("" if card in bare else "; it shows them at the next `plan sync`"))
     for leaf in below:
         _drop(tracker, leaf, args.why)
+    for step in bare:
+        print(f"  plan#{step.number}: every leaf of it was still being filed, so no leaf "
+              "carries its drop (R-BAL190): it is closed itself")
+        if step.number == card.number:
+            _close_dropped(tracker, step)
+        else:
+            _drop(tracker, step, args.why)
     return 0
 
 
@@ -426,11 +450,20 @@ def cmd_sync(args, tracker: Tracker, root: Path) -> int:
     Prints a REPORT for each thing a person must fix in the tracker, which makes
     it exit 1, and a HISTORY line for each thing a commit already on ``dev`` says
     wrongly, which no tracker write can change and so never fails it (R-BAL184).
+
+    The listings of open and marked cards only FIND the cards it decides over; each
+    is then read by its number, which decides, since a listing may still show a card
+    as it was before a write: a leaf's close the listing lagged made its split step,
+    which ``plan drop`` had just closed, read as split again, and sync reopened it.
     """
     found, shipped, strays = _shipped(root)
     named = {trailer.card for trailer in found.trailers}
-    cards = {**tracker.open_cards(), **_unfinished(tracker)}
-    cards.update(tracker.cards(named - set(cards)))
+    listed = {**tracker.open_cards(), **_unfinished(tracker)}
+    cards = tracker.cards(named | set(listed))
+    if unread := sorted(set(listed) - set(cards)):
+        raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
+                           "it (that read has not caught up yet, or the card was deleted or "
+                           "moved since): run sync again")
     history = [f"a trailer on {_git.DEV} names plan#{number}, which does not exist"
                for number in sorted(named - set(cards))]
     cards = _with_closure(tracker, cards)

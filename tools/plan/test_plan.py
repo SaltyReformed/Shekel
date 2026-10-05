@@ -72,6 +72,8 @@ def test_claim_refuses_what_no_branch_ships(code, fields):
     """A ruling, a question, a closed card and a container are not built by a branch."""
     tracker = FakeTracker()
     tracker.add(1, **fields)
+    for child in fields.get("children", ()):
+        tracker.add(child.number, parent=1)
     assert run(tracker, code, "claim", "plan#1") == 1
     assert not tracker.writes
 

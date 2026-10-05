@@ -69,11 +69,11 @@ def test_open_cards_reads_each_cards_facts(recorded):
     cards = tracker.open_cards()
     assert sorted(cards) == [*range(1, 12), 13, 14, 15]
     container, leaf = cards[1], cards[2]
-    assert container.is_container and container.board_item is None
+    assert container.step_children and container.board_item is None
     # A parent lists its sub-issues in the order they were added: L1 added them in plan order.
     assert [child.number for child in container.children] == [2, 3, 4, 5, 6, 9, 7, 8, 10]
-    assert (leaf.kind, leaf.labels, leaf.parent, leaf.is_container) == ("step", ("balance",), 1,
-                                                                        False)
+    assert (leaf.kind, leaf.labels, leaf.parent, leaf.step_children) == ("step", ("balance",), 1,
+                                                                         ())
     assert leaf.board_item and leaf.id == 5696958955
     assert cards[7].blocked_by == (9, 6, 5, 4, 3, 2)
     assert cards[11].kind is None and not cards[11].labels
@@ -293,13 +293,13 @@ def _replay_drop_of_an_unfinished_leaf(tracker, split, leaf, ruling):
     (round 4 LOW 6: each showed it at that first read; one sample, the delay not timed);
     then the cleanup leaves S, L and R closed and off the board."""
     s_card, l_card = tracker.cards([split])[split], tracker.cards([leaf])[leaf]
-    assert s_card.board_item is None and s_card.leaves == (leaf,)
+    assert s_card.board_item is None and s_card.step_children == (leaf,)
     item = tracker.board.add(s_card)
     assert tracker.board.place(item, l_card.board_item)
     tracker.remove_child(split, l_card)
     after = tracker.cards([split, leaf])
     assert [c.number for c in after[split].children] == [ruling] and after[leaf].parent is None
-    assert not tracker.open_cards()[split].is_container
+    assert not tracker.open_cards()[split].step_children
     tracker.comment(leaf, "Dropped: recording R-BAL205's undo of a split (delete me)")
     tracker.close(leaf, "not_planned")
     tracker.unmark(ruling)
@@ -442,7 +442,7 @@ def _recorded_node(number):
 def test_a_connection_github_cut_short_is_an_error_not_a_partial_card():
     """A card with more sub-issues than the read holds must not look like fewer."""
     node = _recorded_node(1)
-    assert card_from(node, "board", APP).is_container
+    assert card_from(node, "board", APP).step_children
     node["subIssues"]["totalCount"] += 1
     with pytest.raises(TrackerError, match="10 sub-issues; the read holds 9"):
         card_from(node, "board", APP)

@@ -7,6 +7,14 @@ decision the ``plan`` command makes is a pure function a test can drive.
 only cards a branch builds and a commit ships.  ``claim``, ``next`` and
 ``sync`` all ask that one predicate.
 
+**A leaf** of a step is a step linked under it -- unless it was dropped before
+its filing finished: closed while still marked, and not shipped by git's
+answer (:func:`leaves`, the one spelling; a container is a step with a leaf).
+Such a card was never part of the split, so a split step left with no other
+leaf is the plain step it was, and no read that lags an unlink, and no close
+of a person's on the web, makes it a split step whose leaves were all dropped
+(``R-BAL187``).
+
 **Resolved** -- the one question ``next`` asks of a blocker and ``sync`` asks
 of a container's leaves -- is git's answer for work, and the tracker's for the
 rest (ruling ``balance:R-BAL170``):
@@ -18,9 +26,9 @@ rest (ruling ``balance:R-BAL170``):
   state; one the TOOL closed as completed is only the tool's display of git,
   so it is resolved only while git says it shipped -- a ``Reopens:`` commit
   makes it unresolved at once, before ``sync`` reopens it;
-- a container -- a step with step children (``R-BAL177``) -- holds no decision
+- a container -- a step with a leaf (``R-BAL177``, :func:`leaves`) -- holds no decision
   of the tool's (``R-BAL190``): it is resolved by its leaves, when every
-  step child is, and dropped when every leaf was (``R-BAL187``: what waits on
+  leaf is, and dropped when every leaf was (``R-BAL187``: what waits on
   it is released, and no leaf can be filed under it), or when a PERSON closed
   it, a drop its leaves inherit (``R-BAL185``).  Its open or closed state is
   the tool's display of its leaves, which ``sync`` keeps in step both ways --
@@ -78,10 +86,62 @@ STALE_CLAIM = timedelta(days=3)
 SHIPPABLE = ("step", "finding")
 
 
-def is_work(card: Card) -> bool:
+def leaves(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> tuple[int, ...]:
+    """The steps ``card`` splits into, the one spelling: each step linked under it
+    (:attr:`_tracker.Card.step_children`; the findings and rulings it owns decide
+    nothing, R-BAL177) but one dropped before its filing finished -- CLOSED while still
+    marked, and :func:`dropped` (not shipped by git's answer).
+
+    Such a card was never part of the split: R-BAL205's reason ("It was never part of
+    the split"), which R-BAL205 ruled for ``plan drop`` (which also unlinks it), carried
+    by the L2 lane under R-BAL207 to a person's close of a still-marked leaf on the web,
+    and to a read that lags ``plan drop``'s own unlink.  An OPEN marked leaf counts: its
+    filing is under way, and its split step is not offered meanwhile.  A leaf git says
+    shipped counts however it was closed: its work is done.  ``cards`` holds every
+    card linked under ``card`` (:func:`missing`)."""
+    shipped = set(shipped)
+    return tuple(number for number in card.step_children
+                 if not (FILING in cards[number].labels and not cards[number].is_open
+                         and dropped(number, cards, shipped)))
+
+
+def is_container(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
+    """A step split into steps: one with a leaf (:func:`leaves`).  A card that is not a
+    step is no container, whatever hangs under it."""
+    return card.kind == "step" and bool(leaves(card, cards, shipped))
+
+
+def is_work(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bool:
     """Whether a card is something a branch builds and a commit ships: a step or a
     finding, and not a container."""
-    return card.kind in SHIPPABLE and not card.is_container
+    return card.kind in SHIPPABLE and not is_container(card, cards, shipped)
+
+
+def withdrawn(card: Card) -> bool:
+    """Whether ``card`` is a ruling withdrawn: closed as anything but completed -- not
+    planned or a duplicate, by ``plan drop`` or a person (R-BAL206).  A ruling closed as
+    completed, by anyone, is a record."""
+    return card.kind == "ruling" and not card.is_open and card.state_reason != "COMPLETED"
+
+
+def filing_ended(card: Card) -> bool:
+    """Whether ``card``'s filing ended without standing: a ruling :func:`withdrawn`, marked
+    or not, or any other card CLOSED while still marked.  A ruling closed as completed
+    while marked is no such card: its filing is unfinished.  Of two cards a filing may
+    already have made, one that ended is passed over for one that stands."""
+    return withdrawn(card) or (FILING in card.labels and not card.is_open
+                               and card.kind != "ruling")
+
+
+def withdrawn_filing(card: Card, shipped: Iterable[int]) -> bool:
+    """Whether a DECISION ended ``card``'s filing, so nothing is ever filed over it: it
+    :func:`filing_ended`, and it is not WORK git says shipped -- a ruling withdrawn, or a
+    card dropped while still marked, by ``plan drop`` or a person.  Work that shipped and
+    was closed while still marked (its filing stopped at its last write, and a person
+    closed it as ``sync`` asks) was not dropped (:func:`dropped`): its filing is moot, not
+    refused.  A ruling or a question is never shipped, so a ``Ships:`` naming one decides
+    nothing here, as it decides nothing anywhere (R-BAL184)."""
+    return filing_ended(card) and not (card.kind in SHIPPABLE and card.number in set(shipped))
 
 
 def filing_unfinished(card: Card) -> bool:
@@ -89,11 +149,11 @@ def filing_unfinished(card: Card) -> bool:
     failure cut short: it still carries the filing mark, and is open, or is a ruling
     closed as completed, by its own filing (which closes it before the last write removes
     the mark) or by anyone (R-BAL206: a ruling is a closed record, so that close
-    withdraws nothing).  A ruling closed as not planned or as a duplicate, by ``plan
-    drop`` or a person, was withdrawn; any other card closed while marked was dropped
-    before its filing finished; what either's filing left undone is moot."""
+    withdraws nothing).  A ruling :func:`withdrawn` is not; any other card closed while
+    marked was dropped before its filing finished; what either's filing left undone is
+    moot."""
     return FILING in card.labels and (card.is_open or (
-        card.kind == "ruling" and card.state_reason == "COMPLETED"))
+        card.kind == "ruling" and not withdrawn(card)))
 
 
 def _shown_shipped(card: Card) -> bool:
@@ -114,13 +174,14 @@ def dropped(number: int, cards: Mapping[int, Card], shipped: set[int]) -> bool:
     A piece of work: closed as dropped, and not shipped (git's answer, whoever
     closed it).  A container: closed by a PERSON (R-BAL185), or every leaf
     dropped (R-BAL187) -- never its own close by the tool, which only shows its
-    leaves (R-BAL190).
+    leaves (R-BAL190).  A container has a leaf (:func:`is_container`), so a step
+    left with none is never one whose leaves were all dropped.
     """
     card = cards[number]
-    if card.is_container:
+    if is_container(card, cards, shipped):
         return (not card.is_open and card.touched_by_hand) or all(
-            dropped(leaf, cards, shipped) for leaf in card.leaves)
-    return _closed_dropped(card) and not (is_work(card) and number in shipped)
+            dropped(leaf, cards, shipped) for leaf in leaves(card, cards, shipped))
+    return _closed_dropped(card) and not (is_work(card, cards, shipped) and number in shipped)
 
 
 def _above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
@@ -132,12 +193,13 @@ def _above(card: Card, cards: Mapping[int, Card]) -> Iterator[Card]:
 
 def missing(cards: Mapping[int, Card]) -> set[int]:
     """Cards the decisions below would read that ``cards`` does not hold yet:
-    blockers, parents, and a container's leaves (its STEP children; the findings
-    and rulings it owns decide nothing)."""
+    blockers, parents, and every step linked under a card, each read to decide whether
+    it is a leaf (:func:`leaves`; the findings and rulings a card owns decide
+    nothing)."""
     wanted = set()
     for card in cards.values():
         wanted.update(card.blocked_by)
-        wanted.update(card.leaves)
+        wanted.update(card.step_children)
         if card.parent is not None:
             wanted.add(card.parent)
     return wanted - set(cards)
@@ -152,8 +214,8 @@ def resolved(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> 
         return not card.is_open
     if dropped(number, cards, shipped):
         return True
-    if card.is_container:
-        return all(resolved(leaf, cards, shipped) for leaf in card.leaves)
+    if is_container(card, cards, shipped):
+        return all(resolved(leaf, cards, shipped) for leaf in leaves(card, cards, shipped))
     return number in shipped
 
 
@@ -172,6 +234,37 @@ def is_live(number: int, cards: Mapping[int, Card], shipped: Iterable[int]) -> b
     """
     return (not resolved(number, cards, shipped)
             and dropped_above(cards[number], cards, shipped) is None)
+
+
+def leaves_below(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> list[Card]:
+    """Every leaf below ``card`` that is work, in any state -- under the steps it splits,
+    under theirs, ... (a step split again is not a leaf; its own leaves are), each level in
+    card order.  ``cards`` holds them all (:func:`missing`)."""
+    below, wanted = [], sorted(leaves(card, cards, shipped))
+    while wanted:
+        below += [cards[number] for number in wanted if is_work(cards[number], cards, shipped)]
+        wanted = sorted(number for step in wanted for number in leaves(cards[step], cards,
+                                                                          shipped))
+    return below
+
+
+def left_bare(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
+              ending: set[int]) -> list[Card]:
+    """The steps at or below ``card`` whose every leaf is in ``ending`` -- leaves
+    whose filing has not finished, dropped now.  Closed while marked, those were never
+    leaves (:func:`leaves`), so each such step is a plain step again: no leaf carries its
+    drop (R-BAL190), so it carries its own.  One a PERSON closed keeps their close; one
+    the tool closed (its display of git, or of its leaves) is closed again, as dropped.
+    No two are nested: a step split again is a leaf of the
+    one above it, and ``ending`` holds work only (:func:`leaves_below`), never a step
+    split again.  ``cards`` holds them all (:func:`missing`)."""
+    bare, wanted = [], [card]
+    while wanted:
+        bare += [step for step in wanted if (step.is_open or not step.touched_by_hand)
+                 and (split := leaves(step, cards, shipped)) and set(split) <= ending]
+        wanted = [cards[number] for step in wanted for number in leaves(step, cards, shipped)
+                  if is_container(cards[number], cards, shipped)]
+    return bare
 
 
 def never_offered(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> str | None:
@@ -205,7 +298,7 @@ def workable(card: Card, cards: Mapping[int, Card], shipped: Iterable[int],
     return (
         card.is_open
         and card.kind == "step"
-        and is_work(card)
+        and is_work(card, cards, shipped)
         and never_offered(card, cards, shipped) is None
         and card.number not in shipped
         and card.number not in claims
@@ -239,8 +332,8 @@ def unfinished_reports(cards: Mapping[int, Card], shipped: Iterable[int]) -> lis
         + ("" if card.number in shipped else ", or `plan drop` it" if card.is_open else
            ", or, to withdraw it, reopen it and close it as not planned on the web")
         + (f" (which unlinks it from plan#{card.parent} first: it was never part of that split, "
-           "R-BAL205)" if card.is_open and is_work(card) and card.kind == "step" and card.parent
-           and card.number not in shipped else "")
+           "R-BAL205)" if card.is_open and is_work(card, cards, shipped) and card.kind == "step"
+           and card.parent and card.number not in shipped else "")
         + f"; with that command lost, `plan show plan#{card.number}` says how to finish it"
         for card in sorted(cards.values(), key=lambda card: card.number)
         if filing_unfinished(card)
@@ -294,9 +387,11 @@ class Placement:
     note: str
 
 
-def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) -> Placement:
+def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int,
+                   cards: Mapping[int, Card], shipped: Iterable[int]) -> Placement:
     """Where leaf ``leaf`` of ``parent`` goes, given the board's ``order``
-    (``(card number, item id)``, top first).
+    (``(card number, item id)``, top first), and ``cards`` and ``shipped`` to read
+    ``parent``'s leaves (:func:`leaves`).
 
     In the split step's place while it is on the board; else just after the
     lowest of the leaves filed before it; else just above the highest of the
@@ -305,9 +400,9 @@ def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) ->
     nowhere new: where it is, or where GitHub adds it, at the bottom.  Filing
     order is the cards' numbers, never the sub-issue list's, which a person may
     drag.  No leaf it is placed by has an unfinished filing: a leaf is never
-    filed while another of its split step's is unfinished (R-BAL204).  (One a
-    person closed while marked is no unfinished filing, and may sit where a
-    failed move left it.)
+    filed while another of its split step's is unfinished (R-BAL204).  One
+    dropped before its filing finished is no leaf, so nothing is placed by it,
+    wherever a failed move left it.
     """
     order = [(number, item) for number, item in order if number != leaf]
     positions = [item for _, item in order]
@@ -315,7 +410,7 @@ def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) ->
     if parent.board_item is not None:
         return Placement(True, parent.board_item, parent.board_item,
                          f"into plan#{parent.number}'s place")
-    anchors = [number for number in parent.leaves if number in items]
+    anchors = [number for number in leaves(parent, cards, shipped) if number in items]
     earlier = [items[number] for number in anchors if number < leaf]
     if earlier:
         return Placement(True, max(earlier, key=positions.index), None,
@@ -425,15 +520,16 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
                 f"ruling plan#{card.number} is open, though a ruling is a record its filing "
                 "closes: close it by hand"
             )
-        if card.number in shipped and not is_work(card):
+        container = is_container(card, cards, shipped)
+        if card.number in shipped and not is_work(card, cards, shipped):
             plan.history.append(
                 f"a Ships trailer names plan#{card.number}, a "
-                f"{'container' if card.is_container else card.kind or 'card with no type'}, "
+                f"{'container' if container else card.kind or 'card with no type'}, "
                 "which no commit ships: a mistyped or stale number? It is not acted on"
             )
         if card.kind not in SHIPPABLE:
             continue
-        if card.is_container:
+        if container:
             _sync_container(card, plan, cards, shipped)
         elif card.number in shipped and card.is_open:
             _sync_shipped(card, plan, claims, ship_branches)

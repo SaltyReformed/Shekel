@@ -55,7 +55,7 @@ def test_a_leaf_takes_the_split_steps_place_and_the_next_leaf_follows_it(code, t
     assert tracker.board.items == [1, 4, 3]
     assert run(tracker, code, *args, "--title", "second half") == 0
     assert tracker.board.items == [1, 4, 5, 3]
-    assert tracker.cards_by_number[2].is_container
+    assert tracker.cards_by_number[2].step_children == (4, 5)
 
 
 
@@ -90,21 +90,25 @@ def test_a_ruling_is_filed_closed_under_its_owner(code, tmp_path):
 
 
 
-def test_an_answered_question_becomes_its_ruling(code, tmp_path):
-    """One card, so the question's text is never copied (rule 14)."""
+def test_an_answered_question_becomes_its_ruling(code, tmp_path, capsys):
+    """One card, so the question's text is never copied (rule 14); run again over the
+    finished ruling, the conversion creates nothing: its question is no open question."""
     answer = tmp_path / "a"
     answer.write_text("Yes.")
     tracker = FakeTracker()
     tracker.add(1)
     tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
-    assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Tonight",
-                "--owner", "plan#1", "--from-question", "plan#2",
-                "--answer-file", str(answer)) == 0
+    args = ("file", "ruling", "--arc", "balance", "--title", "Tonight", "--owner", "plan#1",
+            "--from-question", "plan#2", "--answer-file", str(answer))
+    assert run(tracker, code, *args) == 0
     card = tracker.cards_by_number[2]
     assert (card.kind, card.parent, card.is_open) == ("ruling", 1, False)
     assert tracker.bodies[2] == ruling_body("Ship it tonight?", "Yes.")
     assert tracker.board.items == [1]
     assert not [w for w in tracker.writes if w[0] == "create"]
+    writes = list(tracker.writes)
+    assert run(tracker, code, *args) == 1
+    assert "is not an open question" in capsys.readouterr().err and tracker.writes == writes
 
 
 
@@ -321,8 +325,8 @@ def test_two_open_cards_with_the_same_kind_title_and_text_are_refused(code, caps
                     on_board=False)
     assert run(tracker, code, "file", "finding", "--arc", "balance", "--title", "Twice",
                "--owner", "plan#1", "--text", "The report counts a refund twice.") == 1
-    assert "2 cards, open or unfinished, have this kind, title and text (plan#2, plan#3)" in (
-        capsys.readouterr().err)
+    assert ("2 cards have this kind, title and text (plan#2, plan#3): withdraw the extras -- "
+            "`plan drop` an open one") in capsys.readouterr().err
     assert not tracker.writes
 
 
