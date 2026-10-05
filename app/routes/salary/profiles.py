@@ -341,6 +341,9 @@ def create_profile():
             additional_income=data.get("additional_income", 0),
             additional_deductions=data.get("additional_deductions", 0),
             extra_withholding=data.get("extra_withholding", 0),
+            stub_gross_includes_after_tax=data.get(
+                "stub_gross_includes_after_tax", False,
+            ),
         )
         db.session.add(profile)
         db.session.flush()

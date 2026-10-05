@@ -62,7 +62,9 @@ from app.schemas.validation import (
     PayStubPaydaySchema,
     PayStubSchema,
 )
-from app.services import paycheck_line_kinds, pay_stub_service, withholding_kinds
+from app.services import (
+    paycheck_line_kinds, pay_stub_gross, pay_stub_service, withholding_kinds,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404, get_owned_via_parent, require_owner
 from app.utils.db_errors import is_unique_violation
@@ -527,6 +529,9 @@ def _form_page(
 ) -> dict[str, Any]:
     """The stub form's page context: the line split, the report, the options.
 
+    ``gross_counts`` words which earnings the printed-gross check adds on this
+    job (ruling **R-SAL102**), the phrase the check's own refusals use.
+
     Args:
         profile: The owned profile.
         ctx: The request's :class:`~app.services.balance_at.BalanceContext`.
@@ -547,6 +552,9 @@ def _form_page(
         "lines": lines,
         "kind_options": paycheck_line_kinds.kind_options(),
         "tax_options": withholding_kinds.kind_options(),
+        "gross_counts": pay_stub_gross.gross_counts(
+            profile.stub_gross_includes_after_tax,
+        ),
     }
 
 
