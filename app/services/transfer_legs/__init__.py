@@ -146,12 +146,14 @@ which the step rewrites -- ``_endpoints._apply_endpoint_move`` walks each
 shadow's ``covering_movements`` to carry them to a moved endpoint, and
 ``_status.apply_status_to_all_three`` repairs a drifted shadow from its
 sibling's ``recorded_settlement``; and statement match's own reads of a
-payment member's row -- ``_acts.named_rows``,
-``_candidates._claimed_rows`` and
-``_accept._reject_parent_and_its_own_purchase`` read a transfer payment's
+payment member's row -- ``_acts.named_rows`` and
+``_candidates._claimed_rows`` read a transfer payment's
 ``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
 id, and ``_acts._WHOLE_ACT`` loads a payment member's row and its
-``entries``, for a transfer's payment its shadow.
+``entries``, for a transfer's payment its shadow.  (A third reader of that
+id, the accept door's refusal of an envelope named beside its own purchase,
+was deleted at ``credit_card:CC-5-4a-5``'s leaf 5c-2c-1, finding
+**CC-386**.)
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair

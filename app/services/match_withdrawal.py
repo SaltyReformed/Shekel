@@ -133,13 +133,16 @@ the tick it captions -- a row settling from its purchases over a kept
 payment -- names its lines under the row, a typed ``$0.00`` box is refused
 (ruling **R-CC125**), and neither list offers a tick that would move a
 payment between accounts (ruling **R-CC126**; finding **CC-378** closes at
-that leaf's tick).  Every other panel tick names nothing, so one that would
-free a line is refused; two can still take a payment off uncaptioned -- a
+that leaf's tick).  An act naming the payments of SEVERAL rows is named
+under each of them with the rows that must all close
+(:func:`pending_alone_and_together`, leaf ``5c-2c-1``, ruling **R-CC135**,
+finding **CC-384**), and its lines count as named only when all of those
+rows are ticked.  Every other panel tick names nothing, so one that would
+free a line is refused; one can still take a payment off uncaptioned -- a
 ``$0.00``-figure row ticked with its box cleared, saved when its payment is
-unmatched (ledger row **BAL-596**), and two rows matched to one line ticked
-together, refused until the panel names each match's lines for the rows it
-needs (finding **CC-384**).  Carry-forward names the open finding that owns
-its caption until ``CC-5-4a-5c-2`` (**R-CC76**; finding **CC-364**).  The
+unmatched (ledger row **BAL-596**).  Carry-forward names the open finding
+that owns its caption until leaf ``5c-2c-2`` (**R-CC76**; finding
+**CC-364**).  The
 declarations and the press live in :mod:`app.services.match_press`, split
 from here by subject at leaf 5c-2b.
 
@@ -403,7 +406,7 @@ def _freed_lines(acts: "list[StatementMatch]") -> "dict[int, FreedLine]":
     """Return the bank lines *acts* name, as facts, keyed by id -- ONE query.
 
     Read once for however many withdrawals *acts* make up between them
-    (:func:`pending_for_each`), and for the one a press makes.  No query
+    (:func:`pending_alone_and_together`), and for the one a press makes.  No query
     at all when no act names a line.
 
     Args:
@@ -627,54 +630,174 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     return pending_for_each({None: entries})[None]
 
 
+@dataclass(frozen=True)
+class SharedWithdrawal:
+    """ONE accepted act that only SEVERAL removals made together withdraw.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-1), ruling **R-CC135**
+    (developer 2026-10-04, "One check per save"): *"Warnings name each match
+    under every row it names, saying which rows must all close"*.  An act
+    naming the payments of two rows is left naming no app row only when both
+    rows' removals are made, so neither removal frees its lines alone
+    (:attr:`RemovalWithdrawals.alone`); the reconcile panel read each row
+    alone until this leaf, named the line under neither, and refused the two
+    ticked together (finding **CC-384**).
+
+    Attributes:
+        withdrawal: What withdrawing this one act frees (``matches`` is 1).
+        keys: Every removal whose movements the act names, withdrawn when
+            all are made in one save (or fewer, where keys' movements overlap).
+    """
+
+    withdrawal: MatchWithdrawal
+    keys: "frozenset[Hashable]"
+
+
+@dataclass(frozen=True)
+class RemovalWithdrawals:
+    """What one removal withdraws by itself, and what it withdraws only with others.
+
+    Attributes:
+        alone: The acts this removal empties by itself, as
+            :func:`take_out_of_matches` would answer it alone -- what
+            :func:`pending_for_each` returns for it.
+        shared: The acts it empties only together with other removals given
+            beside it, one :class:`SharedWithdrawal` per act, in the order the
+            acts load.
+    """
+
+    alone: MatchWithdrawal
+    shared: "tuple[SharedWithdrawal, ...]"
+
+
+def _classified(groups: "dict[Hashable, set[int]]") -> "tuple[dict, dict]":
+    """Class every act naming *groups*' movements ONCE: per key, ``(alone, shared)``.
+
+    The one walk :func:`pending_alone_and_together` and
+    :func:`pending_for_each` share; each then reads the lines of only the acts
+    it reports.  *groups* is ``{key: movement ids}``.
+    """
+    alone: "dict[Hashable, list[StatementMatch]]" = {key: [] for key in groups}
+    shared: "dict[Hashable, list[tuple[StatementMatch, frozenset[Hashable]]]]" = {
+        key: [] for key in groups
+    }
+    for act in _acts_naming(set().union(*groups.values())):
+        keys = frozenset(
+            key for key, ids in groups.items()
+            if any(member.transaction_entry_id in ids for member in act.members)
+        )
+        singles = [key for key in keys if _loses_every_row(act, groups[key])]
+        for key in singles:
+            alone[key].append(act)
+        if not singles and len(keys) > 1 and _loses_every_row(
+            act, set().union(*(groups[key] for key in keys)),
+        ):
+            for key in keys:
+                shared[key].append((act, keys))
+    return alone, shared
+
+
+def pending_alone_and_together(
+    removals: "dict[Hashable, Iterable]",
+    rows_leaving: "dict[Hashable, Iterable] | None" = None,
+) -> "dict[Hashable, RemovalWithdrawals]":
+    """Return what each removal withdraws alone, and with the others given, in ONE read.
+
+    The read a screen offering MANY removals at once asks: one member query,
+    one act load and one line query however many it offers, and no query at
+    all when none of their movements is named by an act.  Each act naming any
+    of the movements is classed ONCE (plan step ``credit_card:CC-5-4a-5``,
+    leaf 5c-2c-1, ruling **R-CC135**):
+
+    * emptied by ONE removal's movements (:func:`_loses_every_row`) -- that
+      removal's :attr:`~RemovalWithdrawals.alone`, exactly as
+      :func:`take_out_of_matches` withdraws it when that removal is made;
+    * emptied only by the removals naming it, made together, and by no one
+      of them -- a :class:`SharedWithdrawal` under each of those removals;
+    * naming a movement none of *removals* takes -- neither: no save of these
+      removals empties it, and making some of them only takes their members
+      out of it, as :func:`take_out_of_matches` does.
+
+    Args:
+        removals: ``{key: movements}`` -- each value one removal's movements
+            (a reconcile panel tick's, a purchase X's), under whatever key the
+            caller reads its answer back by.
+        rows_leaving: ``{key: rows}`` -- the rows a removal deletes with its
+            movements (a CC payback the last card purchase's X takes down),
+            as :func:`take_out_of_matches` is handed them, so a creation
+            naming one is not counted as kept.  A key absent here deletes no
+            row; a shared act counts the rows of every removal it needs.
+
+    Returns:
+        ``{key: RemovalWithdrawals}``, one per key given.  All zeroes and no
+        shared act for a removal no act names, which is nearly every one.
+    """
+    groups = {
+        key: {entry.id for entry in entries}
+        for key, entries in removals.items()
+    }
+    leaving = {
+        key: {row.id for row in (rows_leaving or {}).get(key, ())}
+        for key in groups
+    }
+    alone, shared = _classified(groups)
+    lines = _freed_lines(
+        [act for each in alone.values() for act in each]
+        + [act for each in shared.values() for act, _keys in each]
+    )
+    return {
+        key: RemovalWithdrawals(
+            alone=_summarise(alone[key], leaving[key], groups[key], lines),
+            shared=tuple(
+                SharedWithdrawal(
+                    withdrawal=_summarise(
+                        [act],
+                        set().union(*(leaving[each] for each in keys)),
+                        set().union(*(groups[each] for each in keys)),
+                        lines,
+                    ),
+                    keys=keys,
+                )
+                for act, keys in shared[key]
+            ),
+        )
+        for key in groups
+    }
+
+
 def pending_for_each(
     removals: "dict[Hashable, Iterable]",
     rows_leaving: "dict[Hashable, Iterable] | None" = None,
 ) -> "dict[Hashable, MatchWithdrawal]":
-    """Return what each of several removals would withdraw, in ONE read.
+    """Return what each of several removals would withdraw ALONE, in ONE read.
 
-    :func:`pending_for_movements` for a screen offering MANY removals at once
-    -- the purchase list's X on each of an envelope's purchases, drawn for
-    every envelope on the grid (plan step ``credit_card:CC-5-4a-5``, ruling
-    **R-CC80**) -- so the page asks one member query, one act load and one
-    line query however many it offers, rather than three per purchase.
-    Each removal is answered exactly as :func:`take_out_of_matches` would
-    answer it alone: the acts naming its movements, split by
-    :func:`_partition`, the emptied ones summarised.
+    :func:`pending_for_movements` for a screen offering MANY removals, each
+    its own press -- the purchase list's X on each of an envelope's
+    purchases, drawn for every envelope on the grid (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC80**).  Each removal is answered
+    exactly as :func:`take_out_of_matches` would answer it alone: the
+    :attr:`~RemovalWithdrawals.alone` half of
+    :func:`pending_alone_and_together` over the same walk
+    (:func:`_classified`), reading the lines of those acts only.
 
     Args:
         removals: ``{key: movements}`` -- each value one press's movements,
             under whatever key the caller reads its answer back by.
         rows_leaving: ``{key: rows}`` -- the rows a removal's press deletes
-            with its movements (a CC payback the last card purchase's X takes
-            down), as :func:`take_out_of_matches` is handed them, so a
-            creation naming one is not counted as kept.  A key absent here
-            deletes no row.
+            with its movements, as :func:`pending_alone_and_together` takes
+            them.
 
     Returns:
         ``{key: MatchWithdrawal}``, one per key given.  All zeroes for a
         removal no act names, which is nearly every one.
     """
     leaving = rows_leaving or {}
-    groups = {
-        key: {entry.id for entry in entries}
-        for key, entries in removals.items()
-    }
-    acts = _acts_naming(set().union(*groups.values()))
-    emptied = {
-        key: _partition(
-            [
-                act for act in acts
-                if any(member.transaction_entry_id in ids for member in act.members)
-            ],
-            ids,
-        )[0]
-        for key, ids in groups.items()
-    }
-    lines = _freed_lines([act for each in emptied.values() for act in each])
+    groups = {key: {entry.id for entry in each} for key, each in removals.items()}
+    alone, _shared = _classified(groups)
+    lines = _freed_lines([act for each in alone.values() for act in each])
     return {
         key: _summarise(
-            emptied[key], {row.id for row in leaving.get(key, ())},
+            alone[key], {row.id for row in leaving.get(key, ())},
             groups[key], lines,
         )
         for key in groups

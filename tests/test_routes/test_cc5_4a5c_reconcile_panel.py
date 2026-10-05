@@ -730,9 +730,10 @@ class TestTheReadCostsNothingWhenNoTickWithdraws:
         The envelope settles from its purchase, so it passes the read's first
         test; what keeps the members table out of it is that the read is over
         the row's KEPT PAYMENT (none here) and not its entries -- a read over
-        the purchase would ask the table about it.  (``pending_for_each``
-        itself asks nothing for an empty set, so this grades WHICH movements
-        are read, not the comprehension's second clause.)
+        the purchase would ask the table about it.  (The panel's reader,
+        ``pending_alone_and_together`` since leaf 5c-2c-1, itself asks nothing
+        for an empty set, so this grades WHICH movements are read, not the
+        comprehension's second clause.)
         """
         with app.app_context():
             checking_id = seed_user["account"].id

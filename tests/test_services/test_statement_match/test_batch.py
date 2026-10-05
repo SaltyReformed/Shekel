@@ -492,13 +492,17 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
         of a row another item moves is
         :class:`TestASIBLINGWriteCannotBookAgainstAStalePrice`'s.
 
-        **The sentence is the availability one, not the double-count one, and
-        that is the correct order of refusals.**  A row worth nothing can
-        match no bank line, so ``resolve_rows`` refuses it before
-        ``record_match``'s guard is ever asked.  The guard's live shape is an
-        envelope matched EMPTY, reverted, then given a purchase
-        (``test_accept.py::TestEveryOtherRefusalFires::
-        test_a_purchase_under_a_REVERTED_matched_envelope_is_refused``).
+        **The sentence is the availability one, not the double-count one.**
+        A row worth nothing can match no bank line, so ``resolve_rows``
+        refuses it as unavailable.  ``record_match``'s guard against an
+        envelope named beside its own purchase, which this paragraph said was
+        never asked here, is deleted since plan step
+        ``credit_card:CC-5-4a-5``, leaf 5c-2c-1 (finding **CC-386**, ruling
+        **R-CC144**); its last live shape -- an envelope matched EMPTY,
+        reverted, then given a purchase -- was a false refusal and matches
+        since leaf 5c-2b (finding **CC-385**, ruling **R-CC143**;
+        ``test_accept.py::TestEveryOtherRefusalFires::
+        test_a_purchase_under_a_REVERTED_matched_envelope_matches``).
         """
         with app.app_context():
             statement = an_import(seed_user)

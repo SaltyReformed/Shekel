@@ -58,17 +58,24 @@ can submit the pair -- :func:`~app.schemas.validation.statement_reconcile
 .reconcile_payload` keys one verb per line -- so this decides only what a
 crafted body gets.  It is a real decision rather than an arbitrary one: two ticked items can
 collide, because an envelope a match names may also be the destination a
-recorded line was aimed at, and the guard against counting one purchase twice
-(:func:`~._accept._reject_parent_and_its_own_purchase`) has to refuse one of
-them.  Measured on the developer's own statement, 4 envelopes are both named by
-a proposal and offered as a destination, and **15 of the 91 recordable lines
-aim at one**.  The developer ruled 2026-08-19 that the PROPOSAL wins: it
-explains money the records already hold against a line the bank showed, where
-the recorded line can be re-aimed at another envelope on the next pass.
+recorded line was aimed at, and one of them has to be refused.  The matches
+run first, so the match settles the envelope on a covering movement, and a
+settled row holding a payment takes no purchase (ruling **R-BAL78**): the
+creation is refused by the destination re-ask
+(:func:`~._destinations.current_destinations`), which asks the envelope as
+the match left it (``test_batch``'s
+``test_a_creation_cannot_target_an_envelope_a_match_claimed`` grades it).
+Measured on the developer's own statement, 4 envelopes are
+both named by a proposal and offered as a destination, and **15 of the 91
+recordable lines aim at one**.  The developer ruled 2026-08-19 that the
+PROPOSAL wins: it explains money the records already hold against a line the
+bank showed, where the recorded line can be re-aimed at another envelope on
+the next pass.
 
 **Each item FLUSHES before the next is validated**, and that is what makes one
-shared derivation safe rather than merely fast: the guard above reads the
-database.
+shared derivation safe rather than merely fast: the destination re-ask above
+reads the rows as the database holds them, and so does every act's read of
+what is already matched (:func:`~._candidates.matched_subjects`).
 
 **Every LINE lock FIRST, in ONE order, before any arm runs** (plan step
 ``bank_import:X-gi-5``, finding **N-471**): four arms calling a door per item
@@ -76,16 +83,20 @@ took a pass's line locks in SUBMISSION order, and two presses naming the same
 lines in different arms crossed.  :func:`~._resolve.lock_lines` carries the
 argument, what it closes and what it leaves ``balance:X-bn``.
 
-**It is NOT the only way one item can move a figure another item names, and
-saying so was measured FALSE on 2026-08-19.**  Settling a matched purchase runs
+**A parent and its own child are NOT the only pair through which one item can
+move a figure another item names, and saying they were was measured FALSE on
+2026-08-19.**  Settling a matched purchase runs
 ``entry_service.update_entry``, which re-derives the envelope's CC Payback and
 writes its ``estimated_amount`` -- a SIBLING rather than a child, invisible to
-that guard.  What actually keeps a pass honest is that
-:func:`~._valuation.repriced` re-prices every named row per act, and, since
-plan step ``bank_import:X-f6d-3``, that an item whose row has moved since the
-screen described it is REFUSED rather than written (finding **N-336**).  This
-paragraph asserted the refuted reason until an adversarial review found it
-2026-08-23; ``_reject_parent_and_its_own_purchase`` had already been corrected.
+the guard that refused an envelope named beside its own purchase.  What
+actually keeps a pass honest is that :func:`~._valuation.repriced` re-prices
+every named row per act, and, since plan step ``bank_import:X-f6d-3``, that an
+item whose row has moved since the screen described it is REFUSED rather than
+written (finding **N-336**).  This paragraph asserted the refuted reason until
+an adversarial review found it 2026-08-23; that guard's own docstring had
+already been corrected, and the guard itself was deleted as unreachable at
+plan step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1 (finding **CC-386**, ruling
+**R-CC144**).
 
 **What it hands back lives in** :mod:`._outcome` -- :class:`~._outcome
 .BatchOutcome` with its two item values, and the :class:`~._outcome.Tally`
@@ -383,8 +394,8 @@ def _run(tally: Tally, line_ids: "tuple[int, ...]", act) -> object:
         # adversarial test-quality review 2026-08-19.
         #
         # It is also what makes the next item's refusals see this one: they
-        # read what is already matched, and whether a row names an envelope
-        # whose purchase this act just claimed.
+        # read what is already matched, and re-ask whether a destination
+        # still takes a purchase as the rows now stand.
         db.session.flush()
     except (ValidationError, NotFoundError) as exc:
         savepoint.rollback()

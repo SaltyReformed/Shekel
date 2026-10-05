@@ -128,15 +128,22 @@ def destinations_for(
     typically the sum of the purchases."*), and an act naming a SETTLED
     envelope's dated payment is the money clause's.
 
-    **Finding N-317 says this clause is wider than the money needs, and the
-    developer's ruling of 2026-08-19 is that it STAYS WHOLE**: a money guard is
-    not narrowed for a `$0.00` benefit.  The row is OPEN in ``ledger.md`` with
-    its diagnosis corrected -- an earlier closure argued the clause protects a
-    projected envelope holding no entries, whose leg moves `+111.02` when a
-    purchase is added, and adversarial review measured that shape unreachable
-    through this clause: a match SETTLES the envelope it names, and a
+    **The clause that hid an already-matched envelope is DELETED, and two
+    rulings amend the one that kept it.**  Finding **N-317** said it was
+    wider than the money needs, and ruling **bank_import:R-FY** (developer
+    2026-08-19) kept it WHOLE -- a money guard is not narrowed for a `$0.00`
+    benefit -- and retired N-317 the next day as a decision rather than work
+    owed.  Its one remaining reach was the Projected envelope above, whose
+    matched lump the revert keeps UN-DATED and counting nothing, so rulings
+    **R-CC141** (filing into it is allowed) and **R-CC143** (developer
+    2026-10-05, "Allow it, change test": the match saves and the purchase
+    counts once) amend R-FY's "stays whole" for it, and leaf 5c-2c-1's
+    ruling **R-CC144** amends the clause of R-FY that kept the accept door's
+    twin guard.  What the deleted clause once guarded beside that -- a
+    Projected envelope holding no entries, matched -- was already
+    unreachable through it: a match SETTLES the envelope it names, and a
     zero-entry settle at the bank's figure writes a COVERING MOVEMENT, which
-    the money clause above already refuses.
+    the money clause above refuses.
 
     Args:
         account_id: The cash account the statement is for.

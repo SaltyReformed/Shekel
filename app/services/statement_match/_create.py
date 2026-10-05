@@ -264,9 +264,8 @@ def _made_by_this_act(
 
     Ruling **R-GG**, plan step ``bank_import:X-f6f``.  The purchase is both --
     created, and named, because it is what the bank line IS.  The envelope is
-    created and never named: naming a container beside its own purchase counts
-    the same money twice, which
-    :func:`~._accept._reject_parent_and_its_own_purchase` refuses outright.
+    created and never named: naming a container beside its own purchase would
+    count the same money twice, so the act names the purchase alone.
     That asymmetry is exactly why the record is its own relation rather than a
     column on the membership, and it is why this function exists rather than
     the door passing its own rows through.
@@ -507,9 +506,8 @@ def create_purchase_from_line(
     reject_ambiguous_destination(creation)
     reject_incomplete_new_envelope(creation)
     # ONE read of what this account's matches have claimed, for this act:
-    # the line refusal and the double-count guard inside ``record_match``
-    # both narrow with it, so they cannot disagree.  The destination refusal
-    # re-asks the row itself (``_destinations.current_destinations``).
+    # the line refusal narrows with it.  The destination refusal re-asks the
+    # row itself (``_destinations.current_destinations``).
     matched = matched_subjects(scope.account_id)
     line = _load_line(creation, matched, scope, answers)
     # **Before anything is staged**, and before the destination is even looked
@@ -587,7 +585,6 @@ def create_purchase_from_line(
     accepted = record_match(
         scope,
         _match_content(entry, line, envelope, created, scope.calendar),
-        matched,
         # **The PASS's own answer, threaded rather than decided here** (ruling
         # **R-GT**).  This door has two entrances since plan step
         # ``bank_import:X-ge`` -- the review screen's destination select and an

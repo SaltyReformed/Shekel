@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines, shown_line_ids %}
+{% from "_withdrawal_macros.html" import frees_lines, line_facts, posted_ids, shown_line_ids %}
 {% macro period_span(period) -%}
 {#- WHICH paycheck a block belongs to, in this panel's narrow register.
 
@@ -22,6 +22,19 @@
   -
   {{ period.end_date.strftime('%b %-d') }}
 </span>
+{%- endmacro %}
+{% macro shared_match(shared) -%}
+{#- **Ruling R-CC135's warning for a match naming several rows' payments**
+   (developer 2026-10-04, "One check per save"; leaf 5c-2c-1): *"Matched
+   with Dining to one bank line: closing both from their purchases withdraws
+   that match, so 9/24 PAYMENT -$205.00 is unexplained again on your
+   statement screen."*  Each OTHER row it needs is named, with its paycheck
+   where another row on the list carries the same name
+   (``SharedPartner.needs_period``).  ``shared`` is a
+   ``reconcile_service.SharedMatch``. -#}
+{%- set rows = shared.partners | length + 1 -%}
+{%- set lines = shared.withdrawal.lines | length -%}
+Matched with {% for partner in shared.partners %}{{ partner.name }}{% if partner.needs_period %} {{ period_span(partner.period) }}{% endif %}{% if not loop.last %}{{ ' and ' if loop.revindex == 2 else ', ' }}{% endif %}{% endfor %} to {{ 'one bank line' if lines == 1 else lines ~ ' bank lines' }}: closing {{ 'both' if rows == 2 else 'all ' ~ rows }} from their purchases withdraws that match, so {{ line_facts(shared.withdrawal.lines) }} {{ 'is' if lines == 1 else 'are' }} unexplained again on your statement screen.
 {%- endmacro %}
 {% macro settle_row(group, panel_id, label, period=none) %}
 {# ONE rendering of a settle offer, used by BOTH arms.
@@ -54,13 +67,20 @@
    ``group.settle.withdraws`` is the act's own twin over that payment, read
    once for the panel.  The caption and the hidden field print from the SAME
    withdrawal and only where it frees a line, and the field is PER ROW
-   (``group.settle.shown_field``), because the act compares per account.  The
-   caption sits on its own line under the row's one-line flex, where the
-   label's truncation cannot cut a bank line off, and the checkbox names it
-   as its description.
+   (``group.settle.shown_field``), because the save names the lines under the
+   rows TICKED (ruling R-CC135).  The caption sits on its own line under the
+   row's one-line flex, where the label's truncation cannot cut a bank line
+   off, and the checkbox names it as its description.
+
+   **A match naming several rows' payments is named under each of them**
+   (leaf 5c-2c-1, ruling R-CC135, ``group.settle.shared``), saying which rows
+   must all close, and each posts its lines WITH those rows
+   (``SharedMatch.FIELD``): the save counts them as named only when every one
+   of the rows is ticked, so ticking one alone saves with the match kept on
+   the others.
 #}
 {%- set withdraws = group.settle.withdraws %}
-{%- set names_lines = withdraws and withdraws.frees_a_line %}
+{%- set names_lines = (withdraws and withdraws.frees_a_line) or group.settle.shared %}
 {%- set caption_id = 'reconcile-' ~ panel_id ~ '-' ~ group.settle.control_id ~ '-withdraws' %}
 <li class="list-group-item">
   <div class="d-flex align-items-center gap-2">
@@ -103,9 +123,19 @@
   </div>
   {% if names_lines %}
   <div class="form-text mt-1" id="{{ caption_id }}">
-    Closing it from its purchases {{ frees_lines(withdraws) }}.
+    {% if withdraws and withdraws.frees_a_line %}
+    <div>Closing it from its purchases {{ frees_lines(withdraws) }}.</div>
+    {% endif %}
+    {% for shared in group.settle.shared %}
+    <div>{{ shared_match(shared) }}</div>
+    {% endfor %}
   </div>
+  {% if withdraws and withdraws.frees_a_line %}
   <input type="hidden" name="{{ group.settle.shown_field }}" value="{{ shown_line_ids(withdraws) }}">
+  {% endif %}
+  {% for shared in group.settle.shared %}
+  <input type="hidden" name="{{ shared.FIELD }}" value="{{ posted_ids(shared.withdrawal.line_ids) }}{{ shared.SEPARATOR }}{{ posted_ids(shared.row_ids) }}">
+  {% endfor %}
   {% endif %}
 </li>
 {% endmacro %}

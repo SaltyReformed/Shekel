@@ -121,11 +121,18 @@ from app.services.reconcile_service._offers import (
     Section,
     TickForm,
 )
+from app.services.reconcile_service._named import (
+    NamedLines,
+    SharedMatch,
+    SharedPartner,
+    SharedShown,
+)
 from app.services.reconcile_service._purchases import record_settled_days
 from app.services.reconcile_service._rows import Statement
 
 __all__ = [
     "DamagedTransfer",
+    "NamedLines",
     "OfferKind",
     "OutstandingGroup",
     "OutstandingPurchase",
@@ -133,6 +140,9 @@ __all__ = [
     "OutstandingTransaction",
     "ReconcileSubmission",
     "Section",
+    "SharedMatch",
+    "SharedPartner",
+    "SharedShown",
     "Statement",
     "TickForm",
     "outstanding_set",

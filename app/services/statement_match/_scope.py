@@ -30,10 +30,13 @@ creatable lines an envelope an earlier proposal in the same pass claims.
 was.**  The argument was that a candidate's figure is
 ``gross - Sigma(card entries) - Sigma(posted purchases)``
 (:func:`app.services.cash_ledger.cash_leg_of`), so only a parent and its own
-child could move each other -- which
-:func:`~._accept._reject_parent_and_its_own_purchase` refuses.  **Measured
-FALSE on 2026-08-19**: settling a matched purchase writes a SIBLING CC
-Payback's ``estimated_amount``, which that guard cannot see.
+child could move each other -- which the accept door's guard against an
+envelope named beside its own purchase refused.  **Measured FALSE on
+2026-08-19**: settling a matched purchase writes a SIBLING CC Payback's
+``estimated_amount``, which that guard could not see.  *(The guard itself is
+deleted since plan step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1, as
+unreachable: a row holding a purchase is worth ``$0.00`` to the offer,
+ruling **R-BAL81**; finding **CC-386**, ruling **R-CC144**.)*
 
 **So a price is never taken off this scope.**  What the scope holds is WHICH
 rows may be offered, which no act changes;

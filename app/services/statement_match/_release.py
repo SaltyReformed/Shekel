@@ -649,10 +649,12 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
       over its covering movement it is refused
       (``entry_service._refusals._reject_settled_addition``).  A purchase
       reaches it only after a revert, and the revert moves its revision, so
-      the undo refuses it as edited since; and a second act could not name
-      that purchase anyway, the double-count refusal
-      (:func:`~._accept._reject_parent_and_its_own_purchase`) holding it
-      while this act names the row;
+      the undo refuses it as edited since.  That refusal is what holds this
+      case now: nothing stops a second act naming that purchase since plan
+      step ``credit_card:CC-5-4a-5``'s leaf 5c-2b (finding **CC-385**, ruling
+      **R-CC143**) deleted the arm of the accept door's double-count refusal
+      that held it while this act named the row, and leaf 5c-2c-1 deleted the
+      rest of that refusal (finding **CC-386**, ruling **R-CC144**);
     * a created INCOME row takes no purchase at all (``create_entry``'s
       expense-only guard).
 

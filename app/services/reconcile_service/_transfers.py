@@ -347,8 +347,8 @@ def outstanding_transfers(
             # envelope.
             closes_envelope=False,
             # No transfer tick takes a payment out of its matches once a
-            # ``$0.00`` box is refused (ruling R-CC125; ``_settle_one``).
-            withdraws=None,
+            # ``$0.00`` box is refused (ruling R-CC125; ``_settle_one``), so
+            # the offer keeps its default, naming no line.
         )
         groups.append(OutstandingGroup(
             key=leg.cell_key,

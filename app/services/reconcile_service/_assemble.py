@@ -553,7 +553,9 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         ValidationError: A ticked ``$0.00`` box (ruling **R-CC125**), or
             propagated from a settle verb -- an illegal transition a stale
             panel can still submit, or a save freeing other bank lines than
-            the panel named under the rows ticked (``PageOutOfDate``, ruling
+            the panel named for the rows ticked (``NamedLines.for_ticks``:
+            a shared match's lines only when all its rows are;
+            ``PageOutOfDate``, ruling
             **R-CC127**: *"on the reconcile panel, one out-of-date row means
             nothing on it saves"*, and ruling **R-CC135**: compared ONCE, for
             the whole save, at its close -- so a tick whose settle reaches no
@@ -569,17 +571,19 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     statement = submission.statement
     # ONE press for the panel's save (ruling R-CC135, "One check per save"):
     # what the page named is every line captioned under a row the owner
-    # TICKED, and what the whole save frees must equal it at the close.  A
+    # TICKED, and every line of a shared match whose rows were ALL ticked
+    # (``NamedLines.for_ticks``), and what the whole save frees must equal it
+    # at the close.  A
     # transfer's tick names no bank line -- a leg holds no purchase, so once
     # a typed ``$0.00`` box is refused (ruling R-CC125) the panel has no
     # transfer tick to caption -- so a leg's settle freeing a line no row
     # named is refused (``_transfers._settle_one``).
     # PROMISED: a row's caption names what ITS tick frees, so a ticked row
     # whose save went another way refuses the save (ledger row BAL-597).
-    with Press(Shown(frozenset().union(*(
-        submission.shown_lines.get(row_id, frozenset())
-        for row_id in submission.transaction_ids
-    ))), promised=True) as press:
+    with Press(
+        Shown(submission.named.for_ticks(submission.transaction_ids)),
+        promised=True,
+    ) as press:
         purchases = _purchases.record_settled_days(
             statement, submission.entry_ids,
         )
