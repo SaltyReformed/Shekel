@@ -273,48 +273,39 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       refusal abandoning its press, and carry-forward as one `Silent("CC-364")` press. Left open:
       **CC-384**, **balance:BAL-599** (events logged before the commit, `balance:X-dc`) and
       **balance:BAL-600** (BAL-597 at the single-row doors, `balance:X-da`). **4a-5c-2c**, split in
-      two (the coordinator, 2026-10-05): **4a-5c-2c-1** (no `Ships:`) -- **CC-386** first, a writer
-      enumeration and a deletion mutation (a deletion may need a developer ruling, as
-      **bank_import:R-FY** names `_accept._reject_parent_and_its_own_purchase`); **R-CC135**'s
-      per-match warnings on the reconcile panel, a shared act's line counting as named only when all
-      its rows are ticked, closing **CC-384**, pinned by the ruling's own example. **4a-5c-2c-2**
-      carries the `Ships:`: carry-forward's Confirm with its caption, post-back and redraw, its
-      `Silent("CC-364")` press a promised `Shown` one, closing **CC-364**; the `Silent` sweep and
-      the docstring rewrite.
+      two (the coordinator, 2026-10-05): **4a-5c-2c-1** `0088187f` (done, no `Ships:`) -- the
+      statement matcher's double-count guard, `_accept._reject_parent_and_its_own_purchase`, and its
+      proposer half, `_propose._holds_a_parent_and_its_child`, are deleted, every path that could
+      reach them being refused earlier as no longer available to match, and `record_match` takes no
+      claims (**R-CC144**, amending **bank_import:R-FY**; closed **CC-386**). **R-CC135**'s warning
+      on the reconcile panel: a match naming several rows' payments is named under each row it
+      needs, with the rows that must all close, from one read
+      (`match_withdrawal.pending_alone_and_together`), and posts its lines with those rows
+      (`shared_lines`); the save's one press is graded against the lines named for the rows ticked,
+      a shared match's only when all its rows are (`NamedLines.for_ticks`), so ticking both rows of
+      a shared match saves and frees its line (closed **CC-384**). Applications under
+      **balance:R-BAL207**: the rows a shared line needs are the page's claim, posted back and never
+      re-derived at the save, and a partner row's paycheck is printed where another row on the list
+      shares its name. Left open: **balance:BAL-601** (a shared match's withdrawal event names only
+      the last row, `balance:X-dc`). **4a-5c-2c-2** carries the `Ships:`: carry-forward's Confirm
+      with its caption, post-back and redraw, its `Silent("CC-364")` press a promised `Shown` one,
+      closing **CC-364**; the `Silent` sweep and the docstring rewrite.
 - [x] **CC-5-4b** `30e7ddbb0` -- the "Paid from this account" list (`R-CC44`), the bill arm's second
       scope (`SETTLEMENT_ARM`) ticked through its settle: a tick posts `transaction_ids` /
       `settled_amount-<row id>` and neither template nor POST gained a field (`R-CC116`); "this
       card" is `account_projection.is_revolving`, the type's `has_revolving_credit` flag and the one
       card predicate, where an id compare would be a second (`R-CC117`, rule 14). The row's own list
       offered it, by analogy to `R-CC43`'s matcher, until **R-CC126** (**CC-378**).
-- [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
-      balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
-      parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given
-      2026-09-23 5d (`R-CC69`..`R-CC73`); ticked with 5d.
-  - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
-        into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
-        non-loan liability's owed amount floored at zero, summed (`R-CC49`);
-        `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
-        `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
-        shape.
-  - [x] **CC-5-5b** `3d9d0c1a` -- every liability balance door asks OWED and stores held through
-        `liability_sign.held_balance` (`owed()` moved out of the seam; `R-CC52`): the create form
-        (`R-CC58`), the anchor editor on every surface (`R-CC57` as amended by `R-CC60`), the
-        books-opening card; a stale form refused and re-opened as a fresh click (`R-CC61`,
-        `R-CC62`); no stored row re-signed, a loan's anchor cell a link (`R-CC53`). Two commits,
-        `ef4f6782` first; closed **CC-357**; suite 15186/0 at `ef4f6782`.
-  - [x] **CC-5-5c** `6daa3048` -- ONE commit (`R-CC50`): the configured-loan arms report HELD
-        through `liability_sign.owed`; net worth the plain sum; band, trend, subtotal (`R-CC48`),
-        tiles, debt summary, loan readers and archived drawer (`R-CC67`) read `owed`; the footer's
-        words (`R-CC68`); an anchor save answers its opener's display (`R-CC74`, `R-CC77`, `R-CC78`)
-        from the door's report (`R-CC79`, `R-CC85`). Rule-5 re-signs confirmed; closed **CC-354**,
-        **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
-  - [x] **CC-5-5d** `8f8b056d` -- a goal on a DEBT is a milestone to get under (`R-CC69`..`R-CC73`):
-        ONE goal door, `savings_goal_door.judge_goal_save` (`R-CC87`, `R-CC90`, `R-CC93`); every
-        debt figure by the tile's one rule, `_tile.tile_balance_on` (`R-CC88`, `R-CC95`, `R-CC97`),
-        a card-style goal's start recorded as `start_owed` (`R-CC91`); a Delete goal button
-        (`R-CC94`); migration `764461215480`. Rule-5 re-expressions confirmed; closed **CC-360**,
-        **CC-371**; suite 15368/0.
+- [x] **CC-5-5** `8f8b056d` -- every balance is what the account HOLDS, owed is minus it (`R-CC47`);
+      the DECOMPOSED parent, ticked with 5d. Its span is archived under rule 5:
+      `historical/credit_card_cc5_5_span_archived_2026-10-05.md`.
+  - [x] **CC-5-5a** `aa29d977` -- `R-CC29`'s one flip moved into the balance seam.
+  - [x] **CC-5-5b** `3d9d0c1a` (with `ef4f6782`) -- every liability balance door asks OWED and
+        stores held, the flip moved out of the seam to `liability_sign.owed`. Closed **CC-357**.
+  - [x] **CC-5-5c** `6daa3048` -- the configured-loan arms report HELD and net worth is the plain
+        sum. Closed **CC-354**, **CC-361**, **CC-362**, **CC-365**.
+  - [x] **CC-5-5d** `8f8b056d` -- a goal on a DEBT is a milestone to get under. Closed **CC-360**,
+        **CC-371**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
