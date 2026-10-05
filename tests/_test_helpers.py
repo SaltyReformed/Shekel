@@ -10463,14 +10463,15 @@ class _FormControls(HTMLParser):
 
     Repeated names (the stub form's one-off rows) keep every value in order;
     an ``<input>`` submits its ``value`` and a ``<select>`` its ``selected``
-    option, else its first.  A control without a name submits nothing.  It
-    reads only those two shapes: any other control inside the form -- a
-    checkbox or radio, a ``<textarea>``, a named button, a disabled input, a
-    disabled or multiple select, a disabled option, or an option without a
-    ``value`` (a browser posts its text) -- fails the reading loudly rather
-    than being posted as a browser would not post it.  The one reader of the
-    salary route suites (plan step salary:S11-c-2b, its delta review's LOW-3
-    and LOW-4).
+    option, else its first, and a select with no option submits nothing.  A
+    control without a name submits nothing.  It reads only those two shapes:
+    any other control inside the form -- a checkbox or radio, a
+    ``<textarea>``, a named button, a disabled input, a disabled or multiple
+    select, a disabled option, an option without a ``value`` (a browser posts
+    its text), or a disabled ``<fieldset>`` or ``<optgroup>`` -- fails the
+    reading loudly rather than being posted as a browser would not post it.
+    The reader of the pay stub form's and the stub setting's route suites
+    (plan step salary:S11-c-2b, its delta review's LOW-3 and LOW-4).
     """
 
     #: Input types a browser posts by their ``value`` alone.
@@ -10491,6 +10492,8 @@ class _FormControls(HTMLParser):
             self._inside = attributes.get("action") == self.action
         elif self._inside and tag in ("textarea", "button") and attributes.get("name"):
             raise AssertionError(f"the reader does not post a named <{tag}>")
+        elif self._inside and tag in ("fieldset", "optgroup") and "disabled" in attributes:
+            raise AssertionError(f"the reader does not post a disabled <{tag}>")
         elif self._inside and tag == "input" and attributes.get("name"):
             plain = attributes.get("type", "text") in self._PLAIN_INPUTS
             if not plain or "disabled" in attributes:
@@ -10509,7 +10512,8 @@ class _FormControls(HTMLParser):
     def handle_endtag(self, tag):
         """Close a select, submitting its choice, or close the form."""
         if tag == "select" and self._select is not None:
-            self.controls.setdefault(self._select, []).append(self._chosen or "")
+            if self._chosen is not None:
+                self.controls.setdefault(self._select, []).append(self._chosen)
             self._select = None
         elif tag == "form":
             self._inside = False

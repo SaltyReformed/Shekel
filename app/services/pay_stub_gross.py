@@ -23,6 +23,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from app.enums import PaycheckLineKindEnum
+from app.services.paycheck_line_kinds import LABELS
 from app.utils.money import ZERO
 
 if TYPE_CHECKING:
@@ -118,14 +120,23 @@ def gross_refusals(
     single mistake's pair.**  Where one pair has several single-mistake
     causes, the wording asks after each and the owner tells which.  Where
     two mistakes offset into a single mistake's pair, the wording names that
-    mistake's causes and not theirs: base pay and a tax off by the same
-    amount read as net exact, and no cause a net exact wording names is
-    theirs; both printed totals typed off by the same read as an amount,
-    and the one wording that states a cause outright, "One amount is wrong"
-    (R-SAL106, worded by R-SAL114), is then false; base pay and a tax both off by
-    exactly the after-tax total make the pair the setting's exit answers,
-    and taking that exit then saves both mistakes.  The submit with one of
-    them fixed reads true.
+    mistake's causes and not theirs, so a wording that states a cause --
+    "One amount is wrong" (R-SAL106), R-SAL112's two answers and R-SAL119's
+    "You entered extra pay this stub doesn't list" -- can then be false:
+
+    * base pay and a tax off by the same amount read as net exact, and no
+      cause a net exact wording names is theirs;
+    * both printed totals typed off by the same read as an amount.  Where
+      the gross box then holds the base pay -- and the net box is off by the
+      earnings the check counts -- those earnings read as extra pay, and
+      removing a real earning the stub DOES list then SAVES the stub without
+      it: R-SAL112's second answer, to an owner who reads the stub's base pay
+      right, and R-SAL119's only one;
+    * base pay and a tax both off by exactly the after-tax total make the
+      pair the setting's exit answers, and taking that exit then saves both
+      mistakes.
+
+    The submit with one of them fixed reads true.
     **A tax left out** is no gross figure but shifts the net miss by its
     amount: ``$0.00`` left out changes nothing, so every wording is as right
     as with every tax typed; a non-zero one moves the pair, which then reads
@@ -165,14 +176,17 @@ def _net_exact(
     """Word a gross miss beside an exact net: how the gross was typed, or what it holds.
 
     The first bullet of :func:`gross_refusals`' rule (rulings R-SAL104,
-    R-SAL106, R-SAL108, R-SAL110; worded by R-SAL114 to R-SAL116).
+    R-SAL106, R-SAL108, R-SAL110; worded by R-SAL114 to R-SAL116).  The two
+    choices it names are the kind select's own labels (R-SAL116: "the exact
+    words on the form"), read from their one home.
     """
+    taxable = LABELS[PaycheckLineKindEnum.TAXABLE_EARNING]
     if not includes_after_tax and gross_miss == -after_tax:
         return {
             "printed_gross": (
                 f"{opening}: ${-gross_miss:,.2f} less, the same as your untaxed "
                 f"earnings.  Check the Gross Pay you typed.  If it's right, is one of "
-                f"those earnings taxed on your stub?  Then choose Taxable earning for it."
+                f"those earnings taxed on your stub?  Then choose {taxable} for it."
             ),
             SETTING_KEY: "Or, if your stub counts untaxed pay in its Gross Pay,",
         }
@@ -185,7 +199,8 @@ def _net_exact(
             SETTING_KEY: "If it's right, your stub leaves untaxed pay out of its Gross Pay:",
         }
     headings = "" if includes_after_tax else (
-        ", and which earnings you marked Taxable earning and which After-tax earning"
+        f", and which earnings you marked {taxable} and which "
+        f"{LABELS[PaycheckLineKindEnum.AFTER_TAX_EARNING]}"
     )
     return {"printed_gross": (
         f"{opening} (${abs(gross_miss):,.2f} apart).  Your amounts match the stub's "

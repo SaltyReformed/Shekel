@@ -104,7 +104,11 @@ class TestTheSetting:
         ) in page
 
     def test_create_stores_what_the_form_posts(self, auth_client, seed_user):
-        """The chosen option makes a "no" job; the other a "yes" one; a post without it, "no"."""
+        """The chosen option makes a "no" job; the other a "yes" one; a post without it, "no".
+
+        Each option is found by its words, which are R-SAL114's (the approved
+        list, R-SAL115).
+        """
         page = auth_client.get("/salary/new").data.decode()
         user_id = seed_user["user"].id
         _create(auth_client, "Chosen", **{_FIELD: _value_of(page, "Base pay")})

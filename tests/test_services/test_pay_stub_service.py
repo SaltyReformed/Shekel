@@ -465,6 +465,28 @@ class TestThePrintedGross:
             ),
         }
 
+    def test_a_base_pay_typed_above_the_printed_gross_is_an_amount(self, world):
+        """No earning on the stub, base pay typed $2,884.72 for $2,884.62: still an amount.
+
+        Base pay ABOVE the printed gross, both totals $0.10 over (gross
+        2884.72 against 2884.62, net 2884.72 - 897.00 = 1987.72 against
+        1987.62).  Only base pay EQUAL to the printed gross asks what the stub
+        shows (R-SAL112), so this names an amount, as it did before the
+        plain-words rewrite (R-SAL114: when a message appears does not
+        change; worded by R-SAL114; the tail's review, LOW-4).
+        """
+        figures = _figures(world, one_offs=(), base="2884.72")
+        del figures.line_amounts[world["lines"]["phone"].id]
+        with pytest.raises(PayStubRefused) as refused:
+            _record(world, figures, printed_net=Decimal("1987.62"),
+                    printed_gross=Decimal("2884.62"))
+        assert refused.value.errors["printed_gross"] == (
+            "Base pay plus your taxable earnings come to $2,884.72, but the stub's Gross "
+            "Pay is $2,884.62 ($0.10 apart), and your amounts are $0.10 apart from its "
+            "Net Pay too.  One amount is wrong: check Base pay and each earning."
+        )
+        assert set(refused.value.errors) == {"printed_gross", "printed_net"}
+
     def test_the_slip_with_a_zero_tax_left_blank_is_still_asked(self, world):
         """The SAL-590 slip on a stub printing Federal $0.00, the Federal box left blank.
 
@@ -794,7 +816,7 @@ class TestTheJobSaysWhatItsGrossHolds:
             "Gross Pay into Base pay.  Type $0.01 there instead.  $2,884.62: you entered "
             "extra pay this stub doesn't list.  Remove it."
         )),
-    ], ids=["slipped-decimal", "the-whole-base-pay", "a-cent-under"])
+    ], ids=["above-the-base-pay", "the-whole-base-pay", "a-cent-under"])
     def test_an_earning_of_the_whole_base_pay_names_only_the_extra_pay(
         self, world, phone, message,
     ):
@@ -803,10 +825,11 @@ class TestTheJobSaysWhatItsGrossHolds:
         A "no" job whose stub prints no taxable earning (gross = base 2884.62,
         net 2884.62 - 897.00 = 1987.62), Phone entered at *phone*: both totals
         miss by Phone's amount, the pair of the gross typed into Base pay and
-        of an earning the stub does not list.  R-SAL112's first answer would
-        be 2884.62 less that amount: below zero for the slipped decimal point
-        (6000.00 typed for 60.00) and 0.00 for an earning of the whole base
-        pay, neither a base pay, so only the extra pay is named; a cent under
+        of an earning the stub does not list (on a stub that lists none, any
+        earning entered is extra, whatever its size).  R-SAL112's first answer
+        would be 2884.62 less that amount: below zero for an earning larger
+        than the whole base pay and 0.00 for one of exactly the base pay,
+        neither a base pay, so only the extra pay is named; a cent under
         leaves 0.01, a base pay, and the question stands.
         """
         figures = _figures(world, one_offs=())
