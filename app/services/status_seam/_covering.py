@@ -178,6 +178,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
+from sqlalchemy import and_
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
@@ -221,6 +222,66 @@ def covering_clause():
         A SQLAlchemy boolean expression over ``TransactionEntry``.
     """
     return TransactionEntry.covers_settlement.is_(True)
+
+
+def holds_no_purchase_clause():
+    """Return the SQL form of *this row holds no purchase*.
+
+    :attr:`~app.models.transaction.Transaction.purchases` empty, asked of a
+    query over ``Transaction``: no entry under the row lacks the seam's mark
+    (:func:`covering_clause`).  It is the settle verb's own branch predicate
+    (``transaction_service.settles_from_entries``: a row holding purchases
+    settles FROM them) in SQL, for the screens that must cut on it in a
+    query -- the reconcile panel's "Paid from this account" list (ruling
+    **R-CC113**) and :func:`payment_recorded_elsewhere_clause`.  It lived in
+    ``reconcile_service._transactions`` as ``_holds_no_purchase`` until plan
+    step ``credit_card:CC-5-4a-5`` (leaf 5c-2a), when the statement matcher
+    needed the same cut (ruling **R-CC137**) and a private helper of one
+    package could not be its one home.
+
+    Returns:
+        A SQLAlchemy boolean expression over ``Transaction``.
+    """
+    return ~Transaction.entries.any(~covering_clause())
+
+
+def payment_recorded_elsewhere_clause(account_id: int):
+    """Return the SQL form of *this row's payment is recorded on another account*.
+
+    A row holding no purchase (:func:`holds_no_purchase_clause`) whose
+    covering movement -- its payment, dated or kept un-dated by a revert --
+    sits on an account other than *account_id*: a bill planned on Checking,
+    marked paid from the card and reopened.  Such a row settles from its
+    figure, and a settle naming *account_id* as the tender would move that
+    payment onto it (:func:`_re_point`).
+
+    **ONE predicate for every screen that reads a statement of**
+    ``account_id`` (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2a).  The
+    reconcile panel leaves such a row off the account's own list (ruling
+    **R-CC126**, developer 2026-09-30: *"Each list offers only money that
+    moved on its own account, so reconciling never moves a payment. A bill
+    paid by its own purchases stays on its own list."*), and the statement
+    matcher does not offer it on that account's screen and says why (ruling
+    **R-CC137**, developer 2026-10-04: *"Checking's statement screen does not
+    offer Hotel while its payment is recorded on the Visa (the reconcile
+    panel's test, R-CC126), and says so on that screen"*).  A row holding
+    purchases is NOT one of these: it settles from them and never re-points,
+    which is the ruling's "stays on its own list".  So the popover's 'Paid
+    from' is the one door that moves a bill's payment between accounts.
+
+    Args:
+        account_id: The account whose statement is being read.
+
+    Returns:
+        A SQLAlchemy boolean expression over ``Transaction``.
+    """
+    return and_(
+        holds_no_purchase_clause(),
+        Transaction.entries.any(and_(
+            covering_clause(),
+            TransactionEntry.account_id != account_id,
+        )),
+    )
 
 
 def covered_cash_leg(row: PlanItem, account_id: int) -> Decimal:

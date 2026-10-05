@@ -73,7 +73,7 @@ from ._leg_valuation import (
     leg_candidate,
     repriced_leg,
 )
-from ._subjects import CandidateRow, RowKind
+from ._subjects import CandidateRow, HeldElsewhere, RowKind
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.pay_calendar import PayCalendar
@@ -454,12 +454,23 @@ def row_is_offered_here(txn: Transaction, account_id: int) -> bool:
     kept movement whose row has since moved onto this account -- where the
     row is the candidate -- is declined rather than matched twice over.
 
+    **A Projected row on this account whose payment is recorded on ANOTHER
+    account is offered by neither arm here** (plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2a, ruling **R-CC137**): the row arm
+    withholds it (``status_seam.payment_recorded_elsewhere_clause``) and its
+    payment is the other account's subject.  This predicate needs no clause
+    for that case, because it is asked only of a movement ON the screen's
+    account (:func:`settlement_candidate` declines any other first), and a
+    row whose payment is here is not that row.  A clause for it would be a
+    guard no input reaches.
+
     Args:
         txn: The row.
         account_id: The screen's account.
 
     Returns:
-        ``True`` when the row itself is this screen's candidate.
+        ``True`` when the row is a Projected row on this screen's account --
+        the row arm's subject, unless its payment is recorded elsewhere.
     """
     return is_projected(txn) and txn.account_id == account_id
 
@@ -506,8 +517,11 @@ def settlement_candidate(
     row's (*amount*, from :func:`settlement_price`), the window is the row's
     paycheck (``period``; no ``purchased_on``, a payment's stored purchase
     day being its settle day, ruling **R-BAL39**), the door is the row's
-    (``parent_id`` is the row :func:`~._moving._apply_day` re-settles, with
-    the movement's account as the tender -- an echo the door drops), and
+    (``parent_id`` is the row :func:`~._moving._apply_day` re-settles,
+    naming no tender, so the seam books it where the movement is -- the
+    kept record's account, ruling **R-CC42**; it named this account as an
+    echo the door dropped until plan step ``credit_card:CC-5-4a-5``, leaf
+    5c-2a, ruling **R-CC137**), and
     whether the bank's own figure may be written to it is the row's answer
     (``states_own_figure``).  A transfer leg's payment is
     :func:`leg_settlement_candidate`'s, and never reaches this constructor:
@@ -571,6 +585,61 @@ def settlement_candidate(
         period=period,
         version_id=entry.version_id + txn.version_id,
         settle_day_basis=_day_basis(entry),
+    )
+
+
+def held_elsewhere_of(
+    payment: TransactionEntry, amount: Decimal,
+) -> "HeldElsewhere | None":
+    """Return what a screen says about a row it withholds because *payment* is elsewhere.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2a): the row arm withholds a
+    Projected row whose payment is recorded on another account (ruling
+    **R-CC137**) and the screen names it (ruling **R-CC140**) at what
+    pressing Paid records NOW (ruling **R-CC139**, developer 2026-10-04:
+    *"Don't display $120 if the bill is $135."*).  *amount* is
+    :func:`settlement_price` of that payment -- the price the payment's OWN
+    account's screen offers it at (:func:`settlement_candidate`), so the two
+    screens state one figure from one function: for a kept, un-dated
+    payment, :func:`transaction_price`, which re-prices a ``resolved`` record
+    and honours a stated one -- exactly what Paid records.  On a DATED
+    payment under a Projected row, a drift no door writes, it is the
+    movement's own figure, which is what the card's screen offers; Paid
+    keeps that figure when it was typed and re-prices it when it was
+    resolved.  It is taken rather than computed here for the
+    reason every constructor's is: the caller tells an UNPRICEABLE row
+    (reported among :attr:`~._subjects.Candidates.unpriceable`) from a
+    zero-valued one.
+
+    The figure is that price turned back into the row's own terms by
+    ``cash_ledger.movement_figure_for`` -- the sign rule read the other way,
+    so ``-135.00`` of cash under a bill is the bill's ``135.00`` -- and the
+    sentence's verb carries the direction.  The payment's account name is
+    read through a lazy relationship: the shape is rare (production held
+    none on 2026-10-04), and an eager load on every candidate row for it
+    would be paid by every pass.
+
+    Args:
+        payment: The row's covering movement, on another account than the
+            screen's, with its transaction loaded.
+        amount: Its signed cash effect, already resolved by
+            :func:`settlement_price`.
+
+    Returns:
+        Its :class:`~._subjects.HeldElsewhere`, or ``None`` when the payment
+        is worth nothing: a ``0.00`` row is offered on no screen
+        (:func:`transaction_candidate`, :func:`settlement_candidate`), so it
+        is not withheld for being elsewhere, and a sentence saying it was
+        would give the wrong reason.
+    """
+    if not amount:
+        return None
+    txn = payment.transaction
+    return HeldElsewhere(
+        name=txn.name,
+        figure=cash_ledger.movement_figure_for(txn, amount),
+        recorded_on=payment.account.name,
+        is_income=txn.is_income,
     )
 
 

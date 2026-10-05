@@ -554,12 +554,87 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class HeldElsewhere:
+    """A row planned on the screen's account whose payment is recorded on another.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2a), ruling **R-CC137**
+    (developer 2026-10-04, "Only Paid from, say why"): *"Checking's statement
+    screen does not offer Hotel while its payment is recorded on the Visa (the
+    reconcile panel's test, R-CC126), and says so on that screen: 'Hotel
+    $120.00 is planned on Checking but its payment is recorded on the Visa, so
+    it is not offered here. If Checking paid it, press Paid in Hotel's popover
+    with Paid from set to Checking.'"*  The sentence's WORDS are ruling
+    **R-CC140**'s since (:attr:`said`), which replaced the one quoted here.
+    The FACTS the sentence names, carried beside the offer set for the reason
+    :attr:`Candidates.unpriceable` is: a row the screen does not offer and
+    does not mention leaves its bank line looking unexplained, and recording
+    that line as new spending would count the money twice while the row stays
+    Projected.
+
+    Attributes:
+        name: The row's name.
+        figure: What pressing Paid on the row records NOW, in the row's own
+            terms, on every state a door writes (the one exception, a DATED
+            payment under a Projected row, is
+            :func:`~._valuation.held_elsewhere_of`'s) (ruling **R-CC139**,
+            developer 2026-10-04: *"Don't display
+            $120 if the bill is $135."*): the price the OTHER account's
+            screen offers the same payment at
+            (:func:`~._valuation.held_elsewhere_of`), so a plan edited since
+            the payment was kept reads at its new figure, as it does there
+            -- where the stored movement's column still holds the old one.
+            A figure the owner TYPED is kept across the revert and honoured
+            by Paid (ruling **R-BAL61**), so it reads that figure, plan edit
+            or not: the lane's application of ruling **R-BAL207** to the
+            stated case, which the R-CC139 question never showed.
+        recorded_on: The name of the account its payment is recorded on.
+        is_income: Whether the row's money comes IN (a paycheck, a refund),
+            which picks the sentence's verb.
+    """
+
+    name: str
+    figure: Decimal
+    recorded_on: str
+    is_income: bool
+
+    @property
+    def said(self) -> str:
+        """Return the screen's sentence for this row, as ruling **R-CC140** picked it.
+
+        Ruling **R-CC140** (developer 2026-10-04, "Short", replacing
+        **R-CC137**'s sentence): *"'Electric $135.00 is not listed here
+        because the app has it as paid from Visa. To change that, edit
+        Electric on the grid.' A refund: 'Refund $45.00 is not listed here
+        because the app has it as received into Visa. To change that, edit
+        Refund on the grid.'"*  The verb follows the row's direction
+        (:attr:`is_income`), and the account is named as the owner named it,
+        with no article.  Composed here beside the facts it names, the shape
+        :attr:`~._gaps.BooksBound.said` has, from the same query that
+        withholds the row: every row named is one the offer set withheld,
+        and a withheld row goes unnamed only when it is worth ``0.00``
+        (offered on no screen) or cannot be priced (counted among the
+        unpriceable instead).
+
+        Returns:
+            The sentence.
+        """
+        moved = "received into" if self.is_income else "paid from"
+        return (
+            f"{self.name} ${self.figure:,.2f} is not listed here because the "
+            f"app has it as {moved} {self.recorded_on}. To change that, edit "
+            f"{self.name} on the grid."
+        )
+
+
+@dataclass(frozen=True)
 class Candidates:
     """The rows a statement could be showing, and the ones nothing could price.
 
-    Two facts that must travel together: a screen listing what it could match
+    Facts that must travel together: a screen listing what it could match
     and saying nothing about what it could not read as a clean sweep, which is
-    the "no silent caps" discipline applied to a money screen.
+    the "no silent caps" discipline applied to a money screen.  Two kinds of
+    row are not offered and said: the ones nothing could price, and since
+    leaf 5c-2a the ones whose payment is recorded on another account.
 
     Attributes:
         rows: The offerable candidates: the settled records (SETTLEMENT --
@@ -577,7 +652,15 @@ class Candidates:
             transfer is damaged -- and live from the first per-kind cutover
             (plan step ``balance:X-au-d``).  They are NOT candidates: a
             matcher that offered a row it could not price would be guessing.
+        held_elsewhere: The rows planned on this account that are NOT offered
+            here because their payment is recorded on another account (ruling
+            **R-CC137**), one :class:`HeldElsewhere` each, in row-id order --
+            the second thing the screen must say about what it did not offer.
+            A held row nothing could price is among :attr:`unpriceable`
+            instead, and one worth ``0.00`` is in neither, as a ``0.00`` row
+            is offered nowhere (:func:`~._valuation.held_elsewhere_of`).
     """
 
     rows: "list[CandidateRow]"
     unpriceable: "tuple[tuple[RowKind, int], ...]"
+    held_elsewhere: "tuple[HeldElsewhere, ...]"

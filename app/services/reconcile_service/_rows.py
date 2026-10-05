@@ -711,12 +711,23 @@ def outstanding_rows(
 
 
 #: What the panel says to a ticked item whose amount box posted ``$0.00``
+#: when its money goes OUT -- a bill, an envelope, a transfer's paying side
 #: (ruling **R-CC125**, developer 2026-09-30, "Refuse it now", verbatim as
 #: picked).  It names the ROW, never an id (ruling **R-CC98**); ``{name}`` is
 #: the item's own name -- a row's, or a leg's label.
 ZERO_PAYMENT_REFUSAL = (
     "{name}: a payment can't be $0.00. If it wasn't paid, leave it unticked "
     "or cancel it on the grid."
+)
+
+#: The same refusal when the item's money comes IN -- a paycheck, a transfer's
+#: receiving side (ruling **R-CC136**, developer 2026-10-04, "Deposit
+#: wording", verbatim as picked): *"Bills and money going out keep your
+#: sentence. Money coming in reads 'Paycheck: a deposit can't be $0.00. If it
+#: wasn't received, leave it unticked or cancel it on the grid.'"*
+ZERO_DEPOSIT_REFUSAL = (
+    "{name}: a deposit can't be $0.00. If it wasn't received, leave it "
+    "unticked or cancel it on the grid."
 )
 
 
@@ -753,9 +764,14 @@ def _refuse_a_zero_payment(items: dict, corrections: "dict[int, Decimal]") -> No
     is ``balance:X-db``'s to close at every door at once (ledger row
     **BAL-596**).
 
+    **The sentence follows the item's DIRECTION** (ruling **R-CC136**): money
+    going out is refused as a payment (:data:`ZERO_PAYMENT_REFUSAL`), money
+    coming in as a deposit (:data:`ZERO_DEPOSIT_REFUSAL`), asked of the item's
+    own ``is_income`` -- a row's, or a leg's (a transfer's receiving side).
+
     Args:
         items: ``{tick id: item}``, what the arm loaded for the ticked ids --
-            each with a ``name`` (a row, or a leg).
+            each with a ``name`` and an ``is_income`` (a row, or a leg).
         corrections: ``{tick id: amount}`` from the arm's amount boxes.
 
     Raises:
@@ -764,7 +780,10 @@ def _refuse_a_zero_payment(items: dict, corrections: "dict[int, Decimal]") -> No
     for tick_id, item in items.items():
         amount = corrections.get(tick_id)
         if amount is not None and amount == 0:
-            raise ValidationError(ZERO_PAYMENT_REFUSAL.format(name=item.name))
+            refusal = (
+                ZERO_DEPOSIT_REFUSAL if item.is_income else ZERO_PAYMENT_REFUSAL
+            )
+            raise ValidationError(refusal.format(name=item.name))
 
 
 def record_settled(

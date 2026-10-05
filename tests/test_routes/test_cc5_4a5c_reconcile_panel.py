@@ -6,7 +6,10 @@ Three rulings, graded through the panel's own route as a browser drives it
 * **R-CC125** (developer 2026-09-30, "Refuse it now"): *"The panel refuses a
   $0.00 payment today ... 'Hotel: a payment can't be $0.00. If it wasn't
   paid, leave it unticked or cancel it on the grid.' Nothing changes"* --
-  the row box and the transfer box alike.
+  the row box and the transfer box alike.  **R-CC136** (developer
+  2026-10-04, "Deposit wording", leaf 5c-2a) words it for money coming in:
+  *"'Paycheck: a deposit can't be $0.00. If it wasn't received, leave it
+  unticked or cancel it on the grid.'"*
 * **R-CC126** (developer 2026-09-30, "Only the card offers it"): *"Checking's
   list leaves it out ... so reconciling never moves a payment."*
 * **R-CC76** with **R-CC127** (developer 2026-09-23 / 2026-09-30): the panel
@@ -46,6 +49,7 @@ from tests._test_helpers import (
     create_transfer,
     generate_row_of,
     make_expense_template,
+    make_income_template,
     typed,
 )
 # Pylint: ``shekel-private-module-import`` -- the statement-match builders are
@@ -318,6 +322,78 @@ class TestAZeroBoxIsRefused:
                 "Transfer to Savings: a payment can&#39;t be $0.00. If it "
                 "wasn&#39;t paid, leave it unticked or cancel it on the grid."
             ) in response.data.decode()
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer_id).status_id == (
+                ref_cache.status_id(StatusEnum.PROJECTED)
+            )
+
+
+class TestAZeroDepositIsRefusedAsADeposit:
+    """R-CC136: money coming IN is refused as a deposit; nothing saves."""
+
+    def test_a_paycheck_at_zero_is_refused_as_a_deposit(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A paycheck's box typed 0.00 and ticked: the ruled deposit sentence, and it stays Projected."""
+        with app.app_context():
+            checking_id = seed_user["account"].id
+            paycheck = generate_row_of(
+                make_income_template(
+                    db.session, seed_user, amount="2000.00", name="Paycheck",
+                ),
+                seed_periods_today[0],
+            )
+            db.session.commit()
+            paycheck_id = paycheck.id
+            _true_up(auth_client, checking_id)
+            body = _panel(auth_client, checking_id)
+            assert f'name="settled_amount-{paycheck_id}"' in body
+
+            response = _post(auth_client, checking_id, _payload(
+                body, {("transaction_ids", str(paycheck_id))},
+                typed_boxes={f"settled_amount-{paycheck_id}": "0.00"},
+            ))
+
+            assert response.status_code == 400
+            text = response.data.decode()
+            assert (
+                "Paycheck: a deposit can&#39;t be $0.00. If it wasn&#39;t "
+                "received, leave it unticked or cancel it on the grid."
+            ) in text
+            assert "a payment can&#39;t be" not in text
+            assert _status(paycheck_id) == ref_cache.status_id(StatusEnum.PROJECTED)
+
+    def test_a_transfers_receiving_side_at_zero_is_refused_as_a_deposit(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The incoming leg on Savings' panel at 0.00: refused by its own label, as a deposit."""
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("2000.00"),
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods_today[0], Decimal("500.00"),
+            )
+            db.session.commit()
+            savings_id, xfer_id = savings.id, xfer.id
+            _true_up(auth_client, savings_id)
+            body = _panel(auth_client, savings_id)
+            assert f'name="transfer_amount-{xfer_id}"' in body
+
+            response = _post(auth_client, savings_id, _payload(
+                body, {("transfer_ids", str(xfer_id))},
+                typed_boxes={f"transfer_amount-{xfer_id}": "0.00"},
+            ))
+
+            assert response.status_code == 400
+            text = response.data.decode()
+            assert (
+                "Transfer from Checking: a deposit can&#39;t be $0.00. If it "
+                "wasn&#39;t received, leave it unticked or cancel it on the grid."
+            ) in text
+            assert "a payment can&#39;t be" not in text
             db.session.expire_all()
             assert db.session.get(Transfer, xfer_id).status_id == (
                 ref_cache.status_id(StatusEnum.PROJECTED)

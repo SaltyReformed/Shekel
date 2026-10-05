@@ -468,11 +468,19 @@ def settle_transaction(
             TENDER (plan step ``credit_card:CC-5-3``, ruling **R-CC15**: a
             bill charged to the card is settled with its covering movement
             on the card) -- when the CALLER names one: the "Paid from"
-            picker through ``mark_done`` and the popover, and the two
-            statement-driven doors, which FORCE the statement's own account
-            (the reconcile panel's tick, the matcher's transaction arm: a
-            statement showed the money on the account it is a statement
-            of).  An ECHO of what the row records -- the popover's picker
+            picker through ``mark_done`` and the popover, the ONE door that
+            moves a bill's payment between accounts (ruling **R-CC137**,
+            developer 2026-10-04: *"A bill's payment then changes account
+            only through 'Paid from'"*).  The two statement-driven doors
+            name none.  They FORCED the statement's own account (ruling
+            **R-CC15**) until plan step ``credit_card:CC-5-4a-5`` -- the
+            reconcile panel's tick at leaf 5c-1 (ruling **R-CC126**), the
+            matcher's transaction arm at leaf 5c-2a -- and each now offers a
+            row that settles from its figure only where its payment, if it
+            has one, is already on the statement's account, so the default
+            below books it there (a row settling from its purchases takes
+            the entries branch, which ignores a tender).  An
+            ECHO of what the row records -- the popover's picker
             untouched, which always shows the recorded tender -- names
             nothing new and is dropped (``status_seam.tender_for_status``,
             the one echo rule, shared with the identity arm); anything else
@@ -487,9 +495,7 @@ def settle_transaction(
             figure is).  **The entries branch ignores it**, exactly as it
             ignores *submitted*: an envelope's purchases are its record and
             each carries its own account; the popover renders no picker on
-            such a row and the PATCH door refuses one, so what reaches this
-            branch with a tender is the panel's tick, which names the
-            statement's account for every row it settles.
+            such a row and the PATCH door refuses one.
         shown: The bank lines the door's page named before the press, or
             what lets it stay silent (plan step ``credit_card:CC-5-4a-5``,
             rulings **R-CC81** / **R-CC127**): a settle that takes the row's
