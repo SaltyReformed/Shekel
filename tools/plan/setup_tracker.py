@@ -109,7 +109,8 @@ LABELS = {
         "fbca04", "A parent whose leaves /release ships in one release, never split"
     ),
     FILING: (
-        "bfdadc", "Its filing is unfinished: never offered; the same plan file command finishes it"
+        "bfdadc",
+        "Set by plan file until its filing's last write; an open card with it is never offered",
     ),
 }
 

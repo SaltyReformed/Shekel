@@ -480,10 +480,11 @@ def test_filing_order_is_the_cards_numbers_not_the_sub_issue_lists():
     assert leaf_placement(order, split, 5).after == "I3"
 
 
-def test_a_marked_card_is_an_unfinished_filing_while_open_or_closed_by_its_own_filing():
-    """R-BAL202: a ruling's filing closes it, as completed, before the mark comes off; any
-    other card closed while marked -- a ruling dropped or closed by a person included -- was
-    dropped, and what its filing left undone is moot (review rbal202a M2)."""
+def test_a_marked_card_is_an_unfinished_filing_while_open_or_a_ruling_closed_as_completed():
+    """R-BAL202, R-BAL206: a ruling's filing closes it as completed before the mark comes
+    off, and a person's close as completed withdraws nothing either; a ruling closed as not
+    planned, by ``plan drop`` or a person, was withdrawn (review rbal202a M2), and any other
+    card closed while marked was dropped: what either's filing left undone is moot."""
     marked = ("balance", FILING)
     assert filing_unfinished(_card(1, labels=marked))
     assert filing_unfinished(_closed(2, "ruling", labels=marked))
@@ -491,22 +492,60 @@ def test_a_marked_card_is_an_unfinished_filing_while_open_or_closed_by_its_own_f
     assert not filing_unfinished(_closed(4, "question", by_tool=False, labels=marked))
     assert not filing_unfinished(_card(5))
     assert not filing_unfinished(_closed(6, "ruling", labels=marked, reason="NOT_PLANNED"))
-    assert not filing_unfinished(_closed(7, "ruling", by_tool=False, labels=marked))
+    assert filing_unfinished(_closed(7, "ruling", by_tool=False, labels=marked))
+    assert not filing_unfinished(_closed(8, "ruling", by_tool=False, labels=marked,
+                                         reason="NOT_PLANNED"))
+    assert not filing_unfinished(_closed(9, "ruling", by_tool=False, labels=marked,
+                                         reason="DUPLICATE"))
 
 
 def test_a_card_whose_filing_is_unfinished_is_never_offered_and_is_reported():
     """R-BAL202: never handed out, never listed as merely off the board, and named by next
-    and sync -- with ``plan drop`` offered except for a ruling, which is a record."""
+    and sync -- with ``plan drop`` offered while it is open, and ``plan show`` named for a
+    filing whose command is lost."""
     cards = _cards(_card(1, labels=("balance", FILING)), _card(2, labels=("balance", FILING),
                                                                board_item=None),
                    _closed(3, "ruling", labels=("balance", FILING)))
     assert "its filing has not finished (R-BAL202)" in never_offered(cards[1], cards, set())
     answer = next_step([1], cards, set(), {})
     assert answer.card is None and not answer.unplaced
-    lines = unfinished_reports(cards)
+    lines = unfinished_reports(cards, set())
     assert [line.split("'")[0] for line in lines] == ["plan#1", "plan#2", "plan#3"]
-    assert lines[0].endswith(", or `plan drop` it") and lines[2].endswith("to finish it")
+    assert ", or `plan drop` it; with that command lost, `plan show plan#1` says how" in lines[0]
+    assert "plan drop" not in lines[2] and "`plan show plan#3`" in lines[2]
+    assert ", or, to withdraw it, reopen it and close it as not planned on the web;" in lines[2]
     assert sync_plan(cards, set(), {}, {}).reports == lines
+
+
+def test_only_a_marked_leaf_is_told_its_drop_unlinks_it_and_an_open_ruling_may_be_dropped():
+    """R-BAL205, R-BAL206: a marked leaf's drop unlinks it from its split step first, and
+    its report says so; a marked finding under a step, and a marked step split into leaves
+    of its own (plan#5, a container), are no leaf the drop unlinks; an open marked ruling
+    may be dropped (withdrawn) like any open card; and a marked leaf git says shipped is
+    offered no drop at all, which refuses shipped work."""
+    marked = ("balance", FILING)
+    cards = _cards(_card(1, children=(Child(2, "step", True), Child(3, "finding", True),
+                                      Child(5, "step", True))),
+                   _card(2, parent=1, labels=marked), _card(3, "finding", parent=1, labels=marked),
+                   _card(4, "ruling", parent=1, labels=marked),
+                   _card(5, parent=1, labels=marked, children=(Child(6, "step", True),)),
+                   _card(6, parent=5))
+    lines = unfinished_reports(cards, set())
+    assert "(which unlinks it from plan#1 first: it was never part of that split, R-BAL205)" in (
+        lines[0])
+    assert not [line for line in lines[1:] if "unlinks" in line]
+    assert ", or `plan drop` it;" in lines[2]
+    shipped = unfinished_reports(cards, {2})
+    assert "plan drop" not in shipped[0] and "unlinks" not in shipped[0]
+
+
+def test_a_leaf_goes_just_above_the_topmost_of_several_leaves_filed_after_it():
+    """R-BAL204's kept rule, with two later leaves: above the one highest on the board,
+    wherever the other sits."""
+    split = _card(1, board_item=None, children=(Child(5, "step", True), Child(6, "step", True),
+                                                 Child(7, "step", True)))
+    order = [(4, "I4"), (7, "I7"), (9, "I9"), (6, "I6"), (5, "I5")]
+    assert leaf_placement(order, split, 5).after == "I4"
 
 
 def test_a_wait_or_a_drop_two_steps_up_holds_a_leaf_back():

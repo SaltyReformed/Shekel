@@ -44,10 +44,10 @@ every card ``plan file`` creates carries the filing mark from its first write
 until its last removes it (:func:`filing_unfinished`), so a card some of whose
 writes have not landed -- a leaf not yet linked under its split step, or not
 yet in its place -- is never handed out or claimed, and ``next`` and ``sync``
-name it until the same command finishes it, or ``plan drop`` drops it (a
-dropped leaf counts toward its split step's drop, ``R-BAL187``, as any leaf
-does).  While a filing is still running its card is named too: no read can
-tell a filing running from one a failure cut short.
+name it until the same command finishes it, or ``plan drop`` drops it (a leaf
+dropped while marked is first unlinked from its split step: it was never part
+of the split, ``R-BAL205``).  While a filing is still running its card is named
+too: no read can tell a filing running from one a failure cut short.
 
 **A card linked to an issue outside the tracker is never offered**
 (``R-BAL188``): the plan reads only its own cards, so the link is reported
@@ -86,13 +86,14 @@ def is_work(card: Card) -> bool:
 
 def filing_unfinished(card: Card) -> bool:
     """Whether ``card``'s filing has not finished (R-BAL202) -- one still running, or one a
-    failure cut short: it still carries the filing mark, and is open, or is a ruling its
-    own filing closed (the tool's close as completed, which comes before the last write
-    removes the mark).  Any other card closed while marked -- a ruling included -- was
-    dropped before its filing finished, by ``plan drop`` (closed as not planned) or by a
-    person, so what its filing left undone is moot."""
+    failure cut short: it still carries the filing mark, and is open, or is a ruling
+    closed as completed, by its own filing (which closes it before the last write removes
+    the mark) or by anyone (R-BAL206: a ruling is a closed record, so that close
+    withdraws nothing).  A ruling closed as not planned or as a duplicate, by ``plan
+    drop`` or a person, was withdrawn; any other card closed while marked was dropped
+    before its filing finished; what either's filing left undone is moot."""
     return FILING in card.labels and (card.is_open or (
-        card.kind == "ruling" and card.closed_by_tool and card.state_reason == "COMPLETED"))
+        card.kind == "ruling" and card.state_reason == "COMPLETED"))
 
 
 def _shown_shipped(card: Card) -> bool:
@@ -224,17 +225,23 @@ def outside_reports(cards: Mapping[int, Card]) -> list[str]:
     ]
 
 
-def unfinished_reports(cards: Mapping[int, Card]) -> list[str]:
+def unfinished_reports(cards: Mapping[int, Card], shipped: Iterable[int]) -> list[str]:
     """Each card in ``cards`` whose filing has not finished (:func:`filing_unfinished`), as
     a report line: it is never offered until the same command finishes it, or, while it is
-    open, ``plan drop`` drops it -- which, for a leaf, counts toward its split step's drop
-    like any leaf's (R-BAL187), so the line says so."""
+    open and git does not say it shipped, ``plan drop`` drops it -- a leaf unlinked from
+    its split step first (R-BAL205), which the line says; a closed ruling is withdrawn by
+    reopening it and closing it as not planned (R-BAL206); and ``plan show`` says how to
+    finish it by hand."""
+    shipped = set(shipped)
     return [
         f"plan#{card.number}'s filing has not finished, so it is never offered (R-BAL202): "
         "unless a `plan file` command is filing it now, run that command again to finish it"
-        + (", or `plan drop` it" if card.is_open else "")
-        + (f" (if it is plan#{card.parent}'s last leaf still work, that drops plan#{card.parent} "
-           "too, R-BAL187)" if card.is_open and card.kind == "step" and card.parent else "")
+        + ("" if card.number in shipped else ", or `plan drop` it" if card.is_open else
+           ", or, to withdraw it, reopen it and close it as not planned on the web")
+        + (f" (which unlinks it from plan#{card.parent} first: it was never part of that split, "
+           "R-BAL205)" if card.is_open and is_work(card) and card.kind == "step" and card.parent
+           and card.number not in shipped else "")
+        + f"; with that command lost, `plan show plan#{card.number}` says how to finish it"
         for card in sorted(cards.values(), key=lambda card: card.number)
         if filing_unfinished(card)
     ]
@@ -297,8 +304,10 @@ def leaf_placement(order: Iterable[tuple[int, str]], parent: Card, leaf: int) ->
     leaf could take the split step's place before its filing finished); else
     nowhere new: where it is, or where GitHub adds it, at the bottom.  Filing
     order is the cards' numbers, never the sub-issue list's, which a person may
-    drag.  Every other leaf it is placed by is one whose filing finished: a leaf
-    is never filed while another of its split step's is unfinished (R-BAL204).
+    drag.  No leaf it is placed by has an unfinished filing: a leaf is never
+    filed while another of its split step's is unfinished (R-BAL204).  (One a
+    person closed while marked is no unfinished filing, and may sit where a
+    failed move left it.)
     """
     order = [(number, item) for number, item in order if number != leaf]
     positions = [item for _, item in order]
@@ -409,7 +418,7 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
     requests into ``dev`` that merged its standing ``Ships:`` commits.
     """
     shipped = set(shipped)
-    plan = SyncPlan(reports=outside_reports(cards) + unfinished_reports(cards))
+    plan = SyncPlan(reports=outside_reports(cards) + unfinished_reports(cards, shipped))
     for card in sorted(cards.values(), key=lambda card: card.number):
         if card.kind == "ruling" and card.is_open and not filing_unfinished(card):
             plan.reports.append(

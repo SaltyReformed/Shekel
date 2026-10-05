@@ -87,7 +87,8 @@ _OPEN_CARDS = (
 )
 
 #: Every card carrying the :data:`setup_tracker.FILING` mark, open or closed: a
-#: ruling's filing closes it before its last write removes the mark.
+#: ruling's filing closes it before its last write removes the mark, and a ruling
+#: closed as completed by anyone is still unfinished (R-BAL206).
 _MARKED_CARDS = (
     """query($after: String) { repository(owner: "%s", name: "%s") {
   issues(first: 100, after: $after, labels: ["%s"], states: [OPEN, CLOSED]) {
@@ -344,11 +345,12 @@ class Board:
 class Tracker:  # pylint: disable=too-many-public-methods
     """The tracker as the App sees it: its cards and claims, and its :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (22/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (23/20) -- ``connect``, then **one
     method per read or write the plan tool makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
-    GitHub), the board's own writes already apart in :class:`Board`.  Two of
-    them, the filing mark's read and its removal (R-BAL202), took it past 20.
+    GitHub), the board's own writes already apart in :class:`Board`.  Three
+    of them, the filing mark's read and its removal (R-BAL202) and a leaf's
+    unlink (R-BAL205), took it past 20.
     The claims' three (``claims``, ``claim``, ``release``: git references, not
     cards) could stand apart the same way; that split is not this change's.
 
@@ -395,7 +397,8 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def marked(self) -> dict[int, Card]:
         """Every card carrying the :data:`setup_tracker.FILING` mark, open or closed, by
-        number: each a filing the plan tool began and has not finished (R-BAL202)."""
+        number: each a filing the plan tool began; whether it is still unfinished is
+        ``_state.filing_unfinished``'s answer (one dropped while marked is not)."""
         return self._listing(_MARKED_CARDS)
 
     def cards(self, numbers: Iterable[int]) -> dict[int, Card]:
@@ -536,6 +539,11 @@ class Tracker:  # pylint: disable=too-many-public-methods
     def add_child(self, parent: int, child: Card) -> None:
         """Make ``child`` a sub-issue of ``parent``."""
         self.github.rest("POST", f"{_BASE}/issues/{parent}/sub_issues",
+                         {"sub_issue_id": child.id})
+
+    def remove_child(self, parent: int, child: Card) -> None:
+        """Unlink ``child`` from ``parent``, whose sub-issue it is."""
+        self.github.rest("DELETE", f"{_BASE}/issues/{parent}/sub_issue",
                          {"sub_issue_id": child.id})
 
     def block(self, number: int, blocker: Card) -> None:

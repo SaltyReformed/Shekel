@@ -675,6 +675,10 @@ _REFS = f"https://api.github.com/repos/{TRACKER}/git/refs"
     ("DELETE", f"{_ISSUES}/11/labels/balance", None),
     ("DELETE", f"{_ISSUES}/11/labels", None),
     ("DELETE", f"{_ISSUES}/11/labels/{FILING}", {"x": 1}),
+    ("DELETE", f"{_ISSUES}/2/sub_issue", {"sub_issue_id": 911}),
+    ("DELETE", f"{_ISSUES}/11/sub_issue", {"sub_issue_id": 5698680001}),
+    ("DELETE", f"{_ISSUES}/11/sub_issue", {"sub_issue_id": 911, "x": 1}),
+    ("DELETE", f"{_ISSUES}/11/sub_issue", None),
 ])
 def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, url, body):
     """Review cp3 M-3 (d), (e) and review cp4 M-3: a text-writing GraphQL mutation slipped
@@ -700,6 +704,7 @@ def test_a_write_that_is_not_a_known_write_to_a_scratch_card_is_refused(method, 
     ("POST", _REFS, {"ref": "refs/claims/recording-scratch", "sha": "a" * 40}),
     ("DELETE", f"{_REFS}/claims/11", None),
     ("DELETE", f"{_ISSUES}/11/labels/{FILING}", None),
+    ("DELETE", f"{_ISSUES}/11/sub_issue", {"sub_issue_id": 911}),
     ("POST", "https://api.github.com/graphql",
      {"query": BOARD_ADD, "variables": {"p": "PVT_1", "c": "S_11"}}),
     ("POST", "https://api.github.com/graphql",

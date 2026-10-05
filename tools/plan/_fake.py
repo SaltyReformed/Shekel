@@ -66,8 +66,8 @@ class FakeBoard:
 class FakeTracker:  # pylint: disable=too-many-public-methods
     """The tracker in memory: cards, bodies, claims, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (22/20) -- it stands in for
-    :class:`_tracker.Tracker`, so it has each of that class's 21 reads and
+    Pylint: ``too-many-public-methods`` (23/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 22 reads and
     writes (its own disable says why there are so many), and ``add``, which
     puts a card in.
     """
@@ -213,6 +213,16 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
         held = self.cards_by_number[parent]
         self._set(parent, children=(*held.children, Child(child.number, child.kind, True)))
         self._set(child.number, parent=parent)
+
+    def remove_child(self, parent, child):
+        """Unlink ``child`` from ``parent``; the tool never unlinks a card from a parent it
+        is not a sub-issue of."""
+        held = self.cards_by_number[child.number]
+        assert held.parent == parent, f"plan#{child.number} is no sub-issue of plan#{parent}"
+        self.writes.append(("remove_child", parent, child.number))
+        above = self.cards_by_number[parent]
+        self._set(parent, children=tuple(c for c in above.children if c.number != child.number))
+        self._set(child.number, parent=None)
 
     def block(self, number, blocker):
         """Record a blocked-by edge."""

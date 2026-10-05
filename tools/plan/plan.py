@@ -190,7 +190,7 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
               f"no pushed branch -- {_release_hint(claim)}")
     for line in outside_reports(cards):
         print(f"OUTSIDE LINK: {line}")
-    for line in unfinished_reports(cards):
+    for line in unfinished_reports(cards, shipped):
         print(f"UNFINISHED FILING: {line}")
     return 0
 
@@ -425,7 +425,8 @@ def _unfinished(tracker: Tracker) -> dict[int, Card]:
 
 def _half_filed(tracker: Tracker, draft: Draft, unfinished: dict[int, Card]) -> Card | None:
     """The card with ``draft``'s kind, title and text, if one exists: an OPEN card, or one
-    in ``unfinished`` (a ruling's filing closes it before its last write).  The caller
+    in ``unfinished`` (a ruling closed as completed, by its filing before its last write
+    or by anyone, R-BAL206).  The caller
     finishes a filing cut short and files nothing over a finished one (R-BAL186,
     R-BAL202).  Refused when its labels differ, the filing mark aside, or when two such
     cards exist."""
@@ -480,21 +481,25 @@ def _refuse_beside_unfinished(tracker: Tracker, parent: Card, leaf: Card | None)
     if others:
         names = ", ".join(f"plan#{card.number}" for card in others)
         raise Refused(f"the filing of {names}, of plan#{parent.number}'s leaves, has not "
-                      "finished (R-BAL204): finish it first -- run its `plan file` command again "
-                      "-- then file this leaf")
+                      "finished (R-BAL204): finish it first, then run this again.  Unless a "
+                      "`plan file` command is filing it now, run that command again; with that "
+                      "command lost, or the card's title or text changed since, make its "
+                      f"missing writes on the web and remove its {FILING!r} label last "
+                      "(`plan show` shows its parent and board place)")
 
 
 def _filed_already(card: Card, parent: Card | None) -> int:
     """Nothing is written over a filing that finished: ``card`` carries no filing mark, so
     each of its filing's writes landed (R-BAL202), and a person may have moved or edited it
-    since.  Refused when it is not where this filing puts it, at the top level or under
-    ``parent``: re-homing a card is a person's call."""
+    since.  Refused when it sits at the top level and this filing names ``parent``:
+    re-homing a card is a person's call (one under another parent the caller has already
+    refused, :func:`_refuse_rehoming`)."""
     if card.parent is None and parent is not None:
         raise Refused(f"{_label(card)} has this kind, title and text, and its filing finished "
                       f"at the top level, not under plan#{parent.number}: re-homing a card is "
                       "done by hand")
-    print(f"{_label(card)} is filed already: an open card with this kind, title and text "
-          "exists and its filing finished (it carries no filing mark), so nothing is written "
+    print(f"{_label(card)} is filed already: a card with this kind, title and text exists "
+          "and its filing finished (it carries no filing mark), so nothing is written "
           "(R-BAL186, R-BAL202)")
     return 0
 
@@ -520,6 +525,12 @@ def cmd_file(args, tracker: Tracker, root: Path) -> int:
         return _convert_question(args, tracker, draft, parent, asked)
     card = _half_filed(tracker, draft, _unfinished(tracker))
     if card is not None:
+        fresh = tracker.cards([card.number]).get(card.number)
+        if fresh is None:
+            raise TrackerError(f"plan#{card.number} is listed, but a read by its number does not "
+                               "hold it (that read has not caught up yet, or the card was deleted "
+                               "or moved since): run the same command again")
+        card = fresh
         _refuse_rehoming(card, parent)
         if not filing_unfinished(card):
             return _filed_already(card, parent)
@@ -635,9 +646,10 @@ def cmd_move(args, tracker: Tracker, _root: Path) -> int:
     if card.kind not in ON_BOARD or not card.is_open or card.is_container:
         raise Refused(f"the board holds open steps and questions only, and no step split into "
                       f"leaves (R-BAL177, R-BAL179): {_label(card)}")
-    if filing_unfinished(card) and card.parent is not None:
-        raise Refused(f"{_label(card)}'s filing has not finished (R-BAL202): its `plan file` "
-                      "command places this leaf, and would move it again after this move")
+    if filing_unfinished(card) and card.kind == "step":
+        raise Refused(f"{_label(card)}'s filing has not finished (R-BAL202): finish it first.  "
+                      "If it is a leaf -- one whose link has not landed reads as a top-level "
+                      "step -- its `plan file` command moves it again after this move")
     order = tracker.board.order()
     items = dict(order)
     if args.after is not None:
@@ -682,15 +694,41 @@ def _drop(tracker: Tracker, card: Card, why: str) -> None:
         print(f"  its claim by {_holder(claim)} stays: {_release_hint(claim)}")
 
 
+def _undo_split(tracker: Tracker, leaf: Card) -> None:
+    """Take a leaf whose filing never finished out of the split it began (R-BAL205), each
+    write printed as it lands.  When it is the only leaf of an open step, that step is a
+    plain step again, offered as work only from the board: if it is off the board, it is
+    put on it first -- just after the leaf when the leaf is on the board, else at the
+    bottom -- before the unlink, so the same drop run again still sees the link and
+    finishes; then the leaf is unlinked."""
+    split = _one(tracker, leaf.parent)
+    if (split.is_open and split.kind == "step" and split.board_item is None
+            and not [n for n in split.leaves if n != leaf.number]):
+        item = tracker.board.add(split)
+        print(f"  board: plan#{split.number} added back at the bottom, a plain step again")
+        if leaf.board_item is not None:
+            shown = tracker.board.place(item, leaf.board_item)
+            print(f"  board: plan#{split.number} moved into plan#{leaf.number}'s place"
+                  + ("" if shown else " (the board has not shown it yet)"))
+    tracker.remove_child(split.number, leaf)
+    print(f"  unlinked from plan#{split.number}: its filing never finished, so it was never "
+          "part of that split (R-BAL205)")
+
+
 def cmd_drop(args, tracker: Tracker, root: Path) -> int:
     """Retire work with no code: each card's reason as a comment, then closed as not planned.
 
     Work git says shipped is never dropped: undoing it is a ``Reopens:`` commit.
-    A split step holds no decision of the tool's (R-BAL190): dropping one notes
-    it on the split step first, then drops every leaf below it that is still
-    work by git's answer -- not shipped and not dropped, whatever its card shows
-    -- each with the reason, and names the shipped ones it leaves; its own
-    state shows its leaves at the next ``sync``.  Run again after a failure, it
+    A leaf dropped while its filing has not finished is first taken out of the
+    split it began (R-BAL205, :func:`_undo_split`): unlinked, and its split step,
+    if it was the only leaf, a plain step again, on the board (in the leaf's
+    place when the leaf is on it).
+    A leaf dropped with its split step is not unlinked: the split step's own drop
+    is the decision.  A split step holds no decision of the tool's (R-BAL190):
+    dropping one notes it on the split step first, then drops every leaf below
+    it that is still work by git's answer -- not shipped and not dropped,
+    whatever its card shows -- each with the reason, and names the shipped ones
+    it leaves; its own state shows its leaves at the next ``sync``.  Run again after a failure, it
     notes the split step again and drops the leaves still work (a leaf whose
     comment landed but not its close gets the reason twice).
     """
@@ -702,6 +740,8 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
         if is_work(card) and card.number in shipped:
             raise Refused(f"{_label(card)} shipped in git: undo it with a commit carrying "
                           f"'Reopens: plan#{card.number}', not a drop")
+        if card.kind == "step" and card.parent is not None and filing_unfinished(card):
+            _undo_split(tracker, card)
         _drop(tracker, card, args.why)
         return 0
     below = _leaves_below(tracker, card)
