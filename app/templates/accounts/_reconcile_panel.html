@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_withdrawal_macros.html" import frees_lines, line_facts, posted_ids, shown_line_ids %}
+{% from "_withdrawal_macros.html" import frees_lines, posted_ids, shared_match, shown_line_ids %}
 {% macro period_span(period) -%}
 {#- WHICH paycheck a block belongs to, in this panel's narrow register.
 
@@ -23,18 +23,13 @@
   {{ period.end_date.strftime('%b %-d') }}
 </span>
 {%- endmacro %}
-{% macro shared_match(shared) -%}
-{#- **Ruling R-CC135's warning for a match naming several rows' payments**
-   (developer 2026-10-04, "One check per save"; leaf 5c-2c-1): *"Matched
-   with Dining to one bank line: closing both from their purchases withdraws
-   that match, so 9/24 PAYMENT -$205.00 is unexplained again on your
-   statement screen."*  Each OTHER row it needs is named, with its paycheck
-   where another row on the list carries the same name
-   (``SharedPartner.needs_period``).  ``shared`` is a
-   ``reconcile_service.SharedMatch``. -#}
-{%- set rows = shared.partners | length + 1 -%}
-{%- set lines = shared.withdrawal.lines | length -%}
-Matched with {% for partner in shared.partners %}{{ partner.name }}{% if partner.needs_period %} {{ period_span(partner.period) }}{% endif %}{% if not loop.last %}{{ ' and ' if loop.revindex == 2 else ', ' }}{% endif %}{% endfor %} to {{ 'one bank line' if lines == 1 else lines ~ ' bank lines' }}: closing {{ 'both' if rows == 2 else 'all ' ~ rows }} from their purchases withdraws that match, so {{ line_facts(shared.withdrawal.lines) }} {{ 'is' if lines == 1 else 'are' }} unexplained again on your statement screen.
+{% macro shared_partner(partner) -%}
+{#- One OTHER row a shared match needs, as R-CC135's warning names it on this
+   panel (``_withdrawal_macros.shared_match``, leaf 5c-2c-1): its name, with
+   its paycheck where another row on the list carries the same name
+   (``SharedPartner.needs_period``).  ``partner`` is a
+   ``reconcile_service.SharedPartner``. -#}
+{{ partner.name }}{% if partner.needs_period %} {{ period_span(partner.period) }}{% endif %}
 {%- endmacro %}
 {% macro settle_row(group, panel_id, label, period=none) %}
 {# ONE rendering of a settle offer, used by BOTH arms.
@@ -127,7 +122,7 @@ Matched with {% for partner in shared.partners %}{{ partner.name }}{% if partner
     <div>Closing it from its purchases {{ frees_lines(withdraws) }}.</div>
     {% endif %}
     {% for shared in group.settle.shared %}
-    <div>{{ shared_match(shared) }}</div>
+    <div>{% call(partner) shared_match(shared) %}{{ shared_partner(partner) }}{% endcall %}</div>
     {% endfor %}
   </div>
   {% if withdraws and withdraws.frees_a_line %}

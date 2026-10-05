@@ -838,13 +838,16 @@ class PageOutOfDate(ValidationError):
 
     @classmethod
     def over_lines(cls, freed: int, named: int) -> "PageOutOfDate":
-        """Return the refusal of a press freeing other bank lines than its page named.
+        """Return the refusal of a SAVE that freed other bank lines than its page named.
 
         Worded for any press -- a Save, Paid / Received, a Delete -- because
         every one of them reaches it (review finding L3: it said "Saving now"
         on a Delete).  It opens with ruling **R-CC128**'s banner words
         ("nothing was saved because the page was out of date"), which every
         out-of-date refusal shares, the delete's purchases one included.
+        Raised at the save's CLOSE (``match_press.Press``), which knows both
+        counts whole; a call refused AT ONCE knows neither, and says
+        :meth:`over_an_unnamed_line` instead.
 
         Args:
             freed: How many bank lines the press would leave unexplained again.
@@ -860,4 +863,26 @@ class PageOutOfDate(ValidationError):
             f"this press leaves {freed} bank line{'' if freed == 1 else 's'} "
             f"unexplained again on your statement screen, and the page named "
             f"{named}."
+        )
+
+    @classmethod
+    def over_an_unnamed_line(cls) -> "PageOutOfDate":
+        """Return the refusal of ONE call of a save freeing a bank line its page did not name.
+
+        Raised AT ONCE, before the call writes anything (ruling **R-CC135**:
+        *"undoing one the page did not name stops it at once"*), so it knows
+        only the lines freed so far and never the whole save's -- it states
+        the fact and no count.  It counted until plan step
+        ``credit_card:CC-5-4a-5`` (leaf 5c-2c-2, its review's L1): two
+        envelopes each freeing a line under a page that named none read
+        "leaves 1 bank line", over a redraw naming two.  Opens with ruling
+        **R-CC128**'s banner words, as :meth:`over_lines` does.
+
+        Returns:
+            The exception, to raise.
+        """
+        return cls(
+            "Nothing was saved: this page was out of date. As things are now, "
+            "this press would leave a bank line unexplained that this page did "
+            "not mention."
         )

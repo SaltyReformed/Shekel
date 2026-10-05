@@ -1,0 +1,250 @@
+{% from "_money_macros.html" import money %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, posted_ids, shared_match %}
+{# Carry-Forward Preview: the modal's CONTENT.
+
+   Rendered inside ``grid/_carry_forward_preview_modal.html`` by the GET
+   preview, and ALONE by a Confirm refused as out of date, which swaps it over
+   the open modal's content (ruling R-CC128, "Redraw all"): the Bootstrap
+   modal stays shown, and everything in it is drawn again from what is true
+   now, below the refusal's facts.
+
+   Expected context:
+     preview         -- ``CarryForwardPreview`` from
+                        ``carry_forward_service.preview_carry_forward``.
+     source_period   -- ``DerivedPeriod`` the user clicked Carry Fwd on.
+     current_period  -- ``DerivedPeriod`` the items would land in.
+                        BOTH spell their id ``period_id``, NOT ``id`` (plan
+                        steps C2-f3a and C2-f3c): ``{{ current_period.id }}``
+                        renders EMPTY, silently.  The Confirm button's
+                        ``hx-post`` reads the id through ``url_for``, which
+                        RAISES on a missing one rather than rendering a broken
+                        URL, and ``test_carry_forward_preview.
+                        TestCarryForwardPreviewSuccess
+                        .test_returns_200_with_modal_html_for_owned_period``
+                        asserts the link it builds.
+     content_id      -- this element's DOM id, the route's, which a refused
+                        Confirm's redraw is retargeted at.
+     page_refusal    -- ``PageOutOfDate.facts`` on a redraw; ``None`` on
+                        the GET.
+
+   Confirm posts to the existing carry_forward route; on success the
+   route returns ``HX-Trigger: gridRefresh`` which reloads the page
+   (handled in ``app.js``).  On another refusal (a race-condition
+   validation failure) the response body is shown in the alert box at the
+   top of the modal -- handled by the ``data-carry-forward-confirm``
+   listener in ``app.js``.
+
+   **What the batch would leave unexplained on the statement screen is said
+   before the press, and posted back with it** (plan step
+   credit_card:CC-5-4a-5, leaf 5c-2c-2, rulings R-CC76 / R-CC127 /
+   R-CC135).  An envelope's close takes the payment a revert kept off the
+   books, and a match left naming no row goes with it: under the envelope
+   whose close empties the match by itself (``plan.withdraws``), and ONCE,
+   under the first of its envelopes listed, for a match only several closes
+   empty together (``plan.shared``, *"Carry-forward's Confirm is one save of
+   every envelope and names each match once"*).  The Confirm posts every
+   line named as one set (``preview.named_line_ids``), from the same
+   preview the captions print, and the batch's one press compares it with
+   what the batch frees.
+#}
+{# Whether Confirm can be pressed: ONE answer for the button and for the
+   redraw's banner, which tells the owner to press again only when it can. #}
+{% set can_confirm = not (preview.any_blocked or preview.plans|length == 0) %}
+<div class="modal-content" id="{{ content_id }}">
+
+  <div class="modal-header">
+    <h5 class="modal-title" id="carryForwardPreviewLabel">
+      <i class="bi bi-arrow-right-circle"></i>
+      Carry Forward {{ source_period.label }}
+    </h5>
+    <button type="button" class="btn-close" data-bs-dismiss="modal"
+            aria-label="Close"></button>
+  </div>
+
+  <div class="modal-body">
+    {% if page_refusal %}
+    {{ page_refusal_banner(page_refusal, can_press=can_confirm) }}
+    {% endif %}
+    {# Race-condition error display.  The Confirm button's
+       hx-post lands here on 4xx; otherwise stays hidden. #}
+    <div class="alert alert-danger d-none" role="alert"
+         data-carry-forward-error></div>
+
+    {% if preview.plans|length == 0 %}
+      {# Empty period: nothing to do.  Confirm button is disabled
+         below so the user can only Cancel. #}
+      <p class="mb-0 text-muted">
+        No projected items in {{ source_period.label }} to carry forward.
+      </p>
+    {% else %}
+      <p class="mb-3">
+        Carrying forward to
+        <strong>{{ current_period.label }}</strong>.
+        Each row below shows the action that will run if you confirm.
+        All actions execute together as a single batch -- if any
+        row is blocked, the whole batch is refused so no partial
+        state is left behind.
+      </p>
+
+      {% if preview.any_blocked %}
+        <div class="alert alert-warning d-flex align-items-start"
+             role="alert">
+          <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+          <div>
+            <strong>{{ preview.blocked_count }}
+              {{ 'row is' if preview.blocked_count == 1 else 'rows are' }}
+              blocked.</strong>
+            Resolve {{ 'it' if preview.blocked_count == 1 else 'them' }}
+            manually using the table below, then re-open this preview
+            to retry.
+          </div>
+        </div>
+      {% endif %}
+
+      <ul class="list-group mb-3">
+        {% for plan in preview.plans %}
+          <li class="list-group-item
+              {% if plan.blocked %}list-group-item-warning{% endif %}">
+            <div class="d-flex justify-content-between align-items-start gap-2">
+              <div class="flex-grow-1">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <strong>{{ plan.item.name }}</strong>
+                  {% if plan.kind == "envelope" %}
+                    <span class="badge text-bg-info">Envelope</span>
+                  {% elif plan.kind == "discrete" %}
+                    <span class="badge text-bg-secondary">Discrete</span>
+                  {% elif plan.kind == "transfer" %}
+                    <span class="badge text-bg-primary">Transfer</span>
+                  {% endif %}
+                  {% if plan.blocked %}
+                    <span class="badge text-bg-danger">
+                      <i class="bi bi-x-octagon-fill"></i> Blocked
+                    </span>
+                  {% endif %}
+                </div>
+
+                {# Action label -- per-kind branch. #}
+                <div class="small text-body-secondary mt-1">
+                  {% if plan.kind == "envelope" %}
+                    {% if plan.leftover and plan.leftover > 0 %}
+                      {% if plan.target_will_be_generated %}
+                        {% if plan.target_estimated_before and plan.target_estimated_before > 0 %}
+                        Settle source at
+                        <strong>{{ money(plan.entries_sum) }}</strong>;
+                        create a row in {{ current_period.label }} at
+                        <strong>{{ money(plan.target_estimated_before) }}</strong>
+                        carrying
+                        <strong>{{ money(plan.leftover) }}</strong>
+                        forward (total
+                        <strong>{{ money(plan.target_estimated_after) }}</strong>).
+                        {% else %}
+                        Settle source at
+                        <strong>{{ money(plan.entries_sum) }}</strong>;
+                        create a row in {{ current_period.label }}
+                        carrying
+                        <strong>{{ money(plan.leftover) }}</strong>
+                        forward.
+                        {% endif %}
+                      {% elif plan.target_estimated_before is not none %}
+                        Settle source at
+                        <strong>{{ money(plan.entries_sum) }}</strong>;
+                        bump target from
+                        <strong>{{ money(plan.target_estimated_before) }}</strong>
+                        to
+                        <strong>{{ money(plan.target_estimated_after) }}</strong>
+                        (rolling
+                        <strong>{{ money(plan.leftover) }}</strong>
+                        forward).
+                      {% else %}
+                        {# Blocked envelope with leftover > 0 -- target
+                           estimated_before/after are None.  Show the
+                           intent so the user understands what failed. #}
+                        Would settle source at
+                        <strong>{{ money(plan.entries_sum) }}</strong>
+                        and roll
+                        <strong>{{ money(plan.leftover) }}</strong>
+                        forward.
+                      {% endif %}
+                    {% else %}
+                      Settle source at
+                      <strong>{{ money(plan.entries_sum) }}</strong>;
+                      no leftover to roll forward
+                      (estimate {{ money(plan.budget) }}).
+                    {% endif %}
+                  {% elif plan.kind == "discrete" %}
+                    Defer entire row
+                    ({{ money(plan.budget) }})
+                    to {{ current_period.label }}.
+                  {% elif plan.kind == "transfer" %}
+                    Move transfer
+                    ({{ money(plan.budget) }})
+                    and both linked shadow rows to {{ current_period.label }}.
+                  {% endif %}
+                </div>
+
+                {% if plan.blocked %}
+                  <div class="text-danger small mt-1">
+                    <i class="bi bi-x-circle"></i>
+                    {{ plan.block_reason }}
+                  </div>
+                {% endif %}
+
+                {# What this envelope's close withdraws (leaf 5c-2c-2):
+                   the matches it empties by itself, in the clause every
+                   withdrawal caption shares, then each match it empties
+                   only with other envelopes in the batch, named here once
+                   and nowhere else. #}
+                {% if plan.withdraws and plan.withdraws.frees_a_line %}
+                  <div class="form-text mt-1">
+                    Closing it from its purchases {{ frees_lines(plan.withdraws) }}.
+                  </div>
+                {% endif %}
+                {% for shared in plan.shared %}
+                  <div class="form-text mt-1">{% call(partner) shared_match(shared) %}{{ partner }}{% endcall %}</div>
+                {% endfor %}
+              </div>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+
+      {# Summary line.  Pluralised conditionally and matched to
+         the service's same-name properties.  Only counts
+         actionable plans -- blocked rows are not in any of the
+         three counts. #}
+      <div class="small text-body-secondary">
+        <i class="bi bi-info-circle"></i>
+        Summary:
+        <strong>{{ preview.envelope_count }}</strong>
+        envelope{{ '' if preview.envelope_count == 1 else 's' }}
+        settle and roll,
+        <strong>{{ preview.discrete_count }}</strong>
+        discrete defer{{ 's' if preview.discrete_count != 1 else '' }},
+        <strong>{{ preview.transfer_count }}</strong>
+        transfer{{ '' if preview.transfer_count == 1 else 's' }}
+        move.
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="modal-footer">
+    <button type="button" class="btn btn-secondary"
+            data-bs-dismiss="modal">
+      Cancel
+    </button>
+    <button type="button" class="btn btn-warning"
+            data-carry-forward-confirm
+            hx-post="{{ url_for('transactions.carry_forward', period_id=source_period.period_id) }}"
+            hx-vals='{"shown_lines": "{{ posted_ids(preview.named_line_ids) }}"}'
+            hx-swap="none"
+            hx-disabled-elt="this"
+            {% if not can_confirm %}
+            disabled
+            aria-disabled="true"
+            {% endif %}>
+      <i class="bi bi-check-circle"></i>
+      Confirm Carry Forward
+    </button>
+  </div>
+
+</div>
