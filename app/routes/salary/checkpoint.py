@@ -11,7 +11,7 @@ periods.
 Blueprint choice (salary, not analytics): the checkpoint row lives in the
 ``salary`` schema and is scoped to a salary profile, and every salary-schema
 write in the app already lives in the salary blueprint (profiles, raises,
-deductions, calibration, tax config) -- the analytics blueprint owns zero
+deductions, pay stubs, tax config) -- the analytics blueprint owns zero
 mutation routes.  The established domain-write convention therefore places
 this write in the salary blueprint even though the card it renders is an
 analytics surface (the response template lives under ``templates/analytics``,
@@ -57,8 +57,8 @@ def save_ytd_checkpoint(profile_id):
       422 on a validation failure so the card shows the field errors, 500
       with a banner on a DB-tier failure);
     * full-page (non-HTMX) request -> a flash plus redirect to the
-      analytics page (the card's future host), matching how the calibration
-      and line-item handlers redirect on a full-page post.
+      analytics page (the card's future host), matching how the line-item
+      handlers redirect on a full-page post.
     """
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
@@ -92,8 +92,7 @@ def save_ytd_checkpoint(profile_id):
 
     # Capture the requester id on the clean session up front; the failure
     # path logs after a rollback where reading the expired current_user
-    # attribute would hit the rolled-back session (the calibration handler's
-    # pattern).
+    # attribute would hit the rolled-back session.
     user_id = current_user.id
     try:
         checkpoint = tax_withholding_service.save_checkpoint(profile.id, figures)

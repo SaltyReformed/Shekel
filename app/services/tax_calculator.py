@@ -591,41 +591,32 @@ def resolve_child_deduction_per_child(agi, tiers):
 # ── FICA ──────────────────────────────────────────────────────────
 
 
-def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None):
+def capped_social_security(gross, cumulative_wages, fica_config):
     """Compute one period's Social Security tax with the wage-base cap enforced.
 
-    Sole source of truth for SS arithmetic.  Both the bracket-based path
-    (`calculate_fica`, statutory rate) and the calibrated path
-    (`apply_calibration`, the user's pay-stub-derived `effective_ss_rate`)
-    delegate here so the IRS invariant -- a worker's yearly SS never exceeds
-    `ss_wage_base * statutory_ss_rate` -- cannot drift between the two paths.
+    Sole source of truth for SS arithmetic, which :func:`calculate_fica`
+    delegates to so the IRS invariant -- a worker's yearly SS never exceeds
+    `ss_wage_base * ss_rate` -- has one spelling.
 
     Per-period SS is `ss_rate * gross`, accrued until the cumulative SS
     collected reaches the statutory annual maximum, after which it is zero.
     Expressed as one clamp:
 
-        statutory_max = fica_config.ss_rate * ss_wage_base
+        statutory_max = ss_rate * ss_wage_base
         period_ss     = ss_rate * gross
         remaining     = statutory_max - ss_rate * cumulative_wages
         ss            = max(0, min(period_ss, remaining))
 
-    When `ss_rate` is the statutory rate this reduces EXACTLY to the classic
-    three-branch cap (cumulative >= base -> 0; crossing -> partial; under ->
-    full `gross * ss_rate`): at the statutory rate
-    `remaining == ss_rate * (ss_wage_base - cumulative_wages)`, so the bracket
-    path is byte-identical to its prior form (verified against the $312k
-    worked example: period 16 -> $279.00, period 17 -> $0.00).
+    which is the classic three-branch cap (cumulative >= base -> 0; crossing
+    -> partial; under -> full `gross * ss_rate`), verified against the $312k
+    worked example: period 16 -> $279.00, period 17 -> $0.00.
 
-    The calibration path passes the stub-derived `effective_ss_rate`, which
-    reproduces the user's real per-period SS withholding -- assessed by their
-    employer on a Section 125 cafeteria-reduced base, so typically below 6.2%
-    of gross -- while the cap still bounds the annual total at the statutory
-    maximum.  This restores the pre-CRIT-03 calibration fidelity (which used
-    `effective_ss_rate`) WITHOUT reintroducing the F-037 bug (which had no
-    cap): the cap is now enforced for both rates by the same arithmetic.  A
-    calibrated `effective_ss_rate` of zero (a non-SS-covered employee, e.g.
-    some government workers) correctly yields zero SS, which the statutory
-    substitution got wrong.
+    **One rate since plan step salary:S11-c-2c.**  It took an ``ss_rate``
+    override for the pay-stub calibration, which applied one stub's
+    effective Social Security rate to every paycheck under the same cap.
+    That path is deleted (ruling **R-SAL100**): a paycheck's Social Security
+    is now its pay stub's figure corrected by the formulas, and the formulas
+    always price at the statutory rate.
 
     Args:
         gross:            Gross pay for this pay period (NOT annualized).
@@ -633,15 +624,7 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
         fica_config:      The year's :class:`app.tax_law.FicaRules`, with
                           `ss_rate` and `ss_wage_base`.  When None -- the
                           law resolved no FICA year at all -- returns ZERO,
-                          mirroring `calculate_fica`'s None-fica handling so
-                          both the bracket and calibration paths produce a
-                          zero SS line.
-        ss_rate:          Optional per-period SS rate applied to `gross`.
-                          Defaults to the statutory `fica_config.ss_rate`
-                          (the bracket path).  The calibration path passes
-                          the pay-stub-derived `effective_ss_rate`.  The cap
-                          ceiling `statutory_max` always uses the statutory
-                          `fica_config.ss_rate`, never this override.
+                          mirroring `calculate_fica`'s None-fica handling.
 
     Returns:
         Decimal: SS tax for the period, quantised HALF_UP to two places.
@@ -651,11 +634,10 @@ def capped_social_security(gross, cumulative_wages, fica_config, *, ss_rate=None
 
     gross = Decimal(str(gross))
     cumulative = Decimal(str(cumulative_wages))
-    statutory_rate = Decimal(str(fica_config.ss_rate))
-    rate = statutory_rate if ss_rate is None else Decimal(str(ss_rate))
+    rate = Decimal(str(fica_config.ss_rate))
     ss_wage_base = Decimal(str(fica_config.ss_wage_base))
 
-    statutory_max = statutory_rate * ss_wage_base
+    statutory_max = rate * ss_wage_base
     period_ss = rate * gross
     remaining = statutory_max - rate * cumulative
     capped = max(min(period_ss, remaining), ZERO)
@@ -667,8 +649,8 @@ def calculate_fica(annual_gross, fica_config, cumulative_wages=ZERO):
 
     Handles the SS wage base cap and Medicare surtax threshold using
     cumulative wages to track year-to-date totals.  The SS portion is
-    delegated to `capped_social_security` so the bracket and calibration
-    paths cannot drift on the cap invariant (F-037 / CRIT-03).
+    delegated to `capped_social_security`, the cap invariant's one spelling
+    (F-037 / CRIT-03).
 
     Args:
         annual_gross:     Gross income for this pay period (NOT annualized).

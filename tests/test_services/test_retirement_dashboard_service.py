@@ -21,9 +21,9 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     EmployerContributionTypeEnum,
+    WithholdingKindEnum,
 )
 from app.extensions import db
-from app.models.calibration_override import CalibrationOverride
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
@@ -47,6 +47,7 @@ from app.services.pay_rhythm import FixedDays
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.services.salary_raises import terms_of
 from tests._test_helpers import (
+    add_test_pay_stub,
     figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
@@ -633,7 +634,7 @@ class TestTheRenderDayOpensTheSalaryPath:
 
 
 class TestTheCurrentPaycheckIsThePassPricers:
-    """``/retirement``'s current paycheck is the pass's pricer's, CALIBRATED.
+    """``/retirement``'s current paycheck is the pass's pricer's, STUB-PRICED.
 
     Plan step **salary:S3-f-2a**, ruling **R-SAL21** as amended.  The verdict's
     income target scaled by a paycheck ``_compute_current_pay`` priced with a
@@ -654,20 +655,27 @@ class TestTheCurrentPaycheckIsThePassPricers:
         Social Security      2,000.00 x 6.20%          =   124.00
         Medicare             2,000.00 x 1.45%          =    29.00
 
-    With no calibration the bracket path withholds no federal or state (no
-    rules for either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
-    ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare
-    (:func:`~app.services.calibration_service.apply_calibration`: the income
-    rates on the taxable base, which equals the gross here; FICA on the gross,
-    the SS cap far away), net is ``2,000.00 - 453.00 = 1,547.00``.
+    With no pay stub the formulas withhold no federal or state (no rules for
+    either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With a switched-on
+    STUB of the paycheck's pay and (no) lines printing federal ``200.00``,
+    state ``100.00``, SS ``124.00`` and Medicare ``29.00``, each tax is the
+    stub's: the formulas price the stub's paycheck and the current one alike
+    (same gross, the SS cap far away), so their difference is ``$0.00``, and
+    net is ``2,000.00 - 453.00 = 1,547.00``.
 
     A retirement date is set so the SCALING arm runs -- the final-year gross
     of a raise-free profile is the same ``$2,000.00``, scaled by the engine's
     take-home rate back to the same net -- and the picture states it per
     MONTH: ``net x 26 / 12``, rounded once.  Both cases are the same seed with
-    one row toggled, which is what shows the calibration is the whole
-    difference; the calibrated case failed on the tree before this step
+    one stub present or not, which is what shows the stub is the whole
+    difference; the priced case failed on the tree before plan step S3-f-2a
     (``4001.83`` where ``3351.83`` is asserted).
+
+    **RE-BASED by rulings R-SAL42 and R-SAL100** (plan step salary:S11-c-2c):
+    until that step the priced side was an ACTIVE calibration at the same
+    four dollars as effective rates (10% / 5% / 6.2% / 1.45%), which the step
+    deleted with the rates path; the subject -- the verdict scales the
+    pricer's priced net -- and every figure are unchanged.
     """
 
     @pytest.fixture(autouse=True)
@@ -676,8 +684,13 @@ class TestTheCurrentPaycheckIsThePassPricers:
         tax_law(fica_only_law())
 
     @staticmethod
-    def _seed_owner(db, seed_user, *, calibrated):
-        """The owner above, with the calibration row present or not."""
+    def _seed_owner(db, seed_user, *, stubbed):
+        """The owner above, with the pay stub present or not.
+
+        The stub is dated on the pay list's first payday, the calendar's first
+        saved one, so it is on or before the current paycheck whatever day
+        the suite runs.
+        """
         profile = make_salary_profile(
             seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 / 26
         )
@@ -688,47 +701,43 @@ class TestTheCurrentPaycheckIsThePassPricers:
             .one()
         )
         settings.planned_retirement_date = date(2050, 1, 1)
-        if calibrated:
-            db.session.add(CalibrationOverride(
-                salary_profile_id=profile.id,
-                actual_gross_pay=Decimal("2000.00"),
-                actual_federal_tax=Decimal("200.00"),
-                actual_state_tax=Decimal("100.00"),
-                actual_social_security=Decimal("124.00"),
-                actual_medicare=Decimal("29.00"),
-                effective_federal_rate=Decimal("0.1000000000"),
-                effective_state_rate=Decimal("0.0500000000"),
-                effective_ss_rate=Decimal("0.0620000000"),
-                effective_medicare_rate=Decimal("0.0145000000"),
-                pay_stub_date=date(2026, 1, 16),
-                is_active=True,
-            ))
+        if stubbed:
+            add_test_pay_stub(
+                profile, profile.pay_entries[0].payday, "2000.00",
+                taxes={
+                    WithholdingKindEnum.FEDERAL_INCOME: "200.00",
+                    WithholdingKindEnum.STATE_INCOME: "100.00",
+                    WithholdingKindEnum.SOCIAL_SECURITY: "124.00",
+                    WithholdingKindEnum.MEDICARE: "29.00",
+                },
+            )
         db.session.commit()
 
-    def test_the_calibrated_net_is_what_the_verdict_scales_by(
+    def test_the_stub_priced_net_is_what_the_verdict_scales_by(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An active calibration reaches the income target: $1,547.00 a paycheck.
+        """A pay stub reaches the income target: $1,547.00 a paycheck.
 
-        ``1,547.00 x 26 / 12 = 3,351.8333...`` -> ``3,351.83``.  The
-        uncalibrated door answered ``1,847.00`` here, which is ``4,001.83``.
+        ``1,547.00 x 26 / 12 = 3,351.8333...`` -> ``3,351.83``.  The door
+        that dropped the pricer answered ``1,847.00`` here, which is
+        ``4,001.83``.
         """
         with app.app_context():
-            self._seed_owner(db, seed_user, calibrated=True)
+            self._seed_owner(db, seed_user, stubbed=True)
             picture = _picture(seed_user["user"].id)
             assert picture.net.pre_retirement_net_monthly == Decimal("3351.83")
 
-    def test_without_a_calibration_the_bracket_net_is_what_it_scales_by(
+    def test_without_a_stub_the_formulas_net_is_what_it_scales_by(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The same owner with no calibration row: $1,847.00 a paycheck.
+        """The same owner with no pay stub: $1,847.00 a paycheck.
 
         ``1,847.00 x 26 / 12 = 4,001.8333...`` -> ``4,001.83``.  The pair is
-        the control: one row toggled, one figure moved, by the calibration's
+        the control: one stub toggled, one figure moved, by the stub's
         ``$300.00`` of federal and state and nothing else.
         """
         with app.app_context():
-            self._seed_owner(db, seed_user, calibrated=False)
+            self._seed_owner(db, seed_user, stubbed=False)
             picture = _picture(seed_user["user"].id)
             assert picture.net.pre_retirement_net_monthly == Decimal("4001.83")
 

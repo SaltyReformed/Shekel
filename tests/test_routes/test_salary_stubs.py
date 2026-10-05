@@ -24,7 +24,10 @@ refusal, driven through the test client:
   this job's gross counts, a refusal naming the setting ends in a link to it
   (**R-SAL104**, **R-SAL106**), and both links open a new tab (**R-SAL107**)
   -- changing the setting there leaves the open stub form submittable.  The
-  words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**).
+  words are **R-SAL114** to **R-SAL117**'s (the approved list, **R-SAL115**);
+* a saved stub's page says a one-off can affect its taxes exactly when the
+  engine's picker treats it as one that does (**R-SAL123**), in **R-SAL126**'s
+  words.
 
 The figures are the service suite's worked example
 (``tests/test_services/test_pay_stub_service.py``): the 03-27 stub prints a
@@ -45,11 +48,14 @@ from app.extensions import db
 from app.models.pay_stub import PayStub
 from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
+from app.models.transaction_template import TransactionTemplate
 from app.services import pay_stub_service
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     build_pay_stub_world,
     freeze_today,
     make_flat_paycheck_line,
+    make_income_template,
     make_salary_profile,
     rendered_form_controls,
 )
@@ -565,6 +571,103 @@ class TestTheSwitch:
         assert b"Used for pricing: turn off" in page.data
 
 
+@pytest.fixture(name="paid_world")
+def _paid_world(world, seed_user):
+    """The worked example's profile paid into a salary template, so a write regenerates.
+
+    The salary template is what the paycheck rows and the stored amount
+    belong to; the plain ``world`` profile has none, and the regeneration
+    skips a profile without one.  The template's stated price, ``$2,000.00``,
+    is made up and is no paycheck's net.
+    """
+    profile = db.session.get(SalaryProfile, world["profile_id"])
+    template = make_income_template(db.session, seed_user, name="Day Job pay")
+    profile.template_id = template.id
+    db.session.commit()
+    return {**world, "template_id": template.id}
+
+
+def _todays_net(world):
+    """Today's paycheck net, priced by a pass built now -- the oracle a write must store."""
+    db.session.expire_all()
+    profile = db.session.get(SalaryProfile, world["profile_id"])
+    ctx = BalanceContext.build(profile.user_id)
+    period = ctx.calendar().period_containing(ctx.as_of)
+    return ctx.paychecks().for_profile(profile).at(period).earnings.net_pay
+
+
+def _stored_amount(world):
+    """The salary template's stored amount, freshly read."""
+    db.session.expire_all()
+    return db.session.get(TransactionTemplate, world["template_id"]).default_amount
+
+
+class TestAStubWriteRegeneratesThePaychecks:
+    """Each stub door regenerates the salary rows in its transaction (review M3).
+
+    Plan step salary:S11-c-2c: a stub prices the taxes of every paycheck on
+    or after its payday (ruling R-SAL100), so recording, editing or switching
+    one moves the amount the salary template stores for today's paycheck, as
+    the calibration doors it replaced did.  The stub here is dated 03-13, the
+    payday of today's paycheck (today is 03-20), so it prices that paycheck;
+    every door is driven with the form the page emits (the worked example's
+    payload, pinned to the rendered controls above).  The expected figure is
+    the pricer's own, read by a pass built after the write: the door must
+    store what the app now prices, and each case also proves the write moved
+    that figure, so a door that skipped the regeneration fails it.
+    """
+
+    _TODAY_PAYDAY = "2026-03-13"
+
+    def test_recording_a_stub_stores_the_paycheck_it_prices(self, auth_client, paid_world):
+        """The formulas' net before; the stub-priced net stored after."""
+        formulas_net = _todays_net(paid_world)
+
+        response = _record(auth_client, paid_world, payday=self._TODAY_PAYDAY)
+
+        assert response.status_code == 302
+        stub_net = _todays_net(paid_world)
+        assert stub_net != formulas_net
+        assert _stored_amount(paid_world) == stub_net
+
+    def test_editing_a_stub_stores_the_paycheck_it_now_prices(self, auth_client, paid_world):
+        """Federal $150.00 -> $250.00 on the stub moves today's paycheck, and it is stored."""
+        _record(auth_client, paid_world, payday=self._TODAY_PAYDAY)
+        before = _stored_amount(paid_world)
+        stub = _stub()
+        payload = _payload(paid_world, payday=self._TODAY_PAYDAY, printed_net="2002.62")
+        payload[_tax_field(WithholdingKindEnum.FEDERAL_INCOME)] = "250.00"
+        payload["version_id"] = str(stub.version_id)
+
+        response = auth_client.post(f"/salary/stubs/{stub.id}/edit", data=payload)
+
+        assert response.status_code == 302
+        after = _todays_net(paid_world)
+        assert after != before
+        assert _stored_amount(paid_world) == after
+
+    def test_switching_a_stub_off_and_on_stores_each_paycheck(self, auth_client, paid_world):
+        """Off: the formulas' net is stored; on again: the stub's."""
+        formulas_net = _todays_net(paid_world)
+        _record(auth_client, paid_world, payday=self._TODAY_PAYDAY)
+        stub_net = _stored_amount(paid_world)
+        stub_id = _stub().id
+
+        off = auth_client.post(
+            f"/salary/stubs/{stub_id}/pricing",
+            data={"use_for_pricing": "off", "version_id": "1"},
+        )
+        assert off.status_code == 302
+        assert _stored_amount(paid_world) == formulas_net == _todays_net(paid_world)
+
+        on = auth_client.post(
+            f"/salary/stubs/{stub_id}/pricing",
+            data={"use_for_pricing": "on", "version_id": "2"},
+        )
+        assert on.status_code == 302
+        assert _stored_amount(paid_world) == stub_net == _todays_net(paid_world)
+
+
 def _selected(html, name):
     """The values of the options selected in the select named *name*."""
     start = html.index(f'name="{name}"')
@@ -668,6 +771,70 @@ class TestTheKindAStubPrints:
         assert "Taxable earning</span> on the stub" in page
         assert "Post-tax deduction</span> in the app" in page
         assert _selected(page, f"line-kind-{phone}") == [str(taxable)]
+
+
+#: Ruling R-SAL126's words (amending R-SAL125's, which amended R-SAL123's), byte
+#: for byte: the stub page's sentence under a one-off that changes the stub's taxes.
+_ONE_OFF_SENTENCE = (
+    b"This one-off can affect taxes, so this stub won't match any paycheck. "
+    b"Paychecks use a matching stub first."
+)
+
+
+class TestTheOneOffSentence:
+    """R-SAL123's rule on the saved stub's page, in R-SAL126's words (plan step S11-c-2c).
+
+    The page shows the sentence exactly when the engine's picker treats the
+    stub as one of other lines: a one-off of a kind a tax formula reads -- a
+    taxable earning or a pre-tax deduction -- carrying money.  The service flag
+    behind it is graded in ``test_pay_stub_service.py``; this grades what the
+    page RENDERS, which the delta review measured no test reading (three
+    template mutations survived every stub test).  No earlier wording is on
+    the page: fork 8b's "matches no normal paycheck", R-SAL123's "with your
+    usual lines" (false for a switched-off stub and for a paycheck whose lines
+    are not the usual ones) and R-SAL125's "with the same lines as that
+    paycheck" (false where both stubs carry such a one-off).  R-SAL126 gives
+    the gist in plain words and leaves the exact answer to the card that
+    names each paycheck's stub; the developer refused a full statement of the
+    rule as too long for the page.
+    """
+
+    @pytest.mark.parametrize(("kind", "amount", "gross", "net", "shown"), [
+        # gross 2884.62 + Phone 60.00 + 55.00 = 2999.62;
+        # net 2999.62 - 315.00 - 472.00 - 110.00 = 2102.62
+        (PaycheckLineKindEnum.TAXABLE_EARNING, "55.00", "2999.62", "2102.62", True),
+        # gross 2884.62 + 60.00 = 2944.62; net 2944.62 - 315.00 - 55.00 - 472.00 - 110.00
+        # = 1992.62
+        (PaycheckLineKindEnum.PRE_TAX_DEDUCTION, "55.00", "2944.62", "1992.62", True),
+        # gross 2944.62; net 2944.62 - 315.00 - 472.00 - 110.00 - 55.00 = 1992.62
+        (PaycheckLineKindEnum.POST_TAX_DEDUCTION, "55.00", "2944.62", "1992.62", False),
+        # gross 2944.62 (outside it on a "no" job); net 2944.62 - 315.00 - 472.00
+        # - 110.00 + 55.00 = 2102.62
+        (PaycheckLineKindEnum.AFTER_TAX_EARNING, "55.00", "2944.62", "2102.62", False),
+        # a $0.00 one-off moves no tax: gross 2944.62; net 2944.62 - 315.00 - 472.00
+        # - 110.00 = 2047.62
+        (PaycheckLineKindEnum.TAXABLE_EARNING, "0.00", "2944.62", "2047.62", False),
+    ])
+    def test_the_sentence_shows_only_under_a_one_off_that_changes_the_taxes(
+        self, auth_client, world, kind, amount, gross, net, shown,
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        """Recorded through the door with a one-off of *kind*, the saved page says so or not.
+
+        Pylint: ``too-many-arguments`` / ``too-many-positional-arguments`` --
+        two fixtures and the five columns of one parametrized case.
+        """
+        payload = _payload(world, one_off=("Thing", amount), printed_gross=gross,
+                           printed_net=net)
+        payload["one_off_kind"] = [str(ref_cache.paycheck_line_kind_id(kind)), ""]
+        response = auth_client.post(f"/salary/{world['profile_id']}/stubs", data=payload)
+        assert response.status_code == 302, response.data.decode()[:2000]
+        page = auth_client.get(response.headers["Location"])
+        assert page.status_code == 200
+        assert b"One-offs on this stub:" in page.data
+        assert (_ONE_OFF_SENTENCE in page.data) is shown
+        assert b"matches no normal paycheck" not in page.data
+        assert b"with your usual lines" not in page.data
+        assert b"with the same lines as that paycheck" not in page.data
 
 
 class TestTheLineDelete:

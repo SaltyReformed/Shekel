@@ -7,10 +7,11 @@ the amount model, the payroll feeds.  They carry no behaviour beyond the
 section totals that belong to the section owning the data (``taxes.total``,
 ``deductions.total_pre_tax``, ``earnings.total_taxable``,
 ``earnings.take_home_rate_pct``), so this leaf imports nothing of the engine
-and every other leaf may import it.  Two rules sit beside them:
-:func:`waterfall_gross` and :func:`waterfall_net`, the gross and the net a
-waterfall of those totals makes, which a priced paycheck and a transcribed pay
-stub share (plan step **salary:S11-b**).
+and every other leaf may import it.  Three rules sit beside them:
+:func:`waterfall_gross`, :func:`waterfall_taxable` and :func:`waterfall_net`,
+the gross, the taxable wage and the net a waterfall of those totals makes,
+which a priced paycheck and a transcribed pay stub share (plan steps
+**salary:S11-b** and **salary:S11-c-2c**).
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**), which is what put the package where the module had been; the
@@ -42,11 +43,19 @@ class PricedLine:
     this key, never on the display name.  The engine copies the priced line's
     ``id``; it is ``None`` only for a line that carries none -- the engine
     suite's duck-typed line fakes and the display fakes tests build by hand.
+
+    ``paycheck_line_kind_id`` is the kind the line was priced AS, since plan
+    step **salary:S11-c-2c**: the engine's stub picker keeps the taxed kinds'
+    lines by it, on the paycheck's side and the stub's alike, so the set of
+    kinds a tax formula reads is written once (``_stubs.TAXED_KINDS``).  The
+    engine sets it on every line it prices; it is ``None`` only on a display
+    fake a test builds by hand.
     """
     name: str
     amount: Decimal
     target_account_id: int = None
     paycheck_line_id: int | None = None
+    paycheck_line_kind_id: int | None = None
 
 
 def waterfall_gross(base_pay: Decimal, taxable_earnings: Decimal) -> Decimal:
@@ -68,6 +77,24 @@ def waterfall_gross(base_pay: Decimal, taxable_earnings: Decimal) -> Decimal:
     return base_pay + taxable_earnings
 
 
+def waterfall_taxable(gross: Decimal, pre_tax: Decimal) -> Decimal:
+    """Return a paycheck's TAXABLE wage: the gross less the pre-tax deductions, floored at zero.
+
+    The income-tax base, written once for the two paychecks the formulas
+    price since plan step **salary:S11-c-2c**: the engine's own
+    (:func:`~._pricing.calculate_paycheck`) and a pay stub's, on the side of
+    the difference the stub supplies (:mod:`._stubs`).
+
+    Args:
+        gross: Base pay plus the taxable earnings.
+        pre_tax: The pre-tax deductions' total.
+
+    Returns:
+        ``gross - pre_tax``, or ``$0.00`` when the deductions exceed it.
+    """
+    return max(gross - pre_tax, ZERO)
+
+
 def waterfall_net(
     gross: Decimal, pre_tax: Decimal, taxes: Decimal, post_tax: Decimal,
     after_tax: Decimal,
@@ -81,8 +108,9 @@ def waterfall_net(
     printed net the entry door checks (:mod:`app.services.pay_stub_service`,
     plan step **salary:S11-b**).  With :func:`waterfall_gross` it is the whole
     arithmetic the two share; which LINES feed each total is each caller's own
-    grouping (the engine's pass per kind, the stub's sum per kind), so a new
-    kind changes these signatures and both callers answer the change.
+    grouping (the engine's pass per kind, a stub's sum per kind in
+    :func:`~._stubs.stub_totals`), so a new kind changes these signatures and
+    both callers answer the change.
 
     Args:
         gross: Base pay plus the taxable earnings.
@@ -97,13 +125,44 @@ def waterfall_net(
     return round_money(gross - pre_tax - taxes - post_tax + after_tax)
 
 
+def every_priced_line(taxable, deductions, after_tax) -> tuple:
+    """Return every line a paycheck priced, all four kinds, in waterfall order.
+
+    The taxable earnings, the pre-tax and post-tax deductions, then the
+    after-tax earnings: what the pay stub door's report sets each stub line
+    beside (:attr:`PaycheckBreakdown.priced_lines`, plan step
+    **salary:S11-c-2c**).
+
+    Args:
+        taxable: The taxable earning lines.
+        deductions: The :class:`DeductionBreakdown`.
+        after_tax: The after-tax earning lines.
+
+    Returns:
+        The :class:`PricedLine` values.
+    """
+    return (*taxable, *deductions.pre_tax, *deductions.post_tax, *after_tax)
+
+
 @dataclass
 class TaxLines:
-    """The four withholding lines computed for a single paycheck."""
+    """The four withholding lines computed for a single paycheck, and what priced them.
+
+    ``stub_payday`` is the payday of the pay stub the four lines were priced
+    from, or ``None`` when no switched-on stub is dated on or before the
+    paycheck and the tax formulas alone priced them (plan step
+    **salary:S11-c-2c**, ruling **R-SAL100**, "Name the pricing stub";
+    :mod:`._stubs`).  A payday names one stub of a profile, which holds at most
+    one per payday (``uq_pay_stubs_profile_payday``); the date rather than the
+    row keeps the breakdown a plain value.  It rides on the TAX lines because
+    it is their basis and only theirs: the deductions and the earnings are the
+    paycheck lines' own on either path.
+    """
     federal: Decimal = ZERO
     state: Decimal = ZERO
     social_security: Decimal = ZERO
     medicare: Decimal = ZERO
+    stub_payday: date | None = None
 
     @property
     def total(self) -> Decimal:
@@ -263,3 +322,10 @@ class PaycheckBreakdown:
     earnings: Earnings
     taxes: TaxLines = field(default_factory=TaxLines)
     deductions: DeductionBreakdown = field(default_factory=DeductionBreakdown)
+
+    @property
+    def priced_lines(self) -> tuple:
+        """Every line this paycheck priced, all four kinds (:func:`every_priced_line`)."""
+        return every_priced_line(
+            self.earnings.taxable, self.deductions, self.earnings.after_tax,
+        )

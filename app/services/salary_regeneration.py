@@ -57,7 +57,7 @@ there is one fewer place the engine is reached outside
 :class:`~app.services.income_service.PaycheckPricing`.  **What that pricer
 REQUIRES of the caller is that the pass POSTDATES the write it follows**: a
 pricer's memo is filled per payday, so a pass that priced this profile's
-current paycheck before a calibration or a deduction changed would answer
+current paycheck before a pay stub or a deduction changed would answer
 the OLD figure here and the template would be re-stated at it.  A raise
 write is safe either way -- the memo is keyed on the raise set, so changed
 terms are a new entry -- but the rule is stated for the writes that are not.
@@ -136,8 +136,9 @@ def regenerate_salary_transactions(
     current_period = calendar.period_containing(ctx.as_of)
     if current_period:
         # The pass's pricer (plan step salary:C12): the tax configs resolve
-        # for the PERIOD's own year and the profile's calibration applies,
-        # exactly as they do for every other paycheck this profile prices.
+        # for the PERIOD's own year and the profile's pay stubs price its
+        # taxes (plan step salary:S11-c-2c), exactly as they do for every
+        # other paycheck this profile prices.
         pay_breakdown = ctx.paychecks().for_profile(profile).at(current_period)
         # Through the amount's one write door (plan step X-au-a).  The profile
         # is salary-linked and active, so the door moves the column and records

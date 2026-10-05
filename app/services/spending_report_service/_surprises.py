@@ -94,6 +94,8 @@ def _build_surprises(
         # ``salary.calibration_overrides`` is REPLACED in place rather than
         # effective-dated, so a past paycheck re-derives under today's
         # calibration -- findings **N-441** and **N-535**, owned by salary:S1.
+        # (Measured while the calibration priced paychecks; since plan step
+        # salary:S11-c-2c the dated pay stubs do.)
         #
         # *The headline was WRONG in a first draft of this comment, which said
         # "109 of 109 settled EXPENSE rows".  109 was the count over every
