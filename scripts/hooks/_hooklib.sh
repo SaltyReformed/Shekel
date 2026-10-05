@@ -160,3 +160,23 @@ print(path if rel.startswith("..") else rel)
     fi
     printf '%s\n' "$out"
 }
+
+# Run a python PreToolUse guard over the hook payload, failing CLOSED on a
+# crash. The guard's exit 0 is a decision (or none) and exit 2 a block with a
+# message. On any other status Claude Code decides from what the hook printed
+# (hooks guide, read 2026-10-05) -- for a crash, nothing -- so the command
+# would run; it becomes a block here instead (docs/coding-standards.md, Shell
+# Scripts: "Fail with a clear message, not with silent defaults").
+#   $1  the guard's name, for the message
+#   $2  the python file that decides
+#   $3  the hook payload
+hook_run_guard() {
+    local name="$1" script="$2" payload="$3" status
+    printf '%s' "$payload" | python3 "$script"
+    status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+        echo "$name: the decision crashed (exit $status); failing closed." >&2
+        return 2
+    fi
+    return "$status"
+}
