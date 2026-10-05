@@ -88,8 +88,12 @@ def _apply_day(
       ruling **R-CC15**), so a Projected row reverted out of a card-tendered
       settle and matched on checking had its kept payment moved off the card
       (``status_seam._covering._re_point``).  Such a row is not offered on
-      this account's screen any more (``_candidates._transaction_candidates``,
-      the reconcile panel's own clause), so the seam's default
+      this account's screen any more, for two reasons that together cover
+      every row with a kept payment elsewhere: one holding no purchase is
+      withheld (``_candidates._transaction_candidates``, the reconcile
+      panel's own clause), and one holding purchases is worth ``0.00`` to
+      the offer (``_valuation.transaction_price``: its purchases are the
+      candidates) and is never offered as a row.  So the seam's default
       (``status_seam.tender_account_id_of``: the kept payment's account, else
       the row's) IS this account for every member an accept can reach, and
       R-CC15 holds by the offer set's construction rather than by a named

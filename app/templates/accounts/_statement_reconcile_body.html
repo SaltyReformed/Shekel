@@ -328,12 +328,12 @@
   </p>
   {% endif %}
 
-  {# ── Planned here, paid from another account (R-CC137) ─────────────── #}
+  {# ── Planned here, paid from another account (R-CC137, R-CC140) ────── #}
   {# The rows this screen does NOT offer because their payment is recorded
-     on another account, and what to do if this account really paid one.
-     Each sentence is composed in the SERVICE (``HeldElsewhere.said``) over
-     the same partition that withholds the row, so the rows named and the
-     rows withheld cannot differ. #}
+     on another account, and where to change that.  Each sentence is
+     composed in the SERVICE (``HeldElsewhere.said``) from the same query
+     that withholds the row, so every row named is one withheld; a withheld
+     row worth $0.00, or one nothing can price, is not named. #}
   {% if page.held_elsewhere %}
   <div class="alert alert-secondary small" role="note">
     <ul class="mb-0">

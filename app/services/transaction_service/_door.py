@@ -71,7 +71,9 @@ class StatedRecord:
         tender_account_id: The account the door named as the one the money
             MOVED THROUGH (plan step ``credit_card:CC-5-3``): the popover's
             "Paid from" picker, posted on every Save and preselected from
-            what the row records, or the statement matcher's own account.
+            what the row records -- the one door that names one since plan
+            step ``credit_card:CC-5-4a-5`` (leaf 5c-2a, ruling **R-CC137**),
+            when the statement matcher stopped naming its own account.
             Read by the SETTLE arm, which hands it to the verb, and by the
             identity arm, which re-points a settled row's covering movement
             when it names an account other than the recorded one; ``None``

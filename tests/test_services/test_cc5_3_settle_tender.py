@@ -528,7 +528,13 @@ class TestATenderCorrectionOnASettledRow:
     def test_the_settle_verb_ignores_a_tender_on_the_entries_branch(
         self, app, seed_user, seed_periods,
     ):
-        """The panel's tick names the statement's account for every row; an envelope's close takes none."""
+        """An envelope's close takes no tender: a named one is dropped, as a stated figure is.
+
+        No door names one here since plan step ``credit_card:CC-5-4a-5``:
+        the reconcile panel's tick named the statement's account for every
+        row until its leaf 5c-1 (ruling **R-CC126**), and the popover renders
+        no 'Paid from' picker on a row settling from its purchases.
+        """
         with app.app_context():
             card = _card(seed_user)
             txn = _hotel_bill(seed_user, seed_periods[0], is_envelope=True)
@@ -840,10 +846,10 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
                 if row.transaction_id == txn.id
             ] == []
             (held,) = on_checking.candidates.held_elsewhere
-            assert (held.name, held.amount, held.planned_on, held.recorded_on) == (
-                "Hotel", Decimal("120.00"), checking.name, card.name,
+            assert (held.name, held.figure, held.recorded_on, held.is_income) == (
+                "Hotel", _HOTEL, card.name, False,
             )
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match="no longer available"):
                 statement_match.accept_match(
                     a_submission(
                         on_checking, lines=[checking_line], transactions=[txn],
@@ -854,6 +860,8 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             movement = _movement(txn)
             assert movement.account_id == card.id
             assert movement.settled_on is None
+            scenario_id = seed_user["scenario"].id
+            assert bank_day not in _per_day(card.id, scenario_id)
 
             on_card = a_scope(seed_user, card)
             accepted = statement_match.accept_match(
@@ -867,6 +875,10 @@ class TestTheRowsClearingLinkStaysOnTheRowsAccount:
             assert movement.account_id == card.id
             assert movement.settled_on == bank_day
             assert txn.settled_on == bank_day
+            # "the Visa owes $120.00 more": the card's fold carries the
+            # payment on the bank's day, and Checking's carries nothing.
+            assert _per_day(card.id, scenario_id).get(bank_day) == -_HOTEL
+            assert _per_day(checking.id, scenario_id) == {}
 
     def test_the_checking_panel_no_longer_moves_a_card_payment(
         self, app, seed_user, seed_periods,

@@ -45,7 +45,19 @@ the screen's account, :func:`_transaction_candidates` offers only the
 Projected rows, and the two arms PARTITION on one predicate
 (:func:`~._valuation.row_is_offered_here`): a Projected row is offered as itself on its
 own account, and its kept movement -- a reverted row's, un-dated (ruling
-**R-CC42**) -- is offered where the row is not.  Every accepted act therefore
+**R-CC42**) -- is offered where the row is not.  **Since plan step
+``credit_card:CC-5-4a-5`` (leaf 5c-2a, ruling R-CC137) a Projected row whose
+kept payment is on ANOTHER account is not offered as itself either**: its
+payment is the payment's account's subject (offered there while no act
+names it), and the row's own screen names it instead
+(:class:`~._subjects.HeldElsewhere`) unless it is worth ``0.00`` or cannot
+be priced.  Two guards each keep a match from MOVING a payment between
+accounts: withholding the row (no offered member reaches the settle with
+a payment elsewhere), and :func:`~._moving._apply_day` naming no tender --
+the structural one, which no test can grade while the first stands,
+since nothing offered reaches it.  Withholding is also what makes a stale
+page refused by name ("no longer available") rather than by the version
+check, and a fresh accept never fail after its own settle.  Every accepted act therefore
 names movements: the acts recorded before this step named rows until plan
 step ``credit_card:CC-5-4a-2`` re-keyed each onto its row's covering movement
 and dropped the row column (ruling **R-CC45**, migration ``2eabfa596ee0``).
@@ -107,6 +119,7 @@ from ._creations import PurchaseDestination
 from ._leg_valuation import leg_candidate, leg_loads, leg_price
 from ._subjects import CandidateRow, Candidates, HeldElsewhere, RowKind
 from ._valuation import (
+    held_elsewhere_of,
     leg_settlement_candidate,
     purchase_candidate,
     settlement_candidate,
@@ -148,7 +161,16 @@ class MatchedSubjects:
     checking while the card's act still named its payment, and accepting it
     there re-pointed the payment and withdrew the card's act through a door
     that discloses nothing (that leaf's neutral review; ruling **R-CC46**
-    says disclosed).  :attr:`lines` and :attr:`entries` stay the account's
+    says disclosed).  **Since plan step ``credit_card:CC-5-4a-5`` (leaf
+    5c-2a, ruling R-CC137) the OWNER-wide reach decides no ROW offer**: such
+    a bill is withheld on Checking whether or not an act names its payment
+    (:func:`_transaction_candidates`), and every row a screen does offer has
+    its payment, if any, on that screen's account, where the account's own
+    acts claim it.  What the owner-wide reach still decides is the two
+    purchase readers, :func:`unmatched_destinations` and that guard, and
+    there it refuses an envelope whose lump an act names after the envelope
+    was set back to Projected -- which ruling **R-CC141** allows: finding
+    **CC-385**, this step's leaf 5c-2b.  :attr:`lines` and :attr:`entries` stay the account's
     own: a line belongs to one account, and a movement is offered only where
     it is.
 
@@ -441,7 +463,11 @@ def _transaction_candidates(
       the clause (``status_seam.payment_recorded_elsewhere_clause``, the
       reconcile panel's own) is SELECTED beside each row, and a row it holds
       for is returned as :class:`~._subjects.HeldElsewhere` for the screen to
-      say -- one query, one spelling, and nothing left silent.
+      say (ruling **R-CC140**) -- one query, one spelling, and nothing left
+      silent.  It is priced as its PAYMENT is on the payment's own screen
+      (ruling **R-CC139**, :func:`~._valuation.held_elsewhere_of`), and one
+      that cannot be priced is reported among the unpriceable as any row
+      here is.
 
     **What is ALREADY MATCHED is NOT a clause here** (plan step
     ``bank_import:X-f6a-3c-2``); it is :func:`unmatched_rows`, applied by each
@@ -479,7 +505,7 @@ def _transaction_candidates(
         proposals a screen shows must not depend on what the planner happened
         to return), the ``(kind, id)`` of the rows the amount model could
         not price, and one :class:`~._subjects.HeldElsewhere` per row whose
-        payment is recorded on another account, by id.
+        payment is recorded on another account and worth something, by id.
     """
     rows = (
         db.session.query(
@@ -502,46 +528,28 @@ def _transaction_candidates(
     )
     candidates = []
     unpriceable = []
-    held_elsewhere = []
+    withheld = []
     for txn, recorded_elsewhere in rows:
         if recorded_elsewhere:
-            held_elsewhere.append(_held_elsewhere(txn))
-            continue
-        amount = transaction_price(txn, basis)
+            # Its one payment (``uq_transaction_entries_one_settlement_record``),
+            # priced as that payment's own screen prices it (ruling R-CC139).
+            (payment,) = txn.covering_movements
+            amount = settlement_price(payment, basis)
+        else:
+            payment = None
+            amount = transaction_price(txn, basis)
         if amount is None:
             unpriceable.append((RowKind.TRANSACTION, txn.id))
-            continue
-        candidate = transaction_candidate(txn, calendar, amount)
-        if candidate is not None:
-            candidates.append(candidate)
+        elif payment is not None:
+            said = held_elsewhere_of(payment, amount)
+            if said is not None:
+                withheld.append(said)
+        else:
+            candidate = transaction_candidate(txn, calendar, amount)
+            if candidate is not None:
+                candidates.append(candidate)
     candidates.sort(key=lambda row: row.row_id)
-    return candidates, unpriceable, tuple(held_elsewhere)
-
-
-def _held_elsewhere(txn: Transaction) -> HeldElsewhere:
-    """Return what the screen says about *txn*, a row whose payment is on another account.
-
-    The facts ruling **R-CC137**'s sentence names (:class:`~._subjects.HeldElsewhere`),
-    read off the row and its one covering movement -- the payment
-    ``status_seam.payment_recorded_elsewhere_clause`` found on another account
-    (at most one per row, ``uq_transaction_entries_one_settlement_record``).
-    Both account names are read through lazy relationships: the shape is rare
-    (production held none on 2026-10-04), and an eager load on every candidate
-    row for it would be paid by every pass.
-
-    Args:
-        txn: A Projected row on the screen's account the clause held for.
-
-    Returns:
-        Its :class:`~._subjects.HeldElsewhere`.
-    """
-    (payment,) = txn.covering_movements
-    return HeldElsewhere(
-        name=txn.name,
-        amount=payment.amount,
-        planned_on=txn.account.name,
-        recorded_on=payment.account.name,
-    )
+    return candidates, unpriceable, tuple(withheld)
 
 
 def _settlement_candidates(
