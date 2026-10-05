@@ -552,8 +552,10 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
         `-265.69` of ledger, the projected balance `$18.64` high).  A row that
         settles from its purchases is worth ``0`` to the offer now and is not
         a candidate, so the FIRST item is the one refused -- as unavailable,
-        by ``_resolve`` -- and the purchase item lands on its own; the guard
-        is never reached from this shape.
+        by ``_resolve`` -- and the purchase item lands on its own.  The guard
+        was never reached from this shape after that ruling, and it is deleted
+        since plan step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1 (finding
+        **CC-386**, ruling **R-CC144**).
         """
         with app.app_context():
             statement = an_import(seed_user)
@@ -593,22 +595,32 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
     That argument was: one act can only move a figure another act names by
     adding a purchase to that row or posting one under it, which makes the two
     an envelope and its own child -- and
-    ``_reject_parent_and_its_own_purchase`` refuses exactly that.  **Measured
+    ``_reject_parent_and_its_own_purchase`` refused exactly that.  **Measured
     false by adversarial financial review 2026-08-19**, with a booked figure.
+    That guard is deleted since plan step ``credit_card:CC-5-4a-5``, leaf
+    5c-2c-1 (finding **CC-386**, ruling **R-CC144**): under ruling **R-BAL81**
+    a row that settles from its purchases is worth ``0`` to the offer, so the
+    pair it refused is refused as no longer available instead.
 
     ``entry_service.update_entry`` -- which every matched PURCHASE goes through
     -- calls ``entry_credit_workflow.sync_entry_payback``, and that WRITES the
-    envelope's CC Payback ``estimated_amount`` down to the sum of its card
-    entries.  A payback is a transaction on the SAME account, so it is a
-    candidate priced off that column; and it is the purchase's SIBLING under
-    one envelope, not its parent, so no guard here can see the relation.
+    envelope's CC Payback figure (its ``estimated_amount``, through
+    ``amount_ownership.state_own_amount``) to the sum of its card entries.  A
+    payback is a transaction on the SAME account, so it is a candidate priced
+    off that column; and it is the purchase's SIBLING under one envelope, not
+    its parent, so a guard keyed on a parent and its own child could never
+    have seen the relation.
 
     Against a once-derived price the second act was accepted at the stale
     figure: the ledger booked `$50.00` for a `-$60.00` bank line and the
     account read **`$10.00` high**.  The answer is that every act re-prices the
-    rows it names (:func:`~app.services.statement_match.repriced`), which is
-    total where an enumeration of sibling writers is one writer from being
-    wrong again.
+    rows it names (:func:`~app.services.statement_match._valuation.repriced`),
+    which is total where an enumeration of sibling writers is one writer from
+    being wrong again, and then refuses a row that moved after the screen was
+    reviewed (``_resolve._reject_moved_since_review``, finding **N-336**).  So
+    the case pins: the purchase's match lands, and the payback's is refused as
+    "reviewed against different figures", naming `-60.00` and `-50.00`, with
+    the payback left unsettled.
 
     **Both acts are ordinary screen proposals in the same sweep class**, so one
     click of "tick all that mark a row as having happened" plus Apply submits
