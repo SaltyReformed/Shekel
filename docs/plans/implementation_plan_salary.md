@@ -139,7 +139,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         recreates the table empty (**R-SAL124**).
   - [ ] **S11-e -- the FICA treatment** (fork 7): a pre-tax line says if it reduces FICA wages, stub
         or no stub; the developer sets the backfill from his stubs. Closes **SAL-566**, and owns
-        **SAL-595**, **SAL-596** and **SAL-597**, filed at `S11-c-2c`'s tick.
+        **SAL-595**, **SAL-596** and **SAL-597**, filed at `S11-c-2c`'s tick, and **SAL-598**, filed
+        at `balance:X-dj`'s: a sample of the paychecks past the two-year window hand-checked against
+        the published law.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates
