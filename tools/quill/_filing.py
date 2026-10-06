@@ -20,6 +20,7 @@ from tools.quill._command import (
     _label,
     _one,
     _outside_parent,
+    _read,
     _shipped,
     _with_closure,
 )
@@ -44,11 +45,6 @@ from tools.quill.check import (
     violations,
 )
 from tools.quill.setup_tracker import FILING
-
-
-def _read(path: str) -> str:
-    """A file's text (a spec, a question, an answer)."""
-    return Path(path).read_text(encoding="utf-8")
 
 
 @dataclass(frozen=True)

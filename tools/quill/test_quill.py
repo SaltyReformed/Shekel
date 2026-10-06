@@ -9,6 +9,7 @@ import pytest
 import requests
 
 from tools.ci.gitcmd import GitError
+from tools.ci.scratch import point_dev
 from tools.ci.scratch import run as _run
 from tools.quill import _git
 from tools.quill import quill
@@ -413,6 +414,22 @@ def test_sync_and_show_print_a_stray_reopens_and_act_on_neither(code, capsys):
     assert not tracker.writes
 
 
+def test_a_stray_beside_a_reopens_that_cancels_is_still_printed(code, capsys):
+    """BAL-608: one commit reopens plan#1, which shipped, and plan#2, which never did; the
+    first cancels plan#1's ship, and sync and show still print the second as a stray."""
+    tracker = FakeTracker()
+    tracker.add(1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
+    tracker.add(2)
+    ship(code, "Ships: plan#1")
+    ship(code, "Reopens: plan#1", "Reopens: plan#2")
+    assert run(tracker, code, "sync") == 0
+    out = capsys.readouterr().out
+    assert "'Reopens: plan#2' cancels no Ships" in out and "'Reopens: plan#1'" not in out
+    assert tracker.writes == [("reopen", 1)]
+    assert run(tracker, code, "show", "plan#2") == 0
+    assert "STRAY: " in capsys.readouterr().out
+
+
 
 # -- the review of checkpoint 3 ------------------------------------------------------------
 
@@ -458,7 +475,7 @@ def test_spec_history_since_a_branch_starts_where_the_branch_grew_from(code, mon
     tree = _run(code, "hash-object", "-t", "tree", "/dev/null")
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-30T12:00:00+00:00")
     fork = _run(code, "commit-tree", tree, "-m", "dev")
-    _run(code, "update-ref", "refs/remotes/origin/dev", fork)
+    point_dev(code, fork)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-01T09:00:00+00:00")
     first = _run(code, "commit-tree", tree, "-p", fork, "-m", "work starts")
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-03T09:00:00+00:00")

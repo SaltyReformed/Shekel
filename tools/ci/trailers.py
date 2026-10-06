@@ -119,7 +119,9 @@ def shipped(root: Path, found: History) -> tuple[dict[int, tuple[Trailer, ...]],
     and the STRAY ``Reopens:`` trailers, which cancel no ``Ships:``.
 
     A ``Ships:`` trailer stands unless a ``Reopens:`` trailer for the same card
-    sits on a commit whose history holds it (R-BAL181).
+    sits on a commit whose history holds it (R-BAL181).  Whether a ``Reopens:``
+    is a stray is asked of that trailer, never of its commit: one commit may
+    reopen two cards, and cancel a ship for only one of them (BAL-608).
     """
     ships: dict[int, list[Trailer]] = {}
     reopens: dict[int, list[Trailer]] = {}
@@ -130,11 +132,11 @@ def shipped(root: Path, found: History) -> tuple[dict[int, tuple[Trailer, ...]],
         live = []
         for claim in claims:
             undone = [undo for undo in reopens.get(card, ()) if cancels(root, undo, claim)]
-            cancelling.update(undo.sha for undo in undone)
+            cancelling.update(undone)
             if not undone:
                 live.append(claim)
         if live:
             standing[card] = tuple(live)
     strays = tuple(undo for undos in reopens.values() for undo in undos
-                   if undo.sha not in cancelling)
+                   if undo not in cancelling)
     return standing, strays

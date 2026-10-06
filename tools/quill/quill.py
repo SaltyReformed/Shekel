@@ -27,6 +27,8 @@ Usage, from the repository root (``plan#N`` or ``N`` names a card)::
     python -m tools.quill.quill file ruling --arc ARC --title NAME --owner plan#S
                                 (--question-file Q | --from-question plan#Q) --answer-file A
     python -m tools.quill.quill file question --arc ARC --title NAME --body-file QUESTION
+    python -m tools.quill.quill edit plan#N [--title NAME] [--body-file TEXT]
+    python -m tools.quill.quill comment plan#N --body-file TEXT
     python -m tools.quill.quill block plan#N --by plan#M [--remove]
     python -m tools.quill.quill move plan#N (--top | --bottom | --after plan#M)
     python -m tools.quill.quill drop plan#N --why REASON
@@ -47,6 +49,8 @@ still marked (refused when a person's or `quill drop`'s close ended it, unless i
 is work git says shipped), or -- for a ruling, which its own filing closes -- linked under
 its owner; a card closed after its filing finished is not looked for, so the
 command files another (unless a listing that lags its close still shows it open).
+``edit`` run again writes only the parts that differ, so it finishes an edit a
+failure cut short.
 """
 from __future__ import annotations
 
@@ -70,6 +74,7 @@ from tools.quill._command import (
     _label,
     _one,
     _outside_parent,
+    _read,
     _shipped,
     _unfinished,
     _with_closure,
@@ -101,6 +106,7 @@ from tools.quill._state import (
     unsplit,
 )
 from tools.quill._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
+from tools.quill.check import BODY, TITLE, Draft, in_ruling_shape, normalized, violations
 from tools.quill.setup_tracker import FILING
 
 #: Branches a claim may never name: nothing is built on them directly.
@@ -298,6 +304,115 @@ def cmd_show(args, tracker: Tracker, root: Path) -> int:
     for trailer in strays:
         if trailer.card == number:
             print(f"STRAY: {_stray(trailer)}")
+    return 0
+
+
+# -- edit, comment --------------------------------------------------------------
+
+def _card_refusal(card: Card) -> str | None:
+    """Why ``card`` is never rewritten, whatever its new title or text; None when it may be.
+
+    A ruling is the developer's record (R-BAL220).  A card carrying the filing
+    mark is found again by its ``quill file`` command through its kind, title
+    and text (R-BAL186, R-BAL202): rewritten, an unfinished filing would be
+    filed a second time, and so would one closed while still marked, which that
+    command now files nothing over (a drop refused, a shipped card filed
+    already).  No way out by hand is offered for that one: removing its stale
+    mark re-arms the command to file it anew, and, for a leaf still linked under
+    its split step until ``sync`` unlinks it, makes it a dropped leaf, so
+    R-BAL187 could drop a step nobody built (``_state.sync_unsplits``, review
+    M4).  A closed card with no mark is edited: no command looks for it by its
+    text (``_filing._same_filing``), and R-BAL174's review reads any change to
+    it in ``spec-history``.
+    """
+    if card.kind == "ruling":
+        return (f"{_label(card)} is a ruling, the developer's question and answer word for "
+                "word: edit never rewrites one, its title or its text; a correction is a new "
+                "ruling that names the one it amends (R-BAL220)")
+    if FILING in card.labels:
+        return (f"{_label(card)} carries the {FILING!r} mark (R-BAL202): its `quill file` "
+                "command finds it by its kind, title and text, so a new title or text would "
+                "make that command file a second card (R-BAL186); "
+                + (f"finish its filing first (`quill show plan#{card.number}` says how)"
+                   if filing_unfinished(card) else
+                   "closed while still marked, it keeps them so that command files nothing "
+                   "over it, and so it is not edited"))
+    return None
+
+
+def _text_refusal(card: Card, path: str, body: str) -> str | None:
+    """Why ``body``, read from ``path``, is not ``card``'s new text; None when it may be.
+
+    A text that is only space would blank the card's spec or question: edit
+    never blanks a text (a finding's, the check refuses too).  A question's
+    text in a ruling's shape is what only its conversion writes: ``_filing``
+    reads such an edit of quill's as an earlier conversion's
+    (``_Asked.converted_before``).
+    """
+    if not body.strip():
+        return f"{path} holds no text: edit never blanks a card's text"
+    if card.kind == "question" and in_ruling_shape(body):
+        return (f"{_label(card)} is a question, and this text has a ruling's shape (\"Question: "
+                "...\" then \"Answer: ...\"), which only its conversion writes: `quill file "
+                f"ruling --from-question plan#{card.number}` turns an answered question into "
+                "its ruling")
+    return None
+
+
+def cmd_edit(args, tracker: Tracker, _root: Path) -> int:
+    """Rewrite a card's title, its text, or both, through the tracker's own writes
+    (:meth:`_tracker.Tracker.retitle`, :meth:`_tracker.Tracker.set_body`), after the check
+    ``file`` runs on what it writes: :func:`check.violations`, grading the parts written
+    -- a title (R-BAL180), a finding's one sentence (R-BAL136) -- and the card's type and
+    arc label, which every written card keeps.  Refused, with nothing written: with
+    nothing to write, before any card is read; for the card itself
+    (:func:`_card_refusal`), before ``--body-file`` is read; and for its new text
+    (:func:`_text_refusal`).  Each part is written only when it differs from the card's
+    as the rules read it (:func:`check.normalized`), each write printed as it lands, so
+    the same command run again finishes an edit a failure cut short; R-BAL174's review
+    reads a text's change in ``spec-history``."""
+    if args.title is None and args.body_file is None:
+        raise Refused("nothing to edit: pass --title, --body-file or both")
+    card = _one(tracker, args.card)
+    if why := _card_refusal(card):
+        raise Refused(why)
+    body = None
+    if args.body_file is not None:
+        body = _read(args.body_file)
+        if why := _text_refusal(card, args.body_file, body):
+            raise Refused(why)
+    written = {part for part, new in ((TITLE, args.title), (BODY, body)) if new is not None}
+    draft = Draft(card.kind, card.title if args.title is None else args.title, body, card.labels)
+    if problems := violations(draft, written):
+        raise Refused("not edited:\n  " + "\n  ".join(problems))
+    number = card.number
+    if args.title is not None:
+        if args.title.strip() == card.title.strip():
+            print(f"plan#{number}'s title is already {card.title!r}: not written")
+        else:
+            tracker.retitle(number, args.title)
+            print(f"retitled plan#{number}: {card.title!r} -> {args.title!r}")
+    if body is not None:
+        if normalized(tracker.body(number)) == normalized(body):
+            print(f"plan#{number}'s text is already this text: not written")
+        else:
+            tracker.set_body(number, body)
+            print(f"plan#{number}'s text replaced (`quill spec-history plan#{number}` shows "
+                  "the change)")
+    return 0
+
+
+def cmd_comment(args, tracker: Tracker, _root: Path) -> int:
+    """Add a comment to a card through :meth:`_tracker.Tracker.comment`, its text read
+    from ``--body-file``: a note beside the card's own text, which it never changes, so a
+    ruling takes one too.  A text that is only space is refused before any card is
+    read."""
+    text = _read(args.body_file)
+    if not text.strip():
+        raise Refused(f"{args.body_file} holds no text: a comment says something")
+    card = _one(tracker, args.card)
+    tracker.comment(card.number, text)
+    print(f"commented on {_label(card)}")
     return 0
 
 
@@ -700,6 +815,13 @@ def parser() -> argparse.ArgumentParser:
                        help="release a claim whose branch cannot be read, and no other")
     commands.add_parser("show", help="a card and its git history").add_argument("card")
     _file_parser(commands)
+    edit = commands.add_parser("edit", help="rewrite a card's title or text (never a ruling's)")
+    edit.add_argument("card", type=card_number)
+    edit.add_argument("--title", help="its new short name (R-BAL178, R-BAL180)")
+    edit.add_argument("--body-file", help="a file holding its new text")
+    comment = commands.add_parser("comment", help="add a comment to a card")
+    comment.add_argument("card", type=card_number)
+    comment.add_argument("--body-file", required=True, help="a file holding the comment")
     block = commands.add_parser("block", help="record a blocked-by edge")
     block.add_argument("card", type=card_number)
     block.add_argument("--by", type=card_number, required=True)
@@ -726,7 +848,8 @@ def parser() -> argparse.ArgumentParser:
 
 COMMANDS: dict[str, Callable[..., int]] = {
     "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "show": cmd_show,
-    "file": cmd_file, "block": cmd_block, "move": cmd_move, "drop": cmd_drop,
+    "file": cmd_file, "edit": cmd_edit, "comment": cmd_comment, "block": cmd_block,
+    "move": cmd_move, "drop": cmd_drop,
     "sync": cmd_sync, "spec-history": cmd_spec_history, "spec-revert": cmd_spec_revert,
 }
 

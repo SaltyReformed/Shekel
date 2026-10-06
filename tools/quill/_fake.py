@@ -23,7 +23,9 @@ from __future__ import annotations
 import dataclasses
 import json
 
+from tools.ci.scratch import point_dev
 from tools.ci.scratch import run as _run
+from tools.ci.trailers import DEV
 from tools.quill import quill
 from tools.quill._github import GitHubError
 from tools.quill._tracker import Card, Child, Claim, ClaimTaken, Edit
@@ -324,9 +326,9 @@ class AnswerLostOnce:
 def ship(root, *trailers):
     """Put a commit carrying ``trailers`` on origin/dev; its sha."""
     tree = _run(root, "hash-object", "-t", "tree", "/dev/null")
-    parent = _run(root, "rev-parse", "refs/remotes/origin/dev")
+    parent = _run(root, "rev-parse", DEV)
     sha = _run(root, "commit-tree", tree, "-p", parent, "-m", "leaf", "-m", "\n".join(trailers))
-    _run(root, "update-ref", "refs/remotes/origin/dev", sha)
+    point_dev(root, sha)
     return sha
 
 

@@ -52,6 +52,11 @@ def _shipped(root: Path) -> tuple[trailers.History, dict, tuple[trailers.Trailer
     return (found, *trailers.shipped(root, found))
 
 
+def _read(path: str) -> str:
+    """A file's text (a spec, a question, an answer, a card's new text, a comment)."""
+    return Path(path).read_text(encoding="utf-8")
+
+
 def _label(card: Card) -> str:
     """``plan#7 [step, balance] title``."""
     arcs = ", ".join(label for label in card.labels if label in ARCS) or "no arc"
