@@ -81,7 +81,9 @@ docker compose \
 
 The Postgres process re-reads `ssl_cert_file` / `ssl_key_file` on restart, so a `restart db` is
 enough -- no full container recreate is required. The app does NOT need to be restarted as part of
-cert rotation; psycopg2 holds connections open across the brief window the db is unavailable.
+cert rotation: the db restart closes the app's pooled connections, and `ProdConfig`'s
+`pool_pre_ping` tests each one at checkout and replaces a closed one, so the first request after the
+restart reconnects under the new cert.
 
 See `docs/runbook.md` §4.13 for the full rotation procedure including the failure-mode walkthrough.
 

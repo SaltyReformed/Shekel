@@ -216,7 +216,7 @@ class TestAStillPlannedTransferIsOfferedAsItsLeg:
             cash_amount=-_AMOUNT, settled_on=None, is_settled=False,
             states_own_figure=True, version_id=1, transfer_id=7,
         )
-        offered = Candidates(rows=[leg], unpriceable=())
+        offered = Candidates(rows=[leg], unpriceable=(), held_elsewhere=())
 
         entry_seven = MatchedSubjects(
             lines=frozenset(), transactions=frozenset(),

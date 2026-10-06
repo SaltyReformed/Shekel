@@ -48,6 +48,7 @@ from app.utils.auth_helpers import (
     require_owner,
 )
 from app.utils.dates import display_today
+from app.utils.digit_strings import integer_arg
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ def growth_chart(account_id):
     if account is None:
         return "", 404
 
-    horizon_years = request.args.get("horizon_years", type=int, default=2)
+    horizon_years = request.args.get("horizon_years", type=integer_arg, default=2)
     what_if_raw = request.args.get("what_if_contribution", type=str)
 
     ctx = investment_dashboard_service.compute_growth_chart_data(

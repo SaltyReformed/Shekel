@@ -7,7 +7,10 @@ whichever account the money moved through -- the card, for a checking bill
 paid FROM the card (``CC-5-3``) -- so the movement is what a statement shows,
 what the screen offers (a SETTLEMENT, on the row's terms) and what an accepted
 act records; a Projected row is offered as itself, and its kept payment (a
-reverted row's, ruling **R-CC42**) where the row is not.  Ruling **R-CC46**
+reverted row's, ruling **R-CC42**) where the row is not -- and since ruling
+**R-CC137** (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2a) a Projected row
+whose kept payment is on another account is withheld on its own screen and
+named there instead.  Ruling **R-CC46**
 (the same day): a payment re-pointed onto another account leaves the acts
 naming it, withdrawn and disclosed as a delete's are.
 
@@ -33,6 +36,7 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.services import (
     bank_agreement,
+    match_press,
     match_withdrawal,
     pay_calendar,
     status_seam,
@@ -128,10 +132,20 @@ def _revert(txn):
 
 
 def _correct_tender(txn, account_id):
-    """The full-edit popover's identity Save naming another 'Paid from' account."""
-    transaction_service.apply_requested_status(
-        txn, txn.status_id, tender_account_id=account_id,
-    )
+    """The full-edit popover's identity Save naming another 'Paid from' account.
+
+    Posting back the lines its "Paid from" caption names, as the popover does
+    since plan step ``credit_card:CC-5-4a-5`` (ruling **R-CC127**).
+    """
+    with match_press.Press(match_press.Shown(
+            match_withdrawal.pending_for_movements(
+                txn.covering_movements,
+            ).line_ids,
+        )) as press:
+        transaction_service.apply_requested_status(
+            txn, txn.status_id, stated=transaction_service.StatedRecord(tender_account_id=account_id),
+            press=press,
+        )
     db.session.commit()
 
 
@@ -408,10 +422,21 @@ class TestThePaymentIsTheCardScreensCandidate:
 class TestAProjectedRowIsOfferedOnceAndItsKeptPaymentWhereTheRowIsNot:
     """The two arms partition on one predicate; the reverted card bill is the case."""
 
-    def test_the_reverted_card_bill_is_offered_on_both_screens_as_two_subjects(
+    def test_the_reverted_card_bill_is_named_on_checking_and_offered_on_the_card(
         self, app, seed_user,
     ):
-        """Checking offers the Projected row; the card offers its kept payment."""
+        """Checking withholds the Projected row and names it; the card offers its kept payment.
+
+        Rewritten under ruling **R-CC137** (developer 2026-10-04, "Only Paid
+        from, say why", amending R-CC43): *"Checking's statement screen does
+        not offer Hotel while its payment is recorded on the Visa (the
+        reconcile panel's test, R-CC126), and says so on that screen"* -- in
+        ruling **R-CC140**'s words.  It was
+        ``test_the_reverted_card_bill_is_offered_on_both_screens_as_two_subjects``,
+        which pinned Checking offering the row as a TRANSACTION beside the
+        card's SETTLEMENT.  Developer confirmation 2026-10-04 (rule 5, ruling
+        **R-CC138**): "Make the tests match the code".
+        """
         with app.app_context():
             checking = seed_user["account"]
             card = _card(seed_user)
@@ -425,11 +450,12 @@ class TestAProjectedRowIsOfferedOnceAndItsKeptPaymentWhereTheRowIsNot:
             movement = _movement(txn)
             assert movement.settled_on is None and movement.account_id == card.id
 
-            (on_checking,) = _offered_for(seed_user, checking, txn)
-            assert on_checking.kind is RowKind.TRANSACTION
-            assert on_checking.row_id == txn.id
-            assert on_checking.cash_amount == -_HOTEL
-            assert on_checking.is_settled is False
+            assert _offered_for(seed_user, checking, txn) == []
+            (held,) = a_scope(seed_user, checking).candidates.held_elsewhere
+            assert held.said == (
+                f"Hotel $120.00 is not listed here because the app has it as "
+                f"paid from {card.name}. To change that, edit Hotel on the grid."
+            )
 
             (on_card,) = _offered_for(seed_user, card, txn)
             assert on_card.kind is RowKind.SETTLEMENT
@@ -441,91 +467,71 @@ class TestAProjectedRowIsOfferedOnceAndItsKeptPaymentWhereTheRowIsNot:
             period = calendar.period_by_id(txn.pay_period_id)
             assert on_card.expected_window == (period.start_date, period.end_date)
 
-    def test_whichever_screen_accepts_first_wins_and_the_other_is_refused(
+    def test_a_checking_page_drawn_before_the_card_paid_it_is_refused(
         self, app, seed_user,
     ):
-        """Two screens, two stale forms: the second act re-prices to nothing."""
+        """Drawn while plain Projected, posted after a card-pay and revert: nothing moves.
+
+        Rewritten under ruling **R-CC137** (developer 2026-10-04, "Only Paid
+        from, say why", amending R-CC43): *"A bill's payment then changes
+        account only through 'Paid from' ... and a match from a page drawn
+        before the payment moved is refused."*  It was
+        ``test_the_reverse_order_settles_it_on_checking_and_refuses_the_card``,
+        which pinned Checking's accept naming its own account as the tender
+        (ruling **R-CC15**) and re-pointing the card's kept payment onto
+        Checking.  Two guards now keep the payment where it is, each enough
+        alone: Checking withholds the row, and the matcher names no tender.
+        This test grades the first, by its REASON: the fresh scope no longer
+        holds the row, so the page is refused by name.  Without
+        the withholding this stale page would meet the version check
+        instead ("reviewed against different figures"), and a fresh one
+        would fail after its own settle, when the accept reads back a
+        payment that is on the card (measured by the leaf's review).  Developer
+        confirmation 2026-10-04 (rule 5, ruling **R-CC138**): "Make the
+        tests match the code".  The race it was paired with
+        (``test_whichever_screen_accepts_first_wins_and_the_other_is_refused``)
+        is DELETED under the same confirmation: Checking never offers the
+        reverted bill, so two screens cannot both offer it, and its card-side
+        assertions live in ``test_cc5_3_settle_tender``'s
+        ``test_the_matcher_never_moves_a_card_payment``.
+        """
         with app.app_context():
             checking = seed_user["account"]
             card = _card(seed_user)
             bank_day = _first_day(seed_user)
             txn = _hotel_bill(seed_user, seed_user["bootstrap_period"])
-            settle_transaction(
-                txn, settle_day=_entered(bank_day), tender_account_id=card.id,
-            )
-            db.session.commit()
-            _revert(txn)
-            card_line = a_bank_line(
-                seed_user, an_import(seed_user, card), amount="-120.00",
-                posted_on=bank_day,
-            )
             checking_line = a_bank_line(
                 seed_user, an_import(seed_user, checking), amount="-120.00",
                 posted_on=bank_day,
             )
             db.session.commit()
-            # Both screens rendered while the row was Projected.
-            card_scope = a_scope(seed_user, card)
-            checking_scope = a_scope(seed_user, checking)
-            on_card = a_submission(card_scope, lines=[card_line], transactions=[txn])
-            on_checking = a_submission(
-                checking_scope, lines=[checking_line], transactions=[txn],
+            # Checking's page, drawn while the bill was Projected with no
+            # payment anywhere: it offers the row.
+            stale = a_submission(
+                a_scope(seed_user, checking), lines=[checking_line],
+                transactions=[txn],
             )
-
-            accepted = accept_match(on_card, card_scope)
-            db.session.commit()
-
-            assert accepted.settled_count == 1
-            assert _movement(txn).account_id == card.id
-            assert txn.status_id == transaction_service.settled_status_id(txn)
-            with pytest.raises(ValidationError, match="no longer available"):
-                accept_match(on_checking, a_scope(seed_user, checking))
-            db.session.rollback()
-            assert db.session.query(StatementMatch).count() == 1
-            assert _offered_for(seed_user, checking, txn) == []
-
-    def test_the_reverse_order_settles_it_on_checking_and_refuses_the_card(
-        self, app, seed_user,
-    ):
-        """Checking first: the tender NAMED re-points the kept payment (R-CC15)."""
-        with app.app_context():
-            checking = seed_user["account"]
-            card = _card(seed_user)
-            bank_day = _first_day(seed_user)
-            txn = _hotel_bill(seed_user, seed_user["bootstrap_period"])
+            assert {row.kind for row in stale.rows} == {RowKind.TRANSACTION}
             settle_transaction(
                 txn, settle_day=_entered(bank_day), tender_account_id=card.id,
             )
             db.session.commit()
             _revert(txn)
-            movement_id = _movement(txn).id
-            card_line = a_bank_line(
-                seed_user, an_import(seed_user, card), amount="-120.00",
-                posted_on=bank_day,
-            )
-            checking_line = a_bank_line(
-                seed_user, an_import(seed_user, checking), amount="-120.00",
-                posted_on=bank_day,
-            )
-            db.session.commit()
-            card_scope = a_scope(seed_user, card)
-            on_card = a_submission(card_scope, lines=[card_line], transactions=[txn])
+            kept = _movement(txn)
+            before = (kept.id, kept.account_id, kept.settled_on, kept.version_id)
+            assert kept.account_id == card.id and kept.settled_on is None
 
-            _accept(seed_user, checking, [checking_line], [txn])
-
-            movement = _movement(txn)
-            assert movement.id == movement_id and movement.account_id == checking.id
-            (member,) = [
-                m for m in _members_of(
-                    db.session.query(StatementMatch).one().id,
-                ) if m.transaction_entry_id is not None
-            ]
-            assert member.transaction_entry_id == movement_id
-            assert member.account_id == checking.id
             with pytest.raises(ValidationError, match="no longer available"):
-                accept_match(on_card, a_scope(seed_user, card))
+                accept_match(stale, a_scope(seed_user, checking))
             db.session.rollback()
-            assert _offered_for(seed_user, card, txn) == []
+
+            assert db.session.query(StatementMatch).count() == 0
+            kept = _movement(txn)
+            assert (
+                kept.id, kept.account_id, kept.settled_on, kept.version_id,
+            ) == before
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert matched_subjects(checking.id).lines == set()
 
     def test_a_kept_payment_is_priced_at_what_its_re_settle_books(
         self, app, seed_user,
@@ -757,17 +763,24 @@ class TestTheClaimsSeeARowThroughItsPayment:
                 if row.transaction_id == txn.id
             ] != [], "the scope still holds it; the claims are what narrow"
 
-    def test_a_row_whose_payment_the_CARDS_act_names_is_claimed_on_checking_too(
+    def test_a_row_whose_payment_the_CARDS_act_names_is_named_on_checking_and_freed_on_the_card(
         self, app, seed_user,
     ):
-        """The claim is the OWNER's, on every screen (the review's M1).
+        """Checking withholds and names it before and after the Undo, which frees it on the card.
 
-        A reverted card-paid bill whose payment the card's act still names is
-        not offered on Checking: read on one account alone, Checking offered
-        it, and accepting it there re-pointed the payment and withdrew the
-        card's act through a door that discloses nothing.  The card's
-        register carries the act as no longer holding, with its Undo; the
-        undo is what frees the row for either screen.
+        Rewritten under ruling **R-CC137** (developer 2026-10-04, "Only Paid
+        from, say why", amending R-CC43): *"Checking's statement screen does
+        not offer Hotel while its payment is recorded on the Visa (the
+        reconcile panel's test, R-CC126), and says so on that screen"*.  It
+        was ``test_a_row_whose_payment_the_CARDS_act_names_is_claimed_on_checking_too``,
+        which pinned the OWNER's claim (the review's M1) narrowing Checking's
+        offer of the Projected row, and the card's Undo freeing the row for
+        Checking as a TRANSACTION.  Since R-CC137 Checking offers no row
+        whose payment is on another account, act or no act; the card's
+        register still carries the act as no longer holding, with its Undo,
+        and the Undo frees the payment on the card's screen only.  Developer
+        confirmation 2026-10-04 (rule 5, ruling **R-CC138**): "Make the
+        tests match the code".
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -790,17 +803,10 @@ class TestTheClaimsSeeARowThroughItsPayment:
             accepted = _accept(seed_user, card, [card_line], [txn])
             _revert(txn)
 
-            claims = matched_subjects(checking.id)
-            assert txn.id in claims.transactions
             scope = a_scope(seed_user, checking)
-            assert [
-                row for row in scope.candidates.rows
-                if row.transaction_id == txn.id
-            ] != [], "the scope holds the Projected row; the claims narrow"
-            assert [
-                row for row in unmatched_rows(scope.candidates, claims)
-                if row.transaction_id == txn.id
-            ] == []
+            assert _offered_for(seed_user, checking, txn) == []
+            (held,) = scope.candidates.held_elsewhere
+            assert (held.name, held.recorded_on) == ("Hotel", card.name)
             stale = a_submission(scope, lines=[checking_line], transactions=[txn])
             with pytest.raises(ValidationError, match="no longer available"):
                 accept_match(stale, a_scope(seed_user, checking))
@@ -809,18 +815,31 @@ class TestTheClaimsSeeARowThroughItsPayment:
             assert _movement(txn).account_id == card.id
             (group,) = accepted_acts(seed_user, card)
             assert group.agrees is False
+            # The card's act still names the kept payment, so the card's own
+            # screen does not offer it again until the Undo.
+            assert [
+                row for row in unmatched_rows(
+                    a_scope(seed_user, card).candidates,
+                    matched_subjects(card.id),
+                )
+                if row.transaction_id == txn.id
+            ] == []
 
             release_match(accepted.match_id, seed_user["user"].id, card.id)
             db.session.commit()
 
-            claims = matched_subjects(checking.id)
-            assert txn.id not in claims.transactions
-            scope = a_scope(seed_user, checking)
             (offered,) = [
-                row for row in unmatched_rows(scope.candidates, claims)
+                row for row in unmatched_rows(
+                    a_scope(seed_user, card).candidates,
+                    matched_subjects(card.id),
+                )
                 if row.transaction_id == txn.id
             ]
-            assert offered.kind is RowKind.TRANSACTION
+            assert offered.kind is RowKind.SETTLEMENT
+            assert offered.row_id == _movement(txn).id
+            assert _offered_for(seed_user, checking, txn) == []
+            (held,) = a_scope(seed_user, checking).candidates.held_elsewhere
+            assert (held.name, held.recorded_on) == ("Hotel", card.name)
 
     def test_a_payment_re_pointed_since_the_screen_offered_it_is_refused_not_written(
         self, app, seed_user,
@@ -985,9 +1004,13 @@ class TestADeletedBillWithdrawsTheActNamingItsPaymentOnAnotherAccount:
             assert pending.matches == 1
             assert [freed.line_id for freed in pending.lines] == [line.id]
 
-            outcome = transaction_service.delete_transaction(
-                txn, seed_user["user"].id,
-            )
+            with match_press.Press(match_press.Shown(
+                    transaction_service.preview_deletion(txn).withdrawn.line_ids,
+                )) as press:
+                outcome = transaction_service.delete_transaction(
+                    txn, seed_user["user"].id,
+                    press=press,
+                )
             db.session.commit()
 
             assert outcome.soft is False

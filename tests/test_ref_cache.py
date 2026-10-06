@@ -117,9 +117,11 @@ class TestRefCacheStatuses:
     ):
         """A missing ref table is reported, skipped, and never fatal.
 
-        Simulates the pre-migration bootstrap window by forcing the
-        ``loan_anchor_sources`` query to raise ``ProgrammingError`` (as if
-        the table did not exist yet).  ``init()`` must: record that one table
+        Simulates the pre-migration bootstrap window by making the
+        ``loan_anchor_sources`` read meet a REAL missing-table refusal
+        (SQLSTATE 42P01): since plan step balance:X-dj the tolerance reads
+        that code, so a forged error without it would be -- correctly --
+        re-raised (ruling R-BAL211).  ``init()`` must: record that one table
         in its returned ``unavailable`` list, still load every other table,
         and leave the unavailable table's accessor raising ``KeyError`` (an
         empty map) rather than returning a wrong value.  ``create_app`` relies
@@ -135,8 +137,8 @@ class TestRefCacheStatuses:
 
             def fake_query(session, model):
                 if model.__name__ == "LoanAnchorSource":
-                    raise sqlalchemy.exc.ProgrammingError(
-                        "SELECT", {}, Exception("relation does not exist")
+                    session.execute(
+                        sqlalchemy.text("SELECT 1 FROM ref.no_such_table_x_dj"),
                     )
                 return real_query(session, model)
 

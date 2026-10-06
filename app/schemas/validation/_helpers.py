@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from marshmallow import (
     Schema,
     fields,
+    pre_load,
     validate,
     ValidationError,
     EXCLUDE,
@@ -30,7 +31,12 @@ from app import ref_cache
 from app.services.salary_raises import RAISE_YEAR_MAX, RAISE_YEAR_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.utils.rendered_figure import as_rendered_field
-from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
+from app.utils.digit_strings import (
+    MAX_INTEGER_COLUMN,
+    MIN_ROW_ID,
+    is_ascii_digits,
+    parse_row_id,
+)
 
 
 # ── Shared range validators (commit C-24) ─────────────────────────
@@ -78,7 +84,7 @@ _DAY_OF_MONTH_RANGE = validate.Range(min=1, max=31)
 # **The upper bound is not decoration, and plan step X-f2-c3 measured what
 # omitting it costs.**  ``MarkDoneSchema`` carried the ``>= 0`` half alone, so a
 # figure at or above ``10 ** 10`` passed validation, reached the settle verb and
-# died at the DATABASE (``psycopg2.errors.NumericValueOutOfRange``) -- an
+# died at the DATABASE (``NumericValueOutOfRange``, SQLSTATE 22003) -- an
 # unhandled 500 on a door an ordinary crafted POST reaches.  On the reconcile
 # panel that door commits a whole statement walk at once, so one unstorable box
 # discarded every other tick submitted with it.  A schema-tier bound BELOW the
@@ -306,7 +312,10 @@ class RowId(fields.Integer):
     there is nothing to normalise -- but ``Integer`` would TRUNCATE it, and
     ``1.9`` naming row 1 is the same defect as ``"007"`` naming row 7.  A
     non-integral value is refused rather than rounded, and the
-    :data:`~app.utils.digit_strings.MIN_ROW_ID` floor applies on both paths.
+    :data:`~app.utils.digit_strings.MIN_ROW_ID` floor and the
+    :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` ceiling apply on both
+    paths -- the ceiling because a number no ``id`` column can hold is refused
+    by a query's bind cast as a 500 (plan step balance:X-dj).
 
     **The strictness is on LOAD only, deliberately.**  It overrides
     ``_deserialize`` rather than ``_format_num`` because marshmallow calls
@@ -335,8 +344,9 @@ class RowId(fields.Integer):
 
         Raises:
             ValidationError: *value* names no row -- a non-canonical
-                spelling, a non-integral number, or a value below
-                :data:`~app.utils.digit_strings.MIN_ROW_ID`.
+                spelling, a non-integral number, or a value outside
+                :data:`~app.utils.digit_strings.MIN_ROW_ID` to
+                :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`.
         """
         if isinstance(value, str):
             row_id = parse_row_id(value)
@@ -346,7 +356,7 @@ class RowId(fields.Integer):
         row_id = super()._deserialize(value, attr, data, **kwargs)
         # ``Integer`` has already truncated at this point, so the round-trip
         # is what detects that it did: ``1.9`` arrives here as ``1``.
-        if row_id != value or row_id < MIN_ROW_ID:
+        if row_id != value or not MIN_ROW_ID <= row_id <= MAX_INTEGER_COLUMN:
             raise self.make_error("invalid", input=value)
         return row_id
 
@@ -438,6 +448,93 @@ class BaseSchema(Schema):
         """Marshmallow options: silently drop unknown fields (e.g. the CSRF token)."""
 
         unknown = EXCLUDE
+
+
+class ShownIds(fields.Field):
+    """The rows a page NAMED before a press, as the page posts them back.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**:
+    *"Each warning also sends back the bank lines it named, and the function
+    compares them with what it would undo."*  The bank lines a withdrawal
+    caption named (``_withdrawal_macros.shown_line_ids``), and since ruling
+    **R-CC131** the purchases a row's delete dialog named.  The page writes
+    the ids as one comma-joined value and this reads them back, each through
+    :func:`~app.utils.digit_strings.parse_row_id` -- :class:`RowId`'s rule --
+    so a submitted id means here what it means at every other door.
+
+    **Declare it ``allow_none``, and the reason is PRESENCE.**  A full-edit
+    popover always posts the field, EMPTY when its captions name no line, and
+    a press that names nothing is a statement (*"A button with no warning sends
+    nothing"*) where a press without the field -- the grid's one-click Mark
+    Paid -- says nothing at all.  ``_normalize_empty_inputs`` drops an empty
+    value for a field that is not ``allow_none``, which would erase that
+    difference; for an ``allow_none`` field it loads as ``None``, so a page
+    that named nothing reads as present.  ``routes._shown_lines`` is the one
+    reader of both answers for the bank lines.
+
+    The ids are OWNER INPUT, never a scope: the save's press only compares
+    them, whole, with the lines a graded save frees (``match_press.Press``:
+    one that reached a match step, or whose page promised), the delete
+    compares the named purchases with the row's own, as a set, and the rows
+    a reconcile panel's shared match names (leaf 5c-2c-1) are only compared
+    with the rows ticked, to decide whether its lines count as named
+    (``reconcile_service.NamedLines.for_ticks``).
+    """
+
+    default_error_messages = {"invalid": "Not a valid list of ids."}
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the ids *value* names.
+
+        Args:
+            value: The submitted value -- ids joined by commas.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Unused; marshmallow's contract.
+
+        Returns:
+            The ids as a ``frozenset`` of ``int``.
+
+        Raises:
+            ValidationError: *value* is not a string, or any comma-separated
+                part of it names no row.
+        """
+        if not isinstance(value, str):
+            raise self.make_error("invalid")
+        ids = [parse_row_id(part) for part in value.split(",")]
+        if None in ids:
+            raise self.make_error("invalid")
+        return frozenset(ids)
+
+
+class ShownLinesSchema(BaseSchema):
+    """A press that posts nothing but the lines its page named.
+
+    The presses that load no other schema to declare :class:`ShownIds` on
+    (plan step ``credit_card:CC-5-4a-5``): the transfer popover's Paid, the
+    purchase list's X (a DELETE, so the query string) and the bill popover's
+    Undo CC (a DELETE too) -- and each row of the reconcile panel, whose form
+    posts one ``shown_lines-<row id>`` field per captioned row and loads each
+    value through this schema (``routes.accounts.reconcile.
+    _submitted_shown_lines``, plan step ``credit_card:CC-5-4a-5c-1``), and
+    each half -- the lines, then the rows that must all be ticked -- of every
+    shared match's ``"<line ids>;<row ids>"`` value posted beside them
+    (``routes.accounts.reconcile._submitted_shared_lines``, leaf 5c-2c-1,
+    ruling **R-CC135**) -- and carry-forward's Confirm, which posts every
+    line its modal named for the batch's one press
+    (``routes.transactions.carry_forward``, leaf 5c-2c-2).  The transfer
+    instance DELETE reads no field: no
+    template renders it, so every request it takes named nothing.  The
+    transaction DELETE's dialog names its purchases too
+    (``TransactionDeleteSchema``).
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``shown_lines`` to ``None``: a page that named nothing."""
+        return _normalize_empty_inputs(self, data)
+
+    shown_lines = ShownIds(allow_none=True)
 
 
 def _reject_envelope_on_income(data, message):

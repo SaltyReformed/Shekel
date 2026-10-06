@@ -145,6 +145,22 @@ class SalaryProfile(
         db.Numeric(12, 2), nullable=False, default=0,
         server_default=db.text("0"),
     )  # W-4 Step 4(c): extra withholding per period
+    # What this job's pay stub PRINTS as its gross (plan step salary:S11-c-2b,
+    # ruling R-SAL102, "A yes/no on each job"): false -- base pay plus the
+    # taxable earnings, the developer's employer and where every job starts --
+    # or true, a stub whose gross also holds the after-tax earnings (a
+    # reimbursement, say).  Read by the stub door (``pay_stub_service._refuse``,
+    # which hands it to ``pay_stub_gross``), the entry form's line under the
+    # gross box (``routes/salary/stubs._form_page``) and this profile's own
+    # form; it prices nothing.  Switching it moves no saved stub, whose
+    # printed gross was a check and is never stored, but it is undated: an
+    # edit of an older stub is checked under today's answer, so a stub saved
+    # under the other one can refuse an edit until the answer is switched
+    # back (R-SAL102's per-job design).
+    stub_gross_includes_after_tax = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
 
     # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
@@ -183,6 +199,19 @@ class SalaryProfile(
         "PaycheckLine", back_populates="salary_profile",
         cascade="all, delete-orphan", lazy="select",
         order_by="PaycheckLine.sort_order",
+    )
+    # The profile's transcribed pay stubs (plan step salary:S11-c-2c), in
+    # payday order: the engine prices each paycheck's four taxes from one of
+    # them (``paycheck_calculator._stubs``), reading them as an attribute the
+    # caller loaded, as it reads the three collections above.  READ-ONLY,
+    # because no write may reach a stub through its profile:
+    # ``pay_stubs.salary_profile_id`` is RESTRICT, a trigger refuses a move,
+    # and every stub write is the entry door's (``pay_stub_service``), which
+    # writes ``PayStub`` rows rather than appending here.  ``PayStub``'s own
+    # three collections load together (``lazy="selectin"``), so pricing
+    # costs four queries per profile however many stubs it holds.
+    pay_stubs = db.relationship(
+        "PayStub", viewonly=True, lazy="select", order_by="PayStub.payday",
     )
 
     def __repr__(self):

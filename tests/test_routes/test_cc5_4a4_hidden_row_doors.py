@@ -97,6 +97,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     entry_service,
+    match_press,
     pay_period_gates,
     transaction_service,
     transfer_service,
@@ -123,6 +124,7 @@ from tests._test_helpers import (
     typed,
 )
 from tests.test_routes._statement_forms import ReconcileFormReader
+from tests.test_routes.test_cc5_4a5_popover_presses import dialog_delete_values
 from tests.test_routes.test_transfer_leg_cells import (
     _create_savings,
     _create_transfer,
@@ -456,7 +458,8 @@ class TestTheSeamRefusesADeletedRow:
                 "Hotel was deleted: a payment cannot be recorded under it"
             )):
                 transaction_service.apply_requested_status(
-                    deleted, paid, submitted=typed(Decimal("125.00")),
+                    deleted, paid,
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
                 )
             db.session.rollback()
             assert db.session.get(Transaction, row_id).status_id == paid
@@ -475,7 +478,8 @@ class TestTheSeamRefusesADeletedRow:
             _settle(row, period.start_date)
 
             transaction_service.apply_requested_status(
-                row, row.status_id, submitted=typed(Decimal("125.00")),
+                row, row.status_id,
+                stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
             )
             db.session.commit()
 
@@ -545,7 +549,7 @@ class TestTheDialogSaysWhatUnarchiveDoes:
 
 
 class TestTheDialogCountsPurchasesOnly:
-    """A Paid bill's own payment record is not 'a purchase filed under it'."""
+    """A Paid bill's own payment record is not 'a purchase under it'."""
 
     def test_a_paid_bill_names_no_purchase(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -593,9 +597,14 @@ class TestATombstoneCountsAsLeaving:
             assert envelope.recurs is True
 
             preview = transaction_service.preview_deletion(envelope)
-            outcome = transaction_service.delete_transaction(
-                envelope, seed_user["user"].id,
-            )
+            with match_press.Press(match_press.Shown(preview.withdrawn.line_ids)) as press:
+                outcome = transaction_service.delete_transaction(
+                    envelope, seed_user["user"].id,
+                    # What the dialog names, as the card posts it back (plan step
+                    # credit_card:CC-5-4a-5, rulings R-CC127 / R-CC131).
+                    press=press,
+                    purchases_named=preview.purchase_ids,
+                )
             db.session.commit()
             db.session.expire_all()
 
@@ -1119,7 +1128,12 @@ class TestAnArchivedItemsRowSaysArchived:
             ).status_code == 302
             db.session.expire_all()
             assert db.session.get(Transaction, row_id).is_deleted is False
-            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            # Pressed as the card's Delete sends it: the $12.34 purchase its
+            # dialog names (plan step credit_card:CC-5-4a-5, ruling R-CC131).
+            assert auth_client.delete(
+                f"/transactions/{row_id}",
+                query_string=dialog_delete_values(auth_client, row_id),
+            ).status_code == 200
 
             response = auth_client.post(f"/transactions/{row_id}/mark-done")
 
@@ -1233,7 +1247,7 @@ class TestAnArchivedItemsRowSaysArchived:
             )):
                 transaction_service.apply_requested_status(
                     db.session.get(Transaction, row_id), paid,
-                    submitted=typed(Decimal("125.00")),
+                    stated=transaction_service.StatedRecord(figure=typed(Decimal("125.00"))),
                 )
             db.session.rollback()
             _holds_nothing_and_locks_nothing(row_id, period, user_id)

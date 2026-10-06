@@ -59,6 +59,7 @@ extend-ignore-re = ["`[0-9a-f]{7,40}`", "\\bR-[A-Z]{1,3}\\b"]
 HSA = "HSA"             # Health Savings Account (app/enums.py)
 hsa = "hsa"
 astroid = "astroid"    # the pylint AST library (tools/pylint/)
+selectin = "selectin"   # SQLAlchemy's lazy="selectin" loader strategy (app/models/pay_stub.py)
 # Jinja/loop-variable abbreviations used as template conventions.
 ded = "ded"            # {% for ded in pretax_deductions %}
 ect = "ect"            # {% for ect in employer_contribution_types %}

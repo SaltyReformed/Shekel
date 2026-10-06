@@ -54,6 +54,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     insert_trueup_event,
+    refused_by_database_rule,
 )
 
 
@@ -72,7 +73,7 @@ class TestTheObjectLayerNamesTheRefusal:
 
     The database refuses the same writes; what this tier adds is that a
     developer reads ``AccountAnchorHistoryImmutableError: ... Record a
-    correction by inserting a new row`` instead of a ``psycopg2`` RaiseException
+    correction by inserting a new row`` instead of the driver's RaiseException
     naming a trigger, and that the suite can assert on a Shekel type.
     """
 
@@ -146,7 +147,7 @@ class TestTheDatabaseRefusesEverySpelling:
             account = seed_user["account"]
             before = _governing_assertion(account.id).observed_on
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.query(AccountAnchorHistory).filter_by(
                     account_id=account.id,
                 ).update({"observed_on": date(2020, 1, 1)})
@@ -160,7 +161,7 @@ class TestTheDatabaseRefusesEverySpelling:
             account = seed_user["account"]
             row_id = _governing_assertion(account.id).id
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(sa.text(
                     "UPDATE budget.account_anchor_history "
                     "SET anchor_balance = 1 WHERE id = :i"
@@ -180,7 +181,7 @@ class TestTheDatabaseRefusesEverySpelling:
         with app.app_context():
             account = seed_user["account"]
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.query(AccountAnchorHistory).filter_by(
                     account_id=account.id,
                 ).delete(synchronize_session=False)
@@ -271,7 +272,7 @@ class TestTheDatabaseRefusesEverySpelling:
                 account_id=account.id,
             ).count() >= 1
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(sa.text(
                     "UPDATE budget.account_openings SET opening_equity = 1 "
                     "WHERE account_id = :a"
@@ -296,7 +297,7 @@ class TestTheDatabaseRefusesEverySpelling:
                 "refusal below has nothing to refuse"
             )
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(sa.text(
                     "UPDATE budget.loan_anchor_events SET anchor_balance = 1 "
                     "WHERE account_id = :a"
@@ -411,7 +412,7 @@ class TestTheShapesThatBrokeTheFIRSTVersion:
         pass on somebody else's refusal.
         """
         with app.app_context():
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(sa.text(f"TRUNCATE {table} CASCADE"))
             db.session.rollback()
 
@@ -459,7 +460,7 @@ class TestTheShapesThatBrokeTheFIRSTVersion:
                 account_id=account_id,
             ).count() >= 1, "nothing to destroy, so nothing to refuse"
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(
                     sa.text("DELETE FROM budget.accounts WHERE id = :i"),
                     {"i": account_id},
@@ -598,7 +599,7 @@ class TestTheGuardCanBeLiftedAndComesBack:
                 ), {"i": row_id})
             db.session.rollback()
 
-            with pytest.raises(sa.exc.InternalError, match="append-only"):
+            with refused_by_database_rule("append-only"):
                 db.session.execute(sa.text(
                     "UPDATE budget.account_anchor_history "
                     "SET anchor_balance = 8 WHERE id = :i"

@@ -70,7 +70,8 @@ class CurrentPay:
 
     Attributes:
         net_biweekly: The summed net pay for one paycheck, off the pass's
-            pricer, each profile's own calibration applied.
+            pricer, each profile's taxes priced from its own pay stubs (plan
+            step salary:S11-c-2c; its calibration until then).
         gross_biweekly: The summed gross for the same paycheck.
         cadence: The rhythm that paycheck was priced at, off the priced
             paychecks' own :attr:`~app.services.paycheck_calculator.PeriodInfo
@@ -178,7 +179,8 @@ def _current_pay(balance_ctx, current_period):
     3-months-of-salary goal target of ``$16,519.69`` against ``$16,723.07``.
     The DTI denominator is gross-based and did not move.  Ledger row P62 had
     recorded the implementations as agreeing; that was never measured across
-    the calibration.
+    the calibration.  (The pricer prices from the profile's pay stubs since
+    plan step salary:S11-c-2c, which deleted the calibration.)
 
     **SUMMED over the owner's active profiles** (ruling **R-SAL26**), where
     it priced ONE profile chosen by an unordered ``.first()`` -- the shape

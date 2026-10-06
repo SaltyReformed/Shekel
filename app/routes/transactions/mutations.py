@@ -38,6 +38,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
+from app.services.match_press import NOTHING_SHOWN, Press
 from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
@@ -52,11 +53,14 @@ from app.routes.transactions._gates import (
     _reject_generated_due_date_edit,
     _reject_typed_payback_figure,
     _resolve_status_change,
+    _stale_form_conflict,
 )
+from app.routes.transactions._press import _mark_paid_posted, _refused
 from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
 from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
+from app.routes._shown_lines import read_posted
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
     _deleted_row_change_refusal,
@@ -67,7 +71,9 @@ from app.routes.transactions._helpers import (
     _INVALID_REFERENCE_MSG,
     _mark_done_schema,
     _mark_done_success_response,
+    _delete_dialog_schema,
     _stale_transaction_response,
+    _unmark_credit_schema,
     _update_schema_for,
     _verify_owned_fks_in_update,
 )
@@ -130,7 +136,7 @@ _POSTING_RELEVANT_FIELDS = frozenset({
     "settled_on", "pay_period_id",
 })
 
-def _apply_regular_update(txn, txn_id, data, *, target_period):
+def _apply_regular_update(txn, txn_id, data, *, target_period, posted):
     """Apply a PATCH update to a transaction (the inline edit save).
 
     Runs the three pre-mutation gates, writes the submitted fields
@@ -165,6 +171,9 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
             :func:`_verify_owned_fks_in_update`'s answer, threaded so a
             one-off's re-placing (ruling **R-BAL33**) reads the paycheck's
             start off the derivation the FK probe already made.
+        posted: What the card said about the bank lines this save frees
+            (``routes._shown_lines.read_posted``), for the status verb's
+            removal act and for answering its refusal (ruling **R-CC128**).
 
     Returns:
         A Flask response tuple: the updated cell + ``gridRefresh`` (on a
@@ -187,7 +196,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
     # Gate 3, purchase tracking is expense-only.
-    gate_error = (
+    # The refusal this request answers with: the gates' here, the fields' below.
+    refusal = (
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
         or _reject_tracking_on_income(txn, data)
@@ -197,8 +207,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
         # plan step X-au-e it is also what prices the row (balance:X-au-e).
         or _reject_generated_due_date_edit(txn, data)
     )
-    if gate_error is not None:
-        return gate_error
+    if refusal is not None:
+        return refusal
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -326,58 +336,60 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     # three ``ValidationError`` siblings are in ``mark_as_credit`` /
     # ``unmark_credit``, which this path does not call).
     try:
-        if unlocks:
-            _apply_status_or_postings(txn, data, new_status_id)
-        # Write the submitted fields, flag a template row as overridden, and
-        # refuse an amount the settle would discard -- three acts whose ORDER is
-        # load-bearing and is documented at the helper.  Extracted so this
-        # handler keeps one exit per concern rather than one per rule.
-        #
-        # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
-        # ``settles_from_entries``, which lazy-loads ``template`` (or
-        # ``entries``) and so autoflushes the ``setattr`` loop's staged
-        # mutations as the version-pinned UPDATE.  Left above the ``try`` that
-        # was the request's FIRST flush sitting outside its own exception net: a
-        # concurrent commit surfaced as a 500 instead of the designed 409, and a
-        # period move whose ``is_override`` had not yet been written tripped
-        # the generation index (then keyed on the paycheck, now
-        # ``idx_transactions_template_scenario_undated`` for an undated row)
-        # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
-        # claimed the three excepts covered the whole tail, and they covered the
-        # tail while the first flush had moved above it.
-        field_error = _apply_field_updates(
-            txn, data,
-            amount_authored=amount_authored, period_changed=period_changed,
-            target_period=target_period,
-        )
-        if field_error is not None:
-            return field_error
-        if not unlocks:
-            _apply_status_or_postings(txn, data, new_status_id)
-        elif _POSTING_RELEVANT_FIELDS & data.keys():
-            posting_service.sync_transaction_postings(txn)
-        if reverts_credit:
-            # Inside the StaleDataError net deliberately: the payback
-            # lookup autoflushes the already-dirtied row (the
-            # version-pinned UPDATE), so a concurrent commit surfaces
-            # here as StaleDataError and must yield the 409 conflict
-            # cell, not a 500.  The helper does not commit -- the
-            # deletion joins this request's commit so the status flip
-            # and the payback removal land atomically.
-            credit_workflow.delete_payback_on_credit_revert(
-                txn, current_user.id,
+        # ONE press for the save (R-CC135); a field refusal abandons it.
+        with Press(posted.shown) as one_save:
+            if unlocks:
+                _apply_status_or_postings(txn, data, new_status_id, one_save)
+            # Write the submitted fields, flag a template row as overridden, and
+            # refuse an amount the settle would discard -- three acts whose ORDER is
+            # load-bearing and is documented at the helper.  Extracted so this
+            # handler keeps one exit per concern rather than one per rule.
+            #
+            # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
+            # ``settles_from_entries``, which lazy-loads ``template`` (or
+            # ``entries``) and so autoflushes the ``setattr`` loop's staged
+            # mutations as the version-pinned UPDATE.  Left above the ``try`` that
+            # was the request's FIRST flush sitting outside its own exception net: a
+            # concurrent commit surfaced as a 500 instead of the designed 409, and a
+            # period move whose ``is_override`` had not yet been written tripped
+            # the generation index (then keyed on the paycheck, now
+            # ``idx_transactions_template_scenario_undated`` for an undated row)
+            # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
+            # claimed the three excepts covered the whole tail, and they covered the
+            # tail while the first flush had moved above it.
+            refusal = _apply_field_updates(
+                txn, data,
+                amount_authored=amount_authored, period_changed=period_changed,
+                target_period=target_period,
             )
+            if refusal is not None:
+                one_save.abandon()
+                return refusal
+            if not unlocks:
+                _apply_status_or_postings(txn, data, new_status_id, one_save)
+            elif _POSTING_RELEVANT_FIELDS & data.keys():
+                posting_service.sync_transaction_postings(txn)
+            if reverts_credit:
+                # Inside the StaleDataError net deliberately: the payback
+                # lookup autoflushes the already-dirtied row (the
+                # version-pinned UPDATE), so a concurrent commit surfaces
+                # here as StaleDataError and must yield the 409 conflict
+                # cell, not a 500.  The helper does not commit -- the
+                # deletion joins this request's commit so the status flip
+                # and the payback removal land atomically, under what the card
+                # named for the payback (ruling **R-CC80**).
+                credit_workflow.delete_payback_on_credit_revert(
+                    txn, current_user.id, press=one_save,
+                )
         db.session.commit()
     except (NotFoundError, ValidationError) as exc:
         # A "Paid from" account that is not the ROW's owner's (plan step
         # ``credit_card:CC-5-3``) is the security response rule's 404, as the
         # designed fragment -- see ``_mark_done_regular``'s arm; a domain
-        # refusal is the 400 it always was.  One arm, because this handler
-        # is at pylint's return ceiling and the two differ only in status.
-        return _error_transaction_response(
-            txn_id, str(exc),
-            status=404 if isinstance(exc, NotFoundError) else 400,
-        )
+        # refusal is the 400 it always was, and a card out of date is
+        # redrawn (ruling **R-CC128**).  One arm, because this handler is at
+        # pylint's return ceiling.
+        return _refused(txn_id, exc, posted)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on update_transaction id=%d", txn_id,
@@ -400,7 +412,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     }
 
 
-def _apply_status_or_postings(txn, data, new_status_id):
+def _apply_status_or_postings(txn, data, new_status_id, press: Press):
     """Apply the status the payload asks for, else reconcile the edited row.
 
     The status half of :func:`_apply_regular_update`, in one place so the
@@ -416,6 +428,7 @@ def _apply_status_or_postings(txn, data, new_status_id):
         txn: The Transaction being edited.
         data: The schema-loaded PATCH payload.
         new_status_id: The status the payload asks for, or the row's own.
+        press: The save's open press, for the verb's removal act (R-CC135).
     """
     # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
     # this form prefills the settle-day box, so an untouched Save re-submits
@@ -458,7 +471,11 @@ def _apply_status_or_postings(txn, data, new_status_id):
     ):
         transaction_service.apply_requested_status(
             txn, new_status_id, settle_day=settle_day,
-            submitted=submitted_figure, tender_account_id=tender_account_id,
+            stated=transaction_service.StatedRecord(
+                figure=submitted_figure,
+                tender_account_id=tender_account_id,
+            ),
+            press=press,
         )
     elif _POSTING_RELEVANT_FIELDS & data.keys():
         # Posting ledger reconcile (Build-Order Step 3) for the edit that
@@ -487,53 +504,6 @@ def _apply_status_or_postings(txn, data, new_status_id):
         # autoflushes the version-pinned row, so a concurrent commit
         # surfaces here as a 409, not a 500.
         posting_service.sync_transaction_postings(txn)
-
-
-def _stale_form_conflict(txn, data):
-    """Return the 409 conflict cell when the card that posted *data* is stale.
-
-    The card pins the ROW's ``version_id`` (commit C-18 / F-010), and since
-    plan step ``balance:X-bi-7b`` a PLACED row's card pins its DEFINITION's
-    too: a one-off's name, category, flags and PRICE live on the definition
-    and the card edits them there, so a save that touches only those bumps
-    the definition's counter and not the row's -- and two cards rendered
-    before either saved would both have answered 200, the second silently
-    overwriting the first's price, where the row's own counter caught that
-    race while the price lived on the row.  Found by adversarial review.
-    Each pin is compared only when the card shipped it (a legacy row's card
-    ships none for the definition; a client that omits both falls through to
-    the SQLAlchemy-tier check at flush time), and both are POPPED so the
-    field loop never sees them.
-
-    Args:
-        txn: The row being edited.
-        data: The schema-loaded PATCH payload; ``version_id`` and
-            ``template_version_id`` are removed from it.
-
-    Returns:
-        The conflict cell as a ``(html, 409)`` tuple, or ``None``.
-    """
-    submitted_version = data.pop("version_id", None)
-    submitted_definition_version = data.pop("template_version_id", None)
-    if submitted_version is not None and submitted_version != txn.version_id:
-        logger.info(
-            "Stale-form conflict on update_transaction id=%d "
-            "(submitted=%d, current=%d)",
-            txn.id, submitted_version, txn.version_id,
-        )
-        return render_transaction_cell(txn, conflict=True), 409
-    if (
-        submitted_definition_version is not None
-        and txn.is_placed
-        and submitted_definition_version != txn.template.version_id
-    ):
-        logger.info(
-            "Stale-form conflict on update_transaction id=%d "
-            "(definition submitted=%d, current=%d)",
-            txn.id, submitted_definition_version, txn.template.version_id,
-        )
-        return render_transaction_cell(txn, conflict=True), 409
-    return None
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
@@ -610,6 +580,9 @@ def update_transaction(txn, _target):
         )
 
     data = schema.load(request.form)
+    # Taken out here: it names no column, and the field loop below
+    # ``setattr``s every key it does not recognise.
+    posted = read_posted(data, absent=NOTHING_SHOWN)
 
     # Route-boundary FK ownership (commit C-29 / F-029).  Reject
     # cross-user ``pay_period_id`` / ``category_id`` before the
@@ -633,7 +606,9 @@ def update_transaction(txn, _target):
     if conflict is not None:
         return conflict
 
-    return _apply_regular_update(txn, txn.id, data, target_period=target_period)
+    return _apply_regular_update(
+        txn, txn.id, data, target_period=target_period, posted=posted,
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
@@ -662,7 +637,10 @@ def delete_transaction(txn_id):
 
     Refusals (``deletion_refusal``) come back as the designed error fragment
     the card's other controls use, so a crafted request or a stale card is told
-    why rather than swapping a bare string.
+    why rather than swapping a bare string.  A dialog out of date -- it named
+    other bank lines (ruling **R-CC127**) or other purchases (ruling
+    **R-CC131**) than the row holds now -- redraws the popover instead (ruling
+    **R-CC128**).
 
     Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE and the
     hard-delete DELETE are both version-pinned by SQLAlchemy.  A concurrent
@@ -675,12 +653,27 @@ def delete_transaction(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+    # What the card's dialog named, which htmx sends as a DELETE's query
+    # string: the bank lines (ruling **R-CC127**) and the purchases (ruling
+    # **R-CC131**).  A request without them named none.
+    errors = _delete_dialog_schema.validate(request.values)
+    if errors:
+        return _error_transaction_response(
+            txn_id, flatten_schema_errors(errors), status=422,
+        )
+    dialog = _delete_dialog_schema.load(request.values)
+    purchases_named = dialog.pop("shown_purchases", None) or frozenset()
+    posted = read_posted(dialog, absent=NOTHING_SHOWN)
 
     try:
-        outcome = transaction_service.delete_transaction(txn, current_user.id)
+        with Press(posted.shown) as one_save:
+            outcome = transaction_service.delete_transaction(
+                txn, current_user.id, press=one_save,
+                purchases_named=purchases_named,
+            )
         db.session.commit()
     except ValidationError as exc:
-        return _error_transaction_response(txn_id, str(exc))
+        return _refused(txn_id, exc, posted)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on delete_transaction id=%d", txn_id,
@@ -693,7 +686,7 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "gridRefresh"}
 
 
-def _mark_done_regular(txn, txn_id, submitted, tender_account_id, target):
+def _mark_done_regular(txn, submitted, tender_account_id, posted, target):
     """Settle a transaction.
 
     **The rule this used to hold is now a SERVICE verb** --
@@ -734,7 +727,6 @@ def _mark_done_regular(txn, txn_id, submitted, tender_account_id, target):
 
     Args:
         txn: The Transaction being settled.
-        txn_id: The transaction's id, for stale-conflict logging.
         submitted: The figure a human typed for what moved.  ``None`` does NOT
             mean "leave the record alone": it means nobody typed one, and the
             settle then RECORDS what it resolved on the ``derived`` basis.  The
@@ -745,35 +737,42 @@ def _mark_done_regular(txn, txn_id, submitted, tender_account_id, target):
             ``credit_card:CC-5-3``), or ``None`` when the surface carried
             none -- the cell's checkmark, the mobile card -- and the verb's
             seam books on its default (ruling **R-CC42**).
+        posted: What the surface said about the bank lines the settle frees:
+            the popover's captions, or the one-click's silence (ruling
+            **R-CC56**).
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).
 
     Returns:
         A Flask response tuple: the success surface on commit, a 409
         conflict surface on a concurrent commit, a 404 fragment for a tender
-        that is not the row owner's, or a 400 on a bad FK or a rejected
-        transition.
+        that is not the row owner's, a 400 on a bad FK or a rejected
+        transition, or the popover redrawn when it was out of date (ruling
+        **R-CC128**).
     """
+    # Read before the settle: a refusal's rollback expires the row.
+    txn_id = txn.id
     try:
-        transaction_service.settle_transaction(
-            txn, submitted=submitted, tender_account_id=tender_account_id,
-        )
+        with Press(posted.shown) as one_save:
+            transaction_service.settle_transaction(
+                txn, submitted=submitted, tender_account_id=tender_account_id,
+                press=one_save,
+            )
         db.session.commit()
-    except NotFoundError as exc:
-        # A submitted tender that is not the ROW's owner's -- or does not
-        # exist -- is the verb's 404 (plan step ``credit_card:CC-5-3``; the
-        # security response rule: one answer for "not found" and "not
-        # yours"), rendered as the same designed fragment a domain refusal
-        # is, at the status the rule names -- the shape ``routes/entries.py``
-        # gave the purchase door's tender at CC-5-2.
-        return _error_transaction_response(txn_id, str(exc), target, status=404)
-    except ValidationError as exc:
-        # The envelope branch's preconditions, and the illegal-transition case
-        # a stale surface can still reach (e.g. a Mark Paid tap on a card
-        # another device just cancelled) -- the designed fragment shows
-        # current state plus the reason (grid audit D2, ruled 2026-07-11).
-        # Audit reference: F-047 / F-161 follow-up to commit C-21.
-        return _error_transaction_response(txn_id, str(exc), target)
+    except (NotFoundError, ValidationError) as exc:
+        # ONE arm, answered by the package's one refusal decision (``_refused``,
+        # which is where "not found" becomes the 404): a submitted tender that
+        # is not the ROW's owner's -- or does not exist -- is the verb's 404
+        # (plan step ``credit_card:CC-5-3``; the security response rule: one
+        # answer for "not found" and "not yours"), as the designed fragment the
+        # purchase door's tender took at CC-5-2.  A domain refusal -- the
+        # envelope branch's preconditions, the illegal transition a stale
+        # surface can still reach (a Mark Paid tap on a card another device
+        # just cancelled; grid audit D2, F-047 / F-161), a companion's press
+        # that would free a line (ruling **R-CC130**) -- is the 400 fragment
+        # showing current state plus the reason; a popover out of date is
+        # redrawn (ruling **R-CC128**).
+        return _refused(txn_id, exc, posted, target)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on mark_done id=%d", txn_id,
@@ -856,12 +855,16 @@ def mark_done(txn, target):
     # ``transaction_service.settled_status_id``, inside the verb.
 
     return _mark_done_regular(
-        txn, txn.id, submitted,
+        txn, submitted,
         # WHICH ACCOUNT the money moved through, when the surface said (the
         # popover's "Paid from" picker, plan step ``credit_card:CC-5-3``);
         # gated by the verb against the ROW's owner, never ``current_user``
         # (ruling **R-CC11**: a companion settles the owner's row).
         mark_done_data.get("tender_account_id"),
+        # What the popover's captions named; the owner's one-click posts
+        # nothing and withdraws silently (ruling **R-CC56**), and a
+        # companion's may free no line (ruling **R-CC130**).
+        _mark_paid_posted(txn, mark_done_data),
         target,
     )
 
@@ -909,14 +912,27 @@ def mark_credit(txn_id):
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback.
 
-    Optimistic locking: see :func:`mark_credit`.
+    Optimistic locking: see :func:`mark_credit`.  The button posts the bank
+    lines its caption named (plan step ``credit_card:CC-5-4a-5``, rulings
+    **R-CC80** / **R-CC127**), and a card out of date is redrawn (**R-CC128**).
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
+    errors = _unmark_credit_schema.validate(request.args)
+    if errors:
+        return _error_transaction_response(
+            txn_id, flatten_schema_errors(errors), status=422,
+        )
+    posted = read_posted(
+        _unmark_credit_schema.load(request.args), absent=NOTHING_SHOWN,
+    )
 
     try:
-        credit_workflow.unmark_credit(txn_id, current_user.id)
+        with Press(posted.shown) as one_save:
+            credit_workflow.unmark_credit(
+                txn_id, current_user.id, press=one_save,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -930,8 +946,9 @@ def unmark_credit(txn_id):
         # state-machine verification in
         # ``credit_workflow.unmark_credit`` rejects the request --
         # e.g. attempting to unmark a Paid row.  The fragment names
-        # the offending status so the user understands why.
-        return _error_transaction_response(txn_id, str(exc))
+        # the offending status so the user understands why; a card out of
+        # date is redrawn instead (ruling **R-CC128**).
+        return _refused(txn_id, exc, posted)
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 

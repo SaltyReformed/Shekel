@@ -91,6 +91,7 @@ from app.services.status_seam._record import (
     honoured_correction,
     honoured_figure,
     movement_settlement,
+    recorded_leg_settlement,
     recorded_settlement,
     tender_account_id_of,
 )
@@ -108,6 +109,8 @@ from app.services.status_seam._refusals import (
 from app.services.status_seam._covering import (
     covered_cash_leg,
     covering_clause,
+    holds_no_purchase_clause,
+    payment_recorded_elsewhere_clause,
     record_clearing,
 )
 from app.services.status_seam._seam import (
@@ -123,6 +126,8 @@ __all__ = [
     "apply_status_change",
     "covered_cash_leg",
     "covering_clause",
+    "holds_no_purchase_clause",
+    "payment_recorded_elsewhere_clause",
     "record_clearing",
     "figure_for_status",
     "tender_for_status",
@@ -131,6 +136,7 @@ __all__ = [
     "honoured_correction",
     "honoured_figure",
     "movement_settlement",
+    "recorded_leg_settlement",
     "recorded_settlement",
     "tender_account_id_of",
     "deleted_row_payment_refusal",

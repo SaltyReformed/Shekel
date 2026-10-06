@@ -42,6 +42,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    match_press,
     pay_period_admin,
     pay_period_gates,
     transaction_service,
@@ -536,9 +537,14 @@ class TestTheRowDoorsSoftArm:
             cash_with_purchase = _settled_cash(seed_user)
             preview = transaction_service.preview_deletion(row)
 
-            outcome = transaction_service.delete_transaction(
-                row, seed_user["user"].id,
-            )
+            with match_press.Press(match_press.Shown(preview.withdrawn.line_ids)) as press:
+                outcome = transaction_service.delete_transaction(
+                    row, seed_user["user"].id,
+                    # What the dialog names, as the card posts it back (plan step
+                    # credit_card:CC-5-4a-5, rulings R-CC127 / R-CC131).
+                    press=press,
+                    purchases_named=preview.purchase_ids,
+                )
             db.session.commit()
             db.session.expire_all()
 
@@ -604,7 +610,14 @@ class TestTheRowDoorsSoftArm:
                 periods[3].start_date,
             )
             db.session.commit()
-            transaction_service.delete_transaction(row, seed_user["user"].id)
+            transaction_service.delete_transaction(
+                row, seed_user["user"].id,
+                # The purchases the dialog names, as the card posts them back
+                # (plan step credit_card:CC-5-4a-5, ruling R-CC131).
+                purchases_named=(
+                    transaction_service.preview_deletion(row).purchase_ids
+                ),
+            )
             db.session.commit()
             user_id = seed_user["user"].id
 

@@ -12,6 +12,7 @@ verbatim from the pre-split ``app/routes/transfers.py``.
 """
 
 import logging
+from functools import partial
 
 from flask import jsonify, request
 from flask_login import current_user
@@ -33,6 +34,7 @@ from app.services import (
     transfer_legs,
     transfer_service,
 )
+from app.services.match_press import MARK_PAID, NOTHING_SHOWN, Press
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
@@ -43,18 +45,22 @@ from app.utils.error_fragments import (
 )
 from app.routes._authored_figure import figure_was_authored
 from app.routes._typed_figure import typed_figure
+from app.routes._refused_press import answer_refused_press
 from app.routes._render_helpers import render_transfer_cell, transfer_side_boxes
+from app.routes._shown_lines import Posted, read_posted
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
     _error_transfer_response,
     _get_owned_transfer,
     _render_post_mutation_cell,
+    _shown_lines_schema,
     _stale_transfer_response,
     _user_owns,
     _xfer_create_schema,
     _xfer_update_schema,
 )
+from app.routes.transfers.forms import redraw_full_edit
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +543,14 @@ def delete_transfer(xfer_id):
             "Stale-data conflict on delete_transfer id=%d", xfer_id,
         )
         return _stale_transfer_response(xfer_id), 409
+    except ShekelValidationError as exc:
+        # **No page names what this door frees** -- no template renders it --
+        # so the service is told nothing was shown, and a hard delete that
+        # would leave a matched bank line unexplained again is refused (plan
+        # step ``credit_card:CC-5-4a-5``, ruling **R-CC127**: "A button with
+        # no warning sends nothing").  Uncaught until then, it was a 500 with
+        # nothing to roll the press back; the fragment's rollback does.
+        return _error_transfer_response(xfer_id, str(exc))
     logger.info("user_id=%d deleted transfer %d", current_user.id, xfer_id)
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
@@ -555,6 +569,16 @@ def mark_done(xfer_id):
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
+    # What the popover's captions named; the grid leg's one-click and its
+    # phone card post nothing and withdraw silently (ruling **R-CC56**).
+    errors = _shown_lines_schema.validate(request.form)
+    if errors:
+        return _error_transfer_response(
+            xfer_id, flatten_schema_errors(errors), status=422,
+        )
+    posted = read_posted(
+        _shown_lines_schema.load(request.form), absent=MARK_PAID,
+    )
 
     try:
         # **The named VERB, not a kwargs bag** (plan step X-f2-c3): this door
@@ -578,7 +602,13 @@ def mark_done(xfer_id):
         # is finding N-146 through a second door; the verb closes it twice over
         # now -- it passes no day, and an already-settled transfer is an
         # idempotent no-op that writes nothing at all.
-        transfer_service.settle_transfer(xfer.id, current_user.id)
+        #
+        # ONE press for the pair (ruling R-CC135): both sides' settles are
+        # calls of it, compared whole at its close, before the commit.
+        with Press(posted.shown) as one_save:
+            transfer_service.settle_transfer(
+                xfer.id, current_user.id, press=one_save,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -590,8 +620,9 @@ def mark_done(xfer_id):
         # stale surface marking a settled/cancelled transfer done).
         # Previously UNCAUGHT here -- the rejection crashed the request
         # as a 500 instead of rendering a response (found during the
-        # session-4 D2 sweep); now a designed 400 fragment.
-        return _error_transfer_response(xfer_id, str(exc))
+        # session-4 D2 sweep); now a designed 400 fragment.  A popover out
+        # of date is redrawn (ruling **R-CC128**).
+        return _refused(xfer_id, exc, posted)
     except IntegrityError:
         return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
@@ -642,6 +673,29 @@ def cancel_transfer(xfer_id):
     # changes).
     return _render_post_mutation_cell(
         xfer, leg_trigger="gridRefresh", cell_trigger="balanceChanged",
+    )
+
+
+def _refused(xfer_id, exc, posted: Posted):
+    """Answer a press a service refused, on the surface the press came from.
+
+    The transfer doors' call of the one decision
+    (:func:`app.routes._refused_press.answer_refused_press`): a popover out
+    of date is redrawn (ruling **R-CC128**), and every other refusal is the
+    designed 400 fragment of the cell or card the press targeted.
+
+    Args:
+        xfer_id: The transfer the press named.
+        exc: What the service raised.
+        posted: What the request said about its page.
+
+    Returns:
+        A Flask response tuple.
+    """
+    return answer_refused_press(
+        exc, posted,
+        redraw=partial(redraw_full_edit, xfer_id),
+        refuse=lambda: _error_transfer_response(xfer_id, str(exc)),
     )
 
 
@@ -810,10 +864,19 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     actual = typed_figure(data.pop("settled_amount", None))
     if actual is not None:
         data["figure"] = actual
+    # **What the popover's captions named** (plan step
+    # ``credit_card:CC-5-4a-5``, ruling **R-CC127**), taken out of the bag the
+    # service reads as keywords and handed to it as its own: the removal act
+    # refuses a save whose page named other lines than it frees, and a
+    # request with no field named none.  Read HERE, beside the one call that
+    # uses it; none of the gates above reads it.  ONE press for the pair
+    # (ruling R-CC135), compared whole at its close, before the commit.
+    posted = read_posted(data, absent=NOTHING_SHOWN)
     try:
-        transfer_service.update_transfer(
-            xfer.id, current_user.id, **data,
-        )
+        with Press(posted.shown) as one_save:
+            transfer_service.update_transfer(
+                xfer.id, current_user.id, press=one_save, **data,
+            )
         db.session.commit()
     except StaleDataError:
         logger.info("Stale-data conflict on update_transfer id=%d", xfer.id)
@@ -823,8 +886,9 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     except ShekelValidationError as exc:
         # State-machine and domain rejections (e.g. an illegal status
         # transition from the grid transfer card) render as designed
-        # fragments so the reason is visible (grid audit D2).
-        return _error_transfer_response(xfer.id, str(exc))
+        # fragments so the reason is visible (grid audit D2); a popover out
+        # of date is redrawn (ruling **R-CC128**).
+        return _refused(xfer.id, exc, posted)
     except IntegrityError:
         return _error_transfer_response(xfer.id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer.id)

@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "_withdrawal_macros.html" import frees_lines, page_refusal_banner, shown_line_ids, unexplained_again %}
 {% from "grid/_refusal_banner.html" import refusal_banner %}
 {# Entry list with inline add/edit forms for entry-capable transactions.
 
@@ -29,6 +30,19 @@
                           changes it by correcting the purchase's POSTING DATE,
                           which is the fact itself.
      out_of_period_ids -- set of entry IDs with dates outside the pay period
+     removals          -- {entry id: entry_service.PurchaseRemoval}: what each
+                          purchase's X and CC un-tick would leave unexplained
+                          on the statement screen (plan step
+                          credit_card:CC-5-4a-5, ruling R-CC80), from the one
+                          producer of this context
+                          (``entry_service.entry_list_view``).
+     owner_viewing     -- bool: whether the session's user owns the row, so
+                          the controls may name the owner's bank lines
+                          (rulings R-CC130 / R-CC132); the same producer.
+     page_refusal      -- str, optional -- ``PageOutOfDate.facts`` when the
+                          last X or edit was refused because this list named
+                          other bank lines than the press would free (ruling
+                          R-CC127); the list below is what is true now.
      conflict          -- bool, optional -- when True, surface a warning
                           banner because a previous PATCH submission
                           was rejected by the optimistic-lock check.
@@ -81,8 +95,22 @@
    NAME (the project-wide ref rule; ``_transaction_full_edit.html`` asks the
    same question the same way for its settle-day input). #}
 {% set purchases_closed = txn.status and txn.status.is_settled %}
+{#- **Who is looking** (plan step credit_card:CC-5-4a-5, rulings R-CC130 /
+    R-CC132): `owner_viewing`, from the producer, decided from the session's
+    user.  This list renders for the row's OWNER (the grid, the phone card,
+    the popover) and for a COMPANION (the companion page, ruling R-CC11).
+    Only the owner may be shown the owner's bank lines, so only the owner's
+    controls name them; a companion's X is withheld over a purchase whose own
+    line it would free.  The doors re-ask it of the request
+    (``routes.entries._entry_shown``) -- this decides what is drawn, never
+    what is allowed. -#}
 <div id="{{ entry_list_host_id }}">
-  {% if error is defined and error %}
+  {% if page_refusal is defined and page_refusal %}
+  {#- The last press was refused because this list was out of date (ruling
+      R-CC127); everything below is drawn from what is true now, so pressing
+      again goes ahead -- the full-edit popovers' redraw shape (R-CC128). -#}
+  {{ page_refusal_banner(page_refusal) }}
+  {% elif error is defined and error %}
   {# Designed rejection banner: the route re-rendered this list with
      current data plus the reason the last submission was refused. #}
   {{ refusal_banner(error, "mb-2") }}
@@ -109,6 +137,19 @@
          entry.version_id and short-circuits with 409 when the
          form is stale (commit C-18). #}
       <input type="hidden" name="version_id" value="{{ entry.version_id }}">
+      {#- **What un-ticking CC would FREE**, named below the button row and
+          posted back (plan step credit_card:CC-5-4a-5, rulings R-CC80 /
+          R-CC127): on the envelope's last card purchase the un-tick deletes
+          its CC payback, and a match naming that payback's payment is
+          withdrawn.  The owner's form always posts the field, empty when it
+          names nothing; a companion's names no bank line (R-CC132), and its
+          door refuses an un-tick that would free one. -#}
+      {% set uncredit = removals[entry.id].uncredit %}
+      {% set uncredit_caption = owner_viewing and entry.is_credit
+         and not purchases_closed and uncredit.frees_a_line %}
+      {% if owner_viewing %}
+      <input type="hidden" name="shown_lines" value="{{ shown_line_ids(uncredit) if uncredit_caption else '' }}">
+      {% endif %}
       {% if not purchases_closed %}
       <div class="d-flex gap-1 align-items-end mb-1">
         {# **THE BOUND IS BACK, because the box now holds a MAGNITUDE**
@@ -217,6 +258,11 @@
           <i class="bi bi-x"></i>
         </button>
       </div>
+      {%- if uncredit_caption %}
+      <div class="form-text" id="uncredit-withdraws-{{ entry_list_host_id }}-{{ entry.id }}">
+        Un-ticking CC deletes this envelope's CC payback and {{ frees_lines(uncredit) }}.
+      </div>
+      {%- endif %}
     </form>
   </div>
   {% else %}
@@ -283,18 +329,39 @@
               aria-label="{% if purchases_closed %}Record the day the bank took this purchase{% else %}Edit entry{% endif %}">
         <i class="bi bi-{% if purchases_closed %}calendar-check{% else %}pencil{% endif %}"></i>
       </button>
-      {% if not purchases_closed %}
+      {#- **The X says what it frees first, and sends it back** (plan step
+          credit_card:CC-5-4a-5).  The owner's confirmation names the bank
+          lines deleting this purchase leaves unexplained -- its own, and,
+          on the envelope's last card purchase, its CC payback's, which the
+          same press deletes -- in ruling R-CC80's words, and the X posts
+          them back for the removal act to compare (R-CC127).  A COMPANION
+          is never shown the owner's lines: over a purchase whose own line
+          the X would free there is no X, and the sentence of ruling R-CC132
+          ("Refuse, shown first") stands under the row instead. -#}
+      {% set removal = removals[entry.id] %}
+      {% set withheld = not owner_viewing and removal.own.frees_a_line %}
+      {% if not purchases_closed and withheld %}
+      <i class="bi bi-lock text-muted" aria-hidden="true"></i>
+      {% elif not purchases_closed %}
       <button type="button" class="btn btn-link btn-sm p-0 text-danger"
               hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
               hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
-              hx-confirm="Delete this entry?"
+              {%- if owner_viewing %}
+              hx-vals='{"shown_lines": "{{ shown_line_ids(removal.delete) }}"}'
+              {%- endif %}
+              hx-confirm="{% if owner_viewing and removal.delete.frees_a_line %}Delete {{ entry.description }} {{ money(entry.amount) }}? {{ unexplained_again(removal.delete) }}{% else %}Delete this entry?{% endif %}"
               aria-label="Delete entry">
         <i class="bi bi-x-circle"></i>
       </button>
       {% endif %}
     </div>
   </div>
+  {% if not purchases_closed and withheld %}
+  <div class="txn-card-meta pb-1" id="matched-{{ entry_list_host_id }}-{{ entry.id }}">
+    Matched to the bank statement: only the account owner can delete it.
+  </div>
+  {% endif %}
   {% endif %}
   {% endfor %}
   {% else %}

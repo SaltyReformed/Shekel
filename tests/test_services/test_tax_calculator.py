@@ -925,10 +925,11 @@ class TestCappedSocialSecurityHelper:
     """Direct tests for capped_social_security.
 
     Verifies the helper's three branches against hand-computed cap
-    arithmetic.  The helper is the single source of truth for SS in both
-    the bracket and calibration paths (CRIT-03 / F-037); these tests pin
-    each branch independently of either caller so a regression here
-    surfaces before the broader pipeline tests.
+    arithmetic.  The helper is the single source of truth for SS
+    (CRIT-03 / F-037; its calibration caller was deleted at plan step
+    salary:S11-c-2c); these tests pin each branch independently of
+    ``calculate_fica`` so a regression here surfaces before the broader
+    pipeline tests.
     """
 
     def test_branch_under_cap_full_rate(self):
@@ -1023,8 +1024,8 @@ class TestCappedSocialSecurityHelper:
         `calculate_fica` already returns all-ZERO when fica_config is None
         (paycheck-projection contract for profiles without a seeded FICA
         config -- e.g. early bootstrap, unit tests that omit the FICA
-        seed).  The helper must preserve this contract so the calibration
-        path remains symmetric with the bracket path on missing config.
+        seed).  The helper must preserve this contract so a direct caller
+        agrees with ``calculate_fica`` on missing config.
         """
         result = capped_social_security(
             Decimal("12000.00"), Decimal("0"), None

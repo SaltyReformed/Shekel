@@ -53,7 +53,7 @@ from flask import render_template, request
 from flask_login import current_user
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.exceptions import ValidationError
+from app.exceptions import PageOutOfDate, ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
@@ -61,6 +61,7 @@ from app.routes.accounts._cash_page import (
     cash_detail_wrong_type,
     load_cash_account_or_404,
 )
+from app.schemas.validation import ShownLinesSchema
 from app.schemas.validation.transactions import MarkDoneSchema
 from app.services import cash_ledger, reconcile_service
 from app.services.pay_calendar import PayCalendar, calendar_for
@@ -157,12 +158,120 @@ def _submitted_corrections(
     return corrections
 
 
+def _submitted_shown_lines(form) -> "dict[int, frozenset[int]]":
+    """Return ``{row id: bank line ids}`` -- what each row's caption NAMED.
+
+    Plan step ``credit_card:CC-5-4a-5``, rulings **R-CC76** / **R-CC127**: a
+    row whose tick would take a matched payment out of its matches prints a
+    caption naming the bank lines it frees, and posts those ids back under
+    its own hidden field (:attr:`~app.services.reconcile_service.TickForm.shown_prefix`
+    plus the row's id).  PER ROW, because what the save named is the lines
+    under the rows TICKED, and the save's one press compares their union with
+    what the whole save frees (``reconcile_service.record_reconciliation``,
+    ruling **R-CC135**).  Each value is read by the schema every other caption-bearing
+    door loads (``ShownLinesSchema``, over ``ShownIds``), so a posted id means
+    here what it means there; an empty value is a caption that named nothing.
+
+    Args:
+        form: The submitted ``request.form``.
+
+    Returns:
+        The named lines, keyed by row id; a row that posted no field is absent,
+        which the writer reads as having named nothing.
+
+    Raises:
+        ValidationError: On a value that is not a comma-joined list of ids,
+            flattened to this app's own exception as
+            :func:`_submitted_corrections` does.
+    """
+    shown: dict[int, frozenset[int]] = {}
+    schema = ShownLinesSchema()
+    prefix = reconcile_service.TickForm.ROW.shown_prefix
+    for field, raw in form.items():
+        if not field.startswith(prefix):
+            continue
+        row_id = parse_row_id(field[len(prefix):])
+        if row_id is None:
+            continue
+        shown[row_id] = _posted_ids(schema, raw)
+    return shown
+
+
+def _posted_ids(schema: ShownLinesSchema, raw: str) -> "frozenset[int]":
+    """Return the ids one posted comma-joined value names; empty for an empty value.
+
+    The one reading of a caption's posted ids for both of this panel's fields
+    (:func:`_submitted_shown_lines`, :func:`_submitted_shared_lines`), through
+    the schema every caption-bearing door loads.
+
+    Raises:
+        ValidationError: On a value that is not a comma-joined list of ids,
+            flattened to this app's own exception.
+    """
+    errors = schema.validate({"shown_lines": raw})
+    if errors:
+        raise ValidationError(flatten_schema_errors(errors))
+    return schema.load({"shown_lines": raw}).get("shown_lines") or frozenset()
+
+
+#: Why a shared match's posted value is refused when it is not two non-empty
+#: id lists joined by the separator -- a value no page posts (a shared match
+#: always frees a line and always names two rows or more).
+_MALFORMED_SHARED = "A shared match's warning came back without its lines and rows."
+
+
+def _submitted_shared_lines(form) -> "tuple[reconcile_service.SharedShown, ...]":
+    """Return what each shared match's warning NAMED: its lines, and the rows they need.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-1), ruling **R-CC135**: a
+    match naming the payments of several rows is warned under each of them,
+    saying which rows must all close, and each warning posts
+    ``"<line ids>;<row ids>"`` under
+    :attr:`~app.services.reconcile_service.SharedMatch.FIELD`.  The save counts
+    the lines as named only when every one of the rows is ticked
+    (``reconcile_service.record_reconciliation``).  A match warned under two
+    rows posts the same value twice and is read once.  Each half is read by
+    the schema every caption-bearing door loads (``ShownLinesSchema``), so a
+    posted id means here what it means there.
+
+    Args:
+        form: The submitted ``request.form``.
+
+    Returns:
+        One :class:`~app.services.reconcile_service.SharedShown` per distinct
+        value posted; empty when none was.
+
+    Raises:
+        ValidationError: On a value that is not two NON-EMPTY comma-joined
+            lists of ids joined by
+            :attr:`~app.services.reconcile_service.SharedMatch.SEPARATOR` --
+            an empty row half would name the lines whatever was ticked.
+    """
+    schema = ShownLinesSchema()
+    shown = []
+    for raw in dict.fromkeys(form.getlist(reconcile_service.SharedMatch.FIELD)):
+        lines, separator, rows = raw.partition(
+            reconcile_service.SharedMatch.SEPARATOR,
+        )
+        line_ids, row_ids = _posted_ids(schema, lines), _posted_ids(schema, rows)
+        if not separator or not line_ids or not row_ids:
+            raise ValidationError(_MALFORMED_SHARED)
+        shown.append(reconcile_service.SharedShown(
+            line_ids=line_ids, row_ids=row_ids,
+        ))
+    return tuple(shown)
+
+
+#: What the panel says after it is drawn again from CURRENT state, so the
+#: owner ticks again -- the remedy both of its out-of-date refusals share.
+_TICK_AGAIN = "Here it is again -- tick what your statement shows."
+
 #: What a concurrent edit reads as.  A statement is walked slowly and the grid
 #: is open on another device as often as not, so this is ordinary rather than
 #: exotic: the list re-renders from the CURRENT state and the user ticks again.
 _STALE_MESSAGE = (
     "Something on this list changed while you were reconciling, so nothing "
-    "was recorded.  Here it is again -- tick what your statement shows."
+    f"was recorded.  {_TICK_AGAIN}"
 )
 
 #: What a PARTLY-landed submission reads as.  Both arms drop an out-of-scope id
@@ -590,9 +699,26 @@ def record_reconciliation(account_id):
                 transfer_corrections=_submitted_corrections(
                     request.form, legs,
                 ),
+                named=reconcile_service.NamedLines(
+                    under_rows=_submitted_shown_lines(request.form),
+                    shared=_submitted_shared_lines(request.form),
+                ),
             ),
         )
         db.session.commit()
+    except PageOutOfDate as exc:
+        # A save that frees other bank lines than the panel named for the
+        # rows ticked (ruling R-CC127: "on the reconcile panel, one
+        # out-of-date row means nothing on it saves"; ruling R-CC135: compared
+        # once, for the whole save, so a ticked row whose caption named a line
+        # its save does not free refuses it too, ledger row BAL-597, and a
+        # shared match's lines count only when all its rows are ticked,
+        # ``NamedLines.for_ticks``).  The panel is drawn again from
+        # current state below, so the refusal's facts are followed by the
+        # panel's own remedy rather than the reload a plain surface needs --
+        # the shape a popover's redraw has (ruling R-CC128).
+        db.session.rollback()
+        return _refusal(account, statement, f"{exc.facts} {_TICK_AGAIN}")
     except ValidationError as exc:
         db.session.rollback()
         return _refusal(account, statement, str(exc))

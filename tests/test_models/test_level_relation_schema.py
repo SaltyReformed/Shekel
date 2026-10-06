@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, InternalError
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
@@ -30,7 +30,11 @@ from app.models.anchor_release import (
     AnchorReleaseImmutableError,
 )
 from app.models.statement_import import StatementImport
-from tests._test_helpers import constraint_name_from, create_account_of_type
+from tests._test_helpers import (
+    constraint_name_from,
+    create_account_of_type,
+    refused_by_database_rule,
+)
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _UNCORROBORATED = StatementBalanceEvidenceEnum.UNCORROBORATED
@@ -216,7 +220,7 @@ class TestABankLevelLiesInsideItsFile:
         """The INSERT arm, at each of the three bounds."""
         mine = _import(db, seed_user["account"], period=period)
 
-        with pytest.raises(InternalError, match="level_lies_within_file"):
+        with refused_by_database_rule("level_lies_within_file"):
             _level(db, seed_user["account"], mine, day=day)
         db.session.rollback()
 
@@ -261,7 +265,7 @@ class TestABankLevelLiesInsideItsFile:
             ("declared_start", "2026-03-05"),
             ("stated_balance_on", "2026-03-02"),
         ):
-            with pytest.raises(InternalError, match="level_lies_within_file"):
+            with refused_by_database_rule("level_lies_within_file"):
                 db.session.execute(text(
                     f"UPDATE budget.statement_imports SET {column} = :v "
                     "WHERE id = :id"
@@ -361,7 +365,7 @@ class TestTheAppendOnlyRefusalOnTheTwoTables:
         db.session.execute(text(
             "DELETE FROM budget.account_anchor_history WHERE id = :id"
         ), {"id": level.id})
-        with pytest.raises(InternalError, match="append-only; DELETE rejected"):
+        with refused_by_database_rule("append-only; DELETE rejected"):
             db.session.commit()
         db.session.rollback()
 
@@ -377,7 +381,7 @@ class TestTheAppendOnlyRefusalOnTheTwoTables:
         db.session.execute(text(
             "DELETE FROM budget.anchor_releases WHERE id = :id"
         ), {"id": release.id})
-        with pytest.raises(InternalError, match="append-only; DELETE rejected"):
+        with refused_by_database_rule("append-only; DELETE rejected"):
             db.session.commit()
         db.session.rollback()
 
@@ -410,9 +414,7 @@ class TestTheAppendOnlyRefusalOnTheTwoTables:
             "UPDATE budget.anchor_releases SET released_by_import_id = NULL "
             "WHERE id = :id",
         ):
-            with pytest.raises(
-                InternalError, match="append-only; UPDATE rejected",
-            ):
+            with refused_by_database_rule("append-only; UPDATE rejected"):
                 db.session.execute(text(statement), {"id": release_id})
             db.session.rollback()
 
@@ -432,7 +434,7 @@ class TestTheAppendOnlyRefusalOnTheTwoTables:
         release = _release(db, level)
         db.session.commit()
 
-        with pytest.raises(InternalError, match="append-only; UPDATE rejected"):
+        with refused_by_database_rule("append-only; UPDATE rejected"):
             db.session.execute(text(
                 "UPDATE budget.anchor_releases SET released_by_import_id = NULL "
                 "WHERE id = :id"
@@ -441,7 +443,7 @@ class TestTheAppendOnlyRefusalOnTheTwoTables:
 
     def test_TRUNCATE_of_the_releases_is_refused(self, app, db, seed_user):
         """The statement arm, the one spelling no row trigger sees."""
-        with pytest.raises(InternalError, match="TRUNCATE rejected"):
+        with refused_by_database_rule("TRUNCATE rejected"):
             db.session.execute(text("TRUNCATE budget.anchor_releases"))
         db.session.rollback()
 

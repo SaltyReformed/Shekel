@@ -22,9 +22,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.amount_ownership import AmountOwnership
 from app.services.transfer_service import _settle
-from app.services.transfer_service._amount import apply_amount_ownership
+from app.services.transfer_service._amount import (
+    apply_amount_ownership,
+    grade_amount_ownership,
+)
 from app.services.transfer_service._endpoints import (
     _apply_endpoint_move,
     _resolve_endpoints,
@@ -44,7 +46,8 @@ from app.services.transfer_service._ownership import (
     _get_owned_category,
     _get_owned_period,
 )
-from app.services.row_valuation import settled_figure
+from app.services.match_press import Press
+from app.services.row_valuation import leg_settled_figure
 from app.services.status_seam import (
     correction_record,
     figure_for_status,
@@ -63,7 +66,6 @@ from app.services.transfer_service._status import (
 )
 from app.services.transfer_service._validation import (
     TransferRows,
-    _validate_positive_amount,
     load_transfer_rows,
 )
 from app.utils.balance_predicates import enters_settled_band
@@ -135,9 +137,9 @@ def _grade_submitted_figure(
     on every settled transfer, which is the trap ruling **R-EG** removed for the
     settle day.  A figure the user CHANGED is a different thing and is refused.
 
-    The record is read off the EXPENSE leg, the leg the correction writes first
-    and the leg :func:`._settle.settle` resolves its figures from; the parent
-    carries no record at all.
+    The record is the EXPENSE side's (``rows.expense_leg``, read through
+    ``transfer_legs``), the side :func:`._settle.settle` resolves its figures
+    from; the parent carries no record at all.
 
     Args:
         rows: The transfer and both shadows, at their pre-update status.
@@ -154,7 +156,7 @@ def _grade_submitted_figure(
         rows.transfer,
         updates.get("status_id", rows.transfer.status_id),
         updates["figure"],
-        settled_figure(rows.expense),
+        leg_settled_figure(rows.expense_leg),
     )
     if figure is None:
         del updates["figure"]
@@ -162,6 +164,7 @@ def _grade_submitted_figure(
 
 def _dispatch_settle(
     rows: TransferRows, updates: "dict[str, object]", stated: PairDays,
+    press: Press | None,
 ) -> "bool | None":
     """Run the SETTLE when *updates* moves this transfer into the settled band.
 
@@ -192,6 +195,7 @@ def _dispatch_settle(
         updates: The update kwargs as submitted.
         stated: The days stated by side, which a settle entering the band
             admits whole.
+        press: The save's press, or ``None`` (:func:`update_transfer`).
 
     Returns:
         ``None`` when this update does not settle -- so the caller leaves every
@@ -207,13 +211,13 @@ def _dispatch_settle(
         return None
     return _settle.settle(
         rows, updates["status_id"],
-        submitted=updates.get("figure"), stated=stated,
+        submitted=updates.get("figure"), stated=stated, press=press,
     )
 
 
 def _apply_remaining_fields(
     rows: TransferRows, updates: "dict[str, object]", *,
-    stated: PairDays, date_moves: bool,
+    stated: PairDays, date_moves: bool, press: Press | None,
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
@@ -241,6 +245,7 @@ def _apply_remaining_fields(
             occurrence follows its date (**R-BAL94**), decided by the caller
             before its first write beside the sibling refusal that shares
             it, so the two cannot part.
+        press: The save's press, or ``None`` (:func:`update_transfer`).
 
     Note:
         It takes no ``user_id``: the two ownership refusals it used to make now
@@ -298,20 +303,20 @@ def _apply_remaining_fields(
     # legs, so each leg records its own and the two are equal by Transfer
     # Invariant 3.
     new_status_id = updates.get("status_id", rows.transfer.status_id)
-    # Resolved from the EXPENSE leg, the same leg :func:`._settle.settle` reads
-    # its figures from and for the same reason: both legs carry the same record
-    # (Transfer Invariant 3), so naming one means the choice is not made twice.
+    # Resolved from the EXPENSE side's record, read once for the act
+    # (``rows.expense_leg``) as :func:`._settle.settle` reads it: both legs
+    # carry the same record (Transfer Invariant 3), so one side is the choice.
     # A figure only ever reaches here as a CORRECTION -- a settling one is the
     # settle's (:data:`_SETTLE_OWNED_FIELDS`), and one on an unsettled pair was
     # refused before any field was written (:func:`_grade_submitted_figure`).
     submitted = updates.get("figure")
     correction = (
         None if submitted is None
-        else correction_record(rows.expense, submitted)
+        else correction_record(leg_settled_figure(rows.expense_leg), submitted)
     )
     if "status_id" in updates or correction is not None or stated != NO_DAYS:
         apply_status_to_all_three(
-            rows, new_status_id, stated=stated, settlement=correction,
+            rows, new_status_id, stated=stated, settlement=correction, press=press,
         )
 
     # ── pay_period_id ──────────────────────────────────────────────
@@ -526,7 +531,7 @@ def _bump_parent_version_if_a_leg_moved(
     flag_modified(rows.transfer, "status_id")
 
 
-def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False):
+def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False, press):
     """Apply *kwargs* to a transfer and both shadows; report the settle's answer.
 
     **The body both public doors share** -- :func:`update_transfer`, which takes
@@ -552,6 +557,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
             returning ``False`` to say it had booked nothing.  A caller that
             genuinely means "edit these fields on a settled transfer" says so by
             calling :func:`update_transfer`.
+        press: The save's press, or ``None`` (:func:`update_transfer`).
     """
     rows = load_transfer_rows(transfer_id, user_id)
     # Read at the load, before any write: the aggregate's lock below asks
@@ -642,55 +648,9 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # the arms below to apply, and does nothing when no figure was typed.
     restate_definition_price(rows.transfer, updates, placed=placed)
 
-    # The AMOUNT's own refusal, hoisted for the same rule and by plan step
-    # R10-b's adversarial review.  It ran at the arm that assigns it, two
-    # writes later -- so an update that moved the pair between accounts and
-    # stated a negative figure reversed a loan payment's split BEFORE deciding
-    # the amount was illegal.  Validating here leaves the refusal where every
-    # other one is: ahead of the first write.
-    #
-    # **ONE parameter since plan step X-au-f (ruling R-BAL11)**, where it was
-    # ``amount`` + ``amount_authored`` + the hand-back's ``is_override=False``.
-    # Those were three spellings of one question -- what prices this row -- and
-    # the trace that measured X-au-f's own claim about ``stated_override``
-    # found the third does NOT dissolve when the column empties; stating an
-    # ownership is what dissolves all three.
-    #
-    # **READ rather than POPPED, and a first revision of this step popped it.**
-    # TWO things downstream read ``updates.keys()``: the posting reconcile's
-    # ``_POSTING_RELEVANT_FIELDS`` test and the audit's ``fields_changed``.
-    # Popping took the amount out of both, so a settled transfer's re-price
-    # stopped reconciling its ledger and vanished from the audit trail. Nothing
-    # here applies fields by name, so the key rides harmlessly.
-    #
-    # **Presence is the question, not a sentinel value.** A first revision used
-    # one, reasoning from ``AmountOwnership``'s own rule that ``None`` means
-    # "stated nothing" on the ATTRIBUTE -- but that ambiguity is the mapped
-    # column pair's, and a kwargs dict answers "was this stated" by key. The
-    # sentinel also turned an explicit ``amount_ownership=None`` into an
-    # ``AttributeError``, where the parameter it replaced deliberately REFUSED
-    # the analogous absence with a message.
-    if "amount_ownership" in updates:
-        ownership = updates["amount_ownership"]
-        if ownership is None:
-            raise ValueError(
-                "update_transfer was given amount_ownership=None. A save that "
-                "says nothing about the amount OMITS the key (ruling R-BAL11); "
-                "an explicit None is a half-written statement, and applying it "
-                "would leave all three rows owning neither a figure nor a "
-                "relation -- the state ck_transfers_amount_ownership refuses."
-            )
-        if ownership.figure is not None:
-            # **The COERCED value is what gets written.**
-            # ``_validate_positive_amount`` returns ``Decimal(str(amount))``,
-            # and a first revision validated the figure and then applied the
-            # caller's raw ownership -- so one input produced two values and a
-            # ``float`` handed in here would have reached a ``Numeric(12,2)``
-            # column. Unreachable from the routes, which load Marshmallow
-            # ``Decimal``s, and a money-type guard the code deliberately had.
-            updates["amount_ownership"] = AmountOwnership.own(
-                _validate_positive_amount(ownership.figure),
-            )
+    # The AMOUNT's own refusal, ahead of the first write
+    # (:func:`~._amount.grade_amount_ownership`).
+    grade_amount_ownership(updates)
 
     # ── is_override ────────────────────────────────────────────────
     # Applied FIRST, and the position is load-bearing rather than tidy: the
@@ -736,7 +696,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # the amount, the status and each side's day for all three rows; the three
     # kwargs it consumes are then dropped so the loop below cannot write any of
     # them a second time.
-    settled = _dispatch_settle(rows, updates, stated)
+    settled = _dispatch_settle(rows, updates, stated, press)
     if settled is not None:
         remaining = _fields_the_settle_left(updates)
         stated = NO_DAYS
@@ -761,7 +721,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         remaining = updates
 
     _apply_remaining_fields(
-        rows, remaining, stated=stated, date_moves=date_moves,
+        rows, remaining, stated=stated, date_moves=date_moves, press=press,
     )
 
     _bump_parent_version_if_a_leg_moved(rows, versions_before)
@@ -795,6 +755,7 @@ def settle_transfer(
     *,
     submitted: StatedFigure | None = None,
     side_days: "tuple[SideDay, ...]" = (),
+    press: Press | None = None,
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
 
@@ -834,6 +795,9 @@ def settle_transfer(
             on ``asserted``, the matcher's bank day on ``observed``, for the
             leg on the statement's account; the other side borrows it.  Empty
             on a Paid press: both sides borrow the owner's today.
+        press: The save's press, or ``None`` when its door named nothing: a
+            ``$0.00`` settle takes each leg's kept payment off
+            (:func:`update_transfer`).
 
     Returns:
         Whether the settle booked *submitted* as a human's CORRECTION --
@@ -857,12 +821,12 @@ def settle_transfer(
     if side_days:
         updates["side_days"] = side_days
     _, corrected = _apply_transfer_updates(
-        transfer_id, user_id, updates, settle_only=True,
+        transfer_id, user_id, updates, settle_only=True, press=press,
     )
     return corrected
 
 
-def update_transfer(transfer_id, user_id, **kwargs):
+def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     """Update a transfer and propagate changes to shadow transactions.
 
     Enforces invariants 3-5: shadow amounts, statuses, and periods
@@ -969,12 +933,12 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           same question, and the conflict resolver's hand-back,
                           which was a third.
 
-    Any other kwargs are silently ignored (consistent with the
-    BaseSchema EXCLUDE pattern).
-
     Args:
         transfer_id: The primary key of the transfer to update.
         user_id:     The expected owner (defense-in-depth).
+        press:       The save's press over the bank lines the door's page
+                     named, or ``None`` when it named nothing
+                     (``match_press.Press``, R-CC127, R-CC135).
         **kwargs:    The fields to update; see "Accepted kwargs" above.
                      Any key not listed there is silently ignored.
 
@@ -987,5 +951,5 @@ def update_transfer(transfer_id, user_id, **kwargs):
         ValidationError: If validation fails (non-positive amount,
             wrong period owner, data integrity issues).
     """
-    xfer, _ = _apply_transfer_updates(transfer_id, user_id, kwargs)
+    xfer, _ = _apply_transfer_updates(transfer_id, user_id, kwargs, press=press)
     return xfer

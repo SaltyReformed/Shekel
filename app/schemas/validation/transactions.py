@@ -11,6 +11,7 @@ from marshmallow import (
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    ShownIds,
     _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
@@ -149,6 +150,13 @@ class TransactionUpdateSchema(BaseSchema):
     # choice (ruling **R-CC34**), so a one-account form posts nothing here
     # and ``_normalize_empty_inputs`` drops an empty select.
     tender_account_id = RowId()
+    # The bank lines the popover's withdrawal captions NAMED (plan step
+    # ``credit_card:CC-5-4a-5``, rulings **R-CC81** / **R-CC127**): posted on
+    # every popover Save, empty when they name none, so the act a Save reaches
+    # can refuse a press whose page was out of date.  Absent from the grid's
+    # quick edit, whose door then names nothing.  ``allow_none`` is presence:
+    # :class:`~app.schemas.validation._helpers.ShownIds` says why.
+    shown_lines = ShownIds(allow_none=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 
@@ -301,7 +309,7 @@ class MarkDoneSchema(BaseSchema):
     (``budget.transaction_entries.amount``) is ``numeric(12, 2)``, so a
     figure at or above ``10 ** 10`` cannot be stored: it passed the
     ``>= 0`` validator, reached the settle verb and raised
-    ``psycopg2.errors.NumericValueOutOfRange`` at flush -- unhandled,
+    ``NumericValueOutOfRange`` (SQLSTATE 22003) at flush -- unhandled,
     so a 500 on a door an ordinary crafted POST reaches.  The reconcile
     panel commits a whole statement walk in ONE transaction, so a
     single unstorable box discarded every other tick submitted beside
@@ -357,3 +365,31 @@ class MarkDoneSchema(BaseSchema):
     # verb's seam books on its default -- the kept record's account, else the
     # row's (ruling **R-CC42**).  Gated by the verb against the ROW's owner.
     tender_account_id = RowId()
+    # The bank lines the popover's captions NAMED, posted by its Paid /
+    # Received buttons (plan step ``credit_card:CC-5-4a-5``, ruling
+    # **R-CC127**); ABSENT from the grid's one-click Mark Paid and the phone
+    # card -- the owner's withdraw silently by ruling **R-CC56**, and a
+    # companion's may free no line (ruling **R-CC130**) -- and from the
+    # reconcile panel, which loads only ``settled_amount`` here.
+    # ``allow_none`` is presence: :class:`ShownIds` says why.
+    shown_lines = ShownIds(allow_none=True)
+
+
+class TransactionDeleteSchema(BaseSchema):
+    """What a row's delete dialog NAMED, sent back as the DELETE's query string.
+
+    Plan step ``credit_card:CC-5-4a-5``.  The bank lines the dialog's clause
+    named (ruling **R-CC127**), and the purchases its question counted (ruling
+    **R-CC131**, developer 2026-10-04, "Refuse and redraw": *"The dialog also
+    sends back the purchases it named. At 10:02 they differ, so nothing is
+    deleted"*).  ``allow_none`` on both is presence: :class:`ShownIds` says
+    why, and a dialog naming no purchase posts the field empty.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty field to ``None``: a dialog that named nothing."""
+        return _normalize_empty_inputs(self, data)
+
+    shown_lines = ShownIds(allow_none=True)
+    shown_purchases = ShownIds(allow_none=True)

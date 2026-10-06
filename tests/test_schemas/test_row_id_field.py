@@ -135,6 +135,25 @@ class TestTheFieldRefusesWhatIntegerAccepted:
             with pytest.raises(ValidationError):
                 RowId().deserialize(below_floor)
 
+    def test_the_id_column_ceiling_applies_on_both_paths(self):
+        """A value no ``id`` column holds names no row, however it arrives.
+
+        Plan step balance:X-dj: psycopg 3 binds an id with a server-side
+        ``::INTEGER`` cast, so a number above
+        :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` that reached a
+        query would be refused by the cast as a 500 rather than matching no
+        row.  The ceiling itself still loads.
+        """
+        from app.utils.digit_strings import (  # pylint: disable=import-outside-toplevel
+            MAX_INTEGER_COLUMN,
+        )
+
+        assert RowId().deserialize(MAX_INTEGER_COLUMN) == MAX_INTEGER_COLUMN
+        assert RowId().deserialize(str(MAX_INTEGER_COLUMN)) == MAX_INTEGER_COLUMN
+        for beyond in (MAX_INTEGER_COLUMN + 1, str(MAX_INTEGER_COLUMN + 1)):
+            with pytest.raises(ValidationError):
+                RowId().deserialize(beyond)
+
     def test_a_non_integral_number_is_refused_rather_than_truncated(self):
         """``1.9`` does not name row 1.
 
@@ -375,10 +394,17 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: ``tests/test_schemas/test_validation.py::TestReadinessQueryGathersTheRaiseProbes
 #: ::test_a_raise_id_is_read_as_every_row_id_is`` (``007``, ``""``, ``-5`` and
 #: ``1.9`` refused) rather than granted by this listing.
+#: **``ShownIds`` is here on ``PurchaseDestination``'s terms** (plan step
+#: ``credit_card:CC-5-4a-5``, ruling **R-CC127**): it carries the BANK LINE
+#: ids a popover's caption named, comma-joined in one value, and returns a
+#: ``frozenset`` -- so it cannot derive from ``RowId`` without lying about its
+#: return type, and :meth:`TestNoIdFieldWasMissed
+#: ::test_the_shown_lines_field_is_strict_about_the_ids_it_carries` asserts
+#: the strictness on every id inside it directly.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
     "Boolean", "Date", "Decimal", "Dict", "Nested", "RuleAnswerField",
     "PurchaseDestination", "ReviewedDifferenceField", "ReviewedRowField",
-    "String",
+    "ShownIds", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -722,6 +748,49 @@ class TestNoIdFieldWasMissed:
         # ...and the two things it DOES accept.
         assert field.deserialize("12") == 12
         assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
+
+    def test_the_shown_lines_field_is_strict_about_the_ids_it_carries(self):
+        """``ShownIds`` names BANK LINES and is graded like every row id.
+
+        :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
+        terms (plan step ``credit_card:CC-5-4a-5``): listed as a non-integer
+        spelling because it returns a set of ids, so the guarantee is asserted
+        here -- each comma-separated part is read exactly as ``RowId`` reads
+        one, in any position.
+
+        It matters because the ids are what the removal act compares a press
+        against (ruling **R-CC127**): a laxer reading would let ``'007'`` name
+        line 7, so a crafted press could claim to have shown a line its page
+        never named.
+        """
+        field = _helpers.ShownIds()
+        for lax in (
+            "\u0661\u0662", " 12 ", " 12", "12 ", "+12", "1_0", "007", "-5",
+            "0", "",
+        ):
+            with pytest.raises(ValidationError):
+                field.deserialize(lax)
+            with pytest.raises(ValidationError):
+                field.deserialize(f"12,{lax}")
+        # An empty PART is no id either, wherever the stray comma sits.
+        for gap in ("12,,7", ",12", "12,", ","):
+            with pytest.raises(ValidationError):
+                field.deserialize(gap)
+        # ...and what it DOES accept: one id, several, repeats folded.
+        assert field.deserialize("12") == frozenset({12})
+        assert field.deserialize("12,7,12") == frozenset({7, 12})
+
+    def test_an_empty_shown_lines_loads_as_present(self):
+        """``""`` is a page that named nothing -- PRESENT, as ``None`` -- and absence stays absence.
+
+        The difference :class:`~app.schemas.validation._helpers.ShownIds`'
+        ``allow_none`` exists for (review finding H1's schema cases): a full
+        popover posts the field empty, the grid's one-click posts none, and
+        ``routes._shown_lines.read_posted`` reads the two differently.
+        """
+        schema = _helpers.ShownLinesSchema()
+        assert schema.load({"shown_lines": ""}) == {"shown_lines": None}
+        assert schema.load({}) == {}
 
     def test_the_reviewed_row_field_is_strict_about_the_ids_it_carries(self):
         """``ReviewedRowField`` names a ROW and a REVISION, both graded.

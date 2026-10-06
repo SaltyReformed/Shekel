@@ -314,11 +314,18 @@ class TestAProposalOverTheRuleSDestination:
         ``posted_purchase_sum`` counts exactly those, and the cash leg is
         ``gross - off_statement_sum`` -- so filing into the envelope leaves its
         leg unchanged to the cent and no dollar is counted twice, in either
-        order.  What it costs is the MATCH: the created purchase becomes a
-        member, so ``_reject_parent_and_its_own_purchase`` refuses any later
-        act naming that envelope as a whole, and the line the proposal
-        explained stays unexplained.  The wording ``X-ge`` gave this was
-        *count that money twice*, and this case asserted it.
+        order.  What it costs is the MATCH: the envelope now holds a purchase,
+        so the candidate scan never offers it again (``transaction_price``
+        prices it ``0``, ``transaction_candidate`` returns ``None``; ruling
+        **R-BAL81**) and ``resolve_rows`` refuses any later act naming that
+        envelope as a whole as no longer available, and the line the proposal
+        explained stays unexplained.  (This docstring named the accept door's
+        guard against an envelope named beside its own purchase as the
+        refusal until plan step ``credit_card:CC-5-4a-5``, leaf 5c-2c-1,
+        deleted that guard as unreachable: finding **CC-386**, ruling
+        **R-CC144**.)  The wording
+        ``X-ge`` gave this was *count that money twice*, and this case
+        asserted it.
         """
         verdict = _verdicts(
             (_creatable(_records_in()),),

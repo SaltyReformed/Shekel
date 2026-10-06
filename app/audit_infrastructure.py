@@ -158,7 +158,7 @@ _AUDIT_TRIGGER_PREFIX = "audit_"
 # ``LIKE 'audit\_%'``.  ``starts_with`` rather than ``LIKE 'audit_%'``:
 # LIKE reads a bare ``_`` as any one character, and a ``%`` means something
 # different to each driver path that runs this text.  The test-template
-# build runs it verbatim on a raw psycopg2 cursor, and the deploy runs it
+# build runs it verbatim on a raw psycopg cursor, and the deploy runs it
 # EMBEDDED in a statement with named parameters
 # (:data:`_AUDIT_TRIGGER_CENSUS_SQL`), where a ``%`` would be read as a
 # placeholder: this text must never contain one.

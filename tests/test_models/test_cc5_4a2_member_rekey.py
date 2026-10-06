@@ -40,6 +40,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import definition_edit
 from app.services.settle_day import SettleDay
 from app.services.transaction_service import (
+    StatedRecord,
     apply_requested_status,
     settle_transaction,
 )
@@ -385,7 +386,10 @@ class TestTheUpgradeREFUSESARowMemberItCannotReKey:
         act = _matched(seed_user, hotel)
         _run(_M.downgrade, db.session)
         _as_the_past_recorded_it(act, hotel.id)
-        apply_requested_status(hotel, hotel.status_id, tender_account_id=card.id)
+        apply_requested_status(
+            hotel, hotel.status_id,
+            stated=StatedRecord(tender_account_id=card.id),
+        )
         db.session.commit()
         assert _payment(hotel).account_id == card.id
         (member_id, _row), = _row_members()

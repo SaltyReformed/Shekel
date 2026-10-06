@@ -3,17 +3,15 @@ Shekel Budget App -- Salary route package: shared helpers.
 
 Marshmallow schema singletons, form-field allowlists, unique-constraint
 name constants, and the private helpers shared across the salary route
-sub-modules (transaction regeneration, the calibration taxable-base and
-rate-consistency helpers, and the HTMX-partial / redirect responders).
+sub-modules (transaction regeneration and the HTMX-partial / redirect
+responders).
 Constructed once at import time so every handler reuses the same
 instances, preserving the pre-split monolith's behaviour.
 """
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask.typing import ResponseReturnValue
@@ -44,8 +42,6 @@ from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import NEVER_ENDS, EndBound, picker_model
 from app.schemas.validation import (
-    CalibrationConfirmSchema,
-    CalibrationSchema,
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     PaycheckLineCreateSchema,
@@ -57,8 +53,6 @@ from app.schemas.validation import (
     YtdTaxCheckpointSchema,
 )
 
-logger = logging.getLogger(__name__)
-
 # Field allowlists for the update routes: which submitted form fields may
 # be written back to each model via setattr.  Defined at module scope so
 # each set is built once per process rather than on every request.
@@ -66,6 +60,7 @@ _PROFILE_UPDATE_FIELDS = {
     "name", "filing_status_id", "state_code",
     "qualifying_children", "other_dependents",
     "additional_income", "additional_deductions", "extra_withholding",
+    "stub_gross_includes_after_tax",
 }
 _RAISE_UPDATE_FIELDS = {
     "raise_type_id", "effective_month", "effective_year",
@@ -96,8 +91,6 @@ _raise_schema = RaiseCreateSchema()
 _raise_update_schema = RaiseUpdateSchema()
 _line_schema = PaycheckLineCreateSchema()
 _line_update_schema = PaycheckLineUpdateSchema()
-_calibration_schema = CalibrationSchema()
-_calibration_confirm_schema = CalibrationConfirmSchema()
 _ytd_checkpoint_schema = YtdTaxCheckpointSchema()
 
 
@@ -185,78 +178,6 @@ def _regenerate_salary_transactions(profile):
     # step R10-a, adversarial review): the service returns the ids rather
     # than dropping them, and this is where the salary page says so.
     flash_retained_notice(retained)
-
-
-def _compute_total_pre_tax(profile):
-    """Return the profile's pre-tax deduction total for the current period.
-
-    Shared by ``calibrate_preview`` and ``calibrate_confirm`` to derive the
-    taxable base (gross minus pre-tax deductions) the effective tax rates
-    are computed against.  Returns ``Decimal("0")`` when the user has no
-    current pay period, so the taxable base falls back to the full gross --
-    mirroring the original inline behaviour in both handlers.
-
-    **Read off a pass's pricer since plan step salary:C12** (ledger row
-    **P62**), where it was a direct ``calculate_paycheck`` call passing NO
-    calibration.  The pricer prices WITH the profile's calibration, and the
-    figure this returns is byte-identical anyway: a calibration reaches the
-    four withholding lines and nothing else, and the deductions are taken
-    before any of them (measured ``$713.29`` by both doors on the developer's
-    data, 2026-09-12).  The pass is this helper's OWN, built here rather than
-    threaded from ``calibrate_confirm``, and the reason is stated because it
-    looks like the two-passes-per-request shape: that route WRITES the
-    calibration between this read and the regeneration that follows it, and
-    a pricer that had priced the current paycheck before the write would
-    answer the old figure after it (:mod:`app.services.salary_regeneration`).
-    So this pass reads before the write and the adapter builds another after
-    it; sharing one would be the memo-staleness defect, not a saving.
-    """
-    ctx = BalanceContext.build(current_user.id)
-    current_period = ctx.calendar().period_containing(date.today())
-    if not current_period:
-        return Decimal("0")
-    return (
-        ctx.paychecks().for_profile(profile).at(current_period)
-        .deductions.total_pre_tax
-    )
-
-
-def _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id):
-    """Abort 422 if posted federal/state rates disagree with derived ones.
-
-    The confirm form is fully server-generated from the preview, so a
-    mismatch between the posted ``effective_federal_rate`` /
-    ``effective_state_rate`` and the freshly-derived values signals
-    tampering or stale browser state (E-20 / C19-2), not legitimate user
-    error.  The schema covers FICA (divisor = posted ``actual_gross_pay``);
-    federal/state's divisor is the live ``taxable`` base, available only
-    here.  Tolerates the same one-cent-of-withholding slack the schema uses
-    for FICA: a mismatch worth under one cent against ``taxable`` is below
-    the ``Numeric(12, 10)`` storage precision and cannot signal real
-    tampering.
-    """
-    one_cent = Decimal("0.01")
-    failures: list[tuple[str, Decimal, Decimal, Decimal]] = []
-    for posted_key, derived_value in (
-        ("effective_federal_rate", derived_rates.effective_federal_rate),
-        ("effective_state_rate", derived_rates.effective_state_rate),
-    ):
-        posted = Decimal(str(data[posted_key]))
-        diff_dollars = abs(posted - derived_value) * taxable
-        if diff_dollars > one_cent:
-            failures.append((posted_key, posted, derived_value, diff_dollars))
-    if failures:
-        logger.info(
-            "Rejected calibration confirm for profile %d "
-            "(federal/state rate inconsistency, failures=%s)",
-            profile_id,
-            [
-                f"{name} posted={posted} derived={derived} "
-                f"mismatch=${mismatch}"
-                for name, posted, derived, mismatch in failures
-            ],
-        )
-        abort(422)
 
 
 def _render_raises_partial(profile):

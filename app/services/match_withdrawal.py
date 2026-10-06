@@ -102,10 +102,51 @@ an act naming no app row is unrepresentable rather than filtered.  What this
 module adds is the CLEANUP and the DISCLOSURE: the act the press empties goes,
 and a door that discloses names the lines it frees before the press -- the row
 delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
-The grid's one-click Mark Paid withdraws and logs by ruling (**R-CC56**); the
-reconcile panel, carry-forward, the purchase delete and the Credit doors
-withdraw and log with no caption until plan step ``credit_card:CC-5-4a-5``
-(**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**).
+
+**And the act ASKS what the owner was shown, ONCE PER SAVE** (plan step
+``credit_card:CC-5-4a-5``, rulings **R-CC81**, **R-CC127** and **R-CC135**).
+Every door whose page names lines, or that stays silent by a ruling, opens ONE
+:class:`~app.services.match_press.Press` around its unit of work over the
+bank lines its page named (:class:`~app.services.match_press.Shown`) or what
+lets it stay silent (:class:`~app.services.match_press.Silent`), and threads
+it to every call of :func:`take_out_of_matches` the save makes: a call
+freeing a line the page did not name is refused at once, and before the door
+commits, what the whole save freed must equal what the page named -- a page
+drawn before a match existed or after another tab freed one, or a door that
+forgot its caption.  A door that passes no press -- its page names
+nothing -- has each call open one of its own over :data:`NOTHING_SHOWN`,
+which refuses every line it would free: the same answer, one call at a
+time.
+Ruling **R-CC135** (developer 2026-10-04, "One check per save"): *"Every
+button that can undo a match checks once per save: undoing one the page did
+not name stops it at once, and before saving, what it undid must equal what
+the page named for what you ticked, or nothing saves and the page
+redraws"*.  The owner's one-click Mark Paid is silent by ruling (**R-CC56**),
+and a companion's is refused whenever it would free a line, because no page
+may show a companion the owner's statement
+(:class:`~app.services.match_press.OwnerOnly`, ruling
+**R-CC130**) -- as is its purchase X and CC un-tick (ruling **R-CC132**).
+The purchase X, the CC un-tick, Undo CC and Status leaving Credit name their
+lines first since plan step ``credit_card:CC-5-4a-5b`` (ruling **R-CC80**,
+finding **CC-367** closed), and the reconcile panel since ``CC-5-4a-5c-1``:
+the tick it captions -- a row settling from its purchases over a kept
+payment -- names its lines under the row, a typed ``$0.00`` box is refused
+(ruling **R-CC125**), and neither list offers a tick that would move a
+payment between accounts (ruling **R-CC126**; finding **CC-378** closes at
+that leaf's tick).  An act naming the payments of SEVERAL rows is named
+under each of them with the rows that must all close
+(:func:`pending_alone_and_together`, leaf ``5c-2c-1``, ruling **R-CC135**,
+finding **CC-384**), and its lines count as named only when all of those
+rows are ticked.  Every other panel tick names nothing, so one that would
+free a line is refused; one can still take a payment off uncaptioned -- a
+``$0.00``-figure row ticked with its box cleared, saved when its payment is
+unmatched (ledger row **BAL-596**).  Carry-forward's confirmation names what
+each envelope's close frees since leaf ``5c-2c-2`` (ruling **R-CC76**,
+finding **CC-364** closed), a match only several closes empty together once
+for the batch (ruling **R-CC135**), and its Confirm posts every line named
+for the batch's one press (``carry_forward_service.carry_forward_unpaid``).
+The declarations and the press live in :mod:`app.services.match_press`,
+split from here by subject at leaf 5c-2b.
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -113,7 +154,8 @@ That package imports ``entry_service``, ``credit_workflow`` and
 living there could not be reached from any of them.  It imports the two match
 MODELS and, of ``app.services``, only :mod:`app.services.transfer_legs` -- the
 leaf below every service, which names a movement's parent for the event
-(plan step ``balance:X-bi-6-4c-4``) -- which is what lets the act and the
+(plan step ``balance:X-bi-6-4c-4``) -- and :mod:`app.services.match_press`,
+which imports no service at run time; that is what lets the act and the
 seam's move above it call one rule instead of a spelling each.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a
@@ -124,7 +166,9 @@ caller owns the unit of work.
 from __future__ import annotations
 
 import logging
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass
+from functools import partial
 from datetime import date
 from decimal import Decimal
 
@@ -134,6 +178,7 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import transfer_legs
+from app.services.match_press import NOTHING_SHOWN, Press, Silent
 from app.services.transfer_legs import TransferLeg
 from app.utils.log_events import (
     BUSINESS,
@@ -142,6 +187,7 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass(frozen=True)
@@ -205,6 +251,17 @@ class MatchWithdrawal:
         ``length`` test in a Jinja condition.
         """
         return bool(self.lines)
+
+    @property
+    def line_ids(self) -> "frozenset[int]":
+        """Return the ids of the lines this frees -- what a caption naming them posts back.
+
+        The one spelling the page's posted field and the press's comparison
+        (:class:`Press`) share, so what a caption sends and what the save is
+        graded against cannot be two readings of one withdrawal (plan step
+        ``credit_card:CC-5-4a-5``, ruling **R-CC127**).
+        """
+        return frozenset(line.line_id for line in self.lines)
 
 
 def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":
@@ -330,10 +387,57 @@ def _loses_every_row(act: StatementMatch, entry_ids: "set[int]") -> bool:
     )
 
 
+def _line_ids_of(acts: "list[StatementMatch]") -> "set[int]":
+    """Return the ids of the bank lines *acts* name.
+
+    Args:
+        acts: The acts, with ``members`` loaded.
+
+    Returns:
+        Every line id a member of one of them names.
+    """
+    return {
+        member.bank_statement_line_id
+        for act in acts
+        for member in act.members
+        if member.bank_statement_line_id is not None
+    }
+
+
+def _freed_lines(acts: "list[StatementMatch]") -> "dict[int, FreedLine]":
+    """Return the bank lines *acts* name, as facts, keyed by id -- ONE query.
+
+    Read once for however many withdrawals *acts* make up between them
+    (:func:`pending_alone_and_together`), and for the one a press makes.  No query
+    at all when no act names a line.
+
+    Args:
+        acts: The acts, with ``members`` loaded.
+
+    Returns:
+        ``{line id: FreedLine}``.
+    """
+    line_ids = _line_ids_of(acts)
+    if not line_ids:
+        return {}
+    return {
+        line.id: FreedLine(
+            line_id=line.id,
+            posted_on=line.posted_on,
+            amount=line.amount,
+            description=line.description,
+        )
+        for line in db.session.query(BankStatementLine)
+        .filter(BankStatementLine.id.in_(line_ids))
+        .all()
+    }
+
+
 def _summarise(
     acts: "list[StatementMatch]",
     transaction_ids: "set[int]",
     entry_ids: "set[int]",
+    lines: "dict[int, FreedLine]",
 ) -> MatchWithdrawal:
     """Return what withdrawing *acts* comes to, WITHOUT withdrawing them.
 
@@ -344,33 +448,20 @@ def _summarise(
             **R-CC84**) -- so a creation that names one is not reported as
             staying.
         entry_ids: Purchase ids about to leave the table, likewise.
+        lines: :func:`_freed_lines` over *acts* or over a superset of them,
+            so many withdrawals read their lines in one query.
 
     Returns:
-        Their :class:`MatchWithdrawal`.
+        Their :class:`MatchWithdrawal`, its lines ordered by the day the
+        bank posted them.
     """
-    line_ids = {
-        member.bank_statement_line_id
-        for act in acts
-        for member in act.members
-        if member.bank_statement_line_id is not None
-    }
-    lines = (
-        db.session.query(BankStatementLine)
-        .filter(BankStatementLine.id.in_(line_ids))
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
-        if line_ids else []
-    )
     return MatchWithdrawal(
         matches=len(acts),
         lines=tuple(
-            FreedLine(
-                line_id=line.id,
-                posted_on=line.posted_on,
-                amount=line.amount,
-                description=line.description,
+            sorted(
+                (lines[line_id] for line_id in _line_ids_of(acts)),
+                key=lambda line: (line.posted_on, line.line_id),
             )
-            for line in lines
         ),
         kept_rows=sum(
             1
@@ -442,38 +533,43 @@ RE_RECORDED = (
 
 
 def _withdraw(
-    acts, planned: MatchWithdrawal, owner_id: int, *, because: str, **fields,
+    acts, planned: MatchWithdrawal, owner_id: int, *, press: Press,
+    because: str, **fields,
 ) -> None:
-    """Delete the acts and record what that freed.
+    """Delete the acts, and owe the save the event recording what that freed.
 
     The members go with each act through the ORM cascade and the composite
     foreign key alike, which is what puts the lines back among the unexplained:
-    no member names them any more.
+    no member names them any more.  The event is logged at the save's close
+    (:class:`Press`, ruling **R-CC135**), so a save its door then refuses
+    logs no withdrawal its rollback undid.
 
     Args:
         acts: The acts to withdraw.
         planned: What :func:`_summarise` said they come to, so the event
             records the same figures the dialog printed.
         owner_id: The user the caller proved owns the account.
+        press: The save this call is part of.
         because: The event's sentence -- the DOOR's, since a delete, a
             re-record and a re-point withdraw for different reasons and the
             log is read.
         **fields: Subject coordinates for the event (``transaction_ids``,
             ``transfer_ids``, ``transaction_entry_ids`` and
-            ``freed_line_ids``).
+            ``freed_line_ids``), and ``silent_by``: the ruling or finding a
+            no-caption door named (:class:`Silent`), else ``None``.
     """
     for act in acts:
         db.session.delete(act)
     db.session.flush()
-    log_event(
-        logger, logging.INFO, EVT_STATEMENT_MATCH_WITHDRAWN, BUSINESS,
-        because,
+    press.owe_event(partial(
+        log_event, logger, logging.INFO, EVT_STATEMENT_MATCH_WITHDRAWN,
+        BUSINESS, because,
         user_id=owner_id,
         match_count=planned.matches,
         freed_line_count=len(planned.lines),
         kept_row_count=planned.kept_rows,
         **fields,
-    )
+    ))
 
 
 def pending_for_rows(rows) -> MatchWithdrawal:
@@ -496,8 +592,9 @@ def pending_for_rows(rows) -> MatchWithdrawal:
         which is every row on a book nobody has matched.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
+    emptied = _acts_emptied_by(entry_ids)
     return _summarise(
-        _acts_emptied_by(entry_ids), transaction_ids, entry_ids,
+        emptied, transaction_ids, entry_ids, _freed_lines(emptied),
     )
 
 
@@ -522,9 +619,9 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     lines those free; a GROUP act that keeps another row is not named here,
     and the act still takes this member out of it and turns its ``agrees``
     flag amber on the register, stated so it reads as a choice and not a fact.
-    (The purchase X itself says nothing before its press yet -- finding
-    **CC-367**, built in plan step ``credit_card:CC-5-4a-5``, ruling
-    **R-CC80**.)
+    The purchase list reads the same derivation for many purchases at once
+    (:func:`pending_for_each`, plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC80**).
 
     Args:
         entries: The movements a screen is offering to remove or re-point.
@@ -532,8 +629,181 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     Returns:
         Their :class:`MatchWithdrawal`.
     """
-    entry_ids = {entry.id for entry in entries}
-    return _summarise(_acts_emptied_by(entry_ids), set(), entry_ids)
+    return pending_for_each({None: entries})[None]
+
+
+@dataclass(frozen=True)
+class SharedWithdrawal:
+    """ONE accepted act that only SEVERAL removals made together withdraw.
+
+    Plan step ``credit_card:CC-5-4a-5`` (leaf 5c-2c-1), ruling **R-CC135**
+    (developer 2026-10-04, "One check per save"): *"Warnings name each match
+    under every row it names, saying which rows must all close"*.  An act
+    naming the payments of two rows is left naming no app row only when both
+    rows' removals are made, so neither removal frees its lines alone
+    (:attr:`RemovalWithdrawals.alone`); the reconcile panel read each row
+    alone until this leaf, named the line under neither, and refused the two
+    ticked together (finding **CC-384**).
+
+    Attributes:
+        withdrawal: What withdrawing this one act frees (``matches`` is 1).
+        keys: Every removal whose movements the act names, withdrawn when
+            all are made in one save (or fewer, where keys' movements overlap).
+    """
+
+    withdrawal: MatchWithdrawal
+    keys: "frozenset[Hashable]"
+
+
+@dataclass(frozen=True)
+class RemovalWithdrawals:
+    """What one removal withdraws by itself, and what it withdraws only with others.
+
+    Attributes:
+        alone: The acts this removal empties by itself, as
+            :func:`take_out_of_matches` would answer it alone -- what
+            :func:`pending_for_each` returns for it.
+        shared: The acts it empties only together with other removals given
+            beside it, one :class:`SharedWithdrawal` per act, in the order the
+            acts load.
+    """
+
+    alone: MatchWithdrawal
+    shared: "tuple[SharedWithdrawal, ...]"
+
+
+def _classified(groups: "dict[Hashable, set[int]]") -> "tuple[dict, dict]":
+    """Class every act naming *groups*' movements ONCE: per key, ``(alone, shared)``.
+
+    The one walk :func:`pending_alone_and_together` and
+    :func:`pending_for_each` share; each then reads the lines of only the acts
+    it reports.  *groups* is ``{key: movement ids}``.
+    """
+    alone: "dict[Hashable, list[StatementMatch]]" = {key: [] for key in groups}
+    shared: "dict[Hashable, list[tuple[StatementMatch, frozenset[Hashable]]]]" = {
+        key: [] for key in groups
+    }
+    for act in _acts_naming(set().union(*groups.values())):
+        keys = frozenset(
+            key for key, ids in groups.items()
+            if any(member.transaction_entry_id in ids for member in act.members)
+        )
+        singles = [key for key in keys if _loses_every_row(act, groups[key])]
+        for key in singles:
+            alone[key].append(act)
+        if not singles and len(keys) > 1 and _loses_every_row(
+            act, set().union(*(groups[key] for key in keys)),
+        ):
+            for key in keys:
+                shared[key].append((act, keys))
+    return alone, shared
+
+
+def pending_alone_and_together(
+    removals: "dict[Hashable, Iterable]",
+    rows_leaving: "dict[Hashable, Iterable] | None" = None,
+) -> "dict[Hashable, RemovalWithdrawals]":
+    """Return what each removal withdraws alone, and with the others given, in ONE read.
+
+    The read a screen offering MANY removals at once asks: one member query,
+    one act load and one line query however many it offers, and no query at
+    all when none of their movements is named by an act.  Each act naming any
+    of the movements is classed ONCE (plan step ``credit_card:CC-5-4a-5``,
+    leaf 5c-2c-1, ruling **R-CC135**):
+
+    * emptied by ONE removal's movements (:func:`_loses_every_row`) -- that
+      removal's :attr:`~RemovalWithdrawals.alone`, exactly as
+      :func:`take_out_of_matches` withdraws it when that removal is made;
+    * emptied only by the removals naming it, made together, and by no one
+      of them -- a :class:`SharedWithdrawal` under each of those removals;
+    * naming a movement none of *removals* takes -- neither: no save of these
+      removals empties it, and making some of them only takes their members
+      out of it, as :func:`take_out_of_matches` does.
+
+    Args:
+        removals: ``{key: movements}`` -- each value one removal's movements
+            (a reconcile panel tick's, a purchase X's), under whatever key the
+            caller reads its answer back by.
+        rows_leaving: ``{key: rows}`` -- the rows a removal deletes with its
+            movements (a CC payback the last card purchase's X takes down),
+            as :func:`take_out_of_matches` is handed them, so a creation
+            naming one is not counted as kept.  A key absent here deletes no
+            row; a shared act counts the rows of every removal it needs.
+
+    Returns:
+        ``{key: RemovalWithdrawals}``, one per key given.  All zeroes and no
+        shared act for a removal no act names, which is nearly every one.
+    """
+    groups = {
+        key: {entry.id for entry in entries}
+        for key, entries in removals.items()
+    }
+    leaving = {
+        key: {row.id for row in (rows_leaving or {}).get(key, ())}
+        for key in groups
+    }
+    alone, shared = _classified(groups)
+    lines = _freed_lines(
+        [act for each in alone.values() for act in each]
+        + [act for each in shared.values() for act, _keys in each]
+    )
+    return {
+        key: RemovalWithdrawals(
+            alone=_summarise(alone[key], leaving[key], groups[key], lines),
+            shared=tuple(
+                SharedWithdrawal(
+                    withdrawal=_summarise(
+                        [act],
+                        set().union(*(leaving[each] for each in keys)),
+                        set().union(*(groups[each] for each in keys)),
+                        lines,
+                    ),
+                    keys=keys,
+                )
+                for act, keys in shared[key]
+            ),
+        )
+        for key in groups
+    }
+
+
+def pending_for_each(
+    removals: "dict[Hashable, Iterable]",
+    rows_leaving: "dict[Hashable, Iterable] | None" = None,
+) -> "dict[Hashable, MatchWithdrawal]":
+    """Return what each of several removals would withdraw ALONE, in ONE read.
+
+    :func:`pending_for_movements` for a screen offering MANY removals, each
+    its own press -- the purchase list's X on each of an envelope's
+    purchases, drawn for every envelope on the grid (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC80**).  Each removal is answered
+    exactly as :func:`take_out_of_matches` would answer it alone: the
+    :attr:`~RemovalWithdrawals.alone` half of
+    :func:`pending_alone_and_together` over the same walk
+    (:func:`_classified`), reading the lines of those acts only.
+
+    Args:
+        removals: ``{key: movements}`` -- each value one press's movements,
+            under whatever key the caller reads its answer back by.
+        rows_leaving: ``{key: rows}`` -- the rows a removal's press deletes
+            with its movements, as :func:`pending_alone_and_together` takes
+            them.
+
+    Returns:
+        ``{key: MatchWithdrawal}``, one per key given.  All zeroes for a
+        removal no act names, which is nearly every one.
+    """
+    leaving = rows_leaving or {}
+    groups = {key: {entry.id for entry in each} for key, each in removals.items()}
+    alone, _shared = _classified(groups)
+    lines = _freed_lines([act for each in alone.values() for act in each])
+    return {
+        key: _summarise(
+            alone[key], {row.id for row in leaving.get(key, ())},
+            groups[key], lines,
+        )
+        for key in groups
+    }
 
 
 def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
@@ -570,7 +840,8 @@ def _parent_ids(entries, leaving_ids: "set[int]") -> "dict[str, list[int]]":
 
 
 def take_out_of_matches(
-    entries, owner_id: int, *, because: str, rows_leaving=(),
+    entries, owner_id: int, *, because: str, press: "Press | None",
+    rows_leaving=(),
 ) -> MatchWithdrawal:
     """Take *entries* out of every act naming them; withdraw the acts that empties.
 
@@ -600,6 +871,14 @@ def take_out_of_matches(
     status seam run inside a caller's ``no_autoflush`` block (the
     carry-forward batch) writes no earlier than it did before this step.
 
+    **It asks what the owner was SHOWN, as one call of a save** (plan step
+    ``credit_card:CC-5-4a-5``, rulings **R-CC81**, **R-CC127**, **R-CC135**):
+    *press* is REQUIRED, a line this call frees that the page did not name is
+    refused before anything is written, and what it frees is recorded for the
+    save's close (:class:`Press`).  ``None`` is a settle verb's default --
+    its door said nothing -- and is a press of this one call naming nothing
+    (:data:`NOTHING_SHOWN`), opened and closed here.
+
     Does NOT commit -- the caller owns the session boundary.
 
     Args:
@@ -609,6 +888,8 @@ def take_out_of_matches(
         owner_id: The owner under whose books the acts are filed.
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
+        press: The door's open :class:`Press`, or ``None`` for a door that
+            named nothing.
         rows_leaving: The rows going in the same press, soft or hard (a
             recurring occurrence's tombstone counts as gone, ruling
             **R-CC84**), when the caller is a row delete -- so a creation that
@@ -617,20 +898,49 @@ def take_out_of_matches(
 
     Returns:
         What was withdrawn, as the dialog's read would have printed it.
+
+    Raises:
+        PageOutOfDate: When this frees a line the press's page did not name.
+        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
+            would free a line (ruling **R-CC130**).
+    """
+    if press is None:
+        with Press(NOTHING_SHOWN) as one_call:
+            return _take_out(entries, owner_id, because, one_call, rows_leaving)
+    return _take_out(entries, owner_id, because, press, rows_leaving)
+
+
+def _take_out(
+    entries, owner_id: int, because: str, press: Press, rows_leaving,
+) -> MatchWithdrawal:
+    """Take *entries* out of their matches as one call of *press*'s save.
+
+    The body of :func:`take_out_of_matches`, which states the contract.
+
+    Returns:
+        What was withdrawn.
     """
     entry_ids = {entry.id for entry in entries}
     leaving_ids = {row.id for row in rows_leaving}
     emptied, surviving = _partition(_acts_naming(entry_ids), entry_ids)
-    planned = _summarise(emptied, leaving_ids, entry_ids)
+    planned = _summarise(
+        emptied, leaving_ids, entry_ids, _freed_lines(emptied),
+    )
+    press.take(planned)
     if emptied:
         _withdraw(
-            emptied, planned, owner_id, because=because,
+            emptied, planned, owner_id, press=press, because=because,
             # The PARENTS the movements were under, whether or not they leave
             # too -- a re-record's row stays, and the event is the only record
             # of which row a no-caption door (the grid's Mark Paid) touched.
             **_parent_ids(entries, leaving_ids),
             transaction_entry_ids=sorted(entry_ids),
             freed_line_ids=[line.line_id for line in planned.lines],
+            # What let a no-caption door withdraw (ruling **R-CC81**).
+            silent_by=(
+                press.shown.because if isinstance(press.shown, Silent)
+                else None
+            ),
         )
     taken = [
         (act, member) for act in surviving for member in act.members
@@ -643,7 +953,9 @@ def take_out_of_matches(
     return planned
 
 
-def withdraw_for_moved_movement(entry, owner_id: int) -> MatchWithdrawal:
+def withdraw_for_moved_movement(
+    entry, owner_id: int, *, press: "Press | None",
+) -> MatchWithdrawal:
     """Take *entry* out of every act naming it; withdraw the acts that empties.
 
     The door a movement's ACCOUNT change calls BEFORE the account is
@@ -660,8 +972,17 @@ def withdraw_for_moved_movement(entry, owner_id: int) -> MatchWithdrawal:
     Args:
         entry: The covering movement about to be re-pointed.
         owner_id: The row's owner, under whose books the act is filed.
+        press: The door's open :class:`Press`, or ``None`` for a door that
+            named nothing (:func:`take_out_of_matches`).
 
     Returns:
         What was withdrawn.
+
+    Raises:
+        PageOutOfDate: When this frees a line the press's page did not name.
+        ValidationError: An :class:`OwnerOnly` press's own refusal, when it
+            would free a line (ruling **R-CC130**).
     """
-    return take_out_of_matches([entry], owner_id, because=MOVED_ACCOUNTS)
+    return take_out_of_matches(
+        [entry], owner_id, because=MOVED_ACCOUNTS, press=press,
+    )

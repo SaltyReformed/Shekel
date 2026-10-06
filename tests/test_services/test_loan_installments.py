@@ -627,7 +627,7 @@ def _statements_issued():
     At the Engine level rather than a session's, so it sees what the PROCESS
     issued whichever session issued it -- the same probe
     ``test_loan_payment_service`` uses.  It cannot see ``BEGIN`` / ``COMMIT`` /
-    ``ROLLBACK``, which psycopg2 issues through the connection, so the
+    ``ROLLBACK``, which psycopg issues through the connection, so the
     assertions below name TABLES rather than counting a total.
 
     Yields:

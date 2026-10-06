@@ -28,6 +28,7 @@ from app.services.account_resolver import resolve_cash_flow_set
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PeriodWindow
 from app.utils.auth_helpers import require_owner
+from app.utils.digit_strings import integer_arg
 
 from app.routes.grid._bp import grid_bp
 from app.routes.grid._shared import (
@@ -90,7 +91,7 @@ def _resolve_partial_base(user_id):
     balance_ctx = BalanceContext.build(user_id)
     cash_flow = resolve_cash_flow_set(
         user_id, current_user.settings,
-        request.args.get("account_id", type=int),
+        request.args.get("account_id", type=integer_arg),
     )
     return _PartialBase(balance_ctx=balance_ctx, cash_flow=cash_flow)
 
@@ -165,8 +166,8 @@ def _resolve_partial_window(user_id):
         answers any HTMX request in that state with the same 204.
     """
     base = _resolve_partial_base(user_id)
-    num_periods = request.args.get("periods", default=6, type=int)
-    start_offset = request.args.get("offset", default=0, type=int)
+    num_periods = request.args.get("periods", default=6, type=integer_arg)
+    start_offset = request.args.get("offset", default=0, type=integer_arg)
 
     resolved = _resolve_visible_window(
         base.balance_ctx, num_periods, start_offset,
@@ -335,7 +336,7 @@ def mobile_this_period_summary():
     """
     base = _resolve_partial_base(current_user.id)
 
-    period_id = request.args.get("period_id", type=int)
+    period_id = request.args.get("period_id", type=integer_arg)
     if period_id is None:
         return "", 204
     period = base.balance_ctx.calendar().period_by_id(period_id)

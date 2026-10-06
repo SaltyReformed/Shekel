@@ -54,6 +54,7 @@ Architecture (``CLAUDE.md``):
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from decimal import Decimal
 
 from sqlalchemy import and_
@@ -63,10 +64,18 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, status_seam, transaction_service
+from app.services import (
+    cash_ledger,
+    match_withdrawal,
+    status_seam,
+    transaction_service,
+)
 from app.services.account_projection import is_revolving
 from app.services.cash_ledger import AmountBasis
+from app.services.match_press import Press
+from app.services.match_withdrawal import SharedWithdrawal
 from app.services.reconcile_service import _rows
+from app.services.reconcile_service._named import SharedMatch, SharedPartner
 from app.services.reconcile_service._offers import (
     OfferKind,
     OutstandingGroup,
@@ -172,6 +181,7 @@ def _settle_one(
     txn: Transaction,
     submitted: StatedFigure | None,
     statement: _rows.Statement,
+    press: Press,
 ) -> bool:
     """Settle one row through the grid's own verb; say if a human's figure won.
 
@@ -196,21 +206,51 @@ def _settle_one(
             records the money as having moved on, rather than the seam's
             default of the user's today -- and on the ``asserted`` basis, because
             what the owner asserted is a BALANCE for that day and the money was
-            inside it (plan step **X-az**).  **Its ACCOUNT is the tender**
-            (plan step ``credit_card:CC-5-3``, ruling **R-CC15**: a
-            statement-driven settle forces the statement's own account): the
-            owner ticking a row on this account's panel says this account's
-            statement showed the money, so the covering movement books here
-            -- named rather than left to the seam's default, because a row
-            reverted out of a card-tendered settle keeps that record and the
-            default would keep it on the card (ruling **R-CC42**).  On
-            :data:`ARM`'s scope the named tender is the row's own account and
-            passes the verb's gate by its first member.  On
-            :data:`SETTLEMENT_ARM`'s it is the account the row's kept payment
-            is already on (that scope's own clause), which the verb reads as
-            an ECHO of the recorded tender (``status_seam.tender_for_status``)
-            and books where the payment is, asking the gate nothing: the
-            money is not moving, only being dated.
+            inside it (plan step **X-az**).  **Its ACCOUNT is where the tick
+            books, by the scopes' construction** (ruling **R-CC15**: a
+            statement-driven settle books on the statement's own account).
+            The tick names NO tender since plan step
+            ``credit_card:CC-5-4a-5c-1``; it named the statement's account
+            until then, which re-pointed a kept payment from the card onto
+            Checking (finding **CC-378**).  Since ruling **R-CC126** the name
+            changes nothing a tick BOOKS, so it was deleted (the
+            coordinator's application of R-CC126, 2026-10-04): a row that
+            settles from its figure and is offered here holds no payment on
+            another account, so the seam's own default
+            (``status_seam.tender_account_id_of``: the kept payment's
+            account, else the row's) is this account; a row that settles FROM
+            its purchases books no movement of its own, and the verb's
+            purchases branch never reads a tender (on such a row with a card
+            payment the name differed from that default, and changed
+            nothing).  So on :data:`ARM`'s scope a row settling from its
+            figure books here, and a row settling from its purchases takes its
+            kept payment off wherever it is; on :data:`SETTLEMENT_ARM`'s the
+            kept payment is on this account (that scope's own clause), so it
+            books where it is: the money is not moving, only being dated.
+            The booked account is pinned for Checking's own list and the
+            card's "Paid from this account" list
+            (``test_cc5_4a5c_reconcile_panel::TestEachListBooksOnTheStatementsAccount``).
+        press: The panel save's press, over the bank lines the panel named
+            for the rows ticked (``NamedLines.for_ticks``: a shared match's
+            only when all its rows are; plan step ``credit_card:CC-5-4a-5``,
+            rulings **R-CC76**, **R-CC127**, **R-CC135**;
+            ``_assemble.record_reconciliation``), for the act that takes the
+            row's kept payment out of its matches.  After rulings
+            **R-CC125** (a typed ``$0.00`` box is refused before this runs)
+            and **R-CC126** (no tick here moves a payment between accounts)
+            the tick the panel captions is a row
+            holding purchases, which settles FROM them: that ``purchases``
+            record takes the payment a revert kept
+            (``status_seam._covering._withdraw``), and :data:`ARM`'s reader
+            names its lines first (:func:`outstanding_transactions`) -- under
+            the row alone, or, for a match naming several rows' payments,
+            under each of them with the rows that must all close (leaf
+            5c-2c-1, finding **CC-384**).  One tick takes a payment off with
+            NO caption: a row whose own figure is ``$0.00`` ticked with its
+            box CLEARED records ``$0.00`` -- refused as out of date when its
+            kept payment is matched (its page named nothing), and when it is
+            not, saved with that payment taken off unannounced (ledger row
+            **BAL-596**, balance:X-db's).
 
     Returns:
         Whether the verb booked *submitted* as a correction -- **answered by the
@@ -223,8 +263,7 @@ def _settle_one(
         (finding **N-231**), which is the shape they can no longer be.
     """
     corrected = transaction_service.settle_transaction(
-        txn, submitted=submitted, settle_day=statement.settle_day,
-        tender_account_id=statement.account_id,
+        txn, submitted=submitted, settle_day=statement.settle_day, press=press,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The
@@ -261,6 +300,30 @@ def _own_clauses(statement: _rows.Statement) -> tuple:
     ``budget.transfers`` since leaf ``balance:X-bi-6-4c-2``; until then its
     clause was this one's complement over this table.
 
+    **NOT a row whose payment moved on ANOTHER account** (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC126**, developer 2026-09-30,
+    "Only the card offers it"): *"Checking's list leaves it out ... Each list
+    offers only money that moved on its own account, so reconciling never
+    moves a payment. A bill paid by its own purchases stays on its own
+    list."*  A row holding no purchase settles from its figure, and until
+    this step its tick named this account as the tender
+    (:func:`_settle_one`), so ticking one whose kept payment is on the card
+    RE-POINTED that payment onto Checking (``status_seam._covering.
+    _re_point``) and withdrew the card's match unannounced (finding
+    **CC-378**).  Left out here, it is offered by :data:`SETTLEMENT_ARM` on
+    the payment's own account, which books it where it is.  A row holding
+    purchases stays: it settles FROM them and never re-points.  The excluded
+    payment is ANY covering movement on another account, dated or not --
+    the ruling's own words are about where the money moved, not when; the
+    question's example was un-dated because that is the shape a revert
+    leaves, and a DATED one under a Projected row is a drift no door writes
+    which this list must not re-point either (production held 0 of either
+    on 2026-09-30).  So the panel reaches ``_re_point`` from neither scope.
+    The clause is ``status_seam.payment_recorded_elsewhere_clause``, the ONE
+    predicate the statement matcher's offer asks too since leaf 5c-2a (ruling
+    **R-CC137**: *"Checking's statement screen does not offer Hotel while its
+    payment is recorded on the Visa (the reconcile panel's test, R-CC126)"*).
+
     Args:
         statement: The statement being reconciled.
 
@@ -270,6 +333,7 @@ def _own_clauses(statement: _rows.Statement) -> tuple:
     return (
         Transaction.account_id == statement.account_id,
         Transaction.transfer_id.is_(None),
+        ~status_seam.payment_recorded_elsewhere_clause(statement.account_id),
     )
 
 
@@ -340,9 +404,9 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
 
     * the row is on ANOTHER account -- the complement of :data:`ARM`'s first
       clause, so the two scopes partition every row and one posted id loads
-      in at most one (ruling **R-CC116**).  The row's own account's list keeps
-      offering it as a bill, and whichever tick lands first leaves the other
-      nothing to settle.
+      in at most one (ruling **R-CC116**).  The row's own account's list
+      leaves it out (ruling **R-CC126**, :func:`_own_clauses`), so it is
+      offered here alone.
     * ``transfer_id IS NULL`` -- a transfer settles through the transfer
       service and ``settle_transaction`` refuses a shadow.  A shadow's
       covering movements are kept on the shadow's own account
@@ -363,8 +427,9 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
       settles_from_entries``), ignoring the tender and withdrawing the very
       payment this list would show; its purchases are its figure, and the
       purchase arm offers a card swipe on the card.  Stated as the verb's own
-      predicate in SQL (:attr:`~app.models.transaction.Transaction.purchases`
-      is the entries less the seam's mark, ``status_seam.covering_clause``).
+      predicate in SQL (``status_seam.holds_no_purchase_clause``, the one
+      spelling :data:`ARM`'s R-CC126 clause and the statement matcher's
+      R-CC137 cut are built on).
 
     Args:
         statement: The statement being reconciled.
@@ -372,16 +437,15 @@ def _settlement_clauses(statement: _rows.Statement) -> tuple:
     Returns:
         The clauses, for :func:`_scope_loader`.
     """
-    covering = status_seam.covering_clause()
     return (
         Transaction.account_id != statement.account_id,
         Transaction.transfer_id.is_(None),
         Transaction.entries.any(and_(
-            covering,
+            status_seam.covering_clause(),
             TransactionEntry.settled_on.is_(None),
             TransactionEntry.account_id == statement.account_id,
         )),
-        ~Transaction.entries.any(~covering),
+        status_seam.holds_no_purchase_clause(),
     )
 
 
@@ -442,11 +506,93 @@ def outstanding_transactions(
         least one offer, because an envelope's close is offerable for the whole
         of its own period and only closing it clears it.  Finding **N-227**
         owns whether that bound is right.
+
+    **Each offer says what its tick would WITHDRAW** (plan step
+    ``credit_card:CC-5-4a-5``, ruling **R-CC76**, developer 2026-09-23:
+    *"the reconcile panel on a row whose kept payment is matched ... the panel
+    row says 9/24 HOTEL -$120.00 would be unexplained again before you tick
+    it"*).  The one tick here that takes a payment out of its matches is a
+    row that settles FROM its purchases while holding the payment a revert
+    kept (:func:`_settle_one`), so those rows' payments are read through the
+    act's own twin, ``match_withdrawal.pending_alone_and_together``, over the movements
+    the seam's ``purchases`` record removes
+    (:attr:`~app.models.transaction.Transaction.covering_movements`, which
+    ``status_seam._covering._withdraw`` takes) and the verb's own branch
+    predicate (``transaction_service.settles_from_entries``) -- ONE read for
+    the whole list, and no query at all when no row qualifies (production
+    held 0 un-dated covering movements under a Projected row on 2026-09-30,
+    the census behind ruling **R-CC125**'s question).  **A match is read
+    under every row it names** (leaf 5c-2c-1, ruling **R-CC135**): one this
+    row's tick empties by itself is its :attr:`~._offers.OutstandingTransaction
+    .withdraws`, and one naming the payments of several rows here, which only
+    their ticks together empty, is a :class:`~._named.SharedMatch` under
+    each of them (``match_withdrawal.pending_alone_and_together``).  Read
+    alone, two rows matched together to one bank line each read as freeing
+    nothing, and ticking both in one press was refused (finding **CC-384**).
     """
-    return {
+    rows = ARM.load(statement, None)
+    pending = match_withdrawal.pending_alone_and_together({
+        txn_id: txn.covering_movements
+        for txn_id, txn in rows.items()
+        if transaction_service.settles_from_entries(txn)
+        and txn.covering_movements
+    })
+    offers = {
         txn_id: _offer(statement, txn, basis, kind=_offer_kind(txn))
-        for txn_id, txn in ARM.load(statement, None).items()
+        for txn_id, txn in rows.items()
     }
+    for txn_id, each in pending.items():
+        offers[txn_id] = replace(
+            offers[txn_id],
+            withdraws=each.alone,
+            shared=_shared_matches(statement, rows, txn_id, each.shared),
+        )
+    return offers
+
+
+def _shared_matches(
+    statement: _rows.Statement,
+    rows: "dict[int, Transaction]",
+    txn_id: int,
+    shared: "tuple[SharedWithdrawal, ...]",
+) -> "tuple[SharedMatch, ...]":
+    """Return the matches row *txn_id*'s tick withdraws only with other rows ticked.
+
+    Each names the OTHER rows it needs by name, as ruling **R-CC135**'s
+    warning does (*"Matched with Dining to one bank line"*), with the pay
+    period beside a name another row on this list also carries -- one
+    envelope in two paychecks -- since the name alone would not say which
+    (the lane's application of ruling **balance:R-BAL207**, leaf 5c-2c-1,
+    widened from the warning to the list at its review).
+
+    Args:
+        statement: The statement being reconciled, whose calendar files each
+            row's period.
+        rows: The scope's rows, in the order the panel lists them.
+        txn_id: The row whose tick this is.
+        shared: Its :attr:`~app.services.match_withdrawal.RemovalWithdrawals
+            .shared`, whose keys are row ids of *rows*.
+
+    Returns:
+        One :class:`~._named.SharedMatch` per act, in *shared*'s order.
+    """
+    names = [txn.name for txn in rows.values()]
+    matches = []
+    for each in shared:
+        matches.append(SharedMatch(
+            withdrawal=each.withdrawal,
+            partners=tuple(
+                SharedPartner(
+                    name=txn.name,
+                    period=_rows.filed_period(statement, txn),
+                    needs_period=names.count(txn.name) > 1,
+                )
+                for key, txn in rows.items()
+                if key in each.keys and key != txn_id
+            ),
+            row_ids=frozenset(each.keys),
+        ))
+    return tuple(matches)
 
 
 def outstanding_settlements(
@@ -499,6 +645,10 @@ def outstanding_settlements(
             name=_settlement_label(txn, on_card=on_card),
             period=_rows.filed_period(statement, txn),
             purchases=(),
+            # This scope admits no row holding a purchase (ruling
+            # **R-CC113**) and books on the payment's own account, so no
+            # tick here takes a payment out of its matches: the offer keeps
+            # its default, naming no line.
             settle=_offer(statement, txn, basis, kind=OfferKind.SETTLEMENT),
             # Resolved by the assembler once the order is known.
             section=None,
@@ -557,7 +707,9 @@ def _offer(
             settled the same whichever list offers it.
 
     Returns:
-        Its :class:`OutstandingTransaction`.  ``amount`` is resolved once and
+        Its :class:`OutstandingTransaction`, naming no line its tick frees:
+        that is the reader's to add (:func:`outstanding_transactions`, which
+        reads every row's in one pass).  ``amount`` is resolved once and
         passed to :func:`_cash_amount` rather than resolved twice: the two
         figures are the same number seen two ways, and asking the verb again
         would be a second answer to one money question.  ``closes_envelope``

@@ -75,6 +75,7 @@ from app.services.recurring_definition import (
     resolved_submission,
 )
 from app.utils.auth_helpers import get_or_404
+from app.utils.digit_strings import integer_arg
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +159,21 @@ def build_preview_spec(
     R2e-2 was written onto the transient rule's ``pattern`` relationship for a
     reader that does not exist.
 
-    ``interval_n`` is read straight from the query args and NOT bounded here:
-    the authoring seam refuses a non-positive interval, which is the caller's
-    ``RecurrenceResolutionError`` handler's job -- see :func:`preview_fragment`
-    for why every bound is stated once, on the column and its mirror in
-    ``resolve``, rather than a third time on this endpoint.
+    **The four counts -- ``interval_n``, ``nominal_day``, ``max_per_month``,
+    ``max_occurrences`` -- are held to one range here and to no rule.**  Each
+    is read through :func:`~app.utils.digit_strings.integer_arg`, so a value
+    outside a PostgreSQL ``integer``'s range is read exactly as an unparseable
+    one already was, as the argument's default (``interval_n`` 1, the other
+    three absent), and the preview lists what THAT rule would generate while
+    the save refuses the submission (the form schema bounds each of the four
+    within its column's range).  Every bound the RULE has -- a
+    non-positive interval, a nominal day the first occurrence does not leave
+    open, a per-month ceiling beside a unit that cannot hold it -- is refused
+    by ``RecurrenceSpec`` or the authoring seam, which is the caller's
+    ``RecurrenceResolutionError`` handler's job; see
+    :func:`recurrence_preview_fragment` for why those are stated once, on the
+    column and its mirror in ``resolve``, rather than a third time on this
+    endpoint.
 
     Args:
         unit: The submitted cadence unit, already checked as modelled by the
@@ -188,21 +199,20 @@ def build_preview_spec(
         # pay-period structure) is not expressible in the argument any
         # more.
         starts_on=starts_on,
-        interval_n=request.args.get("interval_n", type=int, default=1),
+        interval_n=request.args.get("interval_n", type=integer_arg, default=1),
         placement=placement,
-        # The day a clamped first occurrence MEANT.  Unbounded here like
-        # every other numeric arg: a value the date does not leave open is
-        # refused by ``RecurrenceSpec`` itself, which is the caller's
-        # ``RecurrenceResolutionError`` handler's job -- see
-        # :func:`recurrence_preview_fragment` for why every bound is stated
-        # once rather than a third time on this endpoint.
-        nominal_day=request.args.get("nominal_day", type=int),
+        # The day a clamped first occurrence MEANT.  Held to an ``integer``'s
+        # range and no rule here, like every count (see the docstring): a
+        # value the date does not leave open is refused by
+        # ``RecurrenceSpec`` itself, which is the caller's
+        # ``RecurrenceResolutionError`` handler's job.
+        nominal_day=request.args.get("nominal_day", type=integer_arg),
         # The per-month ceiling (plan step salary:R15-a), read the way the
-        # nominal day is: unbounded here, refused by ``RecurrenceSpec`` and
-        # ``resolve`` beside a unit that cannot hold it or below one, so the
-        # preview lists the same dates the save would generate -- "at most 2
-        # a month" previews the third paycheck skipped.
-        max_per_month=request.args.get("max_per_month", type=int),
+        # nominal day is: refused by ``RecurrenceSpec`` and ``resolve``
+        # beside a unit that cannot hold it or below one, so the preview
+        # lists the same dates the save would generate -- "at most 2 a
+        # month" previews the third paycheck skipped.
+        max_per_month=request.args.get("max_per_month", type=integer_arg),
         # Composed through the SUBMISSION door, not the storage one (plan
         # step R7b-3).  These are query args -- a submission -- so a
         # mistake in them is user input, and
@@ -217,7 +227,7 @@ def build_preview_spec(
             ),
             end_date=_submitted_iso_date("end_date"),
             max_occurrences=request.args.get(
-                "max_occurrences", type=int,
+                "max_occurrences", type=integer_arg,
             ),
         ),
     )
@@ -316,12 +326,12 @@ def _submitted_preview(
         ``(unit, placement, starts_on)`` when the request describes a
         previewable rule, or the muted markup to render instead.
     """
-    unit_id = request.args.get("recurrence_unit", type=int)
+    unit_id = request.args.get("recurrence_unit", type=integer_arg)
     if not unit_id:
         return _muted(NOTHING_TO_PREVIEW)
     unit = modelled_unit(unit_id)
     placement = modelled_placement(
-        request.args.get("recurrence_placement", type=int) or 0,
+        request.args.get("recurrence_placement", type=integer_arg) or 0,
     )
     if unit is None or placement is None:
         return _muted("Unknown cadence")
@@ -390,7 +400,7 @@ def _submitted_account_id(field: str) -> int | None:
     Returns:
         The owner's account id, or ``None`` when the request names none.
     """
-    account_id = request.args.get(field, type=int)
+    account_id = request.args.get(field, type=integer_arg)
     if account_id is None:
         return None
     account = get_or_404(Account, account_id)
@@ -420,13 +430,16 @@ def recurrence_preview_fragment() -> str:
     answer (via the ``or 0`` below, which no ``ref`` row can carry) rather than
     being defaulted into a schedule the save would not produce.
 
-    **Every OTHER query arg is unvalidated, and plan step R4a made that a 200
-    instead of a 500.**  ``interval_n`` / ``starts_on`` / ``nominal_day`` /
-    ``recurrence_end_mode`` / ``end_date`` / ``max_occurrences`` are read
-    straight from ``request.args``; the two form schemas bound them, nothing
-    bounds this endpoint, and it is reachable by anyone signed in.  Measured at
-    R4a on the arguments of the day: ``?interval_n=0`` raised out of the
-    authoring seam, ``?month_of_year=13`` raised ``ValueError`` from
+    **Every OTHER query arg is checked against no rule here, and plan step R4a
+    made that a 200 instead of a 500.**  ``interval_n`` / ``starts_on`` /
+    ``nominal_day`` / ``max_per_month`` / ``recurrence_end_mode`` /
+    ``end_date`` / ``max_occurrences`` are read straight from
+    ``request.args``; the two form schemas bound them, this endpoint holds the
+    integer ones only to a PostgreSQL ``integer``'s range (since plan step
+    balance:X-dj -- see :func:`build_preview_spec`), and it is reachable by
+    anyone signed in.
+    Measured at R4a on the arguments of the day: ``?interval_n=0`` raised out
+    of the authoring seam, ``?month_of_year=13`` raised ``ValueError`` from
     ``monthrange(year, 13)`` inside the matcher R4a deleted,
     ``?day_of_month=-5`` raised ``ValueError`` from ``date(y, m, -5)``, and
     ``?day_of_month=32`` / ``?month_of_year=99`` answered 200 with a silently

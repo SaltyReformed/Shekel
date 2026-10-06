@@ -119,6 +119,21 @@
                      placeholder="NC">
             </div>
           </div>
+
+          {# What this job's pay stub prints as its gross (plan step
+             salary:S11-c-2b, rulings R-SAL102 and R-SAL105), which the stub
+             form's printed-gross check adds up to.  A select, not a checkbox:
+             an unticked box submits nothing, and the update door reads an
+             absent field as "leave it", so "no" could never be saved. #}
+          {% set gross_includes_after_tax = profile and profile.stub_gross_includes_after_tax %}
+          <div class="mb-0">
+            <label for="stub_gross_includes_after_tax" class="form-label">What your pay stub's Gross Pay includes</label>
+            <select id="stub_gross_includes_after_tax" name="stub_gross_includes_after_tax" class="form-select">
+              <option value="false" {{ 'selected' if not gross_includes_after_tax }}>Base pay and taxable earnings</option>
+              <option value="true" {{ 'selected' if gross_includes_after_tax }}>Also untaxed pay, such as a mileage reimbursement</option>
+            </select>
+            <div class="form-text">The pay stub form uses this to check the Gross Pay you type.</div>
+          </div>
         </div>
       </div>
 
@@ -227,50 +242,9 @@
     {# ── Payroll lines section (deductions and earnings, plan step salary:R18-b) ── #}
     {% include "salary/_lines_section.html" %}
 
-    {# ── Calibration ── #}
-    <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h6 class="mb-0"><i class="bi bi-bullseye"></i> Pay Stub Calibration</h6>
-        {% if profile.calibration and profile.calibration.is_active %}
-        {# The cockpit's calibrated marker (.sal-cal), not a raw
-           bg-success badge -- same state, same treatment (P-SA2 genus:
-           the solid bg-* utilities read un-remapped Bootstrap hues). #}
-        <span class="sal-cal"><i class="bi bi-check-circle"></i> Calibrated</span>
-        {% endif %}
-      </div>
-      <div class="card-body">
-        {% if profile.calibration and profile.calibration.is_active %}
-        <p class="mb-2">
-          Calibrated from pay stub dated
-          <strong>{{ profile.calibration.pay_stub_date.strftime('%b %-d, %Y') }}</strong>.
-          Projections use effective rates instead of bracket-based estimates.
-        </p>
-        <div class="d-flex gap-2">
-          <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
-             class="btn btn-sm btn-outline-primary">
-            <i class="bi bi-arrow-repeat"></i> Re-calibrate
-          </a>
-          <form method="POST" class="d-inline"
-                action="{{ url_for('salary.calibrate_delete', profile_id=profile.id) }}">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-danger">
-              <i class="bi bi-x-circle"></i> Remove Calibration
-            </button>
-          </form>
-        </div>
-        {% else %}
-        <p class="text-muted mb-2">
-          Enter actual withholding from a pay stub to calibrate tax projections.
-        </p>
-        <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
-           class="btn btn-sm btn-outline-primary">
-          <i class="bi bi-bullseye"></i> Calibrate from Pay Stub
-        </a>
-        {% endif %}
-      </div>
-    </div>
-
-    {# ── Pay stubs, transcribed line by line (plan step salary:S11-b, R-SAL51 (a)) ── #}
+    {# ── Pay stubs, transcribed line by line (plan step salary:S11-b, R-SAL51 (a)),
+       which price each paycheck's taxes since plan step salary:S11-c-2c: the
+       card that calibrated from a stub is gone with that door (R-SAL100). ── #}
     {% include "salary/_stubs_section.html" %}
 
     {# ── Danger zone: deactivation + inactive-profile recovery ──

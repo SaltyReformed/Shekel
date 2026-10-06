@@ -445,8 +445,11 @@ SHEKEL_FAKE_TODAY=2028-02-29 ./scripts/test.sh
 server-stamped row carries the REAL instant, and any test comparing it against a Python-derived date
 fails by the offset -- an artifact of the instrument, not a defect.
 
-Those tests carry `@pytest.mark.server_clock`, and the sweep deselects them. Two of them assert the
-database's clock on purpose (the `CURRENT_DATE` server default; the audit trigger's `executed_at`).
+Those tests carry `@pytest.mark.server_clock`, and the sweep deselects them. Four of them assert the
+database's clock on purpose (the `CURRENT_DATE` server default; the audit trigger's `executed_at`;
+the stamp arm and the up-then-down round trip in
+`test_a_transfer_side_knows_its_own_day_migration.py`, which grade a Paid press's day against its
+own audit row's `executed_at`).
 
 **The marker is a statement about the instrument, never a way to quiet a failure.** Every marked
 test still runs in ordinary CI. A test earns the marker only after its failure has been traced to

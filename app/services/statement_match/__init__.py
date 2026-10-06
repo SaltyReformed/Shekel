@@ -107,9 +107,10 @@ The public surface, and what each piece is for:
   (``applied_by_rule``, **R-GT**) rather than flashed, so every filed line
   still carries :func:`release_match`'s one-click undo after a reload.
 * :func:`destinations_for` -- the budget lines that door may write into, which
-  is the SAME set the screen offers, and :func:`matched_subjects` /
-  :func:`unmatched_destinations`, which are the one statement of what an
-  accepted match has already claimed.  **What this exports is what something
+  is the SAME set the screen offers, and :func:`current_destinations`, which
+  narrows it to the rows that still take a purchase as a pass has left them;
+  :func:`matched_subjects` is the one statement of what an accepted match has
+  already claimed.  **What this exports is what something
   outside the package imports**: ``AppliedItem``, ``RefusedItem``,
   ``MatchedSubjects`` and ``unmatched_rows`` were exported for symmetry and had
   no importer at all, which is a surface nobody asked for.
@@ -205,7 +206,6 @@ from ._container import MintedEnvelopes
 from ._candidates import (
     candidates_for,
     matched_subjects,
-    unmatched_destinations,
 )
 from ._create import create_purchase_from_line
 from ._creations import (
@@ -221,7 +221,7 @@ from ._creations import (
     parse_place_token,
     place_token,
 )
-from ._destinations import destinations_for
+from ._destinations import current_destinations, destinations_for
 from ._income import record_income_from_line
 from ._leftovers import CreatableLine, RecordableInflow
 from ._offers import (
@@ -412,6 +412,7 @@ __all__ = [
     "rules_worth_offering",
     "create_purchase_from_line",
     "record_income_from_line",
+    "current_destinations",
     "destinations_for",
     "parse_place_token",
     "place_token",
@@ -435,5 +436,4 @@ __all__ = [
     "rule_creating",
     "rule_naming",
     "state_rules",
-    "unmatched_destinations",
 ]

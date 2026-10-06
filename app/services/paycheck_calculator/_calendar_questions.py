@@ -141,11 +141,17 @@ def _is_third_paycheck(month_ordinal):
     return month_ordinal >= 3
 
 
-def _get_cumulative_wages(basis, period):
-    """Return the gross this owner has been paid this year before *period*.
+def _get_cumulative_wages(basis, payday):
+    """Return the gross this owner has been paid this year before *payday*.
 
     What the FICA Social Security wage-base cap and the Medicare surtax
-    threshold are measured against, on BOTH tax paths (CRIT-03 / F-037).
+    threshold are measured against, for the paycheck priced and, since plan
+    step **salary:S11-c-2c**, for the pay stub that prices it: the formulas
+    price the stub's own paycheck at the year-to-date in force on ITS payday
+    (:mod:`._stubs`).  **It takes a payday rather than a period** for the
+    reason :func:`_month_ordinal` does: a stub is dated, not a period, and a
+    stub whose payday later left the pay record (ruling **R-SAL53**) is
+    still summed to.
 
     **The paydays come from ``basis.calendar``** since plan step
     **balance:X-bh-1**, through
@@ -183,17 +189,17 @@ def _get_cumulative_wages(basis, period):
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` -- its
             salary, raise set and lines price each earlier paycheck and its
             calendar supplies the paydays.
-        period: The period being priced.  Its payday bounds the sum, which is
-            STRICTLY before it, and its year is the window.
+        payday: The day being priced.  It bounds the sum, which is STRICTLY
+            before it, and its year is the window.
 
     Returns:
         The summed gross, ``ZERO`` for the year's first paycheck.
     """
     cumulative = ZERO
 
-    for payday in paydays_in_year_before(basis.calendar, period.start_date):
-        base = basis.base_pay_on(payday).per_paycheck
-        _taxable, gross = priced_gross(_LineContext(basis, payday, base))
+    for earlier in paydays_in_year_before(basis.calendar, payday):
+        base = basis.base_pay_on(earlier).per_paycheck
+        _taxable, gross = priced_gross(_LineContext(basis, earlier, base))
         cumulative += gross
 
     return cumulative

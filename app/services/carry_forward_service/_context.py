@@ -63,6 +63,7 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     # rows, which the two paths de-duplicated back to transfers by
     # ``transfer_id`` -- walking the parents is ruling R-BAL86's own words.
     transfers: List[Transfer]
+    # The source period's rows, partitioned, each in id order (leaf 5c-2c-2).
     envelope_txns: List[Transaction]
     discrete_txns: List[Transaction]
     # The owner's pay-period schedule, its write window narrowed to the ONE
@@ -196,6 +197,15 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             is_projected_clause(Transaction),
             Transaction.is_deleted.is_(False),
         )
+        # ORDERED, as the transfers below are: the modal lists the rows in
+        # this order and names a match several envelopes share under the
+        # FIRST of them (``_preview._what_each_close_frees``, plan step
+        # ``credit_card:CC-5-4a-5``, leaf 5c-2c-2), so an unordered read could
+        # move that sentence between the modal and its redraw (the leaf's
+        # review, L5).  What the batch writes does not depend on it -- the
+        # order was arbitrary until then -- only which row a refusal names
+        # first.
+        .order_by(Transaction.id)
         .all()
     )
 

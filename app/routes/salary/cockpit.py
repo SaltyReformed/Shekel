@@ -4,7 +4,8 @@ Shekel Budget App -- Salary route package: cockpit + anatomy fragment.
 The salary section's landing page (``GET /salary``): a single cockpit for
 the primary active profile with a net-per-paycheck hero, chip row,
 net-pay staircase chart, the focused period's paycheck anatomy
-(composition + deductions), the raise rules, and calibration status.
+(composition + deductions), the raise rules, and the strip that links the
+profile's pay stubs, which price each paycheck's taxes.
 Replaces the removed profile-list page.  The anatomy card is refreshed in
 place by :func:`anatomy` as the user steps between periods (HTMX
 fragment).
@@ -23,6 +24,7 @@ from flask import abort, render_template, request
 from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
+from app.utils.digit_strings import integer_arg
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services.balance_at import BalanceContext
@@ -34,12 +36,6 @@ from app.routes.salary._helpers import _get_owned_profile_and_period
 # are template-facing labels only (no business logic keys off them).
 _EMPTY_NO_PROFILES = "no_profiles"
 _EMPTY_NO_PERIODS = "no_periods"
-
-
-def _calibration_active(profile):
-    """Return True when the profile has an active pay-stub calibration."""
-    calibration = profile.calibration
-    return calibration is not None and calibration.is_active
 
 
 def _base_cockpit_context():
@@ -63,7 +59,6 @@ def _base_cockpit_context():
         "prev_period_id": None,
         "next_period_id": None,
         "raises": [],
-        "calibration": None,
         "chart_json": None,
         "salary_path_json": None,
         "salary_path": None,
@@ -85,7 +80,7 @@ def _select_profile(profiles):
     Returns:
         The selected :class:`SalaryProfile`.
     """
-    requested = request.args.get("profile", type=int)
+    requested = request.args.get("profile", type=integer_arg)
     if requested is None:
         return profiles[0]
     profile = get_or_404(SalaryProfile, requested)
@@ -119,7 +114,7 @@ def _select_period(calendar, current_period):
     Returns:
         The selected :class:`~app.services.pay_calendar.DerivedPeriod`.
     """
-    requested = request.args.get("period", type=int)
+    requested = request.args.get("period", type=integer_arg)
     if requested is None:
         return (
             current_period if current_period is not None
@@ -136,7 +131,7 @@ def _select_period(calendar, current_period):
     return period
 
 
-def _anatomy_context(profile, period, periods, paychecks, calibration_active):
+def _anatomy_context(profile, period, periods, paychecks):
     """Build the shared context the ``_anatomy.html`` partial renders.
 
     Shared by the cockpit's initial render and the :func:`anatomy`
@@ -154,7 +149,6 @@ def _anatomy_context(profile, period, periods, paychecks, calibration_active):
             :class:`~app.services.income_service.ProfilePaychecks` of
             *profile*: the focused period's breakdown and its predecessor's
             banner are both read from it.
-        calibration_active: Whether the profile's calibration is active.
 
     Returns:
         A dict with ``profile``, ``focused_period``, ``is_third_paycheck``,
@@ -190,9 +184,7 @@ def _anatomy_context(profile, period, periods, paychecks, calibration_active):
         "focused_period": period,
         "is_third_paycheck": breakdown.period.is_third_paycheck,
         "raise_event": breakdown.period.raise_event if show_raise else "",
-        "composition": salary_cockpit_service.build_composition(
-            breakdown, calibration_active,
-        ),
+        "composition": salary_cockpit_service.build_composition(breakdown),
         "line_rows": salary_cockpit_service.build_line_rows(breakdown),
         "prev_period_id": prev_id,
         "next_period_id": next_id,
@@ -294,7 +286,7 @@ def cockpit():
     calendar = ctx.calendar()
     periods = calendar.saved()
     current_period = calendar.period_containing(today)
-    requested_period_id = request.args.get("period", type=int)
+    requested_period_id = request.args.get("period", type=integer_arg)
     # Block when there is no period to focus: no periods at all, or no
     # period covering today and none explicitly requested.  A lone stale
     # anchor period (no current period) is not a usable biweekly schedule,
@@ -306,7 +298,6 @@ def cockpit():
         context["profiles"] = profiles
         context["profile"] = profile
         context["raises"] = profile.raises
-        context["calibration"] = profile.calibration
         return render_template("salary/cockpit.html", **context)
 
     focused_period = _select_period(calendar, current_period)
@@ -327,14 +318,12 @@ def cockpit():
     # ``breakdowns`` above.
     context.update(_anatomy_context(
         profile, focused_period, periods, ctx.paychecks().for_profile(profile),
-        _calibration_active(profile),
     ))
     context.update({
         "profiles": profiles,
         "current_period": current_period,
         "chips": salary_cockpit_service.build_chips(pairs, focused_breakdown, today),
         "raises": profile.raises,
-        "calibration": profile.calibration,
         "chart_json": json.dumps(_chart_jsonable(chart_series)),
         "salary_path_json": json.dumps(_salary_path_jsonable(salary_path)),
         "salary_path": salary_path,
@@ -369,7 +358,6 @@ def anatomy(profile_id, period_id):
     periods = calendar.saved()
     context = _anatomy_context(
         profile, period, periods, ctx.paychecks().for_profile(profile),
-        _calibration_active(profile),
     )
     # ``oob=True`` marks the deductions card as an out-of-band swap so
     # stepping updates it alongside the composition card (the primary

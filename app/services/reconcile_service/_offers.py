@@ -17,11 +17,13 @@ Architecture (``CLAUDE.md``):
 """
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
+from app.services.match_withdrawal import MatchWithdrawal
 from app.services.pay_calendar import DerivedPeriod
+from app.services.reconcile_service._named import NamedLines, SharedMatch
 from app.services.reconcile_service._rows import Statement
 
 
@@ -172,13 +174,19 @@ class TickForm(enum.Enum):
     which is the property R-BAL145 made two fields to keep; the two row scopes
     partition on the row's account, so one posted id lands in at most one.
 
-    Each value is ``(ids field, amount-box prefix, control-id prefix)``; the
-    third keeps a row's checkbox and a leg's apart in the page's DOM, where
-    one id number can name both.
+    Each value is ``(ids field, amount-box prefix, control-id prefix,
+    shown-lines prefix)``; the third keeps a row's checkbox and a leg's apart
+    in the page's DOM, where one id number can name both.  The fourth names
+    the hidden field a tick posts the bank lines its caption printed under
+    (plan step ``credit_card:CC-5-4a-5``, rulings **R-CC76** /
+    **R-CC127**), and only a ROW has one: a leg holds no purchase to settle
+    from, so once ruling **R-CC125** refuses a typed ``$0.00`` box no
+    transfer tick the panel could caption takes a payment out of its
+    matches, and a leg's tick names nothing and posts no field.
     """
 
-    ROW = ("transaction_ids", "settled_amount-", "t")
-    LEG = ("transfer_ids", "transfer_amount-", "l")
+    ROW = ("transaction_ids", "settled_amount-", "t", "shown_lines-")
+    LEG = ("transfer_ids", "transfer_amount-", "l", None)
 
     @property
     def ids_field(self) -> str:
@@ -194,6 +202,15 @@ class TickForm(enum.Enum):
     def control_prefix(self) -> str:
         """Return the prefix a tick's checkbox id carries before its id."""
         return self.value[2]
+
+    @property
+    def shown_prefix(self) -> "str | None":
+        """Return the prefix a tick's posted-lines field carries before its id.
+
+        ``None`` for :attr:`LEG`, whose tick names no line (the class
+        docstring).
+        """
+        return self.value[3]
 
     @classmethod
     def of(cls, key) -> "TickForm":
@@ -233,12 +250,16 @@ class Section:
 class OutstandingTransaction:  # pylint: disable=too-many-instance-attributes
     """A settle tick offered -- an envelope's close, a bill, or a transfer's leg.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- the eighth is
-    :attr:`closes_envelope` (ruling **R-CC119**), and these eight ARE one
-    tick: what it names, when it lands, what it books and what the statement
-    shows, whether a figure may be typed, which tally and section it counts
-    in, and what the tick DOES.  The last cannot be read off the section once
-    a section names where a row is planned (``OfferKind.SETTLEMENT``), and
+    Pylint: ``too-many-instance-attributes`` (10/7) -- the eighth is
+    :attr:`closes_envelope` (ruling **R-CC119**), the ninth
+    :attr:`withdraws` (plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC76**) and the tenth :attr:`shared` (leaf 5c-2c-1, ruling
+    **R-CC135**), and these ten ARE one tick: what it names, when it lands,
+    what it books and what the statement shows, whether a figure may be
+    typed, which tally and section it counts in, and what the tick DOES --
+    to a budget line, and to the bank lines a match explains, alone and with
+    other ticks.  None of the last three can be read off the section once a
+    section names where a row is planned (``OfferKind.SETTLEMENT``), and
     grouping any of the others into a sub-value would only re-spell the
     template's reads of them.
 
@@ -319,6 +340,34 @@ class OutstandingTransaction:  # pylint: disable=too-many-instance-attributes
             ``ENVELOPE`` (``_transactions._offer_kind``), so on a row's own
             list it and :attr:`kind` cannot part; a transfer leg's is
             ``False``, since a leg is never purchase-tracked.
+        withdraws: What ticking it would take out of its MATCHES -- the
+            accepted acts left naming no app row and the bank lines they
+            free (:class:`~app.services.match_withdrawal.MatchWithdrawal`),
+            read through the act's own twin by the arm's reader (plan step
+            ``credit_card:CC-5-4a-5``, ruling **R-CC76**: the panel names
+            what a tick would free before the press, from the same read it
+            acts on).  Read for one shape: a row on this account settling
+            FROM its purchases while holding the payment a revert kept
+            (``_transactions._settle_one``), which after rulings **R-CC125**
+            and **R-CC126** is the one tick of a FRESH page the panel can
+            caption; ``None`` for every other.  It holds the matches this
+            tick empties BY ITSELF; one it empties only with other ticks is
+            :attr:`shared`'s.  One tick it does not read can still take a
+            payment off, uncaptioned (``_transactions._settle_one``: ledger
+            row **BAL-596**).  The panel prints the caption and posts the
+            lines it names (:attr:`shown_field`) only where it frees one.
+        shared: The matches this tick withdraws only TOGETHER with other rows
+            on the same list (leaf 5c-2c-1, ruling **R-CC135**,
+            :class:`~._named.SharedMatch`) -- read in the same one pass as
+            :attr:`withdraws`; empty for every tick but that same shape, and
+            for every leg.
+
+    :attr:`withdraws` and :attr:`shared` DEFAULT to a tick that frees
+    nothing: the one arm that reads them adds them to the offer it built
+    (``_transactions.outstanding_transactions``), and a tick an arm leaves
+    at the default names no line, so a save of it that would free one is
+    refused (ruling **R-CC127**: *"A button with no warning sends
+    nothing"*).
     """
 
     key: "int | tuple[int, int]"
@@ -329,6 +378,8 @@ class OutstandingTransaction:  # pylint: disable=too-many-instance-attributes
     is_income: bool
     kind: OfferKind
     closes_envelope: bool
+    withdraws: MatchWithdrawal | None = None
+    shared: "tuple[SharedMatch, ...]" = ()
 
     @property
     def tick_form(self) -> TickForm:
@@ -371,6 +422,17 @@ class OutstandingTransaction:  # pylint: disable=too-many-instance-attributes
             :attr:`TickForm.control_prefix` followed by :attr:`tick_id`.
         """
         return f"{self.tick_form.control_prefix}{self.tick_id}"
+
+    @property
+    def shown_field(self) -> "str | None":
+        """Return the field name this tick posts its caption's bank lines under.
+
+        Returns:
+            :attr:`TickForm.shown_prefix` followed by :attr:`tick_id`, or
+            ``None`` for a leg, whose tick names no line.
+        """
+        prefix = self.tick_form.shown_prefix
+        return None if prefix is None else f"{prefix}{self.tick_id}"
 
 
 @dataclass(frozen=True)
@@ -794,6 +856,19 @@ class ReconcileSubmission:
             ticks' amount boxes, passed through on the same terms as
             :attr:`corrections`.  A field of its own because a transfer id and
             a row id can be the same number.
+        named: What the panel's captions NAMED, as the page posted them
+            back (:class:`~._named.NamedLines`, plan step ``credit_card:CC-5-4a-5``,
+            rulings **R-CC76** / **R-CC127** / **R-CC135**): the save's one
+            press is graded against :meth:`~._named.NamedLines.for_ticks` over
+            :attr:`transaction_ids` (``_assemble.record_reconciliation``).
+            Owner input and never a scope: the press only compares it, whole,
+            with what the save frees.  A transfer's tick names none, so there
+            is no transfer twin.  **Defaults to EMPTY -- every tick named
+            nothing**, the default every settle verb under it already has
+            (``None``: nothing shown) for the ruled reason: *"A button with no
+            warning sends nothing"* (ruling **R-CC127**), so a submission
+            built without it refuses any tick that would free a line rather
+            than freeing one unannounced.
     """
 
     statement: Statement
@@ -802,3 +877,4 @@ class ReconcileSubmission:
     corrections: "dict[int, Decimal]"
     transfer_ids: "set[int]"
     transfer_corrections: "dict[int, Decimal]"
+    named: NamedLines = field(default_factory=NamedLines)

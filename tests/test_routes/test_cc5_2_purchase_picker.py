@@ -604,6 +604,25 @@ class TestTheChipIsOneRuleOverTheRowAndItsMovements:
         assert cell.count("account_chips(") == 1
 
 
+def _folded(text):
+    """Return *text* with each expanded ``IN (...)`` bind list folded to one spelling.
+
+    SQLAlchemy renders ``column.in_(ids)`` as ``IN (%(name_1)s::INTEGER,
+    %(name_2)s::INTEGER, ...)`` -- one bind per id, each with the bind cast
+    the psycopg 3 dialect writes (psycopg2's wrote none; plan step
+    balance:X-dj) -- so the SAME statement over more ids has a longer text.
+    Folded, two renders' statements compare as statements rather than as id
+    counts (plan step credit_card:CC-5-4a-5b).  The cast is optional and
+    must repeat on every bind of one list.
+    """
+    return re.sub(
+        r"IN \(%\((\w+?)_\d+\)s((?:::[\w ]+(?:\([\d, ]+\))?)?)"
+        r"(?:, %\(\1_\d+\)s\2)*\)",
+        r"IN (%(\1_*)s\2)",
+        text,
+    )
+
+
 class TestTheChipsAccountReadCostsNoQuery:
     """The eager-load measurement: a movement on a set member reads its account from the identity map."""
 
@@ -681,8 +700,19 @@ class TestTheChipsAccountReadCostsNoQuery:
         # leaf): the one extra statement is the account's load by primary
         # key, bound to the card's id -- anything else with the same count
         # would be a per-render read this test was misattributing.
-        seen = [text for text, _ in before]
-        extra = [(text, params) for text, params in after if text not in seen]
+        #
+        # An expanded ``IN (...)`` bind list is FOLDED before the texts are
+        # compared (plan step credit_card:CC-5-4a-5b, ruling R-CC133 under
+        # rule 5, "Fold id lists"): the purchase list's one read of which
+        # purchases a match names binds every purchase id on the page, so its
+        # text grows with them while it stays ONE statement per render --
+        # measured 1 id before the swipes and 3 after.  The count and the
+        # account-load attribution below are unchanged.
+        seen = [_folded(text) for text, _ in before]
+        extra = [
+            (text, params) for text, params in after
+            if _folded(text) not in seen
+        ]
         assert len(after) == len(before) + 1 and len(extra) == 1, (
             f"{len(before)} statements without the swipes, {len(after)} with two "
             f"on an archived card; extra by text: {[t[:80] for t, _ in extra]}"

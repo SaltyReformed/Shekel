@@ -184,6 +184,10 @@ def _build_partial_context(
     entry_lists = build_entry_lists_dict(
         transactions, budgets, {view.period.period_id: view.period},
         resolve_owner_cash_flow_set(owner_id),
+        # The COMPANION is looking, never the owner whose rows these are, so
+        # no purchase list here names the owner's bank lines (rulings
+        # R-CC130 / R-CC132, plan step ``credit_card:CC-5-4a-5``).
+        current_user.id,
     )
     return {
         "periods": [view.period],

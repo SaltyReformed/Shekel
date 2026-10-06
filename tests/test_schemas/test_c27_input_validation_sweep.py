@@ -118,7 +118,7 @@ class TestMarkDoneSchema:
         The record's figure (``budget.transaction_entries.amount``, the
         covering movement's) is ``numeric(12, 2)``, so
         anything from ``10_000_000_000.00`` up raises
-        ``psycopg2.errors.NumericValueOutOfRange`` at flush.  Nothing
+        ``NumericValueOutOfRange`` (SQLSTATE 22003) at flush.  Nothing
         catches that, so before plan step X-f2-c3 it was a 500 on both
         doors this schema serves -- and on the reconcile panel, which
         commits a whole statement walk at once, it discarded every

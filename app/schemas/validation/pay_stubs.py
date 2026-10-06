@@ -34,6 +34,11 @@ from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 #: forward projection (``app.utils.dates``, whose constants these are).
 _STUB_PAYDAY_RANGE = validate.Range(min=CALENDAR_DATE_MIN, max=CALENDAR_DATE_MAX)
 
+#: A stub's base pay and the gross it prints are above zero: the base like its
+#: column (``ck_pay_stubs_positive_base_pay``), and the gross because it is the
+#: base plus earnings that are never negative.
+_STUB_PAY_RANGE = validate.Range(min=Decimal("0"), min_inclusive=False, max=Decimal("10000000"))
+
 
 class PayStubPaydaySchema(BaseSchema):
     """Validates the entry flow's FIRST step: the stub's payday alone.
@@ -50,11 +55,12 @@ class PayStubPaydaySchema(BaseSchema):
 class PayStubSchema(BaseSchema):
     """Validates a stub's own fields on the entry form's second step.
 
-    ``printed_net`` is the net the stub prints, typed once as a CHECK and
-    never stored (ruling **R-SAL42**); ``base_pay`` is above zero like the
-    column (``ck_pay_stubs_positive_base_pay``).  The edit form's
-    ``version_id`` is not here: the edit route reads it FIRST, before any
-    field, so a stale form is turned away even when its fields are invalid.
+    ``printed_gross`` and ``printed_net`` are the gross and net the stub
+    prints, each typed once as a CHECK and never stored (rulings **R-SAL99**
+    and **R-SAL42**); ``base_pay`` is above zero like the column
+    (``ck_pay_stubs_positive_base_pay``).  The edit form's ``version_id`` is
+    not here: the edit route reads it FIRST, before any field, so a stale form
+    is turned away even when its fields are invalid.
     """
 
     @pre_load
@@ -64,10 +70,10 @@ class PayStubSchema(BaseSchema):
 
     payday = fields.Date(required=True, validate=_STUB_PAYDAY_RANGE)
     base_pay = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(
-            min=Decimal("0"), min_inclusive=False, max=Decimal("10000000"),
-        ),
+        required=True, places=2, as_string=True, validate=_STUB_PAY_RANGE,
+    )
+    printed_gross = fields.Decimal(
+        required=True, places=2, as_string=True, validate=_STUB_PAY_RANGE,
     )
     printed_net = fields.Decimal(
         required=True, places=2, as_string=True,

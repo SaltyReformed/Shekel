@@ -17,9 +17,15 @@ subject named twice, a row that has MOVED since the screen described it, and
 an ATTRIBUTION naming a row the submission does not carry (plan step
 ``bank_import:X-gj-3a``).
 The refusals in :mod:`._accept` are about the submission's SHAPE instead -- an
-empty side, a parent matched beside its own child -- and the ones in
-:mod:`._variance` are about the two sides DISAGREEING, which since plan step
-``bank_import:X-f6d-4`` includes the figure that is not the row's to state.
+empty side -- and about what the act's own writes did to a member's price, and
+the ones in :mod:`._variance` are about the two sides DISAGREEING, which since
+plan step ``bank_import:X-f6d-4`` includes the figure that is not the row's to
+state.  *(:mod:`._accept` also refused a parent matched beside its own child
+until plan step ``credit_card:CC-5-4a-5``'s leaf 5c-2c-1 deleted that refusal
+as unreachable -- finding **CC-386**, ruling **R-CC144** -- because a row
+holding a purchase is worth ``$0.00`` to the offer (ruling **R-BAL81**), so
+this module refuses it as a row this pass could not offer or can no longer
+price.)*
 
 *(This module's count is stated because this arc has shipped a taxonomy that
 did not add up before; if an eighth refusal is added here, this sentence is
@@ -482,16 +488,20 @@ def resolve_rows(
 
     **That third bullet replaces an argument adversarial financial review
     measured FALSE on 2026-08-19.**  The claim was that only a parent/child
-    pairing can move a figure another item names, and that
-    :func:`_reject_parent_and_its_own_purchase` refuses it.  But settling a
-    matched purchase runs ``entry_service.update_entry``, which re-derives the
-    envelope's CC Payback through ``sync_entry_payback`` and WRITES its
-    ``estimated_amount`` -- and that payback is a candidate on the same
-    account, a SIBLING of the purchase rather than its parent, invisible to
-    that guard.  Measured: a `$60.00` payback dropping to `$50.00` mid-pass,
-    with the second match accepted against the stale `$60.00` and the ledger
-    booking `$50.00` for a `-$60.00` bank line.  Re-pricing is total where an
-    enumeration of sibling writers is one writer from being wrong again.
+    pairing can move a figure another item names, and that the accept door's
+    guard against an envelope named beside its own purchase refuses it.  But
+    settling a matched purchase runs ``entry_service.update_entry``, which
+    re-derives the envelope's CC Payback through ``sync_entry_payback`` and
+    WRITES its ``estimated_amount`` -- and that payback is a candidate on the
+    same account, a SIBLING of the purchase rather than its parent, invisible
+    to that guard.  Measured: a `$60.00` payback dropping to `$50.00`
+    mid-pass, with the second match accepted against the stale `$60.00` and
+    the ledger booking `$50.00` for a `-$60.00` bank line.  Re-pricing is
+    total where an enumeration of sibling writers is one writer from being
+    wrong again.  *(The guard is deleted since plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2c-1 -- finding **CC-386**, ruling
+    **R-CC144** -- because this function refuses the pairing first: a row
+    holding a purchase re-prices to nothing, ruling **R-BAL81**.)*
 
     Args:
         submission: What the owner accepted.

@@ -29,32 +29,10 @@ import time
 from datetime import datetime, timezone
 
 import pyotp
-from flask import g
 
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
-
-
-def _reset_login_cache():
-    """Drop ``g._login_user`` so the next request re-runs ``load_user``.
-
-    Flask-Login caches the loaded user on ``g._login_user`` the first
-    time it is requested per app context.  In production each HTTP
-    request is its own app context, so the cache is effectively per-
-    request.  In the test suite the autouse ``db`` fixture wraps every
-    test in a single ``app.app_context()``, so subsequent
-    ``test_client`` calls re-use the same ``g`` and would keep
-    returning the user that was cached on the very first request --
-    defeating the entire point of the multi-client tests below.
-
-    Mirror of the helper in
-    ``tests/test_adversarial/test_session_invalidation.py``.  Kept
-    duplicated rather than imported because each adversarial file
-    exercises distinct invariants and a shared helper would couple
-    them at the wrong layer.
-    """
-    g.pop("_login_user", None)
 
 
 def _enable_mfa_with_known_secret(user_id, last_step=None):
@@ -123,12 +101,10 @@ class TestTotpReplayPreventionAtMfaVerify:
             captured_code = pyotp.TOTP(secret).at(now_unix)
 
             # First attempt: legitimate user logs in.
-            _reset_login_cache()
             client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             first = client.post("/mfa/verify", data={
                 "totp_code": captured_code,
             }, follow_redirects=False)
@@ -138,19 +114,12 @@ class TestTotpReplayPreventionAtMfaVerify:
 
             # Second attempt from a fresh client (the "attacker"):
             # the captured code MUST be rejected even though the +-1
-            # drift window has not elapsed.  ``_reset_login_cache``
-            # before each request because the previous request left
-            # ``g._login_user`` populated -- without the resets the
-            # attacker's /login would short-circuit to /dashboard
-            # (current_user is "still" authenticated) and never set
-            # up the pending MFA state that /mfa/verify expects.
+            # drift window has not elapsed.
             attacker = app.test_client()
-            _reset_login_cache()
             attacker.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             second = attacker.post("/mfa/verify", data={
                 "totp_code": captured_code,
             }, follow_redirects=False)
@@ -188,12 +157,10 @@ class TestTotpReplayPreventionAtMfaVerify:
             step_s_unix = int(time.time())
             code_s = pyotp.TOTP(secret).at(step_s_unix)
             c1 = app.test_client()
-            _reset_login_cache()
             c1.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             r1 = c1.post("/mfa/verify", data={
                 "totp_code": code_s,
             }, follow_redirects=False)
@@ -214,12 +181,10 @@ class TestTotpReplayPreventionAtMfaVerify:
                 "produced the same OTP -- regenerate the secret."
             )
             c2 = app.test_client()
-            _reset_login_cache()
             c2.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             r2 = c2.post("/mfa/verify", data={
                 "totp_code": code_s1,
             }, follow_redirects=False)
@@ -256,12 +221,10 @@ class TestTotpReplayPreventionAtMfaVerify:
             captured_code = pyotp.TOTP(secret).at(now_unix)
 
             # First call -- legitimate -- consumes the step.
-            _reset_login_cache()
             client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             client.post("/mfa/verify", data={
                 "totp_code": captured_code,
             })
@@ -269,12 +232,10 @@ class TestTotpReplayPreventionAtMfaVerify:
             # Second call -- replay from a fresh client.  Capture
             # logs at WARNING so the structured event surfaces.
             attacker = app.test_client()
-            _reset_login_cache()
             attacker.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             with caplog.at_level(logging.WARNING, logger="app.routes.auth"):
                 attacker.post("/mfa/verify", data={
                     "totp_code": captured_code,
@@ -309,12 +270,10 @@ class TestTotpReplayPreventionAtMfaVerify:
         with app.app_context():
             _enable_mfa_with_known_secret(seed_user["user"].id)
 
-            _reset_login_cache()
             client.post("/login", data={
                 "email": "test@shekel.local",
                 "password": "testpass",
             })
-            _reset_login_cache()
             with caplog.at_level(logging.WARNING, logger="app.routes.auth"):
                 response = client.post("/mfa/verify", data={
                     "totp_code": "000000",

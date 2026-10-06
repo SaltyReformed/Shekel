@@ -18,7 +18,14 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import match_withdrawal, movement_removal, posting_service
+from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
+from app.services import (
+    match_withdrawal,
+    movement_removal,
+    posting_service,
+    transfer_legs,
+)
 from app.services.transfer_service._loan_posting import (
     _pays_a_loan,
     _resync_loan_after_payment_left,
@@ -34,7 +41,7 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def delete_transfer(transfer_id, user_id, soft=False):
+def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     """Delete a transfer and its shadow transactions.
 
     Args:
@@ -45,6 +52,14 @@ def delete_transfer(transfer_id, user_id, soft=False):
                      physically remove the transfer; the ON DELETE
                      CASCADE FK on transactions.transfer_id removes
                      both shadows automatically.
+        press:       The save's press over the bank lines the door's page
+                     named before a HARD delete, or ``None`` (rulings
+                     R-CC127, R-CC135).  Every caller passes the default,
+                     ``None``: no page captions this
+                     delete, and they reach only a pair holding no payment
+                     (ruling R-CC65), save a hand-built request to the
+                     instance DELETE no template renders -- refused if it
+                     would free a line.
 
     Returns:
         The soft-deleted Transfer if soft=True, or None if hard-deleted.
@@ -113,6 +128,14 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # ``transfer_recurrence`` restores soft-deleted shadows during a maintain
     # pass, so a withdrawal here would destroy an accepted act that a shipped
     # button puts the rows back for (adversarial review, 2026-08-25).
+    #
+    # **Which movements go is asked of ``transfer_legs``** (leaf
+    # ``balance:X-bi-6-4d-1``): every entry the transfer holds, under any
+    # shadow live or dead -- the scope ``fk_transaction_entries_transaction_id``
+    # would refuse the delete for -- through the one join, so ``X-bi-6-4d``'s
+    # re-parent moves this collection with it.  It read
+    # ``shadow.entries`` per shadow until then.  In movement-id order, so the
+    # act walks them deterministically.
     shadows = (
         db.session.query(Transaction)
         .filter_by(transfer_id=transfer_id)
@@ -120,8 +143,10 @@ def delete_transfer(transfer_id, user_id, soft=False):
     )
     if not soft:
         movement_removal.remove_movements(
-            [movement for shadow in shadows for movement in shadow.entries],
-            user_id, because=match_withdrawal.LEFT_THE_BOOKS,
+            transfer_legs.held_transfer_entries(Transfer.id == transfer_id)
+            .order_by(TransactionEntry.id)
+            .all(),
+            user_id, because=match_withdrawal.LEFT_THE_BOOKS, press=press,
             rows_leaving=shadows,
         )
         db.session.flush()

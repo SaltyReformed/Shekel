@@ -1,4 +1,4 @@
-"""Salary, paycheck-line, calibration and pay-stub-checkpoint schemas."""
+"""Salary, paycheck-line and pay-stub-checkpoint schemas."""
 
 
 from datetime import datetime, timezone
@@ -64,7 +64,7 @@ class SalaryProfileCreateSchema(BaseSchema):
     # pays it from (plan step salary:X-av-3a, rulings R-SAL59 and R-SAL61:
     # "Pay is only ever typed per paycheck").  Whether the day is a payday, and
     # not later than the owner's next one, is the service's question
-    # (``pay_list_service``, through ``pay_stub_service.payday_refusal_for_door``:
+    # (``pay_list_service``, through ``salary_paydays.payday_refusal_for_door``:
     # rulings R-SAL90 and R-SAL93).
     pay_amount = fields.Decimal(
         required=True, places=2, as_string=True, validate=_PAY_AMOUNT_RANGE,
@@ -101,6 +101,10 @@ class SalaryProfileCreateSchema(BaseSchema):
         load_default="0", places=2, as_string=True,
         validate=_NON_NEGATIVE_MONETARY,
     )
+    # What the job's pay stub prints as its gross (plan step salary:S11-c-2b,
+    # rulings R-SAL102 and R-SAL105): "no", the column's own default, unless
+    # the form says otherwise.
+    stub_gross_includes_after_tax = fields.Boolean(load_default=False)
 
 
 class SalaryProfileUpdateSchema(BaseSchema):
@@ -139,6 +143,11 @@ class SalaryProfileUpdateSchema(BaseSchema):
         places=2, as_string=True,
         validate=_NON_NEGATIVE_MONETARY,
     )
+    # Absent leaves the stored answer alone, like every field above.  The
+    # form renders it as a two-option select rather than a checkbox because
+    # of exactly that: an unticked checkbox submits nothing, so "no" could
+    # never be saved over a "yes" (plan step salary:S11-c-2b, R-SAL105).
+    stub_gross_includes_after_tax = fields.Boolean()
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))
@@ -566,162 +575,6 @@ class PaycheckLineUpdateSchema(PaycheckLineCreateSchema):
     """
 
     version_id = RowId(validate=validate.Range(min=1))
-
-
-class CalibrationSchema(BaseSchema):
-    """Validates POST data for paycheck calibration from a real pay stub."""
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    actual_gross_pay = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
-    )
-    actual_federal_tax = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_state_tax = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_social_security = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_medicare = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    pay_stub_date = fields.Date(required=True)
-    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
-
-
-class CalibrationConfirmSchema(BaseSchema):
-    """Validates POST data for the calibration confirm step.
-
-    Includes the original pay stub fields plus the derived effective
-    rates passed via hidden form fields from the preview page.
-
-    HIGH-03 / Q-25 / E-20 (audit 2026-05-19): the FICA cross-check below
-    enforces that the posted ``effective_ss_rate`` and
-    ``effective_medicare_rate`` pair are arithmetically consistent with
-    the posted ``actual_social_security`` / ``actual_medicare`` /
-    ``actual_gross_pay`` triple within a one-cent equivalent tolerance.
-    The federal and state divisor is the profile-derived taxable base
-    (gross minus current pre-tax deductions), which is not available at
-    the schema layer; the route performs the equivalent federal/state
-    cross-check after computing taxable so the four-rate pair is fully
-    pinned end-to-end.  The cross-check rejects tampered or stale
-    two-step submissions whose stored rate would otherwise multiply
-    against future per-period gross to produce silently wrong
-    withholding -- the failure mode the audit documented under HIGH-03.
-    """
-
-    FICA_TOLERANCE = Decimal("0.01")
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    actual_gross_pay = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0, min_inclusive=False),
-    )
-    actual_federal_tax = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_state_tax = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_social_security = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_medicare = fields.Decimal(
-        required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    effective_federal_rate = fields.Decimal(
-        required=True, places=10, as_string=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    effective_state_rate = fields.Decimal(
-        required=True, places=10, as_string=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    effective_ss_rate = fields.Decimal(
-        required=True, places=10, as_string=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    effective_medicare_rate = fields.Decimal(
-        required=True, places=10, as_string=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    pay_stub_date = fields.Date(required=True)
-    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
-
-    @validates_schema
-    def validate_fica_rate_consistency(self, data, **kwargs):
-        """Cross-check posted FICA rate pair against posted actual_* pair.
-
-        For each FICA line (Social Security, Medicare), the calibrated
-        effective rate must satisfy ``rate * actual_gross_pay ==
-        actual_<line>`` to within a one-cent absolute tolerance.  This
-        is the schema-layer half of the E-20 immutable-snapshot
-        invariant; the route layer performs the federal/state half once
-        the profile-derived taxable base is available.
-
-        The tolerance is one cent of expected withholding, which covers
-        the worst-case rounding drift from storing the rate to
-        ``Numeric(12, 10)`` (rate precision 1e-10 multiplied by a
-        realistic biweekly gross of <= $10^4 is bounded by $10^{-6},
-        three orders of magnitude under one cent).
-
-        Raises:
-            ValidationError: If either FICA rate is inconsistent with
-                the corresponding actual_* pair.  The error is attached
-                to the offending ``effective_*_rate`` key so the route
-                layer's field-level handler surfaces the right input.
-        """
-        gross = data.get("actual_gross_pay")
-        if gross is None:
-            return
-
-        errors: dict[str, list[str]] = {}
-
-        ss_actual = data.get("actual_social_security")
-        ss_rate = data.get("effective_ss_rate")
-        if ss_actual is not None and ss_rate is not None:
-            derived = ss_rate * gross
-            if abs(derived - ss_actual) > self.FICA_TOLERANCE:
-                errors["effective_ss_rate"] = [
-                    f"effective_ss_rate {ss_rate} is inconsistent with "
-                    f"actual_social_security {ss_actual} on gross "
-                    f"{gross} (expected ~= {ss_actual / gross}, derived "
-                    f"{derived})."
-                ]
-
-        medicare_actual = data.get("actual_medicare")
-        medicare_rate = data.get("effective_medicare_rate")
-        if medicare_actual is not None and medicare_rate is not None:
-            derived = medicare_rate * gross
-            if abs(derived - medicare_actual) > self.FICA_TOLERANCE:
-                errors["effective_medicare_rate"] = [
-                    f"effective_medicare_rate {medicare_rate} is "
-                    f"inconsistent with actual_medicare {medicare_actual} "
-                    f"on gross {gross} (expected ~= "
-                    f"{medicare_actual / gross}, derived {derived})."
-                ]
-
-        if errors:
-            raise ValidationError(errors)
 
 
 class YtdTaxCheckpointSchema(BaseSchema):

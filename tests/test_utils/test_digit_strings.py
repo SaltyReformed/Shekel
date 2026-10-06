@@ -12,8 +12,17 @@ population first, so none of them can pass by finding nothing to check.
 
 import sys
 
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DataError
+from werkzeug.datastructures import MultiDict
+
+from app.utils.db_errors import sqlstate_of
 from app.utils.digit_strings import (
+    MAX_INTEGER_COLUMN,
+    MIN_INTEGER_COLUMN,
     MIN_ROW_ID,
+    integer_arg,
     is_ascii_digits,
     parse_row_id,
     parse_row_ids,
@@ -166,17 +175,23 @@ class TestParseRowId:
         assert is_ascii_digits(oversized) is True
         assert parse_row_id(oversized) is None
 
-    def test_a_digit_run_within_the_conversion_limit_parses(self):
-        """The far side of that boundary still converts.
+    def test_a_digit_run_within_the_conversion_limit_names_no_row(self):
+        """The far side of that boundary converts, and is still no row.
 
-        Paired with the test above so the pair pins the limit rather than
-        just asserting that something long fails.  A 40-digit id names no
-        row, but naming no row is the caller's answer to give, not the
-        parser's -- and it is measured: the reconcile POST, the collateral
-        validator and the companion scan all answer it without raising.
+        Until plan step balance:X-dj this asserted ``'9' * 40`` parsed to
+        its integer, on the ground that naming no row was the CALLER's
+        answer -- the reconcile POST, the collateral validator and the
+        companion scan each met it with an ordinary no-match.  psycopg 3
+        binds an id with a server-side ``::INTEGER`` cast that refuses it,
+        so those callers would raise instead; an id above
+        :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` now names no row
+        HERE, before any query (ruling R-BAL211).  It still converts -- the
+        ceiling refuses it, not the
+        conversion limit above -- which ``int(large)`` pins.
         """
         large = "9" * 40
-        assert parse_row_id(large) == int(large)
+        assert int(large) > MAX_INTEGER_COLUMN
+        assert parse_row_id(large) is None
 
     def test_zero_names_no_row(self):
         """Every id column is a ``serial``, whose sequence starts at 1."""
@@ -222,3 +237,102 @@ class TestParseRowIds:
     def test_only_junk_is_an_empty_set(self):
         """Distinguishable from a partial parse: nothing survives."""
         assert parse_row_ids(["\N{SUPERSCRIPT TWO}", "abc", ""]) == set()
+
+
+class TestTheIntegerColumnRange:
+    """The range every submitted integer is held to is the DATABASE's, measured.
+
+    Plan step balance:X-dj.  The constants claim to be a PostgreSQL
+    ``integer``'s range, so they are graded against the server rather than
+    against a second spelling of the same two numbers: each end casts, and
+    one past each end is refused with ``numeric_value_out_of_range`` -- the
+    very refusal psycopg 3's bind casts turn a forged id into.
+    """
+
+    @pytest.mark.parametrize("bound", [MIN_INTEGER_COLUMN, MAX_INTEGER_COLUMN])
+    def test_each_end_is_an_integer_the_server_holds(self, db, bound):
+        """The server casts both ends to ``integer`` unchanged."""
+        held = db.session.execute(text(f"SELECT ({bound})::integer")).scalar()
+        assert held == bound
+
+    @pytest.mark.parametrize(
+        "beyond", [MIN_INTEGER_COLUMN - 1, MAX_INTEGER_COLUMN + 1],
+    )
+    def test_one_past_each_end_is_refused_by_the_server(self, db, beyond):
+        """One past either end is SQLSTATE 22003, so the range is exact."""
+        with pytest.raises(DataError) as excinfo:
+            db.session.execute(text(f"SELECT ({beyond})::integer"))
+        db.session.rollback()
+        assert sqlstate_of(excinfo.value) == "22003", excinfo.value
+
+
+class TestParseRowIdHoldsTheColumnCeiling:
+    """A canonical spelling above the ``id`` column's range names no row."""
+
+    def test_the_largest_id_a_serial_can_hold_parses(self):
+        """The ceiling itself is an id."""
+        assert parse_row_id(str(MAX_INTEGER_COLUMN)) == MAX_INTEGER_COLUMN
+
+    def test_one_past_the_ceiling_names_no_row(self):
+        """Canonical, round-trips, and still names no row: no column holds it."""
+        beyond = str(MAX_INTEGER_COLUMN + 1)
+        assert is_ascii_digits(beyond)
+        assert parse_row_id(beyond) is None
+        assert parse_row_ids([beyond, "12"]) == {12}
+
+
+class TestIntegerArg:
+    """The ``type=`` every integer query arg is read through.
+
+    ``int()`` held to the column range, and NOTHING more: the spellings it
+    admits are finding N-142's open questions (plan step X-ah), so these pin
+    that it still admits every one ``int()`` does, alongside the range.
+    """
+
+    @pytest.mark.parametrize("raw, value", [
+        ("12", 12),
+        ("-4", -4),
+        ("0", 0),
+        ("007", 7),
+        (" 12 ", 12),
+        ("+5", 5),
+        ("1_0", 10),
+        ("\u0661\u0662", 12),
+    ])
+    def test_it_reads_exactly_what_int_reads(self, raw, value):
+        """Every spelling ``int()`` accepts, unchanged -- X-ah's to rule on."""
+        assert integer_arg(raw) == int(raw) == value
+
+    @pytest.mark.parametrize("bound", [MIN_INTEGER_COLUMN, MAX_INTEGER_COLUMN])
+    def test_each_end_of_the_range_is_read(self, bound):
+        """Both ends are integers a query can bind."""
+        assert integer_arg(str(bound)) == bound
+
+    @pytest.mark.parametrize("raw", [
+        str(MIN_INTEGER_COLUMN - 1),
+        str(MAX_INTEGER_COLUMN + 1),
+        "9" * 40,
+        "1" * (sys.get_int_max_str_digits() + 1),
+        "abc",
+        "",
+    ])
+    def test_anything_else_raises_value_error(self, raw):
+        """Out of range, too long to convert, or not a number: ``ValueError``."""
+        with pytest.raises(ValueError):
+            integer_arg(raw)
+
+    def test_werkzeug_answers_the_default_for_an_out_of_range_value(self):
+        """The contract every site relies on: no raise, the site's default.
+
+        ``MultiDict.get`` catches the ``ValueError``, so an integer no column
+        can hold is treated exactly as an unparseable one already was.
+        """
+        args = MultiDict({
+            "beyond": str(MAX_INTEGER_COLUMN + 1),
+            "within": str(MAX_INTEGER_COLUMN),
+            "junk": "abc",
+        })
+        assert args.get("beyond", default=7, type=integer_arg) == 7
+        assert args.get("junk", default=7, type=integer_arg) == 7
+        assert args.get("within", default=7, type=integer_arg) == MAX_INTEGER_COLUMN
+        assert args.get("absent", type=integer_arg) is None

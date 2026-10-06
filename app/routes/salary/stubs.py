@@ -22,8 +22,17 @@ yours" alike):
 
 There is no delete door (fork 8a': "Nothing is ever deleted").  Every rule is
 the service's (:mod:`app.services.pay_stub_service`); this module reads the
-form, calls it and renders.  Nothing here regenerates a paycheck: a stub
-prices nothing until the engine's calibrated path (``S11-c``).
+form, calls it and renders.
+
+**Every write regenerates the profile's salary rows in its own transaction**
+(plan step salary:S11-c-2c, its review's finding M3): since that step a
+switched-on stub prices the taxes of the paychecks on or after its payday until
+a later one takes over (rulings **R-SAL42**, **R-SAL54**), so recording,
+editing or switching one can move today's paycheck -- the amount the salary
+template stores -- and the rows the regeneration rebuilds, as the calibration
+doors it replaced did.  The regeneration's pass is built
+AFTER the write, and the profile's ``pay_stubs`` -- a view-only collection
+the write cannot append to -- is expired first (:func:`_reprice_after`).
 """
 
 import logging
@@ -48,13 +57,14 @@ from app.models.salary_profile import SalaryProfile
 from app.routes._commit_helpers import (
     DbErrorContext,
     StaleConflictContext,
-    commit_or_handle_stale,
     handle_db_error,
     handle_stale_conflict,
     handle_stale_form_conflict,
+    regenerate_commit_or_report,
 )
 from app.routes._redirect_target import RedirectTarget
 from app.routes.salary._bp import salary_bp
+from app.routes.salary._helpers import _regenerate_salary_transactions
 from app.schemas.validation import (
     PayStubFigureSchema,
     PayStubLineSchema,
@@ -62,7 +72,9 @@ from app.schemas.validation import (
     PayStubPaydaySchema,
     PayStubSchema,
 )
-from app.services import paycheck_line_kinds, pay_stub_service, withholding_kinds
+from app.services import (
+    paycheck_line_kinds, pay_stub_gross, pay_stub_service, withholding_kinds,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404, get_owned_via_parent, require_owner
 from app.utils.db_errors import is_unique_violation
@@ -161,13 +173,14 @@ def record_stub(profile_id: int) -> ResponseReturnValue:
     if profile is None:
         abort(404)
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             stub = pay_stub_service.record_stub(
-                profile, figures, printed_net, ctx, display_today(),
+                profile, figures, printed, ctx, display_today(),
             )
+            _reprice_after(profile)
             db.session.commit()
         except PayStubRefused as refused:
             db.session.rollback()
@@ -221,13 +234,14 @@ def edit_stub(stub_id: int) -> ResponseReturnValue:
             stale_ctx, submitted=submitted_version, current=stub.version_id,
         )
     ctx = BalanceContext.build(current_user.id)
-    figures, printed_net, errors = _read_form(profile)
+    figures, printed, errors = _read_form(profile)
     user_id = current_user.id
     if figures is not None:
         try:
             pay_stub_service.edit_stub(
-                stub, figures, printed_net, ctx, display_today(),
+                stub, figures, printed, ctx, display_today(),
             )
+            _reprice_after(profile)
             db.session.commit()
         except PayStubRefused as refused:
             db.session.rollback()
@@ -266,7 +280,8 @@ def edit_stub(stub_id: int) -> ResponseReturnValue:
 def set_stub_pricing(stub_id: int) -> ResponseReturnValue:
     """Turn a stub's "Use for pricing" switch on or off (fork 8a', R-SAL51 (a))."""
     stub = _owned_stub(stub_id)
-    profile_id = stub.salary_profile_id
+    profile = stub.salary_profile
+    profile_id = profile.id
     wanted = request.form.get("use_for_pricing")
     submitted = parse_row_id(request.form.get("version_id"))
     if wanted not in ("on", "off") or submitted is None:
@@ -276,12 +291,23 @@ def set_stub_pricing(stub_id: int) -> ResponseReturnValue:
         return handle_stale_form_conflict(
             stale_ctx, submitted=submitted, current=stub.version_id,
         )
+    user_id = current_user.id
     if pay_stub_service.set_use_for_pricing(stub, wanted == "on"):
-        conflict = commit_or_handle_stale(stale_ctx)
-        if conflict is not None:
-            return conflict
+        failed = regenerate_commit_or_report(
+            lambda: _reprice_after(profile),
+            stale_ctx=stale_ctx,
+            error_ctx=DbErrorContext(
+                logger=logger,
+                log_message="user_id=%d failed to switch pay stub %d's pricing",
+                log_args=(user_id, stub_id),
+                flash_message="Failed to switch the pay stub. Please try again.",
+                redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+            ),
+        )
+        if failed is not None:
+            return failed
         logger.info(
-            "user_id=%d turned pay stub %d pricing %s", current_user.id, stub_id, wanted,
+            "user_id=%d turned pay stub %d pricing %s", user_id, stub_id, wanted,
         )
     state = "is used for pricing" if wanted == "on" else "is kept but not used for pricing"
     flash(f"Your {stub.payday.isoformat()} stub {state}.", "info")
@@ -300,6 +326,27 @@ def _record_failed(user_id: int, profile_id: int) -> ResponseReturnValue:
         flash_message="Failed to save the pay stub. Please try again.",
         redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
     ))
+
+
+def _reprice_after(profile: SalaryProfile) -> None:
+    """Regenerate *profile*'s salary rows after a stub write, in its transaction.
+
+    A switched-on stub prices the taxes of the paychecks on or after its
+    payday until a later one takes over (plan step salary:S11-c-2c; rulings
+    R-SAL42, R-SAL54), so each of this module's writes can change today's
+    paycheck, the one amount the salary template stores.  ``pay_stubs`` is a
+    view-only collection: a recorded stub is not appended to it and an edited
+    payday does not re-sort it, so it is expired here and the pricer reloads
+    it.  :func:`~app.routes.salary._helpers._regenerate_salary_transactions`
+    builds its own read pass, after the write, as the regeneration requires
+    (a pass that priced the profile before the write would answer the old
+    figures).
+
+    Args:
+        profile: The stub's :class:`SalaryProfile`, its write staged.
+    """
+    db.session.expire(profile, ["pay_stubs"])
+    _regenerate_salary_transactions(profile)
 
 
 def _owned_stub(stub_id: int) -> PayStub:
@@ -332,7 +379,11 @@ def _first_messages(errors: Mapping[str, list[str]]) -> dict[str, str]:
 
 def _read_form(
     profile: SalaryProfile,
-) -> tuple[pay_stub_service.StubFigures | None, Decimal | None, dict[str, str]]:
+) -> tuple[
+    pay_stub_service.StubFigures | None,
+    pay_stub_service.PrintedTotals | None,
+    dict[str, str],
+]:
     """Read the entry form into the service's values, or into field errors.
 
     The line and tax inputs are read BY THE PROFILE'S OWN LINES AND THE FOUR
@@ -342,9 +393,11 @@ def _read_form(
     service's refusal, not this reader's.
 
     Returns:
-        ``(figures, printed_net, errors)`` -- ``figures`` is a
-        :class:`~app.services.pay_stub_service.StubFigures` when every field
-        loaded, else ``None`` with ``errors`` naming each bad field.
+        ``(figures, printed, errors)`` -- ``figures`` is a
+        :class:`~app.services.pay_stub_service.StubFigures` and ``printed``
+        the :class:`~app.services.pay_stub_service.PrintedTotals` the stub's
+        gross and net are checked against when every field loaded, else both
+        are ``None`` with ``errors`` naming each bad field.
     """
     form = request.form
     errors = {}
@@ -359,7 +412,10 @@ def _read_form(
         line_amounts=line_amounts, withholdings=withholdings,
         one_offs=one_offs, notes=scalars.get("notes"),
     )
-    return figures, scalars["printed_net"], errors
+    printed = pay_stub_service.PrintedTotals(
+        gross=scalars["printed_gross"], net=scalars["printed_net"],
+    )
+    return figures, printed, errors
 
 
 def _read_lines(
@@ -518,6 +574,9 @@ def _form_page(
 ) -> dict[str, Any]:
     """The stub form's page context: the line split, the report, the options.
 
+    ``gross_counts`` words which earnings the printed-gross check adds on this
+    job (ruling **R-SAL102**), the phrase the check's own refusals use.
+
     Args:
         profile: The owned profile.
         ctx: The request's :class:`~app.services.balance_at.BalanceContext`.
@@ -538,6 +597,9 @@ def _form_page(
         "lines": lines,
         "kind_options": paycheck_line_kinds.kind_options(),
         "tax_options": withholding_kinds.kind_options(),
+        "gross_counts": pay_stub_gross.gross_counts(
+            profile.stub_gross_includes_after_tax,
+        ),
     }
 
 
