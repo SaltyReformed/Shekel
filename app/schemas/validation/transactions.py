@@ -309,7 +309,7 @@ class MarkDoneSchema(BaseSchema):
     (``budget.transaction_entries.amount``) is ``numeric(12, 2)``, so a
     figure at or above ``10 ** 10`` cannot be stored: it passed the
     ``>= 0`` validator, reached the settle verb and raised
-    ``psycopg2.errors.NumericValueOutOfRange`` at flush -- unhandled,
+    ``NumericValueOutOfRange`` (SQLSTATE 22003) at flush -- unhandled,
     so a 500 on a door an ordinary crafted POST reaches.  The reconcile
     panel commits a whole statement walk in ONE transaction, so a
     single unstorable box discarded every other tick submitted beside

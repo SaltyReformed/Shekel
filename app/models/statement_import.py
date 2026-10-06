@@ -34,6 +34,7 @@ adapter has to invert anything.
 """
 
 from sqlalchemy import and_, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import column_property
 
@@ -776,7 +777,7 @@ class StatementLineSighting(db.Model):
             select(cls.line_id, cls.import_id)
             .join(StatementImport, cls.of_its_import())
             .where(cls.account_id == account_id)
-            .distinct(cls.line_id)
+            .ext(distinct_on(cls.line_id))
             .order_by(cls.line_id, *StatementImport.act_order())
             .subquery()
         )

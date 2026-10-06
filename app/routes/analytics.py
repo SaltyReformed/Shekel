@@ -26,6 +26,7 @@ from flask_login import current_user
 from app.routes import analytics_view
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today, to_display_date
+from app.utils.digit_strings import integer_arg
 
 from app.extensions import db
 from app.models.account import Account
@@ -174,9 +175,9 @@ def calendar_tab():
     # timezone display policy.
     today = to_display_date(datetime.now(timezone.utc))
     view = request.args.get("view", "month")
-    year = request.args.get("year", today.year, type=int)
-    month = request.args.get("month", today.month, type=int)
-    account_id = request.args.get("account_id", None, type=int)
+    year = request.args.get("year", today.year, type=integer_arg)
+    month = request.args.get("month", today.month, type=integer_arg)
+    account_id = request.args.get("account_id", None, type=integer_arg)
 
     # F-039 / commit C-30: a cross-user or non-existent account_id
     # must 404 before any service call.  The underlying
@@ -242,7 +243,7 @@ def taxes_tab():
     (D13), which then auto-loads this partial.
     """
     today = to_display_date(datetime.now(timezone.utc))
-    year = request.args.get("year", today.year, type=int)
+    year = request.args.get("year", today.year, type=integer_arg)
     year = max(2000, min(2100, year))
 
     shell = _tab_shell_if_not_htmx("taxes")
@@ -338,8 +339,8 @@ def spending_tab():
     default_year, default_month = analytics_view.prev_month(
         today.year, today.month,
     )
-    month = request.args.get("month", default_month, type=int)
-    year = request.args.get("year", default_year, type=int)
+    month = request.args.get("month", default_month, type=integer_arg)
+    year = request.args.get("year", default_year, type=integer_arg)
     month = max(1, min(12, month))
     year = max(2000, min(2100, year))
 
@@ -449,7 +450,7 @@ def income_statement_tab():
     # would refuse identically and record nothing.  The audit trail is the
     # reason this read is not one of the four collapsed below.
     _validate_owned_or_abort(
-        PayPeriod, request.args.get("period_id", type=int),
+        PayPeriod, request.args.get("period_id", type=integer_arg),
     )
 
     # D13: a direct navigation renders the shell (Statements active) after the
@@ -675,9 +676,9 @@ def _resolve_window_params(calendar, today):
     if window_type not in ("pay_period", "month", "year"):
         window_type = "pay_period"
 
-    period_id = request.args.get("period_id", type=int)
-    month = request.args.get("month", type=int)
-    year = request.args.get("year", type=int)
+    period_id = request.args.get("period_id", type=integer_arg)
+    month = request.args.get("month", type=integer_arg)
+    year = request.args.get("year", type=integer_arg)
 
     if window_type == "pay_period" and period_id is None:
         current = calendar.period_containing(today)

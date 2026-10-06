@@ -55,6 +55,7 @@ from app.services.transfer_legs import (
     leg_of,
 )
 from app.utils.dates import display_today
+from app.utils.digit_strings import integer_arg
 
 
 @dataclass(frozen=True)
@@ -490,10 +491,11 @@ def _page_account_override() -> int | None:
     URL: ``/grid?account_id=<card>`` puts the card on the line.  A fragment
     that re-draws one cell of that page must read the same override the page
     read, so it takes it from the header the way the page takes it from
-    ``request.args`` -- through werkzeug's own ``type=int`` coercion, so the
-    two cannot read one value two ways -- and answers ``None`` when the
-    header is absent, carries no ``account_id``, or carries one that is not
-    an int.  A request with no such header (a non-htmx caller, a test
+    ``request.args`` -- through the same werkzeug ``type=`` coercion,
+    :func:`~app.utils.digit_strings.integer_arg`, so the two cannot read one
+    value two ways -- and answers ``None`` when the header is absent, carries
+    no ``account_id``, or carries one that is not an integer a PostgreSQL
+    ``integer`` can hold.  A request with no such header (a non-htmx caller, a test
     client) therefore reads the primary, as every fragment resolved before
     plan step ``credit_card:CC-4-2``.
 
@@ -534,7 +536,7 @@ def _page_account_override() -> int | None:
         query = urlsplit(current_url).query
     except ValueError:
         return None
-    return MultiDict(parse_qsl(query)).get("account_id", type=int)
+    return MultiDict(parse_qsl(query)).get("account_id", type=integer_arg)
 
 
 def fragment_balance_line(owner_id: int) -> Account | None:

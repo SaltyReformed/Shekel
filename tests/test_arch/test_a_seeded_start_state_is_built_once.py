@@ -26,7 +26,7 @@ the control cannot pass by scheduling luck.
 
 from decimal import Decimal
 
-import psycopg2
+import psycopg
 import pytest
 
 from sqlalchemy import text
@@ -108,7 +108,7 @@ def _database_exists(name):
     Returns:
         ``True`` when it exists.
     """
-    conn = psycopg2.connect(suite_conftest._WORKER_ADMIN_URL)
+    conn = psycopg.connect(suite_conftest._WORKER_ADMIN_URL)
     try:
         conn.autocommit = True
         with conn.cursor() as cur:

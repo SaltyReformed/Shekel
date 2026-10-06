@@ -38,7 +38,12 @@ same on a pending row, so a validating class handed those values DIRECTLY
 raises from inside machinery no caller entered.  A first version of this module
 did exactly that and had to weaken the type to survive it; the factory keeps
 the type total and absorbs the empty pair where it belongs.  Measured on
-SQLAlchemy 2.0.49.
+SQLAlchemy 2.0.49.  **SQLAlchemy 2.1 made the factory load-bearing on every
+read of a new row, not only inside that machinery**: its composite GETTER now
+builds the value on a pending row too.  Re-measured at plan step balance:X-dj
+on a new ``Transaction``: reading ``amount_ownership`` calls the constructor
+with ``(None, None)`` on 2.1.3 and does not call it on 2.0.54, and the read
+leaves the ``None`` in the instance's ``__dict__`` on 2.1.3 only.
 
 The DATABASE still refuses the empty pair at INSERT -- that is what
 ``ck_transactions_amount_ownership`` is for, and it is the tier that sees a

@@ -138,33 +138,32 @@ class TestTheOversizedPathSegment:
         with pytest.raises(ValueError, match="Exceeds the limit"):
             stock.match(f"/x/{_oversized_digits()}")
 
-    def test_a_long_but_convertible_run_routes_and_then_finds_nothing(
+    def test_a_long_but_convertible_run_is_refused_by_the_converter(
         self, app, auth_client,
     ):
-        """A 40-digit id is WELL-FORMED and simply names no row.
+        """A 40-digit id is canonical ASCII and still names no row: no column holds it.
 
-        The distinction the converter must not blur, and a first draft of
-        this test got it wrong by asserting a routing refusal: ``'9' * 40``
-        is canonical ASCII, above :data:`MIN_ROW_ID`, and round-trips
-        through ``str``, so the converter has no ground to reject it.  It
-        routes, reaches the view, and the ordinary ownership lookup answers
-        404 -- which is also the measured proof that an oversized id does
-        not overflow the ``int4`` ``id`` column on the way (psycopg sends it
-        as ``numeric``).  Authenticated, because an anonymous caller would
-        be redirected to login before the lookup ran.
+        ``'9' * 40`` is above :data:`MIN_ROW_ID` and round-trips through
+        ``str``, and until plan step balance:X-dj it routed, reached the view
+        and met the ordinary ownership lookup's 404 -- psycopg2 inlined the
+        number and the comparison simply matched nothing.  psycopg 3 binds it
+        with a server-side ``::INTEGER`` cast that REFUSES it (SQLSTATE
+        22003), so it would have been a 500; the converter now refuses any id
+        above :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`, and the
+        answer is the same 404 before any query runs (ruling R-BAL211).  The
+        largest id a column holds still routes and finds nothing:
+        ``tests/test_routes/test_an_integer_no_column_holds.py``.
 
         **The MAP is asserted before the response**, because a 404 alone
         cannot tell "routed and found nothing" from "refused by the
-        converter" -- and those are opposite claims about this input.  An
-        adversarial review caught the request-only version asserting the
-        weaker of the two while its docstring claimed the stronger.
+        converter" -- and those are opposite claims about this input.
         """
+        # pylint: disable=import-outside-toplevel
+        from werkzeug.exceptions import NotFound
+
         huge = "9" * 40
-        endpoint, args = app.url_map.bind("localhost").match(
-            f"/accounts/{huge}/details",
-        )
-        assert endpoint == "accounts.cash_detail"
-        assert args == {"account_id": int(huge)}
+        with pytest.raises(NotFound):
+            app.url_map.bind("localhost").match(f"/accounts/{huge}/details")
 
         response = auth_client.get(f"/accounts/{huge}/details")
         assert response.status_code == 404

@@ -1159,8 +1159,9 @@ docker compose \
 ```
 
 A `restart db` is enough; the postgres process re-reads `ssl_cert_file` / `ssl_key_file` on every
-startup. The app does NOT need to be restarted -- psycopg2 transparently reconnects when the db
-comes back, and the brief 1-2s outage is well under the app's healthcheck `start_period`.
+startup. The app does NOT need to be restarted -- the restart closes the app's pooled connections,
+`ProdConfig`'s `pool_pre_ping` replaces each closed one at its next checkout, and the brief 1-2s
+outage is well under the app's healthcheck `start_period`.
 
 **Rotation impact.** Active connections drop during the restart but the SQLAlchemy engine reconnects
 on the next request. Login sessions survive (sessions live in Flask's secure cookie, not the DB

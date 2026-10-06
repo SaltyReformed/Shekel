@@ -33,6 +33,7 @@ from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT
 from app.extensions import db
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import CalcMethod, PaycheckLineKind
+from app.utils.db_errors import sqlstate_of
 from tests._test_helpers import (
     load_migration_module,
     make_salary_profile,
@@ -342,7 +343,7 @@ class TestTheRoundTrip:
             db.session.rollback()
             # 22001 is ``string_data_right_truncation``: the VARCHAR(10) cast
             # and nothing else in that downgrade can raise it.
-            assert excinfo.value.orig.pgcode == "22001", excinfo.value
+            assert sqlstate_of(excinfo.value) == "22001", excinfo.value
             assert "character varying(10)" in str(excinfo.value.orig)
 
             # Refused means untouched: the DDL ran in one transaction and

@@ -31,7 +31,7 @@ separate subprocess test (``TestMergedComposeCarriesTLS``) runs
 behaviour and skips when Docker is not available.
 
 The runtime-behaviour tests (real openssl-generated cert, postgres
-container with ssl=on, psycopg2 sslmode=require connection) are the
+container with ssl=on, psycopg sslmode=require connection) are the
 manual verification step in the remediation plan and are not
 automated here -- automating them would require sudo and a working
 Docker daemon on every test host.

@@ -60,6 +60,7 @@ from app.enums import (
     TxnTypeEnum,
     WithholdingKindEnum,
 )
+from app.utils.db_errors import is_schema_behind_code
 
 _logger = logging.getLogger(__name__)
 
@@ -157,19 +158,25 @@ class _RefSpec:
 
 
 def _load_rows(db_session, label, query_callable):
-    """Run a ref-table query, tolerating a missing table.
+    """Run a ref-table query, tolerating a schema that is behind the code.
 
-    A ``ProgrammingError`` here almost always means the ref table does
-    not exist yet -- the bootstrap window during ``flask db upgrade``
-    when a migration that creates a new ref table is pending.  Catch
-    it, roll the session back (a failed query poisons the transaction
-    so subsequent queries would otherwise fail with "current
-    transaction is aborted"), log loud, and return ``None`` so the
-    caller can record the table as unavailable.
+    A table or column the schema does not have yet means a migration
+    that creates the ref table, or adds a column to it, is pending --
+    the bootstrap window during ``flask db upgrade`` and the development
+    entrypoint, which build the app before they migrate.  Catch it, roll
+    the session back (a failed query poisons the transaction so
+    subsequent queries would otherwise fail with "current transaction is
+    aborted"), log loud, and return ``None`` so the caller can record the
+    table as unavailable.
 
-    All other database errors propagate -- a misconfigured DSN or a
-    corrupted ref row is a real failure that must surface, not a
-    bootstrap quirk to swallow.
+    All other database errors propagate -- a misconfigured DSN, an
+    absent privilege or a corrupted ref row is a real failure that must
+    surface, not a bootstrap quirk to swallow.  The schema being behind
+    is read off the SQLSTATE
+    (:func:`~app.utils.db_errors.is_schema_behind_code`) because the
+    ``ProgrammingError`` class this caught until plan step
+    balance:X-dj also holds a malformed query and an absent privilege,
+    and since the change to psycopg 3 a trigger's ``RAISE`` as well.
 
     Args:
         db_session: SQLAlchemy session for rollback on failure.
@@ -178,12 +185,15 @@ def _load_rows(db_session, label, query_callable):
             returns the name->id dict.
 
     Returns:
-        dict[str, int] on success, ``None`` if the table is missing.
+        dict[str, int] on success, ``None`` if the table, or a column the
+        query reads, does not exist yet.
     """
     try:
         return query_callable()
-    except sqlalchemy.exc.ProgrammingError:
+    except sqlalchemy.exc.ProgrammingError as exc:
         db_session.rollback()
+        if not is_schema_behind_code(exc):
+            raise
         _logger.warning(
             "ref_cache: ref table %s not available "
             "(likely pre-migration bootstrap); enums for this table will "

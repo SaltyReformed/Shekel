@@ -121,7 +121,7 @@ export LC_ALL=C.UTF-8
 
 # The image builder imports app.ref_seeds and app.audit_infrastructure to
 # read the counts it verifies against, so it needs the project's
-# interpreter -- a bare python3 has neither the package nor psycopg2.
+# interpreter -- a bare python3 has neither the package nor psycopg.
 if [ -x "${_REPO_ROOT}/.venv/bin/python" ]; then
     _PYTHON="${_REPO_ROOT}/.venv/bin/python"
 else

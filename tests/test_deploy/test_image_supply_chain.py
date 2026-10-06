@@ -12,7 +12,9 @@ The artifacts under audit are the multi-stage Dockerfile, the
 production compose override at ``deploy/docker-compose.prod.yml``,
 ``scripts/deploy.sh`` (Cosign sign + verify wrappers),
 ``.github/workflows/docker-publish.yml`` (CI signing pipeline),
-and ``.gitignore`` (private-key exclusion).
+and ``.gitignore`` (private-key exclusion).  Since plan step balance:X-dj
+it also holds the runtime stage to psycopg's C implementation (ruling
+balance:R-BAL209, :class:`TestDockerfileRequiresPsycopgC`).
 
 Tests are filesystem/text-based: the fast unit suite must not depend
 on a live Docker daemon, GHCR network, or installed Cosign binary.
@@ -114,7 +116,7 @@ class TestDockerfileDigestPin:
         """Both FROM lines must include ``@sha256:<digest>``.
 
         The Dockerfile is multi-stage: a builder stage that installs
-        psycopg2 build deps and a runtime stage that copies only the
+        psycopg-c build deps and a runtime stage that copies only the
         venv.  A digest pin on only one stage would let the other
         stage drift to whatever ``:latest`` resolves to at build
         time -- defeating reproducibility.
@@ -133,7 +135,7 @@ class TestDockerfileDigestPin:
 
         A drift between the two would mean stage 2's runtime libraries
         (libssl3t64 in particular) might come from a different OpenSSL
-        revision than the one stage 1 linked psycopg2 against.  The
+        revision than the one stage 1 linked psycopg-c against.  The
         symmetry is the load-bearing invariant.
         """
         from_lines = [
@@ -353,6 +355,35 @@ class TestDockerfilePreservesC34Invariants:
         assert "HEALTHCHECK" in text, (
             "Dockerfile lost its HEALTHCHECK directive; deploy.sh's "
             "wait_for_health() relies on /health responding."
+        )
+
+
+class TestDockerfileRequiresPsycopgC:
+    """The runtime stage REQUIRES psycopg's C implementation.
+
+    Ruling balance:R-BAL209 chose ``psycopg[c]`` compiled against the image's
+    libpq, and psycopg falls back to its pure-Python implementation silently
+    when the C one will not import.  ``PSYCOPG_IMPL=c`` turns that fallback
+    into an import failure, so an image without psycopg-c cannot start
+    rather than running slower unnoticed.  No test builds the image (the
+    publish workflow builds it only on a push to ``main`` or a ``v*`` tag),
+    so this text assertion is what stops the line being dropped before review
+    sees it.
+    """
+
+    def test_the_runtime_stage_sets_psycopg_impl_c(self) -> None:
+        """``ENV PSYCOPG_IMPL=c`` sits after the LAST ``FROM``, the runtime stage.
+
+        A line in the builder stage would not reach the image that runs.
+        """
+        runtime_stage = DOCKERFILE.read_text(encoding="utf-8").rsplit(
+            "\nFROM ", 1,
+        )[1]
+        assert "\nENV PSYCOPG_IMPL=c\n" in runtime_stage, (
+            "the Dockerfile's runtime stage no longer sets "
+            "``ENV PSYCOPG_IMPL=c``; an image without psycopg-c would serve "
+            "every query through psycopg's pure-Python fallback unnoticed "
+            "(ruling balance:R-BAL209)."
         )
 
 

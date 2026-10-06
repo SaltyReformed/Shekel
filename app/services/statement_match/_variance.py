@@ -212,7 +212,7 @@ def _reject_unstorable(sides: MatchSides) -> None:
     :func:`mint` into a new one.
 
     **What that costs without this refusal is the whole PASS, not the item.**
-    ``psycopg2.errors.NumericValueOutOfRange`` is not a ``ValidationError``, so
+    ``NumericValueOutOfRange`` (SQLSTATE 22003) is not a ``ValidationError``, so
     :func:`~._batch._run`'s SAVEPOINT does not catch it: it propagates to the
     route's ``except SQLAlchemyError``, rolls back every item that had landed,
     and reaches the owner as "Something went wrong".  Measured by adversarial

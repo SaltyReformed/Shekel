@@ -26,8 +26,10 @@ on its own it would leave open exactly the surface the finding it closes
 day onto rows with a bulk ``query.update()``, which fires no listener.
 
 **Why keep this half at all, given the trigger refuses the same writes.**  The
-trigger raises a ``psycopg2.errors.RaiseException`` naming a trigger, at flush
-time, wrapped in a SQLAlchemy ``InternalError``.  This raises a named Shekel
+trigger raises a ``RaiseException`` (SQLSTATE ``P0001``) naming a trigger, at
+flush time, wrapped in whichever SQLAlchemy class the driver maps it to --
+``InternalError`` under psycopg2, ``ProgrammingError`` under psycopg 3 since
+plan step balance:X-dj.  This raises a named Shekel
 exception, at the call site, saying what to do instead -- and it is the
 exception the suite asserts against, so a test of the rule reads as a statement
 about the rule rather than about PostgreSQL's error text.  The two are one rule

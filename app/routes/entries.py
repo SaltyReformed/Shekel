@@ -46,6 +46,7 @@ from app.utils.auth_helpers import (
 )
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
+from app.utils.digit_strings import integer_arg
 from app.utils.error_fragments import (
     INVALID_REFERENCE_MSG,
     designed_error,
@@ -577,7 +578,7 @@ def list_entries(txn_id):
     txn = get_accessible_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    editing_id = request.args.get("editing", type=int)
+    editing_id = request.args.get("editing", type=integer_arg)
     return _render_entry_list(
         txn, editing_id=editing_id, host=_request_host(),
     )

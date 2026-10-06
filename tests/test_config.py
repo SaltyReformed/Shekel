@@ -946,3 +946,52 @@ class TestLoginManagerConfig:
         must fail this test.
         """
         assert login_manager.session_protection == "strong"
+
+
+class TestEveryConfigConnectsTheSameWay:
+    """One set of driver arguments for Dev, Test and Prod (plan step balance:X-dj).
+
+    ``prepare_threshold=None`` keeps psycopg 3 from preparing statements on
+    the server, which psycopg2 never did and which production's long-lived
+    pooled connections would reach while the suite's ``NullPool`` mostly
+    would not (``app.config._DRIVER_CONNECT_ARGS`` gives the argument).
+    """
+
+    @pytest.mark.parametrize("config", [DevConfig, TestConfig, ProdConfig])
+    def test_each_config_carries_the_driver_arguments(self, config):
+        """A five-second connect timeout and no server-side preparing."""
+        assert config.SQLALCHEMY_ENGINE_OPTIONS["connect_args"] == {
+            "connect_timeout": 5,
+            "prepare_threshold": None,
+        }
+
+    def test_a_repeated_statement_is_never_prepared(self, app, db):
+        """Six runs on one connection leave nothing in ``pg_prepared_statements``.
+
+        Paired with the control below, so the zero is a measurement and not a
+        probe that cannot see a prepared statement at all.
+        """
+        # pylint: disable=import-outside-toplevel
+        from sqlalchemy import text
+
+        with app.app_context(), db.engine.connect() as connection:
+            for _ in range(6):
+                connection.execute(text("SELECT 1 WHERE 1 = :one"), {"one": 1})
+            prepared = connection.execute(
+                text("SELECT count(*) FROM pg_prepared_statements"),
+            ).scalar()
+        assert prepared == 0
+
+    def test_the_control_sees_the_default_threshold_prepare(self, app, db):
+        """Under psycopg's default threshold the same six runs DO prepare one."""
+        # pylint: disable=import-outside-toplevel
+        import psycopg
+
+        url = db.engine.url.render_as_string(hide_password=False)
+        with psycopg.connect(url) as connection:
+            for _ in range(6):
+                connection.execute("SELECT 1 WHERE 1 = %s", (1,))
+            prepared = connection.execute(
+                "SELECT count(*) FROM pg_prepared_statements",
+            ).fetchone()[0]
+        assert prepared >= 1

@@ -46,7 +46,7 @@ because a test that would pass with the guarantee removed proves nothing.
 
 from datetime import date
 
-import psycopg2
+import psycopg
 import pytest
 from flask import g, request_started
 from sqlalchemy import event, text
@@ -113,7 +113,7 @@ def observed_statements(app):
 
     **It cannot see a ``BEGIN``, a ``COMMIT`` or a ``ROLLBACK``**, which is
     worth stating because a reader will otherwise take a count here for the
-    round-trip count: psycopg2 issues those through the connection rather than
+    round-trip count: psycopg issues those through the connection rather than
     through a cursor, so they never reach ``before_cursor_execute``.  Every
     test below counts a named statement, never a total.
 
@@ -199,7 +199,7 @@ class TestAQueryIsOneSnapshot:
             user_id: The owner to append the payday for.
             start_date: The payday.
         """
-        rival = psycopg2.connect(app.config["SQLALCHEMY_DATABASE_URI"])
+        rival = psycopg.connect(app.config["SQLALCHEMY_DATABASE_URI"])
         try:
             rival.autocommit = True
             with rival.cursor() as cur:

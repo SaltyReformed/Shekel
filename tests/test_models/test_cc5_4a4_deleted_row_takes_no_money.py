@@ -33,9 +33,7 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 
-import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import InternalError
 
 from app.deleted_row_infrastructure import DELETED_ROW_TRIGGERS
 from app.extensions import db as _db
@@ -47,6 +45,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     generate_row_of,
     make_expense_template,
+    refused_by_database_rule,
 )
 # Pylint: ``shekel-private-module-import`` -- the statement-match builders are
 # the one way a test stages a one-off envelope as the grid's create door
@@ -179,7 +178,7 @@ class TestAMovementCannotArriveUnderADeletedRow:
             hidden = a_one_off_envelope(seed_user, name="Garage Sale")
             _hide(hidden.id)
             db.session.commit()
-            with pytest.raises(InternalError, match=_ARRIVAL_REFUSED) as caught:
+            with refused_by_database_rule(_ARRIVAL_REFUSED) as caught:
                 _copy_under(entry.id, hidden.id)
             assert f"transaction {hidden.id} " in str(caught.value)
             db.session.rollback()
@@ -201,7 +200,7 @@ class TestAMovementCannotArriveUnderADeletedRow:
             _hide(hidden.id)
             db.session.commit()
             db.session.expire_all()
-            with pytest.raises(InternalError, match=_ARRIVAL_REFUSED):
+            with refused_by_database_rule(_ARRIVAL_REFUSED):
                 add_entry(
                     db.session, seed_user, hidden, Decimal("12.34"),
                     _day(seed_user),
@@ -218,7 +217,7 @@ class TestAMovementCannotArriveUnderADeletedRow:
             hidden = a_one_off_envelope(seed_user, name="Garage Sale")
             _hide(hidden.id)
             db.session.commit()
-            with pytest.raises(InternalError, match=_ARRIVAL_REFUSED):
+            with refused_by_database_rule(_ARRIVAL_REFUSED):
                 _re_point(entry.id, hidden.id)
             db.session.rollback()
             assert (_held_by(row.id), _held_by(hidden.id)) == (1, 0)
@@ -243,7 +242,7 @@ class TestARowCannotBeHiddenHoldingMoney:
         with app.app_context():
             row, _entry = _holding(seed_user, "Home Improvement")
             _hide(row.id)
-            with pytest.raises(InternalError, match=_HIDING_REFUSED) as caught:
+            with refused_by_database_rule(_HIDING_REFUSED) as caught:
                 db.session.commit()
             assert f"transaction {row.id} " in str(caught.value)
             db.session.rollback()
@@ -342,7 +341,7 @@ class TestARowCannotBeHiddenHoldingMoney:
                 {"id": leg_id, "template": template.id,
                  "day": _day(seed_user)},
             )
-            with pytest.raises(InternalError, match=_HIDING_REFUSED):
+            with refused_by_database_rule(_HIDING_REFUSED):
                 db.session.commit()
             db.session.rollback()
 
