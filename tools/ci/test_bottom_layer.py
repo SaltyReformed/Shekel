@@ -20,8 +20,10 @@ import pytest
 from tools.ci import arcs
 
 PACKAGE = arcs.REPO / "tools" / "ci"
+#: The layer's modules, and ``tools/__init__.py``, which every no-install job imports first.
 MODULES = sorted(path for path in PACKAGE.glob("*.py")
                  if not (path.match("test_*.py") or path.match("conftest.py")))
+MODULES.append(PACKAGE.parent / "__init__.py")
 
 
 def _imports(path: Path) -> Iterator[tuple[int, str]]:
@@ -34,8 +36,8 @@ def _imports(path: Path) -> Iterator[tuple[int, str]]:
 
 
 def _allowed(module: str) -> bool:
-    """The standard library, or this package."""
-    return (module.split(".")[0] in sys.stdlib_module_names
+    """The standard library, or this package (a relative import is one of its own)."""
+    return (module.split(".")[0] in sys.stdlib_module_names or module.startswith(".")
             or module == "tools.ci" or module.startswith("tools.ci."))
 
 
@@ -43,9 +45,10 @@ def test_every_module_of_the_layer_is_graded():
     """The glob finds the modules CI runs, so an empty list cannot pass by grading nothing."""
     assert {"arcs.py", "ci_scope.py", "ci_verdict.py", "commit_trailers.py", "gitcmd.py",
             "trailers.py"} <= {path.name for path in MODULES}
+    assert PACKAGE.parent / "__init__.py" in MODULES
 
 
-@pytest.mark.parametrize("path", MODULES, ids=lambda path: path.name)
+@pytest.mark.parametrize("path", MODULES, ids=lambda path: str(path.relative_to(arcs.REPO)))
 def test_a_module_imports_the_standard_library_and_this_package_only(path):
     """Nothing from ``tools.plan``, ``tools.plan_gate`` or a third-party package."""
     outside = [f"{path.name}:{line}: {module}" for line, module in _imports(path)

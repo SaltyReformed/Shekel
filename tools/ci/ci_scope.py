@@ -76,10 +76,16 @@ tree, any test under ``tests/`` can ``from tools.ci.arcs import PLANS`` or
 ``from tools.plan_gate import _registry`` and read a registry without spelling
 a path (review of 1e52a05ae, finding S1).  :func:`imports_of_the_tools` is the
 second census: no module in a skipped suite imports :data:`TOOLS` at all, and
-``test_ci_scope.py`` holds it at zero.  The rule is the whole package, not a
-list of the modules that read registries today, so it has nothing to keep
-complete: the tools' own tests run in both scopes (``ci.yml`` step 4b), so a
-test that needs a tool belongs there.
+``test_ci_scope.py`` holds it at zero.  The rule names the whole package, not
+the modules that read registries today, so no list of them can go stale; the
+tools' own tests run in both scopes (``ci.yml`` step 4b), so a test that needs
+a tool belongs there.  Like the path census it is LEXICAL, and what it CANNOT
+see, a reviewer of a new test must: an import by string
+(``importlib.import_module("tools...")``, ``__import__``), a plugin named in
+``pytest_plugins``, a ``sys.path`` entry under ``tools/`` followed by a bare
+import (``tools/pylint/tests`` reaches its checkers that way, and they read no
+registry), and a module of ``app/`` or ``scripts/`` a test imports that imports
+``tools`` itself (none does: grepped at step X-cx's L4, review of 46d9b578a).
 
 Usage from ``ci.yml``, at the repository root::
 

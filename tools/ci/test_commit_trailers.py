@@ -177,20 +177,50 @@ class TestARevertOwesTheOpposite:
         _revert(repo, undo, trailer="Ships: plan#4")
         assert problems(repo, base, _head(repo)) == (1, [])
 
-    def test_undoing_a_ship_and_its_own_reopen_owes_nothing(self, repo):
-        """A commit shipping and reopening one card changed nothing: its Reopens cancels it."""
+    def test_undoing_a_ship_and_its_own_reopen_owes_reopens_only(self, repo):
+        """Its ``Ships:`` is undone, so ``Reopens:`` is owed; its ``Reopens:`` owes nothing."""
         both = _change(repo, "leaf", "leaf", "Ships: plan#4\nReopens: plan#4")
         base = _head(repo)
-        _revert(repo, both)
+        undo = _revert(repo, both)
+        reasons = problems(repo, base, _head(repo))[1]
+        assert len(reasons) == 1 and reasons[0].startswith(f"{undo[:12]} ")
+        assert "add the trailer `Reopens: plan#4`" in reasons[0]
+
+    @pytest.mark.parametrize("undone", ["first", "second"])
+    def test_undoing_either_of_two_ships_reopens_the_card(self, repo, undone):
+        """Review of 46d9b578a: the verdict may not turn on which of two ships is undone.
+
+        One ``Reopens:`` cancels both ships (R-BAL181): the card's code is no
+        longer all there, so it is reopened and a later commit ships it again.
+        """
+        ships = {name: _change(repo, name, name, "Ships: plan#4") for name in ("first", "second")}
+        base = _head(repo)
+        _revert(repo, ships[undone])
+        reasons = problems(repo, base, _head(repo))[1]
+        assert len(reasons) == 1 and "add the trailer `Reopens: plan#4`" in reasons[0]
+        _run(repo, "commit", "--quiet", "--amend", "--no-edit", "--trailer", "Reopens: plan#4")
         assert problems(repo, base, _head(repo)) == (1, [])
 
-    def test_undoing_a_second_ship_of_a_shipped_card_owes_nothing(self, repo):
-        """The first ship still stands after the revert, so git's answer does not change."""
-        _change(repo, "first", "first", "Ships: plan#4")
-        again = _change(repo, "again", "again", "Ships: plan#4")
+    def test_undoing_the_last_standing_ship_on_a_branchy_history_owes_reopens(self, repo):
+        """Review of 46d9b578a, finding 1: the case the net-effect rule passed.
+
+        Leaf 1 ships plan#4 and lands; its revert (Reopens) is built on a branch
+        that never saw leaf 2, which ships plan#4 again on another; both merge,
+        so leaf 2's ship is the one standing.  Reverting leaf 2 with no trailer
+        would leave git calling plan#4 shipped with both leaves' code gone.
+        """
+        leaf1 = _change(repo, "leaf1", "leaf 1", "Ships: plan#4")
+        _run(repo, "checkout", "--quiet", "-b", "undo")
+        _revert(repo, leaf1, trailer="Reopens: plan#4")
+        _run(repo, "checkout", "--quiet", "-b", "leaf2", leaf1)
+        leaf2 = _change(repo, "leaf2", "leaf 2", "Ships: plan#4")
+        _run(repo, "checkout", "--quiet", "dev")
+        _run(repo, "merge", "--quiet", "--no-ff", "undo", "-m", "Merge undo")
+        _run(repo, "merge", "--quiet", "--no-ff", "leaf2", "-m", "Merge leaf 2")
         base = _head(repo)
-        _revert(repo, again)
-        assert problems(repo, base, _head(repo)) == (1, [])
+        _revert(repo, leaf2)
+        reasons = problems(repo, base, _head(repo))[1]
+        assert len(reasons) == 1 and "add the trailer `Reopens: plan#4`" in reasons[0]
 
     def test_a_shortened_reference_id_is_resolved(self, repo):
         """``git revert --reference`` writes ``<short id> (<subject>, <date>)``."""
