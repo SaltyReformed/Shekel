@@ -102,10 +102,10 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   `docs/audits/test_improvements/test-performance-research.md` for the full profile.
 - **CI: six shards, each through the wrapper at `-n logical`** (plan step `bank_import:X-gy`,
   rulings R-BI38..R-BI41, 2026-09-22). `.github/workflows/ci.yml` runs a `scope` job (the change-set
-  classifier), `commit-trailers` (step X-cx's L4), `plan-gate`, `tax-law`, `lint` and six `test`
-  shards in parallel, and a `lint-and-test` job -- the check branch protection requires -- that
-  needs them all, runs `if: always()` and fails closed through `tools/ci/ci_verdict.py` (GitHub
-  counts a SKIPPED required check as passing). Each shard exports
+  classifier), `commit-trailers` (step X-cx's L4, on the range `scope` hands over), `plan-gate`,
+  `tax-law`, `lint` and six `test` shards in parallel, and a `lint-and-test` job -- the check branch
+  protection requires -- that needs them all, runs `if: always()` and fails closed through
+  `tools/ci/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each shard exports
   `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a stable hash
   of each test's `xdist_group` or node id, so the shards partition the collection by construction
   and every group lands whole on one shard --

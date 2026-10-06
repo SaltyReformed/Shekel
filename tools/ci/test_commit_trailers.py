@@ -73,6 +73,7 @@ class TestTheRevertRecordIsGitsOwn:
         f"  This reverts commit {'a' * 40}.\n",
         f"> This reverts commit {'a' * 40}.\n",
         "This reverts commit xyz.\n",
+        "This reverts commit added in the last release.\n",
     ])
     def test_a_mention_is_not_a_record(self, message):
         """Mid-line, indented, quoted or not an id: prose, not git's record."""
@@ -124,7 +125,7 @@ class TestTheCitationShape:
 
 
 class TestARevertOwesTheOpposite:
-    """Rule 2: a revert carries the opposite of every card trailer on what it undoes."""
+    """Rule 2: a revert changes back what the undone commits changed of a card's shipped state."""
 
     def test_undoing_a_ship_without_reopens_is_refused(self, repo):
         """The card's rule: git would keep calling plan#4 shipped."""
@@ -135,7 +136,8 @@ class TestARevertOwesTheOpposite:
         assert count == 1
         assert reasons == [
             f"{undo[:12]} (Revert \"leaf\") undoes {ship[:12]} (leaf), which carries "
-            f"`Ships: plan#4`; add the trailer `Reopens: plan#4` to {undo[:12]}'s message"]
+            f"`Ships: plan#4`; add the trailer `Reopens: plan#4` to the last paragraph of "
+            f"{undo[:12]}'s message"]
 
     def test_undoing_a_ship_with_reopens_passes(self, repo):
         """The same revert, carrying ``Reopens: plan#4``."""
@@ -164,8 +166,8 @@ class TestARevertOwesTheOpposite:
         reasons = problems(repo, base, _head(repo))[1]
         assert reasons == [
             f"{again[:12]} (Reapply \"leaf\") undoes {undo[:12]} (Revert \"leaf\"), "
-            f"which carries `Reopens: plan#4`; add the trailer `Ships: plan#4` to "
-            f"{again[:12]}'s message"]
+            f"which carries `Reopens: plan#4`; add the trailer `Ships: plan#4` to the last "
+            f"paragraph of {again[:12]}'s message"]
 
     def test_undoing_a_reopen_with_ships_passes(self, repo):
         """The re-landing carrying ``Ships: plan#4``."""
@@ -173,6 +175,21 @@ class TestARevertOwesTheOpposite:
         undo = _revert(repo, ship, trailer="Reopens: plan#4")
         base = _head(repo)
         _revert(repo, undo, trailer="Ships: plan#4")
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_undoing_a_ship_and_its_own_reopen_owes_nothing(self, repo):
+        """A commit shipping and reopening one card changed nothing: its Reopens cancels it."""
+        both = _change(repo, "leaf", "leaf", "Ships: plan#4\nReopens: plan#4")
+        base = _head(repo)
+        _revert(repo, both)
+        assert problems(repo, base, _head(repo)) == (1, [])
+
+    def test_undoing_a_second_ship_of_a_shipped_card_owes_nothing(self, repo):
+        """The first ship still stands after the revert, so git's answer does not change."""
+        _change(repo, "first", "first", "Ships: plan#4")
+        again = _change(repo, "again", "again", "Ships: plan#4")
+        base = _head(repo)
+        _revert(repo, again)
         assert problems(repo, base, _head(repo)) == (1, [])
 
     def test_a_shortened_reference_id_is_resolved(self, repo):
@@ -211,6 +228,27 @@ class TestRevertingAMerge:
         _revert(repo, merged, "-m", "1", trailer="Reopens: plan#4")
         assert problems(repo, merged, _head(repo)) == (1, [])
 
+    def test_a_merge_that_shipped_reopened_and_reshipped_owes_one_reopens(self, repo):
+        """Review S3: the NET effect is asked, not each trailer.
+
+        The branch ships plan#4, reverts it (Reopens) and reapplies it (Ships);
+        merged, git calls plan#4 shipped once.  Undoing the merge owes
+        ``Reopens: plan#4`` and nothing else: asking each trailer's opposite
+        demanded ``Ships: plan#4`` too, on the commit that removes the code.
+        """
+        _run(repo, "checkout", "--quiet", "-b", "feat")
+        ship = _change(repo, "leaf", "leaf", "Ships: plan#4")
+        undo = _revert(repo, ship, trailer="Reopens: plan#4")
+        _revert(repo, undo, trailer="Ships: plan#4")
+        _run(repo, "checkout", "--quiet", "dev")
+        _run(repo, "merge", "--quiet", "--no-ff", "feat", "-m", "Merge feat")
+        merged = _head(repo)
+        _revert(repo, merged, "-m", "1")
+        reasons = problems(repo, merged, _head(repo))[1]
+        assert len(reasons) == 1 and "add the trailer `Reopens: plan#4`" in reasons[0]
+        _run(repo, "commit", "--quiet", "--amend", "--no-edit", "--trailer", "Reopens: plan#4")
+        assert problems(repo, merged, _head(repo)) == (1, [])
+
     def test_a_merge_revert_that_lost_its_parent_line_is_refused(self, repo, merged):
         """Without the kept parent, what was undone cannot be read: refused, not passed."""
         undo = _change(repo, "gone", "Revert \"Merge feat\"", f"This reverts commit {merged}.")
@@ -239,7 +277,7 @@ class TestWhatCannotBeReadIsRefused:
         undo = _change(repo, "gone", "Revert", f"This reverts commit {'e' * 40}.")
         assert problems(repo, base, _head(repo))[1] == [
             f"{undo[:12]} (Revert): it says it reverts commit {'e' * 40}, which this "
-            f"repository does not hold"]
+            f"repository does not hold (if that commit was rebased, cite its new id)"]
 
     def test_the_undone_commit_may_sit_before_the_change_set(self, repo):
         """Reverting an old commit reads that commit, wherever it is in history."""
@@ -283,6 +321,11 @@ class TestTheCommandLine:
         """An empty or partial range from the workflow checks nothing, so it is not green."""
         assert main(argv) == 2
         assert "usage" in capsys.readouterr().err
+
+    def test_an_empty_change_set_exits_two_not_green(self, repo, capsys):
+        """No event has an empty change set: one means the ends are wrong, nothing checked."""
+        assert main([_head(repo), _head(repo)], root=repo) == 2
+        assert "holds no commit, so nothing was checked" in capsys.readouterr().err
 
     def test_a_range_git_cannot_read_exits_two(self, repo, capsys):
         """An id this repository does not hold is a failure, never an empty change set."""

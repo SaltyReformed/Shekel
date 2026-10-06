@@ -71,6 +71,16 @@ session-start hook, whose test is the one exemption).  None of those
 reaches a registry under the censused roots today (grepped when this
 landed).
 
+**An import is a read too.**  Since step X-cx's L4 made ``tools/`` one package
+tree, any test under ``tests/`` can ``from tools.ci.arcs import PLANS`` or
+``from tools.plan_gate import _registry`` and read a registry without spelling
+a path (review of 1e52a05ae, finding S1).  :func:`imports_of_the_tools` is the
+second census: no module in a skipped suite imports :data:`TOOLS` at all, and
+``test_ci_scope.py`` holds it at zero.  The rule is the whole package, not a
+list of the modules that read registries today, so it has nothing to keep
+complete: the tools' own tests run in both scopes (``ci.yml`` step 4b), so a
+test that needs a tool belongs there.
+
 Usage from ``ci.yml``, at the repository root::
 
     git diff --name-only --no-renames "${BASE}...${HEAD}" | python -m tools.ci.ci_scope
@@ -113,6 +123,11 @@ SKIPPED_TEST_ROOTS = ("tests", "tools/pylint/tests")
 #: halves), nothing imports them (held too), and the only CI step that
 #: touches them compiles rather than runs them (step 5a3).
 NOT_CENSUSED = ("tests/manual",)
+
+#: The repository's tooling package, which a skipped suite may not import: its
+#: modules name the registry-only paths (the arc list, the plan gate) without a
+#: string the path census could see (:func:`imports_of_the_tools`).
+TOOLS = "tools"
 
 #: What pytest WOULD collect if it appeared under :data:`NOT_CENSUSED`: the
 #: patterns the premise above depends on.
@@ -331,6 +346,30 @@ def imports_of_the_uncensused(roots: Iterable[Path] = (), *,
     The directory is left out because nothing runs it AND nothing imports it;
     this is the control on the second half.
     """
+    targets = set()
+    for directory in NOT_CENSUSED:
+        targets.add(directory.replace("/", "."))
+        targets.add(directory.rsplit("/", 1)[-1])
+    return _imports_of(roots, repo, frozenset(targets))
+
+
+def imports_of_the_tools(roots: Iterable[Path] = (), *,
+                         repo: Path | None = None) -> list[str]:
+    """Return ``"<file>:<line>"`` for every censused module that imports :data:`TOOLS`.
+
+    Same ``roots`` / ``repo`` contract as :func:`registry_readers`.
+    """
+    return _imports_of(roots, repo, frozenset({TOOLS}))
+
+
+def _imports_of(roots: Iterable[Path], repo: Path | None,
+                targets: frozenset[str]) -> list[str]:
+    """Return ``"<file>:<line>"`` for every censused import naming one of ``targets``.
+
+    A file that will not parse is reported (``SyntaxError``), as the path
+    census reports it: a census that skips what it cannot read passes on
+    nothing.
+    """
     base = repo or arcs.REPO
     roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
     hits: list[str] = []
@@ -343,20 +382,20 @@ def imports_of_the_uncensused(roots: Iterable[Path] = (), *,
                 hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
                 continue
             for node in ast.walk(tree):
-                if _imports_uncensused(node):
+                if _imports_one_of(node, targets):
                     hits.append(f"{rel}:{node.lineno}")
     return hits
 
 
-def _imports_uncensused(node: ast.AST) -> bool:
-    """Return whether one import statement names a :data:`NOT_CENSUSED` directory.
+def _imports_one_of(node: ast.AST, targets: frozenset[str]) -> bool:
+    """Return whether one import statement names one of ``targets``.
 
     Every dotted name the statement binds is tested on its own: ``import
     os, manual.x`` names ``manual.x``; ``from tests import manual`` names
     ``tests.manual``; ``from tests.manual.x import y`` names
-    ``tests.manual.x``.  A name matches when it IS the directory (as
-    ``tests.manual`` or its last segment ``manual``) or starts under it; a
-    look-alike (``manual_helpers``, ``mytests.manual``) does not.
+    ``tests.manual.x``.  A name matches when it IS a target or starts under
+    it; a look-alike (``manual_helpers``, ``mytests.manual``, ``toolsmith``)
+    does not.
     """
     if isinstance(node, ast.Import):
         dotted = [alias.name for alias in node.names]
@@ -367,10 +406,6 @@ def _imports_uncensused(node: ast.AST) -> bool:
         dotted.append(module)
     else:
         return False
-    targets = set()
-    for directory in NOT_CENSUSED:
-        targets.add(directory.replace("/", "."))
-        targets.add(directory.rsplit("/", 1)[-1])
     return any(
         name == target or name.startswith(f"{target}.")
         for name in dotted if name for target in targets
@@ -437,10 +472,10 @@ def exemption_key(hit: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Print the scope of the change set on stdin; ``--readers`` prints the unexempted census."""
+    """Print the scope of the change set on stdin; ``--readers`` prints both censuses' hits."""
     args = sys.argv[1:] if argv is None else argv
     if args == ["--readers"]:
-        for hit in unexempted_readers():
+        for hit in unexempted_readers() + imports_of_the_tools():
             print(hit)
         return 0
     if args:

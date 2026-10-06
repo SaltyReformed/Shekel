@@ -329,10 +329,11 @@ jobs:
       # re-run it at merge, so a PR checked green on November 30 can still
       # merge in December.  That merge -- and a tag, which skips PRs -- is
       # what the same check in docker-publish.yml stops, before the release
-      # image is built.  (Once the merge queue is required, step X-cx's L5,
-      # this job runs again on each merge group, so it is judged at merge
-      # too.)  The banner on every owner page and the weekly tax-law.yml run
-      # give the month's warning before either refuses.
+      # image is built.  (Step X-cx's L5 requires the merge queue on dev
+      # only: a merge into dev is then judged again on its merge group, but
+      # a release merge into main is never queued, so docker-publish.yml's
+      # check still stops that one.)  The banner on every owner page and the
+      # weekly tax-law.yml run give the month's warning before either refuses.
       - name: Is next year's tax law in? (refuses from December 1)
         run: python scripts/check_tax_law.py refuse
 
