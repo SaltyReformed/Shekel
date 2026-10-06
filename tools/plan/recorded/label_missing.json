@@ -1,0 +1,387 @@
+{
+ "scratch": {
+  "numbers": [
+   21
+  ],
+  "ids": [
+   5705447790
+  ],
+  "nodes": [
+   "I_kwDOU6wSSs8AAAABVBI5bg"
+  ],
+  "items": [],
+  "board": "PVT_kwDOFB5GWc4Bln4u"
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues",
+   "body": {
+    "title": "[L2 measurement] scratch finding filed before the filing label exists (delete me)",
+    "body": "The recorder files this card to record GitHub's answer to a label it lacks.",
+    "type": "finding",
+    "labels": [
+     "balance",
+     "filing"
+    ]
+   },
+   "status": 201,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/21",
+    "id": 5705447790,
+    "node_id": "I_kwDOU6wSSs8AAAABVBI5bg",
+    "number": 21,
+    "title": "[L2 measurement] scratch finding filed before the filing label exists (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     },
+     {
+      "id": 12543741845,
+      "node_id": "LA_kwDOU6wSSs8AAAAC66pPlQ",
+      "url": "[redacted: not a scratch card]",
+      "name": "filing",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": null,
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "open",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:12:57Z",
+    "updated_at": "2026-10-05T02:12:57Z",
+    "closed_at": null,
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387478,
+     "node_id": "IT_kwDOFB5GWc41IX5W",
+     "name": "finding",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 0,
+     "completed": 0,
+     "percent_completed": 0
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "body": "The recorder files this card to record GitHub's answer to a label it lacks.",
+    "closed_by": null,
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/timeline",
+    "performed_via_github_app": null,
+    "state_reason": null,
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c21: issue(number: 21) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c21": {
+       "id": "I_kwDOU6wSSs8AAAABVBI5bg",
+       "number": 21,
+       "fullDatabaseId": "5705447790",
+       "title": "[L2 measurement] scratch finding filed before the filing label exists (delete me)",
+       "state": "OPEN",
+       "stateReason": null,
+       "issueType": {
+        "name": "finding"
+       },
+       "labels": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "name": "balance"
+         },
+         {
+          "name": "filing"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": []
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "DELETE",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/labels/filing",
+   "body": null,
+   "status": 200,
+   "answer": [
+    {
+     "id": 12531478759,
+     "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+     "url": "[redacted: not a scratch card]",
+     "name": "balance",
+     "color": "[redacted: not a scratch card]",
+     "default": false,
+     "description": "[redacted: not a scratch card]",
+     "archived_at": null,
+     "archived_by": null
+    }
+   ]
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c21: issue(number: 21) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c21": {
+       "id": "I_kwDOU6wSSs8AAAABVBI5bg",
+       "number": 21,
+       "fullDatabaseId": "5705447790",
+       "title": "[L2 measurement] scratch finding filed before the filing label exists (delete me)",
+       "state": "OPEN",
+       "stateReason": null,
+       "issueType": {
+        "name": "finding"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": []
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "PATCH",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21",
+   "body": {
+    "state": "closed",
+    "state_reason": "not_planned"
+   },
+   "status": 200,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/21",
+    "id": 5705447790,
+    "node_id": "I_kwDOU6wSSs8AAAABVBI5bg",
+    "number": 21,
+    "title": "[L2 measurement] scratch finding filed before the filing label exists (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "closed",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:12:57Z",
+    "updated_at": "2026-10-05T02:13:00Z",
+    "closed_at": "2026-10-05T02:13:00Z",
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387478,
+     "node_id": "IT_kwDOFB5GWc41IX5W",
+     "name": "finding",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 0,
+     "completed": 0,
+     "percent_completed": 0
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "body": "The recorder files this card to record GitHub's answer to a label it lacks.",
+    "closed_by": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/21/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "not_planned",
+    "pinned_comment": null
+   }
+  }
+ ]
+}
