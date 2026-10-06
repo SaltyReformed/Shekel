@@ -18,7 +18,7 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    over the undone commits' trailers alone, which names each card whose
    shipped code the revert takes away.  The revert owes ``Reopens: plan#N``
    for each card REMOVED names, unless WITHOUT ships it through a
-   ``Ships:`` git cancels NOW (code the revert brings back), and
+   ``Ships:`` git cancels NOW (a ship an undone ``Reopens:`` cancelled), and
    ``Ships: plan#N`` for each card shipped WITHOUT and not NOW; nothing else.
    So undoing a ship owes ``Reopens:``, even one of several ships of a card,
    since they may be its parts (``recurrence:R16-c-2`` shipped in three),
@@ -37,7 +37,7 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    open until a commit ships it again.  Toward SHIPPED, only where parallel
    lines of history meet in a merge: a ``Reopens:`` cancels no ``Ships:`` it
    was not built on, so a ``Ships:`` on one line outlives the undo of the
-   card's code on another, and a revert that brings code back owes nothing,
+   card's code on another, and a revert that also restores a cancelled ship owes nothing,
    leaving the ``Ships:`` whose code it removes standing for such a merge to
    expose.  Each revert is judged where it lands, so no rule here sees the
    merge.  A trailer a revert does not owe is not refused: a ``Ships:`` it
