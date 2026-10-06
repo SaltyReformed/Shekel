@@ -108,3 +108,32 @@ def test_graphql_raises_on_errors_reported_inside_a_200():
     session = _Session(_Response(200, {"data": None, "errors": [{"message": "nope"}]}))
     with pytest.raises(GitHubError, match="nope"):
         GitHub("t", session).graphql("mutation { x }")
+
+
+def test_graphql_lookup_reads_a_missing_field_as_absent_but_raises_on_a_missing_repository():
+    """Review cp3 L-c and cp4 L-10: every NOT_FOUND was dropped, so a repository GitHub could
+    not find left ``data.repository`` null and the caller hit a TypeError.  Only a card the
+    repository holds no number for -- a two-step path -- is absent; the repository's own
+    NOT_FOUND and any deeper one still raise (the first two shapes recorded 2026-10-04 in
+    ``recorded/tracker.json``, graded against it in ``test__tracker.py``; no read has
+    measured a deeper one)."""
+    below = {"data": {"repository": {"c1": None}}, "errors": [
+        {"type": "NOT_FOUND", "path": ["repository", "c1"], "message": "no issue 1"}]}
+    assert GitHub("t", _Session(_Response(200, below))).graphql_lookup("q") == below["data"]
+    top = {"data": {"repository": None}, "errors": [
+        {"type": "NOT_FOUND", "path": ["repository"], "message": "no repository x"}]}
+    with pytest.raises(GitHubError, match="no repository x"):
+        GitHub("t", _Session(_Response(200, top))).graphql_lookup("q")
+    deeper = {"data": {"repository": {"c1": {"parent": None}}}, "errors": [
+        {"type": "NOT_FOUND", "path": ["repository", "c1", "parent"], "message": "unseen"}]}
+    with pytest.raises(GitHubError, match="unseen"):
+        GitHub("t", _Session(_Response(200, deeper))).graphql_lookup("q")
+
+
+def test_graphql_lookup_reads_as_absent_only_a_card_under_the_repository():
+    """A two-step NOT_FOUND under any other top-level field (an organization's) still raises:
+    only a card the repository holds no number for was measured as absent."""
+    other = {"data": {"organization": {"x": None}}, "errors": [
+        {"type": "NOT_FOUND", "path": ["organization", "x"], "message": "elsewhere"}]}
+    with pytest.raises(GitHubError, match="elsewhere"):
+        GitHub("t", _Session(_Response(200, other))).graphql_lookup("q")

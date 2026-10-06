@@ -1,0 +1,1122 @@
+{
+ "scratch": {
+  "numbers": [
+   23,
+   24,
+   25
+  ],
+  "ids": [
+   5705459375,
+   5705460158,
+   5705461351
+  ],
+  "nodes": [
+   "I_kwDOU6wSSs8AAAABVBJmrw",
+   "I_kwDOU6wSSs8AAAABVBJpvg",
+   "I_kwDOU6wSSs8AAAABVBJuZw"
+  ],
+  "items": [],
+  "board": "PVT_kwDOFB5GWc4Bln4u"
+ },
+ "exchanges": [
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c23: issue(number: 23) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } c24: issue(number: 24) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } c25: issue(number: 25) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c23": {
+       "id": "I_kwDOU6wSSs8AAAABVBJmrw",
+       "number": 23,
+       "fullDatabaseId": "5705459375",
+       "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "number": 25,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "ruling"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      },
+      "c24": {
+       "id": "I_kwDOU6wSSs8AAAABVBJpvg",
+       "number": 24,
+       "fullDatabaseId": "5705460158",
+       "title": "[L2 measurement] scratch leaf L of step S, by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "name": "balance"
+         },
+         {
+          "name": "filing"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      },
+      "c25": {
+       "id": "I_kwDOU6wSSs8AAAABVBJuZw",
+       "number": 25,
+       "fullDatabaseId": "5705461351",
+       "title": "[L2 measurement] scratch ruling R of step S, by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "issueType": {
+        "name": "ruling"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": {
+        "number": 23,
+        "repository": {
+         "nameWithOwner": "saltyreformed-labs/shekel-plan"
+        }
+       },
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "DELETE",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/sub_issue",
+   "body": {
+    "sub_issue_id": 5705461351
+   },
+   "status": 200,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/23",
+    "id": 5705459375,
+    "node_id": "I_kwDOU6wSSs8AAAABVBJmrw",
+    "number": 23,
+    "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "closed",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:14:29Z",
+    "updated_at": "2026-10-05T02:14:57Z",
+    "closed_at": "2026-10-05T02:14:57Z",
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387282,
+     "node_id": "IT_kwDOFB5GWc41IX2S",
+     "name": "step",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 1,
+     "completed": 1,
+     "percent_completed": 100
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "repository": {
+     "id": 1403785802,
+     "node_id": "R_kgDOU6wSSg",
+     "name": "shekel-plan",
+     "full_name": "saltyreformed-labs/shekel-plan",
+     "private": true,
+     "owner": {
+      "login": "saltyreformed-labs",
+      "id": 337528409,
+      "node_id": "O_kgDOFB5GWQ",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
+      "type": "Organization",
+      "user_view_type": "[redacted: not a scratch card]",
+      "site_admin": false
+     },
+     "html_url": "[redacted: not a scratch card]",
+     "description": "[redacted: not a scratch card]",
+     "fork": false,
+     "url": "[redacted: not a scratch card]",
+     "forks_url": "[redacted: not a scratch card]",
+     "keys_url": "[redacted: not a scratch card]",
+     "collaborators_url": "[redacted: not a scratch card]",
+     "teams_url": "[redacted: not a scratch card]",
+     "hooks_url": "[redacted: not a scratch card]",
+     "issue_events_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "assignees_url": "[redacted: not a scratch card]",
+     "branches_url": "[redacted: not a scratch card]",
+     "tags_url": "[redacted: not a scratch card]",
+     "blobs_url": "[redacted: not a scratch card]",
+     "git_tags_url": "[redacted: not a scratch card]",
+     "git_refs_url": "[redacted: not a scratch card]",
+     "trees_url": "[redacted: not a scratch card]",
+     "statuses_url": "[redacted: not a scratch card]",
+     "languages_url": "[redacted: not a scratch card]",
+     "stargazers_url": "[redacted: not a scratch card]",
+     "contributors_url": "[redacted: not a scratch card]",
+     "subscribers_url": "[redacted: not a scratch card]",
+     "subscription_url": "[redacted: not a scratch card]",
+     "commits_url": "[redacted: not a scratch card]",
+     "git_commits_url": "[redacted: not a scratch card]",
+     "comments_url": "[redacted: not a scratch card]",
+     "issue_comment_url": "[redacted: not a scratch card]",
+     "contents_url": "[redacted: not a scratch card]",
+     "compare_url": "[redacted: not a scratch card]",
+     "merges_url": "[redacted: not a scratch card]",
+     "archive_url": "[redacted: not a scratch card]",
+     "downloads_url": "[redacted: not a scratch card]",
+     "issues_url": "[redacted: not a scratch card]",
+     "pulls_url": "[redacted: not a scratch card]",
+     "milestones_url": "[redacted: not a scratch card]",
+     "notifications_url": "[redacted: not a scratch card]",
+     "labels_url": "[redacted: not a scratch card]",
+     "releases_url": "[redacted: not a scratch card]",
+     "deployments_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "pushed_at": "[redacted: not a scratch card]",
+     "git_url": "[redacted: not a scratch card]",
+     "ssh_url": "[redacted: not a scratch card]",
+     "clone_url": "[redacted: not a scratch card]",
+     "svn_url": "[redacted: not a scratch card]",
+     "homepage": null,
+     "size": 0,
+     "stargazers_count": 0,
+     "watchers_count": 0,
+     "language": null,
+     "has_issues": true,
+     "has_projects": true,
+     "has_downloads": false,
+     "has_wiki": false,
+     "has_pages": false,
+     "has_discussions": false,
+     "forks_count": 0,
+     "mirror_url": null,
+     "archived": false,
+     "disabled": false,
+     "open_issues_count": 14,
+     "license": null,
+     "allow_forking": false,
+     "is_template": false,
+     "web_commit_signoff_required": false,
+     "has_pull_requests": true,
+     "pull_request_creation_policy": "[redacted: not a scratch card]",
+     "topics": [],
+     "visibility": "[redacted: not a scratch card]",
+     "forks": 0,
+     "open_issues": 14,
+     "watchers": 0,
+     "default_branch": "[redacted: not a scratch card]",
+     "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": false,
+      "triage": false,
+      "pull": false
+     }
+    },
+    "body": "The recorder files this step to record the filing mark.",
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "not_planned",
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/sub_issues",
+   "body": {
+    "sub_issue_id": 5705461351
+   },
+   "status": 201,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/23",
+    "id": 5705459375,
+    "node_id": "I_kwDOU6wSSs8AAAABVBJmrw",
+    "number": 23,
+    "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "closed",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:14:29Z",
+    "updated_at": "2026-10-05T02:14:57Z",
+    "closed_at": "2026-10-05T02:14:57Z",
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387282,
+     "node_id": "IT_kwDOFB5GWc41IX2S",
+     "name": "step",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 1,
+     "completed": 1,
+     "percent_completed": 100
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "repository": {
+     "id": 1403785802,
+     "node_id": "R_kgDOU6wSSg",
+     "name": "shekel-plan",
+     "full_name": "saltyreformed-labs/shekel-plan",
+     "private": true,
+     "owner": {
+      "login": "saltyreformed-labs",
+      "id": 337528409,
+      "node_id": "O_kgDOFB5GWQ",
+      "avatar_url": "[redacted: not a scratch card]",
+      "gravatar_id": "[redacted: not a scratch card]",
+      "url": "[redacted: not a scratch card]",
+      "html_url": "[redacted: not a scratch card]",
+      "followers_url": "[redacted: not a scratch card]",
+      "following_url": "[redacted: not a scratch card]",
+      "gists_url": "[redacted: not a scratch card]",
+      "starred_url": "[redacted: not a scratch card]",
+      "subscriptions_url": "[redacted: not a scratch card]",
+      "organizations_url": "[redacted: not a scratch card]",
+      "repos_url": "[redacted: not a scratch card]",
+      "events_url": "[redacted: not a scratch card]",
+      "received_events_url": "[redacted: not a scratch card]",
+      "type": "Organization",
+      "user_view_type": "[redacted: not a scratch card]",
+      "site_admin": false
+     },
+     "html_url": "[redacted: not a scratch card]",
+     "description": "[redacted: not a scratch card]",
+     "fork": false,
+     "url": "[redacted: not a scratch card]",
+     "forks_url": "[redacted: not a scratch card]",
+     "keys_url": "[redacted: not a scratch card]",
+     "collaborators_url": "[redacted: not a scratch card]",
+     "teams_url": "[redacted: not a scratch card]",
+     "hooks_url": "[redacted: not a scratch card]",
+     "issue_events_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "assignees_url": "[redacted: not a scratch card]",
+     "branches_url": "[redacted: not a scratch card]",
+     "tags_url": "[redacted: not a scratch card]",
+     "blobs_url": "[redacted: not a scratch card]",
+     "git_tags_url": "[redacted: not a scratch card]",
+     "git_refs_url": "[redacted: not a scratch card]",
+     "trees_url": "[redacted: not a scratch card]",
+     "statuses_url": "[redacted: not a scratch card]",
+     "languages_url": "[redacted: not a scratch card]",
+     "stargazers_url": "[redacted: not a scratch card]",
+     "contributors_url": "[redacted: not a scratch card]",
+     "subscribers_url": "[redacted: not a scratch card]",
+     "subscription_url": "[redacted: not a scratch card]",
+     "commits_url": "[redacted: not a scratch card]",
+     "git_commits_url": "[redacted: not a scratch card]",
+     "comments_url": "[redacted: not a scratch card]",
+     "issue_comment_url": "[redacted: not a scratch card]",
+     "contents_url": "[redacted: not a scratch card]",
+     "compare_url": "[redacted: not a scratch card]",
+     "merges_url": "[redacted: not a scratch card]",
+     "archive_url": "[redacted: not a scratch card]",
+     "downloads_url": "[redacted: not a scratch card]",
+     "issues_url": "[redacted: not a scratch card]",
+     "pulls_url": "[redacted: not a scratch card]",
+     "milestones_url": "[redacted: not a scratch card]",
+     "notifications_url": "[redacted: not a scratch card]",
+     "labels_url": "[redacted: not a scratch card]",
+     "releases_url": "[redacted: not a scratch card]",
+     "deployments_url": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "pushed_at": "[redacted: not a scratch card]",
+     "git_url": "[redacted: not a scratch card]",
+     "ssh_url": "[redacted: not a scratch card]",
+     "clone_url": "[redacted: not a scratch card]",
+     "svn_url": "[redacted: not a scratch card]",
+     "homepage": null,
+     "size": 0,
+     "stargazers_count": 0,
+     "watchers_count": 0,
+     "language": null,
+     "has_issues": true,
+     "has_projects": true,
+     "has_downloads": false,
+     "has_wiki": false,
+     "has_pages": false,
+     "has_discussions": false,
+     "forks_count": 0,
+     "mirror_url": null,
+     "archived": false,
+     "disabled": false,
+     "open_issues_count": 14,
+     "license": null,
+     "allow_forking": false,
+     "is_template": false,
+     "web_commit_signoff_required": false,
+     "has_pull_requests": true,
+     "pull_request_creation_policy": "[redacted: not a scratch card]",
+     "topics": [],
+     "visibility": "[redacted: not a scratch card]",
+     "forks": 0,
+     "open_issues": 14,
+     "watchers": 0,
+     "default_branch": "[redacted: not a scratch card]",
+     "permissions": {
+      "admin": false,
+      "maintain": false,
+      "push": false,
+      "triage": false,
+      "pull": false
+     }
+    },
+    "body": "The recorder files this step to record the filing mark.",
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "not_planned",
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "PATCH",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+   "body": {
+    "state": "open"
+   },
+   "status": 200,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/23",
+    "id": 5705459375,
+    "node_id": "I_kwDOU6wSSs8AAAABVBJmrw",
+    "number": 23,
+    "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "open",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:14:29Z",
+    "updated_at": "2026-10-05T12:02:02Z",
+    "closed_at": null,
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387282,
+     "node_id": "IT_kwDOFB5GWc41IX2S",
+     "name": "step",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 1,
+     "completed": 1,
+     "percent_completed": 100
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "body": "The recorder files this step to record the filing mark.",
+    "closed_by": null,
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "reopened",
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "DELETE",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/sub_issue",
+   "body": {
+    "sub_issue_id": 5705460158
+   },
+   "status": 403,
+   "answer": {
+    "message": "Resource not accessible by integration",
+    "documentation_url": "https://docs.github.com/rest/issues/sub-issues#remove-sub-issue",
+    "status": "403"
+   }
+  },
+  {
+   "method": "PATCH",
+   "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+   "body": {
+    "state": "closed",
+    "state_reason": "not_planned"
+   },
+   "status": 200,
+   "answer": {
+    "url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23",
+    "repository_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan",
+    "labels_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/labels{/name}",
+    "comments_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/comments",
+    "events_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/events",
+    "html_url": "https://github.com/saltyreformed-labs/shekel-plan/issues/23",
+    "id": 5705459375,
+    "node_id": "I_kwDOU6wSSs8AAAABVBJmrw",
+    "number": 23,
+    "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+    "user": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "labels": [
+     {
+      "id": 12531478759,
+      "node_id": "LA_kwDOU6wSSs8AAAAC6u8w5w",
+      "url": "[redacted: not a scratch card]",
+      "name": "balance",
+      "color": "[redacted: not a scratch card]",
+      "default": false,
+      "description": "[redacted: not a scratch card]",
+      "archived_at": null,
+      "archived_by": null
+     }
+    ],
+    "state": "closed",
+    "locked": false,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-05T02:14:29Z",
+    "updated_at": "2026-10-05T12:02:03Z",
+    "closed_at": "2026-10-05T12:02:03Z",
+    "assignee": null,
+    "author_association": "NONE",
+    "issue_field_values": [],
+    "type": {
+     "id": 891387282,
+     "node_id": "IT_kwDOFB5GWc41IX2S",
+     "name": "step",
+     "description": "[redacted: not a scratch card]",
+     "color": "[redacted: not a scratch card]",
+     "created_at": "[redacted: not a scratch card]",
+     "updated_at": "[redacted: not a scratch card]",
+     "is_enabled": true
+    },
+    "active_lock_reason": null,
+    "sub_issues_summary": {
+     "total": 1,
+     "completed": 1,
+     "percent_completed": 100
+    },
+    "issue_dependencies_summary": {
+     "blocked_by": 0,
+     "total_blocked_by": 0,
+     "blocking": 0,
+     "total_blocking": 0
+    },
+    "body": "The recorder files this step to record the filing mark.",
+    "closed_by": {
+     "login": "shekel-plan-tool[bot]",
+     "id": 337541023,
+     "node_id": "BOT_kgDOFB53nw",
+     "avatar_url": "[redacted: not a scratch card]",
+     "gravatar_id": "[redacted: not a scratch card]",
+     "url": "[redacted: not a scratch card]",
+     "html_url": "[redacted: not a scratch card]",
+     "followers_url": "[redacted: not a scratch card]",
+     "following_url": "[redacted: not a scratch card]",
+     "gists_url": "[redacted: not a scratch card]",
+     "starred_url": "[redacted: not a scratch card]",
+     "subscriptions_url": "[redacted: not a scratch card]",
+     "organizations_url": "[redacted: not a scratch card]",
+     "repos_url": "[redacted: not a scratch card]",
+     "events_url": "[redacted: not a scratch card]",
+     "received_events_url": "[redacted: not a scratch card]",
+     "type": "Bot",
+     "user_view_type": "[redacted: not a scratch card]",
+     "site_admin": false
+    },
+    "reactions": {
+     "url": "[redacted: not a scratch card]",
+     "total_count": 0,
+     "+1": 0,
+     "-1": 0,
+     "laugh": 0,
+     "hooray": 0,
+     "confused": 0,
+     "heart": 0,
+     "rocket": 0,
+     "eyes": 0
+    },
+    "timeline_url": "https://api.github.com/repos/saltyreformed-labs/shekel-plan/issues/23/timeline",
+    "performed_via_github_app": null,
+    "state_reason": "not_planned",
+    "pinned_comment": null
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {\n  items(first: 100, after: $after, orderBy: {field: POSITION, direction: ASC}) {\n    pageInfo { hasNextPage endCursor }\n    nodes { id content { ... on Issue { number repository { nameWithOwner } } } } } } } }",
+    "variables": {
+     "id": "PVT_kwDOFB5GWc4Bln4u",
+     "after": null
+    }
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "node": {
+      "items": {
+       "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOnYyOpK5MDAwMDAwMDEuMTExMTExMTExMTExMTExMc4PmiCi"
+       },
+       "nodes": [
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIIE",
+         "content": {
+          "number": 2,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIIU",
+         "content": {
+          "number": 3,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIIo",
+         "content": {
+          "number": 4,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aII4",
+         "content": {
+          "number": 5,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIJM",
+         "content": {
+          "number": 6,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIJg",
+         "content": {
+          "number": 9,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIJs",
+         "content": {
+          "number": 7,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIJ4",
+         "content": {
+          "number": 8,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        },
+        {
+         "id": "PVTI_lADOFB5GWc4Bln4uzg-aIKI",
+         "content": {
+          "number": 10,
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "url": "https://api.github.com/graphql",
+   "body": {
+    "query": "query { repository(owner: \"saltyreformed-labs\", name: \"shekel-plan\") { c23: issue(number: 23) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } c24: issue(number: 24) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } c25: issue(number: 25) { \n  id number fullDatabaseId title state stateReason\n  issueType { name }\n  labels(first: 100) { totalCount nodes { name } }\n  parent { number repository { nameWithOwner } }\n  subIssues(first: 100) { totalCount nodes {\n    number state issueType { name } repository { nameWithOwner } } }\n  blockedBy(first: 100) { totalCount nodes { number repository { nameWithOwner } } }\n  projectItems(first: 100) { totalCount nodes { id project { id } } }\n  timelineItems(itemTypes: [CLOSED_EVENT, REOPENED_EVENT], last: 1) { nodes {\n    __typename\n    ... on ClosedEvent { actor { login } }\n    ... on ReopenedEvent { actor { login } } } }\n } } }",
+    "variables": {}
+   },
+   "status": 200,
+   "answer": {
+    "data": {
+     "repository": {
+      "c23": {
+       "id": "I_kwDOU6wSSs8AAAABVBJmrw",
+       "number": 23,
+       "fullDatabaseId": "5705459375",
+       "title": "[L2 measurement] scratch step S, split by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "number": 25,
+          "state": "CLOSED",
+          "issueType": {
+           "name": "ruling"
+          },
+          "repository": {
+           "nameWithOwner": "saltyreformed-labs/shekel-plan"
+          }
+         }
+        ]
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      },
+      "c24": {
+       "id": "I_kwDOU6wSSs8AAAABVBJpvg",
+       "number": 24,
+       "fullDatabaseId": "5705460158",
+       "title": "[L2 measurement] scratch leaf L of step S, by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "NOT_PLANNED",
+       "issueType": {
+        "name": "step"
+       },
+       "labels": {
+        "totalCount": 2,
+        "nodes": [
+         {
+          "name": "balance"
+         },
+         {
+          "name": "filing"
+         }
+        ]
+       },
+       "parent": null,
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      },
+      "c25": {
+       "id": "I_kwDOU6wSSs8AAAABVBJuZw",
+       "number": 25,
+       "fullDatabaseId": "5705461351",
+       "title": "[L2 measurement] scratch ruling R of step S, by the recorder (delete me)",
+       "state": "CLOSED",
+       "stateReason": "COMPLETED",
+       "issueType": {
+        "name": "ruling"
+       },
+       "labels": {
+        "totalCount": 1,
+        "nodes": [
+         {
+          "name": "balance"
+         }
+        ]
+       },
+       "parent": {
+        "number": 23,
+        "repository": {
+         "nameWithOwner": "saltyreformed-labs/shekel-plan"
+        }
+       },
+       "subIssues": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "blockedBy": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "projectItems": {
+        "totalCount": 0,
+        "nodes": []
+       },
+       "timelineItems": {
+        "nodes": [
+         {
+          "__typename": "ClosedEvent",
+          "actor": {
+           "login": "shekel-plan-tool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  }
+ ]
+}
