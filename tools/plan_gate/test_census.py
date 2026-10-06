@@ -22,8 +22,9 @@ import re
 
 import pytest
 
-import _census
-import _registry as registry
+from tools.plan_gate import _census
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
 
 
 @pytest.fixture(name="stage_census")
@@ -88,7 +89,7 @@ def _fixture_tree(tmp_path, monkeypatch):
         'MESSAGE = "NEEDLE appears here only as prose"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(registry, "REPO", tmp_path)
+    monkeypatch.setattr(arcs, "REPO", tmp_path)
     return {"code lines": 5, "code files": 3, "comments lines": 2, "lines": 10, "files": 4}
 
 
@@ -306,7 +307,7 @@ class TestACensusMayNotReachOutsideTheCode:
         outside.write_text("SECRET = 1\n", encoding="utf-8")
         (tmp_path / "app" / "linked.py").symlink_to(outside)
         (tmp_path / "app" / "real.py").write_text("SECRET = 2\n", encoding="utf-8")
-        monkeypatch.setattr(registry, "REPO", tmp_path)
+        monkeypatch.setattr(arcs, "REPO", tmp_path)
         paths = _census.census_paths("app/**/*.py")
         assert [p.name for p in paths] == ["real.py"], paths
         assert _census.census_count(re.compile("SECRET"), paths, "lines") == 1

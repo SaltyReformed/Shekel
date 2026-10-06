@@ -131,7 +131,8 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        files: ^tools/plan_gate/.*\.py$
+        # tools/ci/arcs.py too: the gate imports the arc list from there.
+        files: ^tools/(plan_gate/.*|ci/arcs)\.py$
         pass_filenames: false
         # The plan gate was RUN by the pytest hook below and LINTED by nothing
         # -- not this file, not ci.yml (whose pylint step is `app/` only) --
@@ -150,7 +151,8 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        files: ^tools/plan/.*\.py$
+        # tools/ci too: the tool imports the arc list from there.
+        files: ^tools/(plan|ci)/.*\.py$
         pass_filenames: false
         # The private tracker's tooling (ruling balance:R-BAL170) holds the
         # 10.00/10 floor tools/pylint and tools/plan_gate hold, from its first
@@ -163,9 +165,30 @@ repos:
         name: plan tool unit tests
         entry: pytest
         language: system
-        files: ^tools/plan/.*\.py$
+        files: ^tools/(plan|ci)/.*\.py$
         pass_filenames: false
         args: [tools/plan, -c, /dev/null, -q]
+      # tools/ci: the classifier and verdict ci.yml runs, and the arc list the
+      # plan gate and the plan tool import (step X-cx's L4).  The same 10.00/10
+      # floor and the same tests ci.yml step 4b runs in every scope.
+      - id: pylint-ci
+        name: pylint tools/ci (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tools/ci/.*\.py$
+        pass_filenames: false
+        args:
+          - tools/ci/
+          - --fail-under=10
+          - --fail-on=E,F
+      - id: ci-tests
+        name: tools/ci unit tests
+        entry: pytest
+        language: system
+        files: ^(tools/ci/.*\.py|\.github/workflows/.*\.ya?ml)$
+        pass_filenames: false
+        args: [tools/ci, -c, /dev/null, -q]
 
       # The planning REGISTRIES and the four arc documents.  Every finding
       # names a LIVE owner, the stated row count matches the table, every
@@ -202,7 +225,7 @@ repos:
         # folded scalar joins its lines with a SPACE, which puts a space inside
         # the alternation. It HAD been re-split, and bank_import's document
         # went ungated for as long as nobody re-read this comment.
-        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/rulings\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|docs/plans/implementation_plan_bank_import\.md|docs/plans/implementation_plan_salary\.md|tools/plan_gate/.*\.py)$
+        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/rulings\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|docs/plans/implementation_plan_bank_import\.md|docs/plans/implementation_plan_salary\.md|tools/ci/arcs\.py|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

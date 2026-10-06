@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-import ci_verdict
+from tools.ci import ci_verdict
 
 
 def _needs(scope_output="full", **results):

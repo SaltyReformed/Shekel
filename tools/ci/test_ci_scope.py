@@ -6,8 +6,8 @@ Four claims, each graded in the direction it can fail:
    the prefixes and ``full`` for everything else, including the shapes that
    LOOK registry-only (a sibling directory sharing the prefix's spelling, an
    absolute path, a ``..``, an empty set).
-2. The prefixes are DERIVED from ``_registry``: a seventh arc document widens
-   them with no edit to ``ci_scope``.
+2. The prefixes are DERIVED from ``tools.ci.arcs``: a seventh arc document
+   widens them with no edit to ``ci_scope``; this package is not one of them.
 3. The census finds a registry read in each spelling it claims to see and
    ignores prose about one; on this repository it finds nothing unexempted,
    and an exemption that excuses nothing is itself reported.
@@ -28,9 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-import _registry as registry
-import ci_scope
-import ci_verdict
+from tools.ci import arcs, ci_scope, ci_verdict
 
 FULL, RO = ci_scope.FULL, ci_scope.REGISTRY_ONLY
 
@@ -70,6 +68,8 @@ class TestTheClassifier:
         ["docs/plansteps.md"],
         ["docs/plans"],
         ["tools/plan_gate_v2/x.py"],
+        ["tools/ci/ci_scope.py"],
+        ["docs/plans/steps.md", "tools/ci/arcs.py"],
         ["tools/pylint/tests/test_x.py"],
         ["/docs/plans/steps.md"],
         ["docs/plans/../../app/x.py"],
@@ -89,19 +89,28 @@ class TestThePrefixesAreDerived:
     """Claim 2."""
 
     def test_a_seventh_arc_document_widens_the_set_with_no_edit_here(self, monkeypatch):
-        """A new entry in ``_registry.ARC_DOCS`` is a new prefix, with no edit here."""
-        widened = dict(registry.ARC_DOCS)
-        widened["seventh"] = registry.REPO / "docs/audits/seventh_arc/README.md"
-        monkeypatch.setattr(registry, "ARC_DOCS", widened)
+        """A new entry in ``tools.ci.arcs.ARC_DOCS`` is a new prefix, with no edit here."""
+        widened = dict(arcs.ARC_DOCS)
+        widened["seventh"] = arcs.REPO / "docs/audits/seventh_arc/README.md"
+        monkeypatch.setattr(arcs, "ARC_DOCS", widened)
         assert "docs/audits/seventh_arc" in {str(p) for p in ci_scope.registry_only_prefixes()}
         assert ci_scope.scope_of(["docs/audits/seventh_arc/archive/x.md"]) == RO
 
     def test_an_arc_document_moved_out_of_docs_moves_the_boundary_with_it(self, monkeypatch):
-        """The set follows ``_registry``; it holds no spelling of its own to go stale."""
-        moved = dict(registry.ARC_DOCS)
-        moved["balance"] = registry.REPO / "docs/plans/implementation_plan_balance.md"
-        monkeypatch.setattr(registry, "ARC_DOCS", moved)
+        """The set follows ``tools.ci.arcs``; it holds no spelling of its own to go stale."""
+        moved = dict(arcs.ARC_DOCS)
+        moved["balance"] = arcs.REPO / "docs/plans/implementation_plan_balance.md"
+        monkeypatch.setattr(arcs, "ARC_DOCS", moved)
         assert ci_scope.scope_of(["docs/audits/balance_architecture/README.md"]) == FULL
+
+    def test_the_one_spelled_prefix_names_the_plan_gate(self):
+        """``PLAN_GATE`` is the one prefix spelled rather than derived, so it is held here.
+
+        A rename or deletion of the plan gate's package would otherwise leave a
+        prefix naming nothing: harmless to the scope, and a stale fact.
+        """
+        gate = arcs.REPO / ci_scope.PLAN_GATE
+        assert (gate / "_registry.py").is_file() and (gate / "__init__.py").is_file()
 
 
 # ---------------------------------------------------------------- the census
@@ -387,13 +396,13 @@ class TestThisRepositoryHasNoUnexemptedReader:
     def test_pytest_would_collect_nothing_under_the_uncensused_directories(self):
         """The other half of the premise: no ``test_*.py`` or ``conftest.py`` lives there."""
         for directory in ci_scope.NOT_CENSUSED:
-            root = registry.REPO / directory
+            root = arcs.REPO / directory
             collected = [p for pat in ci_scope.COLLECTED_BY_PYTEST for p in root.rglob(pat)]
             assert not collected, (
                 f"{directory} holds {[p.name for p in collected]}: pytest would collect "
                 f"them and the census would not see them; move them or census the directory"
             )
-        assert (registry.REPO / "pytest.ini").read_text().count("python_files = test_*.py") == 1
+        assert (arcs.REPO / "pytest.ini").read_text().count("python_files = test_*.py") == 1
 
     def test_an_unparseable_file_cannot_be_excused(self, monkeypatch, tmp_path):
         """A ``SyntaxError`` hit keys as itself, line and all, so no entry can match it."""
@@ -514,7 +523,7 @@ GRADED_JOBS = ("scope", "plan-gate", "tax-law", "lint", "test", "lint-and-test")
 
 def _jobs() -> dict[str, dict]:
     """Read the jobs out of the live workflow file."""
-    text = (registry.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    text = (arcs.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     return yaml.safe_load(text)["jobs"]
 
 
@@ -530,7 +539,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
         """The ``scope`` job pipes a rename-visible diff into ``ci_scope.py``."""
         steps = {s.get("id"): s for s in _jobs()["scope"]["steps"] if s.get("id")}
         assert "scope" in steps, "no step with id: scope"
-        assert "python tools/plan_gate/ci_scope.py" in steps["scope"]["run"]
+        assert "python -m tools.ci.ci_scope" in steps["scope"]["run"]
         assert "--no-renames" in steps["scope"]["run"], "a rename must show both paths"
         assert "pull_request" in steps["scope"]["run"], "a push to main must be full"
         assert _jobs()["scope"]["outputs"] == {"scope": "${{ steps.scope.outputs.scope }}"}
@@ -582,6 +591,17 @@ class TestTheWorkflowIsWiredToTheAnswer:
             steps = _steps(job)
             for name in names:
                 assert name in steps, f"{name!r} is no longer in the guarded {job!r} job"
+
+    def test_this_package_is_linted_and_tested_in_both_scopes(self):
+        """``tools/ci`` decides what runs, so its own floor and tests run in every scope.
+
+        It is not a registry-only prefix (a change to it runs everything), but
+        a registry pass still runs the classifier it holds, so its tests must
+        not be skipped by the scope they grade.
+        """
+        run = _steps("plan-gate")["Plan gate (every scope)"]["run"]
+        assert "pylint tools/ci/ --fail-under=10 --fail-on=E,F" in run
+        assert "pytest tools/ci -c /dev/null -q" in run
 
     def test_no_code_running_job_escapes_the_guard(self):
         """A job that runs pytest, pylint, a script or ``test.sh`` is guarded or named here."""
@@ -640,7 +660,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert _steps("tax-law")[TAX_LAW_STEP]["run"].strip() == (
             "python scripts/check_tax_law.py refuse"
         )
-        text = (registry.REPO / ".github/workflows/tax-law.yml").read_text(encoding="utf-8")
+        text = (arcs.REPO / ".github/workflows/tax-law.yml").read_text(encoding="utf-8")
         watch = yaml.safe_load(text)
         # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1).
         assert "schedule" in watch[True]
@@ -662,7 +682,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
         sign and push), the build NEEDS it, and nothing lets it skip or fail
         green.
         """
-        text = (registry.REPO / ".github/workflows/docker-publish.yml").read_text(
+        text = (arcs.REPO / ".github/workflows/docker-publish.yml").read_text(
             encoding="utf-8",
         )
         jobs = yaml.safe_load(text)["jobs"]
@@ -699,7 +719,7 @@ class TestTheWorkflowIsWiredToTheAnswer:
     @staticmethod
     def _publish_jobs() -> dict[str, dict]:
         """Read the jobs out of the live release-image workflow."""
-        text = (registry.REPO / ".github/workflows/docker-publish.yml").read_text(
+        text = (arcs.REPO / ".github/workflows/docker-publish.yml").read_text(
             encoding="utf-8",
         )
         return yaml.safe_load(text)["jobs"]
@@ -827,7 +847,7 @@ class TestTheRequiredCheckJudgesEveryGrader:
         # EXACTLY this: a ``|| true`` or a second command after the pipe would
         # let the verdict's exit 1 fall on the floor.
         assert step["run"].strip() == (
-            "printf '%s' \"${NEEDS}\" | python tools/plan_gate/ci_verdict.py"
+            "printf '%s' \"${NEEDS}\" | python -m tools.ci.ci_verdict"
         )
 
     def test_the_verdicts_classes_are_the_workflows_guards(self):

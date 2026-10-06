@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from _fake import FailOnce, FakeTracker, leaf_filing, run, ship
-from _tracker import Child, Claim
-from setup_tracker import FILING
+from tools.plan._fake import FailOnce, FakeTracker, leaf_filing, run, ship
+from tools.plan._tracker import Child, Claim
+from tools.plan.setup_tracker import FILING
 
 _REFUSED = ("plan#1 is claimed by 'feat/s' since 2026-10-04T12:00:00Z: a branch is building "
             "it as one piece of work, and a step split into smaller steps is never shipped "

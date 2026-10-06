@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import re
 
-from _registry import ledger_rows
+from tools.plan_gate._registry import ledger_rows
 
 #: The prefix each arc MINTS new ``ledger.md`` ids with (developer, 2026-09-05).
 #:

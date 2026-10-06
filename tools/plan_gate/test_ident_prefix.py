@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import re
 
-import _ident_prefix as ident_prefix
-import _registry as registry
-from _staging import a_live_ledger_row, row_of, with_cell
+from tools.plan_gate import _ident_prefix as ident_prefix
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._staging import a_live_ledger_row, row_of, with_cell
 
 
 def _arc_of(prefix: str) -> str:

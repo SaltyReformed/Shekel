@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from _command import (
+from tools.plan._command import (
     ON_BOARD,
     Refused,
     _label,
@@ -22,7 +22,7 @@ from _command import (
     _shipped,
     _with_closure,
 )
-from _state import (
+from tools.plan._state import (
     filing_ended,
     filing_unfinished,
     holder,
@@ -32,8 +32,8 @@ from _state import (
     release_hint,
     withdrawn_filing,
 )
-from _tracker import Card, Tracker, TrackerError
-from check import (
+from tools.plan._tracker import Card, Tracker, TrackerError
+from tools.plan.check import (
     Draft,
     Owner,
     in_ruling_shape,
@@ -42,7 +42,7 @@ from check import (
     ruling_question,
     violations,
 )
-from setup_tracker import FILING
+from tools.plan.setup_tracker import FILING
 
 
 def _read(path: str) -> str:

@@ -35,10 +35,10 @@ edits"*.  So a control states the SHAPE it needs and takes whatever row has it.
 """
 from __future__ import annotations
 
-import _plan_gate
-import _registry as registry
-from _classes import decomposition_leaf_keys, identity_class
-from _tables import UNESCAPED_PIPE_RX
+from tools.plan_gate import _plan_gate
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._classes import decomposition_leaf_keys, identity_class
+from tools.plan_gate._tables import UNESCAPED_PIPE_RX
 
 
 def row_of(which: str, prefix: str) -> str:

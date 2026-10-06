@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 import requests
 
-from _fake import FailOnce, FakeTracker, run, ship
-from _tracker import Child, Claim, Edit, OutsideLink
-from check import ruling_body
-from setup_tracker import FILING
+from tools.plan._fake import FailOnce, FakeTracker, run, ship
+from tools.plan._tracker import Child, Claim, Edit, OutsideLink
+from tools.plan.check import ruling_body
+from tools.plan.setup_tracker import FILING
 
 
 # -- file ----------------------------------------------------------------------------------

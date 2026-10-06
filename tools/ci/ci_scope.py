@@ -13,22 +13,31 @@ outcome can have moved.
 This module says which change sets are that.  ``ci.yml``'s ``scope`` job asks
 it once, and every code-grading JOB is skipped unless the answer is ``full``;
 the plan gate itself (``pytest tools/plan_gate`` and its pylint
-floor) runs in BOTH scopes, and the ``polyglot-lint`` job (rumdl, typos and
-the rest) is untouched and still lints every Markdown file.  Approved by the
-developer 2026-09-11 as its own tooling PR.
+floor) runs in BOTH scopes, as do this package's own tests and the tracker
+tool's, and the ``polyglot-lint`` job (rumdl, typos and the rest) is untouched
+and still lints every Markdown file.  Approved by the developer 2026-09-11 as
+its own tooling PR; moved here from ``tools/plan_gate`` by step X-cx's L4.
 
 **The boundary is DERIVED, not spelled.**  A registry-only change set may
 touch only: the registries' directory (``docs/plans``, which also holds five
 of the six arc documents, the ``historical/`` archive and ``STANDING.md``),
 each arc document's own directory (balance's is
-``docs/audits/balance_architecture``, with its ``archive/``), and this
-package.  :func:`registry_only_prefixes` reads them off :mod:`_registry`, so
-a seventh arc's document extends the set with no edit here and no third
-spelling beside ``_registry.ARC_DOCS`` and ``.pre-commit-config.yaml``'s file
-list.  The plan gate grades the documents it names under those prefixes, not
-every file in them: what makes the skip SOUND is not that everything there
-is graded but that nothing the skip omits READS there, which is the census
-below.
+``docs/audits/balance_architecture``, with its ``archive/``), and the plan
+gate's package (:data:`PLAN_GATE`), which grades them in both scopes.
+:func:`registry_only_prefixes` reads the first two off :mod:`tools.ci.arcs`,
+so a seventh arc's document extends the set with no edit here and no third
+spelling beside ``tools.ci.arcs.ARC_DOCS`` and ``.pre-commit-config.yaml``'s
+file list.  The plan gate grades the documents it names under those prefixes,
+not every file in them: what makes the skip SOUND is not that everything
+there is graded but that nothing the skip omits READS there, which is the
+census below.
+
+**This package is NOT a prefix.**  Until step X-cx's L4 the classifier lived
+in the plan gate's package, so an edit to it was registry-only by where it
+sat, not by design.  Here, a change to the code that decides what CI runs,
+or to the arc list it reads, runs everything: a wrong ``full`` costs minutes,
+a wrong ``registry-only`` a merge no test graded (decided by the
+session under ruling ``balance:R-BAL207``).
 
 **It fails CLOSED, twice.**  Here: an empty change set, an absolute path, a
 ``..`` and any path outside the prefixes all answer ``full``.  In ``ci.yml``:
@@ -45,7 +54,7 @@ nothing.  Measured when this landed: exactly one did --
 ``TestTheGrossContractIsDocumented``'s id-citation arm in
 ``tests/test_services/test_paycheck_calculator.py``, whose docstring said
 outright that it exists to grade the docs-side commit -- and it moved into
-this package as ``test_citations.py``, where it runs in both scopes.
+the plan gate's package as ``test_citations.py``, where it runs in both scopes.
 ``test_ci_scope.py`` holds the census at zero.  The census is ``ast``-based
 and LEXICAL: a docstring that DISCUSSES ``docs/plans`` is prose and is
 skipped; a string a statement evaluates is a read, in the spellings a read
@@ -62,9 +71,9 @@ session-start hook, whose test is the one exemption).  None of those
 reaches a registry under the censused roots today (grepped when this
 landed).
 
-Usage from ``ci.yml``::
+Usage from ``ci.yml``, at the repository root::
 
-    git diff --name-only --no-renames "${BASE}...${HEAD}" | python tools/plan_gate/ci_scope.py
+    git diff --name-only --no-renames "${BASE}...${HEAD}" | python -m tools.ci.ci_scope
 
 prints ``registry-only`` or ``full`` and exits 0 either way: this is a
 classifier, and the gate it feeds is the workflow's ``if:``.
@@ -77,10 +86,15 @@ import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 
-import _registry as registry
+from tools.ci import arcs
 
 REGISTRY_ONLY = "registry-only"
 FULL = "full"
+
+#: The plan gate's package, relative to the repository root.  A registry pass
+#: may touch it (a tick can need one of the gate's constants), and the plan
+#: gate job lints and tests it in both scopes.
+PLAN_GATE = PurePosixPath("tools/plan_gate")
 
 #: The test roots the ``registry-only`` scope does NOT run, so the roots
 #: :func:`registry_readers` must find empty: the application suite (step 7 of
@@ -125,15 +139,14 @@ EXEMPT_READERS = {
 def registry_only_prefixes() -> tuple[PurePosixPath, ...]:
     """Return the repo-relative directories a registry-only change set may touch.
 
-    Read off :mod:`_registry` at call time (``PLANS`` and each ``ARC_DOCS``
-    parent) plus this package's own directory, sorted so the answer is stable
-    for a log line.
+    Read off :mod:`tools.ci.arcs` at call time (``PLANS`` and each
+    ``ARC_DOCS`` parent) plus :data:`PLAN_GATE`, sorted so the answer is
+    stable for a log line.
     """
-    dirs = {registry.PLANS, Path(__file__).resolve().parent}
-    dirs.update(doc.parent for doc in registry.ARC_DOCS.values())
-    return tuple(sorted(
-        PurePosixPath(d.relative_to(registry.REPO).as_posix()) for d in dirs
-    ))
+    dirs = {arcs.PLANS, *(doc.parent for doc in arcs.ARC_DOCS.values())}
+    prefixes = {PurePosixPath(d.relative_to(arcs.REPO).as_posix()) for d in dirs}
+    prefixes.add(PLAN_GATE)
+    return tuple(sorted(prefixes))
 
 
 def _under_a_prefix(path: PurePosixPath, prefixes: tuple[PurePosixPath, ...],
@@ -318,7 +331,7 @@ def imports_of_the_uncensused(roots: Iterable[Path] = (), *,
     The directory is left out because nothing runs it AND nothing imports it;
     this is the control on the second half.
     """
-    base = repo or registry.REPO
+    base = repo or arcs.REPO
     roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
     hits: list[str] = []
     for root in roots:
@@ -375,7 +388,7 @@ def registry_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) ->
     that skips what it cannot read passes on nothing.
     """
     prefixes = registry_only_prefixes()
-    base = repo or registry.REPO
+    base = repo or arcs.REPO
     roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
     hits: list[str] = []
     for root in roots:
@@ -431,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
             print(hit)
         return 0
     if args:
-        print(f"usage: {Path(__file__).name} [--readers] < changed-paths", file=sys.stderr)
+        print("usage: python -m tools.ci.ci_scope [--readers] < changed-paths", file=sys.stderr)
         return 2
     print(scope_of(sys.stdin))
     return 0

@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from _fake import Sent
-from _recorded import (
+from tools.plan._fake import Sent
+from tools.plan._recorded import (
     REDACTED,
     RECORDINGS,
     SCRATCH,
@@ -23,8 +23,8 @@ from _recorded import (
     redacted,
     refusal,
 )
-from _tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from setup_tracker import FILING
+from tools.plan._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
+from tools.plan.setup_tracker import FILING
 
 
 def test_a_recording_never_keeps_a_token():

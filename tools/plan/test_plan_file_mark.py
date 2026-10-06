@@ -10,11 +10,11 @@ from dataclasses import replace
 
 import pytest
 
-from _fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing, run,
-                   ship)
-from _github import GitHubError
-from _tracker import Child, Claim
-from setup_tracker import FILING
+from tools.plan._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
+                              run, ship)
+from tools.plan._github import GitHubError
+from tools.plan._tracker import Child, Claim
+from tools.plan.setup_tracker import FILING
 
 
 def test_a_leaf_and_a_ruling_are_created_marked_and_unmarked_by_their_last_write(code,

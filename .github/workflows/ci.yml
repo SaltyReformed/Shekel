@@ -4,8 +4,9 @@
 # the five it needs (polyglot-lint is a required check of its own):
 #
 #   scope          classifies the change set: ``registry-only`` or ``full``
-#                  (tools/plan_gate/ci_scope.py; step 2b below).
-#   plan-gate      the plan gate and the plan tool, in EVERY scope (step 4b).
+#                  (tools/ci/ci_scope.py; step 2b below).
+#   plan-gate      the plan gate, the plan tool and tools/ci, in EVERY scope
+#                  (step 4b).
 #   tax-law        refuses from December 1 until next year's tax law is in
 #                  the app, in EVERY scope (step 4c).
 #   lint           every pylint floor and the checker tests (steps 5-5c),
@@ -17,7 +18,7 @@
 #                  NEEDS the first five and runs ``if: always()``, because a
 #                  SKIPPED required check counts as passing and a job that
 #                  merely depended on a failed shard would be skipped --
-#                  green.  tools/plan_gate/ci_verdict.py judges every result.
+#                  green.  tools/ci/ci_verdict.py judges every result.
 #
 # WHY SEVERAL JOBS AND NOT ONE (plan step bank_import:X-gy, ledger BI-496,
 # rulings R-BI38..R-BI41).  One job ran for 41-61 min, 35-52 of them the
@@ -32,7 +33,7 @@
 # runners; six shards at ``-n logical`` ran 6.4-9.7 min each.
 #
 # THE STEP NUMBERS are kept from the single-job era, on the same steps, because
-# .pre-commit-config.yaml, pytest.ini and tools/plan_gate/ci_scope.py cite
+# .pre-commit-config.yaml, pytest.ini and tools/ci/ci_scope.py cite
 # them.  Python matches the production Dockerfile (3.14) in every job.
 
 name: CI
@@ -96,7 +97,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # ci_scope.py is standard-library only, so no install precedes it.
+      # tools/ci is standard-library only, so no install precedes it.
       - name: Set up Python 3.14
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -108,11 +109,12 @@ jobs:
       # only grader is the plan gate, and the registry lane is serialized
       # (one such PR at a time, each computed on the tree the last one
       # left), so the suite's runners and minutes spent on it sit on the
-      # queue's critical path and grade nothing.  ``tools/plan_gate/ci_scope.py``
+      # queue's critical path and grade nothing.  ``tools/ci/ci_scope.py``
       # answers ``registry-only`` when EVERY changed path is under
-      # docs/plans, the balance arc document's directory or the gate
-      # package (derived from ``_registry``, not spelled here) and ``full``
-      # for anything else, including an empty change set: it fails CLOSED.
+      # docs/plans, an arc document's directory (derived from
+      # ``tools/ci/arcs.py``, not spelled here) or the plan gate's package,
+      # and ``full`` for anything else, including an empty change set and
+      # tools/ci itself: it fails CLOSED.
       # What makes the skip sound is the census that module keeps -- no
       # module in a skipped suite reads under those prefixes -- not that
       # every file there is graded; the polyglot-lint job still lints the
@@ -149,7 +151,7 @@ jobs:
               exit 0
           fi
           printf 'changed files:\n%s\n' "${changed}"
-          scope="$(printf '%s\n' "${changed}" | python tools/plan_gate/ci_scope.py)"
+          scope="$(printf '%s\n' "${changed}" | python -m tools.ci.ci_scope)"
           echo "scope=${scope}" >> "${GITHUB_OUTPUT}"
           echo "scope: ${scope}"
 
@@ -199,8 +201,8 @@ jobs:
       # pre-commit alone until 2026-09-11 (its hook comment says so); a
       # registry-only run that edits the gate would otherwise merge unlinted,
       # so the floor is held here too, in both scopes.  ``yaml`` (PyYAML,
-      # pinned in requirements-dev.txt) is what ``test_ci_scope.py`` reads
-      # THIS file with, which is why the step follows the install.
+      # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_scope.py``
+      # reads THIS file with, which is why the step follows the install.
       #
       # The plan TOOL (tools/plan/: the private tracker's setup, and from
       # step X-cx's leaf L2 the ``plan`` command; ruling balance:R-BAL170) is
@@ -208,12 +210,19 @@ jobs:
       # never call GitHub and take under a second, and a test of the tool that
       # will READ the registries (the migration, L7) must not be skipped by a
       # registry-only change set, which the lint job would do.
+      #
+      # ``tools/ci`` (this workflow's classifier and verdict, and the arc
+      # list the gate and the tool read; step X-cx's L4) is graded here too.
+      # A change to it is never registry-only, but every registry pass RUNS
+      # its classifier, so its tests are not left to the scope they grade.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/plan_gate -c /dev/null -q
           pylint tools/plan/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/plan -c /dev/null -q
+          pylint tools/ci/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/ci -c /dev/null -q
 
   tax-law:
     runs-on: ubuntu-latest
@@ -537,11 +546,11 @@ jobs:
       # scope is exactly ``registry-only`` -- lint and the shards were
       # skipped.  A failed, cancelled or wrongly skipped job, a job the
       # verdict does not know, or one missing from ``needs`` is red.  The
-      # rules and why each exists: tools/plan_gate/ci_verdict.py.
+      # rules and why each exists: tools/ci/ci_verdict.py.
       - name: Verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: printf '%s' "${NEEDS}" | python tools/plan_gate/ci_verdict.py
+        run: printf '%s' "${NEEDS}" | python -m tools.ci.ci_verdict
 
   # ── Polyglot linters ──────────────────────────────────────────────
   # Non-Python lint floors adopted in docs/audits/polyglot-cleanup

@@ -30,17 +30,18 @@ from __future__ import annotations
 
 import pathlib
 import re
+import sys
 
 import pytest
 import yaml
 
-import _duplication as duplication
-import _registry as registry
+from tools.ci import arcs
+from tools.plan_gate import _duplication as duplication
 
 #: The hook whose job is to RUN this package when a planning document changes.
 GATE_HOOK_ID = "shekel-plan-ledger-gate"
 
-CONFIG = registry.REPO / ".pre-commit-config.yaml"
+CONFIG = arcs.REPO / ".pre-commit-config.yaml"
 
 
 def _gate_hook() -> dict:
@@ -85,7 +86,7 @@ def _graded_documents() -> list[pathlib.Path]:
     """
     seen: dict[pathlib.Path, None] = {}
     for path in duplication.live_docs().values():
-        seen.setdefault(path.relative_to(registry.REPO), None)
+        seen.setdefault(path.relative_to(arcs.REPO), None)
     return list(seen)
 
 
@@ -150,9 +151,10 @@ class TestEveryDocumentTheGateReadsRunsIt:
         assert folded != text, "the real pattern was not found to fold"
         target = tmp_path / ".pre-commit-config.yaml"
         target.write_text(folded)
-        monkeypatch.setattr(
-            "test_gate_coverage.CONFIG", target, raising=False,
-        )
+        # The module object itself, not its name spelled as text: the name
+        # changed when ``tools/`` became a package, and a spelled name that no
+        # longer imports is what this patch would then point at.
+        monkeypatch.setattr(sys.modules[__name__], "CONFIG", target)
         assert re.search(r"\s", _gate_hook()["files"]), (
             "folding the pattern did not introduce whitespace, so this "
             "control is not exercising the defect it names"

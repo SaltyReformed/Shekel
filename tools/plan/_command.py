@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import _git
-from _state import filing_unfinished, missing
-from _tracker import Card, Tracker, TrackerError
-from setup_tracker import ARCS
+from tools.ci import trailers
+from tools.ci.arcs import ARCS
+from tools.plan import _git
+from tools.plan._state import filing_unfinished, missing
+from tools.plan._tracker import Card, Tracker, TrackerError
 
 
 #: The kinds of card the board holds, in the developer's order (R-BAL177).
@@ -43,12 +44,12 @@ def _one(tracker: Tracker, number: int) -> Card:
     return found[number]
 
 
-def _shipped(root: Path) -> tuple[_git.History, dict, tuple[_git.Trailer, ...]]:
+def _shipped(root: Path) -> tuple[trailers.History, dict, tuple[trailers.Trailer, ...]]:
     """``dev``'s card trailers, fetched fresh; the cards they say shipped; the stray
     ``Reopens:`` trailers (R-BAL181)."""
     _git.fetch(root)
-    found = _git.history(root)
-    return (found, *_git.shipped(root, found))
+    found = trailers.history(root)
+    return (found, *trailers.shipped(root, found))
 
 
 def _label(card: Card) -> str:

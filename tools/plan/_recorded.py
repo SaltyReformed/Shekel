@@ -67,9 +67,9 @@ from pathlib import Path
 
 import requests
 
-from _github import API
-from _tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
+from tools.plan._github import API
+from tools.plan._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
+from tools.plan.setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
 
 #: Where the recordings the tests replay are kept.
 RECORDINGS = Path(__file__).resolve().parent / "recorded"

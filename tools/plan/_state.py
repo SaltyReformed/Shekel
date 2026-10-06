@@ -79,8 +79,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from _tracker import Card, Claim
-from setup_tracker import FILING
+from tools.plan._tracker import Card, Claim
+from tools.plan.setup_tracker import FILING
 
 #: The build plan: "``plan next`` reports a claim older than 3 days with no pushed branch".
 STALE_CLAIM = timedelta(days=3)

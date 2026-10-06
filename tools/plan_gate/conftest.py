@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-import _registry as registry
-import _rulings as rulings
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _rulings as rulings
 
 
 @pytest.fixture(name="stage")

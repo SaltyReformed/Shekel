@@ -23,11 +23,11 @@ from __future__ import annotations
 import dataclasses
 import json
 
-import plan
-from _github import GitHubError
-from _scratch import run as _run
-from _tracker import Card, Child, Claim, ClaimTaken, Edit
-from setup_tracker import FILING
+from tools.ci.scratch import run as _run
+from tools.plan import plan
+from tools.plan._github import GitHubError
+from tools.plan._tracker import Card, Child, Claim, ClaimTaken, Edit
+from tools.plan.setup_tracker import FILING
 
 
 class FakeBoard:

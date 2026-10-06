@@ -49,7 +49,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from _github import (
+from tools.plan._github import (
     GitHub,
     GitHubError,
     app_credentials,
@@ -57,7 +57,7 @@ from _github import (
     app_jwt,
     installation_token,
 )
-from setup_tracker import FILING, ORG, REPO, find_board
+from tools.plan.setup_tracker import FILING, ORG, REPO, find_board
 
 _BASE = f"/repos/{ORG}/{REPO}"
 #: The tracker, as GitHub names a repository in a link (``nameWithOwner``).
@@ -379,7 +379,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
         github = GitHub(installation_token(app_installation(ORG, jwt)["id"], jwt))
         board_id = find_board(github)
         if board_id is None:
-            raise TrackerError("the tracker has no board; run tools/plan/setup_tracker.py")
+            raise TrackerError("the tracker has no board; run python -m tools.plan.setup_tracker")
         return cls(github, Board(github, board_id), login)
 
     # -- reads ---------------------------------------------------------------

@@ -104,8 +104,8 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   rulings R-BI38..R-BI41, 2026-09-22). `.github/workflows/ci.yml` runs a `scope` job (the change-set
   classifier), `plan-gate`, `lint` and six `test` shards in parallel, and a `lint-and-test` job --
   the check branch protection requires -- that needs them all, runs `if: always()` and fails closed
-  through `tools/plan_gate/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each
-  shard exports `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a
+  through `tools/ci/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each shard
+  exports `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a
   stable hash of each test's `xdist_group` or node id, so the shards partition the collection by
   construction and every group lands whole on one shard --
   **a test that depends on another test's session must share an `xdist_group` with it.** The weekly

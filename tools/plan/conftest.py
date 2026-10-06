@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-import _git
-from _scratch import run as _run
+from tools.ci.scratch import run as _run
+from tools.plan import _git
 
 
 @pytest.fixture(name="code")

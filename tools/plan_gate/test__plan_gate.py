@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from _plan_gate import (
+from tools.plan_gate._plan_gate import (
     CONVENTIONS_DOC,
     LEDGER_DOC,
     OWNER_RX,

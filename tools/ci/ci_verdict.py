@@ -26,9 +26,9 @@ result is judged here, in the direction that fails closed:
 * A job this module does not name, or a named job absent from ``needs``, is
   red: a verdict that does not know what it is grading has not graded it.
 
-Usage from ``ci.yml``::
+Usage from ``ci.yml``, at the repository root::
 
-    printf '%s' "${NEEDS}" | python tools/plan_gate/ci_verdict.py
+    printf '%s' "${NEEDS}" | python -m tools.ci.ci_verdict
 
 with ``NEEDS: ${{ toJSON(needs) }}``.
 """
@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import sys
 
-from ci_scope import REGISTRY_ONLY
+from tools.ci.ci_scope import REGISTRY_ONLY
 
 #: Jobs that grade in every scope: the classifier itself, the plan gate, and
 #: the tax-law check, which refuses EVERY pull request from December 1 until

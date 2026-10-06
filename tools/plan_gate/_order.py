@@ -29,9 +29,9 @@ from __future__ import annotations
 
 import re
 
-import _registry as registry
-import _tables as tables
-from _classes import decomposition_leaf_keys
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _tables as tables
+from tools.plan_gate._classes import decomposition_leaf_keys
 
 #: A ``starts`` cell's DERIVED head, reconciled by :func:`starts_violations`
 #: against the blocker keys in the same cell.  ``NOW`` is the ready state,

@@ -18,21 +18,21 @@ finished is no leaf unless git says it shipped, ``_state.leaves``.)
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
-    python tools/plan/plan.py next [--arc ARC]
-    python tools/plan/plan.py claim plan#N [--branch BRANCH]
-    python tools/plan/plan.py release plan#N [--branch BRANCH | --unreadable]
-    python tools/plan/plan.py show plan#N | OLD-ID
-    python tools/plan/plan.py file step --arc ARC --title NAME --body-file SPEC [--parent plan#P]
-    python tools/plan/plan.py file finding --arc ARC --title NAME --owner plan#S --text SENTENCE
-    python tools/plan/plan.py file ruling --arc ARC --title NAME --owner plan#S
+    python -m tools.plan.plan next [--arc ARC]
+    python -m tools.plan.plan claim plan#N [--branch BRANCH]
+    python -m tools.plan.plan release plan#N [--branch BRANCH | --unreadable]
+    python -m tools.plan.plan show plan#N | OLD-ID
+    python -m tools.plan.plan file step --arc ARC --title NAME --body-file SPEC [--parent plan#P]
+    python -m tools.plan.plan file finding --arc ARC --title NAME --owner plan#S --text SENTENCE
+    python -m tools.plan.plan file ruling --arc ARC --title NAME --owner plan#S
                                 (--question-file Q | --from-question plan#Q) --answer-file A
-    python tools/plan/plan.py file question --arc ARC --title NAME --body-file QUESTION
-    python tools/plan/plan.py block plan#N --by plan#M [--remove]
-    python tools/plan/plan.py move plan#N (--top | --bottom | --after plan#M)
-    python tools/plan/plan.py drop plan#N --why REASON
-    python tools/plan/plan.py sync [--dry-run]
-    python tools/plan/plan.py spec-history plan#N [--since BRANCH_OR_DATE]
-    python tools/plan/plan.py spec-revert plan#N --to EDIT_ID
+    python -m tools.plan.plan file question --arc ARC --title NAME --body-file QUESTION
+    python -m tools.plan.plan block plan#N --by plan#M [--remove]
+    python -m tools.plan.plan move plan#N (--top | --bottom | --after plan#M)
+    python -m tools.plan.plan drop plan#N --why REASON
+    python -m tools.plan.plan sync [--dry-run]
+    python -m tools.plan.plan spec-history plan#N [--since BRANCH_OR_DATE]
+    python -m tools.plan.plan spec-revert plan#N --to EDIT_ID
 
 Exit status: 0 done; 1 refused, with nothing written (or, for ``sync``, a
 REPORT a person must act on); 2 a call failed -- GitHub, git, the network, or
@@ -60,8 +60,11 @@ from pathlib import Path
 
 import requests
 
-import _git
-from _command import (
+from tools.ci import trailers
+from tools.ci.arcs import ARCS, REPO
+from tools.ci.gitcmd import GitError
+from tools.plan import _git
+from tools.plan._command import (
     ON_BOARD,
     Refused,
     _label,
@@ -71,9 +74,9 @@ from _command import (
     _unfinished,
     _with_closure,
 )
-from _filing import cmd_file
-from _github import GitHubError
-from _state import (
+from tools.plan._filing import cmd_file
+from tools.plan._github import GitHubError
+from tools.plan._state import (
     SyncPlan,
     Unsplit,
     drop_shows,
@@ -97,8 +100,8 @@ from _state import (
     unfinished_reports,
     unsplit,
 )
-from _tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
-from setup_tracker import ARCS, FILING
+from tools.plan._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
+from tools.plan.setup_tracker import FILING
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
@@ -113,7 +116,7 @@ def card_number(text: str) -> int:
     return int(found.group(1))
 
 
-def _stray(trailer: _git.Trailer) -> str:
+def _stray(trailer: trailers.Trailer) -> str:
     """A stray Reopens, as a report line."""
     return (f"{trailer.sha[:12]} 'Reopens: plan#{trailer.card}' cancels no Ships in its own "
             "history (R-BAL181): a mistyped number? It is not acted on")
@@ -291,7 +294,7 @@ def cmd_show(args, tracker: Tracker, root: Path) -> int:
     for trailer in history:
         print(f"{trailer.key}: {trailer.sha[:12]} {trailer.subject}")
     if not history:
-        print(f"no commit on {_git.DEV} carries Ships: or Reopens: plan#{number}")
+        print(f"no commit on {trailers.DEV} carries Ships: or Reopens: plan#{number}")
     for trailer in strays:
         if trailer.card == number:
             print(f"STRAY: {_stray(trailer)}")
@@ -517,7 +520,7 @@ def _undo_splits(tracker: Tracker, cards: dict[int, Card], shipped: dict, change
         _unsplit(tracker, undo, cards, dry_run)
 
 
-def _sync_reads(tracker: Tracker, found: _git.History) -> tuple[dict[int, Card],
+def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Card],
                                                                  dict[int, Claim], list[str]]:
     """The cards ``sync`` decides over, every claim, and a HISTORY line for each card a
     trailer in ``found`` names that does not exist.
@@ -541,7 +544,7 @@ def _sync_reads(tracker: Tracker, found: _git.History) -> tuple[dict[int, Card],
         raise TrackerError(f"plan#{unread[0]} is listed, but a read by its number does not hold "
                            "it (that read has not caught up yet, or the card was deleted or "
                            "moved since): run sync again")
-    history = [f"a trailer on {_git.DEV} names plan#{number}, which does not exist"
+    history = [f"a trailer on {trailers.DEV} names plan#{number}, which does not exist"
                for number in sorted(named - set(cards))]
     return _with_closure(tracker, cards), claims, history
 
@@ -733,11 +736,11 @@ def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = Tracker
     """Run one command; its exit status."""
     args = parser().parse_args(argv)
     try:
-        return COMMANDS[args.command](args, connect(), root or _git.repository_root())
+        return COMMANDS[args.command](args, connect(), root or REPO)
     except Refused as refused:
         print(f"refused: {refused}", file=sys.stderr)
         return 1
-    except (GitHubError, TrackerError, _git.GitError, requests.RequestException,
+    except (GitHubError, TrackerError, GitError, requests.RequestException,
             OSError) as error:
         print(f"failed: {error}", file=sys.stderr)
         return 2

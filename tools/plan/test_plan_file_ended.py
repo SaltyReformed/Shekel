@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from _fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing, run,
-                   ship)
-from _github import GitHubError
-from _tracker import Child
-from check import ruling_body
-from setup_tracker import FILING
+from tools.plan._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
+                              run, ship)
+from tools.plan._github import GitHubError
+from tools.plan._tracker import Child
+from tools.plan.check import ruling_body
+from tools.plan.setup_tracker import FILING
 
 
 def _closed_by_hand(tracker, number, reason="COMPLETED"):
