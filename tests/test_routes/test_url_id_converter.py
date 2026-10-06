@@ -1,20 +1,25 @@
 """The path layer answers "what row does this digit string name" once.
 
 Plan step X-ae / finding N-140.  Werkzeug's stock ``<int:>`` converter has
-``regex = r"\\d+"`` compiled without ``re.ASCII`` and a ``to_python`` of bare
-``int()``, so before :mod:`app.url_converters` the route tree's 123 path
-parameters carried both halves of the defect finding N-136 closed for form
-bodies: one row id under many spellings, and an unhandled ``ValueError`` on a
-long enough digit run.
+``regex = r"\\d+"`` compiled without ``re.ASCII``, and through Werkzeug 3.1.8
+its ``to_python`` was a bare ``int()``, so before :mod:`app.url_converters`
+the route tree's 123 path parameters carried both halves of the defect
+finding N-136 closed for form bodies: one row id under many spellings, and an
+unhandled ``ValueError`` on a long enough digit run.
 
-**The 500 arm is the more serious of the two and these tests are the only
-place it is graded**, because it raises inside ``url_adapter.match()`` -- ahead
-of the view, ahead of ``@login_required``, ahead of any session -- so no route
-test could reach it and no authentication is needed to trigger it.
+**The 500 arm was the more serious of the two and these tests are the only
+place it is graded**, because it raised inside ``url_adapter.match()`` --
+ahead of the view, ahead of the login gate (``app/login_gate.py``), ahead of
+any session -- so no route test could reach it and no authentication was
+needed to trigger it.  Werkzeug 3.1.9 closed that arm in its own converter
+(pallets/werkzeug#3237) and left the spelling arm open; a premise test pins
+each stock answer, so the day Werkzeug changes either one a test here says
+so.
 """
 
 import pytest
-from werkzeug.routing import Map, Rule
+from werkzeug.exceptions import MethodNotAllowed, NotFound
+from werkzeug.routing import IntegerConverter, Map, Rule
 
 from app.url_converters import RowIdConverter
 
@@ -74,16 +79,18 @@ class TestTheConverterIsInstalled:
 
 
 class TestTheOversizedPathSegment:
-    """The unauthenticated 500, and the reason this is a converter."""
+    """The digit runs that were 500s, and the stock answer each rests on."""
 
     def test_an_oversized_digit_run_does_not_raise_out_of_routing(self, app):
         """It is refused instead of raising ``ValueError`` before the view.
 
         This is the arm that matters: the raise happened inside
         ``ctx.push()``, so it needed no session, no CSRF token and no account.
-        ``app/error_handlers.py`` registers 400/403/404/429/500 and
-        ``BaselineMissingError`` -- no ``ValueError`` arm -- so it surfaced as
-        an unhandled 500 to an anonymous caller.
+        ``app/error_handlers.py`` registers 400/403/404/413/429/500,
+        ``BaselineMissingError`` and ``PayCalendarError`` -- no arm for a bare
+        ``ValueError`` (both of those subclass it, and Flask looks a handler
+        up along the RAISED class's MRO, so each arm catches only its own) --
+        so it surfaced as an unhandled 500 to an anonymous caller.
 
         **The refusal is the login redirect, not a 404, since plan step
         ``bank_import:X-gi-4``** (ruling **R-BI4**, developer 2026-09-11): an
@@ -91,6 +98,15 @@ class TestTheOversizedPathSegment:
         which runs after routing and so still sits downstream of the
         ``ValueError`` this case exists to keep out.  It asserted 404 until
         then; the arm graded is unchanged.
+
+        **It grades the APPLICATION's answer -- no 500 -- and not whose
+        refusal produced it.**  On Werkzeug 3.1.9 the stock converter refuses
+        this run too (the premise test below), so this case would pass with
+        :class:`RowIdConverter` handing the run to ``super()``.  The
+        converter's own refusal of it is
+        :func:`~app.utils.digit_strings.parse_row_id`'s, graded by
+        ``tests/test_utils/test_digit_strings.py``'s
+        ``test_a_digit_run_past_the_conversion_limit_returns_none``.
         """
         client = app.test_client()
         response = client.get(f"/accounts/{_oversized_digits()}/details")
@@ -100,34 +116,35 @@ class TestTheOversizedPathSegment:
     def test_the_public_and_submodule_converter_are_one_class(self):
         """The import path this module depends on is the documented one.
 
-        `RowIdConverter` subclasses a third-party class, and Werkzeug is not
-        pinned (finding N-143), so the narrower the surface the better.
+        `RowIdConverter` subclasses a third-party class, so the narrower the
+        surface the better: ``requirements.txt`` pins Werkzeug (finding N-143),
+        and every bump of that pin still reaches this subclass.
         Importing from the public ``werkzeug.routing`` rather than the
         ``werkzeug.routing.converters`` submodule costs nothing -- this
         asserts they really are the same object, so the choice is a free
         reduction in exposure rather than a guess.
         """
-        from werkzeug.routing import (  # pylint: disable=import-outside-toplevel
-            IntegerConverter as PublicConverter,
-        )
         from werkzeug.routing.converters import (  # pylint: disable=import-outside-toplevel
             IntegerConverter as SubmoduleConverter,
         )
 
-        assert PublicConverter is SubmoduleConverter
-        assert issubclass(RowIdConverter, PublicConverter)
+        assert IntegerConverter is SubmoduleConverter
+        assert issubclass(RowIdConverter, IntegerConverter)
 
-    def test_the_stock_converter_really_did_raise(self):
-        """The premise, on Werkzeug's own class rather than on our word.
+    def test_the_stock_converter_refuses_an_oversized_run(self):
+        """The 500's premise, on Werkzeug's own class rather than on our word.
 
-        Without this the test above proves only that 404 is returned today;
-        it would keep passing if the defect had never existed, and the whole
-        step's justification rests on it having existed.
+        It asserted the opposite until plan step ``balance:X-dk``: through
+        Werkzeug 3.1.8 the stock converter's bare ``int()`` raised
+        ``ValueError("Exceeds the limit ...")`` out of ``match()``, the
+        unauthenticated 500 plan step X-ae closed with this module's
+        converter.  Werkzeug 3.1.9 closed it upstream (pallets/werkzeug#3237)
+        and the stock converter now refuses the run itself, so ``match()``
+        raises ``NotFound``.  **It pins that answer** so a Werkzeug that
+        brought the raise back is seen here: :class:`RowIdConverter` would
+        still refuse the run, but the docstrings in ``app/url_converters.py``
+        that call the raise closed upstream would be false.
         """
-        from werkzeug.routing import (  # pylint: disable=import-outside-toplevel
-            IntegerConverter,
-        )
-
         stock = Map([
             Rule("/x/<int:row_id>", endpoint="x"),
         ]).bind("localhost")
@@ -135,8 +152,11 @@ class TestTheOversizedPathSegment:
             stock.map._rules[0]._converters["row_id"],  # pylint: disable=protected-access
             IntegerConverter,
         )
-        with pytest.raises(ValueError, match="Exceeds the limit"):
+        with pytest.raises(NotFound):
             stock.match(f"/x/{_oversized_digits()}")
+        # The control: the same stock rule matches an ordinary id, so the
+        # refusal above is about the oversized value, not about the rule.
+        assert stock.match("/x/7") == ("x", {"row_id": 7})
 
     def test_a_long_but_convertible_run_is_refused_by_the_converter(
         self, app, auth_client,
@@ -158,9 +178,6 @@ class TestTheOversizedPathSegment:
         cannot tell "routed and found nothing" from "refused by the
         converter" -- and those are opposite claims about this input.
         """
-        # pylint: disable=import-outside-toplevel
-        from werkzeug.exceptions import NotFound
-
         huge = "9" * 40
         with pytest.raises(NotFound):
             app.url_map.bind("localhost").match(f"/accounts/{huge}/details")
@@ -198,6 +215,23 @@ class TestTheSpellingOfAPathId:
 
         assert auth_client.get(f"/accounts/{respelled}/details").status_code == 404
 
+    def test_the_stock_converter_still_admits_every_digit_script(self):
+        """The spelling arm's premise, on Werkzeug's own class.
+
+        The case above says the stock converter's regex matched a non-ASCII
+        spelling, and ``isdigit()`` alone cannot show that: this asks the
+        stock class.  It is the half of plan step X-ae that Werkzeug 3.1.9
+        left open (measured at plan step ``balance:X-dk``), so
+        ``app/url_converters.py`` says it is unchanged upstream; the day
+        Werkzeug compiles the regex ASCII-only, this fails and that sentence
+        is re-read.
+        """
+        stock = Map([
+            Rule("/x/<int:row_id>", endpoint="x"),
+        ]).bind("localhost")
+
+        assert stock.match("/x/١") == ("x", {"row_id": 1})
+
     def test_a_zero_padded_path_id_is_refused(
         self, app, auth_client, seed_user,
     ):
@@ -224,10 +258,6 @@ class TestTheSpellingOfAPathId:
         two different causes is not evidence about the converter.  Matching
         the map directly distinguishes them: the rule must not match at all.
         """
-        from werkzeug.exceptions import (  # pylint: disable=import-outside-toplevel
-            NotFound,
-        )
-
         adapter = app.url_map.bind("localhost")
         with pytest.raises(NotFound):
             adapter.match("/accounts/0/details")
@@ -251,6 +281,70 @@ class TestTheSpellingOfAPathId:
             assert url_for(
                 "accounts.cash_detail", account_id=account_id,
             ).endswith(f"/accounts/{account_id}/details")
+
+
+class TestARefusalEndsMatching:
+    """What :class:`RowIdConverter`'s two layers each do to ROUTING.
+
+    Both claims are the converter docstring's, and until plan step
+    ``balance:X-dk`` neither was graded: an adversarial review set the
+    converter's ``regex`` back to the stock ``r"\\d+"`` and 312 tests across
+    this module and its neighbours stayed green.  A map with a second rule
+    that WOULD match each refused segment is what tells the two layers apart.
+    """
+
+    @staticmethod
+    def _id_rule_beside_a_name_rule():
+        """Bind ``/z/<int:a>`` and ``/z/<b>`` under the application's converter.
+
+        Werkzeug tries the ``int`` rule first (its converter weighs less), so
+        every segment below reaches it before the name rule.
+        """
+        return Map(
+            [Rule("/z/<int:a>", endpoint="by_id"), Rule("/z/<b>", endpoint="by_name")],
+            converters={"int": RowIdConverter},
+        ).bind("localhost")
+
+    def test_a_non_ascii_segment_never_selects_the_id_rule(self):
+        """The REGEX layer: ``'١'`` is not a candidate, so the name rule takes it.
+
+        With the stock ``\\d+`` the id rule would be selected and its refusal
+        would end matching in a 404 -- the case below -- so falling through to
+        the name rule is what only the ASCII regex produces.
+        """
+        adapter = self._id_rule_beside_a_name_rule()
+
+        assert adapter.match("/z/١") == ("by_name", {"b": "١"})
+        # The control: a canonical id still selects the id rule.
+        assert adapter.match("/z/7") == ("by_id", {"a": 7})
+
+    @pytest.mark.parametrize("segment", ["0", "007", "9" * 40])
+    def test_a_refused_id_ends_matching_before_the_name_rule(self, segment):
+        """The PARSE layer: a ``ValidationError`` is ``NoMatch``, not "try the next rule".
+
+        The name rule would match every one of these segments; it is never
+        tried.
+        """
+        adapter = self._id_rule_beside_a_name_rule()
+
+        with pytest.raises(NotFound):
+            adapter.match(f"/z/{segment}")
+
+    def test_a_refusal_on_a_path_with_another_methods_rule_is_a_405(self, app):
+        """``DELETE /transactions/0`` is a 405, not the 404 a missing row gets.
+
+        The ``PATCH`` rule on the same path is visited first and records its
+        method, so the refusal surfaces as ``MethodNotAllowed`` -- which is why
+        the converter's docstring says 404 OR 405.  The control: a canonical
+        id routes to the ``DELETE`` view.
+        """
+        adapter = app.url_map.bind("localhost")
+
+        with pytest.raises(MethodNotAllowed):
+            adapter.match("/transactions/0", method="DELETE")
+        assert adapter.match("/transactions/7", method="DELETE") == (
+            "transactions.delete_transaction", {"txn_id": 7},
+        )
 
 
 class TestARealIdStillWorks:

@@ -8,22 +8,32 @@ has the same single spelling in a URL as in a form body.  (The query string is
 NOT yet covered in SPELLING -- finding N-142; its RANGE is, through
 :func:`~app.utils.digit_strings.integer_arg`.)
 
-**Werkzeug's stock ``<int:>`` is lax in both of the ways this arc has already
-paid for**, and both were measured against this application:
+**Werkzeug's stock ``<int:>`` was lax in both of the ways this arc has already
+paid for**, both measured against this application on Werkzeug 3.1.6 at plan
+step X-ae and both unchanged through 3.1.8.  Werkzeug 3.1.9 closed the second
+upstream and left the first:
 
 * ``IntegerConverter.regex`` is ``r"\\d+"``, compiled WITHOUT ``re.ASCII``, and
-  ``to_python`` calls a bare ``int()``.  So ``/accounts/١/details`` returned
-  output byte-identical to ``/accounts/1/details``: the same row id under two
-  spellings, which is exactly what finding N-136 closed for form bodies while
-  leaving 123 path parameters open.
-* A path segment of more than ``sys.get_int_max_str_digits()`` ASCII digits
-  (4,300 by default) makes that ``int()`` raise ``ValueError`` **inside
-  ``url_adapter.match()``** -- before the view function, before the login
-  gate (``app/login_gate.py``), before any session exists.  ``app/error_handlers.py``
-  registers no ``ValueError`` arm, so it is an **unauthenticated** unhandled
-  500, and it is reachable in production: ``gunicorn.conf.py`` sets
-  ``limit_request_line = 8190``, and neither nginx config narrows the header
-  buffer, so a ~4.4 kB request line reaches the application.
+  ``to_python`` hands the segment to ``int()``.  So ``/accounts/١/details``
+  returned output byte-identical to ``/accounts/1/details``: the same row id
+  under two spellings, which is exactly what finding N-136 closed for form
+  bodies while leaving 123 path parameters open.  **Unchanged in Werkzeug
+  3.1.9**, and asserted on the stock class in this module's tests, so the day
+  Werkzeug changes it a test says so.
+* Through Werkzeug 3.1.8, a path segment of more than
+  ``sys.get_int_max_str_digits()`` ASCII digits (4,300 by default) made that
+  ``int()`` raise ``ValueError`` **inside ``url_adapter.match()``** -- before
+  the view function, before the login gate (``app/login_gate.py``), before
+  any session existed.  ``app/error_handlers.py`` registers no ``ValueError``
+  arm, so it was an **unauthenticated** unhandled 500, and it was reachable
+  in production: ``gunicorn.conf.py`` sets ``limit_request_line = 8190``, and
+  neither nginx config narrows the header buffer, so a ~4.4 kB request line
+  reaches the application.  **Werkzeug 3.1.9 refuses the run itself**
+  (pallets/werkzeug#3237): its ``NumberConverter.to_python`` turns that
+  ``ValueError`` into the ``ValidationError`` described below.  This
+  converter refused the run before then and still does, through
+  :func:`~app.utils.digit_strings.parse_row_id`, so its answer is the same on
+  both versions.
 
 **Overriding the built-in ``int`` name is deliberate, and it is what makes
 this one rule rather than 123 edits.**  Registering under a new name would
@@ -44,8 +54,9 @@ census is the whole justification for overriding a Flask built-in.)
 
 **A future path parameter that is NOT a row id must not use ``<int:>``.**  If
 one ever needs zero, a negative value, or a zero-padded fixed width, it needs
-its own converter -- this one refuses all three by design, and would answer
-404 rather than doing something surprising.
+its own converter -- this one refuses all three by design, and would refuse
+the request (see :class:`RowIdConverter` for which status) rather than doing
+something surprising.
 """
 
 # Both names are re-exported from the PUBLIC ``werkzeug.routing`` namespace and
@@ -78,17 +89,31 @@ class RowIdConverter(IntegerConverter):
       :class:`~werkzeug.routing.ValidationError` when the segment names no
       row.  (It is a ``ValueError`` SUBCLASS -- an earlier wording here said
       "not ``ValueError``", which is false; what matters is not the base
-      class but that Werkzeug's matcher catches this one and not a bare
-      ``ValueError`` from ``int()``.)  It is the signal
-      ``MapAdapter.match`` already handles: the rule simply does not match,
-      routing continues, and the request ends at the ordinary 404 that a
-      missing row would have produced anyway.  Raising it is what converts an
-      unhandled 500 into the answer the application already had.
+      class but that Werkzeug's matcher catches this one and lets any other
+      ``ValueError`` escape ``match()``, which is how the stock
+      ``to_python``'s bare ``int()`` was a 500 through Werkzeug 3.1.8.)  It
+      is the signal ``MapAdapter.match`` already handles: **matching ends
+      there** -- the matcher raises ``NoMatch`` and tries no other rule.  The
+      request is then refused one of three ways, measured at plan step
+      ``balance:X-dk``: an anonymous caller gets the login gate's redirect,
+      because ``app/login_gate.py`` is a ``before_request`` hook and Flask
+      raises the stored routing error only after those hooks run; a signed-in
+      one gets a 404, or a 405 where a rule for another method on the same
+      path was visited first (``DELETE /transactions/0`` beside the ``PATCH``
+      rule).  None of the three reaches a view, where a canonical id naming
+      no row gets the lookup's 404 instead.  Raising it is what keeps a
+      segment naming no row, and an id no column holds, out of every view
+      (see :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` for the 500
+      the second would otherwise be).
 
-    The regex alone would not be enough: an oversized run of ASCII digits
-    matches it and still makes ``int()`` raise.  The parse alone would not be
-    enough either, because a rule whose regex admits a segment participates in
-    matching even when its converter rejects it.
+    The regex alone would not be enough: ``0``, ``007`` and a forty-digit run
+    are all ASCII digits, and Werkzeug's own ``to_python`` reads them as row
+    0, a second spelling of row 7, and an id no ``integer`` column holds,
+    which psycopg 3's bind cast refuses with an unhandled 500 (ruling
+    R-BAL211).  The parse alone would not be enough either: a rule whose
+    regex admits a segment is the rule the matcher picks, so a stock ``\\d+``
+    would hand a non-ASCII segment to this converter, whose refusal then ends
+    matching before any later rule is tried.
     """
 
     #: ASCII digits only.  ``\\d`` inside a ``str`` pattern is Unicode-wide
@@ -111,8 +136,9 @@ class RowIdConverter(IntegerConverter):
                 leading zeros (a second spelling of a row that already has
                 one), it is too long for CPython to convert, or it exceeds
                 what an ``id`` column holds
-                (:data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`).  The
-                rule does not match and routing continues.
+                (:data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`).
+                Matching ends there: Werkzeug tries no other rule, and the
+                request is refused (the class docstring says which way).
         """
         row_id = parse_row_id(value)
         if row_id is None:
