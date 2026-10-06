@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.ci import arcs, ci_scope, ci_verdict
+from tools.ci import arcs, ci_scope, ci_verdict, scratch
 
 FULL, RO = ci_scope.FULL, ci_scope.REGISTRY_ONLY
 
@@ -490,10 +490,12 @@ class TestTheCommandLine:
 
 GUARD = "needs.scope.outputs.scope != 'registry-only'"
 
-#: Jobs that may run code without the guard: the classifier, the plan gate,
-#: the tax-law check (plan step salary:X-at-4), the aggregate that judges them,
-#: and the polyglot linters (every scope).
-UNGUARDED_JOBS = {"scope", "plan-gate", "tax-law", "lint-and-test", "polyglot-lint"}
+#: Jobs that may run code without the guard: the classifier, the card-trailer
+#: check (step X-cx's L4), the plan gate, the tax-law check (plan step
+#: salary:X-at-4), the aggregate that judges them, and the polyglot linters
+#: (every scope).
+UNGUARDED_JOBS = {"scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test",
+                  "polyglot-lint"}
 
 #: The tax-law job's one grading step (ruling salary:R-SAL74).
 TAX_LAW_STEP = "Is next year's tax law in? (refuses from December 1)"
@@ -502,6 +504,7 @@ TAX_LAW_STEP = "Is next year's tax law in? (refuses from December 1)"
 #: step-level allowlist, carried to the jobs its steps now live in.
 UNGUARDED_CODE_STEPS = {
     ("scope", "Classify the change set"),
+    ("commit-trailers", "Card trailers (every scope)"),
     ("plan-gate", "Install dependencies"),
     ("plan-gate", "Plan gate (every scope)"),
     ("tax-law", "Install dependencies"),
@@ -516,9 +519,10 @@ STEP_CONDITIONS = {
     ("test", "Run audit-trigger benchmarks (serial)"): "strategy.job-index == 0",
 }
 
-#: The jobs whose every step grades: the five ``lint-and-test`` needs, and the
+#: The jobs whose every step grades: the six ``lint-and-test`` needs, and the
 #: aggregate itself.
-GRADED_JOBS = ("scope", "plan-gate", "tax-law", "lint", "test", "lint-and-test")
+GRADED_JOBS = ("scope", "commit-trailers", "plan-gate", "tax-law", "lint", "test",
+               "lint-and-test")
 
 
 def _jobs() -> dict[str, dict]:
@@ -542,7 +546,11 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "python -m tools.ci.ci_scope" in steps["scope"]["run"]
         assert "--no-renames" in steps["scope"]["run"], "a rename must show both paths"
         assert "pull_request" in steps["scope"]["run"], "a push to main must be full"
-        assert _jobs()["scope"]["outputs"] == {"scope": "${{ steps.scope.outputs.scope }}"}
+        assert _jobs()["scope"]["outputs"] == {
+            "scope": "${{ steps.scope.outputs.scope }}",
+            "base": "${{ steps.scope.outputs.base }}",
+            "head": "${{ steps.scope.outputs.head }}",
+        }
 
     def test_the_classifier_step_is_unconditional(self):
         """A skipped classifier has no output; the guards must never see that state."""
@@ -613,12 +621,12 @@ class TestTheWorkflowIsWiredToTheAnswer:
                 assert job.get("if") == GUARD, name
 
     def test_no_code_running_step_in_an_unguarded_job_escapes_the_allowlist(self):
-        """Inside the classifier, plan-gate, tax-law and aggregate jobs, only named steps run code.
+        """Inside every unguarded job but the polyglot linters, only named steps run code.
 
         The single job held this per STEP; a grader added to an unguarded job
         would run on a registry pass and be judged by nobody's guard.
         """
-        for name in ("scope", "plan-gate", "tax-law", "lint-and-test"):
+        for name in ("scope", "commit-trailers", "plan-gate", "tax-law", "lint-and-test"):
             for step in _jobs()[name]["steps"]:
                 run = step.get("run", "")
                 if any(tool in run for tool in ("pytest", "pylint", "python ", "scripts/test.sh")):
@@ -816,6 +824,99 @@ class TestTheWorkflowIsWiredToTheAnswer:
         """Step 5b used to carry ``pytest tools/plan_gate``; a guarded copy is a second run."""
         checker_step = _steps("lint")["Test and apply custom pylint checkers"]
         assert "tools/plan_gate" not in checker_step["run"]
+
+
+class TestTheChangeSetIsHandedOver:
+    """The merge queue's trigger, and the change set's two ends the scope job hands over.
+
+    Step X-cx's L4: the scope job is the one place that reads which payload
+    field holds a pull request's, a merge group's or a push's two ends; the
+    ``commit-trailers`` job reads them from its outputs.
+    """
+
+    def test_the_merge_queue_triggers_the_workflow(self):
+        """``merge_group`` beside ``pull_request``; ``push`` still only to ``main``."""
+        text = (arcs.REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        # PyYAML reads the bare key ``on`` as the boolean True (YAML 1.1).
+        triggers = yaml.safe_load(text)[True]
+        assert set(triggers) == {"push", "pull_request", "merge_group"}
+        assert triggers["push"] == {"branches": ["main"]}
+
+    def test_the_card_trailer_job_checks_the_scope_jobs_range_over_full_history(self):
+        """Unguarded, waiting on the scope job, a full checkout, and exactly this command."""
+        job = _jobs()["commit-trailers"]
+        assert job["needs"] == "scope" and "if" not in job
+        checkout = job["steps"][0]
+        assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
+        step = _steps("commit-trailers")["Card trailers (every scope)"]
+        assert step["env"] == {"BASE_SHA": "${{ needs.scope.outputs.base }}",
+                               "HEAD_SHA": "${{ needs.scope.outputs.head }}"}
+        # EXACTLY this: a ``|| true`` would let a refusal fall on the floor.
+        assert step["run"].strip() == (
+            'python -m tools.ci.commit_trailers "${BASE_SHA}" "${HEAD_SHA}"'
+        )
+
+    @pytest.fixture(name="ran")
+    def _ran(self, tmp_path):
+        """Run the scope step's text, as bash, in a scratch repository; its outputs and log.
+
+        A stand-in ``python`` answers ``registry-only`` for ``-m
+        tools.ci.ci_scope`` and fails on anything else, so the step's own shell
+        is what is graded: which ends it reads for each event, and when it
+        asks the classifier at all.
+        """
+        repo = tmp_path / "code"
+        repo.mkdir()
+        scratch.run(repo, "init", "--quiet", "--initial-branch=dev")
+        base = scratch.commit(repo, "base")
+        head = scratch.commit(repo, "head", parents=[base])
+        stand_in = tmp_path / "python"
+        stand_in.write_text('#!/bin/sh\ntest "$*" = "-m tools.ci.ci_scope" || exit 9\n'
+                            'cat >/dev/null\necho registry-only\n')
+        stand_in.chmod(0o755)
+        run = {s.get("id"): s for s in _jobs()["scope"]["steps"]}["scope"]["run"]
+
+        def _run(event: str, **ends: str) -> tuple[dict[str, str], str]:
+            output = tmp_path / f"output_{event}"
+            output.write_text("")
+            env = {"PATH": f"{tmp_path}:/usr/bin:/bin", "GITHUB_OUTPUT": str(output),
+                   "EVENT_NAME": event, "HOME": str(tmp_path)}
+            env.update({name: ends.get(name, "") for name in (
+                "PR_BASE", "PR_HEAD", "GROUP_BASE", "GROUP_HEAD", "PUSH_BEFORE", "PUSH_AFTER")})
+            done = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-c", run], cwd=repo,
+                                  env=env, capture_output=True, text=True, check=False)
+            assert done.returncode == 0, done.stderr
+            pairs = [line.split("=", 1) for line in output.read_text().splitlines()]
+            return dict(pairs), done.stdout
+
+        return _run, base, head
+
+    def test_a_pull_request_and_a_merge_group_are_classified_and_handed_over(self, ran):
+        """Each reads its own payload fields, asks the classifier, and hands both ends on."""
+        run, base, head = ran
+        assert run("pull_request", PR_BASE=base, PR_HEAD=head)[0] == {
+            "base": base, "head": head, "scope": "registry-only"}
+        assert run("merge_group", GROUP_BASE=base, GROUP_HEAD=head)[0] == {
+            "base": base, "head": head, "scope": "registry-only"}
+
+    def test_a_push_is_full_and_still_hands_its_range_over(self, ran):
+        """A release runs everything; its before and after are still the commits to check."""
+        run, base, head = ran
+        outputs, log = run("push", PUSH_BEFORE=base, PUSH_AFTER=head)
+        assert outputs == {"base": base, "head": head, "scope": "full"}
+        assert "has no pull-request change set" in log
+
+    def test_an_unreadable_change_set_is_full_and_its_ends_are_handed_over_as_given(self, ran):
+        """A diff git cannot take answers ``full``; the trailer check then fails on the ends."""
+        run, _base, head = ran
+        outputs, log = run("pull_request", PR_BASE="e" * 40, PR_HEAD=head)
+        assert outputs == {"base": "e" * 40, "head": head, "scope": "full"}
+        assert "not trusting an unreadable change set" in log
+
+    def test_any_other_event_hands_over_no_range(self, ran):
+        """No change set: ``full`` here, and an empty range the trailer check refuses."""
+        run, _base, _head = ran
+        assert run("workflow_dispatch")[0] == {"base": "", "head": "", "scope": "full"}
 
 
 class TestTheRequiredCheckJudgesEveryGrader:
