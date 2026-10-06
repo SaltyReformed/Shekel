@@ -1,6 +1,6 @@
 """Recorded GitHub exchanges: kept by a session that calls GitHub once, replayed by the tests.
 
-The plan tool's tests never call GitHub (the build plan, L2), yet a test fed a
+Quill's tests never call GitHub (the build plan, L2), yet a test fed a
 response its author imagined grades the author's imagination.  So the
 exchanges the tests replay were RECORDED: :class:`Recorder` wraps the session
 a real :class:`_github.GitHub` sends through and keeps every request and
@@ -24,7 +24,7 @@ tracker it reads is private: real production figures are allowed there
 - **Only a known write to a scratch card is sent** (:func:`refusal`, asked of
   every request before it goes out, and of every request a recording keeps): a
   REST write takes one of the routes in :data:`_ROUTES` on the tracker, with
-  exactly the body keys the plan tool sends (their values are not checked but
+  exactly the body keys quill sends (their values are not checked but
   for the cards they name) and every card it names -- in its path, by its REST
   id, or as a claim -- a scratch card; a GraphQL write is one of the
   board's four, word for word, on the plan board, moving a scratch card's
@@ -67,9 +67,9 @@ from pathlib import Path
 
 import requests
 
-from tools.plan._github import API
-from tools.plan._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from tools.plan.setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
+from tools.quill._github import API
+from tools.quill._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
+from tools.quill.setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
 
 #: Where the recordings the tests replay are kept.
 RECORDINGS = Path(__file__).resolve().parent / "recorded"
@@ -104,7 +104,7 @@ _REPOSITORY_ALIAS = re.compile(r"\brepository\s*:")
 _STRING_OR_IGNORED = re.compile(
     r'"""(?:\\"""|[^"]|"(?!""))*"""|"(?:\\.|[^"\\\n\r])*"|#[^\n\r]*|[,\ufeff]')
 _CLAIM = re.compile(r"refs/claims/(?:([0-9]+)|recording-[a-z0-9-]+)")
-#: The bodies the plan tool PATCHes an issue with: retype, retitle, a new body, close, reopen.
+#: The bodies quill PATCHes an issue with: retype, retitle, a new body, close, reopen.
 _PATCHES = frozenset(frozenset(keys) for keys in (
     {"type"}, {"title"}, {"body"}, {"state", "state_reason"}, {"state"}))
 
@@ -146,7 +146,7 @@ def _scratch_claim(ref: str, scratch: Scratch) -> bool:
 
 _Allows = Callable[[re.Match, dict, Scratch], bool]
 #: Every REST write a recording may send, under the tracker's repository: its method,
-#: its path, and whether its body is exactly what the plan tool sends, naming scratch cards
+#: its path, and whether its body is exactly what quill sends, naming scratch cards
 #: only.
 _ROUTES: tuple[tuple[str, re.Pattern, _Allows], ...] = tuple(
     (method, re.compile(path), allows) for method, path, allows in (

@@ -1,9 +1,9 @@
-"""The ``plan`` command: how every session reads and writes Shekel's plan in its private tracker.
+"""The ``quill`` command: how every session reads and writes Shekel's plan in its private tracker.
 
 The plan lives in the private repository ``saltyreformed-labs/shekel-plan``
 (ruling ``balance:R-BAL170``): each step, finding, ruling and question is one
 issue, a "card", and one board holds the steps and questions in the order the
-developer drags them (``R-BAL177``).  Every write goes through the plan tool's
+developer drags them (``R-BAL177``).  Every write goes through quill's
 GitHub App, and every card a session files passes :mod:`check` first.
 
 Whether a card SHIPPED is git's answer, never the card's state: a commit on
@@ -18,21 +18,23 @@ finished is no leaf unless git says it shipped, ``_state.leaves``.)
 
 Usage, from the repository root (``plan#N`` or ``N`` names a card)::
 
-    python -m tools.plan.plan next [--arc ARC]
-    python -m tools.plan.plan claim plan#N [--branch BRANCH]
-    python -m tools.plan.plan release plan#N [--branch BRANCH | --unreadable]
-    python -m tools.plan.plan show plan#N | OLD-ID
-    python -m tools.plan.plan file step --arc ARC --title NAME --body-file SPEC [--parent plan#P]
-    python -m tools.plan.plan file finding --arc ARC --title NAME --owner plan#S --text SENTENCE
-    python -m tools.plan.plan file ruling --arc ARC --title NAME --owner plan#S
+    python -m tools.quill.quill next [--arc ARC]
+    python -m tools.quill.quill claim plan#N [--branch BRANCH]
+    python -m tools.quill.quill release plan#N [--branch BRANCH | --unreadable]
+    python -m tools.quill.quill show plan#N | OLD-ID
+    python -m tools.quill.quill file step --arc ARC --title NAME --body-file SPEC [--parent plan#P]
+    python -m tools.quill.quill file finding --arc ARC --title NAME --owner plan#S --text SENTENCE
+    python -m tools.quill.quill file ruling --arc ARC --title NAME --owner plan#S
                                 (--question-file Q | --from-question plan#Q) --answer-file A
-    python -m tools.plan.plan file question --arc ARC --title NAME --body-file QUESTION
-    python -m tools.plan.plan block plan#N --by plan#M [--remove]
-    python -m tools.plan.plan move plan#N (--top | --bottom | --after plan#M)
-    python -m tools.plan.plan drop plan#N --why REASON
-    python -m tools.plan.plan sync [--dry-run]
-    python -m tools.plan.plan spec-history plan#N [--since BRANCH_OR_DATE]
-    python -m tools.plan.plan spec-revert plan#N --to EDIT_ID
+    python -m tools.quill.quill file question --arc ARC --title NAME --body-file QUESTION
+    python -m tools.quill.quill edit plan#N [--title NAME] [--body-file TEXT]
+    python -m tools.quill.quill comment plan#N --body-file TEXT
+    python -m tools.quill.quill block plan#N --by plan#M [--remove]
+    python -m tools.quill.quill move plan#N (--top | --bottom | --after plan#M)
+    python -m tools.quill.quill drop plan#N --why REASON
+    python -m tools.quill.quill sync [--dry-run]
+    python -m tools.quill.quill spec-history plan#N [--since BRANCH_OR_DATE]
+    python -m tools.quill.quill spec-revert plan#N --to EDIT_ID
 
 Exit status: 0 done; 1 refused, with nothing written (or, for ``sync``, a
 REPORT a person must act on); 2 a call failed -- GitHub, git, the network, or
@@ -43,10 +45,12 @@ failure the output says what was written; ``file`` run again finishes a filing
 a failure cut short (R-BAL186): every card it creates is marked ``filing``
 until its last write, and a marked card is never offered (R-BAL202).  Run
 again, it writes nothing over a card the earlier run filed that is still open,
-still marked (refused when a person's or `plan drop`'s close ended it, unless it
+still marked (refused when a person's or `quill drop`'s close ended it, unless it
 is work git says shipped), or -- for a ruling, which its own filing closes -- linked under
 its owner; a card closed after its filing finished is not looked for, so the
 command files another (unless a listing that lags its close still shows it open).
+``edit`` run again writes only the parts that differ, so it finishes an edit a
+failure cut short.
 """
 from __future__ import annotations
 
@@ -63,20 +67,21 @@ import requests
 from tools.ci import trailers
 from tools.ci.arcs import ARCS, REPO
 from tools.ci.gitcmd import GitError
-from tools.plan import _git
-from tools.plan._command import (
+from tools.quill import _git
+from tools.quill._command import (
     ON_BOARD,
     Refused,
     _label,
     _one,
     _outside_parent,
+    _read,
     _shipped,
     _unfinished,
     _with_closure,
 )
-from tools.plan._filing import cmd_file
-from tools.plan._github import GitHubError
-from tools.plan._state import (
+from tools.quill._filing import cmd_file
+from tools.quill._github import GitHubError
+from tools.quill._state import (
     SyncPlan,
     Unsplit,
     drop_shows,
@@ -100,8 +105,9 @@ from tools.plan._state import (
     unfinished_reports,
     unsplit,
 )
-from tools.plan._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
-from tools.plan.setup_tracker import FILING
+from tools.quill._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
+from tools.quill.check import BODY, TITLE, Draft, in_ruling_shape, normalized, violations
+from tools.quill.setup_tracker import FILING
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
@@ -147,10 +153,10 @@ def cmd_next(args, tracker: Tracker, root: Path) -> int:
     print(f"next{scope}: {_label(answer.card)}" if answer.card else f"next{scope}: nothing")
     for card in answer.unplaced:
         print(f"NOT ON THE BOARD, so in no order: {_label(card)} -- "
-              + ("`plan sync` puts it back on the board, unlinking the steps closed while "
+              + ("`quill sync` puts it back on the board, unlinking the steps closed while "
                  "still being filed under it (R-BAL205)"
                  if never_split(card, cards, shipped) else
-                 f"place it with `plan move plan#{card.number} --after plan#M` (or the board "
+                 f"place it with `quill move plan#{card.number} --after plan#M` (or the board "
                  "lags a fresh write)"))
     for claim in stale_claims(claims, datetime.now(UTC), lambda b: _git.pushed(root, b)):
         print(f"STALE CLAIM: plan#{claim.card} by {holder(claim)} since {claim.made or '?'}, "
@@ -258,7 +264,7 @@ def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
               for child in card.children]
     lines += [f"  blocked by: plan#{blocker}" for blocker in card.blocked_by]
     if filing_unfinished(card):
-        lines.append("  filing: not finished (R-BAL202) -- never offered until its `plan file` "
+        lines.append("  filing: not finished (R-BAL202) -- never offered until its `quill file` "
                      "command runs again; with that command lost, make its missing writes on "
                      f"the web and remove its {FILING!r} label last")
     lines += [f"  {link.what} outside the tracker: {link.issue} -- not offered until it is "
@@ -301,6 +307,115 @@ def cmd_show(args, tracker: Tracker, root: Path) -> int:
     return 0
 
 
+# -- edit, comment --------------------------------------------------------------
+
+def _card_refusal(card: Card) -> str | None:
+    """Why ``card`` is never rewritten, whatever its new title or text; None when it may be.
+
+    A ruling is the developer's record (R-BAL220).  A card carrying the filing
+    mark is found again by its ``quill file`` command through its kind, title
+    and text (R-BAL186, R-BAL202): rewritten, an unfinished filing would be
+    filed a second time, and so would one closed while still marked, which that
+    command now files nothing over (a drop refused, a shipped card filed
+    already).  No way out by hand is offered for that one: removing its stale
+    mark re-arms the command to file it anew, and, for a leaf still linked under
+    its split step until ``sync`` unlinks it, makes it a dropped leaf, so
+    R-BAL187 could drop a step nobody built (``_state.sync_unsplits``, review
+    M4).  A closed card with no mark is edited: no command looks for it by its
+    text (``_filing._same_filing``), and R-BAL174's review reads any change to
+    it in ``spec-history``.
+    """
+    if card.kind == "ruling":
+        return (f"{_label(card)} is a ruling, the developer's question and answer word for "
+                "word: edit never rewrites one, its title or its text; a correction is a new "
+                "ruling that names the one it amends (R-BAL220)")
+    if FILING in card.labels:
+        return (f"{_label(card)} carries the {FILING!r} mark (R-BAL202): its `quill file` "
+                "command finds it by its kind, title and text, so a new title or text would "
+                "make that command file a second card (R-BAL186); "
+                + (f"finish its filing first (`quill show plan#{card.number}` says how)"
+                   if filing_unfinished(card) else
+                   "closed while still marked, it keeps them so that command files nothing "
+                   "over it, and so it is not edited"))
+    return None
+
+
+def _text_refusal(card: Card, path: str, body: str) -> str | None:
+    """Why ``body``, read from ``path``, is not ``card``'s new text; None when it may be.
+
+    A text that is only space would blank the card's spec or question: edit
+    never blanks a text (a finding's, the check refuses too).  A question's
+    text in a ruling's shape is what only its conversion writes: ``_filing``
+    reads such an edit of quill's as an earlier conversion's
+    (``_Asked.converted_before``).
+    """
+    if not body.strip():
+        return f"{path} holds no text: edit never blanks a card's text"
+    if card.kind == "question" and in_ruling_shape(body):
+        return (f"{_label(card)} is a question, and this text has a ruling's shape (\"Question: "
+                "...\" then \"Answer: ...\"), which only its conversion writes: `quill file "
+                f"ruling --from-question plan#{card.number}` turns an answered question into "
+                "its ruling")
+    return None
+
+
+def cmd_edit(args, tracker: Tracker, _root: Path) -> int:
+    """Rewrite a card's title, its text, or both, through the tracker's own writes
+    (:meth:`_tracker.Tracker.retitle`, :meth:`_tracker.Tracker.set_body`), after the check
+    ``file`` runs on what it writes: :func:`check.violations`, grading the parts written
+    -- a title (R-BAL180), a finding's one sentence (R-BAL136) -- and the card's type and
+    arc label, which every written card keeps.  Refused, with nothing written: with
+    nothing to write, before any card is read; for the card itself
+    (:func:`_card_refusal`), before ``--body-file`` is read; and for its new text
+    (:func:`_text_refusal`).  Each part is written only when it differs from the card's
+    as the rules read it (:func:`check.normalized`), each write printed as it lands, so
+    the same command run again finishes an edit a failure cut short; R-BAL174's review
+    reads a text's change in ``spec-history``."""
+    if args.title is None and args.body_file is None:
+        raise Refused("nothing to edit: pass --title, --body-file or both")
+    card = _one(tracker, args.card)
+    if why := _card_refusal(card):
+        raise Refused(why)
+    body = None
+    if args.body_file is not None:
+        body = _read(args.body_file)
+        if why := _text_refusal(card, args.body_file, body):
+            raise Refused(why)
+    written = {part for part, new in ((TITLE, args.title), (BODY, body)) if new is not None}
+    draft = Draft(card.kind, card.title if args.title is None else args.title, body, card.labels)
+    if problems := violations(draft, written):
+        raise Refused("not edited:\n  " + "\n  ".join(problems))
+    number = card.number
+    if args.title is not None:
+        if args.title.strip() == card.title.strip():
+            print(f"plan#{number}'s title is already {card.title!r}: not written")
+        else:
+            tracker.retitle(number, args.title)
+            print(f"retitled plan#{number}: {card.title!r} -> {args.title!r}")
+    if body is not None:
+        if normalized(tracker.body(number)) == normalized(body):
+            print(f"plan#{number}'s text is already this text: not written")
+        else:
+            tracker.set_body(number, body)
+            print(f"plan#{number}'s text replaced (`quill spec-history plan#{number}` shows "
+                  "the change)")
+    return 0
+
+
+def cmd_comment(args, tracker: Tracker, _root: Path) -> int:
+    """Add a comment to a card through :meth:`_tracker.Tracker.comment`, its text read
+    from ``--body-file``: a note beside the card's own text, which it never changes, so a
+    ruling takes one too.  A text that is only space is refused before any card is
+    read."""
+    text = _read(args.body_file)
+    if not text.strip():
+        raise Refused(f"{args.body_file} holds no text: a comment says something")
+    card = _one(tracker, args.card)
+    tracker.comment(card.number, text)
+    print(f"commented on {_label(card)}")
+    return 0
+
+
 # -- block, move, drop ----------------------------------------------------------
 
 def cmd_block(args, tracker: Tracker, _root: Path) -> int:
@@ -331,7 +446,7 @@ def cmd_move(args, tracker: Tracker, root: Path) -> int:
     if filing_unfinished(card) and card.kind == "step":
         raise Refused(f"{_label(card)}'s filing has not finished (R-BAL202): finish it first.  "
                       "If it is a leaf -- one whose link has not landed reads as a top-level "
-                      "step -- its `plan file` command moves it again after this move")
+                      "step -- its `quill file` command moves it again after this move")
     order = tracker.board.order()
     items = dict(order)
     if args.after is not None:
@@ -378,7 +493,7 @@ def _unsplit(tracker: Tracker, undo: Unsplit, cards: dict[int, Card],
     printed as what would be written and not made: the split step put back on the board,
     and moved into a leaf's place, when it is left a plain step; then each leaf unlinked.
     ``cards`` holds the split step and every card linked under it
-    (:func:`_with_closure`); ``plan drop`` and ``plan sync`` both take a split apart
+    (:func:`_with_closure`); ``quill drop`` and ``quill sync`` both take a split apart
     here."""
     split, would = cards[undo.step], "would be " if dry_run else ""
     item = split.board_item
@@ -407,7 +522,7 @@ def _leave_split(tracker: Tracker, leaf: Card, cards: dict[int, Card], shipped: 
     write = drop_shows(split, leaf, cards, shipped)
     if write == "reopen":
         tracker.reopen(split.number)
-        print(f"  reopened plan#{split.number}: the plan tool had closed it, and without "
+        print(f"  reopened plan#{split.number}: quill had closed it, and without "
               f"plan#{leaf.number} it still has work to do (R-BAL190)")
     elif write is not None:
         tracker.close(split.number, write)
@@ -472,13 +587,13 @@ def cmd_drop(args, tracker: Tracker, root: Path) -> int:
         print(f"  plan#{leaf.number} shipped in git, so it is not dropped")
     if not below:
         raise Refused(f"{_label(card)} has no leaf below it that is still work; its own state "
-                      "shows its leaves, which `plan sync` writes")
+                      "shows its leaves, which `quill sync` writes")
     names = ", ".join(f"plan#{leaf.number}" for leaf in below)
     ending = {leaf.number for leaf in below if filing_unfinished(leaf)}
     bare = left_bare(card, cards, shipped, ending)
     tracker.comment(card.number, f"Dropped: {args.why} (its leaves still work: {names})")
     print(f"  commented on plan#{card.number}: dropping its leaves still work, {names}"
-          + ("" if card in bare else "; it shows them at the next `plan sync`"))
+          + ("" if card in bare else "; it shows them at the next `quill sync`"))
     for leaf in below:
         _drop(tracker, leaf, args.why)
     for undo in drop_unlinks(card, cards, shipped, ending):
@@ -530,7 +645,7 @@ def _sync_reads(tracker: Tracker, found: trailers.History) -> tuple[dict[int, Ca
     undoes wherever that step is) only FIND the cards it decides over; each
     is then read by its number, which decides, since a listing may still show a card
     as it was before a write: a leaf's close the listing lagged made its split step,
-    which ``plan drop`` had just closed, read as split again, and sync reopened it.
+    which ``quill drop`` had just closed, read as split again, and sync reopened it.
     Every card a trailer names, and every claimed card, is read by its number too --
     the claimed ones so that a claim on a split step is reported whatever that step's
     state (:func:`_state.sync_plan`) -- and then every card a decision over them reads
@@ -643,7 +758,7 @@ def cmd_spec_revert(args, tracker: Tracker, _root: Path) -> int:
     chosen = [version for version in versions if version.edit_id == args.to]
     if not chosen:
         raise Refused(f"plan#{args.card} has no saved version {args.to!r}; "
-                      f"`plan spec-history plan#{args.card}` lists them")
+                      f"`quill spec-history plan#{args.card}` lists them")
     if chosen[0].body == body:
         raise Refused(f"plan#{args.card}'s body already is that version")
     print(_diff(body, chosen[0].body, f"version {args.to}"))
@@ -685,7 +800,7 @@ def _file_parser(commands) -> None:
 
 def parser() -> argparse.ArgumentParser:
     """Every command and its arguments."""
-    top = argparse.ArgumentParser(prog="plan", description=__doc__.splitlines()[0])
+    top = argparse.ArgumentParser(prog="quill", description=__doc__.splitlines()[0])
     commands = top.add_subparsers(dest="command", required=True)
     nxt = commands.add_parser("next", help="the next step to build")
     nxt.add_argument("--arc", choices=ARCS)
@@ -700,6 +815,13 @@ def parser() -> argparse.ArgumentParser:
                        help="release a claim whose branch cannot be read, and no other")
     commands.add_parser("show", help="a card and its git history").add_argument("card")
     _file_parser(commands)
+    edit = commands.add_parser("edit", help="rewrite a card's title or text (never a ruling's)")
+    edit.add_argument("card", type=card_number)
+    edit.add_argument("--title", help="its new short name (R-BAL178, R-BAL180)")
+    edit.add_argument("--body-file", help="a file holding its new text")
+    comment = commands.add_parser("comment", help="add a comment to a card")
+    comment.add_argument("card", type=card_number)
+    comment.add_argument("--body-file", required=True, help="a file holding the comment")
     block = commands.add_parser("block", help="record a blocked-by edge")
     block.add_argument("card", type=card_number)
     block.add_argument("--by", type=card_number, required=True)
@@ -726,7 +848,8 @@ def parser() -> argparse.ArgumentParser:
 
 COMMANDS: dict[str, Callable[..., int]] = {
     "next": cmd_next, "claim": cmd_claim, "release": cmd_release, "show": cmd_show,
-    "file": cmd_file, "block": cmd_block, "move": cmd_move, "drop": cmd_drop,
+    "file": cmd_file, "edit": cmd_edit, "comment": cmd_comment, "block": cmd_block,
+    "move": cmd_move, "drop": cmd_drop,
     "sync": cmd_sync, "spec-history": cmd_spec_history, "spec-revert": cmd_spec_revert,
 }
 

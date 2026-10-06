@@ -1,8 +1,8 @@
 """No leaf is filed under a claimed step, X-cx L2's leaf C3 (C2 review M4, an application of
 ruling ``balance:R-BAL207``): a claim says a branch is building the step as one piece of work,
-and a step split into smaller steps is never shipped itself (R-BAL177), so ``plan file step
+and a step split into smaller steps is never shipped itself (R-BAL177), so ``quill file step
 --parent`` refuses -- a first run, and a run that finishes an earlier filing -- naming the
-claim and its ``plan release``; and ``sync`` reports a claim the refusal could not prevent.
+claim and its ``quill release``; and ``sync`` reports a claim the refusal could not prevent.
 Over :class:`_fake.FakeTracker` and a throwaway git repository (the ``code`` fixture,
 ``conftest.py``).  Nothing here calls GitHub.
 """
@@ -10,21 +10,21 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from tools.plan._fake import FailOnce, FakeTracker, leaf_filing, run, ship
-from tools.plan._tracker import Child, Claim
-from tools.plan.setup_tracker import FILING
+from tools.quill._fake import FailOnce, FakeTracker, leaf_filing, run, ship
+from tools.quill._tracker import Child, Claim
+from tools.quill.setup_tracker import FILING
 
 _REFUSED = ("plan#1 is claimed by 'feat/s' since 2026-10-04T12:00:00Z: a branch is building "
             "it as one piece of work, and a step split into smaller steps is never shipped "
             "itself (R-BAL177), so no leaf is filed under it while it is claimed.  Release the "
-            "claim first (`plan release plan#1 --branch feat/s`, by the session that holds it, "
+            "claim first (`quill release plan#1 --branch feat/s`, by the session that holds it, "
             "or once its work is abandoned), then run this again")
-_KEEP = ("; or, to keep plan#1 whole, `plan drop plan#2`: its filing never finished, so it "
+_KEEP = ("; or, to keep plan#1 whole, `quill drop plan#2`: its filing never finished, so it "
          "was never part of the split (R-BAL205)")
 
 
 def _claimed_by_a_race(tracker, number):
-    """A claim on plan#``number`` that `plan claim` would refuse now -- made while a leaf's
+    """A claim on plan#``number`` that `quill claim` would refuse now -- made while a leaf's
     link was landing, or before C3 -- put straight into the tracker."""
     tracker.held[number] = Claim(number, "feat/s", "2026-10-04T12:00:00Z", f"sha{number}")
 
@@ -175,7 +175,7 @@ def test_sync_reports_a_claim_on_a_split_step_until_it_is_released(code, tmp_pat
     out = capsys.readouterr().out
     assert out == ("REPORT: plan#1 is split into smaller steps, but 'feat/s' still claims it: a "
                    "split step is never shipped itself, its smaller steps are the work "
-                   "(R-BAL177), so release the claim with `plan release plan#1 --branch "
+                   "(R-BAL177), so release the claim with `quill release plan#1 --branch "
                    "feat/s`\n")
     assert tracker.writes == writes
     assert run(tracker, code, "release", "plan#1", "--branch", "feat/s") == 0
@@ -206,7 +206,7 @@ def test_sync_names_the_drop_when_every_leaf_of_the_claimed_step_is_still_being_
     """Leaf C3 review LOW 2: a claim made as plan#2's link landed (its unmark failed).  The
     REPORT named only the release, which hands the claimed work to the split; every leaf
     of plan#1 is still being filed, so it also names the drop that keeps plan#1 whole, as
-    `plan file`'s refusal does -- until plan#2 ships, which no drop undoes."""
+    `quill file`'s refusal does -- until plan#2 ships, which no drop undoes."""
     tracker = FakeTracker()
     tracker.add(1)
     FailOnce(tracker, "unmark")
@@ -216,7 +216,7 @@ def test_sync_names_the_drop_when_every_leaf_of_the_claimed_step_is_still_being_
     assert run(tracker, code, "sync") == 1
     assert ("REPORT: plan#1 is split into smaller steps, but 'feat/s' still claims it: a split "
             "step is never shipped itself, its smaller steps are the work (R-BAL177), so release "
-            "the claim with `plan release plan#1 --branch feat/s`; or, to keep it whole, `plan "
+            "the claim with `quill release plan#1 --branch feat/s`; or, to keep it whole, `quill "
             "drop plan#2`: still being filed, so never part of the split (R-BAL205)\n") in (
         capsys.readouterr().out)
     ship(code, "Ships: plan#2")
@@ -244,9 +244,9 @@ def test_no_drop_is_offered_to_keep_whole_a_claimed_step_another_leaf_splits(cod
 
 
 def test_a_claim_whose_branch_cannot_be_read_is_named_so_everywhere(code, tmp_path, capsys):
-    """Leaf C3 review LOW 7 and LOW 9: the refusal, sync's REPORT on a split step, `plan show`
+    """Leaf C3 review LOW 7 and LOW 9: the refusal, sync's REPORT on a split step, `quill show`
     and sync's REPORT on a shipped card each name a holder whose branch cannot be read the
-    one way, with the release that takes `--unreadable` (`plan show` and the shipped
+    one way, with the release that takes `--unreadable` (`quill show` and the shipped
     REPORT printed None)."""
     tracker = FakeTracker()
     tracker.add(1)
@@ -259,11 +259,11 @@ def test_a_claim_whose_branch_cannot_be_read_is_named_so_everywhere(code, tmp_pa
     assert run(tracker, code, *leaf_filing(tmp_path, "Other")) == 1
     err = capsys.readouterr().err
     assert err.startswith("refused: plan#1 is claimed by a branch that cannot be read since ?: ")
-    assert "(`plan release plan#1 --unreadable`, by the session that holds it" in err
+    assert "(`quill release plan#1 --unreadable`, by the session that holds it" in err
     assert run(tracker, code, "sync") == 1
     out = capsys.readouterr().out
     assert ("REPORT: plan#1 is split into smaller steps, but a branch that cannot be read still "
-            "claims it: ") in out and "`plan release plan#1 --unreadable`" in out
+            "claims it: ") in out and "`quill release plan#1 --unreadable`" in out
     assert "but its claim names a branch that cannot be read: not closed" in out
     assert run(tracker, code, "show", "plan#3") == 0
     assert "\n  claim: a branch that cannot be read since ?\n" in capsys.readouterr().out
@@ -302,7 +302,7 @@ def test_the_drop_that_keeps_a_claimed_step_whole_counts_only_its_leaves(code, t
     assert run(tracker, code, *leaf_filing(tmp_path, "Half")) == 1
     assert capsys.readouterr().err == f"refused: {_REFUSED}{_KEEP}\n"
     assert run(tracker, code, "sync", "--dry-run") == 1
-    assert "; or, to keep it whole, `plan drop plan#2`: still being filed" in (
+    assert "; or, to keep it whole, `quill drop plan#2`: still being filed" in (
         capsys.readouterr().out)
 
 
@@ -316,5 +316,5 @@ def test_sync_names_the_drop_of_every_leaf_still_being_filed(code, capsys):
     _claimed_by_a_race(tracker, 1)
     capsys.readouterr()
     assert run(tracker, code, "sync") == 1
-    assert ("; or, to keep it whole, `plan drop plan#2` and `plan drop plan#3`: still being "
+    assert ("; or, to keep it whole, `quill drop plan#2` and `quill drop plan#3`: still being "
             "filed, so never part of the split (R-BAL205)\n") in capsys.readouterr().out

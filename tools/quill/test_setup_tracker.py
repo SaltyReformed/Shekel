@@ -7,9 +7,9 @@ import re
 import pytest
 
 from tools.ci.arcs import ARCS
-from tools.plan import setup_tracker
-from tools.plan._github import GitHubError
-from tools.plan.setup_tracker import (
+from tools.quill import setup_tracker
+from tools.quill._github import GitHubError
+from tools.quill.setup_tracker import (
     APP_PERMISSIONS,
     ISSUE_TYPES,
     LABELS,
@@ -149,7 +149,7 @@ def test_every_arc_is_a_label():
 
 
 def test_the_filing_mark_is_a_label_the_tracker_keeps():
-    """R-BAL202: every card ``plan file`` creates carries it, so ``--apply`` makes it and
+    """R-BAL202: every card ``quill file`` creates carries it, so ``--apply`` makes it and
     never deletes it as a label nothing declares."""
     assert setup_tracker.FILING in LABELS
 
@@ -392,7 +392,7 @@ def test_apply_on_an_empty_board_deletes_rank_hides_status_and_no_automation():
 
 
 def test_an_automation_that_adds_cards_is_a_difference():
-    """Only the plan tool puts a card on the board (balance:R-BAL177): GitHub's default
+    """Only quill puts a card on the board (balance:R-BAL177): GitHub's default
     "Auto-add sub-issues to project" would add every finding and ruling; hiding is allowed."""
     project = _project(views=(("Plan", "is:open", 0),))
     project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]

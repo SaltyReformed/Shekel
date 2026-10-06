@@ -1,28 +1,30 @@
-"""The ``plan file`` command: a step, finding, ruling or question filed after
+"""The ``quill file`` command: a step, finding, ruling or question filed after
 :func:`check.violations` passes, a filing a failure cut short finished by the same
 command (R-BAL186), and nothing written over one an earlier run filed -- ruling
 ``balance:R-BAL202``'s mark, its leaf rule (R-BAL204) and ruling closes (R-BAL206) --
-and no leaf filed under a step a branch has claimed.  ``plan.py``'s module docstring is
+and no leaf filed under a step a branch has claimed.  ``quill.py``'s module docstring is
 the command's usage.
 
-Split out of ``plan.py`` (X-cx L2, leaf C), which leaf C's change would otherwise take
-past the 1,000 lines ``too-many-lines`` allows.
+Split out of the command module at X-cx L2's leaf C, whose change would otherwise take
+that module past the 1,000 lines ``too-many-lines`` allows (it has been ``quill.py``
+since the tool's rename).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.plan._command import (
+from tools.quill._command import (
     ON_BOARD,
     Refused,
     _label,
     _one,
     _outside_parent,
+    _read,
     _shipped,
     _with_closure,
 )
-from tools.plan._state import (
+from tools.quill._state import (
     filing_ended,
     filing_unfinished,
     holder,
@@ -32,8 +34,8 @@ from tools.plan._state import (
     release_hint,
     withdrawn_filing,
 )
-from tools.plan._tracker import Card, Tracker, TrackerError
-from tools.plan.check import (
+from tools.quill._tracker import Card, Tracker, TrackerError
+from tools.quill.check import (
     Draft,
     Owner,
     in_ruling_shape,
@@ -42,18 +44,13 @@ from tools.plan.check import (
     ruling_question,
     violations,
 )
-from tools.plan.setup_tracker import FILING
-
-
-def _read(path: str) -> str:
-    """A file's text (a spec, a question, an answer)."""
-    return Path(path).read_text(encoding="utf-8")
+from tools.quill.setup_tracker import FILING
 
 
 @dataclass(frozen=True)
 class _Asked:
     """The question card a ruling is converted from, its body as read, and whether an EDIT
-    of the plan tool's (not its filing) ever saved it in a ruling's shape -- an earlier
+    of quill's (not its filing) ever saved it in a ruling's shape -- an earlier
     conversion's work, whoever saved the card since."""
 
     card: Card
@@ -83,8 +80,8 @@ def _converted_body(asked: _Asked, answer: str) -> str:
     if question is None and asked.converted_before and in_ruling_shape(asked.body):
         number = asked.card.number
         raise Refused(f"{_label(asked.card)}'s text is an earlier conversion's, with another "
-                      f"answer: put the developer's question back first (`plan spec-history "
-                      f"plan#{number}` lists its saved versions, `plan spec-revert plan#{number} "
+                      f"answer: put the developer's question back first (`quill spec-history "
+                      f"plan#{number}` lists its saved versions, `quill spec-revert plan#{number} "
                       "--to EDIT_ID` restores one), then run this again")
     return ruling_body(asked.body if question is None else question, answer)
 
@@ -119,7 +116,7 @@ def _filing_for(args, tracker: Tracker, root: Path) -> _Filing:
     parent = _one(tracker, parent_number) if parent_number else None
     if args.kind == "step" and parent is not None and filing_unfinished(parent):
         raise Refused(f"{_label(parent)}'s own filing has not finished (R-BAL202): finish it "
-                      "with the same `plan file` command first, then split it -- a leaf under "
+                      "with the same `quill file` command first, then split it -- a leaf under "
                       "it would make it a split step its own filing puts on the board")
     owner, cards, shipped = None, {}, frozenset()
     if parent is not None:
@@ -172,7 +169,7 @@ def _place_leaf(tracker: Tracker, leaf: Card, filing: _Filing) -> None:
 def _same_filing(tracker: Tracker, draft: Draft, parent: Card | None) -> Card | None:
     """The card an earlier run of this filing made, if one exists: a card with ``draft``'s
     kind, title and text that is OPEN, or still MARKED in any state (a filing the tool
-    began: unfinished, or ended by a person's or ``plan drop``'s close) -- or, for a
+    began: unfinished, or ended by a person's or ``quill drop``'s close) -- or, for a
     RULING, the one kind its own filing closes, ANY ruling linked under its owner, read
     by number.  A ruling is linked before its filing closes it and removes its mark, so
     one whose filing finished is found under its owner, whatever answer a write of it
@@ -202,7 +199,7 @@ def _same_filing(tracker: Tracker, draft: Draft, parent: Card | None) -> Card | 
     if len(standing) > 1:
         raise Refused(f"{len(standing)} cards have this kind, title and text "
                       f"({', '.join(f'plan#{card.number}' for card in standing)}): withdraw "
-                      "the extras -- `plan drop` an open one; reopen a closed one and close it "
+                      "the extras -- `quill drop` an open one; reopen a closed one and close it "
                       "as not planned on the web")
     return (standing or same or [None])[0]
 
@@ -256,10 +253,10 @@ def _refuse_beside_unfinished(filing: _Filing, leaf: Card | None) -> None:
         names = ", ".join(f"plan#{card.number}" for card in others)
         raise Refused(f"the filing of {names}, of plan#{parent.number}'s leaves, has not "
                       "finished (R-BAL204): finish it first, then run this again.  Unless a "
-                      "`plan file` command is filing it now, run that command again; with that "
+                      "`quill file` command is filing it now, run that command again; with that "
                       "command lost, or the card's title or text changed since, make its "
                       f"missing writes on the web and remove its {FILING!r} label last "
-                      "(`plan show` shows its parent and board place)")
+                      "(`quill show` shows its parent and board place)")
 
 
 def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) -> None:
@@ -288,7 +285,7 @@ def _refuse_under_a_claim(tracker: Tracker, filing: _Filing, leaf: Card | None) 
         return
     others = set(leaves(parent, filing.cards, filing.shipped)) - {getattr(leaf, "number", None)}
     keep = ("" if leaf is None or leaf.number in filing.shipped or others else
-            f"; or, to keep plan#{parent.number} whole, `plan drop plan#{leaf.number}`: its "
+            f"; or, to keep plan#{parent.number} whole, `quill drop plan#{leaf.number}`: its "
             "filing never finished, so it was never part of the split (R-BAL205)")
     raise Refused(f"plan#{parent.number} is claimed by {holder(claim)} since "
                   f"{claim.made or '?'}: a branch is building it as one piece of work, and a step "
@@ -410,7 +407,7 @@ def _created(kind: str, tracker: Tracker, draft: Draft) -> Card:
     card = tracker.cards([number]).get(number)
     if card is None:
         raise TrackerError(f"plan#{number} was filed but cannot be read back yet: once "
-                           f"`plan show plan#{number}` reads it, run the same command again "
+                           f"`quill show plan#{number}` reads it, run the same command again "
                            "to finish it (R-BAL186, R-BAL202); run while GitHub's lists of "
                            "open and marked cards do not hold it yet, it files a second card")
     print(f"  {_label(card)}")
@@ -452,7 +449,7 @@ def _convert_question(args, tracker: Tracker, draft: Draft, owner: Card, asked: 
         raise Refused(f"{_label(question)} is not an open question")
     if filing_unfinished(question):
         raise Refused(f"{_label(question)}'s filing has not finished (R-BAL202): finish it with "
-                      "the `plan file` command that filed it first, then convert it")
+                      "the `quill file` command that filed it first, then convert it")
     if args.arc not in question.labels:
         raise Refused(f"{_label(question)} is not in the {args.arc} arc; pass its own --arc")
     _refuse_rehoming(question, owner)

@@ -10,6 +10,7 @@ import pytest
 
 from tools.ci.commit_trailers import main, problems, reverts
 from tools.ci.scratch import commit as _commit
+from tools.ci.scratch import repository
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import history, shipped
 
@@ -17,9 +18,7 @@ from tools.ci.trailers import history, shipped
 @pytest.fixture(name="repo")
 def _repo(tmp_path):
     """A repository with a work tree under tmp_path, one commit on ``dev``; not a real checkout."""
-    root = tmp_path / "code"
-    root.mkdir()
-    _run(root, "init", "--quiet", "--initial-branch=dev")
+    root = repository(tmp_path)
     _change(root, "base", "base")
     return root
 

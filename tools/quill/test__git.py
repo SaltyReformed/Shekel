@@ -5,31 +5,21 @@ What a card's trailers mean (``Ships:``, ``Reopens:``, shipped) moved with
 """
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from tools.ci import scratch
 from tools.ci.gitcmd import GitError
 from tools.ci.scratch import commit as _commit
+from tools.ci.scratch import point_dev as _dev
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import history
-from tools.plan import _git
+from tools.quill import _git
 
 
 @pytest.fixture(name="repo")
 def _repo(tmp_path):
     """An empty repository under tmp_path (never a real checkout)."""
-    root = tmp_path / "code"
-    root.mkdir()
-    _run(root, "init", "--quiet", "--initial-branch=dev")
-    return root
-
-
-def _dev(root, sha):
-    """Point the remote-tracking ``dev`` the plan reads at ``sha``."""
-    _run(root, "update-ref", "refs/remotes/origin/dev", sha)
+    return scratch.repository(tmp_path)
 
 
 def test_current_branch_and_a_detached_head(repo):
@@ -143,34 +133,18 @@ def test_author_date_is_when_the_commit_was_first_written(repo, monkeypatch):
 
 # -- an environment bound to another repository reaches nothing but the directory named ----------
 
-@pytest.fixture(name="bound", params=scratch.BINDINGS)
-def _bound(request, tmp_path, monkeypatch):
-    """A sentinel repository this process's environment is bound to; it and its state."""
-    return scratch.bound_sentinel(tmp_path, request.param, monkeypatch.setenv)
-
-
-def test_a_bound_environment_reaches_no_repository_but_the_one_named(bound, tmp_path):
+@pytest.mark.parametrize("binding", scratch.BINDINGS)
+def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tmp_path,
+                                                                     monkeypatch):
     """The incident's mechanism replayed onto a sentinel: every write the tests' builder makes
     and every git call this module makes lands in the directory named, every answer is that
     directory's, and the sentinel -- its refs, config, HEADs and indexes -- is byte-identical
-    afterwards.  The sentinel's indexes each hold a committed file, so an index a leaked
-    ``GIT_INDEX_FILE`` rewrote with this test's empty tree differs from it (review cp3
-    M-1: with an empty index, the rewrite was byte-identical and passed).  The trailer
+    afterwards.  The sentinel is proven bound, and its indexes not empty (review cp3
+    M-1's control), before it is handed over (``scratch._prove_bound``).  The trailer
     rules' own calls, ``is_ancestor`` among them, are held the same way in
     ``tools/ci/test_trailers.py``."""
-    sentinel, before = bound
-    assert b"work.txt" in before["index"] and b"work.txt" in before["lane/index"], (
-        "control: each index the sentinel holds is not empty")
-    plain = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "--absolute-git-dir"],
-                           capture_output=True, text=True, check=True).stdout.strip()
-    assert Path(plain).resolve().is_relative_to((sentinel / ".git").resolve()), (
-        "control: the planted environment binds a plain git call to the sentinel")
-
-    work = tmp_path / "work"
-    work.mkdir()
-    _run(work, "init", "--quiet", "--initial-branch=dev")
-    leaf = _commit(work, "leaf", "Ships: plan#3")
-    _run(work, "update-ref", "refs/heads/dev", leaf)
+    sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
+    work, leaf = scratch.leaf_on_dev(tmp_path)
     assert _git.current_branch(work) == "dev"
     origin = tmp_path / "origin.git"
     _run(tmp_path, "init", "--quiet", "--bare", str(origin))

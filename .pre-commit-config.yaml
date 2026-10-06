@@ -146,30 +146,30 @@ repos:
           - tools/plan_gate/
           - --fail-under=10
           - --fail-on=E,F
-      - id: pylint-plan-tool
-        name: pylint plan tool (10.00/10 floor)
+      - id: pylint-quill
+        name: pylint quill (10.00/10 floor)
         entry: pylint
         language: system
         types: [python]
         # tools/ci too: the tool imports the arc list from there.
-        files: ^tools/(plan|ci)/.*\.py$
+        files: ^tools/(quill|ci)/.*\.py$
         pass_filenames: false
         # The private tracker's tooling (ruling balance:R-BAL170) holds the
         # 10.00/10 floor tools/pylint and tools/plan_gate hold, from its first
         # commit; ci.yml step 4b runs the same command in every scope.
         args:
-          - tools/plan/
+          - tools/quill/
           - --fail-under=10
           - --fail-on=E,F
-      - id: plan-tool-tests
-        name: plan tool unit tests
+      - id: quill-tests
+        name: quill unit tests
         entry: pytest
         language: system
-        files: ^tools/(plan|ci)/.*\.py$
+        files: ^tools/(quill|ci)/.*\.py$
         pass_filenames: false
-        args: [tools/plan, -c, /dev/null, -q]
+        args: [tools/quill, -c, /dev/null, -q]
       # tools/ci: the classifier and verdict ci.yml runs, and the arc list the
-      # plan gate and the plan tool import (step X-cx's L4).  The same 10.00/10
+      # plan gate and quill import (step X-cx's L4).  The same 10.00/10
       # floor and the same tests ci.yml step 4b runs in every scope.
       - id: pylint-ci
         name: pylint tools/ci (10.00/10 floor)

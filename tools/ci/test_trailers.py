@@ -1,18 +1,17 @@
 """What git says shipped, read from throwaway repositories under pytest's tmp_path; no network.
 
-Moved here with :mod:`tools.ci.trailers` from ``tools/plan/test__git.py`` by
-step X-cx's L4; the tracker tool's own git calls are tested there still.
+Moved here with :mod:`tools.ci.trailers` from what is now
+``tools/quill/test__git.py`` by step X-cx's L4; the tracker tool's own git calls
+are tested there still.
 """
 from __future__ import annotations
-
-import subprocess
-from pathlib import Path
 
 import pytest
 
 from tools.ci import scratch
 from tools.ci.gitcmd import GitError, git
 from tools.ci.scratch import commit as _commit
+from tools.ci.scratch import point_dev as _dev
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import DEV, cancels, history, is_ancestor, shipped
 
@@ -20,15 +19,7 @@ from tools.ci.trailers import DEV, cancels, history, is_ancestor, shipped
 @pytest.fixture(name="repo")
 def _repo(tmp_path):
     """An empty repository under tmp_path (never a real checkout)."""
-    root = tmp_path / "code"
-    root.mkdir()
-    _run(root, "init", "--quiet", "--initial-branch=dev")
-    return root
-
-
-def _dev(root, sha):
-    """Point the remote-tracking ``dev`` the plan reads at ``sha``."""
-    _run(root, "update-ref", "refs/remotes/origin/dev", sha)
+    return scratch.repository(tmp_path)
 
 
 def test_only_the_trailer_block_claims_a_card(repo):
@@ -97,6 +88,25 @@ def test_a_reopen_that_cancels_nothing_is_a_stray_and_the_card_stays_shipped(rep
     standing, strays = shipped(repo, history(repo))
     assert [t.sha for t in standing[7]] == [ship]
     assert sorted((t.card, t.sha) for t in strays) == [(7, early), (71, early)]
+
+
+def test_a_commit_reopening_two_cards_keeps_the_stray_of_the_one_that_cancels_nothing(repo):
+    """BAL-608: the cancelling ``Reopens:`` were keyed by their commit, so a commit carrying
+    ``Reopens: plan#4``, which cancels plan#4's ship, beside ``Reopens: plan#5``, which
+    cancels nothing, hid plan#5's stray from ``quill show`` and ``quill sync``.  Each
+    trailer is its own: plan#4 is reopened, plan#5's is the one stray.  The control:
+    alone on the commit, ``Reopens: plan#5`` is a stray and plan#4 stays shipped."""
+    ship = _commit(repo, "ship", "Ships: plan#4")
+    both = _commit(repo, "revert", "Reopens: plan#4\nReopens: plan#5", parents=[ship])
+    _dev(repo, both)
+    standing, strays = shipped(repo, history(repo))
+    assert not standing
+    assert [(t.key, t.card, t.sha) for t in strays] == [("Reopens", 5, both)]
+    alone = _commit(repo, "typo", "Reopens: plan#5", parents=[ship])
+    _dev(repo, alone)
+    standing, strays = shipped(repo, history(repo))
+    assert [t.sha for t in standing[4]] == [ship]
+    assert [(t.key, t.card, t.sha) for t in strays] == [("Reopens", 5, alone)]
 
 
 def test_a_commit_that_ships_and_reopens_the_same_card_leaves_it_open(repo):
@@ -171,34 +181,18 @@ def test_is_ancestor_raises_on_a_commit_git_does_not_have(repo):
 
 # -- an environment bound to another repository reaches nothing but the directory named ----------
 
-@pytest.fixture(name="bound", params=scratch.BINDINGS)
-def _bound(request, tmp_path, monkeypatch):
-    """A sentinel repository this process's environment is bound to; it and its state."""
-    return scratch.bound_sentinel(tmp_path, request.param, monkeypatch.setenv)
-
-
-def test_a_bound_environment_reaches_no_repository_but_the_one_named(bound, tmp_path):
+@pytest.mark.parametrize("binding", scratch.BINDINGS)
+def test_a_bound_environment_reaches_no_repository_but_the_one_named(binding, tmp_path,
+                                                                     monkeypatch):
     """The 2026-10-04 incident's mechanism replayed onto a sentinel: every write the tests'
     builder makes and every git call this package makes lands in the directory named,
     every answer is that directory's, and the sentinel -- its refs, config, HEADs and
-    indexes -- is byte-identical afterwards.  The sentinel's indexes each hold a committed
-    file, so an index a leaked ``GIT_INDEX_FILE`` rewrote with this test's empty tree
-    differs from it (review cp3 M-1: with an empty index, the rewrite was byte-identical
-    and passed).  The tracker tool's own calls are held the same way in
-    ``tools/plan/test__git.py``."""
-    sentinel, before = bound
-    assert b"work.txt" in before["index"] and b"work.txt" in before["lane/index"], (
-        "control: each index the sentinel holds is not empty")
-    plain = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "--absolute-git-dir"],
-                           capture_output=True, text=True, check=True).stdout.strip()
-    assert Path(plain).resolve().is_relative_to((sentinel / ".git").resolve()), (
-        "control: the planted environment binds a plain git call to the sentinel")
-
-    work = tmp_path / "work"
-    work.mkdir()
-    _run(work, "init", "--quiet", "--initial-branch=dev")
-    leaf = _commit(work, "leaf", "Ships: plan#3")
-    _run(work, "update-ref", "refs/heads/dev", leaf)
+    indexes -- is byte-identical afterwards.  The sentinel is proven bound, and its
+    indexes not empty (review cp3 M-1's control), before it is handed over
+    (``scratch._prove_bound``).  The tracker tool's own calls are held the same way in
+    ``tools/quill/test__git.py``."""
+    sentinel, before = scratch.bound_sentinel(tmp_path, binding, monkeypatch.setenv)
+    work, leaf = scratch.leaf_on_dev(tmp_path)
     assert git(work, "rev-parse", "dev").strip() == leaf
     assert [(t.card, t.sha) for t in history(work, "dev").trailers] == [(3, leaf)]
     assert is_ancestor(work, leaf, leaf)

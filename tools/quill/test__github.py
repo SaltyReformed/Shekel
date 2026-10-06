@@ -9,7 +9,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
-from tools.plan._github import API, GitHub, GitHubError, app_jwt
+from tools.quill._github import API, GitHub, GitHubError, app_jwt
 
 
 class _Response:

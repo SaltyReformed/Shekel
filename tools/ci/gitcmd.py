@@ -1,11 +1,13 @@
-"""Run git in ONE repository and no other: the one place ``tools/`` starts git.
+"""Run git in ONE repository: how the modules of ``tools/ci`` and ``tools/quill`` start git.
 
 Every call runs ``git -C <root>`` through :func:`run`, with the variables that
 bind git to some OTHER repository removed, so ``root`` alone decides which
 repository is read or written.  The card-trailer rules (:mod:`tools.ci.trailers`),
-the tracker tool's own git calls (``tools/plan/_git.py``) and the tests'
-throwaway repositories (:mod:`tools.ci.scratch`) all start git here.  Moved
-here from ``tools/plan/_git.py`` by step X-cx's L4.
+the tracker tool's own git calls (``tools/quill/_git.py``) and the tests'
+throwaway repositories (:mod:`tools.ci.scratch`) all start git here, but for one
+call: ``scratch._prove_bound``'s control, which must reach the binding this module
+removes, to prove a test's sentinel is bound.  Moved here from what is now
+``tools/quill/_git.py`` by step X-cx's L4.
 """
 from __future__ import annotations
 

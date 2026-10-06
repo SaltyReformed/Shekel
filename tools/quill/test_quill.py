@@ -1,7 +1,7 @@
-"""The ``plan`` command's reads and decisions -- next, claim, release, show, block, move,
+"""The ``quill`` command's reads and decisions -- next, claim, release, show, block, move,
 drop, sync, spec-history and spec-revert -- over :class:`_fake.FakeTracker` and a
 throwaway git repository (the ``code`` fixture, ``conftest.py``).  ``file`` has its own
-module, ``test_plan_file.py``.  Nothing here calls GitHub.
+module, ``test_quill_file.py``.  Nothing here calls GitHub.
 """
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ import pytest
 import requests
 
 from tools.ci.gitcmd import GitError
+from tools.ci.scratch import point_dev
 from tools.ci.scratch import run as _run
-from tools.plan import _git
-from tools.plan import plan
-from tools.plan._fake import FakeTracker, run, ship
-from tools.plan._github import GitHubError
-from tools.plan._tracker import Child, Claim, Edit, OutsideLink
+from tools.quill import _git
+from tools.quill import quill
+from tools.quill._fake import FakeTracker, run, ship
+from tools.quill._github import GitHubError
+from tools.quill._tracker import Child, Claim, Edit, OutsideLink
 
 
 # -- next ----------------------------------------------------------------------------------
@@ -306,7 +307,7 @@ def test_a_ships_naming_a_container_closes_nothing_and_unblocks_nothing(code, ca
 
 
 def test_dropping_a_split_step_takes_its_leaves_out_of_the_order(code, capsys):
-    """R-BAL190 (narrowing R-BAL185 for ``plan drop``; review L2 first): ``plan drop``
+    """R-BAL190 (narrowing R-BAL185 for ``quill drop``; review L2 first): ``quill drop``
     on a split step notes it there, then drops each open leaf, each with the reason, and the
     split step shows them at the next sync."""
     tracker = FakeTracker()
@@ -365,7 +366,7 @@ def test_a_network_error_or_missing_credentials_exit_2_not_a_traceback(code, cap
         raise FileNotFoundError(2, "No such file or directory",
                                 "/home/x/.config/shekel-plan/app.json")
 
-    assert plan.main(["next"], connect=no_credentials, root=code) == 2
+    assert quill.main(["next"], connect=no_credentials, root=code) == 2
     assert "app.json" in capsys.readouterr().err
 
 
@@ -379,7 +380,7 @@ def test_a_claim_whose_branch_cannot_be_read_is_released_by_saying_so(code, caps
     tracker.held[2] = Claim(2, "feat/x", "2026-10-04T11:00:00Z", "s2")
     assert run(tracker, code, "next") == 0
     out = capsys.readouterr().out
-    assert "`plan release plan#1 --unreadable`" in out and "--branch None" not in out
+    assert "`quill release plan#1 --unreadable`" in out and "--branch None" not in out
     assert run(tracker, code, "release", "plan#1", "--branch", "feat/work") == 1
     assert "pass --unreadable" in capsys.readouterr().err
     assert run(tracker, code, "release", "plan#2", "--unreadable") == 1
@@ -411,6 +412,22 @@ def test_sync_and_show_print_a_stray_reopens_and_act_on_neither(code, capsys):
     out = capsys.readouterr().out
     assert "STRAY: " in out and "'Reopens: plan#1' cancels no Ships" in out
     assert not tracker.writes
+
+
+def test_a_stray_beside_a_reopens_that_cancels_is_still_printed(code, capsys):
+    """BAL-608: one commit reopens plan#1, which shipped, and plan#2, which never did; the
+    first cancels plan#1's ship, and sync and show still print the second as a stray."""
+    tracker = FakeTracker()
+    tracker.add(1, is_open=False, state_reason="COMPLETED", closed_by_tool=True)
+    tracker.add(2)
+    ship(code, "Ships: plan#1")
+    ship(code, "Reopens: plan#1", "Reopens: plan#2")
+    assert run(tracker, code, "sync") == 0
+    out = capsys.readouterr().out
+    assert "'Reopens: plan#2' cancels no Ships" in out and "'Reopens: plan#1'" not in out
+    assert tracker.writes == [("reopen", 1)]
+    assert run(tracker, code, "show", "plan#2") == 0
+    assert "STRAY: " in capsys.readouterr().out
 
 
 
@@ -445,9 +462,9 @@ def test_a_container_is_never_moved_back_into_the_order(code, capsys):
 def test_a_command_line_of_no_form_exits_2_before_anything_is_read(code):
     """Review cp3 L-i: argparse's usage error exits 2, which the docstring now says."""
     with pytest.raises(SystemExit) as stopped:
-        plan.main(["file", "finding", "--arc", "balance"], connect=FakeTracker, root=code)
+        quill.main(["file", "finding", "--arc", "balance"], connect=FakeTracker, root=code)
     assert stopped.value.code == 2
-    assert "argparse's usage error" in plan.__doc__
+    assert "argparse's usage error" in quill.__doc__
 
 
 
@@ -458,7 +475,7 @@ def test_spec_history_since_a_branch_starts_where_the_branch_grew_from(code, mon
     tree = _run(code, "hash-object", "-t", "tree", "/dev/null")
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-30T12:00:00+00:00")
     fork = _run(code, "commit-tree", tree, "-m", "dev")
-    _run(code, "update-ref", "refs/remotes/origin/dev", fork)
+    point_dev(code, fork)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-01T09:00:00+00:00")
     first = _run(code, "commit-tree", tree, "-p", fork, "-m", "work starts")
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-03T09:00:00+00:00")
@@ -597,7 +614,7 @@ def test_dropping_a_claimed_card_names_the_claim_it_leaves(code, capsys):
     tracker.add(1)
     tracker.held[1] = Claim(1, "feat/one", "2026-10-04T12:00:00Z", "s1")
     assert run(tracker, code, "drop", "plan#1", "--why", "superseded") == 0
-    assert ("its claim by 'feat/one' stays: `plan release plan#1 --branch feat/one`"
+    assert ("its claim by 'feat/one' stays: `quill release plan#1 --branch feat/one`"
             in capsys.readouterr().out)
     assert 1 in tracker.held
 

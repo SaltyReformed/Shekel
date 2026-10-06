@@ -1,5 +1,5 @@
 """A drop under a card the TOOL closed, X-cx L2's leaf C3 (C2 review LOW 6 and the leaf C3
-reviews, applications of ruling ``balance:R-BAL207``): ``plan drop`` of a leaf whose filing
+reviews, applications of ruling ``balance:R-BAL207``): ``quill drop`` of a leaf whose filing
 never finished first shows the card it splits as ``sync`` would show it once the drop is
 done (``_state.drop_shows``), then takes the leaf out of the split as under an open step
 (R-BAL205), so no link is left.  Over :class:`_fake.FakeTracker` and a throwaway git
@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from tools.plan._fake import FailOnce, FakeTracker, run, ship
-from tools.plan._tracker import Child
-from tools.plan.setup_tracker import FILING
+from tools.quill._fake import FailOnce, FakeTracker, run, ship
+from tools.quill._tracker import Child
+from tools.quill.setup_tracker import FILING
 
 
 
@@ -43,7 +43,7 @@ def test_dropping_a_leaf_under_a_split_step_the_tool_closed_reopens_it_first(cod
     assert tracker.writes[len(writes):] == [
         ("reopen", 1), ("board_add", 1), ("board_place", 1, "PVTI_2"), ("remove_child", 1, 2),
         ("comment", 2, "Dropped: not after all"), ("close", 2, "not_planned")]
-    assert ("  reopened plan#1: the plan tool had closed it, and without plan#2 it still has "
+    assert ("  reopened plan#1: quill had closed it, and without plan#2 it still has "
             "work to do (R-BAL190)\n") in capsys.readouterr().out
     assert run(tracker, code, "next") == 0
     assert capsys.readouterr().out.startswith("next: plan#1 ")

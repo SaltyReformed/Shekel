@@ -401,9 +401,7 @@ class TestTheChangeSetIsHandedOver:
         is what is graded: which ends it reads for each event, and when it
         asks the classifier at all.
         """
-        repo = tmp_path / "code"
-        repo.mkdir()
-        scratch.run(repo, "init", "--quiet", "--initial-branch=dev")
+        repo = scratch.repository(tmp_path)
         base = scratch.commit(repo, "base")
         head = scratch.commit(repo, "head", parents=[base])
         stand_in = tmp_path / "python"

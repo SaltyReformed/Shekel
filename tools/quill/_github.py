@@ -1,9 +1,9 @@
-"""The one HTTP path the plan tools take to GitHub, under either of two identities.
+"""The one HTTP path quill takes to GitHub, under either of two identities.
 
 The private tracker (ruling ``balance:R-BAL170``) is written by two identities
 on purpose.  The developer's own login -- the token ``gh`` already holds --
 configures the tracker (:mod:`setup_tracker`).  Every CARD write goes through
-the plan tool's GitHub App instead, a separate identity, so a check can tell a
+quill's GitHub App instead, a separate identity, so a check can tell a
 tool write from the developer's own edit and never act on his.
 
 An App proves who it is with a JSON Web Token signed by its private key, and

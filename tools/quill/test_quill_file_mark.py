@@ -1,4 +1,4 @@
-"""``plan file`` under ruling ``balance:R-BAL202``: every card it creates is born marked
+"""``quill file`` under ruling ``balance:R-BAL202``: every card it creates is born marked
 ``filing``, the mark comes off with its filing's last write, and a card still marked is
 never offered, is named by ``next`` and ``sync``, and is finished by the same command --
 for a leaf, its move made again -- over :class:`_fake.FakeTracker` and a throwaway git
@@ -10,18 +10,18 @@ from dataclasses import replace
 
 import pytest
 
-from tools.plan._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
+from tools.quill._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
                               run, ship)
-from tools.plan._github import GitHubError
-from tools.plan._tracker import Child, Claim
-from tools.plan.setup_tracker import FILING
+from tools.quill._github import GitHubError
+from tools.quill._tracker import Child, Claim
+from tools.quill.setup_tracker import FILING
 
 
 def test_a_leaf_and_a_ruling_are_created_marked_and_unmarked_by_their_last_write(code,
                                                                                 tmp_path):
     """R-BAL202: a leaf is created marked, linked, added, moved, its split step taken off the
     board, then unmarked; a ruling is created marked, linked, closed, then unmarked.  (A
-    finding's and a question's writes are pinned in ``test_plan_file.py``.)"""
+    finding's and a question's writes are pinned in ``test_quill_file.py``.)"""
     tracker = FakeTracker()
     for number in (1, 2, 3):
         tracker.add(number)
@@ -37,7 +37,7 @@ def test_a_leaf_and_a_ruling_are_created_marked_and_unmarked_by_their_last_write
 
 class _HandUnmarks:
     """``board.add`` after which a person removes the card's mark by hand on the web (as
-    ``plan show`` advises for a filing whose command is lost), while its command still runs."""
+    ``quill show`` advises for a filing whose command is lost), while its command still runs."""
 
     def __init__(self, tracker):
         """Stand in for ``tracker.board.add``."""
@@ -58,7 +58,7 @@ def test_a_mark_removed_by_hand_mid_filing_fails_its_unmark_and_the_same_command
     """Review rbal202b M1 (c), LOW 4: the tool's unmark finds the mark already gone (a person,
     another session, or the label deleted) and GitHub answers 404, a failed call (exit 2)
     after every other write landed; the same command run again finds the step filed and
-    writes nothing.  (A ruling's: ``test_plan_file_ended.py``.)"""
+    writes nothing.  (A ruling's: ``test_quill_file_ended.py``.)"""
     tracker = FakeTracker()
     spec = tmp_path / "spec.md"
     spec.write_text("Build it.")
@@ -78,8 +78,8 @@ def test_a_leaf_cut_short_after_its_create_is_never_offered_and_the_same_command
         code, tmp_path, capsys, failure):
     """Review cp5 MEDIUM-1, R-BAL202: plan#1 waits on question plan#9.  Its leaf's filing
     stops at each write after the create in turn (a failed read-back after the create is
-    pinned, for a question, in ``test_plan_file.py``); until the same command runs again,
-    ``plan next`` names the leaf as an unfinished filing and never offers it, and ``plan
+    pinned, for a question, in ``test_quill_file.py``); until the same command runs again,
+    ``quill next`` names the leaf as an unfinished filing and never offers it, and ``quill
     claim`` refuses it.  Under R-BAL201's order (link last), a stop at the move, its
     read-back or the link left the leaf a top-level step, offered and claimed past
     plan#1's wait."""
@@ -131,7 +131,7 @@ def test_a_leaf_cut_short_before_its_link_is_reported_after_its_split_step_is_dr
         code, tmp_path, capsys):
     """Review cp5 MEDIUM-1, R-BAL202: the link failed, so the drop of the split step cannot
     reach the leaf, and the same command is refused (its parent is not live); the leaf is
-    never offered, and ``next`` and ``sync`` name it until ``plan drop`` drops it -- under
+    never offered, and ``next`` and ``sync`` name it until ``quill drop`` drops it -- under
     R-BAL201's order it was offered as work, and sync said nothing."""
     tracker = FakeTracker()
     tracker.add(1)
@@ -144,8 +144,8 @@ def test_a_leaf_cut_short_before_its_link_is_reported_after_its_split_step_is_dr
     assert "a step's parent is the LIVE step it splits" in capsys.readouterr().err
     assert run(tracker, code, "next") == 0
     assert ("UNFINISHED FILING: plan#2's filing has not finished, so it is never offered "
-            "(R-BAL202): unless a `plan file` command is filing it now, run that command again "
-            "to finish it, or `plan drop` it; with that command lost, `plan show plan#2` says "
+            "(R-BAL202): unless a `quill file` command is filing it now, run that command again "
+            "to finish it, or `quill drop` it; with that command lost, `quill show plan#2` says "
             "how to finish it\n") in capsys.readouterr().out
     assert run(tracker, code, "sync", "--dry-run") == 1
     assert "REPORT: plan#2's filing has not finished" in capsys.readouterr().out
@@ -193,9 +193,9 @@ def test_no_leaf_is_filed_while_another_leaf_of_its_split_step_is_unfinished(cod
     err = capsys.readouterr().err
     assert ("refused: the filing of plan#5, of plan#1's leaves, has not finished (R-BAL204): "
             "finish it first") in err
-    assert "Unless a `plan file` command is filing it now, run that command again" in err
+    assert "Unless a `quill file` command is filing it now, run that command again" in err
     assert "make its missing writes on the web and remove its 'filing' label last" in err
-    assert "(`plan show` shows its parent and board place)" in err
+    assert "(`quill show` shows its parent and board place)" in err
     assert tracker.writes == writes
     assert run(tracker, code, *first) == 0
     assert run(tracker, code, *second) == 0
@@ -349,10 +349,10 @@ def test_no_leaf_conversion_or_leaf_move_rides_on_a_filing_that_has_not_finished
     assert run(tracker, code, "file", "ruling", "--arc", "balance", "--title", "Ship",
                "--owner", "plan#3", "--from-question", "plan#2",
                "--answer-file", str(answer)) == 1
-    assert "Ship's filing has not finished (R-BAL202): finish it with the `plan file` " in (
+    assert "Ship's filing has not finished (R-BAL202): finish it with the `quill file` " in (
         capsys.readouterr().err)
     assert run(tracker, code, "move", "plan#5", "--top") == 1
-    assert "its `plan file` command moves it again after this move" in capsys.readouterr().err
+    assert "its `quill file` command moves it again after this move" in capsys.readouterr().err
     assert run(tracker, code, "move", "plan#1", "--top") == 1
     assert "one whose link has not landed reads as a top-level step" in capsys.readouterr().err
     assert not tracker.writes
@@ -460,7 +460,7 @@ def test_a_marked_leaf_dropped_with_its_split_step_is_unlinked_before_the_step_c
 
 
 def test_a_marked_leaf_shows_its_filing_until_it_finishes(code, tmp_path, capsys):
-    """R-BAL202, review rbal202a LOW 9: ``plan show`` says the filing has not finished, and
+    """R-BAL202, review rbal202a LOW 9: ``quill show`` says the filing has not finished, and
     how to finish it by hand; once it finishes it says nothing (a card dropped while marked:
     ``test_a_dropped_card_still_carrying_the_mark_shows_no_unfinished_filing``)."""
     tracker = FakeTracker()
@@ -470,7 +470,7 @@ def test_a_marked_leaf_shows_its_filing_until_it_finishes(code, tmp_path, capsys
     assert run(tracker, code, *args) == 2
     capsys.readouterr()
     assert run(tracker, code, "show", "plan#2") == 0
-    assert "\n  filing: not finished (R-BAL202) -- never offered until its `plan file` " in (
+    assert "\n  filing: not finished (R-BAL202) -- never offered until its `quill file` " in (
         capsys.readouterr().out)
     assert run(tracker, code, *args) == 0
     capsys.readouterr()
@@ -480,7 +480,7 @@ def test_a_marked_leaf_shows_its_filing_until_it_finishes(code, tmp_path, capsys
 
 def test_a_dropped_card_still_carrying_the_mark_shows_no_unfinished_filing(code, capsys):
     """R-BAL202: a card closed as not planned while marked was dropped; what its filing left
-    undone is moot, so ``plan show`` says nothing of it."""
+    undone is moot, so ``quill show`` says nothing of it."""
     tracker = FakeTracker()
     tracker.add(5, labels=("balance", FILING), is_open=False, state_reason="NOT_PLANNED",
                 closed_by_tool=True)

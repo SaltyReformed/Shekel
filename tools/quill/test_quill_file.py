@@ -1,4 +1,4 @@
-"""``plan file``: each kind's filing, its checks, its board place, and the same command
+"""``quill file``: each kind's filing, its checks, its board place, and the same command
 finishing a filing a failure cut short (R-BAL186), over :class:`_fake.FakeTracker` and a
 throwaway git repository (the ``code`` fixture, ``conftest.py``).  Nothing here calls
 GitHub.
@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 import requests
 
-from tools.plan._fake import FailOnce, FakeTracker, run, ship
-from tools.plan._tracker import Child, Claim, Edit, OutsideLink
-from tools.plan.check import ruling_body
-from tools.plan.setup_tracker import FILING
+from tools.quill._fake import FailOnce, FakeTracker, run, ship
+from tools.quill._tracker import Child, Claim, Edit, OutsideLink
+from tools.quill.check import ruling_body
+from tools.quill.setup_tracker import FILING
 
 
 # -- file ----------------------------------------------------------------------------------
@@ -326,7 +326,7 @@ def test_two_open_cards_with_the_same_kind_title_and_text_are_refused(code, caps
     assert run(tracker, code, "file", "finding", "--arc", "balance", "--title", "Twice",
                "--owner", "plan#1", "--text", "The report counts a refund twice.") == 1
     assert ("2 cards have this kind, title and text (plan#2, plan#3): withdraw the extras -- "
-            "`plan drop` an open one") in capsys.readouterr().err
+            "`quill drop` an open one") in capsys.readouterr().err
     assert not tracker.writes
 
 

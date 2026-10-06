@@ -1,7 +1,7 @@
 """What the plan says, decided from the cards, the board, the claims and git.
 
 Nothing here reads GitHub or git: the caller hands over what it read, so every
-decision the ``plan`` command makes is a pure function a test can drive.
+decision the ``quill`` command makes is a pure function a test can drive.
 
 **Work** is a step or finding that is not a container (:func:`is_work`): the
 only cards a branch builds and a commit ships.  ``claim``, ``next`` and
@@ -19,9 +19,9 @@ of a person's on the web, makes it a split step whose leaves were all dropped
 of a container's leaves -- is git's answer for work, and the tracker's for the
 rest (ruling ``balance:R-BAL170``):
 
-- a card closed by a PERSON, or by ``plan drop``, is resolved: it was dropped
+- a card closed by a PERSON, or by ``quill drop``, is resolved: it was dropped
   (the build plan: "Dropped ... ``plan drop`` ..., or the developer closing a
-  card by hand");
+  card by hand"; ``plan drop`` has been ``quill drop`` since the tool's rename);
 - a piece of work git says SHIPPED is resolved, whatever its open or closed
   state; one the TOOL closed as completed is only the tool's display of git,
   so it is resolved only while git says it shipped -- a ``Reopens:`` commit
@@ -43,16 +43,16 @@ rest (ruling ``balance:R-BAL170``):
 workable only when its own blockers AND every blocker of every step above it
 are resolved, and while no step above it was dropped.  A wait is recorded
 once, on the step it was set on, and so is a PERSON's close of a split step;
-nothing is copied.  ``plan drop`` of a split step writes its drop on each leaf
+nothing is copied.  ``quill drop`` of a split step writes its drop on each leaf
 below it that is still work instead (``R-BAL190``: the tool records a decision
 only where the work is).
 
 **A card whose filing has not finished is never offered** (``R-BAL202``):
-every card ``plan file`` creates carries the filing mark from its first write
+every card ``quill file`` creates carries the filing mark from its first write
 until its last removes it (:func:`filing_unfinished`), so a card some of whose
 writes have not landed -- a leaf not yet linked under its split step, or not
 yet in its place -- is never handed out or claimed, and ``next`` and ``sync``
-name it until the same command finishes it, or ``plan drop`` drops it (a leaf
+name it until the same command finishes it, or ``quill drop`` drops it (a leaf
 dropped while marked is first unlinked from its split step: it was never part
 of the split, ``R-BAL205``).  While a filing is still running its card is named
 too: no read can tell a filing running from one a failure cut short.  A leaf
@@ -79,10 +79,11 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from tools.plan._tracker import Card, Claim
-from tools.plan.setup_tracker import FILING
+from tools.quill._tracker import Card, Claim
+from tools.quill.setup_tracker import FILING
 
-#: The build plan: "``plan next`` reports a claim older than 3 days with no pushed branch".
+#: The build plan: "``plan next`` reports a claim older than 3 days with no pushed branch"
+#: (``plan next`` has been ``quill next`` since the tool's rename).
 STALE_CLAIM = timedelta(days=3)
 #: The kinds of card a commit ships; a ruling is a record and a question the
 #: developer's, so ``sync`` never opens or closes either.
@@ -96,9 +97,9 @@ def leaves(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> tup
     marked, and :func:`dropped` (not shipped by git's answer).
 
     Such a card was never part of the split: R-BAL205's reason ("It was never part of
-    the split"), which R-BAL205 ruled for ``plan drop`` (which also unlinks it), carried
+    the split"), which R-BAL205 ruled for ``quill drop`` (which also unlinks it), carried
     by the L2 lane under R-BAL207 to a person's close of a still-marked leaf on the web,
-    and to a read that lags ``plan drop``'s own unlink.  An OPEN marked leaf counts: its
+    and to a read that lags ``quill drop``'s own unlink.  An OPEN marked leaf counts: its
     filing is under way, and its split step is not offered meanwhile.  A leaf git says
     shipped counts however it was closed: its work is done.  ``sync`` unlinks a card this
     rule leaves out (:func:`never_split`), so its mark stops deciding.  ``cards`` holds
@@ -131,7 +132,7 @@ def is_work(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -> bo
 
 def withdrawn(card: Card) -> bool:
     """Whether ``card`` is a ruling withdrawn: closed as anything but completed -- not
-    planned or a duplicate, by ``plan drop`` or a person (R-BAL206).  A ruling closed as
+    planned or a duplicate, by ``quill drop`` or a person (R-BAL206).  A ruling closed as
     completed, by anyone, is a record."""
     return card.kind == "ruling" and not card.is_open and card.state_reason != "COMPLETED"
 
@@ -148,7 +149,7 @@ def filing_ended(card: Card) -> bool:
 def withdrawn_filing(card: Card, shipped: Iterable[int]) -> bool:
     """Whether a DECISION ended ``card``'s filing, so nothing is ever filed over it: it
     :func:`filing_ended`, and it is not WORK git says shipped -- a ruling withdrawn, or a
-    card dropped while still marked, by ``plan drop`` or a person.  Work that shipped and
+    card dropped while still marked, by ``quill drop`` or a person.  Work that shipped and
     was closed while still marked (its filing stopped at its last write, and a person
     closed it as ``sync`` asks) was not dropped (:func:`dropped`): its filing is moot, not
     refused.  A ruling or a question is never shipped, so a ``Ships:`` naming one decides
@@ -183,7 +184,7 @@ def unshipped_shown_done(card: Card, shipped: Iterable[int]) -> bool:
 
 def _closed_dropped(card: Card) -> bool:
     """A card that is no container closed by a person (for any reason), or by the tool as
-    not planned (``plan drop``)."""
+    not planned (``quill drop``)."""
     return not card.is_open and not _shown_shipped(card)
 
 
@@ -293,7 +294,7 @@ def never_offered(card: Card, cards: Mapping[int, Card], shipped: Iterable[int])
     it back."""
     shipped = set(shipped)
     if filing_unfinished(card):
-        return ("its filing has not finished (R-BAL202): unless a `plan file` command is "
+        return ("its filing has not finished (R-BAL202): unless a `quill file` command is "
                 "filing it now, the same command run again finishes it")
     if card.outside:
         links = ", ".join(f"its {link.what} {link.issue}" for link in card.outside)
@@ -340,20 +341,20 @@ def outside_reports(cards: Mapping[int, Card]) -> list[str]:
 def unfinished_reports(cards: Mapping[int, Card], shipped: Iterable[int]) -> list[str]:
     """Each card in ``cards`` whose filing has not finished (:func:`filing_unfinished`), as
     a report line: it is never offered until the same command finishes it, or, while it is
-    open and git does not say it shipped, ``plan drop`` drops it -- a leaf unlinked from
+    open and git does not say it shipped, ``quill drop`` drops it -- a leaf unlinked from
     its split step first (R-BAL205), which the line says; a closed ruling is withdrawn by
-    reopening it and closing it as not planned (R-BAL206); and ``plan show`` says how to
+    reopening it and closing it as not planned (R-BAL206); and ``quill show`` says how to
     finish it by hand."""
     shipped = set(shipped)
     return [
         f"plan#{card.number}'s filing has not finished, so it is never offered (R-BAL202): "
-        "unless a `plan file` command is filing it now, run that command again to finish it"
-        + ("" if card.number in shipped else ", or `plan drop` it" if card.is_open else
+        "unless a `quill file` command is filing it now, run that command again to finish it"
+        + ("" if card.number in shipped else ", or `quill drop` it" if card.is_open else
            ", or, to withdraw it, reopen it and close it as not planned on the web")
         + (f" (which unlinks it from plan#{card.parent} first: it was never part of that split, "
            "R-BAL205)" if card.is_open and is_work(card, cards, shipped) and card.kind == "step"
            and card.parent and card.number not in shipped else "")
-        + f"; with that command lost, `plan show plan#{card.number}` says how to finish it"
+        + f"; with that command lost, `quill show plan#{card.number}` says how to finish it"
         for card in sorted(cards.values(), key=lambda card: card.number)
         if filing_unfinished(card)
     ]
@@ -499,9 +500,9 @@ def shown_write(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -
     does not say shipped is reopened (:func:`unshipped_shown_done`).  Open work git says
     shipped is closed only by its claim (``_sync_shipped``), so this never decides it,
     and no caller passes a card a person last closed or reopened, which holds their
-    decision: ``sync`` reports what it must (``_sync_container``), and ``plan drop`` writes
+    decision: ``sync`` reports what it must (``_sync_container``), and ``quill drop`` writes
     only a card the tool closed (:func:`drop_shows`).  ``sync`` writes it
-    (:func:`sync_plan`), and so does ``plan drop`` for the card it takes a leaf out of."""
+    (:func:`sync_plan`), and so does ``quill drop`` for the card it takes a leaf out of."""
     shipped = set(shipped)
     if is_container(card, cards, shipped):
         wanted = container_shown(card, cards, shipped)
@@ -513,7 +514,7 @@ def shown_write(card: Card, cards: Mapping[int, Card], shipped: Iterable[int]) -
 
 def drop_shows(split: Card, leaf: Card, cards: Mapping[int, Card],
                shipped: Iterable[int]) -> str | None:
-    """The write ``plan drop`` makes to ``split``'s state before taking ``leaf`` -- a leaf of
+    """The write ``quill drop`` makes to ``split``'s state before taking ``leaf`` -- a leaf of
     it whose filing never finished -- out of its split (C2 review LOW 6): the one ``sync``
     would make (:func:`shown_write`) to ``split`` as the drop leaves it, with ``leaf``
     closed as not planned by the tool and still marked, so no leaf of it (:func:`leaves`).
@@ -561,7 +562,7 @@ def release_flag(claim: Claim) -> str:
 
 def release_hint(claim: Claim) -> str:
     """The command that releases ``claim``, whether or not its branch could be read."""
-    return f"`plan release plan#{claim.card} {release_flag(claim)}`"
+    return f"`quill release plan#{claim.card} {release_flag(claim)}`"
 
 
 def holder(claim: Claim) -> str:
@@ -664,13 +665,13 @@ def _record(plan: SyncPlan, number: int, write: str | None) -> None:
 def _claimed_split(card: Card, claim: Claim, cards: Mapping[int, Card], shipped: set[int]) -> str:
     """The REPORT for ``claim`` on ``card``, a step split into smaller steps: release the
     claim -- or, when every leaf of ``card`` is still being filed and not shipped, drop
-    each of them, which keeps it whole (R-BAL205).  (``plan file``'s refusal under a claim
+    each of them, which keeps it whole (R-BAL205).  (``quill file``'s refusal under a claim
     names that drop for its own leaf only, when no other leaf splits the step.)"""
     split = leaves(card, cards, shipped)
     filing = [number for number in split
               if filing_unfinished(cards[number]) and number not in shipped]
     keep = ("" if len(filing) < len(split) else
-            "; or, to keep it whole, " + " and ".join(f"`plan drop plan#{number}`"
+            "; or, to keep it whole, " + " and ".join(f"`quill drop plan#{number}`"
                                                       for number in filing)
             + ": still being filed, so never part of the split (R-BAL205)")
     return (f"plan#{card.number} is split into smaller steps, but {holder(claim)} still claims "
@@ -687,7 +688,7 @@ def sync_plan(cards: Mapping[int, Card], shipped: Iterable[int], claims: Mapping
 
     A claim on a step split into smaller steps is reported, never released: a
     branch building that step whole would ship a ``Ships:`` that names a split
-    step, which no commit ships.  ``plan file`` refuses a leaf under a claimed
+    step, which no commit ships.  ``quill file`` refuses a leaf under a claimed
     step (C2 review M4), but some claims it cannot see (its docstring names them)
     still land on one.  ``cards`` holds every claimed card, so each such claim is
     seen (:func:`_claimed_split`).
