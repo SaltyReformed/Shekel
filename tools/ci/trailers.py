@@ -107,6 +107,12 @@ def is_ancestor(root: Path, older: str, newer: str) -> bool:
     return done.returncode == 0
 
 
+def cancels(root: Path, undo: Trailer, claim: Trailer) -> bool:
+    """Whether the ``Reopens:`` trailer ``undo`` cancels the ``Ships:`` trailer ``claim``: the
+    same card, and ``claim``'s commit in ``undo``'s history (R-BAL181)."""
+    return undo.card == claim.card and is_ancestor(root, claim.sha, undo.sha)
+
+
 def shipped(root: Path, found: History) -> tuple[dict[int, tuple[Trailer, ...]],
                                                  tuple[Trailer, ...]]:
     """``{card: the Ships trailers still standing}`` for every card git says shipped,
@@ -123,8 +129,7 @@ def shipped(root: Path, found: History) -> tuple[dict[int, tuple[Trailer, ...]],
     for card, claims in ships.items():
         live = []
         for claim in claims:
-            undone = [undo for undo in reopens.get(card, ())
-                      if is_ancestor(root, claim.sha, undo.sha)]
+            undone = [undo for undo in reopens.get(card, ()) if cancels(root, undo, claim)]
             cancelling.update(undo.sha for undo in undone)
             if not undone:
                 live.append(claim)

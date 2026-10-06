@@ -14,7 +14,7 @@ from tools.ci import scratch
 from tools.ci.gitcmd import GitError, git
 from tools.ci.scratch import commit as _commit
 from tools.ci.scratch import run as _run
-from tools.ci.trailers import DEV, history, is_ancestor, shipped
+from tools.ci.trailers import DEV, cancels, history, is_ancestor, shipped
 
 
 @pytest.fixture(name="repo")
@@ -104,6 +104,23 @@ def test_a_commit_that_ships_and_reopens_the_same_card_leaves_it_open(repo):
     both = _commit(repo, "confused", "Ships: plan#4\nReopens: plan#4")
     _dev(repo, both)
     assert shipped(repo, history(repo)) == ({}, ())
+
+
+def test_a_reopen_cancels_only_its_own_card_and_only_what_it_was_built_on(repo):
+    """:func:`cancels`, the one spelling of R-BAL181's test, which CI's ``commit_trailers``
+    check also asks when it names the ``Reopens:`` that cancelled a ship."""
+    ship = _commit(repo, "ship", "Ships: plan#4")
+    undo = _commit(repo, "revert", "Reopens: plan#4\nReopens: plan#5", parents=[ship])
+    _dev(repo, undo)
+    (claim,) = [t for t in history(repo).trailers if t.key == "Ships"]
+    four, five = sorted((t for t in history(repo).trailers if t.key == "Reopens"),
+                        key=lambda t: t.card)
+    assert cancels(repo, four, claim)
+    assert not cancels(repo, five, claim)
+    sibling = _commit(repo, "elsewhere", "Reopens: plan#4")
+    _dev(repo, sibling)
+    (stray,) = history(repo).trailers
+    assert not cancels(repo, stray, claim)
 
 
 def test_only_dev_is_read(repo):

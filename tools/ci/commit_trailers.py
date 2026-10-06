@@ -8,20 +8,40 @@ the one reader and the one ``shipped`` rule the tracker tool also asks:
    cutover (L8), the old ``<arc>:<id>`` form the plan gate reads.  Anything
    else is a citation git would silently read as naming nothing.
 
-2. **A revert carries the opposite of what it undoes, card by card.**  Undoing
-   a commit that carries ``Ships: plan#N`` must carry ``Reopens: plan#N`` (the
-   card's rule): a card any of whose shipped code is removed is reopened, and
-   a later commit ships it again.  Under ruling R-BAL181 one ``Reopens:``
-   cancels every ``Ships:`` of the card in its history, so undoing one of two
-   ships reopens the card too, whichever of the two is undone.  Undoing a
-   commit that carries ``Reopens: plan#N`` must carry ``Ships: plan#N`` --
-   reverting a revert brings the code back (decided by the session under
-   ruling ``balance:R-BAL207``) -- unless the undone commits also carry a
-   ``Ships: plan#N``, whose code the same revert removes: that card is
-   reopened, so ``Reopens:`` is owed and ``Ships:`` is not.  Each rule reads
-   only the undone commits' own trailers, so the verdict cannot turn on
-   where in history the revert lands (reviews of 1e52a05ae, S3, and of
-   46d9b578a, which measured a net effect and was order-dependent).
+2. **A revert carries what keeps git's answer true to the code it changes.**
+   One revert commit undoes everything ANY of its revert records names (a
+   squash of several reverts is one undo, judged once), and every commit it
+   undoes is in the history it LANDS on, its first parent's.  Three answers
+   are asked of :func:`tools.ci.trailers.shipped`, the tracker tool's own
+   rule, and nothing else here decides what shipped: NOW, over that history;
+   WITHOUT, over it with the undone commits' trailers taken out; and REMOVED,
+   over the undone commits' trailers alone, which names each card whose
+   shipped code the revert takes away.  The revert owes ``Reopens: plan#N``
+   for each card REMOVED names, unless WITHOUT ships it through a
+   ``Ships:`` git cancels NOW (code the revert brings back), and
+   ``Ships: plan#N`` for each card shipped WITHOUT and not NOW; nothing else.
+   So undoing a ship owes ``Reopens:``, even one of several ships of a card,
+   since they may be its parts (``recurrence:R16-c-2`` shipped in three),
+   and even when another ``Reopens:`` already cancelled it, so that
+   undoing that other one later cannot bring the ship back (both decided by
+   the session under ruling ``balance:R-BAL207``).  Undoing a revert's
+   ``Reopens:`` owes ``Ships:``, since the code comes back.  Undoing a ship
+   with the ``Reopens:`` that cancelled it, or a ``Reopens:`` that cancelled
+   nothing (what one cancels is ruling ``balance:R-BAL181``'s), owes nothing.
+
+   **Where it errs, and which way.**  Toward OPEN: one ``Reopens:`` cancels
+   every ``Ships:`` of the card before it (R-BAL181), so undoing one of
+   several ships reopens the card even when what remains is all of it, and
+   so does undoing a later ship after a revert brought an earlier ship's code
+   back (the card was shipped, so that revert owed nothing); the card stays
+   open until a commit ships it again.  Toward SHIPPED, only where parallel
+   lines of history meet in a merge: a ``Reopens:`` cancels no ``Ships:`` it
+   was not built on, so a ``Ships:`` on one line outlives the undo of the
+   card's code on another, and a revert that brings code back owes nothing,
+   leaving the ``Ships:`` whose code it removes standing for such a merge to
+   expose.  Each revert is judged where it lands, so no rule here sees the
+   merge.  A trailer a revert does not owe is not refused: a ``Ships:`` it
+   carries is a claim, as on any commit.
 
 **What a revert is: git's own record, at the start of a line.**  ``git
 revert`` writes ``This reverts commit <id>.``; with ``--reference`` the id is
@@ -37,9 +57,12 @@ read.
 for a MERGE, every commit the merge brought in beside the parent it kept
 (``<parent>..<merge>``), returning to that parent, since the trailers sit on
 those commits and not on the merge.  A revert naming a commit this repository
-does not hold, a merge without the parent it kept, or a parent that is not one
-of the merge's, is refused: what it undid cannot be read, and a check that
-cannot read its subject has not checked it.
+does not hold or that is not in the history the revert lands on (a rebased or
+cherry-picked copy is what that history holds), a merge without the parent it
+kept, or a parent that is not one of the merge's, is refused: what it undid
+cannot be read, and a check that cannot read its subject has not checked it.
+A commit with such a record is asked no debt either, since what it undoes is
+not all known.
 
 **The change set** is ``<base>..<head>``: the commits ``head`` holds and
 ``base`` does not.  ``ci.yml``'s ``scope`` job hands over the pair for a pull
@@ -109,7 +132,7 @@ def _resolve(root: Path, named: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
-def undone(root: Path, named: str, kept: str | None) -> trailers.History | str:
+def undone(root: Path, named: str, kept: str | None, onto: str) -> trailers.History | str:
     """The card trailers on what a revert of ``named`` undid, or one sentence saying why
     that cannot be read.
 
@@ -117,11 +140,15 @@ def undone(root: Path, named: str, kept: str | None) -> trailers.History | str:
         root: The repository.
         named: The commit the revert record names.
         kept: The parent a merge revert says it kept, or None.
+        onto: The commit the revert lands on, its first parent.
     """
     full = _resolve(root, named)
     if full is None:
         return (f"it says it reverts commit {named}, which this repository does not hold "
                 f"(if that commit was rebased, cite its new id)")
+    if not trailers.is_ancestor(root, full, onto):
+        return (f"it says it reverts commit {full[:12]}, which is not in the history it "
+                f"lands on (if that commit was rebased or cherry-picked, cite the copy's id)")
     parents = git(root, "rev-list", "--parents", "-n", "1", full).split()[1:]
     if len(parents) < 2:
         return trailers.history(root, f"{full}^!")
@@ -135,43 +162,58 @@ def undone(root: Path, named: str, kept: str | None) -> trailers.History | str:
     return trailers.history(root, f"{kept_full}..{full}")
 
 
-def owed(found: trailers.History) -> dict[tuple[str, int], trailers.Trailer]:
-    """``{(trailer owed, card): the undone trailer that owes it}`` for one undo (rule 2)."""
-    shipped = {t.card for t in found.trailers if t.key == trailers.SHIPS}
+def owed_at_landing(root: Path, revert: str,
+                    found: list[trailers.History]) -> dict[tuple[str, int], trailers.Trailer]:
+    """``{(trailer owed, card): the undone trailer that owes it}`` for the commit ``revert``,
+    whose revert records undo ``found`` (rule 2).
+
+    NOW, WITHOUT and REMOVED are :func:`trailers.shipped`'s answers over the
+    history ``revert`` lands on, over it without the undone commits' trailers,
+    and over those trailers alone.
+    """
+    undone_trailers = tuple(trailer for each in found for trailer in each.trailers)
+    gone = {trailer.sha for trailer in undone_trailers}
+    landing = trailers.history(root, f"{revert}^1")
+    now = trailers.shipped(root, landing)[0]
+    without = trailers.shipped(root, trailers.History(
+        tuple(trailer for trailer in landing.trailers if trailer.sha not in gone),
+        landing.malformed))[0]
+    removed = trailers.shipped(root, trailers.History(undone_trailers, ()))[0]
     debts: dict[tuple[str, int], trailers.Trailer] = {}
-    for trailer in found.trailers:
-        if trailer.key == trailers.SHIPS:
-            debts.setdefault((trailers.REOPENS, trailer.card), trailer)
-        elif trailer.card not in shipped:
-            debts.setdefault((trailers.SHIPS, trailer.card), trailer)
+    for card, claims in removed.items():
+        if not any(claim not in now.get(card, ()) for claim in without.get(card, ())):
+            debts[(trailers.REOPENS, card)] = claims[0]
+    for card in without.keys() - now.keys():
+        # One always exists: a Ships standing WITHOUT and not NOW is cancelled NOW
+        # only by Reopens trailers the revert undoes.
+        debts[(trailers.SHIPS, card)] = next(
+            undo for undo in undone_trailers if undo.key == trailers.REOPENS
+            and any(trailers.cancels(root, undo, claim) for claim in without[card]))
     return debts
-
-
-def _debts(commit: tuple[str, str], found: trailers.History,
-           carries: set[tuple[str, int]]) -> list[str]:
-    """One sentence per trailer the revert ``commit`` (``(sha, subject)``) owes and lacks."""
-    sha, subject = commit
-    return [
-        f"{sha[:12]} ({subject}) undoes {cause.sha[:12]} ({cause.subject}), which carries "
-        f"`{cause.key}: plan#{card}`; add the trailer `{key}: plan#{card}` to the last "
-        f"paragraph of {sha[:12]}'s message"
-        for (key, card), cause in sorted(owed(found).items()) if (key, card) not in carries
-    ]
 
 
 def _revert_reasons(root: Path, commit: tuple[str, str, str],
                     carries: set[tuple[str, int]]) -> list[str]:
     """Why one commit of the change set breaks rule 2, one sentence per debt; empty when
-    it reverts nothing or pays every debt.  ``commit`` is ``(sha, subject, message)``."""
+    it reverts nothing or pays every debt.  ``commit`` is ``(sha, subject, message)``.
+
+    Every record the commit holds is read before any debt is asked, since a
+    debt is owed by the whole undo: a record that cannot be read is refused,
+    and then no debt is asked.
+    """
     sha, subject, message = commit
-    reasons: list[str] = []
-    for named, kept in reverts(message):
-        what = undone(root, named, kept)
-        if isinstance(what, str):
-            reasons.append(f"{sha[:12]} ({subject}): {what}")
-        else:
-            reasons.extend(_debts((sha, subject), what, carries))
-    return reasons
+    found = [undone(root, named, kept, f"{sha}^1") for named, kept in reverts(message)]
+    unread = [f"{sha[:12]} ({subject}): {what}" for what in found if isinstance(what, str)]
+    if unread or not found:
+        return unread
+    read = [what for what in found if isinstance(what, trailers.History)]
+    return [
+        f"{sha[:12]} ({subject}) undoes {cause.sha[:12]} ({cause.subject}), which carries "
+        f"`{cause.key}: plan#{card}`; add the trailer `{key}: plan#{card}` to the last "
+        f"paragraph of {sha[:12]}'s message"
+        for (key, card), cause in sorted(owed_at_landing(root, sha, read).items())
+        if (key, card) not in carries
+    ]
 
 
 def problems(root: Path, base: str, head: str) -> tuple[int, list[str]]:
