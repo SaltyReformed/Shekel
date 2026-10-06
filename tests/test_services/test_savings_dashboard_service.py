@@ -23,10 +23,11 @@ from app.enums import (
     CompoundingFrequencyEnum,
     GoalModeEnum,
     IncomeUnitEnum,
+    WithholdingKindEnum,
 )
 from app.extensions import db
 from app.models.account import Account
-from app.models.calibration_override import CalibrationOverride
+from app.models.pay_stub import PayStub
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
@@ -40,6 +41,7 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
 
 from tests._test_helpers import (
+    add_test_pay_stub,
     figure_source_columns,
     all_periods,
     current_pay_period,
@@ -7102,11 +7104,11 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
                 )
 
 
-# ── salary:C12-b: /savings' current pay is the pass's pricer's, calibrated, summed ──
+# ── salary:C12-b: /savings' current pay is the pass's pricer's, stub-priced, summed ──
 
 
-class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
-    """``/savings``' current pay is the pass's pricer's, CALIBRATED, SUMMED.
+class TestTheCurrentPayIsThePassPricersStubPricedAndSummed:
+    """``/savings``' current pay is the pass's pricer's, STUB-PRICED, SUMMED.
 
     Plan step **salary:C12-b**, rulings **R-SAL25** and **R-SAL26**, ledger
     row **P62**'s last site.  ``_metrics._get_current_paycheck_breakdown``
@@ -7129,13 +7131,23 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         Social Security      2,000.00 x 6.20%          =   124.00
         Medicare             2,000.00 x 1.45%          =    29.00
 
-    With no calibration the bracket path withholds no federal or state (no
-    rules for either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
-    ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare,
-    net is ``2,000.00 - 453.00 = 1,547.00``.  An income-relative goal of
-    THREE PAYCHECKS is ``3 x net``, so the page publishes ``$4,641.00``
-    calibrated against ``$5,541.00`` not; the calibrated case failed on the
-    tree before this step (``5541.00`` where ``4641.00`` is asserted).
+    With no pay stub the formulas withhold no federal or state (no rules for
+    either), so net is ``2,000.00 - 153.00 = 1,847.00``.  With a switched-on
+    STUB of the paycheck's pay and (no) lines printing federal ``200.00``,
+    state ``100.00``, SS ``124.00`` and Medicare ``29.00``, each tax is the
+    stub's: the formulas price the stub's paycheck and the current one alike
+    (same gross, both far below the wage base), so their difference is
+    ``$0.00``, and net is ``2,000.00 - 453.00 = 1,547.00``.  An
+    income-relative goal of THREE PAYCHECKS is ``3 x net``, so the page
+    publishes ``$4,641.00`` stub-priced against ``$5,541.00`` not; the priced
+    case failed on the tree before plan step C12-b (``5541.00`` where
+    ``4641.00`` is asserted).
+
+    **RE-BASED by rulings R-SAL42 and R-SAL100** (plan step salary:S11-c-2c):
+    until that step the priced side was an ACTIVE calibration at the same
+    four dollars as effective rates (10% / 5% / 6.2% / 1.45%), which the step
+    deleted with the rates path; the subject -- the page publishes the
+    pricer's priced net, summed -- and every figure are unchanged.
 
     A SECOND profile of ``$26,000.00`` -- gross ``1,000.00``, SS ``62.00``,
     Medicare ``14.50``, net ``923.50`` -- makes the sum case: one paycheck of
@@ -7155,28 +7167,28 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         tax_law(fica_only_law())
 
     @staticmethod
-    def _seed_owner(db, seed_user, *, calibrated, second_profile=False,
+    def _seed_owner(db, seed_user, *, stubbed, second_profile=False,
                     multiplier=Decimal("3.00")):
-        """The owner above, with the calibration row and the second profile as asked."""
+        """The owner above, with the pay stub and the second profile as asked.
+
+        The stub is dated on the pay list's first payday, the calendar's first
+        saved one, so it is on or before the current paycheck whatever day
+        the suite runs.
+        """
         profile = make_salary_profile(
             seed_user, db.session, pay=Decimal("2000.00"),  # $52,000.00 a year / 26
         )
         db.session.flush()
-        if calibrated:
-            db.session.add(CalibrationOverride(
-                salary_profile_id=profile.id,
-                actual_gross_pay=Decimal("2000.00"),
-                actual_federal_tax=Decimal("200.00"),
-                actual_state_tax=Decimal("100.00"),
-                actual_social_security=Decimal("124.00"),
-                actual_medicare=Decimal("29.00"),
-                effective_federal_rate=Decimal("0.1000000000"),
-                effective_state_rate=Decimal("0.0500000000"),
-                effective_ss_rate=Decimal("0.0620000000"),
-                effective_medicare_rate=Decimal("0.0145000000"),
-                pay_stub_date=date(2026, 1, 16),
-                is_active=True,
-            ))
+        if stubbed:
+            add_test_pay_stub(
+                profile, profile.pay_entries[0].payday, "2000.00",
+                taxes={
+                    WithholdingKindEnum.FEDERAL_INCOME: "200.00",
+                    WithholdingKindEnum.STATE_INCOME: "100.00",
+                    WithholdingKindEnum.SOCIAL_SECURITY: "124.00",
+                    WithholdingKindEnum.MEDICARE: "29.00",
+                },
+            )
         if second_profile:
             make_salary_profile(
                 seed_user, db.session, name="Second Job",
@@ -7202,24 +7214,24 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         assert len(goals) == 1
         return goals[0].resolved_target
 
-    def test_the_calibrated_net_is_what_the_goal_is_stated_in(
+    def test_the_stub_priced_net_is_what_the_goal_is_stated_in(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An active calibration reaches the goal: three paychecks of $1,547.00."""
+        """A pay stub reaches the goal: three paychecks of $1,547.00."""
         with app.app_context():
-            self._seed_owner(db, seed_user, calibrated=True)
+            self._seed_owner(db, seed_user, stubbed=True)
             assert self._goal_target(seed_user) == Decimal("4641.00")
 
-    def test_without_a_calibration_the_bracket_net_is_what_it_is_stated_in(
+    def test_without_a_stub_the_formulas_net_is_what_it_is_stated_in(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The same owner with no calibration row: three paychecks of $1,847.00.
+        """The same owner with no pay stub: three paychecks of $1,847.00.
 
-        The pair is the control: one row toggled, one figure moved, by the
-        calibration's ``$300.00`` of federal and state and nothing else.
+        The pair is the control: one stub toggled, one figure moved, by the
+        stub's ``$300.00`` of federal and state and nothing else.
         """
         with app.app_context():
-            self._seed_owner(db, seed_user, calibrated=False)
+            self._seed_owner(db, seed_user, stubbed=False)
             assert self._goal_target(seed_user) == Decimal("5541.00")
 
     def test_two_active_profiles_are_summed_into_one_paycheck(
@@ -7228,7 +7240,7 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
         """Two jobs, one paycheck of salary: ``1,847.00 + 923.50``."""
         with app.app_context():
             self._seed_owner(
-                db, seed_user, calibrated=False, second_profile=True,
+                db, seed_user, stubbed=False, second_profile=True,
                 multiplier=Decimal("1.00"),
             )
             assert self._goal_target(seed_user) == Decimal("2770.50")
@@ -7236,16 +7248,18 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
     def test_the_dti_denominator_is_a_month_of_the_summed_gross(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """DTI reads the summed GROSS, so it is calibration-blind and job-total.
+        """DTI reads the summed GROSS, so it is stub-blind and job-total.
 
         The denominator is ``3,000.00 x 26 / 12 = 6,500.00`` a month with both
         profiles; under the first-by-id door it was ``4,333.33``.  The
         numerator is the debt summary's own PITI total (not under test), so
         the ratio is asserted as that total over ``6,500.00``, the way this
         file's existing DTI cases pin the denominator; and it is asserted
-        EQUAL with the first profile's calibration on and off, which is the
-        other half of the ruling: the calibration reaches the withholding
-        lines and the gross is upstream of them.
+        EQUAL with the first profile's pay stub switched on and off, which is
+        the other half of the ruling: a stub prices the withholding lines and
+        the gross is upstream of them.  (A calibration row toggled until
+        plan step salary:S11-c-2c, rulings R-SAL42 / R-SAL100; a stub cannot
+        be deleted, so its switch is the toggle.)
         """
         def _summary():
             return savings_dashboard_service.compute_debt_summary(
@@ -7254,29 +7268,37 @@ class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
 
         with app.app_context():
             self._seed_owner(
-                db, seed_user, calibrated=True, second_profile=True,
+                db, seed_user, stubbed=True, second_profile=True,
             )
             _create_small_loan(seed_user, db.session)
             db.session.commit()
-            calibrated = _summary()
-            assert calibrated is not None and calibrated.dti is not None
-            assert calibrated.dti.ratio == (
-                calibrated.total_monthly_payments / Decimal("6500.00")
+            priced = _summary()
+            assert priced is not None and priced.dti is not None
+            assert priced.dti.ratio == (
+                priced.total_monthly_payments / Decimal("6500.00")
                 * Decimal("100")
             ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
             # The first-by-id denominator, 4,333.33, would read differently
             # for any positive payment; assert the two are distinguishable so
             # the equality above graded the denominator and not a zero.
-            assert calibrated.total_monthly_payments > Decimal("0.00")
-            assert calibrated.dti.ratio != (
-                calibrated.total_monthly_payments / Decimal("4333.33")
+            assert priced.total_monthly_payments > Decimal("0.00")
+            assert priced.dti.ratio != (
+                priced.total_monthly_payments / Decimal("4333.33")
                 * Decimal("100")
             ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
-            # Off: same owner, calibration row deleted.
-            db.session.query(CalibrationOverride).delete()
+            # The toggle is real: the goal (three paychecks of salary, both
+            # jobs) moves by the stub's $300.00 a paycheck, 3 x (1,547.00 +
+            # 923.50) on and 3 x (1,847.00 + 923.50) off -- so the equal DTI
+            # below is the gross being upstream of the taxes, not a toggle
+            # that did nothing.
+            assert self._goal_target(seed_user) == Decimal("7411.50")
+
+            # Off: same owner, the stub switched off.
+            db.session.query(PayStub).update({PayStub.use_for_pricing: False})
             db.session.commit()
-            assert _summary().dti.ratio == calibrated.dti.ratio
+            assert self._goal_target(seed_user) == Decimal("8311.50")
+            assert _summary().dti.ratio == priced.dti.ratio
 
 
 class TestTheTrendWindowGatesEachLoanFromItsRecordedStart:

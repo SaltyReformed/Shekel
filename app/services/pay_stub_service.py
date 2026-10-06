@@ -2,8 +2,11 @@
 
 A real pay stub is TRANSCRIBED line by line into the four tables of
 :mod:`app.models.pay_stub` (``S11-a``) through this service and nothing else.
-It moves ``$0.00``: no paycheck prices from a stub until the engine's
-calibrated path (``S11-c``); the old calibration keeps pricing until then.
+Since plan step **salary:S11-c-2c** the paycheck engine prices each
+paycheck's four taxes from one switched-on stub (rulings **R-SAL42**,
+**R-SAL54**; ``paycheck_calculator._stubs``), so what this door saves moves
+money: a stub's figures and the kinds it records are the engine's input,
+and the switch takes a stub out of pricing.
 
 **What the door refuses, and whose rule each refusal is:**
 
@@ -85,7 +88,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import inspect
-from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
@@ -102,9 +104,12 @@ from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_line_kinds, withholding_kinds
 from app.services.pay_stub_gross import gross_refusals
-from app.services.paycheck_calculator import waterfall_gross, waterfall_net
+from app.services.paycheck_calculator import (
+    StubTotals,
+    one_offs_change_taxes,
+    stub_totals,
+)
 from app.services.salary_paydays import paycheck_on, payday_refusal_for_door
-from app.utils.money import ZERO
 
 if TYPE_CHECKING:
     from app.services.balance_at import BalanceContext
@@ -170,7 +175,8 @@ class StubFigures:
 class PrintedTotals:
     """The two totals a stub PRINTS, typed once at the door as checks and never stored.
 
-    What the stub's own figures must add up to (:class:`StubTotals`): the
+    What the stub's own figures must add up to
+    (:class:`~app.services.paycheck_calculator.StubTotals`): the
     gross (ruling **R-SAL99**) and the net (ruling **R-SAL42**).  Both are
     derived from the figures, so keeping either would be a second home for
     it (rule 14); they exist only for the one submission that checks them.
@@ -182,27 +188,6 @@ class PrintedTotals:
         net: The net pay the stub prints.
     """
     gross: Decimal
-    net: Decimal
-
-
-@dataclass(frozen=True)
-class StubTotals:
-    """What a stub's figures ADD UP to -- derived, never stored.
-
-    Attributes:
-        gross: Base pay plus the taxable earnings.
-        pre_tax: The pre-tax deductions.
-        taxes: The four taxes.
-        post_tax: The post-tax deductions.
-        after_tax: The after-tax earnings.
-        net: :func:`~app.services.paycheck_calculator.waterfall_net` of the
-            five above, the rule a priced paycheck's net uses too.
-    """
-    gross: Decimal
-    pre_tax: Decimal
-    taxes: Decimal
-    post_tax: Decimal
-    after_tax: Decimal
     net: Decimal
 
 
@@ -282,12 +267,19 @@ class StubReport:
         lines: Every paycheck line the stub prints or the app takes that
             payday, in the profile's line order.
         one_offs: The one-offs, in the order they were entered.
+        one_off_changes_taxes: Whether a one-off changes the stub's taxes,
+            so that it prices a paycheck only when no SWITCHED-ON stub of that
+            paycheck's own lines is on or before it -- the engine picker's own
+            answer (:func:`app.services.paycheck_calculator.one_offs_change_taxes`,
+            ruling **R-SAL123**), which the page states rather than restating
+            the rule (plan step salary:S11-c-2c), in **R-SAL126**'s words.
     """
     totals: StubTotals
     app_base_pay: Decimal | None
     base_gap: Decimal | None
     lines: tuple[LineComparison, ...]
     one_offs: tuple[OneOffRow, ...]
+    one_off_changes_taxes: bool
 
     @property
     def disagreements(self) -> int:
@@ -358,16 +350,12 @@ def stub_summaries(profile: SalaryProfile) -> list[StubSummary]:
     """Return one :class:`StubSummary` per stub of *profile*, newest payday first.
 
     The three child collections load in one ``SELECT ... IN`` each for every
-    stub at once, not three per stub: the card renders on every visit to the
-    profile page.
+    stub at once, not three per stub (``PayStub``'s own ``lazy="selectin"``,
+    since plan step salary:S11-c-2c; an explicit option here until then): the
+    card renders on every visit to the profile page.
     """
     stubs = (
         db.session.query(PayStub)
-        .options(
-            selectinload(PayStub.line_amounts),
-            selectinload(PayStub.withholdings),
-            selectinload(PayStub.one_offs),
-        )
         .filter(PayStub.salary_profile_id == profile.id)
         .order_by(PayStub.payday.desc())
         .all()
@@ -435,14 +423,18 @@ def totals_of(profile: SalaryProfile, figures: StubFigures) -> StubTotals:
 
     Ruling **R-SAL58**: a line figure and a one-off each carry their own kind,
     so the stub's totals read nothing off the paycheck lines but their
-    identity, and an edit of a line moves no saved stub.
+    identity, and an edit of a line moves no saved stub.  The arithmetic is
+    the engine's (:func:`~app.services.paycheck_calculator.stub_totals`, since
+    plan step **salary:S11-c-2c**), so the gross this door checks is the gross
+    the engine prices a saved stub's paycheck at; this function adds only the
+    ownership check.
 
     Args:
         profile: The owned profile whose lines *figures* names.
         figures: The stub's figures.
 
     Returns:
-        The :class:`StubTotals`.
+        The :class:`~app.services.paycheck_calculator.StubTotals`.
 
     Raises:
         NotFoundError: *figures* names a line the profile does not hold.
@@ -451,20 +443,9 @@ def totals_of(profile: SalaryProfile, figures: StubFigures) -> StubTotals:
     for line_id in figures.line_amounts:
         if line_id not in line_ids:
             raise NotFoundError(f"paycheck line {line_id} is not this profile's")
-    by_kind = {member: ZERO for member in PaycheckLineKindEnum}
-    for figure in (*figures.line_amounts.values(), *figures.one_offs):
-        by_kind[ref_cache.paycheck_line_kind_member(figure.paycheck_line_kind_id)] += (
-            figure.amount
-        )
-    gross = waterfall_gross(figures.base_pay, by_kind[PaycheckLineKindEnum.TAXABLE_EARNING])
-    taxes = sum(figures.withholdings.values(), ZERO)
-    pre_tax = by_kind[PaycheckLineKindEnum.PRE_TAX_DEDUCTION]
-    post_tax = by_kind[PaycheckLineKindEnum.POST_TAX_DEDUCTION]
-    after_tax = by_kind[PaycheckLineKindEnum.AFTER_TAX_EARNING]
-    return StubTotals(
-        gross=gross, pre_tax=pre_tax, taxes=taxes, post_tax=post_tax,
-        after_tax=after_tax,
-        net=waterfall_net(gross, pre_tax, taxes, post_tax, after_tax),
+    return stub_totals(
+        figures.base_pay, (*figures.line_amounts.values(), *figures.one_offs),
+        figures.withholdings.values(),
     )
 
 
@@ -498,6 +479,7 @@ def stub_report(profile: SalaryProfile, stub: PayStub, ctx: "BalanceContext") ->
             )
             for one_off in figures.one_offs
         ),
+        one_off_changes_taxes=one_offs_change_taxes(figures.one_offs),
     )
 
 
@@ -530,13 +512,9 @@ def _app_paycheck(
     if period is None:
         return None
     breakdown = ctx.paychecks().for_profile(profile).at(period)
-    priced = (
-        *breakdown.earnings.taxable, *breakdown.deductions.pre_tax,
-        *breakdown.deductions.post_tax, *breakdown.earnings.after_tax,
-    )
     return (
         breakdown.earnings.base_biweekly,
-        {line.paycheck_line_id: line.amount for line in priced},
+        {line.paycheck_line_id: line.amount for line in breakdown.priced_lines},
     )
 
 
@@ -913,7 +891,6 @@ __all__ = [
     "StubFigures",
     "StubReport",
     "StubSummary",
-    "StubTotals",
     "edit_stub",
     "figures_of",
     "form_lines",

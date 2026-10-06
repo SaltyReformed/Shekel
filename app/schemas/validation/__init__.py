@@ -154,8 +154,6 @@ from app.schemas.validation.retirement import (
     RetirementSettingsSchema,
 )
 from app.schemas.validation.salary import (
-    CalibrationConfirmSchema,
-    CalibrationSchema,
     PaycheckLineCreateSchema,
     PaycheckLineUpdateSchema,
     RaiseCreateSchema,
@@ -207,8 +205,6 @@ __all__ = [
     "AnchorUpdateSchema",
     "OpeningRestatementSchema",
     "AppreciationParamsUpdateSchema",
-    "CalibrationConfirmSchema",
-    "CalibrationSchema",
     "CardAprSchema",
     "CategoryCreateSchema",
     "CategoryEditSchema",

@@ -140,11 +140,13 @@ finding **CC-384**), and its lines count as named only when all of those
 rows are ticked.  Every other panel tick names nothing, so one that would
 free a line is refused; one can still take a payment off uncaptioned -- a
 ``$0.00``-figure row ticked with its box cleared, saved when its payment is
-unmatched (ledger row **BAL-596**).  Carry-forward names the open finding
-that owns its caption until leaf ``5c-2c-2`` (**R-CC76**; finding
-**CC-364**).  The
-declarations and the press live in :mod:`app.services.match_press`, split
-from here by subject at leaf 5c-2b.
+unmatched (ledger row **BAL-596**).  Carry-forward's confirmation names what
+each envelope's close frees since leaf ``5c-2c-2`` (ruling **R-CC76**,
+finding **CC-364** closed), a match only several closes empty together once
+for the batch (ruling **R-CC135**), and its Confirm posts every line named
+for the batch's one press (``carry_forward_service.carry_forward_unpaid``).
+The declarations and the press live in :mod:`app.services.match_press`,
+split from here by subject at leaf 5c-2b.
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and

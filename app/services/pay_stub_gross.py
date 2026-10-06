@@ -29,7 +29,8 @@ from app.services.paycheck_line_kinds import LABELS
 from app.utils.money import ZERO
 
 if TYPE_CHECKING:
-    from app.services.pay_stub_service import PrintedTotals, StubTotals
+    from app.services.pay_stub_service import PrintedTotals
+    from app.services.paycheck_calculator import StubTotals
 
 
 def gross_counts(includes_after_tax: bool) -> str:

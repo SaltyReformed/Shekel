@@ -35,7 +35,7 @@ matters.**  Two writers would have made those figures permanent: a settle ran
 a cache reconciler in ``transaction_service`` BEFORE the status flip and
 wrote the live figure into ``estimated_amount``, after which the row left the
 read-time repair's Projected-only candidate set and nothing could repair it;
-and any salary, calibration or tax-config save runs
+and any salary, pay stub or tax-config save runs
 ``salary_regeneration.regenerate_salary_transactions`` (in the salary routes
 package until plan step salary:S3-f-3), which rebuilds every
 row from today forward.  A read-time defect with two write-back doors is a

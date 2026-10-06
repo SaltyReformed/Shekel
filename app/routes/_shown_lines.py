@@ -4,8 +4,10 @@ Shekel Budget App -- What a page NAMED before the press
 One translation, made identically by every door a page with ONE set of
 withdrawal captions posts to: the transaction popover's Save, Paid / Received,
 Delete and Undo CC (``routes/transactions/mutations.py``), the transfer
-popover's Save and Paid (``routes/transfers/mutations.py``), and the purchase
-list's X and edit form (``routes/entries.py``).  The reconcile panel posts one
+popover's Save and Paid (``routes/transfers/mutations.py``), the purchase
+list's X and edit form (``routes/entries.py``), and carry-forward's Confirm,
+one set for its whole batch (``routes/transactions/carry_forward.py``, leaf
+5c-2c-2).  The reconcile panel posts one
 set PER ROW (``shown_lines-<row id>``) and reads them itself
 (``routes.accounts.reconcile._submitted_shown_lines``, plan step
 ``credit_card:CC-5-4a-5c-1``), and since leaf 5c-2c-1 one value PER SHARED

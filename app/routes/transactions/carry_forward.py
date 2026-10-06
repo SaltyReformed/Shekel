@@ -5,22 +5,46 @@ The carry-forward preview (GET, read-only plan) and the carry-forward
 mutator (POST), which copy a past period's unpaid items into the current
 period.  Both apply identical ownership / configuration checks via the
 shared :func:`_resolve_carry_forward_context`.
+
+**The Confirm posts back the bank lines the preview NAMED, and a stale one is
+drawn again** (plan step ``credit_card:CC-5-4a-5``, leaf 5c-2c-2; rulings
+**R-CC76**, **R-CC127**, **R-CC128**, **R-CC135**): the modal says which
+lines the batch would leave unexplained on the statement screen, the POST
+hands them to the batch's one press, and a batch that would free other lines
+-- a match made or undone in another tab since the modal was drawn -- saves
+nothing and redraws the modal's content from what is true now.
 """
 
 import logging
 
-from flask import render_template
+from flask import render_template, request
+from flask.typing import ResponseReturnValue
 from flask_login import current_user
 
 from app.extensions import db
+from app.routes._shown_lines import read_posted
+from app.schemas.validation import ShownLinesSchema
 from app.services import carry_forward_service
 from app.services.balance_at import BalanceContext
-from app.exceptions import NotFoundError, ValidationError
+from app.services.match_press import NOTHING_SHOWN
+from app.exceptions import NotFoundError, PageOutOfDate, ValidationError
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.utils.error_fragments import designed_error, flatten_schema_errors
 from app.routes.transactions._bp import transactions_bp
 
 logger = logging.getLogger(__name__)
+
+#: The modal's frame, mounted by the GET, and its content alone, which a
+#: refused Confirm redraws over the open modal (ruling R-CC128).
+_MODAL = "grid/_carry_forward_preview_modal.html"
+_CONTENT = "grid/_carry_forward_preview_content.html"
+
+#: The content's DOM id: written by the template, and the element a refused
+#: Confirm's redraw is retargeted at, so the Bootstrap modal stays shown.
+_CONTENT_ID = "carryForwardPreviewContent"
+
+_shown_lines_schema = ShownLinesSchema()
 
 
 def _resolve_carry_forward_context(period_id):
@@ -93,6 +117,72 @@ def _resolve_carry_forward_context(period_id):
     return (balance_ctx, source_period, current_period), None
 
 
+def _render_preview(
+    period_id: int, template: str, *, page_refusal: "str | None" = None,
+) -> "tuple[str | None, ResponseReturnValue | None]":
+    """Return the preview rendered through *template*, or the response refusing it.
+
+    The one render of the carry-forward plan, for the GET's modal and for a
+    refused Confirm's redraw of its content: both resolve the context, ask
+    the service for the plan and draw it the same way, so the redraw cannot
+    say something the modal would not.
+
+    Args:
+        period_id: pay_period.id of the source period.
+        template: :data:`_MODAL` or :data:`_CONTENT`.
+        page_refusal: :attr:`~app.exceptions.PageOutOfDate.facts`, drawn
+            above the content on a redraw; ``None`` on the GET.
+
+    Returns:
+        ``(body, None)`` on success, or ``(None, response)`` -- the
+        context's 404 / 400, or the service's 404.
+    """
+    ctx, err = _resolve_carry_forward_context(period_id)
+    if err is not None:
+        return None, err
+    balance_ctx, source_period, current_period = ctx
+    try:
+        preview = carry_forward_service.preview_carry_forward(
+            period_id, current_period.period_id, balance_ctx.scenario_id,
+            balance_ctx=balance_ctx,
+        )
+    except NotFoundError as exc:
+        return None, (str(exc), 404)
+    return render_template(
+        template,
+        preview=preview,
+        source_period=source_period,
+        current_period=current_period,
+        content_id=_CONTENT_ID,
+        page_refusal=page_refusal,
+    ), None
+
+
+def _redrawn(period_id: int, facts: str) -> ResponseReturnValue:
+    """Return the modal's content drawn again over the open modal, as a designed 400.
+
+    A Confirm refused as out of date (ruling **R-CC128**, "Redraw all"):
+    the content -- every plan, every caption and the Confirm's posted lines
+    -- from what is true now, with *facts* above it, swapped over the open
+    modal's content so pressing Confirm again goes ahead.  Called after the
+    batch is rolled back.
+
+    Args:
+        period_id: pay_period.id of the source period.
+        facts: :attr:`~app.exceptions.PageOutOfDate.facts`.
+
+    Returns:
+        The designed 400, or the refusal :func:`_render_preview` answers
+        when the context no longer resolves.
+    """
+    body, err = _render_preview(period_id, _CONTENT, page_refusal=facts)
+    if err is not None:
+        return err
+    return designed_error(
+        body, 400, retarget=f"#{_CONTENT_ID}", reswap="outerHTML",
+    )
+
+
 @transactions_bp.route(
     "/pay-periods/<int:period_id>/carry-forward-preview", methods=["GET"],
 )
@@ -119,31 +209,33 @@ def carry_forward_preview(period_id: int):
         Flask response tuple: rendered modal HTML or an error message
         with the appropriate status code.
     """
-    ctx, err = _resolve_carry_forward_context(period_id)
+    body, err = _render_preview(period_id, _MODAL)
     if err is not None:
         return err
-    balance_ctx, source_period, current_period = ctx
-
-    try:
-        preview = carry_forward_service.preview_carry_forward(
-            period_id, current_period.period_id, balance_ctx.scenario_id,
-            balance_ctx=balance_ctx,
-        )
-    except NotFoundError as exc:
-        return str(exc), 404
-
-    return render_template(
-        "grid/_carry_forward_preview_modal.html",
-        preview=preview,
-        source_period=source_period,
-        current_period=current_period,
-    )
+    return body
 
 
 @transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
 @require_owner
 def carry_forward(period_id):
-    """Carry forward all unpaid items from a period to the current period."""
+    """Carry forward all unpaid items from a period to the current period.
+
+    The modal's Confirm posts ``shown_lines``: every bank line the preview
+    named (``CarryForwardPreview.named_line_ids``, plan step
+    ``credit_card:CC-5-4a-5``, leaf 5c-2c-2).  A request without the field
+    named nothing (*"A button with no warning sends nothing"*, ruling
+    **R-CC127**), so it withdraws no match.  A batch whose withdrawals differ
+    from what was named is refused as out of date, rolled back whole, and the
+    modal's content is drawn again from current state with the refusal's
+    facts above it, as a designed 400 retargeted at the open modal (ruling
+    **R-CC128**, "Redraw all"); pressing Confirm again goes ahead.
+    """
+    errors = _shown_lines_schema.validate(request.form)
+    if errors:
+        return flatten_schema_errors(errors), 422
+    shown = read_posted(
+        _shown_lines_schema.load(request.form), absent=NOTHING_SHOWN,
+    ).shown
     ctx, err = _resolve_carry_forward_context(period_id)
     if err is not None:
         return err
@@ -163,11 +255,20 @@ def carry_forward(period_id):
     try:
         count = carry_forward_service.carry_forward_unpaid(
             period_id, current_period.period_id, balance_ctx.scenario_id,
-            balance_ctx=balance_ctx,
+            balance_ctx=balance_ctx, shown=shown,
         )
         db.session.commit()
     except NotFoundError as exc:
         return str(exc), 404
+    except PageOutOfDate as exc:
+        # The batch freed other bank lines than the modal named (ruling
+        # R-CC135: compared once, for the whole save).  Rolled back whole,
+        # then drawn again by a FRESH read pass: the batch's own priced rows
+        # mid-write, and the redraw is a render of what is true now, every box
+        # and warning from one moment (ruling R-CC128).
+        db.session.rollback()
+        db.session.expire_all()
+        return _redrawn(period_id, exc.facts)
     except ValidationError as exc:
         # Refused by the envelope branch (a corrupt multi-row target state), or
         # -- since plan step C9b -- by ruling R-C, when a carried loan payment's

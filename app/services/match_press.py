@@ -62,12 +62,14 @@ class Silent:
     Ruling **R-CC81**: a button may undo a match unannounced only by naming
     the ruling that lets it stay silent, in its own code where a reviewer
     sees it -- the grid's one-click Mark Paid (:data:`MARK_PAID`, ruling
-    **R-CC56**).  Until plan step ``credit_card:CC-5-4a-5c-2`` captions it,
-    carry-forward names the OPEN FINDING that owns its caption instead
-    (**CC-364**): today's behaviour, stated at its call site.  The purchase
-    X and the three Credit doors did too until ``CC-5-4a-5b`` captioned them
-    (finding **CC-367**), and the reconcile panel until ``CC-5-4a-5c-1``
-    (findings **CC-364**, **CC-378**).
+    **R-CC56**), the ONE silent door left (ruling **R-CC76**: *"Only the
+    grid's one-click Mark Paid stays silent"*).  Until plan step
+    ``credit_card:CC-5-4a-5`` captioned them, other doors named the OPEN
+    FINDING that owned their caption instead -- their behaviour then, stated
+    at the call site: the purchase X and the three Credit doors until leaf
+    5b (finding **CC-367**), the reconcile panel until leaf 5c-1 (findings
+    **CC-364**, **CC-378**), and carry-forward until leaf 5c-2c-2 (finding
+    **CC-364**).
 
     Attributes:
         because: The ruling or finding id, written to the withdrawal event.
@@ -166,7 +168,9 @@ class Press:
       graded (ruling **R-CC135**: *"One-row buttons behave as now"*), while
       the reconcile panel names only what the rows TICKED will free, so a
       ticked row whose save went another way refuses it (ledger row
-      **BAL-597**).
+      **BAL-597**), and carry-forward's confirmation names exactly what its
+      batch frees, so an envelope another tab closed since the modal was
+      drawn refuses it (leaf 5c-2c-2).
     * **The withdrawal EVENTS are logged at the close**, not per call: a save
       refused after one call withdrew would otherwise have logged a
       withdrawal its rollback undid.
@@ -196,8 +200,9 @@ class Press:
             :class:`OwnerOnly` for a companion's), or what lets it stay
             silent (:class:`Silent`).
         promised: Whether the page named exactly what this save will free
-            -- the reconcile panel's captions under the rows ticked -- so
-            the close compares a save that reached no match step too.
+            -- the reconcile panel's captions under the rows ticked, and
+            carry-forward's confirmation for its whole batch -- so the close
+            compares a save that reached no match step too.
         state: The save a :meth:`reworded` twin shares; a door passes none.
     """
 
@@ -287,10 +292,9 @@ class Press:
             if planned.line_ids - self.shown.line_ids:
                 if isinstance(self.shown, OwnerOnly):
                     raise ValidationError(self.shown.refusal)
-                raise PageOutOfDate.over_lines(
-                    len(self._state.freed.keys() | planned.line_ids),
-                    len(self.shown.line_ids),
-                )
+                # No count: the calls after this one are unknown here
+                # (leaf 5c-2c-2's review, L1).
+                raise PageOutOfDate.over_an_unnamed_line()
         self._state.freed.update(
             (line.line_id, line) for line in planned.lines
         )

@@ -36,7 +36,6 @@ import pytest
 from sqlalchemy.exc import DataError
 
 from app.extensions import db
-from app.models.calibration_override import CalibrationOverride
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
@@ -410,108 +409,6 @@ class TestSalaryNarrowCatch:
             db.session.expire_all()
             refreshed = db.session.get(PaycheckLine, ded_id)
             assert refreshed.amount == original_amount
-
-    def test_calibrate_confirm_data_error_handled(
-        self, app, auth_client, seed_user, seed_periods,
-    ):
-        """``DataError`` on ``calibrate_confirm`` commit triggers narrow catch.
-
-        Re-pinned under HIGH-03 / Q-25 / E-20 (audit 2026-05-19): the
-        confirm route now re-derives the four effective rates server-
-        side from the stored actual_* plus the taxable base and
-        rejects tampered or stale rate posts as 422.  The posted rates
-        previously (0.0700 / 0.0350 / 0.0620 / 0.0145) were arbitrary
-        placeholders inconsistent with the actual_* triple; under the
-        new (correct) behaviour those rates short-circuit at the
-        federal/state cross-check with a 422 before the patched commit
-        is ever called, defeating the test's intent.  Replaced with the
-        server-derived values for the same actual_* triple so the
-        request now reaches the patched ``db.session.commit`` and
-        triggers the narrow catch.
-
-        Hand-computed arithmetic at 10dp ROUND_HALF_UP (the profile has
-        no pre-tax deductions so taxable == gross == 2884.62):
-          federal_rate = 200.00 / 2884.62 = 0.0693332224
-          state_rate   = 100.00 / 2884.62 = 0.0346666112
-          ss_rate      = 178.85 / 2884.62 = 0.0620012341
-          medicare_rate=  41.83 / 2884.62 = 0.0145010435
-        """
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            profile_id = profile.id
-
-            with patch.object(
-                db.session, "commit", side_effect=_make_data_error(),
-            ):
-                resp = auth_client.post(
-                    f"/salary/{profile_id}/calibrate/confirm",
-                    data={
-                        "actual_gross_pay": "2884.62",
-                        "actual_federal_tax": "200.00",
-                        "actual_state_tax": "100.00",
-                        "actual_social_security": "178.85",
-                        "actual_medicare": "41.83",
-                        "effective_federal_rate": "0.0693332224",
-                        "effective_state_rate": "0.0346666112",
-                        "effective_ss_rate": "0.0620012341",
-                        "effective_medicare_rate": "0.0145010435",
-                        "pay_stub_date": "2026-03-14",
-                    },
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert f"/salary/{profile_id}/calibrate" in resp.headers["Location"]
-
-            # Rollback verified: no calibration row persisted.
-            db.session.expire_all()
-            persisted = db.session.query(CalibrationOverride).filter_by(
-                salary_profile_id=profile_id,
-            ).all()
-            assert persisted == []
-
-    def test_calibrate_delete_data_error_handled(
-        self, app, auth_client, seed_user, seed_periods,
-    ):
-        """``DataError`` on ``calibrate_delete`` commit triggers narrow catch."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-            profile_id = profile.id
-
-            # Seed a calibration so the delete branch executes.
-            cal = CalibrationOverride(
-                salary_profile_id=profile_id,
-                actual_gross_pay=Decimal("2884.62"),
-                actual_federal_tax=Decimal("200.00"),
-                actual_state_tax=Decimal("100.00"),
-                actual_social_security=Decimal("178.85"),
-                actual_medicare=Decimal("41.83"),
-                effective_federal_rate=Decimal("0.07000"),
-                effective_state_rate=Decimal("0.03500"),
-                effective_ss_rate=Decimal("0.06200"),
-                effective_medicare_rate=Decimal("0.01450"),
-                pay_stub_date=date(2026, 3, 14),
-                is_active=True,
-            )
-            db.session.add(cal)
-            db.session.commit()
-            cal_id = cal.id
-
-            with patch.object(
-                db.session, "commit", side_effect=_make_data_error(),
-            ):
-                resp = auth_client.post(
-                    f"/salary/{profile_id}/calibrate/delete",
-                    follow_redirects=False,
-                )
-
-            assert resp.status_code == 302
-            assert f"/salary/{profile_id}/edit" in resp.headers["Location"]
-
-            # Rollback verified: calibration row still present.
-            db.session.expire_all()
-            still_there = db.session.get(CalibrationOverride, cal_id)
-            assert still_there is not None
 
 
 # ── salary.py: private helper ──────────────────────────────────────
