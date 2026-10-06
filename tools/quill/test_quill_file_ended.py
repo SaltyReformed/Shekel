@@ -1,5 +1,5 @@
 """Filings that ended, X-cx L2's leaf C (applications of ruling ``balance:R-BAL207``, recorded
-beside R-BAL202..R-BAL206): ``plan file`` run again writes nothing over a filing an earlier
+beside R-BAL202..R-BAL206): ``quill file`` run again writes nothing over a filing an earlier
 run made -- a card still marked is found in any state, and a ruling among its owner's
 sub-issues -- and never files over one a decision ended; and a leaf closed while still
 marked is no leaf of its split step, unless git says it shipped (``_state.leaves``) -- and,
@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from tools.plan._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
+from tools.quill._fake import (AnswerLostOnce, FailOnce, FakeTracker, leaf_filing, ruling_filing,
                               run, ship)
-from tools.plan._github import GitHubError
-from tools.plan._tracker import Child
-from tools.plan.check import ruling_body
-from tools.plan.setup_tracker import FILING
+from tools.quill._github import GitHubError
+from tools.quill._tracker import Child
+from tools.quill.check import ruling_body
+from tools.quill.setup_tracker import FILING
 
 
 def _closed_by_hand(tracker, number, reason="COMPLETED"):
@@ -130,7 +130,7 @@ def test_a_ruling_withdrawn_before_its_link_landed_is_found_by_its_mark(code, tm
 def test_a_withdrawn_extra_never_hides_the_ruling_that_stands(code, tmp_path, capsys):
     """Closing an extra as a duplicate is how a person withdraws it, so a finished ruling
     beside a withdrawn copy is the one filed; two that stand are refused, and the remedy
-    for a closed one is a close as not planned, which `plan drop` cannot make."""
+    for a closed one is a close as not planned, which `quill drop` cannot make."""
     body = ruling_body("Where?", "Here.")
     tracker = FakeTracker()
     tracker.add(1, children=(Child(2, "ruling", False), Child(3, "ruling", False)))
@@ -139,7 +139,7 @@ def test_a_withdrawn_extra_never_hides_the_ruling_that_stands(code, tmp_path, ca
                     state_reason="COMPLETED", closed_by_tool=True)
     assert run(tracker, code, *ruling_filing(tmp_path, "plan#1")) == 1
     assert ("2 cards have this kind, title and text (plan#2, plan#3): withdraw the extras -- "
-            "`plan drop` an open one; reopen a closed one and close it as not planned on the "
+            "`quill drop` an open one; reopen a closed one and close it as not planned on the "
             "web") in capsys.readouterr().err
     _closed_by_hand(tracker, 2, "DUPLICATE")
     assert run(tracker, code, *ruling_filing(tmp_path, "plan#1")) == 0
@@ -204,7 +204,7 @@ def test_a_person_closing_the_only_unfinished_leaf_leaves_a_plain_step(code, tmp
     closed as not planned by `sync` (R-BAL187 counted it a split step whose leaves were all
     dropped).  Leaf C2: `sync` puts it back on the board in the leaf's place, then unlinks
     the leaf (R-BAL205), so `next` offers it -- at leaf C it was named off the board until
-    a person ran `plan move`."""
+    a person ran `quill move`."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     _closed_by_hand(tracker, 2)
@@ -222,7 +222,7 @@ def test_a_person_closing_the_only_unfinished_leaf_leaves_a_plain_step(code, tmp
 
 def test_a_read_that_lags_a_drops_unlink_never_drops_the_split_step(code, tmp_path,
                                                                      monkeypatch, capsys):
-    """Round 4 LOW 6: `plan drop` of the only unfinished leaf unlinks it, then closes it; a
+    """Round 4 LOW 6: `quill drop` of the only unfinished leaf unlinks it, then closes it; a
     `sync` whose read of plan#1 still lists the link saw a split step whose only leaf was
     dropped, and closed it as not planned for good.  Leaf C2 (review M3): that lagging read
     makes `sync` send the unlink again, and GitHub refuses an unlink of a card that is no
@@ -422,7 +422,7 @@ def test_a_finding_closed_after_its_filing_finished_is_filed_anew(code):
 
 def test_a_sync_whose_open_listing_lags_a_leaf_closing_never_reopens_the_dropped_step(
         code, tmp_path, monkeypatch):
-    """Review M1 (P7): `plan drop` closed the split step itself, its only leaf still being
+    """Review M1 (P7): `quill drop` closed the split step itself, its only leaf still being
     filed; a `sync` whose open listing still showed that leaf open took the split step for
     split again and reopened it, losing the drop once the listing caught up.  Each card
     sync decides over is read by its number."""
@@ -733,7 +733,7 @@ def test_a_leaf_reopened_as_sync_unlinked_it_is_relinked_by_its_own_command(code
 
 
 def test_show_names_a_linked_step_that_is_no_leaf(code, tmp_path, capsys):
-    """`plan show` of the split step says the leaf a person closed while it was still being
+    """`quill show` of the split step says the leaf a person closed while it was still being
     filed is no leaf, so it agrees with `next`, which offers the step as plain work; an
     open leaf still being filed, and the line once `sync` unlinked it, say nothing of it."""
     tracker = FakeTracker()
@@ -779,10 +779,10 @@ def test_a_plain_steps_drop_unlinks_a_leaf_closed_while_still_being_filed(code, 
 
 def test_next_says_sync_places_a_step_whose_leaf_closed_while_still_being_filed(code, tmp_path,
                                                                                 capsys):
-    """C2 delta DM1: `next` asked a person to `plan move` a step whose leaf a person closed
+    """C2 delta DM1: `next` asked a person to `quill move` a step whose leaf a person closed
     while it was still being filed, and the next `sync` moved it back after that leaf; it
     now says `sync` puts it back.  A step off the board with no such link is still told to
-    `plan move`, and after the sync puts it back, `next` offers it."""
+    `quill move`, and after the sync puts it back, `next` offers it."""
     tracker = FakeTracker()
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     tracker.add(3, on_board=False)
@@ -790,9 +790,9 @@ def test_next_says_sync_places_a_step_whose_leaf_closed_while_still_being_filed(
     capsys.readouterr()
     assert run(tracker, code, "next") == 0
     out = capsys.readouterr().out
-    assert ("NOT ON THE BOARD, so in no order: plan#1 [step, balance] card 1 -- `plan sync` puts "
+    assert ("NOT ON THE BOARD, so in no order: plan#1 [step, balance] card 1 -- `quill sync` puts "
             "it back on the board, unlinking") in out
-    assert "plan#3 [step, balance] card 3 -- place it with `plan move plan#3 --after" in out
+    assert "plan#3 [step, balance] card 3 -- place it with `quill move plan#3 --after" in out
     assert run(tracker, code, "sync") == 0
     capsys.readouterr()
     assert run(tracker, code, "next") == 0

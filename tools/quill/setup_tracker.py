@@ -7,7 +7,7 @@ the developer drags them.  This module is the one home of that tracker's
 CONFIGURATION: the repository and its settings, the labels, the board, and the
 things only the web can set (the organization's issue types, which need a
 scope the shared token does not carry; the board's automations and its view's
-sort, which the API cannot change; and the plan tool's GitHub App).  The cards
+sort, which the API cannot change; and quill's GitHub App).  The cards
 themselves are content, and their home is the tracker; nothing here names one.
 
 Run with no flag it changes nothing: it reads GitHub, prints one line per
@@ -33,7 +33,7 @@ value reported as a difference.  Those automations matter twice over: one of
 them, "Auto-close issue", would close a card when someone set its Status to
 Done -- a third way to close a card, beside git and the developer's own hand.
 **Nor may an automation put a card on the board** (ruling ``balance:R-BAL177``):
-the board holds steps and questions only, and the plan tool places each one
+the board holds steps and questions only, and quill places each one
 itself, a new leaf where the step it splits sat.  "Auto-add sub-issues to
 project" would put every finding and ruling, each a sub-issue of its owner
 step, at the bottom of the ordered list (measured 2026-10-04: within ten
@@ -42,8 +42,8 @@ holds (:data:`ALLOWED_WORKFLOWS`).
 
 Usage, from the repository root::
 
-    python -m tools.plan.setup_tracker            # check only
-    python -m tools.plan.setup_tracker --apply    # make and correct
+    python -m tools.quill.setup_tracker            # check only
+    python -m tools.quill.setup_tracker --apply    # make and correct
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from tools.ci.arcs import ARCS
-from tools.plan._github import (
+from tools.quill._github import (
     APP_DIR,
     GitHub,
     GitHubError,
@@ -91,12 +91,12 @@ REPOSITORY = {
 #: module's second list); a label's colour is the one at its arc's position.
 _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 
-#: The mark every card the plan tool files carries from the call that creates it
+#: The mark every card quill files carries from the call that creates it
 #: until its filing's last write removes it (ruling ``balance:R-BAL202``).
 FILING = "filing"
 
 #: Every label the tracker carries: one per arc, the two a release reads, and
-#: the plan tool's :data:`FILING` mark.
+#: quill's :data:`FILING` mark.
 LABELS = {
     **{
         arc: (_ARC_COLORS[index % len(_ARC_COLORS)], f"The {arc.replace('_', '-')} arc")
@@ -114,7 +114,7 @@ LABELS = {
     ),
 }
 
-#: What the plan tool's App may do, and nothing more: write cards (issues,
+#: What quill's App may do, and nothing more: write cards (issues,
 #: their sub-issues and dependencies), create and delete the git references
 #: that are claims (contents), and place cards on the organization's board.
 #: ``metadata: read`` is mandatory for every App.
@@ -140,7 +140,7 @@ GITHUB_STATUS_FIELD = "Status"
 #: already holds.  Names as GitHub's documentation lists them (the API lists a
 #: built-in automation only once a board has it).  Every other one writes a
 #: stored field or an issue's state, or ADDS cards ("Auto-add to project",
-#: "Auto-add sub-issues to project"), which only the plan tool may do
+#: "Auto-add sub-issues to project"), which only quill may do
 #: (``balance:R-BAL177``); each must be switched off -- on the web, because the
 #: API can only DELETE an automation, and what deleting a built-in one does
 #: is unmeasured.
@@ -470,7 +470,7 @@ def _board_listing(github: GitHub) -> tuple[str, str | None]:
 
 def find_board(github: GitHub) -> str | None:
     """The plan's board's node id (None while there is none): the one lookup both this
-    module and the plan tool make."""
+    module and quill make."""
     return _board_listing(github)[1]
 
 
@@ -611,7 +611,7 @@ def check_board(github: GitHub, repository: dict | None, apply: bool, report: Re
 
 
 def check_app(report: Report) -> None:
-    """Check the plan tool's App: registered by the organization, installed on the tracker only."""
+    """Check quill's App: registered by the organization, installed on the tracker only."""
     try:
         client_id, private_key = app_credentials()
     except FileNotFoundError:

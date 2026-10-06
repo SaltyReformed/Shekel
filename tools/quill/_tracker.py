@@ -1,9 +1,9 @@
-"""The tracker's cards, board order and claims, read and written as the plan tool's App.
+"""The tracker's cards, board order and claims, read and written as quill's App.
 
-Every card write goes through the plan tool's GitHub App (ruling
+Every card write goes through quill's GitHub App (ruling
 ``balance:R-BAL170``), a separate identity from the developer's login, so a
 reader can tell the tool's write from his own edit and never act on his.  This
-module is the only place the plan tool speaks to the tracker; it decides
+module is the only place quill speaks to the tracker; it decides
 nothing about the plan (``_state`` does), it only reads and writes.
 
 **What each read can see, measured on the tracker 2026-10-04:**
@@ -49,7 +49,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from tools.plan._github import (
+from tools.quill._github import (
     GitHub,
     GitHubError,
     app_credentials,
@@ -57,7 +57,7 @@ from tools.plan._github import (
     app_jwt,
     installation_token,
 )
-from tools.plan.setup_tracker import FILING, ORG, REPO, find_board
+from tools.quill.setup_tracker import FILING, ORG, REPO, find_board
 
 _BASE = f"/repos/{ORG}/{REPO}"
 #: The tracker, as GitHub names a repository in a link (``nameWithOwner``).
@@ -118,7 +118,7 @@ _EDITS = (
 )
 
 
-#: The board's writes, the only GraphQL mutations the plan tool sends (a recording
+#: The board's writes, the only GraphQL mutations quill sends (a recording
 #: sends no other: ``_recorded.refusal``).  ``$p`` is the board, ``$c`` a card's node
 #: id, ``$i`` a board item, ``$a`` the item it goes after.
 BOARD_ADD = ("mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, "
@@ -132,7 +132,7 @@ BOARD_AFTER = ("mutation($p: ID!, $i: ID!, $a: ID!) { updateProjectV2ItemPositio
 
 
 class TrackerError(RuntimeError):
-    """The tracker refused a write or answered something the plan tool cannot read."""
+    """The tracker refused a write or answered something quill cannot read."""
 
 
 class ClaimTaken(TrackerError):
@@ -168,7 +168,7 @@ class Card:  # pylint: disable=too-many-instance-attributes
     ``parent``, ``children`` and ``blocked_by`` name cards of the tracker only;
     ``outside`` holds every link to an issue anywhere else (R-BAL188).
     ``closed_by_tool``: the card is closed, and the last time anyone closed or
-    reopened it, it was the plan tool -- so its state is the tool's display of
+    reopened it, it was quill -- so its state is the tool's display of
     git, not a person's decision.  ``touched_by_hand``: the last close or reopen
     was a person's.
 
@@ -351,7 +351,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
     """The tracker as the App sees it: its cards and claims, and its :class:`Board`.
 
     Pylint: ``too-many-public-methods`` (23/20) -- ``connect``, then **one
-    method per read or write the plan tool makes of the tracker** (most one
+    method per read or write quill makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
     GitHub), the board's own writes already apart in :class:`Board`.  Three
     of them, the filing mark's read and its removal (R-BAL202) and a leaf's
@@ -372,14 +372,14 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     @classmethod
     def connect(cls) -> Tracker:
-        """The tracker, through a fresh installation token of the plan tool's App."""
+        """The tracker, through a fresh installation token of quill's App."""
         client_id, key = app_credentials()
         jwt = app_jwt(client_id, key, int(time.time()))
         login = GitHub(jwt).rest("GET", "/app")["slug"]
         github = GitHub(installation_token(app_installation(ORG, jwt)["id"], jwt))
         board_id = find_board(github)
         if board_id is None:
-            raise TrackerError("the tracker has no board; run python -m tools.plan.setup_tracker")
+            raise TrackerError("the tracker has no board; run python -m tools.quill.setup_tracker")
         return cls(github, Board(github, board_id), login)
 
     # -- reads ---------------------------------------------------------------
@@ -402,7 +402,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def marked(self) -> dict[int, Card]:
         """Every card carrying the :data:`setup_tracker.FILING` mark, open or closed, by
-        number: each a filing the plan tool began; whether it is still unfinished is
+        number: each a filing quill began; whether it is still unfinished is
         ``_state.filing_unfinished``'s answer (one dropped while marked is not)."""
         return self._listing(_MARKED_CARDS)
 
@@ -500,7 +500,7 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def create(self, kind: str, title: str, body: str, labels: Iterable[str]) -> int:
         """File a card, marked :data:`setup_tracker.FILING` beside ``labels`` in this, its
-        first write (R-BAL202): every card the plan tool files is born marked, and its
+        first write (R-BAL202): every card quill files is born marked, and its
         filing's last write, :meth:`unmark`, removes the mark.  Its number, once GitHub's
         answer shows the type and labels sent.
 

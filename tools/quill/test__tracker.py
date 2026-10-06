@@ -20,16 +20,16 @@ import copy
 
 import pytest
 
-from tools.plan._fake import Sent
-from tools.plan._github import GitHub, GitHubError
-from tools.plan._recorded import (
+from tools.quill._fake import Sent
+from tools.quill._github import GitHub, GitHubError
+from tools.quill._recorded import (
     REDACTED,
     SCRATCH,
     Replay,
     recording,
 )
-from tools.plan._state import filing_unfinished
-from tools.plan._tracker import (
+from tools.quill._state import filing_unfinished
+from tools.quill._tracker import (
     BOARD_WAIT_SECONDS,
     TRACKER,
     Board,
@@ -40,7 +40,7 @@ from tools.plan._tracker import (
     card_from,
     claim_message,
 )
-from tools.plan.setup_tracker import FILING, find_board
+from tools.quill.setup_tracker import FILING, find_board
 
 APP = "shekel-plan-tool"
 #: The code repository's commits the recording asks about: PR #506's last commit (merged
@@ -239,7 +239,7 @@ def _replay_board(tracker, order, parent):
 
 
 def _replay_marked_step(tracker):
-    """A top-level step S filed as ``plan file`` files one -- created marked, put on the
+    """A top-level step S filed as ``quill file`` files one -- created marked, put on the
     board, unmarked -- with its mark read by number and in the listing of marked cards
     just after the create and just after the unmark (cp5 LOW 3: each showed the write at
     that first read; one sample, the delay not timed), and unmarked again: GitHub answers
@@ -287,7 +287,7 @@ def _replay_unfinished_leaf_and_ruling(tracker, split, split_item):
 
 
 def _replay_drop_of_an_unfinished_leaf(tracker, split, leaf, ruling):
-    """``plan drop`` of L, its filing unfinished and S's only leaf (R-BAL205): S back on the
+    """``quill drop`` of L, its filing unfinished and S's only leaf (R-BAL205): S back on the
     board just after L, L unlinked, commented and closed as not planned.  Read just after the
     unlink, by number and in the listing of open cards ``sync`` reads, S no longer lists L
     (round 4 LOW 6: each showed it at that first read; one sample, the delay not timed);

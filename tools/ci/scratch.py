@@ -7,8 +7,8 @@ bound to (a pre-commit hook binds it to the repository being committed:
 
 :func:`bound_sentinel` stands up the other half of that claim's control: a
 repository the calling process IS bound to, which no call may touch.  Moved
-here from ``tools/plan`` by step X-cx's L4, so the card-trailer rules and the
-tracker tool test against one builder.
+here from what are now quill's tests (``tools/quill``) by step X-cx's L4, so
+the card-trailer rules and the tracker tool test against one builder.
 """
 from __future__ import annotations
 

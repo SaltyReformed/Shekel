@@ -50,7 +50,7 @@ def test_every_module_of_the_layer_is_graded():
     assert PACKAGE.parent / "__init__.py" in MODULES
 
 
-@pytest.mark.parametrize("module", [".", ".trailers", "..", "..plan"])
+@pytest.mark.parametrize("module", [".", ".trailers", "..", "..quill"])
 def test_a_relative_import_is_refused(module):
     """``from . import trailers`` and ``from .. import plan_gate`` alike: no module of the layer
     imports relatively, so there is no allowance for ``..`` to slip through beside one."""
@@ -59,7 +59,7 @@ def test_a_relative_import_is_refused(module):
 
 @pytest.mark.parametrize("path", MODULES, ids=lambda path: str(path.relative_to(arcs.REPO)))
 def test_a_module_imports_the_standard_library_and_this_package_only(path):
-    """Nothing from ``tools.plan``, ``tools.plan_gate`` or a third-party package."""
+    """Nothing from ``tools.quill``, ``tools.plan_gate`` or a third-party package."""
     outside = [f"{path.name}:{line}: {module}" for line, module in _imports(path)
                if not _allowed(module)]
     assert not outside, f"tools/ci is the bottom layer and stdlib-only: {outside}"

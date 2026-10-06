@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from tools.plan._state import (
+from tools.quill._state import (
     Placement,
     Unsplit,
     drop_unlinks,
@@ -32,8 +32,8 @@ from tools.plan._state import (
     withdrawn,
     workable,
 )
-from tools.plan._tracker import Card, Child, Claim, OutsideLink
-from tools.plan.setup_tracker import FILING
+from tools.quill._tracker import Card, Child, Claim, OutsideLink
+from tools.quill.setup_tracker import FILING
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
@@ -77,7 +77,7 @@ def test_shipped_in_git_is_resolved_whatever_the_card_shows():
     assert not resolved(5, _cards(_card(5)), shipped=set())
 
 
-def test_a_card_a_person_closed_or_plan_dropped_is_resolved():
+def test_a_card_a_person_closed_or_quill_dropped_is_resolved():
     """Dropped is a tracker fact: closed by hand (any reason) or closed not-planned by the tool."""
     assert resolved(5, _cards(_closed(5, by_tool=False, reason="COMPLETED")), shipped=set())
     assert resolved(5, _cards(_closed(5, by_tool=True, reason="NOT_PLANNED")), shipped=set())
@@ -505,7 +505,7 @@ def test_filing_order_is_the_cards_numbers_not_the_sub_issue_lists():
 def test_a_marked_card_is_an_unfinished_filing_while_open_or_a_ruling_closed_as_completed():
     """R-BAL202, R-BAL206: a ruling's filing closes it as completed before the mark comes
     off, and a person's close as completed withdraws nothing either; a ruling closed as not
-    planned, by ``plan drop`` or a person, was withdrawn (review rbal202a M2), and any other
+    planned, by ``quill drop`` or a person, was withdrawn (review rbal202a M2), and any other
     card closed while marked was dropped: what either's filing left undone is moot."""
     marked = ("balance", FILING)
     assert filing_unfinished(_card(1, labels=marked))
@@ -523,7 +523,7 @@ def test_a_marked_card_is_an_unfinished_filing_while_open_or_a_ruling_closed_as_
 
 def test_a_card_whose_filing_is_unfinished_is_never_offered_and_is_reported():
     """R-BAL202: never handed out, never listed as merely off the board, and named by next
-    and sync -- with ``plan drop`` offered while it is open, and ``plan show`` named for a
+    and sync -- with ``quill drop`` offered while it is open, and ``quill show`` named for a
     filing whose command is lost."""
     cards = _cards(_card(1, labels=("balance", FILING)), _card(2, labels=("balance", FILING),
                                                                board_item=None),
@@ -533,8 +533,8 @@ def test_a_card_whose_filing_is_unfinished_is_never_offered_and_is_reported():
     assert answer.card is None and not answer.unplaced
     lines = unfinished_reports(cards, set())
     assert [line.split("'")[0] for line in lines] == ["plan#1", "plan#2", "plan#3"]
-    assert ", or `plan drop` it; with that command lost, `plan show plan#1` says how" in lines[0]
-    assert "plan drop" not in lines[2] and "`plan show plan#3`" in lines[2]
+    assert ", or `quill drop` it; with that command lost, `quill show plan#1` says how" in lines[0]
+    assert "quill drop" not in lines[2] and "`quill show plan#3`" in lines[2]
     assert ", or, to withdraw it, reopen it and close it as not planned on the web;" in lines[2]
     assert sync_plan(cards, set(), {}, {}).reports == lines
 
@@ -556,9 +556,9 @@ def test_only_a_marked_leaf_is_told_its_drop_unlinks_it_and_an_open_ruling_may_b
     assert "(which unlinks it from plan#1 first: it was never part of that split, R-BAL205)" in (
         lines[0])
     assert not [line for line in lines[1:] if "unlinks" in line]
-    assert ", or `plan drop` it;" in lines[2]
+    assert ", or `quill drop` it;" in lines[2]
     shipped = unfinished_reports(cards, {2})
-    assert "plan drop" not in shipped[0] and "unlinks" not in shipped[0]
+    assert "quill drop" not in shipped[0] and "unlinks" not in shipped[0]
 
 
 def test_a_leaf_goes_just_above_the_topmost_of_several_leaves_filed_after_it():
@@ -606,7 +606,7 @@ def _split(*leaf_cards, **changes):
 def test_a_leaf_closed_while_still_marked_and_unshipped_is_no_leaf():
     """It was never part of the split: plan#1 is a plain step again -- work, not dropped,
     offered when on the board -- whoever closed the leaf and however (a person, as
-    completed or not planned; `plan drop`, whose unlink a read may lag)."""
+    completed or not planned; `quill drop`, whose unlink a read may lag)."""
     for by_tool, reason in ((False, "COMPLETED"), (False, "NOT_PLANNED"), (True, "NOT_PLANNED")):
         cards = _split(_closed(2, by_tool=by_tool, reason=reason, parent=1, labels=MARKED))
         assert not leaves(cards[1], cards, set())

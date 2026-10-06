@@ -1,10 +1,10 @@
-"""What every ``plan`` command shares: its refusal, its reads of the tracker and of git, and
+"""What every ``quill`` command shares: its refusal, its reads of the tracker and of git, and
 how it names a card.
 
-Split out of ``plan.py`` (X-cx L2, leaf C), which leaf C's change would otherwise take
-past the 1,000 lines ``too-many-lines`` allows, so that ``_filing`` (the ``file``
-command) and ``plan`` (every other command, and the command line) read these from one
-place.
+Split out of the command module at X-cx L2's leaf C, whose change would otherwise take
+that module past the 1,000 lines ``too-many-lines`` allows (it has been ``quill.py``
+since the tool's rename), so that ``_filing`` (the ``file`` command) and ``quill``
+(every other command, and the command line) read these from one place.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from pathlib import Path
 
 from tools.ci import trailers
 from tools.ci.arcs import ARCS
-from tools.plan import _git
-from tools.plan._state import filing_unfinished, missing
-from tools.plan._tracker import Card, Tracker, TrackerError
+from tools.quill import _git
+from tools.quill._state import filing_unfinished, missing
+from tools.quill._tracker import Card, Tracker, TrackerError
 
 
 #: The kinds of card the board holds, in the developer's order (R-BAL177).

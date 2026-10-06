@@ -8,7 +8,7 @@
 #                  ends to commit-trailers.
 #   commit-trailers  refuses a commit that breaks the card-trailer rules
 #                  (tools/ci/commit_trailers.py), in EVERY scope (step 4d).
-#   plan-gate      the plan gate, the plan tool and tools/ci, in EVERY scope
+#   plan-gate      the plan gate, quill and tools/ci, in EVERY scope
 #                  (step 4b).
 #   tax-law        refuses from December 1 until next year's tax law is in
 #                  the app, in EVERY scope (step 4c).
@@ -265,8 +265,8 @@ jobs:
       # pinned in requirements-dev.txt) is what ``tools/ci/test_ci_scope.py``
       # reads THIS file with, which is why the step follows the install.
       #
-      # The plan TOOL (tools/plan/: the private tracker's setup, and from
-      # step X-cx's leaf L2 the ``plan`` command; ruling balance:R-BAL170) is
+      # Quill (tools/quill/: the private tracker's setup, and from
+      # step X-cx's leaf L2 the ``quill`` command; ruling balance:R-BAL170) is
       # graded in the same step, at the same floor, in every scope.  Its tests
       # never call GitHub and take under a second, and a test of the tool that
       # will READ the registries (the migration, L7) must not be skipped by a
@@ -280,8 +280,8 @@ jobs:
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/plan_gate -c /dev/null -q
-          pylint tools/plan/ --fail-under=10 --fail-on=E,F --output-format=colorized
-          pytest tools/plan -c /dev/null -q
+          pylint tools/quill/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/quill -c /dev/null -q
           pylint tools/ci/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/ci -c /dev/null -q
 

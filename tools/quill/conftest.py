@@ -1,10 +1,10 @@
-"""The fixture the ``plan`` command's tests share: a throwaway code repository."""
+"""The fixture the ``quill`` command's tests share: a throwaway code repository."""
 from __future__ import annotations
 
 import pytest
 
 from tools.ci.scratch import run as _run
-from tools.plan import _git
+from tools.quill import _git
 
 
 @pytest.fixture(name="code")

@@ -3,9 +3,9 @@
 Every call runs ``git -C <root>`` through :func:`run`, with the variables that
 bind git to some OTHER repository removed, so ``root`` alone decides which
 repository is read or written.  The card-trailer rules (:mod:`tools.ci.trailers`),
-the tracker tool's own git calls (``tools/plan/_git.py``) and the tests'
+the tracker tool's own git calls (``tools/quill/_git.py``) and the tests'
 throwaway repositories (:mod:`tools.ci.scratch`) all start git here.  Moved
-here from ``tools/plan/_git.py`` by step X-cx's L4.
+here from what is now ``tools/quill/_git.py`` by step X-cx's L4.
 """
 from __future__ import annotations
 

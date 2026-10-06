@@ -1,4 +1,4 @@
-"""An in-memory tracker for the ``plan`` command's tests, and the helpers they share.
+"""An in-memory tracker for the ``quill`` command's tests, and the helpers they share.
 
 ``_tracker`` is graded against RECORDED GitHub answers (``test__tracker.py``);
 the command's tests grade what each command decides to read and write, so they
@@ -24,10 +24,10 @@ import dataclasses
 import json
 
 from tools.ci.scratch import run as _run
-from tools.plan import plan
-from tools.plan._github import GitHubError
-from tools.plan._tracker import Card, Child, Claim, ClaimTaken, Edit
-from tools.plan.setup_tracker import FILING
+from tools.quill import quill
+from tools.quill._github import GitHubError
+from tools.quill._tracker import Card, Child, Claim, ClaimTaken, Edit
+from tools.quill.setup_tracker import FILING
 
 
 class FakeBoard:
@@ -101,7 +101,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
                   "touched_by_hand": False, "outside": (), **fields}
         self.cards_by_number[number] = Card(**values)
         self.bodies[number] = body
-        if on_board and values["is_open"] and kind in plan.ON_BOARD:
+        if on_board and values["is_open"] and kind in quill.ON_BOARD:
             self.board.items.append(number)
         return self.cards_by_number[number]
 
@@ -332,7 +332,7 @@ def ship(root, *trailers):
 
 
 def leaf_filing(tmp_path, title, parent="plan#1"):
-    """``plan file step`` filing a leaf named ``title`` under ``parent``, its spec written to
+    """``quill file step`` filing a leaf named ``title`` under ``parent``, its spec written to
     a file."""
     spec = tmp_path / f"{title}.md"
     spec.write_text(f"Build {title}.")
@@ -341,7 +341,7 @@ def leaf_filing(tmp_path, title, parent="plan#1"):
 
 
 def ruling_filing(tmp_path, owner):
-    """``plan file ruling`` filing the ruling "Home" under ``owner``, its question and answer
+    """``quill file ruling`` filing the ruling "Home" under ``owner``, its question and answer
     written to files."""
     question, answer = tmp_path / "q", tmp_path / "a"
     question.write_text("Where?")
@@ -352,4 +352,4 @@ def ruling_filing(tmp_path, owner):
 
 def run(tracker, root, *argv):
     """Run one command against ``tracker`` and ``root``; its exit status."""
-    return plan.main(list(argv), connect=lambda: tracker, root=root)
+    return quill.main(list(argv), connect=lambda: tracker, root=root)

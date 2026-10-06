@@ -1,11 +1,11 @@
 """The one check a card passes before it is written, whoever writes it.
 
-The plan tool runs it before it sends a card (``plan file``) and refuses to
+Quill runs it before it sends a card (``quill file``) and refuses to
 send what fails.  The tracker's Action (step X-cx's leaf L6) runs the SAME
 function on a card the developer files or edits by hand, and comments on what
 fails without reverting it -- so the two hold a card to one set of rules.  What
 each passes in can differ, never the rules: whether the owner is still work
-(:attr:`Owner.live`), which the plan tool reads from git and the cards
+(:attr:`Owner.live`), which quill reads from git and the cards
 (``_state.is_live``) and the Action from whatever it reads; and ``changed``, the
 parts a change writes, which a new card's filing and a hand edit name
 differently.
@@ -46,7 +46,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 
 from tools.ci.arcs import ARCS
-from tools.plan.setup_tracker import ISSUE_TYPES
+from tools.quill.setup_tracker import ISSUE_TYPES
 
 #: A NEW finding's text: one sentence of at most this many characters (R-BAL136).
 FINDING_CAP = 400
@@ -82,7 +82,7 @@ _BREAK = re.compile(r"(?<![A-Za-z]\.[A-Za-z])" + _END + r"\s+[A-Z`*_\"'(\[]")
 @dataclass(frozen=True)
 class Owner:
     """A card's parent, as the check reads it: its issue type (None when it has
-    none), and the caller's answer to whether it is still work -- the plan tool
+    none), and the caller's answer to whether it is still work -- quill
     asks git and the card, the Action the card."""
 
     kind: str | None

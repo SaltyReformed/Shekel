@@ -1,7 +1,8 @@
 """What git says shipped, read from throwaway repositories under pytest's tmp_path; no network.
 
-Moved here with :mod:`tools.ci.trailers` from ``tools/plan/test__git.py`` by
-step X-cx's L4; the tracker tool's own git calls are tested there still.
+Moved here with :mod:`tools.ci.trailers` from what is now
+``tools/quill/test__git.py`` by step X-cx's L4; the tracker tool's own git calls
+are tested there still.
 """
 from __future__ import annotations
 
@@ -185,7 +186,7 @@ def test_a_bound_environment_reaches_no_repository_but_the_one_named(bound, tmp_
     file, so an index a leaked ``GIT_INDEX_FILE`` rewrote with this test's empty tree
     differs from it (review cp3 M-1: with an empty index, the rewrite was byte-identical
     and passed).  The tracker tool's own calls are held the same way in
-    ``tools/plan/test__git.py``."""
+    ``tools/quill/test__git.py``."""
     sentinel, before = bound
     assert b"work.txt" in before["index"] and b"work.txt" in before["lane/index"], (
         "control: each index the sentinel holds is not empty")

@@ -2,7 +2,7 @@
 
 **Whether a card shipped is git's answer, never the card's open or closed
 state** (ruling ``balance:R-BAL170``; the card's state is display, which the
-tracker tool's ``plan sync`` writes from this module's answer).  A card is
+tracker tool's ``quill sync`` writes from this module's answer).  A card is
 shipped when a commit on ``dev`` carries the trailer ``Ships: plan#N`` and no
 LATER commit carries ``Reopens: plan#N``.
 
@@ -26,8 +26,8 @@ shipped before the cut would read as unshipped.
 
 The rules live here, below both of their readers: the tracker tool asks what
 shipped, and CI's ``commit_trailers`` check refuses a commit that breaks them.
-Moved here from ``tools/plan/_git.py`` by step X-cx's L4.  Nothing here writes
-the repository.
+Moved here from what is now ``tools/quill/_git.py`` by step X-cx's L4.  Nothing
+here writes the repository.
 """
 from __future__ import annotations
 

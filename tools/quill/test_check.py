@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.plan.check import (
+from tools.quill.check import (
     BODY,
     FINDING_CAP,
     OWNER,

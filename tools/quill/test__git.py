@@ -15,7 +15,7 @@ from tools.ci.gitcmd import GitError
 from tools.ci.scratch import commit as _commit
 from tools.ci.scratch import run as _run
 from tools.ci.trailers import history
-from tools.plan import _git
+from tools.quill import _git
 
 
 @pytest.fixture(name="repo")
