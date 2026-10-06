@@ -240,9 +240,19 @@ class BaseConfig:
     # bounds the worst case to tens of megabytes.  Nginx caps the body at 5 MB
     # independently (``deploy/nginx-*``), so this is the binding limit.
     #
-    # It bounds EVERY request body, not only uploads.  No other route in the
-    # app posts anything near it (the largest form is the recurrence editor at
-    # a few kilobytes).
+    # **It is the ONE bound on every request body, form or upload** (ruling
+    # R-BAL218, developer 2026-10-06).  Werkzeug weighs a body against it
+    # before anything parses it, whatever its type.  Since Werkzeug 3.1.9 it
+    # is the ONLY bound on an ordinary (urlencoded) form: Flask's
+    # ``MAX_FORM_MEMORY_SIZE`` (500,000 bytes, its default, never set here)
+    # was the tighter bound on such a body through 3.1.8, and now weighs only
+    # a multipart TEXT part; the one multipart form here (the upload) carries
+    # two short ones.  The arguments this app makes about a crafted body rest
+    # on this number -- ``StatementMatchSchema``'s note in
+    # ``app/schemas/validation/statements.py`` prices a crafted Reconcile
+    # pass against it -- and ``tests/test_config.py``'s
+    # ``TestTheUploadCeiling`` pins the value and grades it on a form body,
+    # at the ceiling and one byte past it.
     MAX_CONTENT_LENGTH = 512 * 1024
 
     # Budget defaults
