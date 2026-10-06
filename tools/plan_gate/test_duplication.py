@@ -18,8 +18,8 @@ import re
 
 import pytest
 
-import _duplication as duplication
-import _registry as registry
+from tools.plan_gate import _duplication as duplication
+from tools.plan_gate import _registry as registry
 
 #: A verbatim question's worth of words, past the 400 characters a WRAPPED
 #: quote is held to, as ruling rows have quoted since ``balance:R-BAL136``.

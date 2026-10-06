@@ -20,16 +20,16 @@ import copy
 
 import pytest
 
-from _fake import Sent
-from _github import GitHub, GitHubError
-from _recorded import (
+from tools.plan._fake import Sent
+from tools.plan._github import GitHub, GitHubError
+from tools.plan._recorded import (
     REDACTED,
     SCRATCH,
     Replay,
     recording,
 )
-from _state import filing_unfinished
-from _tracker import (
+from tools.plan._state import filing_unfinished
+from tools.plan._tracker import (
     BOARD_WAIT_SECONDS,
     TRACKER,
     Board,
@@ -40,7 +40,7 @@ from _tracker import (
     card_from,
     claim_message,
 )
-from setup_tracker import FILING, find_board
+from tools.plan.setup_tracker import FILING, find_board
 
 APP = "shekel-plan-tool"
 #: The code repository's commits the recording asks about: PR #506's last commit (merged

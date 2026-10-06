@@ -10,11 +10,11 @@ Bootstrap 5
 (`.github/workflows/ci.yml`: pylint + the full pytest suite) runs on every pull request and on
 pushes to `main`, and a branch protection rule on `main` blocks the merge until that `lint-and-test`
 check is green. (A pull request touching ONLY the planning documents and the plan gate runs the plan
-gate in place of the suite -- `tools/plan_gate/ci_scope.py` decides, and fails closed.) CI is
-therefore an enforced pre-merge gate -- but it is only as good as the tests, and no human will catch
-a bad assertion or a missing case for you. The developer is a solo operator. If you miss a bug, skip
-an edge case, or take a shortcut, that defect ships to production. In a budgeting app, that means
-real money is mismanaged. Treat every line of code as if someone's rent payment depends on it being
+gate in place of the suite -- `tools/ci/ci_scope.py` decides, and fails closed.) CI is therefore an
+enforced pre-merge gate -- but it is only as good as the tests, and no human will catch a bad
+assertion or a missing case for you. The developer is a solo operator. If you miss a bug, skip an
+edge case, or take a shortcut, that defect ships to production. In a budgeting app, that means real
+money is mismanaged. Treat every line of code as if someone's rent payment depends on it being
 correct.
 
 ## Rules
@@ -150,7 +150,7 @@ root; never silence it with a bare disable.
 - **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one
   when a rule is an AST pattern rather than hoping a reviewer remembers it.
 - **CI + pre-commit** run `pylint app/` (checkers as hard `--fail-on`) and the full suite per PR (a
-  registry-only PR runs the plan gate in place of the suite; `tools/plan_gate/ci_scope.py` holds the
+  registry-only PR runs the plan gate in place of the suite; `tools/ci/ci_scope.py` holds the
   boundary and its census of test modules that read there); `useless-suppression` is on, so a
   disable that suppresses nothing is itself a finding.
 - **Plan gate (`tools/plan_gate/`)** grades the PLANNING documents against

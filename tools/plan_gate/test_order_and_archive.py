@@ -14,11 +14,12 @@ import re
 
 import pytest
 
-import _archive as archive
-import _order as order
-import _registry as registry
-from _classes import decomposition_leaf_keys
-from _staging import a_prefix_trap, row_of, stage_a_live_container, with_cell
+from tools.plan_gate import _archive as archive
+from tools.plan_gate import _order as order
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._classes import decomposition_leaf_keys
+from tools.plan_gate._staging import a_prefix_trap, row_of, stage_a_live_container, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -465,7 +466,7 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
         directory walk rooted at the balance arc's archive would miss, and the
         document that started this rule was reachable from none of them.
         """
-        parents = {str(p.relative_to(registry.REPO).parent)
+        parents = {str(p.relative_to(arcs.REPO).parent)
                    for p in archive.archived_docs()}
         for tree in ("docs/audits/balance_architecture/archive",
                      "docs/historical",
@@ -481,7 +482,7 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
         (fake / "implementation_plan_something.md").write_text(
             "# Implementation Plan: Something\n\nThis is the plan of record.\n",
         )
-        monkeypatch.setattr(registry, "REPO", tmp_path)
+        monkeypatch.setattr(arcs, "REPO", tmp_path)
         problems = archive.archive_banner_violations()
         assert len(problems) == 1, problems
         assert "implementation_plan_something.md" in problems[0]
@@ -493,7 +494,7 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
         live = tmp_path / "docs" / "plans"
         live.mkdir(parents=True)
         (live / "implementation_plan_something.md").write_text("# Live\n")
-        monkeypatch.setattr(registry, "REPO", tmp_path)
+        monkeypatch.setattr(arcs, "REPO", tmp_path)
         assert not archive.archive_banner_violations()
 
 

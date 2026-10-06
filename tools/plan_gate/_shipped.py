@@ -70,7 +70,8 @@ from __future__ import annotations
 
 import subprocess
 
-import _registry as registry
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
 
 #: Cited by every message below, so a failure sends the reader to the rule.
 _RULE = "conventions.md rule 7"
@@ -107,7 +108,7 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
     """Run one git command at the repository root and return the finished process."""
     return subprocess.run(
         ("git", *args),
-        cwd=registry.REPO,
+        cwd=arcs.REPO,
         capture_output=True,
         text=True,
         check=False,

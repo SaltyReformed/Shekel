@@ -49,8 +49,9 @@ import sys
 import tokenize
 from pathlib import Path
 
-import _registry as registry
-import _rulings as rulings
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _rulings as rulings
 
 #: Cited by every message below, so a failure sends the reader to the rule.
 _RULE = "conventions.md rule 6"
@@ -98,9 +99,9 @@ def census_paths(glob: str) -> list[Path] | None:
     # resolve check is what keeps that TRUE rather than merely true now.  A
     # census that could follow a link out of the tree would read whatever the
     # link pointed at and report a number about it.
-    root = registry.REPO.resolve()
+    root = arcs.REPO.resolve()
     return sorted(
-        p for p in registry.REPO.glob(glob)
+        p for p in arcs.REPO.glob(glob)
         if p.is_file() and p.resolve().is_relative_to(root)
     )
 

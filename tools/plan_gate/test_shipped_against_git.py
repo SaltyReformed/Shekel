@@ -21,8 +21,9 @@ from pathlib import Path
 
 import pytest
 
-import _registry as registry
-import _shipped
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _shipped
 
 #: A git identity for the commits these controls write, scoped per command so
 #: nothing about the developer's configuration is read or written -- and so a
@@ -38,11 +39,11 @@ def _dangling_commit(message: str, cwd: Path | None = None) -> str:
     resolves-at-all clause: a fabricated hash would fire the first and leave
     the second ungraded.  ``commit-tree`` writes exactly that.  The default
     root is read at CALL time, so a control that has re-pointed
-    ``registry.REPO`` gets the repository it re-pointed to.
+    ``arcs.REPO`` gets the repository it re-pointed to.
     """
     return subprocess.run(
         ("git", *_IDENT, "commit-tree", "HEAD^{tree}", "-m", message),
-        cwd=cwd or registry.REPO, capture_output=True, text=True, check=True,
+        cwd=cwd or arcs.REPO, capture_output=True, text=True, check=True,
     ).stdout.strip()
 
 
@@ -136,7 +137,7 @@ def _build_history(monkeypatch, root: Path, *messages: str) -> list[str]:
     for message in messages:
         _git(root, "commit", "-q", "--allow-empty", "-m", message)
         shas.append(_git(root, "rev-parse", "HEAD"))
-    monkeypatch.setattr(registry, "REPO", root)
+    monkeypatch.setattr(arcs, "REPO", root)
     return shas
 
 
@@ -376,7 +377,7 @@ class TestAMergeBeingCommittedIsGradedAgainstBothParents:
         """The scratch repository, with the module's git root pointed at it."""
         leaf = _open_row()
         other = _build_merge_in_waiting(monkeypatch, tmp_path, f"Ships: {leaf.key}")
-        monkeypatch.setattr(registry, "REPO", tmp_path)
+        monkeypatch.setattr(arcs, "REPO", tmp_path)
         return {"root": str(tmp_path), "other": other, "claimed": leaf.key}
 
     def test_outside_a_merge_only_head_is_asked(self, scratch):

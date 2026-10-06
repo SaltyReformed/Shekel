@@ -42,8 +42,8 @@ holds (:data:`ALLOWED_WORKFLOWS`).
 
 Usage, from the repository root::
 
-    python tools/plan/setup_tracker.py            # check only
-    python tools/plan/setup_tracker.py --apply    # make and correct
+    python -m tools.plan.setup_tracker            # check only
+    python -m tools.plan.setup_tracker --apply    # make and correct
 """
 from __future__ import annotations
 
@@ -53,7 +53,8 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from _github import (
+from tools.ci.arcs import ARCS
+from tools.plan._github import (
     APP_DIR,
     GitHub,
     GitHubError,
@@ -85,10 +86,9 @@ REPOSITORY = {
     "has_wiki": False,
 }
 
-#: The arcs, by the slug the registries' ``arc`` column uses; each is one label.
-#: ``tools/plan_gate/_registry.py``'s ``ARC_DOCS`` spells the same set until the
-#: plan gate's arms are deleted (step X-cx's L4 and L8 cards own the merge).
-ARCS = ("balance", "recurrence", "pay_calendar", "credit_card", "bank_import", "salary")
+#: Each arc is one label.  The arcs are :data:`tools.ci.arcs.ARCS`, their one
+#: home beside each arc's planning document (step X-cx's L4 deleted this
+#: module's second list); a label's colour is the one at its arc's position.
 _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 
 #: The mark every card the plan tool files carries from the call that creates it

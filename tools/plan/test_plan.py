@@ -8,12 +8,13 @@ from __future__ import annotations
 import pytest
 import requests
 
-import _git
-import plan
-from _fake import FakeTracker, run, ship
-from _github import GitHubError
-from _scratch import run as _run
-from _tracker import Child, Claim, Edit, OutsideLink
+from tools.ci.gitcmd import GitError
+from tools.ci.scratch import run as _run
+from tools.plan import _git
+from tools.plan import plan
+from tools.plan._fake import FakeTracker, run, ship
+from tools.plan._github import GitHubError
+from tools.plan._tracker import Child, Claim, Edit, OutsideLink
 
 
 # -- next ----------------------------------------------------------------------------------
@@ -277,7 +278,7 @@ def test_a_github_failure_exits_2(code, capsys, monkeypatch):
     tracker = FakeTracker()
 
     def broken(_numbers):
-        raise _git.GitError("boom")
+        raise GitError("boom")
 
     monkeypatch.setattr(tracker, "cards", broken)
     assert run(tracker, code, "drop", "plan#1", "--why", "x") == 2

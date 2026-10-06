@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from _fake import FailOnce, FakeTracker, run, ship
-from _tracker import Child
-from setup_tracker import FILING
+from tools.plan._fake import FailOnce, FakeTracker, run, ship
+from tools.plan._tracker import Child
+from tools.plan.setup_tracker import FILING
 
 
 

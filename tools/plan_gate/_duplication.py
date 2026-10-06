@@ -54,9 +54,10 @@ import re
 from itertools import groupby
 from pathlib import Path
 
-import _registry as registry
-from _tables import UNESCAPED_PIPE_RX, is_table_row
-from _plan_gate import _blank_fenced_regions
+from tools.ci import arcs
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._tables import UNESCAPED_PIPE_RX, is_table_row
+from tools.plan_gate._plan_gate import _blank_fenced_regions
 
 def live_docs() -> dict[str, Path]:
     """Return every live planning document, by the name the arms report it under.
@@ -188,7 +189,7 @@ def _name(path: Path) -> str:
         A repo-relative path, or the file name when it is not under the repo.
     """
     try:
-        return str(path.relative_to(registry.REPO))
+        return str(path.relative_to(arcs.REPO))
     except ValueError:
         return path.name
 

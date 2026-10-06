@@ -102,12 +102,13 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   `docs/audits/test_improvements/test-performance-research.md` for the full profile.
 - **CI: six shards, each through the wrapper at `-n logical`** (plan step `bank_import:X-gy`,
   rulings R-BI38..R-BI41, 2026-09-22). `.github/workflows/ci.yml` runs a `scope` job (the change-set
-  classifier), `plan-gate`, `lint` and six `test` shards in parallel, and a `lint-and-test` job --
-  the check branch protection requires -- that needs them all, runs `if: always()` and fails closed
-  through `tools/plan_gate/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each
-  shard exports `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a
-  stable hash of each test's `xdist_group` or node id, so the shards partition the collection by
-  construction and every group lands whole on one shard --
+  classifier), `commit-trailers` (step X-cx's L4, on the range `scope` hands over), `plan-gate`,
+  `tax-law`, `lint` and six `test` shards in parallel, and a `lint-and-test` job -- the check branch
+  protection requires -- that needs them all, runs `if: always()` and fails closed through
+  `tools/ci/ci_verdict.py` (GitHub counts a SKIPPED required check as passing). Each shard exports
+  `SHEKEL_TEST_SHARD=<index>/<total>` and keeps the share `tests/_shard.py` assigns: a stable hash
+  of each test's `xdist_group` or node id, so the shards partition the collection by construction
+  and every group lands whole on one shard --
   **a test that depends on another test's session must share an `xdist_group` with it.** The weekly
   `calendar-sweep.yml` runs the wrapper too, so every CI run has the one cluster configuration a
   local run has. **Why, measured on the runner in a matched A/B** (draft PR #447, runs 35803297014,

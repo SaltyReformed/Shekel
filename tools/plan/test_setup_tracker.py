@@ -6,11 +6,11 @@ import re
 
 import pytest
 
-import setup_tracker
-from _github import GitHubError
-from setup_tracker import (
+from tools.ci.arcs import ARCS
+from tools.plan import setup_tracker
+from tools.plan._github import GitHubError
+from tools.plan.setup_tracker import (
     APP_PERMISSIONS,
-    ARCS,
     ISSUE_TYPES,
     LABELS,
     REPOSITORY,
@@ -143,7 +143,7 @@ def test_every_declared_label_is_one_github_accepts():
 
 
 def test_every_arc_is_a_label():
-    """Every arc in ``ARCS`` is a label (``ARC_DOCS`` spells the set again until L4 or L8)."""
+    """Every arc in ``tools.ci.arcs.ARCS``, the arcs' one home, is a label."""
     assert set(ARCS) <= set(LABELS)
     assert len(ARCS) == len(set(ARCS))
 

@@ -45,7 +45,8 @@ import re
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from setup_tracker import ARCS, ISSUE_TYPES
+from tools.ci.arcs import ARCS
+from tools.plan.setup_tracker import ISSUE_TYPES
 
 #: A NEW finding's text: one sentence of at most this many characters (R-BAL136).
 FINDING_CAP = 400
