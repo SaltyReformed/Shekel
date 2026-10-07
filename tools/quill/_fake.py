@@ -28,7 +28,7 @@ from tools.ci.scratch import run as _run
 from tools.ci.trailers import DEV
 from tools.quill import quill
 from tools.quill._github import GitHubError
-from tools.quill._tracker import Card, Child, Claim, ClaimTaken, Edit
+from tools.quill._tracker import Card, Child, Claim, ClaimTaken, Comment, Edit
 from tools.quill.setup_tracker import FILING
 
 
@@ -73,22 +73,27 @@ class FakeBoard:
 
 
 
-class FakeTracker:  # pylint: disable=too-many-public-methods
-    """The tracker in memory: cards, bodies, claims, its board, and every write.
+class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
+    """The tracker in memory: cards, bodies, comments, claims, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (23/20) -- it stands in for
-    :class:`_tracker.Tracker`, so it has each of that class's 22 reads and
+    Pylint: ``too-many-public-methods`` (24/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 23 reads and
     writes (its own disable says why there are so many), and ``add``, which
-    puts a card in.
+    puts a card in.  ``too-many-instance-attributes`` (8/7) -- **one per kind
+    of fact it keeps**: seven a command reads back (cards, bodies, saved
+    versions, comments, claims, merged pull requests, the board) and the log
+    of writes the tests read; the comments ``show`` reads (X-cx leaf B) made
+    the eighth.
     """
 
-    app_login = "shekel-plan-tool"
+    app_login = "shekel-quill"
 
     def __init__(self):
         """An empty tracker."""
         self.cards_by_number: dict[int, Card] = {}
         self.bodies: dict[int, str] = {}
         self.versions: dict[int, list[Edit]] = {}
+        self.notes: dict[int, list[Comment]] = {}
         self.held: dict[int, Claim] = {}
         self.pulls: dict[str, set[str]] = {}
         self.writes: list[tuple] = []
@@ -150,6 +155,10 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
             Edit(None, "2026-10-01T00:00:00Z", self.app_login, self.bodies[number])]
         return self.bodies[number], list(versions)
 
+    def comments(self, number):
+        """A card's comments, oldest first."""
+        return list(self.notes.get(number, []))
+
     def find_titles(self, text):
         """Cards whose title holds ``text``."""
         return [(n, c.title) for n, c in self.cards_by_number.items() if text in c.title]
@@ -191,8 +200,10 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
         self.bodies[number] = body
 
     def comment(self, number, text):
-        """Comment on a card."""
+        """Comment on a card as the tool."""
         self.writes.append(("comment", number, text))
+        self.notes.setdefault(number, []).append(
+            Comment(self.app_login, "2026-10-06T00:00:00Z", text))
 
     def close(self, number, reason):
         """Close a card as the tool."""

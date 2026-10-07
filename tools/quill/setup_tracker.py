@@ -110,7 +110,7 @@ LABELS = {
     ),
     FILING: (
         "bfdadc",
-        "The plan tool has not finished filing this card, so it is not offered as work",
+        "Quill has not finished filing this card, so it is not offered as work",
     ),
 }
 

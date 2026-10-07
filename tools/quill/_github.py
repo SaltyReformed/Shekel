@@ -33,7 +33,7 @@ TIMEOUT_SECONDS = 30
 #: Where the App's two credentials live: OUTSIDE every repository, readable by
 #: the developer's account only.  ``app.json`` holds the App's client ID (an
 #: identifier, not a secret); ``app.pem`` is the private key GitHub issued.
-APP_DIR = Path.home() / ".config" / "shekel-plan"
+APP_DIR = Path.home() / ".config" / "shekel-quill"
 
 #: GitHub refuses a token whose ``iat`` is in its future, and this host's clock
 #: and GitHub's need not agree to the second; the App documentation's own

@@ -237,10 +237,11 @@ def _resolve_reference(tracker: Tracker, text: str) -> int:
 
 
 def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
-                shipped: dict) -> list[str]:
+                shipped: dict, titles: dict[int, str]) -> list[str]:
     """What the tracker and git say about a card, one fact a line.  ``cards`` holds every
     step linked below it (:func:`_steps_below`), so a step linked under it that is no leaf
-    of it says so (:func:`_state.never_split`), as ``next`` reads it."""
+    of it says so (:func:`_state.never_split`), as ``next`` reads it; ``titles`` holds the
+    title of each card it lists as a child or a blocker."""
     claim = tracker.claims().get(card.number)
     stale = set(never_split(card, cards, shipped))
     order = [n for n, _ in tracker.board.order()]
@@ -260,9 +261,9 @@ def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
     lines += [f"  child: plan#{child.number} ({child.kind}, "
               f"{'open' if child.is_open else 'closed'}"
               + ("; no leaf: closed while still being filed, so never part of the split, "
-                 "R-BAL205" if child.number in stale else "") + ")"
+                 "R-BAL205" if child.number in stale else "") + f") {titles[child.number]}"
               for child in card.children]
-    lines += [f"  blocked by: plan#{blocker}" for blocker in card.blocked_by]
+    lines += [f"  blocked by: plan#{blocker} {titles[blocker]}" for blocker in card.blocked_by]
     if filing_unfinished(card):
         lines.append("  filing: not finished (R-BAL202) -- never offered until its `quill file` "
                      "command runs again; with that command lost, make its missing writes on "
@@ -272,29 +273,59 @@ def _card_lines(card: Card, tracker: Tracker, cards: dict[int, Card],
     return lines
 
 
+def _linked(tracker: Tracker, numbers: set[int], card: Card) -> dict[int, Card]:
+    """The cards ``numbers``, each linked below ``card`` or blocking it, read by number;
+    :class:`TrackerError` when the read does not hold one the link names (a read that
+    lags the link, or a card deleted or moved since).  No numbers, no read."""
+    if not numbers:
+        return {}
+    found = tracker.cards(numbers)
+    if absent := sorted(numbers - set(found)):
+        raise TrackerError(f"plan#{absent[0]} is linked below plan#{card.number} or blocks it, "
+                           "but a read by its number does not hold it: run show again")
+    return found
+
+
 def _steps_below(tracker: Tracker, card: Card) -> dict[int, Card]:
     """``card`` and every step linked below it, read by number: all that the leaf rule
     reads (:func:`_state.leaves` reads a linked step's own leaves, never a blocker or a
-    parent), so ``show`` reads no more than it says."""
+    parent), so the leaf rule's read is no more than it needs; the titles ``show`` prints
+    are :func:`_titles`' read."""
     cards, wanted = {card.number: card}, set(card.step_children)
     while wanted:
-        found = tracker.cards(wanted)
-        if absent := sorted(wanted - set(found)):
-            raise TrackerError(f"plan#{absent[0]} is linked below plan#{card.number}, but a "
-                               "read by its number does not hold it: run show again")
+        found = _linked(tracker, wanted, card)
         cards.update(found)
         wanted = {number for step in found.values() for number in step.step_children} - set(cards)
     return cards
 
 
+def _titles(tracker: Tracker, card: Card, read: dict[int, Card]) -> dict[int, str]:
+    """The title of each card ``card`` lists as a child or a blocker: from ``read`` (the
+    steps :func:`_steps_below` read already), and the rest read by number in one more
+    read (:meth:`_tracker.Tracker.cards`: one request per 50 cards), made only when one is
+    left."""
+    numbers = {child.number for child in card.children} | set(card.blocked_by)
+    cards = {**read, **_linked(tracker, numbers - set(read), card)}
+    return {number: cards[number].title for number in numbers}
+
+
 def cmd_show(args, tracker: Tracker, root: Path) -> int:
-    """A card, then the code repository's history for it."""
+    """A card -- the title of each card linked below it or blocking it among its facts --
+    then its text, its comments oldest first, and the code repository's history for it."""
     number = _resolve_reference(tracker, args.card)
     card = _one(tracker, number)
     found, shipped, strays = _shipped(root)
-    print("\n".join(_card_lines(card, tracker, _steps_below(tracker, card), shipped)))
+    steps = _steps_below(tracker, card)
+    print("\n".join(_card_lines(card, tracker, steps, shipped, _titles(tracker, card, steps))))
     print()
     print(tracker.body(number))
+    print()
+    comments = tracker.comments(number)
+    if not comments:
+        print("no comments")
+    for comment in comments:
+        print(f"== comment, {comment.created_at} by {comment.author or '?'}")
+        print(comment.body.rstrip())
     print()
     history = [t for t in found.trailers if t.card == number]
     for trailer in history:
@@ -813,7 +844,8 @@ def parser() -> argparse.ArgumentParser:
     whose.add_argument("--branch", help="the branch the claim names; default: the one checked out")
     whose.add_argument("--unreadable", action="store_true",
                        help="release a claim whose branch cannot be read, and no other")
-    commands.add_parser("show", help="a card and its git history").add_argument("card")
+    commands.add_parser("show", help="a card, its comments and its git history").add_argument(
+        "card")
     _file_parser(commands)
     edit = commands.add_parser("edit", help="rewrite a card's title or text (never a ruling's)")
     edit.add_argument("card", type=card_number)

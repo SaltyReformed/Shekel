@@ -15,7 +15,8 @@ from tools.quill import _git
 from tools.quill import quill
 from tools.quill._fake import FakeTracker, run, ship
 from tools.quill._github import GitHubError
-from tools.quill._tracker import Child, Claim, Edit, OutsideLink
+from tools.quill._tracker import Child, Claim, Comment, Edit, OutsideLink
+from tools.quill.setup_tracker import FILING
 
 
 # -- next ----------------------------------------------------------------------------------
@@ -206,8 +207,8 @@ def _versions(tracker):
     """Card 1 filed 10-01 by the tool, edited 10-02 by the tool and 10-03 by the developer."""
     tracker.add(1, body="v3")
     tracker.versions[1] = [
-        Edit("E1", "2026-10-01T00:00:00Z", "shekel-plan-tool", "v1\n"),
-        Edit("E2", "2026-10-02T00:00:00Z", "shekel-plan-tool", "v2\n"),
+        Edit("E1", "2026-10-01T00:00:00Z", FakeTracker.app_login, "v1\n"),
+        Edit("E2", "2026-10-02T00:00:00Z", FakeTracker.app_login, "v2\n"),
         Edit("E3", "2026-10-03T00:00:00Z", "SaltyReformed", "v3"),
     ]
 
@@ -219,7 +220,7 @@ def test_spec_history_shows_each_change_in_the_window_against_the_version_before
     _versions(tracker)
     assert run(tracker, code, "spec-history", "plan#1", "--since", "2026-10-02") == 0
     out = capsys.readouterr().out
-    assert "edit E2, 2026-10-02T00:00:00Z by shekel-plan-tool" in out
+    assert f"edit E2, 2026-10-02T00:00:00Z by {FakeTracker.app_login}" in out
     assert "-v1" in out and "+v2" in out
     assert "edit E3" in out and "by SaltyReformed" in out
     assert "filed" not in out
@@ -271,6 +272,84 @@ def test_show_resolves_an_old_id_by_its_title_alias(code, capsys):
     assert "names 2 cards" in capsys.readouterr().err
     assert run(tracker, code, "show", "bank_import:R-GU") == 0
     assert capsys.readouterr().out.startswith("plan#2 [ruling, bank_import] [R-GU] two")
+
+
+def test_show_names_each_links_title_and_prints_the_comments_after_the_text(code, capsys,
+                                                                            monkeypatch):
+    """Card plan#27, leaf B: a child's and a blocker's title follow their numbers, read by
+    number once -- a step child the leaf rule read already is not read again -- and the
+    card's comments follow its text, oldest first, each under its time and author (``?``
+    when the account is gone), its trailing space trimmed and its leading space kept (an
+    indented first line, a code block, keeps its indent); a card with none says so, its
+    parent's aside."""
+    tracker = FakeTracker()
+    tracker.add(1, body="The spec.", blocked_by=(4,),
+                children=(Child(2, "step", True), Child(3, "finding", True)))
+    tracker.add(2, title="Leaf two", parent=1)
+    tracker.add(3, "finding", title="A finding", parent=1)
+    tracker.add(4, title="The blocker")
+    tracker.notes[1] = [Comment("SaltyReformed", "2026-10-05T00:00:00Z",
+                                "    indented first line\nFirst, by hand.\n\n"),
+                        Comment(None, "2026-10-06T00:00:00Z", "Second.")]
+    reads, read = [], tracker.cards
+    monkeypatch.setattr(tracker, "cards", lambda numbers: reads.append(set(numbers)) or read(
+        numbers))
+    assert run(tracker, code, "show", "plan#1") == 0
+    out = capsys.readouterr().out
+    assert ("\n  child: plan#2 (step, open) Leaf two\n  child: plan#3 (finding, open) A finding"
+            "\n  blocked by: plan#4 The blocker\n\nThe spec.\n\n"
+            "== comment, 2026-10-05T00:00:00Z by SaltyReformed\n    indented first line\n"
+            "First, by hand.\n"
+            "== comment, 2026-10-06T00:00:00Z by ?\nSecond.\n\nno commit on ") in out
+    assert reads == [{1}, {2}, {3, 4}]
+    reads.clear()
+    assert run(tracker, code, "show", "plan#2") == 0
+    out = capsys.readouterr().out
+    assert "\n\nno comments\n\nno commit on " in out and "by hand" not in out
+    assert reads == [{2}]
+
+
+def test_a_comment_quill_posts_is_shown_after_the_text(code, tmp_path, capsys):
+    """``quill comment`` then ``quill show``: the comment the tool wrote is read back under
+    the App's login."""
+    tracker = FakeTracker()
+    tracker.add(1, body="The spec.")
+    note = tmp_path / "note"
+    note.write_text("Noted.\n")
+    assert run(tracker, code, "comment", "plan#1", "--body-file", str(note)) == 0
+    assert run(tracker, code, "show", "plan#1") == 0
+    assert (f"\nThe spec.\n\n== comment, 2026-10-06T00:00:00Z by {FakeTracker.app_login}\n"
+            "Noted.\n\n") in capsys.readouterr().out
+
+
+def test_show_fails_on_a_grandchild_the_leaf_rule_reads_and_no_read_holds(code, capsys):
+    """Review M-1: a step closed while still being filed has its own linked steps read for
+    the leaf rule (:func:`_state.leaves`); one of those no read by its number holds fails
+    show, exit 2, naming it -- the refusal only the leaf rule's read makes, since the
+    titles are read for the card's own links alone."""
+    tracker = FakeTracker()
+    tracker.add(1, children=(Child(2, "step", False),))
+    tracker.add(2, parent=1, is_open=False, state_reason="NOT_PLANNED", on_board=False,
+                labels=("balance", FILING), children=(Child(3, "step", True),))
+    assert run(tracker, code, "show", "plan#1") == 2
+    assert ("failed: plan#3 is linked below plan#1 or blocks it, but a read by its number "
+            "does not hold it: run show again") in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("links", [{"children": (Child(2, "step", True),)},
+                                   {"children": (Child(2, "finding", True),)},
+                                   {"blocked_by": (2,)}])
+def test_show_fails_on_a_link_no_read_by_number_holds(code, capsys, links):
+    """A child or a blocker the card names that a read by its number does not hold (a read
+    lagging the link, or a card deleted since) fails show, exit 2, naming it.  The titles'
+    read refuses the finding child and the blocker; the step child is refused first by the
+    leaf rule's read, and with that refusal gone the titles' read refuses it in the same
+    words.  The leaf rule's read alone is graded by the grandchild case above."""
+    tracker = FakeTracker()
+    tracker.add(1, **links)
+    assert run(tracker, code, "show", "plan#1") == 2
+    assert ("failed: plan#2 is linked below plan#1 or blocks it, but a read by its number "
+            "does not hold it: run show again") in capsys.readouterr().err
 
 
 
@@ -364,7 +443,7 @@ def test_a_network_error_or_missing_credentials_exit_2_not_a_traceback(code, cap
 
     def no_credentials():
         raise FileNotFoundError(2, "No such file or directory",
-                                "/home/x/.config/shekel-plan/app.json")
+                                "/home/x/.config/shekel-quill/app.json")
 
     assert quill.main(["next"], connect=no_credentials, root=code) == 2
     assert "app.json" in capsys.readouterr().err
@@ -483,7 +562,7 @@ def test_spec_history_since_a_branch_starts_where_the_branch_grew_from(code, mon
          _run(code, "commit-tree", tree, "-p", first, "-m", "work continues"))
     tracker = FakeTracker()
     tracker.add(1, body="v3")
-    tracker.versions[1] = [Edit("E1", "2026-09-29T00:00:00Z", "shekel-plan-tool", "v1"),
+    tracker.versions[1] = [Edit("E1", "2026-09-29T00:00:00Z", FakeTracker.app_login, "v1"),
                            Edit("E2", "2026-09-30T18:00:00Z", "SaltyReformed", "v2"),
                            Edit("E3", "2026-10-02T00:00:00Z", "SaltyReformed", "v3")]
     assert run(tracker, code, "spec-history", "plan#1", "--since", "feat/work") == 0
