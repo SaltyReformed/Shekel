@@ -42,6 +42,8 @@ from tools.quill._tracker import (
 )
 from tools.quill.setup_tracker import FILING, find_board
 
+#: The App's login as these recordings hold it: they were kept 2026-10-04 and -05, before the
+#: App was renamed ``shekel-quill`` (R-BAL227), and a recording keeps GitHub's answer as given.
 APP = "shekel-plan-tool"
 #: The code repository's commits the recording asks about: PR #506's last commit (merged
 #: into dev, not yet on main) and PR #447's head (closed, never merged).

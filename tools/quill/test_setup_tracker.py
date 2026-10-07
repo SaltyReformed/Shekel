@@ -590,7 +590,7 @@ def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, re
 
     monkeypatch.setattr(setup_tracker, "app_installation", installed)
     answers = {
-        "jwt": {("GET", "/app"): {"slug": "shekel-plan-tool", "owner": {"login": owner}}},
+        "jwt": {("GET", "/app"): {"slug": "shekel-quill", "owner": {"login": owner}}},
         "installation": {("GET", "/installation/repositories"): {
             "repositories": [{"name": name} for name in (repos or ["shekel-plan"])]
         }},

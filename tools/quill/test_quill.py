@@ -206,8 +206,8 @@ def _versions(tracker):
     """Card 1 filed 10-01 by the tool, edited 10-02 by the tool and 10-03 by the developer."""
     tracker.add(1, body="v3")
     tracker.versions[1] = [
-        Edit("E1", "2026-10-01T00:00:00Z", "shekel-plan-tool", "v1\n"),
-        Edit("E2", "2026-10-02T00:00:00Z", "shekel-plan-tool", "v2\n"),
+        Edit("E1", "2026-10-01T00:00:00Z", FakeTracker.app_login, "v1\n"),
+        Edit("E2", "2026-10-02T00:00:00Z", FakeTracker.app_login, "v2\n"),
         Edit("E3", "2026-10-03T00:00:00Z", "SaltyReformed", "v3"),
     ]
 
@@ -219,7 +219,7 @@ def test_spec_history_shows_each_change_in_the_window_against_the_version_before
     _versions(tracker)
     assert run(tracker, code, "spec-history", "plan#1", "--since", "2026-10-02") == 0
     out = capsys.readouterr().out
-    assert "edit E2, 2026-10-02T00:00:00Z by shekel-plan-tool" in out
+    assert f"edit E2, 2026-10-02T00:00:00Z by {FakeTracker.app_login}" in out
     assert "-v1" in out and "+v2" in out
     assert "edit E3" in out and "by SaltyReformed" in out
     assert "filed" not in out
@@ -364,7 +364,7 @@ def test_a_network_error_or_missing_credentials_exit_2_not_a_traceback(code, cap
 
     def no_credentials():
         raise FileNotFoundError(2, "No such file or directory",
-                                "/home/x/.config/shekel-plan/app.json")
+                                "/home/x/.config/shekel-quill/app.json")
 
     assert quill.main(["next"], connect=no_credentials, root=code) == 2
     assert "app.json" in capsys.readouterr().err
@@ -483,7 +483,7 @@ def test_spec_history_since_a_branch_starts_where_the_branch_grew_from(code, mon
          _run(code, "commit-tree", tree, "-p", first, "-m", "work continues"))
     tracker = FakeTracker()
     tracker.add(1, body="v3")
-    tracker.versions[1] = [Edit("E1", "2026-09-29T00:00:00Z", "shekel-plan-tool", "v1"),
+    tracker.versions[1] = [Edit("E1", "2026-09-29T00:00:00Z", FakeTracker.app_login, "v1"),
                            Edit("E2", "2026-09-30T18:00:00Z", "SaltyReformed", "v2"),
                            Edit("E3", "2026-10-02T00:00:00Z", "SaltyReformed", "v3")]
     assert run(tracker, code, "spec-history", "plan#1", "--since", "feat/work") == 0

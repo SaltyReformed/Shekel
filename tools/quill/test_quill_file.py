@@ -679,7 +679,7 @@ def _rewritten(tracker, editor, body):
     """Card 2, a question, with one edit after its filing: ``body`` saved by ``editor``, and
     the question put back by the developer since."""
     tracker.add(2, "question", body="Ship it tonight?", title="Tonight")
-    tracker.versions[2] = [Edit("E2.0", "2026-10-01T00:00:00Z", "shekel-plan-tool",
+    tracker.versions[2] = [Edit("E2.0", "2026-10-01T00:00:00Z", FakeTracker.app_login,
                                 "Ship it tonight?"),
                            Edit("E2.1", "2026-10-02T00:00:00Z", editor, body),
                            Edit("E2.2", "2026-10-03T00:00:00Z", "SaltyReformed",
@@ -689,7 +689,7 @@ def _rewritten(tracker, editor, body):
 
 @pytest.mark.parametrize(("editor", "body"), [
     ("SaltyReformed", ruling_body("Ship it tonight?", "Yes.")),
-    ("shekel-plan-tool", "Ship it tonight, please?"),
+    (FakeTracker.app_login, "Ship it tonight, please?"),
 ])
 def test_only_an_edit_of_the_tools_in_a_rulings_shape_marks_an_earlier_conversion(
         code, tmp_path, editor, body):

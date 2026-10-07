@@ -82,7 +82,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods
     puts a card in.
     """
 
-    app_login = "shekel-plan-tool"
+    app_login = "shekel-quill"
 
     def __init__(self):
         """An empty tracker."""
