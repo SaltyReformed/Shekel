@@ -42,19 +42,21 @@ tracker it reads is private: real production figures are allowed there
   the tracker's and that aliases nothing as ``repository``.  Any other
   numbered object is no card.  An object with no number that carries a
   string of its own belongs to NO card -- except the answer itself, which is
-  the card the request's URL names, and the edit history of an object that
-  carries a card's number; any other object, and a string in a list, shares its
-  enclosing object's card, and nothing encloses the answer.
+  the card the request's URL names, and the edit history and the comments of
+  an object that carries a card's number (:data:`_OWN_CONTENT`); any other
+  object, and a string in a list, shares its enclosing object's card, and
+  nothing encloses the answer.
 
 What a recording can still hold: a string under a :data:`_KEPT` key, of any
 card (so a key enters that set only when no card's text can be stored under
 it); everything on the REQUEST side, kept as sent because the replay matches it
 -- read URLs, search terms, GraphQL variables, a claim commit's message -- so a
 recording session puts no private text in a request; a scratch card's own
-text, including any edit history from before it carried a scratch title (the
-recording sessions file their scratch cards as scratch); and, where the request
-reads the tracker's own cards, the text of an object carrying a number that is
-not a card's (a milestone numbered like a scratch card), read as that card's.
+text, including any edit history or comment from before it carried a scratch
+title (the recording sessions file their scratch cards as scratch); and, where
+the request reads the tracker's own cards, the text of an object carrying a
+number that is not a card's (a milestone numbered like a scratch card), read as
+that card's.
 """
 from __future__ import annotations
 
@@ -85,8 +87,9 @@ _KEPT = frozenset({
     "nameWithOwner", "node_id", "path", "ref", "repository_url", "sha", "state",
     "stateReason", "state_reason", "type",
 })
-#: The keys under which an object with no number is its enclosing card's own content.
-_OWN_CONTENT = frozenset({"userContentEdits"})
+#: The keys under which an object with no number is its enclosing card's own content: its
+#: saved versions and its comments.
+_OWN_CONTENT = frozenset({"userContentEdits", "comments"})
 #: GitHub's node-id prefix for a board (a ProjectV2).
 _BOARD_NODE = "PVT_"
 _REPO_URL = f"{API}/repos/{TRACKER}"
@@ -271,10 +274,10 @@ def _card_of(value: dict, slot: bool) -> int | None:
 @dataclass(frozen=True)
 class _Owner:
     """Where a part of an answer sits, and whose text it holds: ``card``; the card the
-    request names; whether the part is a card's own content (its edit history); whether
-    the request reads the tracker's own cards (:func:`_about_the_tracker`), and by GraphQL;
-    its ``path`` (its keys from the answer down); and whether it is the answer itself
-    (``top``), not an item of it."""
+    request names; whether the part is a card's own content (its edit history, its
+    comments); whether the request reads the tracker's own cards
+    (:func:`_about_the_tracker`), and by GraphQL; its ``path`` (its keys from the answer
+    down); and whether it is the answer itself (``top``), not an item of it."""
 
     card: int | None
     named: int | None

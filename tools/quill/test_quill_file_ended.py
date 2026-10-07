@@ -740,11 +740,11 @@ def test_show_names_a_linked_step_that_is_no_leaf(code, tmp_path, capsys):
     _split_by_an_unfinished_leaf(tracker, code, tmp_path)
     capsys.readouterr()
     assert run(tracker, code, "show", "plan#1") == 0
-    assert "\n  child: plan#2 (step, open)\n" in capsys.readouterr().out
+    assert "\n  child: plan#2 (step, open) Half\n" in capsys.readouterr().out
     _closed_by_hand(tracker, 2)
     assert run(tracker, code, "show", "plan#1") == 0
     assert ("\n  child: plan#2 (step, closed; no leaf: closed while still being filed, so "
-            "never part of the split, R-BAL205)\n") in capsys.readouterr().out
+            "never part of the split, R-BAL205) Half\n") in capsys.readouterr().out
     assert run(tracker, code, "sync") == 0
     capsys.readouterr()
     assert run(tracker, code, "show", "plan#1") == 0

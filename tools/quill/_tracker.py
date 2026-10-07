@@ -117,6 +117,15 @@ _EDITS = (
     % (ORG, REPO)
 )
 
+_COMMENTS = (
+    """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
+  issue(number: $number) { number
+    comments(first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { author { login } createdAt body } } } } }"""
+    % (ORG, REPO)
+)
+
 
 #: The board's writes, the only GraphQL mutations quill sends (a recording
 #: sends no other: ``_recorded.refusal``).  ``$p`` is the board, ``$c`` a card's node
@@ -217,6 +226,16 @@ class Edit:
     edit_id: str | None
     edited_at: str
     editor: str | None
+    body: str
+
+
+@dataclass(frozen=True)
+class Comment:
+    """One comment on a card: who wrote it (None for an account since deleted), when, and
+    its text."""
+
+    author: str | None
+    created_at: str
     body: str
 
 
@@ -350,12 +369,13 @@ class Board:
 class Tracker:  # pylint: disable=too-many-public-methods
     """The tracker as the App sees it: its cards and claims, and its :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (23/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (24/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
     GitHub), the board's own writes already apart in :class:`Board`.  Three
     of them, the filing mark's read and its removal (R-BAL202) and a leaf's
-    unlink (R-BAL205), took it past 20.
+    unlink (R-BAL205), took it past 20; ``show``'s read of a card's comments
+    is the fourth.
     The claims' three (``claims``, ``claim``, ``release``: git references, not
     cards) could stand apart the same way; that split is not this change's.
 
@@ -477,6 +497,19 @@ class Tracker:  # pylint: disable=too-many-public-methods
         if not versions:
             versions = [Edit(None, issue["createdAt"], (issue["author"] or {}).get("login"), body)]
         return body, sorted(versions, key=lambda edit: edit.edited_at)
+
+    def comments(self, number: int) -> list[Comment]:
+        """Every comment on a card, oldest first, read page by page.  A number nobody
+        filed is GitHub's NOT_FOUND error, which :meth:`_github.GitHub.graphql` raises."""
+        comments, after = [], None
+        while True:
+            answer = self.github.graphql(_COMMENTS, number=number, after=after)
+            page = answer["repository"]["issue"]["comments"]
+            comments += [Comment((node["author"] or {}).get("login"), node["createdAt"],
+                                 node["body"]) for node in page["nodes"]]
+            if not page["pageInfo"]["hasNextPage"]:
+                return comments
+            after = page["pageInfo"]["endCursor"]
 
     def merged_into_dev(self, repository: str, sha: str) -> set[str]:
         """The head branches of the merged pull requests into ``dev`` that carried

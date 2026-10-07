@@ -64,6 +64,28 @@ def test_a_recording_keeps_a_scratch_cards_text_and_redacts_every_other_cards():
         assert public in kept, public
 
 
+def test_a_cards_comments_are_its_own_text():
+    """X-cx leaf B: a card's comments are its own text, as its saved versions are
+    (``_recorded._OWN_CONTENT``): kept for a scratch card, redacted for any other card and
+    for a related card's comments read through an object without its number; an author's
+    login is a kept key, whoever's card."""
+    kept = json.dumps(redacted([
+        _graphql({"data": {"repository": {"issue": {"number": 2, "comments": {"nodes": [
+            {"author": {"login": "SaltyReformed"}, "createdAt": "2026-10-06T00:00:00Z",
+             "body": "secret comment"}]}}}}}, {"number": 2}),
+        _graphql({"data": {"repository": {"issue": {"number": 11, "comments": {"nodes": [
+            {"author": {"login": "shekel-quill"}, "createdAt": "2026-10-06T00:00:01Z",
+             "body": "scratch comment"}]}}}}}, {"number": 11}),
+        _graphql({"data": {"repository": {"issue": {"number": 11, "parent": {
+            "id": "I_real", "comments": {"nodes": [{"body": "secret parent comment"}]}}}}}},
+                 {"number": 11}),
+    ], _scratch(11)))
+    for private in ("secret comment", "secret parent comment"):
+        assert private not in kept, private
+    for public in ("scratch comment", "shekel-quill", "SaltyReformed"):
+        assert public in kept, public
+
+
 #: A query reading the tracker alone, so a number its answer names no repository for is
 #: the tracker's card.
 _TRACKER_QUERY = ('query { repository(owner: "saltyreformed-labs", name: "shekel-plan") '
@@ -297,8 +319,8 @@ def test_a_create_github_refused_counts_nothing_as_scratch():
 #: redacted title on a card node): ``tracker.json`` read them; ``label_missing.json``
 #: read only its scratch card.  A recording added or removed must be named here (the next
 #: test).
-RECORDINGS_READ_REAL_CARDS = {"label_missing": False, "tracker": True, "twice": False,
-                              "unlink": False}
+RECORDINGS_READ_REAL_CARDS = {"comments": False, "label_missing": False, "tracker": True,
+                              "twice": False, "unlink": False}
 
 
 def test_every_recording_is_in_the_census():

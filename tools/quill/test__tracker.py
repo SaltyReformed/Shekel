@@ -5,7 +5,8 @@ R-BAL202's filing mark, every create carrying it) by a session that ran every
 :class:`_tracker.Tracker` and :class:`_tracker.Board` call once against scratch
 cards #11-#25 (``_recorded.Recorder``, which writes to scratch cards only and
 redacts every other card's text); ``recorded/label_missing.json`` was kept the
-same evening, before the mark's label existed.
+same evening, before the mark's label existed; ``recorded/comments.json`` was kept
+2026-10-06 20:23 EDT, after the App's rename, on scratch cards #28-#30.
 These tests replay them (``_recorded.Replay``), which answers only a request
 it recorded, in the order recorded.  Nothing here calls GitHub.  A query whose
 text changes no longer matches its recording: re-record it, never edit an
@@ -20,6 +21,7 @@ import copy
 
 import pytest
 
+from tools.quill import quill
 from tools.quill._fake import Sent
 from tools.quill._github import GitHub, GitHubError
 from tools.quill._recorded import (
@@ -34,6 +36,7 @@ from tools.quill._tracker import (
     TRACKER,
     Board,
     ClaimTaken,
+    Comment,
     OutsideLink,
     Tracker,
     TrackerError,
@@ -674,3 +677,109 @@ def test_an_unlink_of_a_card_not_linked_is_refused_and_a_closed_parent_is_not_wh
     end = tracker.cards([23, 24, 25])
     assert (end[23].is_open, end[25].parent, end[24].parent) == (False, 23, None)
     assert replay.unused() == 0
+
+
+#: The App's login as the comments recording holds it: kept after the App's rename (R-BAL227).
+QUILL = "shekel-quill"
+#: The scratch cards the comments recording filed: step S, the finding C linked under it, and
+#: the step B blocking it.
+S, C, B = 28, 29, 30
+
+
+def _comments_recording():
+    """The tracker over the comments recording, and the replay."""
+    replay = Replay("comments")
+    github = GitHub("token", replay)
+    return Tracker(github, Board(github, recording("comments")["scratch"]["board"]), QUILL), replay
+
+
+def test_comments_are_read_oldest_first_each_as_posted():
+    """Recorded 2026-10-06 20:23 EDT (X-cx leaf B): a card no one commented on has none; the
+    two comments the App posted on #28, within the same second, come back in the order
+    posted, each with its author's login, its time and its text as sent, the second's
+    trailing newline kept."""
+    tracker, _ = _comments_recording()
+    assert tracker.comments(C) == []
+    assert tracker.comments(S) == [
+        Comment(QUILL, "2026-10-07T00:23:24Z", "A first comment the recorder posts."),
+        Comment(QUILL, "2026-10-07T00:23:24Z",
+                "A second comment, on two lines:\nthe recorder posts it too.\n")]
+
+
+class _Pages:
+    """A GitHub answering each GraphQL read with the next of ``pages``, keeping the ``after``
+    each read was sent."""
+
+    def __init__(self, pages):
+        """Hold the pages."""
+        self.pages, self.afters = list(pages), []
+
+    def graphql(self, _query, **variables):
+        """The next page."""
+        self.afters.append(variables["after"])
+        return self.pages.pop(0)
+
+
+def test_comments_are_read_page_by_page_and_an_author_may_be_gone():
+    """No scratch card holds a hundred comments, so from #28's recorded answer: its two
+    comments split over two pages, the first saying another follows after "CURSOR"; and the
+    second's author null, which GitHub's schema allows (an account since deleted;
+    unmeasured)."""
+    data = next(copy.deepcopy(exchange["answer"]["data"])
+                for exchange in recording("comments")["exchanges"]
+                if "comments(first" in ((exchange["body"] or {}).get("query") or "")
+                and exchange["body"]["variables"]["number"] == S)
+    first, second = copy.deepcopy(data), copy.deepcopy(data)
+    nodes = data["repository"]["issue"]["comments"]["nodes"]
+    first["repository"]["issue"]["comments"] = {
+        "pageInfo": {"hasNextPage": True, "endCursor": "CURSOR"}, "nodes": nodes[:1]}
+    second["repository"]["issue"]["comments"] = {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{**nodes[1], "author": None}]}
+    github = _Pages([first, second])
+    comments = Tracker(github, Board(None, "B"), QUILL).comments(S)
+    assert github.afters == [None, "CURSOR"]
+    assert [(comment.author, comment.body) for comment in comments] == [
+        (QUILL, nodes[0]["body"]), (None, nodes[1]["body"])]
+
+
+def test_show_over_the_recording_prints_its_links_titles_and_its_comments(code, capsys):
+    """The ``quill show plan#28`` the recording session ran, replayed: every read show makes,
+    in its order, answered as GitHub answered it, and nothing written -- #28 by number;
+    its child #29 and its blocker #30 in ONE read by number, for their titles; the claims
+    (none were held); the board; its text; its comments."""
+    tracker, replay = _comments_recording()
+    assert quill.main(["show", f"plan#{S}"], connect=lambda: tracker, root=code) == 0
+    assert capsys.readouterr().out == (
+        f"plan#{S} [step, balance] {SCRATCH} step S, its comments read by the recorder "
+        "(delete me)\n"
+        "  state: open\n"
+        "  shipped (git): no\n"
+        "  board: not on it\n"
+        "  claim: none\n"
+        "  parent: none\n"
+        f"  child: plan#{C} (finding, open) {SCRATCH} finding C under step S, by the "
+        "recorder (delete me)\n"
+        f"  blocked by: plan#{B} {SCRATCH} step B blocking step S, by the recorder "
+        "(delete me)\n"
+        "\n"
+        "The recorder files this step to record a card's comments and quill show.\n"
+        "\n"
+        f"== comment, 2026-10-07T00:23:24Z by {QUILL}\n"
+        "A first comment the recorder posts.\n"
+        f"== comment, 2026-10-07T00:23:24Z by {QUILL}\n"
+        "A second comment, on two lines:\n"
+        "the recorder posts it too.\n"
+        "\n"
+        f"no commit on origin/dev carries Ships: or Reopens: plan#{S}\n")
+    repo = f"/repos/{TRACKER}"
+    assert [(method, url.removeprefix("https://api.github.com"))
+            for method, url, _ in replay.sent] == [
+        ("POST", "/graphql"), ("POST", "/graphql"),
+        ("GET", f"{repo}/git/matching-refs/claims/"), ("POST", "/graphql"),
+        ("GET", f"{repo}/issues/{S}"), ("POST", "/graphql")]
+    queries = [str((body or {}).get("query", "")) for _, _, body in replay.sent]
+    assert not any("mutation" in query for query in queries)
+    assert f"c{S}: issue" in queries[0] and f"c{C}: issue" not in queries[0]
+    assert f"c{C}: issue" in queries[1] and f"c{B}: issue" in queries[1]
+    assert "ProjectV2" in queries[3] and "comments(first" in queries[5]
