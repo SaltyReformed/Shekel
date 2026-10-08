@@ -210,7 +210,9 @@ def gate_deletable_tail(
         The periods that may be deleted, empty when *kept* is already the last.
 
     Raises:
-        PayPeriodLocked: A to-delete period is hard-locked.
+        PayPeriodLocked: A to-delete period is hard-locked; one locked for
+            holding a payment or purchase is named with what it holds
+            (``pay_period_locks.locked_refusal``).
         PayPeriodDiscardRequired: A to-delete period holds unrecoverable
             rows and ``confirm_discard`` is False.
     """
@@ -240,13 +242,14 @@ def gate_deletable_tail(
         # relaxes these locks MUST first reverse the postings
         # (posting_service.reverse_postings_before_delete / the loan sync).
         # A third layer since plan step credit_card:CC-5-4a-4: a period
-        # holding a row that holds a payment or purchase classifies
-        # HOLDS_MOVEMENT, and its refusal names the period (ruling R-CC66).
-        raise PayPeriodLocked(blocking, holding_starts=[
-            period.start_date for period in to_delete
-            if blocking.get(period.period_id)
-            is PeriodLockReason.HOLDS_MOVEMENT
-        ])
+        # holding a row or transfer that holds a payment or purchase
+        # classifies HOLDS_MOVEMENT, whatever ``_regenerable`` says, and
+        # BEFORE the discard count below -- so no confirmation reaches it.
+        # Its refusal names every payment and purchase, its amount and its
+        # row (plan step pay_calendar:C22, ruling R-PC116).
+        raise PayPeriodLocked(
+            blocking, pay_period_locks.locked_refusal(to_delete, blocking),
+        )
 
     if not confirm_discard:
         discardable = count_discardable_items(
@@ -361,11 +364,6 @@ def gate_removable_head(
     return head
 
 
-def _paycheck(period: DerivedPeriod) -> str:
-    """Return how a refusal names *period*: ``"The 2026-03-12 paycheck"``."""
-    return f"The {period.start_date.isoformat()} paycheck"
-
-
 def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     """Refuse a head holding a row that is not an untouched template row.
 
@@ -387,31 +385,23 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
     # Keyed per paycheck by what the owner sees -- a row, or a transfer once
     # for both its legs -- so an item held for two reasons is named once.
     held: "dict[int, dict[tuple[str, int], str]]" = {}
-    for row in _live_rows_of(
-        Transaction, Transaction.template, period_ids,
-        Transaction.transfer_id.is_(None),
+    for model, scope in (
+        (Transaction, (Transaction.transfer_id.is_(None),)),
+        (Transfer, ()),
     ):
-        if not _regenerable(row):
-            held.setdefault(row.pay_period_id, {})[("row", row.id)] = row.name
-    for row in _live_rows_of(Transfer, Transfer.template, period_ids):
-        if not _regenerable(row):
-            held.setdefault(row.pay_period_id, {})[("transfer", row.id)] = (
-                row.name or "a transfer"
-            )
+        for row in _live_rows_of(model, model.template, period_ids, *scope):
+            if not _regenerable(row):
+                item, name = pay_period_locks.item_of(model, row.id, row.name)
+                held.setdefault(row.pay_period_id, {})[item] = name
     # Ruling R-PC115's half: every item the delete would take -- hidden ones
     # included -- that holds a payment or purchase, so a paid row set back to
     # Projected (its revert keeps its payment, undated) is one of them.  A
     # transfer is asked for itself (ruling R-BAL157), never through its legs.
-    rows, transfers = pay_period_locks.items_holding_a_movement(period_ids)
-    for period_id, row_id, name in rows.with_entities(
-        Transaction.pay_period_id, Transaction.id, Transaction.name,
-    ):
-        held.setdefault(period_id, {})[("row", row_id)] = name
-    for period_id, transfer_id, name in transfers.with_entities(
-        Transfer.pay_period_id, Transfer.id, Transfer.name,
-    ):
-        held.setdefault(period_id, {})[("transfer", transfer_id)] = (
-            name or "a transfer"
+    # Read through the pay-period doors' one NAMED reading of what a paycheck
+    # holds (plan step C22), which truncate and regenerate name it by too.
+    for movement in pay_period_locks.movements_held_in(period_ids):
+        held.setdefault(movement.period_id, {})[movement.item] = (
+            movement.item_name
         )
     if not held:
         return
@@ -421,8 +411,8 @@ def _reject_held_rows(head: "list[DerivedPeriod]") -> None:
         if names:
             noun = "item" if len(names) == 1 else "items"
             sentences.append(
-                f"{_paycheck(period)} holds {len(names)} {noun} you entered "
-                f"or changed ({', '.join(names)})."
+                f"{pay_period_locks.paycheck_name(period)} holds {len(names)} "
+                f"{noun} you entered or changed ({', '.join(names)})."
             )
     one = sum(len(names) for names in held.values()) == 1
     sentences.append(
@@ -849,8 +839,9 @@ def count_discardable_items(period_ids):
     wipes it when no rule would write it back (``recurs`` is ``False``: a
     hand-entered row, or a row of a definition with no cadence), when it is
     a manual override, or when it carries a deliberate non-Projected status
-    (Credit / Cancelled -- settled rows are already hard-locked upstream, so
-    they never reach here).  Transfer shadows always carry ``template_id IS
+    (Credit / Cancelled -- settled rows, and any row or transfer holding a
+    payment or purchase, are already hard-locked upstream, so they never
+    reach here).  Transfer shadows always carry ``template_id IS
     NULL``, so the transaction scan excludes them (``transfer_id IS NULL``)
     and transfers are counted once on their own table by the same three
     questions.  That way a recurring transfer (regenerable) does not falsely
@@ -897,11 +888,16 @@ def _regenerable(row) -> bool:
     rule both destructive gates ask, stated once.  It was a nested function
     of :func:`count_discardable_items` until plan step ``pay_calendar:C21``
     lifted it, unchanged, for :func:`gate_removable_head`, which asks the
-    same question of the head.  **It does not see a payment or purchase** --
-    ledger row **PC-524**, whose step ``C22`` (ruling **R-PC112**) makes the
-    discard gate refuse one; the head gate asks
-    :func:`app.services.pay_period_locks.items_holding_a_movement` beside it
-    (:func:`_reject_held_rows`, ruling **R-PC115**).
+    same question of the head.  **It does not see a payment or purchase,
+    and no gate relies on it to**: truncate and regenerate refuse a period
+    holding one upstream of their discard count (the lock classifier's
+    ``HOLDS_MOVEMENT``, plan step ``credit_card:CC-5-4a-4``), and the head
+    gate asks
+    :func:`app.services.pay_period_locks.movements_held_in` beside it
+    (:func:`_reject_held_rows`, ruling **R-PC115**).  Ledger row **PC-524**
+    -- a purchase deleted with an untouched template row this calls
+    regenerable, or after Confirm & discard -- was re-measured in its seven
+    cases at plan step ``pay_calendar:C22`` and every one is refused.
 
     Args:
         row: A live ``Transaction`` (not a shadow) or ``Transfer``.
