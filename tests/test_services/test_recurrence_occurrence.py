@@ -2338,3 +2338,29 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
         assert dates_through(
             resolved, calendar, date(2026, 3, 1),
         )[0] == date(2026, 1, 15)
+
+
+class TestTheMonthWalkReachesTheCalendarsLastMonth:
+    """``_months.walk_months`` yields through the calendar's LAST month, then stops.
+
+    Its stop is the month of the last grid day on or before
+    ``CALENDAR_DATE_MAX`` (2100-12-31), read from the monthly-grid set beside
+    the clamp since plan step recurrence:R25 (ruling R-R122).  A mutation that
+    stopped the walk one month early survived the whole recurrence suite until
+    these were written: no other case reaches December 2100.
+    """
+
+    def test_a_monthly_walk_ends_on_the_last_day_the_calendar_holds(self):
+        """The 31st from January 2100: twelve dates, the last 2100-12-31."""
+        walked = list(_months.walk_months(
+            _months.month_ordinal(date(2100, 1, 1)), 31, 1,
+        ))
+        assert len(walked) == 12
+        assert walked[1] == date(2100, 2, 28)
+        assert walked[-1] == date(2100, 12, 31)
+
+    def test_a_stride_landing_past_the_calendar_fires_once(self):
+        """Yearly from March 2100: March 2101 is past the calendar, so one date."""
+        assert list(_months.walk_months(
+            _months.month_ordinal(date(2100, 3, 1)), 15, 12,
+        )) == [date(2100, 3, 15)]

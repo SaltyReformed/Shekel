@@ -86,10 +86,12 @@ class LoanPricing:
     **It holds no terms of its own since plan step recurrence:R25** (ruling
     **R-R105**, finding **REC-545**): each loan's terms are the read pass's
     :class:`~app.services.loan_ledger.LoanCalendars` -- the memo the pass's
-    loan walk builds its charges from -- so a pass that walks a loan and
-    prices its payments loads the loan's terms once, and the price and the
-    charges read one calendar.  It memoized a second bundle per loan here
-    (``_LoanCashBasis`` and the escrow lines) until then.
+    loan walk builds its charges from -- so the price and the charges read
+    one calendar, loaded once for both.  (The loan resolver's bundle and the
+    payoff calculator still load the terms on their own paths in the same
+    pass: finding **REC-559**, owned by plan step recurrence:R16-f.)  It
+    memoized a second bundle per loan here (``_LoanCashBasis`` and the escrow
+    lines) until then.
 
     **IT READS NO CLOCK, and plan step X-au-g-2b is what deleted the one it
     used to read.**  It took an ``as_of`` and resolved each loan's rate-period

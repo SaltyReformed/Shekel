@@ -21,11 +21,11 @@ readers take this memo's calendar.
 **The memo holds the PARAMS too**, because the walk needs them beyond the
 calendar (its opening assertion is synthesized from them,
 :func:`app.services.loan_loaders.load_loan_anchor_facts`), and loading them
-once per pass for both is what keeps a pass that never prices a derive-mode
-loan payment at the one params load it made before.  The loan resolver's bundle and the payoff
-calculator still resolve the terms again inside one pass; that is finding
-**REC-559**, owned by plan step recurrence:R16-f, after which every reader
-takes this memo.
+once per pass for both is what keeps the walk at the one params load it made
+before.  The loan resolver's bundle and the payoff calculator still load the
+params and resolve the terms on their own paths inside one pass; that is
+finding **REC-559**, owned by plan step recurrence:R16-f, after which every
+reader takes this memo.
 
 **A memo on the PASS, not a cache**: a write path that changes a loan's terms
 and then re-renders builds a fresh pass, so there is no invalidation question
