@@ -101,7 +101,10 @@ from app.audit_infrastructure import (
     apply_audit_infrastructure,
     require_audit_triggers,
 )
-from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
+from app.deleted_row_infrastructure import (
+    ALL_ARMS as DELETED_ROW_ARMS,
+    apply_deleted_row_infrastructure,
+)
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import stamp_head, upgrade_to_head
@@ -269,11 +272,12 @@ def init_fresh_database(connection):
 
     # A deleted row takes no money (plan step credit_card:CC-5-4a-4, ruling
     # R-CC89): a payment or purchase arriving under a deleted row is refused.
-    # Same fresh-DB reason, same three-caller contract: the stamp below marks
-    # c4a4e7d1b9f2 applied without running it.
+    # Same fresh-DB reason, and every arm for the opening rule's reason: the
+    # stamp below marks every revision that installs one applied without
+    # running it, so this materialises HEAD.
     print("Applying deleted-row rule (payments and purchases)...")
     apply_deleted_row_infrastructure(
-        lambda sql: db.session.execute(db.text(sql))
+        lambda sql: db.session.execute(db.text(sql)), arms=DELETED_ROW_ARMS,
     )
     print("Deleted-row rule ready.")
 

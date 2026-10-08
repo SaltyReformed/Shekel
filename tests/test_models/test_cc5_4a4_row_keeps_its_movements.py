@@ -36,7 +36,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.deleted_row_infrastructure import DELETED_ROW_TRIGGERS
 from app.extensions import db as _db
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
@@ -114,13 +113,19 @@ def _keys(session):
     return dict(rows)
 
 
+#: The ROW arm's two attachments, the ones this revision installs.  Named
+#: rather than read off ``DELETED_ROW_TRIGGERS``, which lists HEAD's set and
+#: grew a third, the transfer arm's, at plan step ``balance:X-bi-6-4d-2``.
+_ROW_ARM_TRIGGERS = ("ck_movement_row_not_deleted", "ck_hidden_row_holds_nothing")
+
+
 def _deleted_row_rule(session):
     """Return ``(triggers, functions)`` of ruling R-CC89's two arms present now."""
     return (
         session.execute(
             text("SELECT count(*) FROM pg_trigger "
                  "WHERE tgname = ANY(:names) AND NOT tgisinternal"),
-            {"names": [name for name, _table in DELETED_ROW_TRIGGERS]},
+            {"names": list(_ROW_ARM_TRIGGERS)},
         ).scalar(),
         session.execute(
             text("SELECT count(*) FROM pg_proc p "

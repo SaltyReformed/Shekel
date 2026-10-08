@@ -183,6 +183,41 @@ class Transfer(
         # ``uq_transactions_transfer_type_active``.  scenario_id is
         # included so an ad-hoc transfer in the baseline scenario
         # does not block the same transfer in a what-if scenario.
+        # The SUPERKEYS a transfer side's payment names to prove its account is
+        # that side's endpoint (``fk_transaction_entries_expense_side`` /
+        # ``fk_transaction_entries_income_side``, plan step
+        # ``balance:X-bi-6-4d-2``, ruling **R-BAL88**).  They constrain nothing
+        # -- ``id`` is already the primary key -- and exist only because
+        # PostgreSQL requires a UNIQUE over exactly the referenced columns
+        # before a composite foreign key may target them: the construction
+        # ``uq_transactions_id_account`` uses one table over.
+        db.UniqueConstraint(
+            "id", "from_account_id", name="uq_transfers_id_from_account",
+        ),
+        db.UniqueConstraint(
+            "id", "to_account_id", name="uq_transfers_id_to_account",
+        ),
+        # **A TRANSFER'S ACCOUNTS ARE ITS OWNER'S** (plan step
+        # ``balance:X-bi-6-4d-2``, ruling **R-BAL107**): each endpoint keys,
+        # with ``user_id``, onto ``uq_accounts_id_user``, exactly as
+        # ``fk_transactions_owner_account`` does for a row.  A transfer naming
+        # another user's account is unstorable, and a side's payment, whose
+        # account the side keys hold to an endpoint, is the owner's by that
+        # chain.  ``ON DELETE RESTRICT`` matches the single-column endpoint keys
+        # beside them, which stay as the ``from_account`` / ``to_account``
+        # relationships' declared join paths.
+        db.ForeignKeyConstraint(
+            ["from_account_id", "user_id"],
+            ["budget.accounts.id", "budget.accounts.user_id"],
+            name="fk_transfers_owner_from_account",
+            ondelete="RESTRICT",
+        ),
+        db.ForeignKeyConstraint(
+            ["to_account_id", "user_id"],
+            ["budget.accounts.id", "budget.accounts.user_id"],
+            name="fk_transfers_owner_to_account",
+            ondelete="RESTRICT",
+        ),
         db.Index(
             "uq_transfers_adhoc_dedupe",
             "user_id", "from_account_id", "to_account_id",

@@ -164,7 +164,10 @@ from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
 from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
-from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
+from app.deleted_row_infrastructure import (
+    ALL_ARMS as DELETED_ROW_ARMS,
+    apply_deleted_row_infrastructure,
+)
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -361,10 +364,12 @@ def _populate_template(app) -> None:
         db.session.commit()
 
         # A deleted row takes no money (plan step credit_card:CC-5-4a-4):
-        # idempotent re-application, same contract, and a rule a FIXTURE can
-        # trip -- one that stages a movement under a hidden row.
+        # idempotent re-application of EVERY arm, the opening rule's HEAD
+        # contract, and a rule a FIXTURE can trip -- one that stages a
+        # movement under a hidden row or transfer.
         apply_deleted_row_infrastructure(
-            lambda statement: db.session.execute(db.text(statement))
+            lambda statement: db.session.execute(db.text(statement)),
+            arms=DELETED_ROW_ARMS,
         )
         db.session.commit()
 

@@ -41,7 +41,15 @@ class TransactionEntry(
     ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
 
     Columns:
-        transaction_id  -- The parent transaction this entry belongs to.
+        transaction_id  -- The parent transaction this entry belongs to, or
+                           NULL for a transfer side's payment (plan step
+                           ``balance:X-bi-6-4d-2``).
+        expense_transfer_id, income_transfer_id -- The TRANSFER whose from- or
+                           to-side this movement is the payment of, keyed with
+                           ``account_id`` onto that side's endpoint (ruling
+                           **R-BAL88**).  Exactly one of these two and
+                           ``transaction_id`` is set
+                           (``ck_transaction_entries_one_parent``).
         account_id      -- The account this movement's money moved THROUGH:
                            its own, and free to differ from its parent's since
                            plan step ``credit_card:CC-5-1`` (rulings
@@ -358,6 +366,69 @@ class TransactionEntry(
             unique=True,
             postgresql_where=db.text("covers_settlement = true"),
         ),
+        # **A MOVEMENT IS FILED UNDER EXACTLY ONE PARENT** (plan step
+        # ``balance:X-bi-6-4d-2``, ruling **R-BAL88**): a plan row, or one side
+        # of a transfer.  What makes ``transaction_id``'s NULL a fact rather
+        # than a gap, and what lets the two side keys below be the whole of a
+        # transfer side's link.
+        db.CheckConstraint(
+            "num_nonnulls(transaction_id, expense_transfer_id, "
+            "income_transfer_id) = 1",
+            name="ck_transaction_entries_one_parent",
+        ),
+        # **A TRANSFER SIDE HOLDS ITS PAYMENT AND NOTHING ELSE**: every door
+        # refuses a purchase on a transfer, so a side link is the settlement
+        # record the status seam writes, and the stored mark says so.  A revert
+        # keeps the record un-dated and the mark with it (ruling **R-BAL61**).
+        db.CheckConstraint(
+            "(expense_transfer_id IS NULL AND income_transfer_id IS NULL) "
+            "OR covers_settlement",
+            name="ck_transaction_entries_side_link_is_a_record",
+        ),
+        # **THE SIDE KEYS** (ruling **R-BAL88**): the movement's account IS the
+        # side's endpoint, so a from-side payment on any account but the
+        # transfer's from-account is unstorable.  The transfer's accounts are
+        # its owner's (``fk_transfers_owner_from_account`` /
+        # ``fk_transfers_owner_to_account``, ruling **R-BAL107**), and this
+        # movement's account is ``owner_id``'s (``fk_transaction_entries_owner_
+        # account``), so the record is the transfer owner's by the chain: no
+        # owner key of its own.
+        #
+        # **ON UPDATE CASCADE** (ruling **R-BAL168**): changing a transfer's
+        # endpoint carries the side's record to the new account, in the same
+        # statement; a NO ACTION key would refuse the move in either statement
+        # order.  **No ``ondelete`` -- NO ACTION** (rulings **R-CC54**,
+        # **R-CC64**): a transfer holding a payment is history, and the one
+        # removal act (:mod:`app.services.movement_removal`) takes a record off
+        # first and on purpose.
+        db.ForeignKeyConstraint(
+            ["expense_transfer_id", "account_id"],
+            ["budget.transfers.id", "budget.transfers.from_account_id"],
+            name="fk_transaction_entries_expense_side",
+            onupdate="CASCADE",
+        ),
+        db.ForeignKeyConstraint(
+            ["income_transfer_id", "account_id"],
+            ["budget.transfers.id", "budget.transfers.to_account_id"],
+            name="fk_transaction_entries_income_side",
+            onupdate="CASCADE",
+        ),
+        # AT MOST ONE record per transfer side, the side-link twin of
+        # ``uq_transaction_entries_one_settlement_record``: every linked
+        # movement is a record (the CHECK above), so the count is over the link
+        # alone.  Also the link's index, for the joins and the keys' cascades.
+        db.Index(
+            "uq_transaction_entries_one_expense_side_record",
+            "expense_transfer_id",
+            unique=True,
+            postgresql_where=db.text("expense_transfer_id IS NOT NULL"),
+        ),
+        db.Index(
+            "uq_transaction_entries_one_income_side_record",
+            "income_transfer_id",
+            unique=True,
+            postgresql_where=db.text("income_transfer_id IS NOT NULL"),
+        ),
         {"schema": "budget"},
     )
 
@@ -380,14 +451,32 @@ class TransactionEntry(
     # (migration ``c4a4e7d1b9f2``); it carried Postgres' default
     # ``transaction_entries_transaction_id_fkey`` and ``ON DELETE CASCADE``
     # until then.
+    #
+    # **NULLABLE since plan step ``balance:X-bi-6-4d-2``, and NULL is a fact**:
+    # a transfer side's payment is filed under no row, but under its TRANSFER,
+    # by the side link below that names it (ruling **R-BAL88**).
+    # ``ck_transaction_entries_one_parent`` makes exactly one of the three set,
+    # so a NULL here always means "a transfer side's record".
     transaction_id = db.Column(
         db.Integer,
         db.ForeignKey(
             "budget.transactions.id",
             name="fk_transaction_entries_transaction_id",
         ),
-        nullable=False,
+        nullable=True,
     )
+    # THE TRANSFER whose FROM side this movement is the payment of (plan step
+    # ``balance:X-bi-6-4d-2``, ruling **R-BAL88**), or NULL.  Keyed with
+    # ``account_id`` onto ``uq_transfers_id_from_account`` by
+    # ``fk_transaction_entries_expense_side``, so the movement's account IS the
+    # transfer's from-account: a side's payment on any other account is
+    # unstorable.  The SIDE is which of the two links is set -- never inferred
+    # from an account.  Nullable because a movement names exactly one parent
+    # (``ck_transaction_entries_one_parent``).
+    expense_transfer_id = db.Column(db.Integer, nullable=True)
+    # The to-side twin of ``expense_transfer_id``: keyed onto
+    # ``uq_transfers_id_to_account`` by ``fk_transaction_entries_income_side``.
+    income_transfer_id = db.Column(db.Integer, nullable=True)
     # The account this movement's money moved THROUGH -- its OWN fact since
     # plan step ``credit_card:CC-5-1`` (rulings **R-BAL75**, **R-BAL76**), read
     # on this account by the fold (``cash_ledger._events._movements_of``), the
