@@ -15,13 +15,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.services.installment_calendar import first_installment_date
 from app.utils.dates import months_between
 from app.utils.money import round_money
 
 from ._projection import (
     PeriodTerms,
     ProjectionInputs,
-    advance_to_next_payment_date,
     project_forward,
 )
 
@@ -197,7 +197,7 @@ def calculate_payoff_by_date(
     if request.current_principal <= 0 or request.remaining_months <= 0:
         return Decimal("0.00")
 
-    starting_date = advance_to_next_payment_date(
+    starting_date = first_installment_date(
         request.origination_date, request.payment_day,
     )
 

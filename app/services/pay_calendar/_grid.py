@@ -73,8 +73,11 @@ the kinds' order mattering; a table says it without.
 
 **The month arithmetic is O(1) and walks nothing**: a payday is the meant
 day clamped into the month *steps* months on (:func:`_monthly_payday`), and
-the inverse compares the day with the clamp in its own month
-(:func:`_monthly_steps_to`).  The semi-monthly grid is the same walk over
+the inverse is the month of the latest grid day on or before the day
+(:func:`_monthly_steps_to`, reading :func:`app.utils.dates.grid_month_on_or_before`,
+the monthly-grid set the loan calendar, the card statement and the recurrence
+walk read too since plan step ``recurrence:R25``, ruling
+``recurrence:R-R122``).  The semi-monthly grid is the same walk over
 HALF-months: grid days are numbered ``2 x month + member`` from the
 anchor's month, where the member is which of the sorted pair a day is, and
 the anchor's own member is read off its date.  **The clamp is
@@ -86,7 +89,7 @@ which is rule 14's remedy for a shared leaf a layer put out of reach.
 from datetime import date, timedelta
 
 from app.services.pay_rhythm import FixedDays, Monthly, SemiMonthly
-from app.utils.dates import clamped_day, month_ordinal
+from app.utils.dates import clamped_day, grid_month_on_or_before, month_ordinal
 
 
 def _fixed_days_payday(anchor: date, cadence: FixedDays, steps: int) -> date:
@@ -159,11 +162,12 @@ def _monthly_steps_to(anchor: date, cadence: Monthly, day: date) -> int:
 
     :func:`cadence_steps_to`'s body for
     :class:`~app.services.pay_rhythm.Monthly`.  Each month holds exactly one
-    grid day, so the answer is the month distance when *day*'s own month's
-    grid day is at or before it, and one less when *day* falls earlier in
-    its month than that.  Signed for the same reason the fixed-days inverse
-    floors: a *day* below *anchor* counts negative months back to the grid
-    day still at or before it.
+    grid day, so the answer is the month distance from *anchor*'s month to
+    the month of the latest grid day on or before *day*
+    (:func:`app.utils.dates.grid_month_on_or_before`): *day*'s own month when
+    its grid day has fallen by *day*, the one before otherwise.  Signed for
+    the same reason the fixed-days inverse floors: a *day* below *anchor*
+    counts negative months back to the grid day still at or before it.
 
     Args:
         anchor: A day the grid passes through.
@@ -173,11 +177,7 @@ def _monthly_steps_to(anchor: date, cadence: Monthly, day: date) -> int:
     Returns:
         The signed step count.
     """
-    ordinal = month_ordinal(day)
-    months = ordinal - month_ordinal(anchor)
-    if clamped_day(ordinal, cadence.day) <= day:
-        return months
-    return months - 1
+    return grid_month_on_or_before(day, cadence.day) - month_ordinal(anchor)
 
 
 def _semi_monthly_payday(anchor: date, cadence: SemiMonthly, steps: int) -> date:
@@ -208,12 +208,15 @@ def _semi_monthly_steps_to(anchor: date, cadence: SemiMonthly, day: date) -> int
 
     :func:`cadence_steps_to`'s body for
     :class:`~app.services.pay_rhythm.SemiMonthly`, on
-    :func:`_semi_monthly_payday`'s numbering.  *day*'s own month holds two
-    grid days, the lower then the upper: the last one at or before *day*
-    is the upper when *day* has reached it, else the lower when *day* has
-    reached that, else the PREVIOUS month's upper -- three cases, because
-    the lower day clamps never (it is at most 27) and the previous month's
-    upper day is always at or before the current month's first day.
+    :func:`_semi_monthly_payday`'s numbering.  The grid is the union of two
+    monthly grids, the lower day's and the upper day's, and the last payday
+    at or before *day* is the later of the two grids' latest days on or
+    before it (:func:`app.utils.dates.grid_month_on_or_before`, plan step
+    ``recurrence:R25``).  In half-month numbers that is the larger of the
+    upper grid's ``2 x month + 1`` and the lower grid's ``2 x month``: the
+    lower day never clamps (it is at most 27), so it falls before the upper
+    day in every month and the upper grid's month is the lower grid's or the
+    one before it.
 
     Args:
         anchor: A day the grid passes through.
@@ -223,17 +226,12 @@ def _semi_monthly_steps_to(anchor: date, cadence: SemiMonthly, day: date) -> int
     Returns:
         The signed step count.
     """
-    ordinal = month_ordinal(day)
     lower, upper = cadence.days
-    if clamped_day(ordinal, upper) <= day:
-        member = 1
-    elif clamped_day(ordinal, lower) <= day:
-        member = 0
-    else:
-        ordinal -= 1
-        member = 1
-    index = 2 * (ordinal - month_ordinal(anchor)) + member
-    return index - cadence.member_of(anchor)
+    index = max(
+        2 * grid_month_on_or_before(day, upper) + 1,
+        2 * grid_month_on_or_before(day, lower),
+    )
+    return index - 2 * month_ordinal(anchor) - cadence.member_of(anchor)
 
 
 #: The grid arithmetic per cadence KIND: ``{kind class: (payday, steps_to)}``.

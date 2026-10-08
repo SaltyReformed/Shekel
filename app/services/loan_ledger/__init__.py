@@ -136,6 +136,7 @@ from ._walk import (
     walk_loan_ledger,
 )
 from ._charges import AccrualCharge, LoanCalendar
+from ._calendars import LoanCalendars
 from ._replay import (
     LoanCashEvent,
     LoanEventStream,
@@ -156,6 +157,7 @@ __all__ = [
     "AccrualCharge",
     "LoanAnchorCorrection",
     "LoanCalendar",
+    "LoanCalendars",
     "LoanCashEvent",
     "LoanEventStream",
     "LoanLedgerWalk",

@@ -49,6 +49,7 @@ from app.models.transfer import Transfer
 from app.services import loan_loaders
 from app.services.loan_ledger import _visible
 from app.services.loan_ledger import (
+    LoanCalendars,
     confirmed_shadows_through,
     load_loan_stream,
     payment_installments,
@@ -337,11 +338,12 @@ class TestAnOffDayZeroDollarCloseIsDatedByItsIntervalsInstallment:
             # The read pass's bound, which takes its origination and due day
             # off the loan's calendar: seen from 02-22, not before.
             [seen] = load_loan_stream(
-                loan.id, scenario_id, visible_by=installment,
+                loan.id, scenario_id, LoanCalendars(), visible_by=installment,
             ).payments
             assert (seen.source, seen.visible_on) == (leg, installment)
             assert load_loan_stream(
-                loan.id, scenario_id, visible_by=date(2026, 2, 21),
+                loan.id, scenario_id, LoanCalendars(),
+                visible_by=date(2026, 2, 21),
             ).payments == []
 
             [fed] = payment_installments(
@@ -439,11 +441,14 @@ class TestTheReadPassBoundReadsTheLoansCalendar:
             )
             assert leg.due_date is None, "the close must store no due date"
 
-            seen = load_loan_stream(loan.id, scenario_id, visible_by=_DUE)
+            seen = load_loan_stream(
+                loan.id, scenario_id, LoanCalendars(), visible_by=_DUE,
+            )
             assert [event.source for event in seen.payments] == [leg]
             assert [event.visible_on for event in seen.payments] == [_DUE]
             assert load_loan_stream(
-                loan.id, scenario_id, visible_by=date(2026, 2, 28),
+                loan.id, scenario_id, LoanCalendars(),
+                visible_by=date(2026, 2, 28),
             ).payments == []
 
 

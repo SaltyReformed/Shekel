@@ -22,13 +22,13 @@ both are re-exported flat from the package ``__init__`` so consumers
 keep importing from ``app.services.amortization_engine`` unchanged.
 """
 
-import calendar
 import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.utils.dates import months_between
+from app.services.installment_calendar import due_in_following_month
+from app.utils.dates import clamped_day, month_ordinal, months_between
 from app.utils.money import (
     MONTHS_PER_YEAR,
     accrue_monthly_interest,
@@ -248,16 +248,6 @@ def calculate_monthly_payment(
     return round_money(payment)
 
 
-def _advance_month(year: int, month: int, day: int) -> date:
-    """Move forward one month, clamping the day to the month's max days."""
-    month += 1
-    if month > 12:
-        month = 1
-        year += 1
-    max_day = calendar.monthrange(year, month)[1]
-    return date(year, month, min(day, max_day))
-
-
 def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
     """Return one DISTINCT monthly schedule slot per payment, in the order given.
 
@@ -282,9 +272,10 @@ def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
     first landed in ``loan_ledger._installments``, whose loaders put
     ``loan_payment_service._engine_prep`` -- pure arithmetic, closure 14 -- on a
     **42-module** closure to reach it (measured 2026-09-09).  That is the defect
-    this step exists to remove, so the rule sits beside
-    :func:`advance_to_next_payment_date`, the only thing it calls, where both
-    tiers already import it and neither loads a row to get it.
+    this step exists to remove, so the rule sits in the primitives both tiers
+    already import, where neither loads a row to get it.  The one date rule it
+    calls is the loan calendar's
+    (:func:`app.services.installment_calendar.due_in_following_month`).
 
     **Only the slot is invented; nothing here touches a fact.**  The funding
     period and the cash day never enter, so a caller cannot accidentally
@@ -324,14 +315,14 @@ def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
     for due in due_dates:
         # A payment whose own month is free keeps its own DATE, day included --
         # the uncontested case, which is every payment on both live loans.  A
-        # contested one walks forward a month at a time through
-        # ``advance_to_next_payment_date``, the project's one "next month, day
-        # clamped to this month's last" primitive, so a ``payment_day`` of 31
-        # lands on the 28th in February here exactly as it does in a forward
-        # projection.
+        # contested one walks forward a month at a time through the loan
+        # calendar's one "the due day in the next month, clamped to its last"
+        # step (``installment_calendar.due_in_following_month``), so a
+        # ``payment_day`` of 31 lands on the 28th in February here exactly as
+        # it does in a forward projection.
         slot = due
         while (slot.year, slot.month) in allocated_months:
-            slot = advance_to_next_payment_date(slot, payment_day)
+            slot = due_in_following_month(slot, payment_day)
         slots.append(slot)
         allocated_months.add((slot.year, slot.month))
     return slots
@@ -385,35 +376,6 @@ def slotted_dates(
             strict=True,
         )
     ]
-
-
-def advance_to_next_payment_date(
-    reference_date: date, payment_day: int,
-) -> date:
-    """Return the first payment date that follows ``reference_date``.
-
-    Public helper shared by callers that need to derive the starting
-    date of a forward projection from an anchor or origination date.
-    ``project_forward`` expects ``starting_date`` to be the first
-    payment date of the projection; for both ``calculate_payoff_by_date``
-    and ``refinance_calculate`` that date is the month after the
-    reference date with the day clamped to the month's last valid day
-    (e.g., day 31 in February becomes the 28th or 29th).
-
-    Args:
-        reference_date: The anchor date (origination, today's first
-            of month, or any other reference).  The returned date is
-            in the month immediately following.
-        payment_day: Day-of-month payments are due.  Clamped to the
-            target month's max days so a payment_day of 31 always
-            produces a valid date.
-
-    Returns:
-        The next payment date after ``reference_date``.
-    """
-    return _advance_month(
-        reference_date.year, reference_date.month, payment_day,
-    )
 
 
 @dataclass(frozen=True)
@@ -716,23 +678,17 @@ def project_forward(
     # whose representation could yield float-like surprises.
     balance = Decimal(str(inputs.starting_balance))
 
-    # First payment date: the starting month with the day clamped to
-    # that month's length.  Subsequent dates advance via _advance_month.
-    pay_date = date(
-        inputs.starting_date.year,
-        inputs.starting_date.month,
-        min(
-            inputs.payment_day,
-            calendar.monthrange(
-                inputs.starting_date.year, inputs.starting_date.month,
-            )[1],
-        ),
-    )
+    # Row N falls on the payment day of the N-th month from the starting
+    # date's, clamped through the ONE clamp and re-clamped from the meant
+    # day every month (plan step recurrence:R25 deleted this module's own
+    # copy of it), so a 31st returns after a February.
+    first_month = month_ordinal(inputs.starting_date)
     rows: list[AmortizationRow] = []
 
     for month_num in range(1, inputs.remaining_months + 1):
         if balance <= 0:
             break
+        pay_date = clamped_day(first_month + month_num - 1, inputs.payment_day)
 
         # Rate AND contractual P&I from the governing terms -- the
         # rate-period engine's figures, never re-derived from the
@@ -762,11 +718,5 @@ def project_forward(
 
         if balance <= 0:
             break
-
-        # Advance to the next month's payment date (day re-clamped from
-        # the original payment_day, not the prior clamped day).
-        pay_date = _advance_month(
-            pay_date.year, pay_date.month, inputs.payment_day,
-        )
 
     return rows

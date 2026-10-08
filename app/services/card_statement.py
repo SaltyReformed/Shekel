@@ -23,7 +23,12 @@ so prices the cycle before it, by this same rule.
 **Every day-of-month term is NOMINAL and clamps through the ONE clamp**
 (:func:`app.utils.dates.clamped_day`, ruling `pay_calendar:R-PC79` /
 `recurrence:R-R3`): a close day of 31 is the 31st in January and the 28th in
-February, and never decays to the 30th for good.
+February, and never decays to the 30th for good.  Which close or due date a
+day falls before or after is the monthly-grid set beside that clamp
+(:func:`app.utils.dates.grid_month_after` and its siblings), which the loan
+calendar, the pay grid and the recurrence walk read too -- this module spelled
+the comparisons itself until plan step ``recurrence:R25`` (ruling
+``recurrence:R-R122``, finding ``recurrence:REC-547``).
 
 **Every statement figure is an OWED amount** (developer ruling **R-CC29**,
 2026-09-18): positive when the owner owes, negative when the card holds a
@@ -55,7 +60,11 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.utils.dates import clamped_day, month_ordinal
+from app.utils.dates import (
+    clamped_day,
+    grid_month_after,
+    grid_months_within,
+)
 from app.utils.money import ZERO, round_money
 
 # The close instant is the end of the day BEFORE the close date.
@@ -135,10 +144,7 @@ def cycle_containing(close_day: int, day: date) -> CycleWindow:
     Returns:
         The :class:`CycleWindow` with ``window.contains(day)``.
     """
-    month = month_ordinal(day)
-    if day >= clamped_day(month, close_day):
-        month += 1
-    return cycle_window(close_day, month)
+    return cycle_window(close_day, grid_month_after(day, close_day))
 
 
 def statement_sequence(
@@ -158,15 +164,9 @@ def statement_sequence(
     Returns:
         The :class:`CycleWindow` list, oldest first.
     """
-    first_month = month_ordinal(first)
-    if clamped_day(first_month, close_day) < first:
-        first_month += 1
-    last_month = month_ordinal(last)
-    if clamped_day(last_month, close_day) > last:
-        last_month -= 1
     return [
         cycle_window(close_day, month)
-        for month in range(first_month, last_month + 1)
+        for month in grid_months_within(close_day, first, last)
     ]
 
 
@@ -177,15 +177,11 @@ def due_date_for(closes: date, due_day: int) -> date:
     this month's when that date is still ahead of the close, next month's
     otherwise.  A due day equal to the close day is therefore next month's.
 
-    The clamp is the ONE clamp's; the two-line "which month's occurrence"
-    comparison over it is also spelled by
-    :func:`app.services.installment_calendar.monthly_due_date` (the first
-    occurrence ON OR AFTER a date) and, for the latest ON OR BEFORE,
-    :func:`~app.services.installment_calendar.installment_of`, both over the
-    one clamp since plan step recurrence:R16-c-2; and the
-    fold of both onto one ``first_day_on_or_after`` beside
-    :func:`~app.utils.dates.clamped_day` is ledger row **REC-547**'s, owned by
-    plan step ``recurrence:R25``, which this function is reported to.
+    The clamp is the ONE clamp's and the "which month's occurrence" comparison
+    over it is the monthly-grid set's
+    (:func:`app.utils.dates.grid_month_after`), which the loan calendar's
+    on-or-after and on-or-before questions read too since plan step
+    ``recurrence:R25`` closed ledger row ``recurrence:REC-547``.
 
     Args:
         closes: The statement's close date (:attr:`CycleWindow.closes`).
@@ -195,11 +191,7 @@ def due_date_for(closes: date, due_day: int) -> date:
     Returns:
         The due date, clamped to its month's length.
     """
-    month = month_ordinal(closes)
-    due = clamped_day(month, due_day)
-    if due <= closes:
-        due = clamped_day(month + 1, due_day)
-    return due
+    return clamped_day(grid_month_after(closes, due_day), due_day)
 
 
 def minimum_payment(

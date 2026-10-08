@@ -51,13 +51,10 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.services import (
-    loan_loaders,
-    loan_resolver,
-)
+from app.services import loan_loaders
 from app.services.loan_loaders import LoanAnchorFact
 
-from ._charges import LoanCalendar
+from ._calendars import LoanCalendars
 from ._events import confirmed_shadows_through, loan_event_stream
 from ._replay import LoanEventStream, PaymentOutcome, replay_loan_events
 from ._visible import anchor_visible_on
@@ -209,7 +206,11 @@ def replay_loan_stream(
 
 
 def load_loan_stream(
-    loan_account_id: int, scenario_id: int, *, visible_by: date | None = None,
+    loan_account_id: int,
+    scenario_id: int,
+    terms: LoanCalendars,
+    *,
+    visible_by: date | None = None,
 ) -> LoanEventStream:
     """Load a loan's recorded facts into its :class:`~._replay.LoanEventStream`.
 
@@ -264,9 +265,16 @@ def load_loan_stream(
     recorded earlier than the start after the start was written, or from a
     row held before those refusals existed.
 
+    **The loan's params and calendar come from the caller's pass**
+    (:class:`._calendars.LoanCalendars`, plan step recurrence:R25), so a pass
+    that also prices the loan's payments reads the SAME calendar its charges
+    are built from (ruling **R-R105**); the ledger's own walk hands a fresh
+    one.
+
     Args:
         loan_account_id: The loan account whose facts to load.
         scenario_id: The budget scenario the payments live in.
+        terms: The read pass's :class:`._calendars.LoanCalendars`.
         visible_by: ``None`` for every recorded fact (the ledger's walk); a
             date for the facts a pass reading on that day has seen.
 
@@ -276,7 +284,7 @@ def load_loan_stream(
         N1 guard; a configured loan always has at least its origination
         assertion, which is synthesized.
     """
-    params = loan_loaders.load_loan_params(loan_account_id)
+    params = terms.params(loan_account_id)
     if params is None:
         # Not a configured loan yet (e.g. a payment settled before its
         # LoanParams was created); nothing to walk until it is resolvable.
@@ -291,26 +299,14 @@ def load_loan_stream(
         or anchor_visible_on(fact.anchor_date) <= visible_by
     ]
 
-    periods = loan_resolver.resolve_periods(
-        params, loan_loaders.load_rate_changes(loan_account_id),
-    )
-    # Every escrow LINE with its full version history, loaded once; each accrual
-    # period's escrow is resolved (greatest effective_date <= the period's own
-    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
-    # since-removed version still applies to a historical period and a later
-    # escrow change never re-splits a past payment (plan Section 2 / D3).
-    escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
-    # The loan's ONE calendar (ruling R-R100), built before the payments load
+    # The loan's ONE calendar (ruling R-R100), read before the payments load
     # because the visibility bound reads it too: a ``$0.00`` close is visible
     # from the installment it skips (ruling R-BAL139), its interval's on this
     # calendar (ruling R-R107) -- the installment the replay charges it
-    # against.
-    calendar = LoanCalendar(
-        origination_date=params.origination_date,
-        payment_day=params.payment_day,
-        periods=periods,
-        escrow_lines=escrow_lines,
-    )
+    # against.  Its escrow lines carry their full version history, so each
+    # accrual period's escrow is resolved on the period's own date and a later
+    # escrow change never re-splits a past payment (plan Section 2 / D3).
+    calendar = terms.calendar(loan_account_id)
     # The stream reads each settled payment's LEG: its parent's due date and
     # pay period (the producer loads the period as its sort key) and its
     # RECORD, the covering movement the producer's one join attaches (plan
@@ -388,7 +384,9 @@ def walk_loan_ledger(
         guard); a configured loan always walks, since its origination anchor is
         synthesized.
     """
-    return replay_loan_stream(load_loan_stream(loan_account_id, scenario_id))
+    return replay_loan_stream(
+        load_loan_stream(loan_account_id, scenario_id, LoanCalendars()),
+    )
 
 
 def compute_loan_payment_splits(

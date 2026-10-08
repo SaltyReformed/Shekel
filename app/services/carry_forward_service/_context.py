@@ -165,9 +165,12 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     # ONE basis for the whole request, on the same terms as the schedule above:
     # every envelope row is priced against the same owner and scenario, and it
     # resolves nothing until the first row asks.  Built OVER the pass's pricer
-    # (plan step salary:C12) under the CARRIED scenario, which is why it is not
+    # (plan step salary:C12) and its loan terms (plan step recurrence:R25)
+    # under the CARRIED scenario, which is why it is not
     # ``balance_ctx.amounts()`` -- see the docstring on *scenario_id*.
-    basis = amount_basis(balance_ctx.paychecks(), scenario_id)
+    basis = amount_basis(
+        balance_ctx.paychecks(), scenario_id, balance_ctx.loan_terms(),
+    )
 
     if source_period_id == target_period_id:
         return _CarryForwardContext(

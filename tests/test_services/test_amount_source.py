@@ -1396,8 +1396,9 @@ class TestTheLoanPaymentRule:
     ):
         """No loan behind it, so its P&I has no answer and nothing substitutes.
 
-        The destination is an ordinary savings account, so
-        ``_resolve_loan_basis`` answers nothing.  A fallback here would publish
+        The destination is an ordinary savings account, so the loan calendar
+        (``loan_ledger.LoanCalendars.calendar``, ``_resolve_loan_basis``
+        until plan step recurrence:R25) answers nothing.  A fallback here would publish
         the stored figure, which on a derive-mode payment is a snapshot of
         exactly the computation that just failed.
         """
@@ -1871,7 +1872,12 @@ class TestTheBasisIsOneDerivationPerReadPass:
             "pricing an ordinary expense row must not resolve the paycheck "
             f"derivation; got {touched}"
         )
-        assert not basis.loans._loans, (  # pylint: disable=protected-access -- likewise
+        # The loan derivation's memo is the pass's ``LoanCalendars`` since plan
+        # step recurrence:R25 (it was ``LoanPricing._loans``); its params memo
+        # is the first thing any loan price loads, and the calendar is built
+        # over it, so both empty is "no loan resolved".
+        terms = basis.loans._terms  # pylint: disable=protected-access -- likewise
+        assert not terms._params and not terms._calendars, (  # pylint: disable=protected-access -- likewise
             "pricing an ordinary expense row must not resolve the loan "
             f"derivation; got {touched}"
         )

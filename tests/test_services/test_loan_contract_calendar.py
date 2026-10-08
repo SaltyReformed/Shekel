@@ -21,10 +21,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.routes.loan._helpers import band_chart_dates
-from app.services.cash_ledger._loan_installment import (
-    _LoanCashBasis,
-    _installment_cash,
-)
+from app.services.cash_ledger._loan_installment import _installment_cash
 from app.services.loan_ledger import (
     LoanCalendar,
     LoanCashEvent,
@@ -500,21 +497,22 @@ class TestAPaymentIsPricedOnItsInterval:
     _ORIGINATION = date(2026, 1, 22)
     _LINES = [_escrow_line((date(2026, 1, 22), "1200.00"), (date(2026, 3, 1), "3600.00"))]
 
-    def _basis(self, periods=None) -> _LoanCashBasis:
-        """The loan's pricing terms: one 6% period at P&I $200.00 unless stated."""
-        return _LoanCashBasis(
+    def _basis(self, periods=None, lines=None) -> LoanCalendar:
+        """The loan's terms: one 6% period at P&I $200.00 and _LINES unless stated."""
+        return LoanCalendar(
+            origination_date=self._ORIGINATION,
+            payment_day=22,
             periods=periods if periods is not None else [
                 rate_period(_RATE, start_date=self._ORIGINATION,
                             period_pi=Decimal("200.00")),
             ],
-            payment_day=22,
-            origination_date=self._ORIGINATION,
+            escrow_lines=lines if lines is not None else self._LINES,
         )
 
-    def _cash(self, due: date, basis: _LoanCashBasis | None = None) -> Decimal:
+    def _cash(self, due: date, basis: LoanCalendar | None = None) -> Decimal:
         """The derive-mode cash of a payment due *due*, no standing extra."""
         return _installment_cash(
-            basis if basis is not None else self._basis(), self._LINES,
+            basis if basis is not None else self._basis(),
             due, date(2026, 1, 1), _ZERO,
         )
 
@@ -541,7 +539,7 @@ class TestAPaymentIsPricedOnItsInterval:
             (date(2026, 1, 22), "1200.00"), (date(2026, 2, 1), "3600.00"),
         )]
         assert _installment_cash(
-            self._basis(), lines, date(2026, 2, 10), date(2026, 1, 1), _ZERO,
+            self._basis(lines=lines), date(2026, 2, 10), date(2026, 1, 1), _ZERO,
         ) == Decimal("500.00")
 
     def test_an_off_day_payment_carries_its_intervals_rate_period(self):

@@ -1,11 +1,11 @@
 """
 Shekel Budget App -- Cash ledger: what one loan INSTALLMENT costs.
 
-Amount rule 4's per-INSTALLMENT tier: a loan's rate periods and payment day
-(:class:`_LoanCashBasis`), and the rule that prices one installment against
-them -- the DERIVE arm's installment P&I plus that installment's own escrow
-plus any standing extra.  The MANUAL arm lived here too until plan step
-X-au-g-2c-2; see the note at the foot of this file for where it went and why.
+Amount rule 4's per-INSTALLMENT tier: the rule that prices one installment
+against the loan's contract terms -- the DERIVE arm's installment P&I plus
+that installment's own escrow plus any standing extra.  The MANUAL arm lived
+here too until plan step X-au-g-2c-2; see the note at the foot of this file for
+where it went and why.
 
 **Nothing here takes a ROW, and plan step X-au-f-2 is what re-typed it**
 (ruling **R-BAL10**).  :func:`_installment_cash` took the payment SHADOW and
@@ -20,8 +20,12 @@ transfer can answer it.  The module names no model at all as a result.
 **Every contractual term here resolves on the INSTALLMENT it governs, never on
 a read date** (ruling **R-IJ**, plan step X-au-g-2b), and the installment is the
 one whose INTERVAL the payment falls in (ruling **R-R104**, which amends R-IJ).
-The basis holds the loan's term SET -- a pure function of its params and its
-rate feed, dated by nothing -- and :func:`_installment_cash` derives the
+The terms are the loan's :class:`~app.services.loan_ledger.LoanCalendar` --
+the SAME value its charges are built from (plan step recurrence:R25, ruling
+**R-R105**: "one bundle that pricing and charging both read"; it was a second
+bundle of its own here, ``_LoanCashBasis`` plus the pricer's escrow lines,
+finding **REC-545**) -- a pure function of the loan's params, rate feed and
+escrow history, dated by nothing; :func:`_installment_cash` derives the
 installment once and reads both the P&I and the escrow on it.  Nothing in this
 module, or in the package above it, reads a wall clock.
 
@@ -33,9 +37,10 @@ model's own question rather than the loan reader's -- so hosting it a tier UP
 forced the amount model to reach into ``loan_payment_service`` for it, and
 :mod:`app.services.row_valuation` exists as a separate leaf only because of
 that reach.  Moving the producer DOWN deletes it rather than routing around
-it: this module names only loan TERM primitives (``loan_loaders``,
-``loan_resolver``, ``escrow_calculator``), none of which names the cash ledger,
-so the arrow runs one way and the loan READING tier is free to import this
+it: this module names only loan TERM primitives (``loan_ledger``'s calendar,
+``loan_loaders``, ``installment_calendar``, ``rate_period_engine``,
+``escrow_calculator``), none of which names the cash ledger, so the arrow runs
+one way and the loan READING tier is free to import this
 package -- which plan step X-au-g-2c SPENT, routing
 ``loan_payment_service.get_payment_history`` through the amount model.  The
 unwind is the one :mod:`app.services.row_valuation` says plan step ``X-au-g``
@@ -78,173 +83,33 @@ them are MASKS, over 9 modules** -- a target imported under
 
 **It reads the loan's TERMS and never its payment rows**, which is what makes
 this leaf independent of the payment-history tier rather than merely ordered
-after it.  The cycle that used to run through
-:func:`app.services.loan_payment_service.load_loan_context` is deleted; see
-:func:`_resolve_loan_basis`.
+after it.  The terms used to be resolved through
+:func:`app.services.loan_payment_service.load_loan_context` -- and therefore
+the loan's own payment history -- only to read
+``resolve_loan(...).monthly_payment`` back out, a cycle plan step X-au-g-1
+deleted; the terms' one loader since plan step recurrence:R25 is
+:func:`app.services.loan_ledger.build_loan_calendar`, and
+``test_loan_payment_service.TestALoansPriceDoesNotReadItsOwnPayments`` grades
+that it issues no statement against the payment rows.
 
 Imports no sibling, so it is the bottom of this package's pricing line:
 ``_loan_installment`` -> :mod:`._loan_pricing` -> :mod:`._amount_basis` ->
 :mod:`._amount_source`.
 """
 
-from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.services import escrow_calculator, loan_resolver
+from app.services import escrow_calculator
 from app.services.installment_calendar import installment_paid_by
-from app.services.loan_loaders import (
-    installment_for,
-    load_loan_params,
-    load_rate_changes,
-)
-from app.services.rate_period_engine import RatePeriod, period_for_date
+from app.services.loan_ledger import LoanCalendar
+from app.services.loan_loaders import installment_for
+from app.services.rate_period_engine import period_for_date
 from app.utils.money import round_money
-
-@dataclass(frozen=True)
-class _LoanCashBasis:
-    """The loan-level facts one installment's live cash is built from.
-
-    All three fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`),
-    so they are returned together rather than re-queried per row: the rate
-    periods are the loan's TERMS over its whole life, and the origination date
-    and the payment day are the two constants that place a payment on the
-    loan's installment calendar
-    (:func:`app.services.installment_calendar.installment_of`) and so name the
-    installment it pays.
-
-    **It holds the loan's term SET rather than one resolved P&I, and ruling
-    R-IJ is why** (plan step X-au-g-2b).  A loan's contractual terms resolve on
-    the INSTALLMENT they govern, never on a read date, so there is no such
-    thing as "the loan's monthly P&I" for a whole pass to share: an ARM's
-    December and January installments are governed by different periods when a
-    recast falls between them.  What a pass CAN share is the period set, which
-    is a pure function of the loan's params and its rate feed and depends on no
-    date at all -- so it is resolved once per loan per pass here and each
-    payment reads the period governing the installment it pays
-    (:func:`_installment_cash`), exactly as its escrow resolves on that
-    installment.
-
-    Attributes:
-        periods: The loan's ordered :class:`~app.services.rate_period_engine.RatePeriod`
-            set (:func:`app.services.loan_resolver.resolve_periods`), each
-            carrying the level P&I held constant for its span.  Non-empty for
-            a configured loan: period 0 always starts at origination.
-        payment_day: The loan's contractual day-of-month due day, 1-31, from
-            :attr:`app.models.loan_params.LoanParams.payment_day` -- the
-            fallback basis :func:`app.services.loan_loaders.installment_for`
-            needs for a payment carrying no stored ``due_date``, and the day
-            the loan's installment grid falls on.
-        origination_date: The loan's immutable
-            :attr:`~app.models.loan_params.LoanParams.origination_date`, where
-            the installment grid starts (ruling **R-R104**).
-    """
-
-    periods: list[RatePeriod]
-    payment_day: int
-    origination_date: date
-
-
-def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
-    """Resolve a loan's rate periods, payment day and origination date, or ``None``.
-
-    Returns ``None`` when the loan has no ``LoanParams`` row (it cannot be
-    resolved, so its shadows keep their stored amount); a configured loan is
-    always resolvable, since its origination anchor fact is synthesized from
-    the immutable params.
-
-    **It takes no date, and ruling R-IJ is what deleted the one it used to
-    take** (plan step X-au-g-2b).  It resolved
-    ``compute_monthly_payment_baseline(params, rate_changes, as_of)`` into a
-    single ``monthly_pi`` -- one P&I, pinned at the read pass's wall clock,
-    applied to every installment the pass priced (finding **N-40**).  That is
-    the same producer this now calls, DECOMPOSED rather than replaced:
-    ``compute_monthly_payment_baseline`` is by its own definition
-    ``period_for_date(resolve_periods(params, rate_changes), as_of).period_pi``,
-    so resolving the periods here and letting each payment pick its own period
-    (:func:`_installment_cash`) reads the same figure from the same
-    derivation on a date the pass no longer chooses.  The periods are a pure
-    function of the params and the rate feed, so there is no date left to pin:
-    a resolver reads no wall clock.
-
-    The escrow term is deliberately NOT added here for the reason the P&I is
-    no longer resolved here -- it is per-INSTALLMENT
-    (:func:`_installment_cash`), not one figure per loan.  A future-dated
-    escrow version means a December and a January payment carry different
-    escrow, so the escrow must be resolved against the installment each
-    payment pays rather than folded into a single loan-level PITI; ruling R-IJ
-    is that same rule, stated for the P&I term beside it.
-
-    **It reads the loan's TERMS and nothing else, and that is what deletes a
-    cycle three docstrings were built around.**  It used to run
-    :func:`load_loan_context` and then ``resolve_loan(...).monthly_payment``,
-    which put :func:`get_payment_history` on the pricing path -- so pricing a
-    loan payment read the amounts of the loan's own payment rows, and that
-    apparent circularity is why ``get_payment_history`` priced through
-    ``cash_ledger.settled_contribution`` instead of the amount resolver, why its
-    docstring concluded "the loan-side INCOME leg must keep owning its figure,
-    and only the checking-side EXPENSE leg can be declared derived".
-
-    **That is not finding N-259, and conflating the two was a first draft's
-    error worth naming.**  N-259 was a WRITE-BACK cycle one layer up -- a
-    settle refreshed the amount, so a settle / revert / settle compounded the
-    standing extra -- and it is CLOSED at plan step ``balance:X-au-c3``
-    (`3d1379d1`), which made a settle RECORD what moved.  Stating it in the
-    present tense is the shape this project has already paid for: an undated
-    claim quoted as a REASON decays invisibly, because nobody re-checks a
-    premise.
-
-    **The cycle never closed for the value that actually flowed.**  Exactly one
-    field left ``resolve_loan`` here -- ``monthly_payment`` -- and that is
-    ``period_for_date(resolve_periods(params, rate_changes), as_of).period_pi``
-    (``loan_resolver._state``), whose producer
-    :func:`~app.services.loan_resolver.resolve_periods` takes the params and the
-    rate feed and NO payments and NO anchors.  So the whole payment history was
-    loaded to derive a figure independent of it, and
-    :func:`~app.services.loan_resolver.compute_monthly_payment_baseline` is the
-    cheap producer documented as returning the same value for the same inputs.
-
-    Measured on a production clone 2026-08-31, both live loans, at the read
-    date then current, by
-    ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``: the Mortgage
-    answers ``1293.96`` and the Van Loan ``531.94`` from the FULL 29-record
-    history, an EMPTY one, the confirmed 5 alone, a DOUBLED 58, and the cheap
-    producer -- five ways, one figure each.  *That harness pins a DATE because
-    the payment-feed independence it grades is a claim about one figure; this
-    function no longer takes one, so the harness now asks the period set for
-    the P&I governing that date.*
-
-    The DOUBLED feed is the arm that grades the CLAIM rather than the number,
-    and the harness states why; the suite carries the same distinction as two
-    tests with disjoint fail sets
-    (``test_loan_payment_service.TestALoansPriceDoesNotReadItsOwnPayments``).
-
-    **The scenario argument went with the history**, which is the honest
-    signal: a loan's contractual P&I is not scenario-scoped, and the parameter
-    only ever existed to scope the payment rows this no longer reads.
-
-    Args:
-        loan_account_id: The destination loan account to resolve.
-
-    Returns:
-        The loan's :class:`_LoanCashBasis`, or ``None`` when the account is
-        not a configured loan.
-    """
-    params = load_loan_params(loan_account_id)
-    if params is None:
-        return None
-    return _LoanCashBasis(
-        periods=loan_resolver.resolve_periods(
-            params, load_rate_changes(loan_account_id),
-        ),
-        payment_day=params.payment_day,
-        origination_date=params.origination_date,
-    )
 
 
 def _installment_cash(
-    basis: _LoanCashBasis,
-    escrow_lines: list,
+    calendar: LoanCalendar,
     due_date: "date | None",
     period_start: date,
     extra_principal: Decimal,
@@ -359,16 +224,17 @@ def _installment_cash(
     part a cutover advertised as byte-identical from its predecessor by a cent.
 
     Args:
-        basis: The loan's :class:`_LoanCashBasis` (:func:`_resolve_loan_basis`),
-            resolved once per loan.  Taken WHOLE rather than unpacked by every
-            caller: its rate periods, its payment day and its origination are
-            parts of one figure -- the last two place the installment whose
-            period is read -- so passing them separately would let a call site
-            pair one loan's terms with another's calendar.
-        escrow_lines: The loan's escrow lines with their full version history.
+        calendar: The loan's :class:`~app.services.loan_ledger.LoanCalendar`
+            -- the read pass's own, the one its charges are built from
+            (:class:`~app.services.loan_ledger.LoanCalendars`).  Taken WHOLE
+            rather than unpacked by every caller: its rate periods, its escrow
+            lines, its payment day and its origination are parts of one figure
+            -- the last two place the installment whose period and escrow are
+            read -- so passing them separately would let a call site pair one
+            loan's terms with another's calendar.
         due_date: The payment's own stored due date, or ``None``.  Both dating
-            values come off ONE row at every call site, for the reason *basis*
-            is taken whole.
+            values come off ONE row at every call site, for the reason
+            *calendar* is taken whole.
         period_start: The start date of the payment's pay period -- the
             fallback basis, read on every call because
             :func:`~app.services.loan_loaders.installment_for` takes it eagerly.
@@ -376,18 +242,21 @@ def _installment_cash(
             (``0.00`` when none), from :func:`loan_payment_config`.
 
     Returns:
-        ``round_money(period_for_date(basis.periods, installment).period_pi
-        + escrow_monthly_as_of(lines, installment) + extra_principal)``, where
+        ``round_money(period_for_date(calendar.periods, installment).period_pi
+        + escrow_monthly_as_of(calendar.escrow_lines, installment)
+        + extra_principal)``, where
         ``installment`` is the one whose interval this payment's due date falls
         in -- the due date itself for a payment due on the contractual day or
         before the loan's first installment.
     """
     installment = installment_paid_by(
-        basis.origination_date, basis.payment_day,
-        installment_for(due_date, period_start, basis.payment_day),
+        calendar.origination_date, calendar.payment_day,
+        installment_for(due_date, period_start, calendar.payment_day),
     )
-    monthly_pi = period_for_date(basis.periods, installment).period_pi
-    escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, installment)
+    monthly_pi = period_for_date(calendar.periods, installment).period_pi
+    escrow = escrow_calculator.escrow_monthly_as_of(
+        calendar.escrow_lines, installment,
+    )
     return round_money(monthly_pi + escrow + extra_principal)
 
 

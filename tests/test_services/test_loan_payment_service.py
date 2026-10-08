@@ -40,7 +40,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     typed,
 )
-from app.services.cash_ledger import _resolve_loan_basis
+from app.services.loan_ledger import LoanCalendars
 from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.loan_payment_service import (
@@ -1231,7 +1231,9 @@ def _statements_issued():
 class TestALoansPriceDoesNotReadItsOwnPayments:
     """A loan's monthly P&I is its TERMS, so the payment feed cannot move it.
 
-    The cycle these tests exist to keep deleted: ``_resolve_loan_basis`` used to
+    The cycle these tests exist to keep deleted: the loan's pricing terms
+    (``_resolve_loan_basis`` until plan step recurrence:R25, the pass's
+    :class:`~app.services.loan_ledger.LoanCalendars` since) used to
     run :func:`load_loan_context` -- and therefore
     :func:`get_payment_history` -- purely to read
     ``resolve_loan(...).monthly_payment`` back out, which put the loan's own
@@ -1285,7 +1287,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 )
             db.session.commit()
 
-            before = _resolve_loan_basis(loan.id)
+            before = LoanCalendars().calendar(loan.id)
             assert before is not None
             assert get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
@@ -1302,7 +1304,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ) == [], "the feed is not empty: one of its two relations survived"
 
-            after = _resolve_loan_basis(loan.id)
+            after = LoanCalendars().calendar(loan.id)
             assert after is not None
             # The whole TERM SET, period by period -- not one resolved figure.
             # A producer that read the feed could agree on the period governing
@@ -1341,7 +1343,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.expire_all()
 
             with _statements_issued() as seen:
-                basis = _resolve_loan_basis(loan.id)
+                basis = LoanCalendars().calendar(loan.id)
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"

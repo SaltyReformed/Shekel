@@ -18,7 +18,12 @@ installment a date falls in inverts it with month arithmetic rather than a
 search over a list; the first installment is its first term; and the due date
 on or after a pay period's start reads the same clamp from that month.  Until
 that step the rule was written out by hand in the loan rate engine (the month
-step and the due-date fallback) beside the one clamp.  The installment lookup
+step and the due-date fallback) beside the one clamp; the payoff and refinance
+calculators' own month step and clamp went at plan step recurrence:R25, which
+also made every question above a reading of the monthly-grid set beside the
+clamp (:func:`app.utils.dates.grid_month_on_or_before` and its siblings, ruling
+**R-R122**) that the card statement, the pay grid and the recurrence walk read
+too.  The installment lookup
 ruling **R-R104** needs was first built, inside that step, as a search over a
 list rebuilt from origination for every payment priced: measured 2026-09-24 on
 a production copy with a mortgage's payments switched to derive mode (rolled
@@ -36,7 +41,13 @@ Pure: no I/O, no clock, no Flask.
 
 from datetime import date
 
-from app.utils.dates import clamped_day, month_ordinal
+from app.utils.dates import (
+    clamped_day,
+    grid_month_on_or_after,
+    grid_month_on_or_before,
+    grid_months_within,
+    month_ordinal,
+)
 
 
 def due_in_following_month(reference: date, payment_day: int) -> date:
@@ -45,9 +56,12 @@ def due_in_following_month(reference: date, payment_day: int) -> date:
     The rule's one-month step: whatever day of its month *reference* is, the
     answer is *payment_day* in the NEXT calendar month, clamped to that
     month's end.  It seeds the loan's first installment from its origination
-    (:func:`first_installment_date`) and the rate engine's contractual
+    (:func:`first_installment_date`), the rate engine's contractual
     schedule from its latest row or anchor
-    (:func:`app.services.rate_period_engine.replay_schedule`).
+    (:func:`app.services.rate_period_engine.replay_schedule`), and the
+    schedule-slot walk's step past a contested month
+    (:func:`app.services.amortization_engine.schedule_dates`), whose own copy
+    of this step went at plan step recurrence:R25.
 
     Args:
         reference: Any date; only its month is read.
@@ -77,7 +91,12 @@ def first_installment_date(origination_date: date, payment_day: int) -> date:
     Exposed because the recurrence bound needs it
     (:func:`app.services.loan_recurrence_sync.loan_cadence_start` makes it the
     rule's ``starts_on`` -- its FIRST OCCURRENCE since ruling R-R16 -- so no
-    payment generates before the loan exists, plan step C9a).  The
+    payment generates before the loan exists, plan step C9a), and since plan
+    step recurrence:R25 the payoff-by-date and refinance calculators start
+    their projections on it
+    (:func:`app.services.amortization_engine.calculate_payoff_by_date`,
+    ``routes.loan.calculators._project_refinance``) rather than on a month
+    step of their own.  The
     alternative -- reading
     ``contractual_schedule_from_origination(...)[0].payment_date`` -- yields
     the identical date (pinned by test) but builds the loan's entire 360-row
@@ -112,11 +131,13 @@ def monthly_due_date(period_start: date, payment_day: int) -> date:
     dated between a period's start and that period's due date would strand
     the payment in the gap.
 
-    It reads the rule's clamp in *period_start*'s own month and steps to the
-    next month only when that day has already passed, so a ``payment_day``
-    of 31 resolves to Feb 28/29 in February.  It lived in
-    :mod:`app.services.rate_period_engine` until plan step recurrence:R16-c-2
-    (see :func:`first_installment_date`).
+    It is the grid's first day on or after *period_start*
+    (:func:`app.utils.dates.grid_month_on_or_after`, the one set every
+    monthly grid reads since plan step recurrence:R25): the rule's clamp in
+    *period_start*'s own month, or the next month's when that day has already
+    passed, so a ``payment_day`` of 31 resolves to Feb 28/29 in February.  It
+    lived in :mod:`app.services.rate_period_engine` until plan step
+    recurrence:R16-c-2 (see :func:`first_installment_date`).
 
     Args:
         period_start: The date to resolve from -- a payment's pay-period
@@ -127,10 +148,9 @@ def monthly_due_date(period_start: date, payment_day: int) -> date:
         The first date on or after *period_start* whose day is
         *payment_day* (day-clamped to the month's length).
     """
-    candidate = clamped_day(month_ordinal(period_start), payment_day)
-    if candidate >= period_start:
-        return candidate
-    return due_in_following_month(period_start, payment_day)
+    return clamped_day(
+        grid_month_on_or_after(period_start, payment_day), payment_day,
+    )
 
 
 def installment_dates(
@@ -146,7 +166,10 @@ def installment_dates(
     rulings **R-R72**, **R-R89** and **R-R100**) -- and the grid the loan
     page's band chart and the plan's post-contractual extension step along.
     A caller that needs ONE installment asks :func:`installment_of` rather
-    than searching this list.
+    than searching this list.  The enumeration is the grid's own
+    (:func:`app.utils.dates.grid_months_within`, plan step recurrence:R25):
+    the months from the first installment's through the last on or before
+    *through*, each re-clamped from the meant day.
 
     Args:
         origination_date: The loan's immutable
@@ -158,14 +181,14 @@ def installment_dates(
     Returns:
         The installment dates, ascending, one per calendar month.
     """
-    dates: list[date] = []
-    ordinal = month_ordinal(first_installment_date(origination_date, payment_day))
-    due = clamped_day(ordinal, payment_day)
-    while due <= through:
-        dates.append(due)
-        ordinal += 1
-        due = clamped_day(ordinal, payment_day)
-    return dates
+    return [
+        clamped_day(ordinal, payment_day)
+        for ordinal in grid_months_within(
+            payment_day,
+            first_installment_date(origination_date, payment_day),
+            through,
+        )
+    ]
 
 
 def installment_of(
@@ -187,8 +210,10 @@ def installment_of(
 
     **The rule inverted, not searched.**  The installment in *day*'s own
     month is the clamp there; when that has not yet fallen by *day*, the
-    interval opened on the month before's.  Either way it is an installment
-    only from number 1 on, :func:`first_installment_date`'s month.
+    interval opened on the month before's -- the grid's latest day on or
+    before *day* (:func:`app.utils.dates.grid_month_on_or_before`, plan step
+    recurrence:R25).  Either way it is an installment only from number 1 on,
+    :func:`first_installment_date`'s month.
 
     **The replay's pairing is the same answer by construction.**  The replay
     hands a payment whatever charge stands when it walks
@@ -214,14 +239,10 @@ def installment_of(
         after origination and before any installment falls, which no charge
         stands over.
     """
-    ordinal = month_ordinal(day)
-    installment = clamped_day(ordinal, payment_day)
-    if installment > day:
-        ordinal -= 1
-        installment = clamped_day(ordinal, payment_day)
+    ordinal = grid_month_on_or_before(day, payment_day)
     if ordinal < month_ordinal(first_installment_date(origination_date, payment_day)):
         return None
-    return installment
+    return clamped_day(ordinal, payment_day)
 
 
 def installment_paid_by(

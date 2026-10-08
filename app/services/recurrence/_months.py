@@ -51,6 +51,7 @@ from app.utils.dates import (
     CALENDAR_DATE_MAX,
     MONTHS_PER_YEAR,
     clamped_day,
+    grid_month_on_or_before,
     month_ordinal,
 )
 
@@ -139,15 +140,6 @@ def months_per_step(unit: RecurrenceUnitEnum, interval_n: int) -> int:
     return months * interval_n
 
 
-#: The last month this walk can name: the one holding
-#: :data:`~app.utils.dates.CALENDAR_DATE_MAX`.
-#:
-#: Read from the application's own calendar vocabulary rather than restated, so
-#: the walk, ``ck_recurrence_rules_starts_on_range`` and
-#: ``_resolution._require_authored_start_window`` all bound the same calendar.
-_LAST_WALKABLE_ORDINAL: int = month_ordinal(CALENDAR_DATE_MAX)
-
-
 def walk_months(
     start_ordinal: int, nominal_day: int, month_step: int,
 ) -> Iterator[date]:
@@ -174,8 +166,16 @@ def walk_months(
     same shape ``ck_recurrence_rules_starts_on_range`` was added for one leaf
     earlier, arriving through the other authored value.
 
-    The bound is applied to the ORDINAL rather than to the yielded date, so the
-    overflowing ``date`` is never constructed.
+    The bound is the month of the last grid day on or before
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`
+    (:func:`app.utils.dates.grid_month_on_or_before`, the monthly-grid set the
+    loan calendar, the card statement and the pay grid read too since plan
+    step ``recurrence:R25``, ruling **R-R122**), read from the application's
+    own calendar vocabulary rather than restated, so the walk,
+    ``ck_recurrence_rules_starts_on_range`` and
+    ``_resolution._require_authored_start_window`` all bound the same
+    calendar.  It is applied to the ORDINAL rather than to the yielded date,
+    so the overflowing ``date`` is never constructed.
 
     Args:
         start_ordinal: The absolute month ordinal to start from.
@@ -190,10 +190,9 @@ def walk_months(
         answer rather than an error: it does fire once, and it names no second
         date the application can hold.
     """
-    ordinal = start_ordinal
-    while ordinal <= _LAST_WALKABLE_ORDINAL:
+    last_ordinal = grid_month_on_or_before(CALENDAR_DATE_MAX, nominal_day)
+    for ordinal in range(start_ordinal, last_ordinal + 1, month_step):
         yield clamped_day(ordinal, nominal_day)
-        ordinal += month_step
 
 
 __all__ = [

@@ -39,7 +39,6 @@ The monetary rounding boundary is :func:`app.utils.money.round_money`
 test in this project assumes.
 """
 
-import calendar
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -50,7 +49,7 @@ from app.services.amortization_engine import (
     calculate_monthly_payment,
 )
 from app.services.installment_calendar import due_in_following_month
-from app.utils.dates import has_settled_by, months_between
+from app.utils.dates import add_months, has_settled_by, months_between
 from app.utils.money import (
     accrue_monthly_interest,
     apply_payment_cash,
@@ -204,20 +203,6 @@ def payment_number(origination_date: date, payment_date: date) -> int:
         whose first row is one month after origination (payment 1).
     """
     return months_between(origination_date, payment_date)
-
-
-def _add_months(start: date, months: int) -> date:
-    """Return ``start`` advanced by ``months`` calendar months, day-clamped.
-
-    Clamps the day to the target month's length (2026-01-31 + 1 month
-    is 2026-02-28).  Used to place period boundaries relative to the
-    origination date.
-    """
-    target_month_zero = start.month - 1 + months
-    target_year = start.year + target_month_zero // 12
-    target_month = target_month_zero % 12 + 1
-    last_day = calendar.monthrange(target_year, target_month)[1]
-    return date(target_year, target_month, min(start.day, last_day))
 
 
 def due_after_anchor(anchor_date: date, due_date: date) -> bool:
@@ -442,6 +427,15 @@ def _period_boundary_dates(
     the full term.  Boundaries are deduplicated, so a rate change that
     coincides with a cadence adjustment date counts once.
 
+    A cadence boundary and the term's end are the origination date plus
+    whole months, day-clamped (2026-01-31 + 1 month is 2026-02-28), through
+    the project's one month step, :func:`app.utils.dates.add_months` -- this
+    module wrote its own copy of that step and its clamp until plan step
+    recurrence:R25 (ruling **R-R106**, finding **REC-546**).  The day kept is
+    the ORIGINATION's, not the payment day: a boundary is when a rate takes
+    effect, and a payment is priced on the period containing its
+    installment (:func:`period_for_date`).
+
     Args:
         terms: The loan's :class:`LoanTerms`.
         rate_changes: Optional :class:`RateChangeRecord` list; each
@@ -453,7 +447,7 @@ def _period_boundary_dates(
         the origination date.
     """
     origination = terms.origination_date
-    term_end = _add_months(origination, terms.term_months)
+    term_end = add_months(origination, terms.term_months)
     boundaries = {origination}
     for change in (rate_changes or []):
         if origination < change.effective_date < term_end:
@@ -463,7 +457,7 @@ def _period_boundary_dates(
         interval = terms.arm_adjustment_interval_months
         offset = first
         while offset < terms.term_months:
-            boundaries.add(_add_months(origination, offset))
+            boundaries.add(add_months(origination, offset))
             if interval is None or interval <= 0:
                 break
             offset += interval
