@@ -373,8 +373,12 @@ def truncate_pay_periods(
     Two gates protect real data, checked in order before anything is deleted:
 
       1. **Hard locks (not overridable).** If any to-delete period is
-         historical, holds a settled transaction, carries an unbalanced
-         ledger account, raise
+         historical, holds a settled transaction, holds a row or transfer
+         holding a payment or purchase (whatever its status, since plan step
+         ``credit_card:CC-5-4a-4``; where that is the period's first lock
+         reason the refusal names each one, its amount and its row, plan
+         step ``pay_calendar:C22``, ruling **R-PC116**),
+         or carries an unbalanced ledger account, raise
          :class:`PayPeriodLocked` and delete nothing.
       2. **Discard gate (overridable).** If any to-delete period holds a
          row regeneration cannot reproduce -- hand-entered, override, or
@@ -476,13 +480,17 @@ def regenerate_pay_periods(
     onward), then generate a fresh ``num_periods``-long schedule from
     ``new_start_date`` at ``cadence_days``.  The new periods come back EMPTY
     and the caller repopulates them (ruling **R-R38**; see the module
-    docstring).  Periods that have already started,
-    are historical, hold settled money or posted ledger entries, or anchor a
-    recurrence rule are KEPT; if any such locked period sits inside the rebuildable tail the
+    docstring).  Periods that have already started, are historical, or
+    hold settled money, a payment or purchase, or posted ledger entries are
+    KEPT; if any such locked period sits inside the rebuildable tail the
     truncate step refuses (history cannot be rewritten under a settled
-    paycheck).  A new rhythm becomes a new ERA from the corrected start
-    (plan step ``pay_calendar:C17-a``) so later extends continue at it, and
-    the kept paydays keep the era they ran on.
+    paycheck), naming each payment and purchase a paycheck locked for
+    holding one holds (plan step ``pay_calendar:C22``).  *"Or anchor a
+    recurrence rule" stood in that list until C22, a lock plan step R7b-4
+    deleted.*  A new rhythm becomes a
+    new ERA from the corrected start (plan step ``pay_calendar:C17-a``) so
+    later extends continue at it, and the kept paydays keep the era they ran
+    on.
 
     The whole operation is one transaction the route commits: if the writer
     rejects ``new_start_date`` after the truncate has run, the route's rollback
