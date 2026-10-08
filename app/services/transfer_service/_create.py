@@ -464,20 +464,23 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # the ``entry_date`` the postings below are filed under (step C2's one
     # clock), and that day is the user's (ruling R-DH (b)) -- and the SEAM is
     # what applies it, since plan step X-f1b made that the column's one writer
-    # (finding N-183).  The shadows are born in the parent's status, so this is
-    # an identity status change carrying the day and moves nothing else.
+    # (finding N-183).  Since plan step ``balance:X-bi-6-4d-2`` the days and
+    # the record land on each SIDE's payment record
+    # (``_status.date_born_settled_pair`` through the seam's Transfer arm,
+    # finding BAL-583); the transfer's status is already written, so nothing
+    # else moves.
     if created_status is not None and created_status.is_settled:
-        # The shadows are BORN in the settled status, so the seam sees an
-        # identity transition and cannot demand a record of what moved -- but a
-        # settled row with no covering movement is the ``$0.00`` record
-        # (ruling **R-BAL82**), a transfer that moved nothing.  So the create
-        # supplies one: the figure is the transfer's own amount, which is
+        # The transfer is BORN in the settled status, so nothing demands a
+        # record of what moved -- but a settled transfer whose sides hold no
+        # record is the ``$0.00`` record (ruling **R-BAL82**), a transfer that
+        # moved nothing.  So the create supplies one: the figure is the
+        # transfer's own amount, which is
         # what a born-settled transfer says moved, and its source is
         # ``resolved`` -- the app priced it from the row rather than anyone
         # stating what the bank took (the source is the stated field since
         # X-bi-3e-1).
         date_born_settled_pair(
-            expense_shadow, income_shadow, stated,
+            xfer, stated,
             settlement=status_seam.Settlement(
                 amount=amount, source=MovementFigureSourceEnum.RESOLVED,
             ),

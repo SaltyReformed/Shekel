@@ -105,6 +105,10 @@ from app.deleted_row_infrastructure import (
     ALL_ARMS as DELETED_ROW_ARMS,
     apply_deleted_row_infrastructure,
 )
+from app.side_band_infrastructure import (
+    ALL_ARMS as SIDE_BAND_ARMS,
+    apply_side_band_infrastructure,
+)
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import stamp_head, upgrade_to_head
@@ -280,6 +284,15 @@ def init_fresh_database(connection):
         lambda sql: db.session.execute(db.text(sql)), arms=DELETED_ROW_ARMS,
     )
     print("Deleted-row rule ready.")
+
+    # A transfer side's record is dated exactly while its transfer is settled
+    # (plan step balance:X-bi-6-4d-2): every arm, for the deleted-row rule's
+    # reason above.
+    print("Applying side-record band rule...")
+    apply_side_band_infrastructure(
+        lambda sql: db.session.execute(db.text(sql)), arms=SIDE_BAND_ARMS,
+    )
+    print("Side-record band rule ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

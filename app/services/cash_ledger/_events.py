@@ -366,11 +366,12 @@ class CashSourceFact:  # pylint: disable=too-many-instance-attributes
     Attributes:
         transaction_id: The movement's own ``transaction_id`` column: the
             plan row it records money for (ruling **R-BAL35**; never a fact
-            of its own).  For a transfer leg it is the shadow the movement
-            still hangs off, NULL from ``X-bi-6-4d``; the fold reads no
-            parent through it.  Its one reader is the bank-agreement screen's
-            name lookup (``bank_agreement._rows_on`` / ``_row_names``), which
-            keys both sides by this column, so a NULL matches a NULL.  The
+            of its own).  ``None`` for a transfer side's record, which hangs
+            off its transfer by a side link since plan step
+            ``balance:X-bi-6-4d-2``; the fold reads no parent through it.
+            Its one reader is the bank-agreement screen's name lookup
+            (``bank_agreement._rows_on`` / ``_row_names``), which keys both
+            sides by this column, so a NULL matches a NULL.  The
             sort's tie-break read it until leaf ``X-bi-6-4d-1`` re-keyed that
             on :attr:`entry_id`, because a ``None`` beside an ``int`` does
             not sort.
@@ -429,7 +430,7 @@ class CashSourceFact:  # pylint: disable=too-many-instance-attributes
     precision the datum does not have.
     """
 
-    transaction_id: int
+    transaction_id: "int | None"
     transfer_id: "int | None"
     entry_id: int
     pay_period_id: int

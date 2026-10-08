@@ -385,6 +385,40 @@ class Transfer(
     pay_period = db.relationship("PayPeriod")
     scenario = db.relationship("Scenario")
     category = db.relationship("Category", lazy="joined")
+    # **EACH SIDE'S PAYMENT RECORD, and a delete never takes one** (plan step
+    # ``balance:X-bi-6-4d-2``, ruling **R-BAL88**; ``Transaction.entries``'
+    # shape, rulings **R-CC54** and **R-CC64**).  At most one per side
+    # (``uq_transaction_entries_one_expense_side_record`` /
+    # ``..._one_income_side_record``): the from-side's money leaving, the
+    # to-side's arriving, dated while the transfer is settled and kept
+    # un-dated across a revert (ruling **R-BAL61**).  No ``delete`` cascade and
+    # ``passive_deletes="all"``: the side keys are ``NO ACTION``, so deleting a
+    # transfer still holding a record is REFUSED at flush, and the one act that
+    # takes a movement off the books (:mod:`app.services.movement_removal`)
+    # deletes each record itself and takes it out of THIS list
+    # (``transfer_legs.parent_entries``).  Written by the status seam's
+    # Transfer arm (:mod:`app.services.status_seam._side`); read through
+    # :mod:`app.services.transfer_legs`.
+    expense_movements = db.relationship(
+        "TransactionEntry",
+        primaryjoin="Transfer.id == TransactionEntry.expense_transfer_id",
+        foreign_keys="TransactionEntry.expense_transfer_id",
+        back_populates="expense_transfer",
+        lazy="select",
+        cascade="save-update, merge, refresh-expire, expunge",
+        passive_deletes="all",
+        order_by="TransactionEntry.id",
+    )
+    income_movements = db.relationship(
+        "TransactionEntry",
+        primaryjoin="Transfer.id == TransactionEntry.income_transfer_id",
+        foreign_keys="TransactionEntry.income_transfer_id",
+        back_populates="income_transfer",
+        lazy="select",
+        cascade="save-update, merge, refresh-expire, expunge",
+        passive_deletes="all",
+        order_by="TransactionEntry.id",
+    )
 
     @hybrid_property
     def amount(self):

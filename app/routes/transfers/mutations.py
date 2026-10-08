@@ -545,7 +545,9 @@ def delete_transfer(xfer_id):
         return _stale_transfer_response(xfer_id), 409
     except ShekelValidationError as exc:
         # **No page names what this door frees** -- no template renders it --
-        # so the service is told nothing was shown, and a hard delete that
+        # so the service is told nothing was shown, and a delete -- hard, or
+        # since plan step ``balance:X-bi-6-4d-2`` an occurrence's soft one,
+        # which takes its sides' records off too (ruling **R-BAL229**) -- that
         # would leave a matched bank line unexplained again is refused (plan
         # step ``credit_card:CC-5-4a-5``, ruling **R-CC127**: "A button with
         # no warning sends nothing").  Uncaught until then, it was a 500 with

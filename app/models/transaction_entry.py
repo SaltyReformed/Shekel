@@ -461,9 +461,9 @@ class TransactionEntry(
     # a movement a side link below files under a TRANSFER names no row
     # (ruling **R-BAL88**).  ``ck_transaction_entries_one_parent`` makes
     # exactly one of the three set, so a NULL here always means "a transfer
-    # side's record".  (The step's migration files every stored record that
-    # way; until the rest of the step moves the status seam's writer onto the
-    # side links, a NEW record is still written under its transfer's twin.)
+    # side's record".  The step's migration filed every stored record that
+    # way, and the status seam's Transfer arm writes every new one so
+    # (:mod:`app.services.status_seam._side`).
     transaction_id = db.Column(
         db.Integer,
         db.ForeignKey(
@@ -596,6 +596,28 @@ class TransactionEntry(
     transaction = db.relationship(
         "Transaction", foreign_keys=[transaction_id],
         back_populates="entries",
+    )
+    # The TRANSFER whose side this movement is the record of (plan step
+    # ``balance:X-bi-6-4d-2``): one relationship per side link, joined on the
+    # transfer's id alone.  The side key is composite -- the movement's
+    # account is the endpoint -- but the join path is the id, the choice
+    # ``transaction`` makes over ``fk_transaction_entries_owner_transaction``:
+    # a join that also named the account would make ``account_id`` a column
+    # this relationship wanted to write on flush, beside ``account``.  An
+    # endpoint move carries the account by the key's ``ON UPDATE CASCADE``
+    # (ruling **R-BAL168**), and the transfer service assigns it in the
+    # session too (``transfer_service._endpoints``).
+    expense_transfer = db.relationship(
+        "Transfer",
+        primaryjoin="TransactionEntry.expense_transfer_id == Transfer.id",
+        foreign_keys=[expense_transfer_id],
+        back_populates="expense_movements",
+    )
+    income_transfer = db.relationship(
+        "Transfer",
+        primaryjoin="TransactionEntry.income_transfer_id == Transfer.id",
+        foreign_keys=[income_transfer_id],
+        back_populates="income_movements",
     )
     # The account the money moved through, for a reader that wants the
     # ACCOUNT rather than its id.  Lazy (the default): ``lazy="joined"``

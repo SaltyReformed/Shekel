@@ -1,11 +1,13 @@
 """
 Shekel Budget App -- Transfer Service: the UPDATE verb
 
-The one path that changes an existing transfer, and with it both shadow
-:class:`~app.models.transaction.Transaction` rows.  Transfer Invariants 3-5
-are maintained here: shadow amounts, statuses and periods always equal the
-parent's, because every field a caller may move is mirrored in this module and
-nowhere else.
+The one path that changes an existing transfer, its two sides' payment
+records (through the one writer, ``_status.apply_status_to_all_three``) and
+the shadow :class:`~app.models.transaction.Transaction` rows' remaining
+mirrored fields -- period, category, due date and the override flag, mirrored
+in this module and nowhere else until plan step ``balance:X-bi-6-4d-3``
+deletes the rows.  A shadow's status and day are no longer kept since
+``X-bi-6-4d-2``: nothing reads them.
 
 Its tail is the posting reconcile (:func:`_reconcile_postings_after_update`),
 which brings the double-entry ledger back in step after the kwargs land -- once
@@ -16,8 +18,6 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 """
 
 import logging
-
-from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -61,7 +61,6 @@ from app.services.transfer_service._side_days import (
 )
 from app.services.transfer_service._status import (
     apply_status_to_all_three,
-    drifted_sides_only,
     reject_stated_days_without_settle,
 )
 from app.services.transfer_service._validation import (
@@ -298,10 +297,9 @@ def _apply_remaining_fields(
     # day arriving alone reaches the seam as an identity transition, the
     # reason the seam stays the single writer of the settlement columns.
     #
-    # The record goes to both SHADOWS and to neither the parent, which
-    # ``apply_status_to_all_three`` owns: a transfer's money moves on its two
-    # legs, so each leg records its own and the two are equal by Transfer
-    # Invariant 3.
+    # The record goes to both SIDES, which ``apply_status_to_all_three`` owns:
+    # a transfer's money moves on its two sides, so each side records its own
+    # and the two are equal.
     new_status_id = updates.get("status_id", rows.transfer.status_id)
     # Resolved from the EXPENSE side's record, read once for the act
     # (``rows.expense_leg``) as :func:`._settle.settle` reads it: both legs
@@ -424,113 +422,6 @@ def _reject_unowned_references(
         _get_owned_category(updates["category_id"], user_id)
 
 
-def _versions_of(rows: TransferRows) -> dict:
-    """Return each of the three rows' ``version_id`` as it stands now.
-
-    Taken by :func:`_apply_transfer_updates` the moment the rows are loaded,
-    so :func:`_bump_parent_version_if_a_leg_moved` can tell a row that was
-    UPDATED by an autoflush from one nothing touched: a flushed row is clean
-    again, but its counter has moved.  Keyed by the ROW OBJECT, not its
-    ``id``: the parent and the shadows live in two tables, so their ids can
-    coincide, while the objects are the same three for the whole act.
-    """
-    return {row: row.version_id for row in (rows.transfer, *rows.shadows)}
-
-
-def _moved_since(row, versions_before: dict) -> bool:
-    """Return whether *row* has changed since *versions_before* was taken.
-
-    TOTAL over flush state: a row is changed if it is DIRTY now
-    (``Session.is_modified``, a net change against its committed value, so an
-    echoed prefill counts for nothing) OR if a flush inside this act has
-    already written it, which its optimistic-lock counter records.  Either
-    half alone is one query from wrong; see
-    :func:`_bump_parent_version_if_a_leg_moved`.
-    """
-    return (
-        db.session.is_modified(row)
-        or row.version_id != versions_before[row]
-    )
-
-
-def _bump_parent_version_if_a_leg_moved(
-    rows: TransferRows, versions_before: dict,
-) -> None:
-    """Move the PARENT's optimistic-lock counter when a shadow-only write lands.
-
-    **A transfer and its two shadows are ONE thing, so the aggregate's version
-    is what a stale form must be caught by** (developer ruling, 2026-08-18).
-    Both full-edit popovers pin ``Transfer.version_id``, but the two facts they
-    can correct in place -- the settle DAY (ruling **R-ED**) and the settled
-    FIGURE -- live on the shadows alone.  SQLAlchemy bumps a version counter
-    only for a row it actually UPDATEs, so those saves left the parent's counter
-    untouched and the C-18 conflict cell could not fire.
-
-    **Measured before the fix, on the live route**: two tabs open on one settled
-    transfer, both holding ``version_id = 2``.  Tab A corrects the figure to
-    ``$214.37`` -- 200 OK, parent still ``2``.  Tab B then saves its prefilled
-    ``$200.00`` against the same pin -- 200 OK, both legs now record
-    ``$200.00``.  A lost update on a money figure, reported as success, with the
-    figure the user read off their statement gone and no conflict shown.
-
-    **Gated on a NET change, not on "a write was attempted".**
-    ``Session.is_modified`` compares each attribute against its committed value,
-    so an echoed prefill -- which ``correction_record`` already resolves to "no
-    record to write" -- bumps nothing.  A version that moved when nothing did
-    would turn every second tab into a spurious 409.
-
-    **"A leg moved" is asked of the counter as well as of the dirty state, and
-    the second half is what plan step X-bi-3c found missing** (measured
-    2026-09-16).  ``is_modified`` answers about the UNFLUSHED change only.  A
-    settled shadow carries a covering movement from that step, and the status
-    seam finds it through the shadow's ``entries`` relationship -- a lazy
-    load, which AUTOFLUSHES the shadow's own pending UPDATE before this
-    function runs.  The shadow was then clean, the parent's counter never
-    moved, and the two-tab lost update above was back, reported green by
-    every test that did not open two tabs.  The predicate this rested on was
-    one query from wrong from the day it was written; a row a flush has
-    already written has a counter that says so, and :func:`_moved_since`
-    reads both.  Eager-loading ``entries`` on the shadows would have made the
-    tests pass and left the predicate one query from wrong again.
-
-    **A leg whose FIGURE moved is dirty by the seam's own hand** (plan step
-    ``balance:X-bi-4b-2``).  Through ``X-bi-4b-1`` the seam wrote the figure
-    onto the shadow's own ``settled_amount`` / ``settled_basis_id`` beside
-    the covering movement, so a figure correction dirtied the shadow and
-    this predicate saw the leg move.  Those columns are gone -- the figure
-    lives on the movement alone, a row of another table -- and the two-tab
-    lost update above came back the moment they went, its own test catching
-    it.  The root cause is the seam's: the record is part of the row's
-    aggregate, so ``status_seam._covering._record_moved`` marks the ROW
-    modified whenever its record nets a change, for a plain transaction's
-    counter and a shadow's alike; this predicate reads that mark as it
-    reads any other write to the leg.
-
-    ``flag_modified`` is what forces the parent into the flush: the row has no
-    field of its own to change, and an assignment of an unchanged value is
-    dropped from the UPDATE (SQLAlchemy's ``_collect_update_commands`` skips a
-    net-zero change), which is the same rule that hid the defect.  It writes
-    ``status_id`` back at its current value -- chosen because it is the one
-    column every path through this module has already loaded, and
-    ``flag_modified`` REFUSES an attribute absent from the object state (which
-    ``updated_at`` is on a freshly-expired instance, measured).  The row's
-    ``updated_at`` still refreshes, because the mixin's ``onupdate`` fires for
-    any UPDATE of the row.
-
-    Args:
-        rows: The transfer and both shadows, after every field write.
-        versions_before: The three rows' counters as :func:`_versions_of`
-            read them when the rows were loaded, before any write.
-    """
-    if not any(_moved_since(shadow, versions_before) for shadow in rows.shadows):
-        return
-    if _moved_since(rows.transfer, versions_before):
-        # The parent is already in the flush, or a flush has already moved its
-        # counter, so a stale pin is caught either way.
-        return
-    flag_modified(rows.transfer, "status_id")
-
-
 def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False, press):
     """Apply *kwargs* to a transfer and both shadows; report the settle's answer.
 
@@ -560,10 +451,6 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
         press: The save's press, or ``None`` (:func:`update_transfer`).
     """
     rows = load_transfer_rows(transfer_id, user_id)
-    # Read at the load, before any write: the aggregate's lock below asks
-    # whether a leg moved, and a leg an autoflush has already written answers
-    # only through its counter (see ``_bump_parent_version_if_a_leg_moved``).
-    versions_before = _versions_of(rows)
     # The transfer's SHAPE, read before any write for the reason the
     # transaction PATCH reads ``recurs`` before its field loop: the accessor
     # lazy-loads the definition, and a load after the first ``setattr`` would
@@ -679,7 +566,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     # ``balance:X-bi-6-3`` the split was reversed HERE, first, because it was
     # keyed by the income shadow the move was about to hide from the loan's
     # reconcile (the R10-b `-$4.17` that measured it).
-    _apply_endpoint_move(rows, endpoints)
+    _apply_endpoint_move(rows, endpoints, press)
 
     # ── WHO OWNS each of the three rows' figure ────────────────────
     # Asked exactly when the caller STATED an ownership.  It used to fire on
@@ -703,20 +590,18 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
     elif settle_only:
         # Already in the settled band, so there is no settle to run -- but the
         # STATUS still goes through, and dropping it too was a defect this
-        # branch shipped for one test run.  Two things depend on it: the
-        # transition is VERIFIED, so marking a ``Cancelled`` transfer Done
-        # stays the designed 400 it has always been; and the write REPAIRS a
-        # pair whose shadows drifted out of the
-        # parent's status, which is the state a bulk ``status_id`` update
-        # leaves and which the posting reconcile below then refuses as an
-        # undated settle.  What is dropped is what DEGRADED: a figure that
-        # would be written verbatim past the echo rule, and a day for a side
-        # already in the band, which would re-date money already recorded.  A
-        # day for a side OUT of the band is the repair's own input and is
-        # honoured (ledger row **BAL-578**: it was dropped, and the repair
-        # dated the drifted side on the owner's today, not the bank's day).
+        # branch shipped for one test run: the transition is VERIFIED, so
+        # marking a ``Cancelled`` transfer Done stays the designed 400 it has
+        # always been.  What is dropped is what would DEGRADE: a figure that
+        # would be written verbatim past the echo rule, and every stated day,
+        # which would re-date money already recorded -- a settle is
+        # idempotent over money already recorded.  The drifted-side repair
+        # that honoured a day for a side OUT of the band (ledger row
+        # **BAL-578**) went at plan step ``balance:X-bi-6-4d-2``: a side's
+        # day is its record's, and a settled transfer holding an un-dated
+        # record is unstorable there.
         remaining = {"status_id": updates["status_id"]}
-        stated = drifted_sides_only(rows, stated)
+        stated = NO_DAYS
     else:
         remaining = updates
 
@@ -724,8 +609,11 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False,
         rows, remaining, stated=stated, date_moves=date_moves, press=press,
     )
 
-    _bump_parent_version_if_a_leg_moved(rows, versions_before)
-
+    # The aggregate's lock -- the transfer's counter moving when a side's
+    # record or day moved and the transfer did not -- is the status seam's
+    # Transfer arm's (``status_seam._side``) since plan step
+    # ``balance:X-bi-6-4d-2``: it compared the twin rows' counters here
+    # until then.
     db.session.flush()
 
     # The ORIGINAL updates, not *remaining*: what the caller ASKED to change is
@@ -827,10 +715,12 @@ def settle_transfer(
 
 
 def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
-    """Update a transfer and propagate changes to shadow transactions.
+    """Update a transfer, its sides' records, and its shadows' mirrored fields.
 
-    Enforces invariants 3-5: shadow amounts, statuses, and periods
-    always match the parent transfer.
+    Enforces invariants 3-5 as far as the shadows still carry them: a shadow's
+    period, category and due date always match the parent transfer, and its
+    amount is the parent's by the amount model; a side's record is written by
+    the one writer (``_status.apply_status_to_all_three``).
 
     **A change that moves the transfer INTO the settled band is a SETTLE**, and
     this hands that act whole to

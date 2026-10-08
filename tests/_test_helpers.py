@@ -3784,7 +3784,7 @@ def create_settled_transfer(
 
     from app import ref_cache
     from app.enums import SettledDayBasisEnum, StatusEnum
-    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
     from app.services import transfer_service
     from app.services.settle_day import SettleDay, recorded_settle_day
     from app.services.transfer_service import _status as transfer_status
@@ -3813,13 +3813,22 @@ def create_settled_transfer(
             transfer.id, seed_user["user"].id, **update_kwargs
         )
     pressed = SettleDay(day=settled_on, basis=SettledDayBasisEnum.BORROWED)
+    # Each side's day is its RECORD's since plan step ``balance:X-bi-6-4d-2``
+    # (R-BAL167 class 4: read by its own SQL over the side links, not through
+    # the producer under test); a ``$0.00`` close keeps no record on either
+    # side (R-BAL141), so it has no day to read.
     sides = [
-        recorded_settle_day(shadow)
-        for shadow in db_session.query(Transaction).filter_by(
-            transfer_id=transfer.id, is_deleted=False,
+        recorded_settle_day(record)
+        for record in db_session.query(TransactionEntry).filter(
+            (TransactionEntry.expense_transfer_id == transfer.id)
+            | (TransactionEntry.income_transfer_id == transfer.id),
         )
     ]
-    assert sides == [pressed, pressed], (
+    expected = (
+        [] if settled_amount is not None and not settled_amount
+        else [pressed, pressed]
+    )
+    assert sides == expected, (
         f"create_settled_transfer pressed Paid on {settled_on} but the sides "
         f"read {sides}: the pin on the writer's clock read no longer reaches "
         "it (see this builder's docstring)"
@@ -4767,11 +4776,20 @@ def transfer_family_journal_filter(transfer_id):
     suite that reads "the transfer's postings" by ``JournalEntry.transfer_id``
     alone reads only the LEGACY one-entry shape, which the pair's door reverses
     to zero and which no go-forward settle writes.  This is the ONE spelling
-    of the transfer family read -- the movements of EVERY shadow of the
-    transfer, deleted or not (a dead pair's reversed legs are part of the
-    family's history), plus whatever still links the transfer directly -- so
-    the cases the developer confirmed when the shape moved widen their subject
-    the same way and no figure per real account moves.
+    of the transfer family read -- the records of BOTH sides of the transfer,
+    plus whatever still links the transfer directly -- so the cases the
+    developer confirmed when the shape moved widen their subject the same way
+    and no figure per real account moves.
+
+    **Independent SQL over the side links** (plan step
+    ``balance:X-bi-6-4d-2``, ruling **R-BAL167** class 4): a record hangs off
+    the TRANSFER by ``expense_transfer_id`` / ``income_transfer_id`` since
+    that step, and this reads those columns itself rather than through
+    ``transfer_legs``, the producer the suite grades -- a helper selecting
+    money through the producer under test cannot catch that producer's
+    fault.  Until then it read the movements under every shadow of the
+    transfer; a record keeps its id across the re-parent, so a journal entry
+    that linked it still does.
 
     Args:
         transfer_id: The ``budget.transfers`` id.
@@ -4783,13 +4801,13 @@ def transfer_family_journal_filter(transfer_id):
     # convention every helper in this module follows.
     from app.extensions import db
     from app.models.journal_entry import JournalEntry
-    from app.models.transaction import Transaction
     from app.models.transaction_entry import TransactionEntry
 
-    movement_ids = (
-        db.session.query(TransactionEntry.id)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(Transaction.transfer_id == transfer_id)
+    movement_ids = db.session.query(TransactionEntry.id).filter(
+        db.or_(
+            TransactionEntry.expense_transfer_id == transfer_id,
+            TransactionEntry.income_transfer_id == transfer_id,
+        ),
     )
     return db.or_(
         JournalEntry.transfer_id == transfer_id,
@@ -4800,11 +4818,13 @@ def transfer_family_journal_filter(transfer_id):
 def transfer_side_journal_filter(transfer_id, account_id):
     """Return the SQL clause selecting ONE side's entries of a transfer's family.
 
-    The entries linked to the covering movement of the transfer's shadow on
-    *account_id* -- the loan-side cash entry of a loan payment, or either
-    side of a cash transfer -- since plan step ``balance:X-bi-6-3`` (a side
-    is an entry of its own, rulings **R-BAL45** and **R-BAL101**).  The
-    per-side twin of :func:`transfer_family_journal_filter`.
+    The entries linked to the record of the transfer's side on *account_id*
+    -- the loan-side cash entry of a loan payment, or either side of a cash
+    transfer -- since plan step ``balance:X-bi-6-3`` (a side is an entry of
+    its own, rulings **R-BAL45** and **R-BAL101**).  The per-side twin of
+    :func:`transfer_family_journal_filter`, and independent SQL over the side
+    links for its reason: a side's record is on its endpoint (the side keys),
+    so the side on *account_id* is the linked record on that account.
 
     Args:
         transfer_id: The ``budget.transfers`` id.
@@ -4817,16 +4837,14 @@ def transfer_side_journal_filter(transfer_id, account_id):
     # convention every helper in this module follows.
     from app.extensions import db
     from app.models.journal_entry import JournalEntry
-    from app.models.transaction import Transaction
     from app.models.transaction_entry import TransactionEntry
 
-    movement_ids = (
-        db.session.query(TransactionEntry.id)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(
-            Transaction.transfer_id == transfer_id,
-            Transaction.account_id == account_id,
-        )
+    movement_ids = db.session.query(TransactionEntry.id).filter(
+        db.or_(
+            TransactionEntry.expense_transfer_id == transfer_id,
+            TransactionEntry.income_transfer_id == transfer_id,
+        ),
+        TransactionEntry.account_id == account_id,
     )
     return JournalEntry.transaction_entry_id.in_(movement_ids)
 

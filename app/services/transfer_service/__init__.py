@@ -59,13 +59,12 @@ through the grid and another through the transfers page, which is finding
   same act when one of those fields settles the row, so a fifth door cannot be
   written without the rule.
 
-:func:`settle_amount` publishes what a tick will book, for the screens that
-must display the figure the verb is about to record, and :func:`leg_settle_amount`
-asks it of a transfer LEG (the reconcile panel's offer since leaf
-``balance:X-bi-6-4c-2``, as :func:`record_leg_clearing` records which statement
-showed one); the verb itself answers whether a human's figure was booked, so
-the panel's count and the column's contents come from one act rather than from
-two askings.
+:func:`leg_settle_amount` publishes what a tick will book on a transfer LEG,
+for the screens that must display the figure the verb is about to record (the
+reconcile panel's offer and the statement matcher's), as
+:func:`record_leg_clearing` records which statement showed one; the verb
+itself answers whether a human's figure was booked, so the panel's count and
+the column's contents come from one act rather than from two askings.
 
 :func:`load_transfer_rows` publishes the pair itself, for the READ surfaces that
 must agree with the write paths about what a transfer IS: the full-edit popover
@@ -93,9 +92,7 @@ from app.services.transfer_service._restore import restore_transfer
 from app.services.transfer_service._side_days import SideDay
 from app.services.transfer_service._settle import (
     leg_settle_amount,
-    record_clearing,
     record_leg_clearing,
-    settle_amount,
 )
 from app.services.transfer_service._update import (
     settle_transfer,
@@ -115,9 +112,7 @@ __all__ = [
     "leg_settle_amount",
     "load_transfer_rows",
     "restore_transfer",
-    "record_clearing",
     "record_leg_clearing",
-    "settle_amount",
     "settle_transfer",
     "update_transfer",
 ]

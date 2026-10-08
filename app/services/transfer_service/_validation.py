@@ -20,17 +20,14 @@ module limit as the Build-Order Step 2-4 posting-ledger wiring lands -- the
 same split that moved the ownership loaders into ``_ownership`` and
 the loan-posting glue into ``_loan_posting``.  :func:`assert_restorable`
 joined them at plan step X-aj1 (ruling **R-DR**), bringing ``restore_transfer``'s
-four preconditions to the module whose single responsibility they already were.
+preconditions to the module whose single responsibility they already were.
 
 These helpers plus :class:`TransferRows` and its one loader are a cohesive,
 transfer-service-private cluster (single responsibility: validate inputs and
 load-and-verify the rows a mutation operates on).  They write no ``status_id``
 and construct no ``Transaction`` -- so they stay clear of the W9907 status fence
 that keeps the status-mirroring appliers in the parent module -- and they
-compute no balance.  :func:`assert_restorable` READS the
-state machine (:func:`~app.services.state_machine.allowed_transitions`) to decide
-whether a drifted shadow is legally repairable; reading the transition rules is
-not writing a status, so the fence is unaffected.
+compute no balance.
 Flask-isolated like the parent service: plain data in, ORM objects out, no
 ``request`` / ``session`` imports.
 """
@@ -48,7 +45,6 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services.account_projection import is_revolving
-from app.services.state_machine import allowed_transitions
 from app.services.transfer_legs import TransferLeg, transfer_side_leg
 from app.services.transfer_service._loan_posting import (
     _reject_transfer_out_of_loan,
@@ -397,7 +393,7 @@ def _get_shadow_transactions(transfer_id):
 def assert_restorable(xfer, shadows, user_id):
     """Refuse a restore whose preconditions do not hold, before anything moves.
 
-    The four checks ``restore_transfer`` runs before it un-deletes a thing.
+    The three checks ``restore_transfer`` runs before it un-deletes a thing.
     Extracted here at plan step X-aj1 (ruling **R-DO**) because they are
     precondition checks on the rows a mutation operates on, which is this
     module's single responsibility, and because gathering them made the caller's
@@ -417,12 +413,11 @@ def assert_restorable(xfer, shadows, user_id):
        onto one would resurrect entries against an account the user has
        withdrawn from active projections, producing balance drift they have no
        UI affordance to investigate.
-    4. **Unrepairable status drift (ruling R-DO).** A shadow whose status the
-       state machine cannot legally move to the parent's is corruption, not
-       drift.  It used to be rewritten with no transition check at all, which
-       destroys the evidence of how it happened -- and a settled shadow silently
-       reverted to Projected would strand its postings.  It is refused in the
-       same voice as checks 1 and 2, which is what makes the three consistent.
+
+    A fourth, **unrepairable status drift** (ruling **R-DO**: a shadow whose
+    status could not legally reach the parent's), went at plan step
+    ``balance:X-bi-6-4d-2``: a shadow's status is no longer kept or read, so
+    the restore no longer repairs one.
 
     Args:
         xfer: The soft-deleted :class:`~app.models.transfer.Transfer` being
@@ -432,7 +427,7 @@ def assert_restorable(xfer, shadows, user_id):
         user_id: The owner, for the archived-endpoint refusal's structured log.
 
     Raises:
-        ValidationError: On any of the four, with a message naming what a human
+        ValidationError: On any of the three, with a message naming what a human
             has to fix.
     """
     transfer_id = xfer.id
@@ -482,22 +477,4 @@ def assert_restorable(xfer, shadows, user_id):
         raise ValidationError(
             "Cannot restore transfer: source or destination account "
             "is archived.  Reactivate the account before restoring."
-        )
-
-    unrepairable = {
-        shadow.id: shadow.status_id for shadow in shadows
-        if shadow.status_id != xfer.status_id
-        and xfer.status_id not in allowed_transitions(shadow)
-    }
-    if unrepairable:
-        logger.error(
-            "Cannot restore transfer %d: shadow(s) %s hold a status that "
-            "cannot legally reach the transfer's status %s.  Data "
-            "integrity issue.",
-            transfer_id, unrepairable, xfer.status_id,
-        )
-        raise ValidationError(
-            f"Transfer {transfer_id} has a shadow transaction whose status "
-            f"cannot legally be reconciled with the transfer's.  Cannot "
-            f"restore -- data integrity issue requiring manual intervention."
         )

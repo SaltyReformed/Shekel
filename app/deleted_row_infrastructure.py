@@ -49,12 +49,14 @@ so either can move without the other.
   ruling R-CC96 closed below); the hiding arm gains an attachment on
   ``budget.transfers``, excepting nothing; and the ``transfer_id IS NULL``
   clause goes from the row arm's ``WHEN`` and its function.  **The third
-  lands with the transfer delete that takes a side's records off first**
-  (design D7, finding BAL-532), at the leaf's second checkpoint: until then a
-  transfer's records are still written under its legs and its soft delete
-  still hides a leg holding one.  ``transfer_id`` is watched as well as
-  ``is_deleted``, so a raw ``UPDATE`` re-pointing a hidden leg away from its
-  transfer cannot walk out of the exception.
+  landed with the transfer delete that takes a side's records off first**
+  (design D7, finding BAL-532), at the leaf's second checkpoint, so under
+  :data:`TRANSFER_ARM` the row arm excepts nothing either -- a leg holds no
+  record, and one that did could not be hidden.  The row-only text a revision
+  without :data:`TRANSFER_ARM` installs keeps the clause, and with it
+  ``transfer_id`` watched as well as ``is_deleted``, so a raw ``UPDATE``
+  re-pointing a hidden leg away from its transfer cannot walk out of the
+  exception there.
 
 **This module is the rule's database half.**  The arrival arm's words are the
 two writers' own refusals -- :func:`app.services.entry_service.create_entry`
@@ -290,7 +292,10 @@ $$ LANGUAGE plpgsql
 
 #: Asked of the row as it stands at COMMIT, not as the event saw it: a row
 #: hidden and then restored, or re-parented to a transfer, in the same
-#: transaction holds nothing this rule forbids.
+#: transaction holds nothing this rule forbids.  The ROW-ONLY text, with R-CC92's
+#: carve-out for a transfer's leg (``t.transfer_id IS NULL``), exactly as
+#: ``c4a4e7d1b9f2`` installed it; :data:`TRANSFER_ARM` installs
+#: :data:`_CREATE_TRANSFER_ERA_HIDING_FUNCTION_SQL` instead.
 _CREATE_HIDING_FUNCTION_SQL = f"""
 CREATE OR REPLACE FUNCTION {_HIDING_FUNCTION}()
 RETURNS TRIGGER AS $$
@@ -315,6 +320,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql
 """
+
+#: The row hiding function under :data:`TRANSFER_ARM`: the row-only text with
+#: the carve-out's one line gone (design D7 of plan step
+#: ``balance:X-bi-6-4d-2``).  Derived from it rather than restated, so the two
+#: cannot part anywhere else.
+_CREATE_TRANSFER_ERA_HIDING_FUNCTION_SQL = _CREATE_HIDING_FUNCTION_SQL.replace(
+    "          AND t.transfer_id IS NULL\n", "",
+)
 
 #: The transfer arm's hiding function, asked at COMMIT for the row arm's
 #: reason: a transfer delete that takes its sides' records off and hides the
@@ -358,6 +371,17 @@ def _arms_rows(arms: tuple[str, ...]) -> tuple[tuple[str, str, str, str, str, st
         "transaction_id, expense_transfer_id, income_transfer_id"
         if TRANSFER_ARM in arms else "transaction_id"
     )
+    # The row hiding attachment excepts a transfer's leg only before the
+    # transfer arm (R-CC92's carve-out; design D7).
+    row_hiding_clause = (
+        "AFTER UPDATE OF is_deleted ON {table} "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+        "WHEN (NEW.is_deleted)"
+        if TRANSFER_ARM in arms else
+        "AFTER UPDATE OF is_deleted, transfer_id ON {table} "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+        "WHEN (NEW.is_deleted AND NEW.transfer_id IS NULL)"
+    )
     return (
         (
             ROW_ARM, *DELETED_ROW_TRIGGERS[0], _ARRIVAL_FUNCTION, "TRIGGER",
@@ -366,10 +390,7 @@ def _arms_rows(arms: tuple[str, ...]) -> tuple[tuple[str, str, str, str, str, st
         ),
         (
             ROW_ARM, *DELETED_ROW_TRIGGERS[1], _HIDING_FUNCTION,
-            "CONSTRAINT TRIGGER",
-            "AFTER UPDATE OF is_deleted, transfer_id ON {table} "
-            "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
-            "WHEN (NEW.is_deleted AND NEW.transfer_id IS NULL)",
+            "CONSTRAINT TRIGGER", row_hiding_clause,
         ),
         (
             TRANSFER_ARM, *DELETED_ROW_TRIGGERS[2], _TRANSFER_HIDING_FUNCTION,
@@ -453,7 +474,10 @@ def apply_deleted_row_infrastructure(
         _CREATE_TRANSFER_ARRIVAL_FUNCTION_SQL if TRANSFER_ARM in arms
         else _CREATE_ROW_ARRIVAL_FUNCTION_SQL
     )
-    executor(_CREATE_HIDING_FUNCTION_SQL)
+    executor(
+        _CREATE_TRANSFER_ERA_HIDING_FUNCTION_SQL if TRANSFER_ARM in arms
+        else _CREATE_HIDING_FUNCTION_SQL
+    )
     if TRANSFER_ARM in arms:
         executor(_CREATE_TRANSFER_HIDING_FUNCTION_SQL)
     for arm, name, table, function, kind, clause in _arms_rows(arms):

@@ -44,7 +44,13 @@ postings, and only the column that says what they are filed under changes.
   4. **The deleted-row rule gains its transfer arm**
      (:mod:`app.deleted_row_infrastructure`, ``TRANSFER_ARM``): a payment may
      not arrive under a deleted transfer, read under the same row lock (ruling
-     **R-CC96**), and a transfer may not be hidden while a side links one.
+     **R-CC96**), and a transfer may not be hidden while a side links one --
+     and the row arm loses R-CC92's carve-out for a transfer's leg, which
+     holds nothing now.
+  5. **The band rule** (:mod:`app.side_band_infrastructure`, design D8): a
+     side's record is dated exactly while its transfer is settled, and a
+     settled transfer records both sides or, closed at zero, neither -- a
+     deferred constraint trigger, installed LAST.
 
 **The upgrade REFUSES, writing nothing, while any stored row could not take its
 link**, each named with the query that finds it (fail-closed, the shape
@@ -52,8 +58,10 @@ link**, each named with the query that finds it (fail-closed, the shape
 not a settlement record, not on its side's endpoint, or under a deleted twin or
 a deleted transfer (the last two would be a hidden parent holding money, the
 state the transfer arm forbids); two records on one side of one transfer; a
-transfer naming an account its owner does not hold.  Every count is 0 where the
-transfer service wrote the rows.
+transfer naming an account its owner does not hold.  After the backfill, and
+before either rule is installed, it refuses the same way while a transfer's
+records break the band rule (step 5).  Every count is 0 where the transfer
+service wrote the rows.
 
 **Measured on the 2026-10-08 14:34 EDT production dump** (at ``1f431fec6547``):
 179 transfers, 358 twins, 44 movements under a twin -- 22 per side, every one a
@@ -85,6 +93,11 @@ from app.deleted_row_infrastructure import (
     ROW_ARM,
     TRANSFER_ARM,
     apply_deleted_row_infrastructure,
+)
+from app.side_band_infrastructure import (
+    BAND_ARM,
+    apply_side_band_infrastructure,
+    remove_side_band_infrastructure,
 )
 
 
@@ -213,6 +226,29 @@ UPDATE budget.transaction_entries e
 """
 
 #: The two side keys, as ``(name, link column, referenced endpoint column)``.
+#: Every transfer whose side records break the band rule
+#: (:mod:`app.side_band_infrastructure`): settled with an un-dated record or a
+#: record on one side only, or not settled with a dated record.  Read AFTER
+#: the backfill, over the side links; ``(transfer id, settled?, dated,
+#: un-dated)``.
+_OFF_BAND_SQL = """
+SELECT x.id, s.is_settled,
+       count(e.id) FILTER (WHERE e.settled_on IS NOT NULL) AS dated,
+       count(e.id) FILTER (WHERE e.settled_on IS NULL) AS undated
+FROM budget.transfers x
+JOIN ref.statuses s ON s.id = x.status_id
+LEFT JOIN budget.transaction_entries e
+       ON e.expense_transfer_id = x.id OR e.income_transfer_id = x.id
+GROUP BY x.id, s.is_settled
+HAVING (s.is_settled
+        AND (count(e.id) FILTER (WHERE e.settled_on IS NULL) > 0
+             OR count(e.id) FILTER (WHERE e.settled_on IS NOT NULL)
+                NOT IN (0, 2)))
+    OR (NOT s.is_settled
+        AND count(e.id) FILTER (WHERE e.settled_on IS NOT NULL) > 0)
+ORDER BY x.id
+"""
+
 _SIDE_KEYS = (
     ("fk_transaction_entries_expense_side", "expense_transfer_id",
      "from_account_id"),
@@ -304,6 +340,32 @@ def refuse_twinless_sides(bind) -> None:
         )
 
 
+def refuse_off_band_transfers(bind) -> None:
+    """Refuse the upgrade while a stored transfer's side records break the band rule.
+
+    Asked after the backfill, inside the revision's transaction, so a refusal
+    rolls the whole revision back and writes nothing.  Module-level so a test
+    can DRIVE it, as :func:`refuse_unlinkable_rows`.
+
+    Args:
+        bind: A SQLAlchemy connection.
+
+    Raises:
+        RuntimeError: Naming each offending transfer and the query that finds
+            it.
+    """
+    off_band = [tuple(row) for row in bind.execute(sa.text(_OFF_BAND_SQL))]
+    if off_band:
+        raise RuntimeError(
+            f"X-bi-6-4d-2 refuses: {len(off_band)} transfer(s) hold payment "
+            "records their status does not admit -- a settled transfer with an "
+            "un-dated record or a record on one side only, or an unsettled "
+            "one with a dated record (transfer id, settled, dated, un-dated: "
+            f"{off_band}; diagnose with: {_OFF_BAND_SQL.strip()}).  Nothing "
+            "was written; each is the developer's to rule."
+        )
+
+
 def _counts(bind, sql: str) -> tuple[int, int]:
     """Return a ``(from-side, to-side)`` count pair from *sql*."""
     expense, income = bind.execute(sa.text(sql)).one()
@@ -365,13 +427,17 @@ def upgrade():
             f"where {expected} hung off a twin, and {left} still do; the "
             "transaction rolls back."
         )
+    refuse_off_band_transfers(bind)
     apply_deleted_row_infrastructure(op.execute, arms=(ROW_ARM, TRANSFER_ARM))
+    # LAST: a deferred trigger queues an event per matching row, and a queued
+    # event blocks an ALTER TABLE later in the same transaction.
+    apply_side_band_infrastructure(op.execute, arms=(BAND_ARM,))
     print(
         f"X-bi-6-4d-2: {linked[0]} from-side and {linked[1]} to-side payment "
         "record(s) now hang off their transfer by a side link; 0 under a twin; "
         "0 refused.  A transfer's accounts are its owner's, and a payment "
         "arriving under a deleted transfer, or a transfer hidden while it holds "
-        "one, is refused."
+        "one, is refused; so is a record dated off its transfer's status."
     )
 
 
@@ -379,6 +445,9 @@ def downgrade():
     """Put every side-linked payment back under its side's twin."""
     bind = op.get_bind()
     refuse_twinless_sides(bind)
+    # FIRST: the re-attach below would queue the band rule's deferred events,
+    # and a queued event blocks the column drops after it.
+    remove_side_band_infrastructure(op.execute)
     apply_deleted_row_infrastructure(op.execute, arms=(ROW_ARM,))
     op.execute(_REATTACH_SQL)
     orphaned = bind.execute(sa.text(

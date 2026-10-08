@@ -39,7 +39,9 @@ and three defects the duplicate had and this one did not:
 subjects**: :mod:`._seam` (the mechanics -- ``apply_status_change`` and the two
 form-submission readings), :mod:`._record` (WHAT a settle records: the
 ``Settlement`` value and the reads over it), and :mod:`._refusals` (the
-invariants stated as guards).  The split is the one ``transfer_service`` and
+invariants stated as guards); :mod:`._covering` writes a row's covering
+movement and, since plan step ``balance:X-bi-6-4d-2``, :mod:`._side` a
+transfer side's record (the Transfer arm).  The split is the one ``transfer_service`` and
 ``cash_ledger`` already made at the same 1000-line ceiling, and by the same
 rule: BY RESPONSIBILITY, not by line count.  **The public surface is this module
 and ``__all__`` is it** -- a leaf is private, and a caller outside the package
@@ -48,7 +50,7 @@ depends on the names below, so no import site changed when the split landed.
 **The W9907 allowlist narrowed WITH the split**, to ``_seam`` alone.  Prefix
 matching would otherwise have exempted every leaf here from the status-write
 fence without anybody deciding it should be -- the exact widening that happened
-to ``transfer_service`` at plan step X-f2-c3.  Neither of the other two leaves
+to ``transfer_service`` at plan step X-f2-c3.  None of the other leaves
 writes ``status_id`` at all.
 
 Architecture:
@@ -113,6 +115,12 @@ from app.services.status_seam._covering import (
     payment_recorded_elsewhere_clause,
     record_clearing,
 )
+from app.services.status_seam._side import (
+    free_moving_side_record,
+    land_moved_side_record,
+    record_side_clearing,
+    sync_side_records,
+)
 from app.services.status_seam._seam import (
     apply_status_change,
     settle_day_for_status,
@@ -129,6 +137,10 @@ __all__ = [
     "holds_no_purchase_clause",
     "payment_recorded_elsewhere_clause",
     "record_clearing",
+    "free_moving_side_record",
+    "land_moved_side_record",
+    "record_side_clearing",
+    "sync_side_records",
     "figure_for_status",
     "tender_for_status",
     "correction_record",

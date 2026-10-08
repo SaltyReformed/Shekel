@@ -194,6 +194,7 @@ from app.services.cash_ledger import (
     reject_movement_before_books_open,
 )
 from app.services.settle_day import (
+    SettleDay,
     is_evidence,
     record_settle_day,
     recorded_settle_day,
@@ -457,14 +458,36 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
             row.reconciled_by_id if _links_the_row(row, movement) else None
         )
         return
-    row_day, movement_day = recorded_settle_day(row), recorded_settle_day(movement)
-    if row_day != movement_day and (
-        row_day.basis is SettledDayBasisEnum.OBSERVED
-        or not is_evidence(movement_day)
-    ):
+    row_day = recorded_settle_day(row)
+    if raises_basis(row_day, recorded_settle_day(movement)):
         record_settle_day(movement, row_day)
     if movement.reconciled_by_id is None and _links_the_row(row, movement):
         movement.reconciled_by_id = row.reconciled_by_id
+
+
+def raises_basis(stated: SettleDay, held: SettleDay) -> bool:
+    """Return whether *stated*, on the SAME day as *held*, raises what the movement knows.
+
+    The equal-days arm of the mirror's rule, stated once for both arms of the
+    seam -- :func:`_mirror_assertion` for a row's covering movement and
+    ``_side`` for a transfer side's record (plan step
+    ``balance:X-bi-6-4d-2``): a bank line's ``observed`` raises any basis, and
+    any basis raises a movement holding no evidence of its own
+    (:func:`~app.services.settle_day.is_evidence`, a ``borrowed`` day).  The
+    three evidence members are separated by provenance and not ranked, so
+    nothing else moves, and a movement's own evidence is never lowered.
+
+    Args:
+        stated: The day the act resolved for the movement, on the same civil
+            day as *held*.
+        held: What the movement records now.
+
+    Returns:
+        ``True`` when the movement should take *stated*'s pair.
+    """
+    return stated != held and (
+        stated.basis is SettledDayBasisEnum.OBSERVED or not is_evidence(held)
+    )
 
 
 def _links_the_row(row: Transaction, movement: TransactionEntry) -> bool:
@@ -539,17 +562,41 @@ def _record_onto(
         change against what *movement* carried, for :func:`_record_moved`.
         The day pair is the row's own assertion and moves the row itself.
     """
+    # The plan's name as it reads at the settle -- the movement's OWN fact
+    # (ruling R-BAL39): a bill's payment has no receipt text, and a later
+    # rename of the plan no more rewrites this than renaming an envelope
+    # rewrites its purchases.  Its day, likewise its own, is the mirror's.
+    changed = record_figure(movement, settlement, row.name)
+    _mirror_assertion(row, movement)
+    return changed
+
+
+def record_figure(
+    movement: TransactionEntry, settlement: Settlement, name: str,
+) -> bool:
+    """Write a settle's FIGURE onto *movement*: the amount, who wrote it, and its name.
+
+    The figure half of what a settle records, stated once for both arms of
+    the seam -- :func:`_record_onto` for a row's covering movement and
+    ``_side`` for a transfer side's record (plan step
+    ``balance:X-bi-6-4d-2``).  The day is each arm's own.
+
+    Args:
+        movement: The covering movement or side record being written.
+        settlement: The record, carrying a figure and its source.
+        name: What the payment is called -- the plan row's name, or the
+            transfer side's leg label.
+
+    Returns:
+        Whether the figure, its source or the name netted a change against
+        what *movement* carried.
+    """
     before = (movement.amount, movement.figure_source_id, movement.description)
     movement.amount = settlement.amount
     movement.figure_source_id = ref_cache.movement_figure_source_id(
         settlement.source,
     )
-    # The plan's name as it reads at the settle -- the movement's OWN fact
-    # (ruling R-BAL39): a bill's payment has no receipt text, and a later
-    # rename of the plan no more rewrites this than renaming an envelope
-    # rewrites its purchases.  Its day, likewise its own, is the mirror's.
-    movement.description = row.name
-    _mirror_assertion(row, movement)
+    movement.description = name
     return before != (
         movement.amount, movement.figure_source_id, movement.description,
     )
