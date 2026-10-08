@@ -2359,6 +2359,18 @@ class TestTheMonthWalkReachesTheCalendarsLastMonth:
         assert walked[1] == date(2100, 2, 28)
         assert walked[-1] == date(2100, 12, 31)
 
+    def test_a_mid_month_walk_from_the_last_month_yields_that_month_alone(self):
+        """The 15th, monthly, from December 2100: exactly one date.
+
+        The stop is the LAST grid day ON OR BEFORE 2100-12-31.  A stop read
+        as the first ON OR AFTER would let this walk name 2101-01-15, past
+        the calendar; the 31st cannot tell the two apart (both are Dec 31),
+        so this is the case that grades the stop's direction.
+        """
+        assert list(_months.walk_months(
+            _months.month_ordinal(date(2100, 12, 1)), 15, 1,
+        )) == [date(2100, 12, 15)]
+
     def test_a_stride_landing_past_the_calendar_fires_once(self):
         """Yearly from March 2100: March 2101 is past the calendar, so one date."""
         assert list(_months.walk_months(

@@ -469,10 +469,12 @@ def clamped_day(ordinal: int, nominal_day: int) -> date:
 # latest grid day on or before a date, the first on or after it, the first
 # strictly after it, and the grid days between two dates.  Until that step the
 # loan calendar (:mod:`app.services.installment_calendar`), the card statement
-# (:mod:`app.services.card_statement`), the pay grid
-# (:mod:`app.services.pay_calendar._grid`) and the recurrence walk
-# (:mod:`app.services.recurrence._months`) each wrote the comparison out over
-# the one clamp.  Each answers a month ORDINAL rather than a date, because
+# (:mod:`app.services.card_statement`) and the pay grid
+# (:mod:`app.services.pay_calendar._grid`) each wrote the comparisons out over
+# the one clamp, and the recurrence walk
+# (:mod:`app.services.recurrence._months`) bounded itself by a month constant
+# of its own; its stop is the last grid day on or before the calendar's last
+# day now.  Each answers a month ORDINAL rather than a date, because
 # every caller steps or bounds by the ordinal (an installment's number, a
 # statement's month, a payday's step count) and lands the day with
 # :func:`clamped_day` itself.

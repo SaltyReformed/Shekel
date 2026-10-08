@@ -4,7 +4,12 @@ The forward half of the amortization engine: the value records
 (:class:`PaymentRecord`, :class:`RateChangeRecord`,
 :class:`PeriodTerms`, :class:`AmortizationRow`,
 :class:`AmortizationSummary`, :class:`ProjectionInputs`), the standard
-payment formula, the date helpers, and :func:`project_forward` itself.
+payment formula, the schedule-slot helpers, and :func:`project_forward`
+itself.  It writes no date arithmetic of its own: a projected row's date is
+the one clamp's (:func:`app.utils.dates.clamped_day`) and a slot's step past
+a contested month the loan calendar's
+(:func:`app.services.installment_calendar.due_in_following_month`), since
+plan step recurrence:R25 deleted this module's month step and clamp.
 Pure functions, no database access -- operates only on values passed in.
 
 Per-month rate AND contractual P&I come from the projection's

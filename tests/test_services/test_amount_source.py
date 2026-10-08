@@ -469,7 +469,8 @@ def _declare_loan_payment_derived(xfer):
     read: the loan resolves through ``load_loan_context`` ->
     ``get_payment_history``, so the rule that prices the row routes back to the
     row.  That path was deleted at plan step X-au-g-1 --
-    ``_resolve_loan_basis`` reads the loan's terms alone -- leaving finding
+    ``_resolve_loan_basis`` read the loan's terms alone (and plan step
+    recurrence:R25 deleted it for the pass's ``LoanCalendars``) -- leaving finding
     N-266(a)'s conclusion standing on ONE UNROUTED READER, which is what
     X-au-g-2c routed.  Three weeks between the diagnosis and its true cause,
     which is why a finding's claim is re-measured before its remedy is built.
@@ -1397,7 +1398,7 @@ class TestTheLoanPaymentRule:
         """No loan behind it, so its P&I has no answer and nothing substitutes.
 
         The destination is an ordinary savings account, so the loan calendar
-        (``loan_ledger.LoanCalendars.calendar``, ``_resolve_loan_basis``
+        (``loan_ledger.LoanCalendars.loan_calendar_of``, ``_resolve_loan_basis``
         until plan step recurrence:R25) answers nothing.  A fallback here would publish
         the stored figure, which on a derive-mode payment is a snapshot of
         exactly the computation that just failed.

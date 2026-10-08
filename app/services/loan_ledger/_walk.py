@@ -284,7 +284,7 @@ def load_loan_stream(
         N1 guard; a configured loan always has at least its origination
         assertion, which is synthesized.
     """
-    params = terms.params(loan_account_id)
+    params = terms.loan_params_of(loan_account_id)
     if params is None:
         # Not a configured loan yet (e.g. a payment settled before its
         # LoanParams was created); nothing to walk until it is resolvable.
@@ -306,7 +306,7 @@ def load_loan_stream(
     # against.  Its escrow lines carry their full version history, so each
     # accrual period's escrow is resolved on the period's own date and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
-    calendar = terms.calendar(loan_account_id)
+    calendar = terms.loan_calendar_of(loan_account_id)
     # The stream reads each settled payment's LEG: its parent's due date and
     # pay period (the producer loads the period as its sort key) and its
     # RECORD, the covering movement the producer's one join attaches (plan

@@ -120,7 +120,7 @@ def main():
                     f"  account={account_id} feed={name:<14} "
                     f"n={len(feed):>3} monthly_pi={answers[name]}"
                 )
-            basis = LoanCalendars().calendar(account_id)
+            basis = LoanCalendars().loan_calendar_of(account_id)
             # The basis holds the loan's PERIOD SET since plan step X-au-g-2b
             # (ruling R-IJ), so the figure this harness compares is the one
             # governing ``as_of`` -- the same date every other arm reads.

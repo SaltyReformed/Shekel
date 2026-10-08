@@ -161,7 +161,7 @@ class LoanPricing:
             account carrying no ``LoanParams``, which rule 4 turns into a
             refusal rather than a fallback to a stored snapshot.
         """
-        calendar = self._terms.calendar(loan_account_id)
+        calendar = self._terms.loan_calendar_of(loan_account_id)
         if calendar is None:
             return None
         return _installment_cash(

@@ -13,10 +13,10 @@ both read"; finding **REC-545**).  ``cash_ledger._loan_installment``'s
 ``_LoanCashBasis`` held the rate periods, the due day and the origination, and
 ``LoanPricing`` the escrow lines beside it -- the identical four facts this
 module's calendar holds, each loaded by its own path, so a pass that walked a
-derive-mode loan and priced its payments resolved the loan's terms twice
-(measured on a production copy 2026-10-08: rate periods, params and escrow
-lines each loaded twice for one balance read).  The bundle is deleted; both
-readers take this memo's calendar.
+derive-mode loan and priced its payments loaded the loan's terms once for each
+(the walk's and the pricer's loads; the loan resolver's bundle loads them a
+third time, below).  The bundle is deleted; both readers take this memo's
+calendar.
 
 **The memo holds the PARAMS too**, because the walk needs them beyond the
 calendar (its opening assertion is synthesized from them,
@@ -24,8 +24,7 @@ calendar (its opening assertion is synthesized from them,
 once per pass for both is what keeps the walk at the one params load it made
 before.  The loan resolver's bundle and the payoff calculator still load the
 params and resolve the terms on their own paths inside one pass; that is
-finding **REC-559**, owned by plan step recurrence:R16-f, after which every
-reader takes this memo.
+finding **REC-559**, owned by plan step recurrence:R16-f.
 
 **A memo on the PASS, not a cache**: a write path that changes a loan's terms
 and then re-renders builds a fresh pass, so there is no invalidation question
@@ -81,7 +80,7 @@ class LoanCalendars:
         self._params: "dict[int, LoanParams | None]" = {}
         self._calendars: "dict[int, LoanCalendar | None]" = {}
 
-    def params(self, loan_account_id: int) -> "LoanParams | None":
+    def loan_params_of(self, loan_account_id: int) -> "LoanParams | None":
         """Return the loan's params, or ``None`` when it is not a configured loan.
 
         Args:
@@ -96,11 +95,11 @@ class LoanCalendars:
             )
         return self._params[loan_account_id]
 
-    def calendar(self, loan_account_id: int) -> "LoanCalendar | None":
+    def loan_calendar_of(self, loan_account_id: int) -> "LoanCalendar | None":
         """Return the loan's calendar, or ``None`` when it is not a configured loan.
 
-        Built over :meth:`params`, so a pass loads the params row once for
-        both.
+        Built over :meth:`loan_params_of`, so a pass loads the params row
+        once for both.
 
         Args:
             loan_account_id: The loan account.
@@ -110,7 +109,7 @@ class LoanCalendars:
             or ``None`` when the account carries no ``LoanParams``.
         """
         if loan_account_id not in self._calendars:
-            params = self.params(loan_account_id)
+            params = self.loan_params_of(loan_account_id)
             self._calendars[loan_account_id] = (
                 None if params is None else build_loan_calendar(params)
             )

@@ -1288,7 +1288,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 )
             db.session.commit()
 
-            before = LoanCalendars().calendar(loan.id)
+            before = LoanCalendars().loan_calendar_of(loan.id)
             assert before is not None
             assert get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
@@ -1305,7 +1305,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ) == [], "the feed is not empty: one of its two relations survived"
 
-            after = LoanCalendars().calendar(loan.id)
+            after = LoanCalendars().loan_calendar_of(loan.id)
             assert after is not None
             # The whole TERM SET, period by period -- not one resolved figure.
             # A producer that read the feed could agree on the period governing
@@ -1344,7 +1344,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.expire_all()
 
             with _statements_issued() as seen:
-                basis = LoanCalendars().calendar(loan.id)
+                basis = LoanCalendars().loan_calendar_of(loan.id)
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"
@@ -1373,8 +1373,8 @@ class TestOnePassReadsOneLoanCalendar:
     charging both read"; finding **REC-545**).  Pricing kept a second bundle of
     a loan's terms beside the calendar the walk's charges are built from, so a
     pass that walked a derive-mode loan and priced its payments loaded the
-    terms twice.  Both now read the pass's
-    :meth:`~app.services.balance_at.BalanceContext.loan_terms`.
+    terms twice.  Both now read the pass's one
+    :class:`~app.services.loan_ledger.LoanCalendars`.
     """
 
     def test_pricing_after_the_walk_loads_no_terms_again(

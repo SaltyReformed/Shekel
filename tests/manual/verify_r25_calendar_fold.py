@@ -34,11 +34,11 @@ first line names the side; diff from line 2.
   stated-price).  ``tests/manual/verify_loan_plan_sum.py`` covers the plan's
   doors; ``verify_generation_pass.py`` the recurrence walk's writes.
 
-Lines starting ``METRIC`` are EXPECTED to differ: they count the calls a read
-pass makes through the terms loaders' MODULE attributes (a caller that bound a
-loader by name is not counted), and the step halves the rate-period
-resolutions a derive-mode pass makes through ``loan_resolver.resolve_periods``
-(the walk's and the pricer's).
+Lines starting ``METRIC`` are EXPECTED to differ: they count, at the engine,
+the statements one read pass issues against a loan's terms tables, and in a
+derive-mode pass the step removes the pricer's load (the walk and the pricer
+share one memo); the loan resolver's bundle still loads the terms on its own
+(finding REC-559).
 
 Usage::
 
@@ -49,10 +49,12 @@ Usage::
 import hashlib
 import inspect
 from collections import Counter
-from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from app import create_app
 from app.extensions import db
@@ -65,7 +67,6 @@ from app.services import (
     amortization_engine,
     balance_at,
     card_statement,
-    escrow_calculator,
     installment_calendar,
     loan_loaders,
     loan_resolver,
@@ -391,23 +392,29 @@ def _plant_derive_mode():
     db.session.flush()
 
 
+#: The tables a loan's CONTRACT TERMS load from.
+_TERMS_TABLES = (
+    "budget.loan_params", "budget.rate_history",
+    "budget.escrow_lines", "budget.escrow_component_versions",
+)
+
+
 def _count_term_loads():
-    """Wrap the terms loaders, counting calls; return the counter."""
+    """Count every statement the ENGINE issues against a terms table; return the counter.
+
+    Engine-level (``before_cursor_execute``), so it sees every load path --
+    a loader bound by name in the importing module included -- where wrapping
+    module attributes would not.
+    """
     counts = Counter()
-    for name in ("load_rate_changes", "load_escrow_lines"):
-        original = getattr(loan_loaders, name)
 
-        def counted(*args, _name=name, _original=original, **kwargs):
-            counts[_name] += 1
-            return _original(*args, **kwargs)
-        setattr(loan_loaders, name, counted)
-    original_periods = loan_resolver.resolve_periods
+    def _record(conn, cursor, statement, params, context, executemany):  # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
+        for table in _TERMS_TABLES:
+            if table in statement:
+                counts[table] += 1
 
-    def counted_periods(*args, **kwargs):
-        counts["resolve_periods"] += 1
-        return original_periods(*args, **kwargs)
-    loan_resolver.resolve_periods = counted_periods
-    return counts
+    event.listen(Engine, "before_cursor_execute", _record)
+    return counts, _record
 
 
 def production_copy():
@@ -464,16 +471,14 @@ def production_copy():
                 print(f"{label} {account.name} SPLIT {outcome.due_date} "
                       f"{outcome.cash} {outcome.interest} {outcome.escrow} "
                       f"{outcome.principal} {outcome.excess} {outcome.balance_after}")
-        counts = _count_term_loads()
         fresh = BalanceContext.build(USER_ID, as_of)
-        for params in loans:
-            balance_at.balance_at(
-                db.session.get(Account, params.account_id), fresh, date(2027, 6, 1),
-            )
-        print(f"METRIC {label} calls through loan_loaders.load_rate_changes / "
-              f".load_escrow_lines and loan_resolver.resolve_periods in one pass, "
-              f"both loans (by-name imports are not counted): "
-              f"{dict(sorted(counts.items()))}")
+        accounts = [db.session.get(Account, params.account_id) for params in loans]
+        counts, listener = _count_term_loads()
+        for account in accounts:
+            balance_at.balance_at(account, fresh, date(2027, 6, 1))
+        event.remove(Engine, "before_cursor_execute", listener)
+        print(f"METRIC {label} statements against each terms table in one "
+              f"pass's balance read of both loans: {dict(sorted(counts.items()))}")
         db.session.rollback()
 
 

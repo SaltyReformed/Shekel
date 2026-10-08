@@ -20,10 +20,12 @@ on or after a pay period's start reads the same clamp from that month.  Until
 that step the rule was written out by hand in the loan rate engine (the month
 step and the due-date fallback) beside the one clamp; the payoff and refinance
 calculators' own month step and clamp went at plan step recurrence:R25, which
-also made every question above a reading of the monthly-grid set beside the
-clamp (:func:`app.utils.dates.grid_month_on_or_before` and its siblings, ruling
+also made the list, the lookup and the due date on or after a day readings of
+the monthly-grid set beside the clamp
+(:func:`app.utils.dates.grid_month_on_or_before` and its siblings, ruling
 **R-R122**) that the card statement, the pay grid and the recurrence walk read
-too.  The installment lookup
+too; the first installment and the next month's due day are the clamp
+itself.  The installment lookup
 ruling **R-R104** needs was first built, inside that step, as a search over a
 list rebuilt from origination for every payment priced: measured 2026-09-24 on
 a production copy with a mortgage's payments switched to derive mode (rolled

@@ -365,13 +365,13 @@ _FENCED_MODULE_RULINGS = {
             # R-R105): ``build_loan_calendar`` returns the loan's
             # ``LoanCalendar`` -- its origination, due day, rate periods and
             # escrow lines -- and ``LoanCalendars`` is the read pass's memo of
-            # it, whose ``params`` / ``calendar`` methods hand back the loan's
-            # ``LoanParams`` row and that same calendar.  Terms, not a
+            # it, whose ``loan_params_of`` / ``loan_calendar_of`` methods hand
+            # back the loan's ``LoanParams`` row and that same calendar.  Terms, not a
             # balance: nothing in them is a figure owed on any date, and the
             # charges built from them are ``contract_charges``' ruling below.
             "build_loan_calendar",
-            "calendar",
-            "params",
+            "loan_calendar_of",
+            "loan_params_of",
             # The CHARGE calendar (plan step X-au-g-2c-3b-1; the contract's
             # since recurrence:R16-c-2, ruling R-R100) -- the TIME half of a
             # walk, and it does not answer balance-at-T.  Its DATES
@@ -657,14 +657,6 @@ _FENCED_MODULE_RULINGS = {
         # this adds is that the seam and its caller cannot end up pricing one
         # render's paychecks twice.
         "paychecks",
-        # The read pass's LOAN-TERMS memo (plan step recurrence:R25, ruling
-        # R-R105).  A NON-producer on the ground ``calendar`` stands on: it
-        # hands back a ``loan_ledger.LoanCalendars``, each loan's params row
-        # and contract calendar -- terms, with no balance-at-T in them -- and
-        # that class is a public leaf BELOW this seam any consumer may build
-        # for the identical value.  What this adds is that the pass's loan
-        # walk and its loan pricer read one calendar.
-        "loan_terms",
     })),
     # The context's RECURRENCE memos (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`),
     # split out of ``_context`` as a mixin ``BalanceContext`` inherits (ruling

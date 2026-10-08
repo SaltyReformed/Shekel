@@ -122,7 +122,7 @@ class AmountBasis:
 
 
 def amount_basis(
-    paychecks: "PaycheckPricing", scenario_id, loan_terms: LoanCalendars,
+    paychecks: "PaycheckPricing", scenario_id, loan_calendars: LoanCalendars,
 ) -> AmountBasis:
     """Return the read pass's :class:`AmountBasis` over its pricer and scenario.
 
@@ -182,7 +182,7 @@ def amount_basis(
     therefore no longer has this derivation as a subject -- there is nothing
     left here for a pass-level clock to correct.
 
-    **It takes the pass's LOAN TERMS for the same reason it takes the pricer**
+    **It takes the pass's LOAN CALENDARS for the same reason it takes the pricer**
     (plan step recurrence:R25, ruling **R-R105**, finding **REC-545**): a loan
     payment's price and the loan's charges read ONE calendar, so the pass that
     walks a loan hands its own memo here rather than letting the pricer load
@@ -194,9 +194,9 @@ def amount_basis(
             scopes the salary derivation's profile lookup, and its calendar
             and memo are what a salary row's paycheck is read from.
         scenario_id: The scenario the amounts resolve under.
-        loan_terms: The read pass's
+        loan_calendars: The read pass's
             :class:`~app.services.loan_ledger.LoanCalendars` -- the memo its
-            loan walk reads too.
+            loan walk reads too, or a fresh one for a caller holding no pass.
 
     Returns:
         The unresolved :class:`AmountBasis` for that owner and scenario.
@@ -213,7 +213,7 @@ def amount_basis(
         user_id=paychecks.user_id,
         scenario_id=scenario_id,
         salary=income_service.salary_pricing(scenario_id, paychecks),
-        loans=loan_pricing(loan_terms),
+        loans=loan_pricing(loan_calendars),
     )
 
 

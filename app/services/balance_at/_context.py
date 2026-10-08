@@ -109,7 +109,8 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
     recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk), 14 at
     recurrence:**R16-c-1** (the loan's timeline), 15 at
     pay_calendar:**C18-a** (each account's books floor) and 16 at
-    recurrence:**R25** (each loan's contract terms); plan step
+    recurrence:**R25** (the loan calendars its walk and its pricer share);
+    plan step
     **X-i1** raises it further, because that step's remaining inputs (the contribution feed, the
     standing extra, the contractual schedule) are memos of exactly this kind.
     The count is a property of what a read pass IS rather than a threshold
@@ -127,14 +128,13 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **SEVEN derivations this class owns, three it stores in PUBLIC caches, and
+    **SIX derivations this class owns, three it stores in PUBLIC caches, and
     ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
     (:meth:`calendar`), the AMOUNT BASIS (:meth:`amounts`), the PAYCHECK
-    PRICING (:meth:`paychecks`), each loan's contract TERMS
-    (:meth:`loan_terms`, plan step recurrence:R25), a rule's RESOLUTION
+    PRICING (:meth:`paychecks`), a rule's RESOLUTION
     (:meth:`resolved_recurrence_of`) and a resolved recurrence's OCCURRENCE
     WALK (:meth:`placements_of`) derive from modules BELOW the two that
-    define this class, which import them outright, so all seven stay private,
+    define this class, which import them outright, so all six stay private,
     filled by its own methods -- the last two inherited from
     :class:`~._recurrence_memos.RecurrenceMemosMixin`, split out of this
     module by ruling **R-BAL146**.  *The count read "two" and named only the first two
@@ -168,7 +168,15 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
     :meth:`loan_walk` open-coded its own store-once lines until X-i4 routed it
     here too.  What it is NOT is a second ownership gate -- see
     :class:`~app.exceptions.ForeignAccountError` for why no upstream gate can
-    answer this question at all.
+    answer this question at all.  **One per-loan memo is not filled through
+    it**: ``_loan_calendars`` (plan step recurrence:R25), the
+    :class:`~app.services.loan_ledger.LoanCalendars` the walk and the amount
+    basis's loan pricer share, keyed by a bare loan id as the pricer's own memo
+    was before it.  It holds contract terms and no balance, it has no public
+    accessor, the walk reaches it only after
+    :func:`~._memoize._memoize_once` has bound the account, and the pricer
+    reaches it for a row the amount model has already checked against this
+    pass's scenario (``cash_ledger._amount_source``).
 
     Exposing THOSE THREE caches hands out no balance the fence must guard: a plan
     is payment RECORDS, a payoff is a ``date``, and a
@@ -250,13 +258,17 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
             sibling's.
         _amount_bases: The pass's amount-model memo, keyed by ``scenario_id``
             and filled by :meth:`amounts`.  Private for the same reason.
-        _loan_terms: The pass's loan-terms memo
-            (:class:`~app.services.loan_ledger.LoanCalendars`, plan step
+        _loan_calendars: The loan calendars the pass's walk and its pricer
+            share (:class:`~app.services.loan_ledger.LoanCalendars`, plan step
             recurrence:R25): each loan's params and contract calendar, loaded
             at most once and read by BOTH :meth:`loan_walk` and the loan
             pricer inside :meth:`amounts`, so a loan's charges and its
-            payments' price read one calendar (ruling **R-R105**).  Private
-            for the reason ``_calendars`` is.
+            payments' price read one calendar (ruling **R-R105**).  It is not
+            the pass's only home for a loan's terms: the loan resolver's
+            bundle loads them again (finding **REC-559**, owned by plan step
+            recurrence:R16-f).  Private, with no accessor, for the binding
+            reason the paragraph on :func:`~._memoize._memoize_once` above
+            gives.
         _paycheck_pricing: The pass's PAYCHECK PRICER, keyed by ``user_id``
             and filled by :meth:`paychecks` (plan step **salary:S3-d**).
 
@@ -342,7 +354,7 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _loan_terms: LoanCalendars = field(
+    _loan_calendars: LoanCalendars = field(
         default_factory=LoanCalendars, repr=False, compare=False,
     )
     _recurrences: (
@@ -599,31 +611,10 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
         return _memoize_once(
             self, self._walks, account,
             lambda: replay_loan_stream(load_loan_stream(
-                account.id, self.scenario_id, self.loan_terms(),
+                account.id, self.scenario_id, self._loan_calendars,
                 visible_by=self.as_of,
             )),
         )
-
-    def loan_terms(self) -> LoanCalendars:
-        """Return the pass's loan-terms memo: each loan's params and calendar, once.
-
-        **The one home a pass has for a loan's contract terms** (plan step
-        recurrence:R25, ruling **R-R105**, finding **REC-545**): the walk's
-        charges are built from it (:meth:`loan_walk`) and the loan pricer the
-        amount basis holds prices a derive-mode payment from it
-        (:meth:`amounts`), so the two read ONE calendar.  Until that step the
-        pricer kept a second bundle of the same terms, and a pass that walked
-        a loan and priced its payments loaded them twice.  The loan resolver's
-        bundle and the payoff calculator still load them on their own paths;
-        that is finding **REC-559**, owned by plan step recurrence:R16-f.
-
-        A memo on the PASS, for the reason :meth:`calendar` gives: a write
-        path that changes a loan's terms and re-renders builds a fresh pass.
-
-        Returns:
-            The pass's :class:`~app.services.loan_ledger.LoanCalendars`.
-        """
-        return self._loan_terms
 
     def calendar(self) -> PayCalendar:
         """Return the owner's pay calendar for this pass, deriving it once.
@@ -732,7 +723,7 @@ class BalanceContext(RecurrenceMemosMixin):  # pylint: disable=too-many-instance
             # P63): the amount model reads the paychecks every other producer
             # under this pass reads, rather than deriving a second set.
             self._amount_bases[scenario_id] = amount_basis(
-                self.paychecks(), scenario_id, self.loan_terms(),
+                self.paychecks(), scenario_id, self._loan_calendars,
             )
         return self._amount_bases[scenario_id]
 
