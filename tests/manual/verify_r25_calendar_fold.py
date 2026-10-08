@@ -34,8 +34,11 @@ first line names the side; diff from line 2.
   stated-price).  ``tests/manual/verify_loan_plan_sum.py`` covers the plan's
   doors; ``verify_generation_pass.py`` the recurrence walk's writes.
 
-Lines starting ``METRIC`` are EXPECTED to differ: they count how many times a
-read pass loads a loan's terms, which the step halves for a derive-mode loan.
+Lines starting ``METRIC`` are EXPECTED to differ: they count the calls a read
+pass makes through the terms loaders' MODULE attributes (a caller that bound a
+loader by name is not counted), and the step halves the rate-period
+resolutions a derive-mode pass makes through ``loan_resolver.resolve_periods``
+(the walk's and the pricer's).
 
 Usage::
 
@@ -446,6 +449,13 @@ def production_copy():
             plan = loan_plan(account, ctx)
             for payment in plan.payments:
                 print(f"{label} {account.name} PLAN {payment!r}")
+                # The pass's pricer asked directly, so the line sees the
+                # pricing bundle the step deleted even where the derived
+                # price equals the stated one (it does on both live loans).
+                print(f"{label} {account.name} PRICE {payment.due_date} "
+                      f"{ctx.amounts().loans.derive_cash(
+                          payment.due_date, payment.due_date - timedelta(days=9),
+                          account.id, Decimal('7.00'))}")
             for month in range(0, 48):
                 day = add_months(date(2026, 10, 1), month)
                 print(f"{label} {account.name} BAL {day} "
@@ -460,7 +470,10 @@ def production_copy():
             balance_at.balance_at(
                 db.session.get(Account, params.account_id), fresh, date(2027, 6, 1),
             )
-        print(f"METRIC {label} terms loads in one pass, both loans: {dict(sorted(counts.items()))}")
+        print(f"METRIC {label} calls through loan_loaders.load_rate_changes / "
+              f".load_escrow_lines and loan_resolver.resolve_periods in one pass, "
+              f"both loans (by-name imports are not counted): "
+              f"{dict(sorted(counts.items()))}")
         db.session.rollback()
 
 
