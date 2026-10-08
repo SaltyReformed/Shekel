@@ -297,43 +297,37 @@ class PayPeriodLocked(ShekelError):
 
     Raised by truncate / regenerate when the window they would delete or
     rebuild contains a period that may never be removed -- it is
-    historical, holds a settled transaction, holds a row holding a payment
-    or purchase, or holds posted ledger entries
+    historical, holds a settled transaction, holds a row or transfer
+    holding a payment or purchase, or holds posted ledger entries
     (:class:`~app.services.pay_period_locks.PeriodLockReason`).  A hard lock
     is NOT overridable (unlike the discard gate); the operation deletes
     nothing.
 
-    **The message names each period locked for holding a movement** (plan
-    step ``credit_card:CC-5-4a-4``, ruling **R-CC66**: "the refusal names
-    the period: 'Pay period 9/10 holds a recorded payment or purchase;
-    delete it from its row first.'"), and counts the rest.  Its generic
-    sentence listed "an account anchor, or a recurrence anchor" until then:
-    two reasons deleted at plan steps X-f1c3c and R7b-4, which it went on
-    naming.
+    **The message is the caller's** (plan step ``pay_calendar:C22``):
+    ``pay_period_locks.locked_refusal`` words it and
+    ``pay_period_gates.gate_deletable_tail`` raises it -- per paycheck locked
+    for holding a movement, every payment and purchase it holds with its
+    amount and its row (ruling **R-PC116**: "The 2026-11-16 paycheck holds 2
+    payments or purchases you entered (Kroger, $87.43, in Groceries; Rent's
+    payment, $1,200.00). Remove or move them first."), then a count of the
+    rest.  The words are built beside the reader that finds the movements and
+    the one spelling of a paycheck the pay-period refusals share, which this
+    module cannot import.  Until C22 this class built the sentence itself
+    from the periods' start dates alone -- ruling **R-CC66**'s "Pay period
+    9/10 holds a recorded payment or purchase; delete it from its row
+    first.", which R-PC116 replaced -- and before plan step
+    ``credit_card:CC-5-4a-4`` its generic sentence listed "an account
+    anchor, or a recurrence anchor": two reasons deleted at plan steps
+    X-f1c3c and R7b-4, which it went on naming.
 
     Attributes:
         blocking: A dict mapping each blocking pay-period id to its
             :class:`~app.services.pay_period_locks.PeriodLockReason`.
-        holding_starts: The start dates of the blocking periods locked for
-            holding a payment or purchase, in schedule order.
     """
 
-    def __init__(self, blocking, holding_starts=()):
+    def __init__(self, blocking, message):
         self.blocking = blocking
-        self.holding_starts = list(holding_starts)
-        sentences = [
-            f"Pay period {start.month}/{start.day} holds a recorded payment "
-            "or purchase; delete it from its row first."
-            for start in self.holding_starts
-        ]
-        others = len(blocking) - len(self.holding_starts)
-        if others:
-            sentences.append(
-                f"Operation refused: {others} pay period(s) are locked (past, "
-                f"settled, or holding posted ledger entries) and cannot be "
-                f"deleted or rebuilt."
-            )
-        super().__init__(" ".join(sentences))
+        super().__init__(message)
 
 
 class PayPeriodDiscardRequired(ShekelError):

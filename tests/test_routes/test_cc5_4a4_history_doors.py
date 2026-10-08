@@ -15,11 +15,14 @@ exists, still counts toward the account's settled cash, and its bank match
 still stands.  The sentences are ruling **R-CC66**'s, verbatim where it gave
 one, in its shape ("'<name>' holds a recorded purchase and cannot be
 permanently deleted.  It has been archived instead; the row holding it stays
-on your budget." -- "Pay period <m/d> holds a recorded payment or purchase;
-delete it from its row first." -- the lock badge "Holds a recorded payment or
-purchase"; the ruling's own example named a real row), read
-off the session's flashes so no HTML escaping stands between the test and
-the text.
+on your budget." -- the lock badge "Holds a recorded payment or purchase";
+the ruling's own example named a real row), read off the session's flashes so
+no HTML escaping stands between the test and the text.  **The truncate
+refusal's is ruling pay_calendar:R-PC116's since plan step
+``pay_calendar:C22``** (developer 2026-10-08), which replaced R-CC66's "Pay
+period <m/d> holds a recorded payment or purchase; delete it from its row
+first." with one naming each payment and purchase, its amount and its row;
+``test_c22_tail_doors_keep_purchases`` grades its shapes.
 """
 
 from __future__ import annotations
@@ -417,7 +420,12 @@ class TestThePayPeriodDoors:
     def test_the_lock_names_the_period_and_deletes_nothing(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Ruling R-CC66's sentence, and ``HOLDS_MOVEMENT`` in the classifier."""
+        """The lock's sentence, and ``HOLDS_MOVEMENT`` in the classifier.
+
+        R-CC66's sentence until plan step ``pay_calendar:C22``; ruling
+        ``pay_calendar:R-PC116``'s since, naming the $40.00 purchase (this
+        fixture's description, "purchase") and the Tires row holding it.
+        """
         with app.app_context():
             periods = seed_periods_today
             row = _purchase_in(seed_user, periods[7])
@@ -440,8 +448,8 @@ class TestThePayPeriodDoors:
 
             start = periods[7].start_date
             assert str(caught.value) == (
-                f"Pay period {start.month}/{start.day} holds a recorded payment "
-                "or purchase; delete it from its row first."
+                f"The {start.isoformat()} paycheck holds 1 purchase you "
+                "entered (purchase, $40.00, in Tires). Remove or move it first."
             )
             assert db.session.get(Transaction, row.id) is not None
 

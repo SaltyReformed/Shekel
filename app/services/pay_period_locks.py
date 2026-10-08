@@ -8,6 +8,14 @@ result as a per-period lock badge.  Flask-isolated: takes and returns plain
 data, never imports ``request`` / ``session``, and issues no write of any
 kind.
 
+**It also WORDS a lock that holds money, since plan step
+``pay_calendar:C22``** (ruling **R-PC116**): :func:`movements_held_in` names
+every payment and purchase a paycheck holds, read through the same queries
+the classifier locks by, and :func:`locked_refusal` is truncate and
+regenerate's sentence over them -- beside the reader so the lock and the
+words cannot disagree, and here rather than in ``pay_period_gates`` because
+that module sits at pylint's 1,000-line ceiling and imports this one.
+
 **It lived inside ``pay_period_admin`` until plan step C3-a** (developer
 ruling, 2026-08-10), which is where its own docstring called it "the module's
 foundation" while that module's other job was the four destructive writers
@@ -63,6 +71,7 @@ which named this function as one of the two sites that needed the ruling).
 
 import enum
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -74,9 +83,10 @@ from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import transfer_legs
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.utils import archive_helpers
 from app.utils.balance_predicates import settled_status_ids
 
@@ -269,9 +279,11 @@ def items_holding_a_movement(periods: "list[int] | Query") -> "tuple[Query, Quer
 
     The pay-period doors' one reading of it: the lock classifier's
     ``HOLDS_MOVEMENT`` (per period), the reset gate's second count
-    (``pay_period_gates.movement_holding_row_count``) and "Remove earlier
-    paychecks"' refusal naming each item (``pay_period_gates``,
-    ruling **R-PC115**).
+    (``pay_period_gates.movement_holding_row_count``), and -- through
+    :func:`movements_held_in`, these queries with the movements joined on --
+    truncate and regenerate's refusal naming each movement (plan step
+    ``pay_calendar:C22``, ruling **R-PC116**) and "Remove earlier
+    paychecks"' naming each item (ruling **R-PC115**).
 
     Args:
         periods: The pay-period ids to look in -- a list, or a query of
@@ -285,6 +297,277 @@ def items_holding_a_movement(periods: "list[int] | Query") -> "tuple[Query, Quer
         rows=(archive_helpers.holds_a_movement(),),
         transfers=(transfer_legs.transfer_holds_a_movement(),),
     )
+
+
+#: How an item with no name of its own is named: ``budget.transfers.name``
+#: admits none (every door writes one; a legacy row may not), and every
+#: refusal that names an ITEM -- the row or transfer the owner sees -- says
+#: this.  A refusal naming a transfer's SIDE names its account instead.
+_UNNAMED_TRANSFER = "a transfer"
+
+
+def item_of(
+    model: type, item_id: int, name: "str | None",
+) -> "tuple[tuple[str, int], str]":
+    """Return how the pay-period refusals key and name one ITEM.
+
+    An item is what the owner sees in a paycheck: a plan row, or a transfer
+    once for its two legs.  Its key, ``("row", id)`` or ``("transfer", id)``,
+    is what lets a refusal name an item held for two reasons once; its name
+    is the row's, or the transfer's (:data:`_UNNAMED_TRANSFER` when it has
+    none).  The ONE spelling of both (plan step ``pay_calendar:C22``):
+    :func:`movements_held_in` and "Remove earlier paychecks"' own item walk
+    (``pay_period_gates._reject_held_rows``) each call it, so the head
+    refusal's "named once" cannot come to depend on two spellings agreeing.
+
+    Args:
+        model: ``Transaction`` or ``Transfer``.
+        item_id: The row's or the transfer's id.
+        name: Its ``name`` column.
+
+    Returns:
+        ``(key, name)``.
+    """
+    if model is Transfer:
+        return ("transfer", item_id), name or _UNNAMED_TRANSFER
+    return ("row", item_id), name
+
+
+@dataclass(frozen=True)
+class HeldMovement:
+    """One payment or purchase an item filed in a pay period holds, as a refusal names it.
+
+    The unit of :func:`movements_held_in`.  **A PAYMENT** is a settle's
+    covering movement (``covers_settlement``), kept un-dated across a revert
+    (ruling **R-BAL61**) -- a refusal names it by its item; **a PURCHASE** is
+    every other movement, named by its own description.  The same split
+    ``archive_helpers.HeldMovements`` aggregates.
+
+    Attributes:
+        period_id: The pay period the holding item is filed in.
+        item: The item as the owner sees it, keyed by :func:`item_of`: a
+            transfer once for its two legs.
+        item_name: What the owner calls the item (:func:`item_of`).
+        is_payment: The movement is a payment rather than a purchase.
+        description: The movement's own description (a purchase's store or
+            note; a covering movement carries its row's name at the settle).
+        amount: The movement's figure, signed: a refund is negative (ruling
+            ``bank_import:R-II``).
+    """
+
+    period_id: int
+    item: "tuple[str, int]"
+    item_name: str
+    is_payment: bool
+    description: str
+    amount: Decimal
+
+
+def movements_held_in(periods: "list[int] | Query") -> "list[HeldMovement]":
+    """Return every payment and purchase the items filed in *periods* hold, named.
+
+    **The pay-period doors' one NAMED reading of what a paycheck holds**
+    (plan step ``pay_calendar:C22``, ruling **R-PC116**): truncate and
+    regenerate name each movement in their refusal, and "Remove earlier
+    paychecks" names each holding item (ruling **R-PC115**).  It is
+    :func:`items_holding_a_movement`'s two queries with each item's
+    movements joined on, so it reaches exactly the items that question
+    reaches -- every status, soft-deleted or not, a transfer through the
+    one ``transfer_legs`` join -- and a period the lock calls
+    ``HOLDS_MOVEMENT`` is one this names.
+
+    **A transfer's payment is named ONCE**: its two legs each keep a copy
+    of it (one covering movement per side, one ``Settlement`` written onto
+    both), and the owner sees one transfer and one payment.  The copies are
+    collapsed by transfer and amount -- the sides' descriptions are their
+    own rows' names and differ -- and ONLY the copies: every other movement
+    is named, so two equal purchases are two purchases, under a row or
+    (no door writes one) under a transfer's leg.
+
+    Args:
+        periods: The pay-period ids to look in -- a list or a query of ids.
+
+    Returns:
+        The movements, ordered by period, then item name, then item, then
+        the order they were recorded in.
+    """
+    held = []
+    copies_named = set()
+    for model, query in _movement_arms(periods):
+        for period_id, item_id, name, covers, description, amount in (
+            query.order_by(TransactionEntry.id)
+        ):
+            item, item_name = item_of(model, item_id, name)
+            if model is Transfer and covers:
+                if (item, amount) in copies_named:
+                    continue
+                copies_named.add((item, amount))
+            held.append(HeldMovement(
+                period_id, item, item_name, covers, description, amount,
+            ))
+    # Stable, so the recorded order survives inside one item.
+    return sorted(
+        held, key=lambda each: (each.period_id, each.item_name, each.item),
+    )
+
+
+def _movement_arms(periods: "list[int] | Query") -> "tuple[tuple[type, Query], ...]":
+    """Return :func:`movements_held_in`'s two queries, one per KIND of item.
+
+    :func:`items_holding_a_movement`'s pair with each item's movements joined
+    on: a row's through its ``entries``, a transfer's through the one
+    ``transfer_legs`` join, scoped to the transfers that pair's query
+    selects.  Each yields ``(period id, item id, item name, is a payment,
+    description, amount)``.
+
+    Args:
+        periods: As :func:`movements_held_in`.
+
+    Returns:
+        ``((Transaction, row query), (Transfer, transfer query))``, unexecuted.
+    """
+    rows, transfers = items_holding_a_movement(periods)
+    movement = (
+        TransactionEntry.covers_settlement, TransactionEntry.description,
+        TransactionEntry.amount,
+    )
+    return (
+        (Transaction, rows.join(Transaction.entries).with_entities(
+            Transaction.pay_period_id, Transaction.id, Transaction.name,
+            *movement,
+        )),
+        (Transfer, transfer_legs.held_transfer_entries(
+            Transfer.id.in_(transfers.with_entities(Transfer.id)),
+        ).with_entities(
+            Transfer.pay_period_id, Transfer.id, Transfer.name, *movement,
+        )),
+    )
+
+
+def paycheck_name(period: DerivedPeriod) -> str:
+    """Return how a pay-period refusal names *period*: ``"The 2026-03-12 paycheck"``.
+
+    The ONE spelling every refusal naming a paycheck uses -- "Remove
+    earlier paychecks"' (``pay_period_gates``, plan step
+    ``pay_calendar:C21``) and truncate and regenerate's
+    (:func:`locked_refusal`, plan step ``C22``).  It lived in
+    ``pay_period_gates`` until C22, which cannot be imported from here.
+    """
+    return f"The {period.start_date.isoformat()} paycheck"
+
+
+def locked_refusal(
+    to_delete: "list[DerivedPeriod]",
+    blocking: "dict[int, PeriodLockReason]",
+) -> str:
+    """Return truncate and regenerate's refusal for the *blocking* periods.
+
+    **Ruling R-PC116** (plan step ``pay_calendar:C22``, replacing ruling
+    **R-CC66**'s sentence, which named the period alone): one sentence per
+    paycheck locked ``HOLDS_MOVEMENT`` naming each payment and purchase it
+    holds, with its amount and its row (:func:`_holds_sentence`), then the
+    one remedy, "Remove or move it first."; then the count of the periods
+    locked for any other reason, the sentence the refusal has always ended
+    with.  ``pay_period_gates.gate_deletable_tail`` raises it.
+
+    **The movements are :func:`movements_held_in`'s** -- the named reading of
+    the very queries :func:`classify_schedule_locks` locked those periods by
+    -- so a paycheck locked for holding one is a paycheck this names.  Were
+    it ever not, it would land in the count rather than drop out of the
+    message, so the refusal is never silent about a period it refuses.
+
+    Args:
+        to_delete: The periods the door would delete, payday ascending.
+        blocking: The hard-locked ones among them, keyed by period id.
+
+    Returns:
+        The refusal's message.
+    """
+    held: "dict[int, list[HeldMovement]]" = {}
+    for movement in movements_held_in([
+        period.period_id for period in to_delete
+        if blocking.get(period.period_id) is PeriodLockReason.HOLDS_MOVEMENT
+    ]):
+        held.setdefault(movement.period_id, []).append(movement)
+    sentences = [
+        _holds_sentence(period, held[period.period_id])
+        for period in to_delete if period.period_id in held
+    ]
+    if sentences:
+        named = sum(len(movements) for movements in held.values())
+        sentences.append(
+            "Remove or move it first." if named == 1
+            else "Remove or move them first.",
+        )
+    others = len(blocking) - len(held)
+    if others:
+        sentences.append(
+            f"Operation refused: {others} pay period(s) are locked (past, "
+            f"settled, or holding posted ledger entries) and cannot be "
+            f"deleted or rebuilt."
+        )
+    return " ".join(sentences)
+
+
+def _holds_sentence(period: DerivedPeriod, movements: "list[HeldMovement]") -> str:
+    """Return what one locked paycheck holds, in ruling R-PC116's words.
+
+    "The 2026-11-16 paycheck holds 2 payments or purchases you entered
+    (Kroger, $87.43, in Groceries; Rent's payment, $1,200.00)."  The noun
+    counts the kinds it names: "purchase(s)", "payment(s)", or, holding
+    both, "payments or purchases".
+
+    Args:
+        period: The locked paycheck.
+        movements: What it holds -- at least one -- in the reader's order.
+
+    Returns:
+        The sentence, with its full stop.
+    """
+    payments = sum(1 for movement in movements if movement.is_payment)
+    if 0 < payments < len(movements):
+        noun = "payments or purchases"
+    else:
+        noun = "payment" if payments else "purchase"
+        if len(movements) != 1:
+            noun += "s"
+    names = "; ".join(_named(movement) for movement in movements)
+    return (
+        f"{paycheck_name(period)} holds {len(movements)} {noun} you entered "
+        f"({names})."
+    )
+
+
+def _named(movement: HeldMovement) -> str:
+    """Return how ruling R-PC116 names one movement.
+
+    A purchase by its own description, its amount and the row it sits in
+    ("Kroger, $87.43, in Groceries"): the grid shows rows rather than
+    purchases, so the row says where to look.  A payment by its item
+    ("Rent's payment, $1,200.00"), since its own description is only that
+    row's name again.
+
+    Args:
+        movement: One of :func:`movements_held_in`'s.
+
+    Returns:
+        The clause.
+    """
+    figure = _money(movement.amount)
+    if movement.is_payment:
+        return f"{movement.item_name}'s payment, {figure}"
+    return f"{movement.description}, {figure}, in {movement.item_name}"
+
+
+def _money(amount: Decimal) -> str:
+    """Return *amount* as the grid shows a purchase: ``$87.43``, a refund ``-$12.00``.
+
+    The ``money`` macro's spelling (``templates/_money_macros.html``), so a
+    refusal names the figure the owner sees in the row's purchase list.
+    """
+    if amount < 0:
+        return f"-${-amount:,.2f}"
+    return f"${amount:,.2f}"
 
 
 def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
