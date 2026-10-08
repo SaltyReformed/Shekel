@@ -1,9 +1,9 @@
-"""The one HTTP path the plan tools take to GitHub, under either of two identities.
+"""The one HTTP path quill takes to GitHub, under either of two identities.
 
 The private tracker (ruling ``balance:R-BAL170``) is written by two identities
 on purpose.  The developer's own login -- the token ``gh`` already holds --
 configures the tracker (:mod:`setup_tracker`).  Every CARD write goes through
-the plan tool's GitHub App instead, a separate identity, so a check can tell a
+quill's GitHub App instead, a separate identity, so a check can tell a
 tool write from the developer's own edit and never act on his.
 
 An App proves who it is with a JSON Web Token signed by its private key, and
@@ -33,7 +33,7 @@ TIMEOUT_SECONDS = 30
 #: Where the App's two credentials live: OUTSIDE every repository, readable by
 #: the developer's account only.  ``app.json`` holds the App's client ID (an
 #: identifier, not a secret); ``app.pem`` is the private key GitHub issued.
-APP_DIR = Path.home() / ".config" / "shekel-plan"
+APP_DIR = Path.home() / ".config" / "shekel-quill"
 
 #: GitHub refuses a token whose ``iat`` is in its future, and this host's clock
 #: and GitHub's need not agree to the second; the App documentation's own
@@ -89,6 +89,26 @@ class GitHub:
         payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})
         if payload.get("errors"):
             raise GitHubError(200, f"graphql: {json.dumps(payload['errors'])[:500]}")
+        return payload["data"]
+
+    def graphql_lookup(self, query: str, **variables) -> dict:
+        """One GraphQL call whose unresolvable fields BELOW the top-level object are
+        ABSENT, not errors.
+
+        Asked for an issue number nobody filed, GitHub answers 200 with that
+        field ``null`` beside the others and a ``NOT_FOUND`` error whose ``path``
+        names it under the repository (measured 2026-10-04); this answers the
+        ``data`` with the field None.  Only that two-step path is read as absent: a
+        top-level object it cannot find -- the repository itself, a one-step path
+        (measured 2026-10-04) -- and anything deeper, which no read has measured,
+        still raise, as does every other error.
+        """
+        payload = self.rest("POST", "/graphql", {"query": query, "variables": variables})
+        others = [e for e in payload.get("errors") or []
+                  if e.get("type") != "NOT_FOUND" or len(e.get("path") or ()) != 2
+                  or e["path"][0] != "repository"]
+        if others or payload.get("data") is None:
+            raise GitHubError(200, f"graphql: {json.dumps(payload.get('errors'))[:500]}")
         return payload["data"]
 
 

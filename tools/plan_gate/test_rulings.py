@@ -18,10 +18,10 @@ from collections import Counter
 
 import pytest
 
-import _registry as registry
-import _rulings as rulings
-from _staging import with_cell
-from _tables import cells
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _rulings as rulings
+from tools.plan_gate._staging import with_cell
+from tools.plan_gate._tables import cells
 
 
 def _a_row_of(arc: str) -> str:

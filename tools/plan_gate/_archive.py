@@ -16,15 +16,15 @@ ARTIFACT instead, at the first line, where a reader arriving from anywhere
 cannot get around it.
 
 Separate from ``_registry.py`` because it grades neither registry: its subject
-is every markdown file under an archived directory, and its only input from the
-registry is the repository root.
+is every markdown file under an archived directory, and its only shared input is
+the repository root (:data:`tools.ci.arcs.REPO`).
 """
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
 
-import _registry as registry
+from tools.ci import arcs
 
 #: Directory names whose contents are a historical record and govern nothing.
 #: Three separate trees hold them -- ``docs/audits/**/archive``,
@@ -40,8 +40,8 @@ ARCHIVE_BANNER = "> **ARCHIVED."
 
 def archived_docs() -> Iterator[Path]:
     """Every markdown file under an ``archive/`` or ``historical/`` directory."""
-    for path in sorted((registry.REPO / "docs").rglob("*.md")):
-        if ARCHIVED_DIRS & set(path.relative_to(registry.REPO).parts):
+    for path in sorted((arcs.REPO / "docs").rglob("*.md")):
+        if ARCHIVED_DIRS & set(path.relative_to(arcs.REPO).parts):
             yield path
 
 
@@ -56,7 +56,7 @@ def archive_banner_violations() -> list[str]:
         first = path.read_text().lstrip().splitlines()[:1]
         if not first or not first[0].startswith(ARCHIVE_BANNER):
             problems.append(
-                f"{path.relative_to(registry.REPO)} is archived and its first "
+                f"{path.relative_to(arcs.REPO)} is archived and its first "
                 f"line does not say so.  It must open with {ARCHIVE_BANNER!r} "
                 f"... so a reader who arrives by grep is told before they read "
                 f"a word of it (conventions.md rule 15)",

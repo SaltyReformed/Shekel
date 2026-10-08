@@ -7,7 +7,7 @@ the developer drags them.  This module is the one home of that tracker's
 CONFIGURATION: the repository and its settings, the labels, the board, and the
 things only the web can set (the organization's issue types, which need a
 scope the shared token does not carry; the board's automations and its view's
-sort, which the API cannot change; and the plan tool's GitHub App).  The cards
+sort, which the API cannot change; and quill's GitHub App).  The cards
 themselves are content, and their home is the tracker; nothing here names one.
 
 Run with no flag it changes nothing: it reads GitHub, prints one line per
@@ -32,13 +32,18 @@ every automation that writes it switched off, and any card holding a Status
 value reported as a difference.  Those automations matter twice over: one of
 them, "Auto-close issue", would close a card when someone set its Status to
 Done -- a third way to close a card, beside git and the developer's own hand.
-The board may keep only automations that choose WHICH cards it shows
-(:data:`ALLOWED_WORKFLOWS`).
+**Nor may an automation put a card on the board** (ruling ``balance:R-BAL177``):
+the board holds steps and questions only, and quill places each one
+itself, a new leaf where the step it splits sat.  "Auto-add sub-issues to
+project" would put every finding and ruling, each a sub-issue of its owner
+step, at the bottom of the ordered list (measured 2026-10-04: within ten
+seconds).  The board may keep only an automation that hides a card it already
+holds (:data:`ALLOWED_WORKFLOWS`).
 
 Usage, from the repository root::
 
-    python tools/plan/setup_tracker.py            # check only
-    python tools/plan/setup_tracker.py --apply    # make and correct
+    python -m tools.quill.setup_tracker            # check only
+    python -m tools.quill.setup_tracker --apply    # make and correct
 """
 from __future__ import annotations
 
@@ -48,7 +53,8 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from _github import (
+from tools.ci.arcs import ARCS
+from tools.quill._github import (
     APP_DIR,
     GitHub,
     GitHubError,
@@ -80,13 +86,17 @@ REPOSITORY = {
     "has_wiki": False,
 }
 
-#: The arcs, by the slug the registries' ``arc`` column uses; each is one label.
-#: ``tools/plan_gate/_registry.py``'s ``ARC_DOCS`` spells the same set until the
-#: plan gate's arms are deleted (step X-cx's L4 and L8 cards own the merge).
-ARCS = ("balance", "recurrence", "pay_calendar", "credit_card", "bank_import", "salary")
+#: Each arc is one label.  The arcs are :data:`tools.ci.arcs.ARCS`, their one
+#: home beside each arc's planning document (step X-cx's L4 deleted this
+#: module's second list); a label's colour is the one at its arc's position.
 _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 
-#: Every label the tracker carries: one per arc, and the two a release reads.
+#: The mark every card quill files carries from the call that creates it
+#: until its filing's last write removes it (ruling ``balance:R-BAL202``).
+FILING = "filing"
+
+#: Every label the tracker carries: one per arc, the two a release reads, and
+#: quill's :data:`FILING` mark.
 LABELS = {
     **{
         arc: (_ARC_COLORS[index % len(_ARC_COLORS)], f"The {arc.replace('_', '-')} arc")
@@ -98,9 +108,13 @@ LABELS = {
     "deploy-together": (
         "fbca04", "A parent whose leaves /release ships in one release, never split"
     ),
+    FILING: (
+        "bfdadc",
+        "Quill has not finished filing this card, so it is not offered as work",
+    ),
 }
 
-#: What the plan tool's App may do, and nothing more: write cards (issues,
+#: What quill's App may do, and nothing more: write cards (issues,
 #: their sub-issues and dependencies), create and delete the git references
 #: that are claims (contents), and place cards on the organization's board.
 #: ``metadata: read`` is mandatory for every App.
@@ -122,16 +136,15 @@ STORED_FIELD_TYPES = frozenset(
 #: lose (see the module docstring); it is tolerated only while unused.
 GITHUB_STATUS_FIELD = "Status"
 
-#: The board's automations that may run: each only decides WHICH cards the
-#: board shows.  Names as GitHub's documentation lists them (the API lists a
-#: built-in automation only once a board has it; the 09-24 demo board listed
-#: six, the last of these among them).  Every other one writes a stored field
-#: or an issue's state, and must be switched off -- on the web, because the
+#: The board's automations that may run: only one that hides a card the board
+#: already holds.  Names as GitHub's documentation lists them (the API lists a
+#: built-in automation only once a board has it).  Every other one writes a
+#: stored field or an issue's state, or ADDS cards ("Auto-add to project",
+#: "Auto-add sub-issues to project"), which only quill may do
+#: (``balance:R-BAL177``); each must be switched off -- on the web, because the
 #: API can only DELETE an automation, and what deleting a built-in one does
 #: is unmeasured.
-ALLOWED_WORKFLOWS = frozenset(
-    {"Auto-add to project", "Auto-archive items", "Auto-add sub-issues to project"}
-)
+ALLOWED_WORKFLOWS = frozenset({"Auto-archive items"})
 
 #: The board's view: the open cards, unsorted, so it shows the drag order.
 VIEW_NAME = "Plan"
@@ -337,8 +350,8 @@ def board_differences(project: dict) -> list[str]:
             "was renamed, so no card's Status can be read -- rename it back"
         )
     differences += [
-        f"the board automation {workflow['name']!r} is on and writes card state: switch it "
-        f"off at {project['url']}/workflows"
+        f"the board automation {workflow['name']!r} is on, and only "
+        f"{sorted(ALLOWED_WORKFLOWS)} may be: switch it off at {project['url']}/workflows"
         for workflow in project["workflows"]["nodes"]
         if workflow["enabled"] and workflow["name"] not in ALLOWED_WORKFLOWS
     ]
@@ -446,13 +459,25 @@ def _project(github: GitHub, project_id: str) -> dict:
     return github.graphql(_PROJECT, id=project_id)["node"]
 
 
-def _find_project(github: GitHub) -> tuple[str, dict | None]:
-    """The organization's node id and the board titled :data:`PROJECT_TITLE`, if any."""
+def _board_listing(github: GitHub) -> tuple[str, str | None]:
+    """The organization's node id and the id of the board titled :data:`PROJECT_TITLE`."""
     organization = github.graphql(_PROJECTS, org=ORG)["organization"]
     matches = [p for p in organization["projectsV2"]["nodes"] if p["title"] == PROJECT_TITLE]
     if len(matches) > 1:
         raise GitHubError(200, f"{len(matches)} boards are titled {PROJECT_TITLE!r}; keep one")
-    return organization["id"], (_project(github, matches[0]["id"]) if matches else None)
+    return organization["id"], (matches[0]["id"] if matches else None)
+
+
+def find_board(github: GitHub) -> str | None:
+    """The plan's board's node id (None while there is none): the one lookup both this
+    module and quill make."""
+    return _board_listing(github)[1]
+
+
+def _find_project(github: GitHub) -> tuple[str, dict | None]:
+    """The organization's node id and the board titled :data:`PROJECT_TITLE`, if any."""
+    org_id, board_id = _board_listing(github)
+    return org_id, (_project(github, board_id) if board_id else None)
 
 
 def _apply_to_view(github: GitHub, project: dict, report: Report) -> None:
@@ -580,13 +605,13 @@ def check_board(github: GitHub, repository: dict | None, apply: bool, report: Re
     if not differences:
         report.ok(
             f"board {PROJECT_TITLE!r} ({project['url']}): no stored field but GitHub's unused "
-            f"{GITHUB_STATUS_FIELD}, no state-writing automation on, an unsorted "
+            f"{GITHUB_STATUS_FIELD}, no automation on that writes or adds cards, an unsorted "
             f"{VIEW_NAME!r} table of open cards, ungrouped, showing no stored field"
         )
 
 
 def check_app(report: Report) -> None:
-    """Check the plan tool's App: registered by the organization, installed on the tracker only."""
+    """Check quill's App: registered by the organization, installed on the tracker only."""
     try:
         client_id, private_key = app_credentials()
     except FileNotFoundError:

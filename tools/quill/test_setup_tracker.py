@@ -6,11 +6,11 @@ import re
 
 import pytest
 
-import setup_tracker
-from _github import GitHubError
-from setup_tracker import (
+from tools.ci.arcs import ARCS
+from tools.quill import setup_tracker
+from tools.quill._github import GitHubError
+from tools.quill.setup_tracker import (
     APP_PERMISSIONS,
-    ARCS,
     ISSUE_TYPES,
     LABELS,
     REPOSITORY,
@@ -143,9 +143,15 @@ def test_every_declared_label_is_one_github_accepts():
 
 
 def test_every_arc_is_a_label():
-    """Every arc in ``ARCS`` is a label (``ARC_DOCS`` spells the set again until L4 or L8)."""
+    """Every arc in ``tools.ci.arcs.ARCS``, the arcs' one home, is a label."""
     assert set(ARCS) <= set(LABELS)
     assert len(ARCS) == len(set(ARCS))
+
+
+def test_the_filing_mark_is_a_label_the_tracker_keeps():
+    """R-BAL202: every card ``quill file`` creates carries it, so ``--apply`` makes it and
+    never deletes it as a label nothing declares."""
+    assert setup_tracker.FILING in LABELS
 
 
 def test_a_missing_repository_is_created_private_with_a_first_commit():
@@ -380,9 +386,27 @@ def test_apply_on_an_empty_board_deletes_rank_hides_status_and_no_automation():
     assert not [name for name, _ in sent if name in ("deleteProjectV2Workflow",
                                                      "updateProjectV2Field")]
     assert ("updateProjectV2View", {"id": "V1", "fields": ["F1"]}) in github.mutations
-    assert report.differences == 1
+    assert report.differences == 2
     assert any("'Item closed' is on" in line for line in report.lines)
     assert not any("'Auto-close issue'" in line for line in report.lines)
+
+
+def test_an_automation_that_adds_cards_is_a_difference():
+    """Only quill puts a card on the board (balance:R-BAL177): GitHub's default
+    "Auto-add sub-issues to project" would add every finding and ruling; hiding is allowed."""
+    project = _project(views=(("Plan", "is:open", 0),))
+    project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]
+    project["views"]["nodes"][0]["fields"]["nodes"] = _visible("F1")
+    project["workflows"]["nodes"] = [
+        {"name": "Auto-add sub-issues to project", "enabled": True},
+        {"name": "Auto-add to project", "enabled": True},
+        {"name": "Auto-archive items", "enabled": True},
+    ]
+    differences = setup_tracker.board_differences(project)
+    assert [d.split(" is on")[0] for d in differences] == [
+        "the board automation 'Auto-add sub-issues to project'",
+        "the board automation 'Auto-add to project'",
+    ]
 
 
 def test_a_refused_field_deletion_is_still_a_difference():
@@ -391,7 +415,8 @@ def test_a_refused_field_deletion_is_still_a_difference():
     report = Report()
     setup_tracker.check_board(github, {"node_id": "R"}, apply=True, report=report)
     assert any("stores a field, 'Rank'" in line for line in report.lines)
-    assert report.differences == 2
+    # Rank, 'Item closed' on, and 'Auto-add sub-issues to project' on (R-BAL177).
+    assert report.differences == 3
 
 
 def test_github_status_is_tolerated_only_hidden_and_a_custom_select_is_not():
@@ -547,8 +572,9 @@ def test_check_mode_sends_no_mutation_even_to_a_public_unlinked_board():
     report = Report()
     setup_tracker.check_board(github, {"node_id": "R"}, apply=False, report=report)
     assert not github.writes()
-    # Public, unlinked, Rank stored, 'Item closed' on, no 'Plan' view.
-    assert report.differences == 5
+    # Public, unlinked, Rank stored, 'Item closed' on, 'Auto-add sub-issues to
+    # project' on (R-BAL177), no 'Plan' view.
+    assert report.differences == 6
 
 
 def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, repos=None):
@@ -564,7 +590,7 @@ def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, re
 
     monkeypatch.setattr(setup_tracker, "app_installation", installed)
     answers = {
-        "jwt": {("GET", "/app"): {"slug": "shekel-plan-tool", "owner": {"login": owner}}},
+        "jwt": {("GET", "/app"): {"slug": "shekel-quill", "owner": {"login": owner}}},
         "installation": {("GET", "/installation/repositories"): {
             "repositories": [{"name": name} for name in (repos or ["shekel-plan"])]
         }},

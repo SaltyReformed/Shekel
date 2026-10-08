@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import pytest
 
-import _registry as registry
-from _tables import cells
-from _plan_gate import (
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._tables import cells
+from tools.plan_gate._plan_gate import (
     PlanSpec,
     arc_state_violation,
     line_count_violation,

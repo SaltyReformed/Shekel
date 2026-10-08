@@ -16,6 +16,8 @@ gate covers every static security knob the app ships with.
 from importlib import reload
 
 import pytest
+from flask import request
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from app import config as config_module
 from app.config import (
@@ -45,7 +47,31 @@ class TestTheUploadCeiling:
     would notice being raised: Werkzeug's default is unlimited, and an
     adversarial review measured a CSV parse expanding its input ~52x in list
     overhead (5.24 MB of input -> 273 MB resident) against a 1 GB container.
+
+    **It is the ONE bound on an ordinary form as well** (ruling **R-BAL218**,
+    plan step ``balance:X-dk``): Werkzeug 3.1.9 stopped weighing an
+    urlencoded body against Flask's ``MAX_FORM_MEMORY_SIZE``, so the last two
+    cases grade the number the statement-match notes price a crafted pass
+    against, through the app's own request class.
     """
+
+    @staticmethod
+    def _parse_form_body(app, size):
+        """Parse a *size*-byte urlencoded body the way a view reads one.
+
+        Args:
+            app: The application whose request class and config parse it.
+            size: The body's length in bytes.
+
+        Returns:
+            The length of its one field's value, as parsed.
+        """
+        body = "a=" + "x" * (size - 2)
+        with app.test_request_context(
+            "/", method="POST", data=body,
+            content_type="application/x-www-form-urlencoded",
+        ):
+            return len(request.form["a"])
 
     def test_the_ceiling_is_set_at_all(self):
         """Unset means unlimited, which is what this exists to stop."""
@@ -54,18 +80,52 @@ class TestTheUploadCeiling:
     def test_the_ceiling_is_proportionate_to_the_real_need(self):
         """512 KB against a measured 59 KB largest real statement.
 
-        Asserted as a RANGE rather than an equality: the point is that it stays
-        small enough that a flood of uploads cannot exhaust the container, and
-        large enough for a full year-to-date export with room to spare.  A
-        future edit that raises it into megabytes should have to change this
-        test and read why.
+        Asserted as a RANGE, and beside the exact pin below rather than
+        instead of it: the pin is the value a ruling picked and moves with a
+        ruling, while this is the envelope any value must stay inside --
+        small enough that a flood of uploads cannot exhaust the container,
+        and large enough for a full year-to-date export with room to spare.
+        Today the pin implies it; a ruling that moved the pin into megabytes
+        would still have to change this test too and read why.
         """
         assert 128 * 1024 <= BaseConfig.MAX_CONTENT_LENGTH <= 1024 * 1024
+
+    def test_the_ceiling_is_the_ruled_value(self):
+        """512 KB exactly, as ruling R-BAL218 picked it.
+
+        The range above allows anything up to 1 MB, and the notes that state
+        the bound quote 524,288 bytes -- ``app/schemas/validation/statements.py``,
+        ``TestAMatchMayNameAsManyRowsAsThePassOFFERS`` and
+        ``test_oversized_backup_code_rejected_before_bcrypt`` -- and the first
+        two price a crafted body at the 23,830 ticks it carries.  A change to
+        the value has to come here and re-measure them.
+        """
+        assert BaseConfig.MAX_CONTENT_LENGTH == 512 * 1024
 
     def test_every_config_inherits_it(self):
         """Dev, test and prod all bound their bodies."""
         assert DevConfig.MAX_CONTENT_LENGTH == BaseConfig.MAX_CONTENT_LENGTH
         assert TestConfig.MAX_CONTENT_LENGTH == BaseConfig.MAX_CONTENT_LENGTH
+
+    def test_a_form_body_at_the_ceiling_parses(self, app):
+        """Nothing smaller than the ceiling bounds an ordinary form.
+
+        The body is past Flask's 500,000-byte ``MAX_FORM_MEMORY_SIZE``
+        default, which refused it through Werkzeug 3.1.8.  So this fails if a
+        smaller bound ever binds a form body again, and the notes that call
+        this ceiling the one bound would then be false.
+        """
+        ceiling = app.config["MAX_CONTENT_LENGTH"]
+        assert ceiling > app.config["MAX_FORM_MEMORY_SIZE"] == 500_000
+
+        assert self._parse_form_body(app, ceiling) == ceiling - 2
+
+    def test_a_form_body_past_the_ceiling_is_refused(self, app):
+        """One byte over is a 413 before any of it is parsed."""
+        ceiling = app.config["MAX_CONTENT_LENGTH"]
+
+        with pytest.raises(RequestEntityTooLarge):
+            self._parse_form_body(app, ceiling + 1)
 
 
 class TestDevConfig:

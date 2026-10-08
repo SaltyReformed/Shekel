@@ -60,9 +60,9 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from _plan_gate import _blank_fenced_regions
-from _registry import ARC_DOCS, PLANS
-from _tables import RULINGS_HEADER, RulingRow, is_table_row, rows_under
+from tools.plan_gate._plan_gate import _blank_fenced_regions
+from tools.plan_gate._registry import ARC_DOCS, PLANS
+from tools.plan_gate._tables import RULINGS_HEADER, RulingRow, is_table_row, rows_under
 
 #: Every arc's rulings, since ``balance:X-ao-2a`` finished the lift.
 RULINGS = PLANS / "rulings.md"

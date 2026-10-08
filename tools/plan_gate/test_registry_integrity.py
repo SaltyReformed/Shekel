@@ -20,10 +20,10 @@ from __future__ import annotations
 import pathlib
 import re
 
-import _registry as registry
-import _row_width as row_width
-from _classes import decomposition_leaf_keys
-from _staging import (
+from tools.plan_gate import _registry as registry
+from tools.plan_gate import _row_width as row_width
+from tools.plan_gate._classes import decomposition_leaf_keys
+from tools.plan_gate._staging import (
     a_live_ledger_row,
     a_prefix_trap,
     a_shipped_balance_row,

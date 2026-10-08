@@ -168,7 +168,15 @@ is on that step's own entry.
       becomes the balance-of-record; `ImportRemoval` gains the field. `$0.00`; the door's copy only.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
-      nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
+      nginx); the step names the query or payload each pays for. It also measures the largest body a
+      real pass's Apply sends, against the one 512 KB request cap (**balance:R-BAL218**;
+      **BI-511**), and states once the per-item cost `MAX_BATCH_ITEMS`'s note spells as both about
+      10 ms and 43 ms (**BI-512**). If a real pass stays well under the cap, the 413 page's note
+      that only the statement upload reaches it is restated to that measurement. If one can reach
+      the cap, the over-cap Apply, an htmx post whose 413 is never swapped, silently does nothing:
+      the remedy is then a question for the developer that would amend **balance:R-BAL218**, asked
+      by this step's lane, and nothing is restated in its place. Performance and comments only on
+      the first branch; upkeep tier.
 - [x] **X-gy** `fe1de448` -- CI's one `lint-and-test` job became `scope`, `plan-gate` (its own job,
       not in `lint` as specified: `registry-only` skips `lint`), `lint`, six `test` shards via
       `scripts/test.sh` at `-n logical` and a fail-closed `lint-and-test`: ~10 min a PR, cap 50 s

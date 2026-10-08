@@ -87,9 +87,13 @@ class StatementUploadSchema(BaseSchema):
 #:
 #: **43 ms is an AVERAGE over acts naming one to four rows, not a bound on
 #: one.**  An item may name any number of lines and rows, so a hostile pass is
-#: bounded by ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``) rather than by
-#: this.  This ceiling is what keeps an ORDINARY pass inside the budget; that
-#: one is what keeps a crafted one out, and
+#: bounded by ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``), the one bound
+#: on a request body (ruling **R-BAL218**), rather than by this.  *Through
+#: Werkzeug 3.1.8 Flask's ``MAX_FORM_MEMORY_SIZE`` (500,000) was the tighter
+#: bound on such a body, so this sentence named the wrong one until plan step
+#: ``balance:X-dk`` moved the pin (finding BAL-598).*  This ceiling is what
+#: keeps an ORDINARY pass inside the budget; that one is what keeps a crafted
+#: one out, and
 #: :func:`~app.services.statement_match._resolve.resolve_rows` is what keeps
 #: either from naming a row the pass never offered.  *It said
 #: ``_MAX_MATCH_MEMBERS`` bounded a member at 100 until plan step
@@ -336,11 +340,9 @@ class StatementMatchSchema(BaseSchema):
     #:   same for lines.  A body cannot reach an account's history at all; it
     #:   reaches at most what this pass offered, which the server derived;
     #: * the RESOURCE bound exists where the body does, and it is
-    #:   ``MAX_FORM_MEMORY_SIZE`` -- **500,000 bytes, Flask's own default,
-    #:   which this app never sets**.  Werkzeug's ``_parse_urlencoded`` weighs
-    #:   the body against it before this schema sees anything, and it is the
-    #:   BINDING one: ``MAX_CONTENT_LENGTH`` (524,288, ``app/config.py``) is
-    #:   larger, so for a urlencoded body it never fires.
+    #:   ``MAX_CONTENT_LENGTH`` -- **524,288 bytes, ``app/config.py``, the ONE
+    #:   bound on every request body** (ruling **R-BAL218**).  Werkzeug weighs
+    #:   the body against it before this schema sees anything.
     #:   :data:`MAX_BATCH_ITEMS` beside them bounds the ACTS.
     #:
     #: **And it had started to contradict the screen.**  Since plan step
@@ -354,32 +356,45 @@ class StatementMatchSchema(BaseSchema):
     #: bitten; the list grows with the statement span.
     #:
     #: **THE WORST CASE IS NOT MULTIPLICATIVE, and that is what makes the
-    #: deletion safe.**  ``MAX_FORM_MEMORY_SIZE`` weighs the WHOLE BODY -- one
-    #: ``content_length`` against one number, with no per-field accounting for
-    #: a urlencoded body -- so :data:`MAX_BATCH_ITEMS` items each naming
-    #: unbounded members is UNCONSTRUCTIBLE: every item's ticks come out of one
-    #: 500,000-byte budget.  **The body was always the tighter bound**: 500
-    #: items x 100 members is 50,000 ticks, against a body that can carry
-    #: 22,727, so the deleted cap could never bind in aggregate and the door's
-    #: worst case is IDENTICAL before and after this step.
+    #: deletion safe.**  ``MAX_CONTENT_LENGTH`` weighs the WHOLE BODY -- one
+    #: ``content_length`` against one number, with no per-field accounting --
+    #: so :data:`MAX_BATCH_ITEMS` items each naming unbounded members is
+    #: UNCONSTRUCTIBLE: every item's ticks come out of one 524,288-byte
+    #: budget.  **The body was always the tighter bound**: 500 items x 100
+    #: members is 50,000 ticks, against a body that can carry 23,830, so the
+    #: deleted cap could never bind in aggregate and the door's worst case is
+    #: IDENTICAL before and after this step.
     #:
-    #: Measured 2026-09-06, three runs per shape, at the CRAFTED tick --
-    #: ``rows-1=purchase:1:1:1&`` is **22 bytes**, where a browser's
-    #: ``rows-1234=transaction%3A4567%3A-178.32%3A1&`` is 43: ONE item carrying
-    #: the whole 22,727-tick budget costs **50-54 ms**, and 500 items sharing
-    #: it cost **57-132 ms**.  Every row in either is then refused by
-    #: ``resolve_rows``, because no pass offers them.
+    #: Measured 2026-10-06 on Werkzeug 3.1.9, in two sessions of three runs
+    #: per shape on a shared host, through the form parse,
+    #: ``reconcile_payload`` and the batch schema's load, at the CRAFTED tick
+    #: -- ``rows-1=purchase:1:1:1&`` is **22 bytes**, where a browser's
+    #: ``rows-1234=transaction%3A4567%3A-178.32%3A1&`` is 43: ONE item
+    #: carrying the whole 23,830-tick budget costs **51-63 ms**, and 500
+    #: items sharing it (21,593 ticks, the longer line numbers costing bytes)
+    #: cost **49-139 ms** (139 the first of one session's three runs; the
+    #: other five read 49-62); each shape peaks at 7.1-7.2 MB.  Every row in
+    #: either is then refused by ``resolve_rows``, because no pass offers
+    #: them.
     #:
-    #: *Three drafts of this note were wrong and the corrections are kept
-    #: because each was a different mistake.  The first quoted 21.8 ms and
-    #: asked only the single-item question -- the wrong question, since whether
-    #: the item ceiling MULTIPLIES is what decides safety.  The second answered
-    #: that but cited ``MAX_CONTENT_LENGTH``, a gate that never fires for these
-    #: bodies, and priced a BROWSER's tick while bounding a CRAFTED one, which
-    #: understated the budget by 1.86x.  Both were found by adversarial review
-    #: before this step was committed.  The figure the deleted block quoted --
-    #: 44,600 ticks in 0.36 s -- was measured against the retired
-    #: ``match-<i>-rows`` wire shape and is not any of these.*
+    #: *Two drafts of this note were wrong and a third stopped being true;
+    #: the corrections are kept because each was a different mistake.  The
+    #: first quoted 21.8 ms and asked only the single-item question -- the
+    #: wrong question, since whether the item ceiling MULTIPLIES is what
+    #: decides safety.  The second answered that but cited
+    #: ``MAX_CONTENT_LENGTH``, which on the Werkzeug 3.1.6 then pinned was not
+    #: the tighter bound on these bodies, and priced a BROWSER's tick while
+    #: bounding a CRAFTED one, which understated the budget by 1.86x.  Both
+    #: were found by adversarial review before this step was committed.  The
+    #: third named Flask's ``MAX_FORM_MEMORY_SIZE`` (500,000) as the binding
+    #: bound, measured 22,727 ticks at 50-54 ms and 57-132 ms, and was true
+    #: until Werkzeug 3.1.9 stopped weighing a urlencoded body against it
+    #: (plan step ``balance:X-dk``).  That measurement's harness was not
+    #: recorded; this note's reads 48-60 ms and 48-138 ms at 500,000 bytes
+    #: over the same two sessions, so the dates compare by figure only.  The
+    #: figure the deleted block quoted -- 44,600 ticks in 0.36 s -- was
+    #: measured against the retired ``match-<i>-rows`` wire shape and is not
+    #: any of these.*
     #: Both lists, and the note above governs the pair: neither carries a
     #: ceiling, for one reason, so they are spelled the same way.
     line_ids = fields.List(RowId(), required=False, load_default=list)

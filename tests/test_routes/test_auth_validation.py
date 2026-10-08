@@ -281,9 +281,14 @@ class TestMfaVerifySchemaWiring:
         ``bcrypt.checkpw`` must not be invoked.
 
         100,000 characters is the test payload size: comfortably above
-        the schema's 32-char cap and the WSGI 500KB form-size limit
-        (``MAX_FORM_MEMORY_SIZE``) so the schema is the layer being
-        tested, not the WSGI framing layer.
+        the schema's 32-char cap and well BELOW the request-body ceiling
+        (``MAX_CONTENT_LENGTH``, 524,288 bytes, the one bound on a body:
+        ruling R-BAL218), so the body reaches the schema and the schema
+        is the layer being tested, not the WSGI framing layer.  *It said
+        "above the WSGI 500KB form-size limit" until plan step
+        ``balance:X-dk``, which was false (finding BAL-598): 100,000 was
+        below that limit too, and a body above it would have been a 413
+        before the schema ran.*
         """
         with app.app_context():
             self._enable_mfa(seed_user["user"].id)

@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from pathlib import Path
 
-from _classes import decomposition_leaf_keys
-from _tables import (
+from tools.ci.arcs import ARC_DOCS, PLANS
+from tools.plan_gate._classes import decomposition_leaf_keys
+from tools.plan_gate._tables import (
     FORKS_HEADER,
     LEDGER_HEADER,
     STEPS_HEADER,
@@ -37,7 +37,7 @@ from _tables import (
     StepRow,
     rows_under,
 )
-from _plan_gate import (
+from tools.plan_gate._plan_gate import (
     CHECKBOX_RX,
     COMMIT_SHA,
     NON_STEP_OWNERS,
@@ -45,9 +45,8 @@ from _plan_gate import (
     split_owners,
 )
 
-REPO = Path(__file__).resolve().parents[2]
-PLANS = REPO / "docs" / "plans"
-
+#: The registries, under :data:`tools.ci.arcs.PLANS`; the arcs and their
+#: documents (``ARC_DOCS``) are read from :mod:`tools.ci.arcs`, their one home.
 LEDGER = PLANS / "ledger.md"
 STEPS = PLANS / "steps.md"
 CONVENTIONS = PLANS / "conventions.md"
@@ -79,17 +78,6 @@ COMMIT_CELL_RX = re.compile(rf"^`{COMMIT_SHA}`$")
 #: (two steps blocked by one third) as a cycle, which every one of these
 #: registries contains.
 _WHITE, _GREY, _BLACK = 0, 1, 2
-
-
-#: One arc document, by the slug its registry rows carry.
-ARC_DOCS = {
-    "balance": REPO / "docs/audits/balance_architecture/README.md",
-    "recurrence": PLANS / "implementation_plan_recurrence_redesign.md",
-    "pay_calendar": PLANS / "implementation_plan_pay_calendar.md",
-    "credit_card": PLANS / "implementation_plan_credit_card.md",
-    "bank_import": PLANS / "implementation_plan_bank_import.md",
-    "salary": PLANS / "implementation_plan_salary.md",
-}
 
 
 def ledger_rows() -> list[LedgerRow]:

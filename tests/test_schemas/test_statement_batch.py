@@ -586,14 +586,18 @@ class TestAMatchMayNameAsManyRowsAsThePassOFFERS:
       ``load_lines`` does the same for lines.  Graded by
       ``test_accept.TestEveryOtherRefusalFires`` (a cancelled row, a card
       purchase, an unknown line, a row another match already claims);
-    * the RESOURCE bound -- ``MAX_FORM_MEMORY_SIZE`` (500,000, Flask's default,
-      which this app never sets) refuses the body before this schema sees it,
-      and :data:`MAX_BATCH_ITEMS` bounds the ACTS.  It is the BINDING one:
-      ``MAX_CONTENT_LENGTH`` is larger, so for a urlencoded body it never
-      fires.  Measured 2026-09-06 at the CRAFTED 22-byte tick: that budget
-      carries 22,727 ticks, costing 50-54 ms in one item and 57-132 ms spread
-      across the 500-item ceiling, all of which ``resolve_rows`` then refuses.
-      The schema's own docstring carries the two drafts this corrects.
+    * the RESOURCE bound -- ``MAX_CONTENT_LENGTH`` (524,288,
+      ``app/config.py``), the ONE bound on a request body (ruling
+      **R-BAL218**), refuses the body before this schema sees it, and
+      :data:`MAX_BATCH_ITEMS` bounds the ACTS.  Graded on a form body by
+      ``tests/test_config.py``'s ``TestTheUploadCeiling``.  Measured
+      2026-10-06 on Werkzeug 3.1.9 at the CRAFTED 22-byte tick: that budget
+      carries 23,830 ticks, costing 51-63 ms in one item and 49-139 ms spread
+      across the 500-item ceiling (two sessions on a shared host), all of
+      which ``resolve_rows`` then refuses.  *Through Werkzeug 3.1.8 Flask's
+      ``MAX_FORM_MEMORY_SIZE`` (500,000) was the tighter bound on such a
+      body, and this docstring named it.*  The schema's own docstring
+      carries the drafts this corrects.
 
     **And the cap had begun to contradict the screen**, which is what made it
     a defect rather than merely redundant: since plan step

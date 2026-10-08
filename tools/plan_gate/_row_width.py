@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import re
 
-import _registry
-from _registry import LEDGER_ROW_CAP, ledger_rows
+from tools.plan_gate import _registry
+from tools.plan_gate._registry import LEDGER_ROW_CAP, ledger_rows
 
 #: The width at which a ``ledger.md`` row counts as CROWDING the row cap.
 #:

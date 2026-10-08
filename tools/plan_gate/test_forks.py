@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-import _registry as registry
-from _staging import (
+from tools.plan_gate import _registry as registry
+from tools.plan_gate._staging import (
     row_of,
     stage_a_fork,
     with_cell,
