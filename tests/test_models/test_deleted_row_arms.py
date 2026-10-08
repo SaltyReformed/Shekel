@@ -21,6 +21,7 @@ is :mod:`app.opening_infrastructure`'s, and so are the properties pinned here:
 from __future__ import annotations
 
 import ast
+import hashlib
 import pathlib
 
 import pytest
@@ -42,6 +43,13 @@ _MIGRATIONS = (
 
 #: The builder whose calls a revision must declare.
 _BUILDER = "apply_deleted_row_infrastructure"
+
+#: SHA-256 of the row arm's four CREATE statements, newline-joined, as
+#: ``c4a4e7d1b9f2`` emitted them at ``4c9456778`` (taken 2026-10-08 from
+#: ``git show 4c9456778:app/deleted_row_infrastructure.py``).
+_SHIPPED_ROW_ARM_SHA256 = (
+    "73592549b4f236492467bc2fb9ecb998f15a7bdc070bbfdfcb30eec25d533900"
+)
 
 #: The transfer arm's own objects, as they appear in emitted SQL.
 _TRANSFER_OBJECTS = (
@@ -100,19 +108,24 @@ class TestAnArmSetInstallsExactlyItself:
     def test_the_row_arms_bodies_are_what_c4a4e7d1b9f2_shipped(self):
         """A revision builds the database ITS point in history describes.
 
-        The row arm's arrival body reads ``transaction_id`` alone, with the
-        plain ``=`` early return BAL-576 is about; the transfer arm's reads all
-        three links with ``IS NOT DISTINCT FROM``.  If the row-only install
-        emitted the newer body, a replay at ``c4a4e7d1b9f2`` would install a
-        function naming columns that do not exist yet -- a plpgsql body
-        resolves them only when it runs, so the replay would pass and the first
-        movement written would fail.
+        The row arm's four CREATE statements -- both functions, both
+        attachments -- hashed against what ``c4a4e7d1b9f2`` emitted at
+        ``4c9456778``, the commit before the arms existed (measured equal
+        statement by statement when the hash was taken).  A row-only install
+        that emitted a newer body would make a replay at that revision install
+        a function naming columns that do not exist yet: a plpgsql body
+        resolves them only when it runs, so the replay would pass and the
+        first movement written would fail.  And an edit to the row arm that
+        later steps owe (the hiding arm's transfer carve-out goes with the
+        transfer arm) must land in the TRANSFER arm's bodies, never in these.
         """
-        row_only = " ".join(_statements((ROW_ARM,)))
-        both = " ".join(_statements(ALL_ARMS))
+        row_only = _creates(_statements((ROW_ARM,)))
 
-        assert "NEW.transaction_id = OLD.transaction_id" in row_only
-        assert "income_transfer_id" not in row_only
+        assert len(row_only) == 4
+        assert hashlib.sha256("\n".join(row_only).encode()).hexdigest() == (
+            _SHIPPED_ROW_ARM_SHA256
+        )
+        both = " ".join(_statements(ALL_ARMS))
         assert "IS NOT DISTINCT FROM OLD.income_transfer_id" in both
         assert "FROM budget.transfers" in both
 
@@ -128,15 +141,19 @@ class TestAnArmSetInstallsExactlyItself:
             in _arrival_attachment(statements)
         )
 
-    @pytest.mark.parametrize("arms", [(), (TRANSFER_ARM,), (ROW_ARM, "card")])
-    def test_an_arm_set_the_module_cannot_build_is_refused(self, arms):
+    @pytest.mark.parametrize("arms, refusal", [
+        ((), "omits 'row'"),
+        ((TRANSFER_ARM,), "omits 'row'"),
+        ((ROW_ARM, "card"), r"unknown arm\(s\) \('card',\)"),
+    ])
+    def test_an_arm_set_the_module_cannot_build_is_refused(self, arms, refusal):
         """No arm set without the row arm, and no arm the module does not know.
 
         The transfer arm extends the row arm's arrival function and attaches
         nothing that refuses a movement on its own; an empty set is the
         removal, which has its own function.
         """
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=refusal):
             _statements(arms)
 
 

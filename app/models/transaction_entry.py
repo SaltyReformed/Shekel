@@ -42,8 +42,8 @@ class TransactionEntry(
 
     Columns:
         transaction_id  -- The parent transaction this entry belongs to, or
-                           NULL for a transfer side's payment (plan step
-                           ``balance:X-bi-6-4d-2``).
+                           NULL when a side link below names a transfer side
+                           instead (plan step ``balance:X-bi-6-4d-2``).
         expense_transfer_id, income_transfer_id -- The TRANSFER whose from- or
                            to-side this movement is the payment of, keyed with
                            ``account_id`` onto that side's endpoint (ruling
@@ -74,9 +74,14 @@ class TransactionEntry(
                            and to the account's by
                            ``fk_transaction_entries_owner_account`` -- the
                            construction ``fk_transactions_owner_account`` uses
-                           one table up.  Never the author: a companion who
-                           records a purchase writes ``user_id``, and the
-                           purchase is still the owner's.
+                           one table up.  A side-linked movement names no row,
+                           so the row key skips it (MATCH SIMPLE on a NULL),
+                           and the chain holds it instead: its account is the
+                           owner's, the side key makes that account a
+                           transfer endpoint, and an endpoint is the
+                           transfer owner's (ruling **R-BAL107**).  Never the
+                           author: a companion who records a purchase writes
+                           ``user_id``, and the purchase is still the owner's.
         user_id         -- The user who created the entry (owner or companion):
                            the AUTHOR, never the owner.
         amount          -- What the purchase cost, as a signed figure
@@ -377,8 +382,8 @@ class TransactionEntry(
             name="ck_transaction_entries_one_parent",
         ),
         # **A TRANSFER SIDE HOLDS ITS PAYMENT AND NOTHING ELSE**: every door
-        # refuses a purchase on a transfer, so a side link is the settlement
-        # record the status seam writes, and the stored mark says so.  A revert
+        # refuses a purchase on a transfer, so a side link names a transfer
+        # side's settlement record, and the stored mark says so.  A revert
         # keeps the record un-dated and the mark with it (ruling **R-BAL61**).
         db.CheckConstraint(
             "(expense_transfer_id IS NULL AND income_transfer_id IS NULL) "
@@ -453,10 +458,12 @@ class TransactionEntry(
     # until then.
     #
     # **NULLABLE since plan step ``balance:X-bi-6-4d-2``, and NULL is a fact**:
-    # a transfer side's payment is filed under no row, but under its TRANSFER,
-    # by the side link below that names it (ruling **R-BAL88**).
-    # ``ck_transaction_entries_one_parent`` makes exactly one of the three set,
-    # so a NULL here always means "a transfer side's record".
+    # a movement a side link below files under a TRANSFER names no row
+    # (ruling **R-BAL88**).  ``ck_transaction_entries_one_parent`` makes
+    # exactly one of the three set, so a NULL here always means "a transfer
+    # side's record".  (The step's migration files every stored record that
+    # way; until the rest of the step moves the status seam's writer onto the
+    # side links, a NEW record is still written under its transfer's twin.)
     transaction_id = db.Column(
         db.Integer,
         db.ForeignKey(
@@ -504,7 +511,9 @@ class TransactionEntry(
         nullable=False,
     )
     # WHO OWNS this movement: the parent row's owner, as a co-located key
-    # column (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).  Not a
+    # column (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**) -- or, for
+    # a side-linked movement, which names no row, its TRANSFER's, by the chain
+    # the side keys' comment states (plan step ``balance:X-bi-6-4d-2``).  Not a
     # copy some writer keeps in step -- ``fk_transaction_entries_owner_transaction``
     # refuses any value but the row's ``user_id`` and
     # ``fk_transaction_entries_owner_account`` refuses an account that owner

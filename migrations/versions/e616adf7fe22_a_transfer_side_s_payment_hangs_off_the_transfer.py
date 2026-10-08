@@ -15,8 +15,8 @@ the TRANSFER, not under the hidden twin row the transfer service keeps for that
 side.**  Until now each side's record hung off its twin
 (``transaction_entries.transaction_id`` = the twin's id), so every reader of a
 transfer's money walked a row whose only job was to copy the transfer.  After
-this revision the record names its transfer by one of two SIDE LINKS, and the
-twins hold nothing.  **No figure, day, account or statement link moves**: the
+this revision every STORED record names its transfer by one of two SIDE LINKS,
+and no twin holds one.  **No figure, day, account or statement link moves**: the
 same 44 rows keep their ids, amounts, days, bases, accounts, matches and
 postings, and only the column that says what they are filed under changes.
 
@@ -63,14 +63,17 @@ members naming one of the 44 (they key by the movement's id and account, which
 do not change).  0 refused.  The migration prints its own counts so the operator
 compares them with the rehearsal's.
 
-**The downgrade re-attaches each record to its side's twin** -- the live one,
-else the lowest id -- and refuses, writing nothing, while a record's side has no
+**The downgrade re-attaches each record to its side's LIVE twin** (a transfer
+has at most one per side, ``uq_transactions_transfer_type_active``) and
+refuses, writing nothing, while a record's side has none: a twin hidden around
+the transfer service (Transfer Invariant 4 drift, which no door writes), or no
 twin at all (a state only a LATER revision that deletes the twins can leave,
-and that revision's downgrade rebuilds them first).  Then it withdraws the
-transfer arm, drops the new constraints and columns, and restores
-``transaction_id``'s NOT NULL, refusing if any row would violate it.  A record
-re-attached to a deleted twin is the pre-step shape of finding BAL-532 and is
-allowed, as the older code allowed it.
+and that revision's downgrade rebuilds them first).  A deleted twin cannot take
+the record back -- the row arm the downgrade restores refuses a movement
+arriving under a deleted row -- and a record under a hidden TRANSFER cannot
+exist at this revision, which the transfer arm refuses.  Then it drops the new
+constraints and columns and restores ``transaction_id``'s NOT NULL, refusing if
+any row would violate it.
 
 ``tests/test_models/test_a_transfer_side_s_payment_hangs_off_the_transfer.py``
 drives the shipped ``upgrade`` / ``downgrade`` and each refusal.
@@ -174,7 +177,9 @@ UPDATE budget.transaction_entries e
    AND t.transfer_id IS NOT NULL
 """
 
-#: Every side-linked movement whose side has no twin to go back under.
+#: Every side-linked movement whose side has no LIVE twin to go back under: a
+#: deleted twin cannot take it (the row arm refuses a movement arriving under
+#: a deleted row).
 _TWINLESS_SQL = f"""
 SELECT e.id, coalesce(e.expense_transfer_id, e.income_transfer_id)
   FROM budget.transaction_entries e
@@ -185,12 +190,13 @@ SELECT e.id, coalesce(e.expense_transfer_id, e.income_transfer_id)
                                        e.income_transfer_id)
           AND (t.transaction_type_id = {_INCOME})
               = (e.income_transfer_id IS NOT NULL)
+          AND NOT t.is_deleted
    )
  ORDER BY e.id
 """
 
-#: The downgrade's re-attach: each side-linked movement under its side's twin,
-#: the live one first.
+#: The downgrade's re-attach: each side-linked movement under its side's live
+#: twin, of which ``uq_transactions_transfer_type_active`` allows one.
 _REATTACH_SQL = f"""
 UPDATE budget.transaction_entries e
    SET transaction_id = (
@@ -199,8 +205,7 @@ UPDATE budget.transaction_entries e
                                            e.income_transfer_id)
               AND (t.transaction_type_id = {_INCOME})
                   = (e.income_transfer_id IS NOT NULL)
-            ORDER BY t.is_deleted, t.id
-            LIMIT 1
+              AND NOT t.is_deleted
        ),
        expense_transfer_id = NULL,
        income_transfer_id = NULL
@@ -274,7 +279,7 @@ def refuse_unlinkable_rows(bind) -> None:
 
 
 def refuse_twinless_sides(bind) -> None:
-    """Refuse the downgrade while any side-linked record has no twin to go back under.
+    """Refuse the downgrade while any side-linked record has no live twin to go back under.
 
     Module-level so a test can DRIVE the refusal, as
     :func:`refuse_unlinkable_rows`.
@@ -290,10 +295,12 @@ def refuse_twinless_sides(bind) -> None:
     if twinless:
         raise RuntimeError(
             f"X-bi-6-4d-2's downgrade refuses: {len(twinless)} side-linked "
-            f"payment(s) have no twin row on their side to go back under "
+            f"payment(s) have no live twin row on their side to go back under "
             f"(entry id, transfer id: {twinless}; diagnose with: "
-            f"{_TWINLESS_SQL.strip()}).  Downgrade the revision that deleted "
-            "the twins first; it rebuilds them.  Nothing was written."
+            f"{_TWINLESS_SQL.strip()}).  A twin hidden around the transfer "
+            "service is the developer's to rule; twins a later revision "
+            "deleted come back with that revision's downgrade.  Nothing was "
+            "written."
         )
 
 

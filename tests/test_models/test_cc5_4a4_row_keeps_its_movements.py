@@ -245,7 +245,9 @@ class TestTheOneActStillRemovesAMovement:
         """No ``delete-orphan`` any more: the act's explicit DELETE is the path.
 
         Removed from the collection BEFORE it was deleted, the flush would
-        NULL ``transaction_id`` and ``NOT NULL`` would refuse it.
+        NULL ``transaction_id`` and ``ck_transaction_entries_one_parent``
+        would refuse it (``NOT NULL`` did until plan step
+        ``balance:X-bi-6-4d-2``).
         """
         with app.app_context():
             row = _unmatched_purchase(seed_user)

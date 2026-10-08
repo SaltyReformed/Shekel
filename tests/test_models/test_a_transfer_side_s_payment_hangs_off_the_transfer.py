@@ -165,9 +165,9 @@ def _catalog(schema):
     compare equal when they agree.
 
     Returns:
-        ``(constraints, indexes, nullability)``: ``{(table, name):
-        definition}``, ``{name: definition}`` and ``{column: is_nullable}``
-        for ``transaction_entries``' three parent columns.
+        ``(constraints, indexes, columns)``: ``{(table, name):
+        definition}``, ``{name: definition}`` and ``{column: (is_nullable,
+        data_type)}`` for ``transaction_entries``' three parent columns.
     """
     names = [name for group in _NEW_CONSTRAINTS.values() for name in group]
     constraints = {
@@ -186,13 +186,18 @@ def _catalog(schema):
             "WHERE schemaname = :schema AND indexname = ANY(:names)"
         ), {"schema": schema, "names": list(_NEW_INDEXES)})
     }
-    nullability = dict(_db.session.execute(text(
-        "SELECT column_name, is_nullable FROM information_schema.columns "
-        "WHERE table_schema = :schema AND table_name = 'transaction_entries' "
-        "AND column_name IN ('transaction_id', 'expense_transfer_id', "
-        "'income_transfer_id')"
-    ), {"schema": schema}).all())
-    return constraints, indexes, nullability
+    columns = {
+        column: (is_nullable, data_type)
+        for column, is_nullable, data_type in _db.session.execute(text(
+            "SELECT column_name, is_nullable, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = :schema "
+            "AND table_name = 'transaction_entries' "
+            "AND column_name IN ('transaction_id', 'expense_transfer_id', "
+            "'income_transfer_id')"
+        ), {"schema": schema})
+    }
+    return constraints, indexes, columns
 
 
 class TestTheTables:
@@ -208,7 +213,7 @@ class TestTheTables:
     """
 
     def test_the_models_build_what_the_revision_built(self, app):
-        """Every new constraint and index, and the three parent columns' nullability."""
+        """Every new constraint and index, and the three parent columns' nullability and type."""
         del app
         budget_tables = [
             table for table in _db.metadata.sorted_tables
@@ -228,8 +233,9 @@ class TestTheTables:
 
         assert len(migrated[0]) == 8 and len(migrated[1]) == 2
         assert migrated[2] == {
-            "transaction_id": "YES", "expense_transfer_id": "YES",
-            "income_transfer_id": "YES",
+            "transaction_id": ("YES", "integer"),
+            "expense_transfer_id": ("YES", "integer"),
+            "income_transfer_id": ("YES", "integer"),
         }
         assert modelled == migrated
 
@@ -237,13 +243,17 @@ class TestTheTables:
 class TestTheRoundTrip:
     """Down files every record under its twin, up under its transfer; nothing else moves."""
 
-    def test_down_then_up_moves_only_what_a_record_is_filed_under(
+    def test_down_up_down_moves_only_what_a_record_is_filed_under(
         self, app, seed_user,
     ):
-        """Four records, two per transfer: same fields, twin then side link."""
+        """Four records, two per transfer: same fields; twin, side link, the SAME twin.
+
+        The second downgrade is the one that re-attaches side-linked records
+        (the first meets them under twins whenever the code under test writes
+        them there), so each must land back on the very twin it left.
+        """
         del app
-        first, second = _settled_pair(seed_user)
-        ids = (first.id, second.id)
+        ids = tuple(xfer.id for xfer in _settled_pair(seed_user))
         entry_ids = _record_ids(ids)
         before = _records(entry_ids)
         assert len(before) == 4
@@ -251,25 +261,38 @@ class TestTheRoundTrip:
         run_migration_callable(_MIGRATION.downgrade, _db.session)
         assert not _has_side_links()
         assert _records(entry_ids) == before
-        shadow_side = dict(_db.session.execute(text(
-            "SELECT e.id, (t.transaction_type_id = (SELECT id FROM "
+        twins = _db.session.execute(text(
+            "SELECT e.id, t.id, (t.transaction_type_id = (SELECT id FROM "
             "ref.transaction_types WHERE name = 'Income')) "
             "FROM budget.transaction_entries e "
             "JOIN budget.transactions t ON t.id = e.transaction_id "
-            "WHERE t.transfer_id = ANY(:ids)"
-        ), {"ids": list(ids)}).all())
-        assert sorted(shadow_side) == entry_ids
+            "WHERE t.transfer_id = ANY(:ids) ORDER BY e.id"
+        ), {"ids": list(ids)}).all()
+        assert [entry_id for entry_id, _twin, _income in twins] == entry_ids
 
         run_migration_callable(_MIGRATION.upgrade, _db.session)
         assert _has_side_links()
         assert _records(entry_ids) == before
         parents = _parents(entry_ids)
-        for entry_id, is_income in shadow_side.items():
+        for entry_id, _twin, is_income in twins:
             row_id, expense_link, income_link = parents[entry_id]
             assert row_id is None
             assert (income_link is not None) is is_income
             assert (expense_link is not None) is (not is_income)
             assert (expense_link or income_link) in ids
+        # CONTROL for the downgrade's refusal below: every side has its twin.
+        _MIGRATION.refuse_twinless_sides(_db.session.connection())
+
+        run_migration_callable(_MIGRATION.downgrade, _db.session)
+        assert not _has_side_links()
+        assert _records(entry_ids) == before
+        assert _db.session.execute(text(
+            "SELECT id, transaction_id FROM budget.transaction_entries "
+            "WHERE id = ANY(:ids) ORDER BY id"
+        ), {"ids": entry_ids}).all() == [
+            (entry_id, twin) for entry_id, twin, _income in twins
+        ]
+        run_migration_callable(_MIGRATION.upgrade, _db.session)
 
     def test_the_downgrade_withdraws_the_transfer_arm_and_the_upgrade_restores_it(
         self, app,
@@ -442,7 +465,30 @@ class TestTheUpgradeRefuses:
 
 
 class TestTheDowngradeRefuses:
-    """A record whose side has no twin cannot go back under one."""
+    """A record whose side has no LIVE twin cannot go back under one."""
+
+    def test_a_side_whose_twin_was_hidden_refuses_the_downgrade_by_name(
+        self, app, seed_user,
+    ):
+        """A twin hidden around the service: named, and nothing is written.
+
+        A deleted twin cannot take the record back -- the row arm the
+        downgrade restores refuses a movement arriving under a deleted row --
+        so the census names it before any statement runs.
+        """
+        del app
+        first, _second = _settled_pair(seed_user)
+        run_migration_callable(_MIGRATION.downgrade, _db.session)
+        run_migration_callable(_MIGRATION.upgrade, _db.session)
+        _db.session.execute(text(
+            "UPDATE budget.transactions SET is_deleted = TRUE "
+            "WHERE transfer_id = :t AND account_id = :a"
+        ), {"t": first.id, "a": first.from_account_id})
+        _db.session.commit()
+        with pytest.raises(RuntimeError, match=rf"no live twin.*, {first.id}\)"):
+            run_migration_callable(_MIGRATION.downgrade, _db.session)
+        _db.session.rollback()
+        assert _has_side_links()
 
     def test_a_side_with_no_twin(self, app, seed_user):
         """A from-side record whose transfer's twins are gone is named; nothing is written."""

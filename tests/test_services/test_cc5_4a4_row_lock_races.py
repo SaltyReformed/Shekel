@@ -79,6 +79,8 @@ from app.services.settle_day import SettleDay
 from app.utils.dates import display_today
 from tests._test_helpers import (
     advisory_lock_keys,
+    create_account_of_type,
+    create_transfer,
     generate_row_of,
     make_expense_template,
     owner_lock_key,
@@ -581,6 +583,96 @@ class TestTheDatabaseLocksTheRow:
                 str(hide.result)
             )
             assert _state(row_id) == (False, 1)
+
+
+class TestTheDatabaseLocksTheTransfer:
+    """The transfer arm's lock, raced the same way (plan step ``balance:X-bi-6-4d-2``).
+
+    A transfer side's payment names its transfer by a side link, so the
+    arrival arm reads the TRANSFER's ``is_deleted`` under the same
+    ``FOR NO KEY UPDATE`` (ruling **R-CC96**), and the transfer hiding arm
+    refuses at COMMIT.  Without the lock each order would end with a hidden
+    transfer holding a payment, the state ruling R-CC92 forbids.
+    """
+
+    @staticmethod
+    def _transfer(seed_user):
+        """A Projected $500.00 Checking -> Savings transfer: ``(id, from account, owner)``."""
+        savings = create_account_of_type(
+            seed_user, _db.session, "Savings", "Race Savings",
+        )
+        _db.session.commit()
+        xfer = create_transfer(
+            seed_user, _db.session, seed_user["account"], savings,
+            seed_user["bootstrap_period"], amount=Decimal("500.00"),
+        )
+        _db.session.commit()
+        return xfer.id, xfer.from_account_id, xfer.user_id
+
+    @staticmethod
+    def _raw_insert(transfer_id, account_id, owner_id):
+        """Return a click writing the from-side's kept payment record, raw."""
+        def click():
+            _db.session.execute(
+                text(
+                    "INSERT INTO budget.transaction_entries (expense_transfer_id, "
+                    "account_id, owner_id, user_id, amount, description, "
+                    "covers_settlement, figure_source_id) "
+                    "SELECT :t, :a, :o, :o, 500.00, 'Race record', TRUE, id "
+                    "FROM ref.movement_figure_sources WHERE name = 'resolved'"
+                ),
+                {"t": transfer_id, "a": account_id, "o": owner_id},
+            )
+        return click
+
+    @staticmethod
+    def _raw_hide(transfer_id):
+        """Return a click hiding the transfer with a raw ``UPDATE``."""
+        def click():
+            _db.session.execute(
+                text("UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"),
+                {"t": transfer_id},
+            )
+        return click
+
+    @staticmethod
+    def _state(transfer_id):
+        """Return ``(is_deleted, side records held)`` for the transfer, read fresh."""
+        return tuple(_db.session.execute(
+            text("SELECT x.is_deleted, (SELECT count(*) FROM "
+                 "budget.transaction_entries e WHERE e.expense_transfer_id = x.id "
+                 "OR e.income_transfer_id = x.id) "
+                 "FROM budget.transfers x WHERE x.id = :t"),
+            {"t": transfer_id},
+        ).one())
+
+    def test_hide_first_the_insert_waits_and_is_refused(self, app, db, seed_user):
+        """Hide open, record arrives: it waits for the hide, then the arm refuses it."""
+        with app.app_context():
+            transfer_id, account_id, owner_id = self._transfer(seed_user)
+            hide, insert = _race_statements(
+                app, self._raw_hide(transfer_id),
+                self._raw_insert(transfer_id, account_id, owner_id),
+            )
+            assert hide.committed
+            assert insert.waited, "the arrival did not wait for the open hide"
+            assert "was deleted: a payment cannot be recorded under it" in (
+                str(insert.result)
+            )
+            assert self._state(transfer_id) == (True, 0)
+
+    def test_insert_first_the_hide_waits_and_is_refused(self, app, db, seed_user):
+        """Record open, hide arrives: it waits for the record, then the hiding arm refuses it."""
+        with app.app_context():
+            transfer_id, account_id, owner_id = self._transfer(seed_user)
+            insert, hide = _race_statements(
+                app, self._raw_insert(transfer_id, account_id, owner_id),
+                self._raw_hide(transfer_id),
+            )
+            assert insert.committed
+            assert hide.waited
+            assert "while it still holds a recorded payment" in str(hide.result)
+            assert self._state(transfer_id) == (False, 1)
 
 
 class TestPurchaseAgainstDelete:

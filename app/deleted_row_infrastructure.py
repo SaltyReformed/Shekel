@@ -132,7 +132,11 @@ incidental autoflush.  Its ``WHEN`` reads the row's own columns, so an
 event is queued only when a non-transfer row is hidden, never on an ordinary
 write -- but **a transaction that hides such a row and then runs DDL on
 ``budget.transactions`` must drain first** (``SET CONSTRAINTS ALL
-IMMEDIATE``), the pattern :mod:`app.opening_infrastructure` describes.
+IMMEDIATE``), the pattern :mod:`app.opening_infrastructure` describes.  The
+transfer arm's hiding attachment is the same kind of trigger with a wider
+``WHEN`` (``NEW.is_deleted``: a transfer has no exempt kind), so it queues an
+event on EVERY transfer soft delete, and a transaction that hides a transfer
+and then runs DDL on ``budget.transfers`` must drain first too.
 
 **The rule is built ARM BY ARM, and a revision declares its own**, the
 construction :mod:`app.opening_infrastructure` adopted after measuring the

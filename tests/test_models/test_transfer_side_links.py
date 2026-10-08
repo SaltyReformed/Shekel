@@ -297,6 +297,56 @@ class TestTheSideKeysCarryAndKeep:
         )
 
 
+    def test_deleting_an_empty_transfer_lands(self, app, seed_user):
+        """CONTROL: the same two statements over a transfer holding nothing commit."""
+        del app
+        checking, savings, _van = _accounts(seed_user)
+        xfer = _transfer(seed_user, checking, savings)
+        xfer_id = xfer.id
+        _db.session.execute(
+            text("DELETE FROM budget.transactions WHERE transfer_id = :t"),
+            {"t": xfer_id},
+        )
+        _db.session.execute(
+            text("DELETE FROM budget.transfers WHERE id = :t"), {"t": xfer_id},
+        )
+        _db.session.commit()
+        assert _db.session.execute(text(
+            "SELECT count(*) FROM budget.transfers WHERE id = :t"
+        ), {"t": xfer_id}).scalar_one() == 0
+
+    def test_a_cascade_beside_an_unchanged_link_is_no_arrival(self, app, seed_user):
+        """The arrival arm's early return, graded where it decides the outcome.
+
+        A transfer hidden earlier in the same save, its endpoint then moved:
+        PostgreSQL's cascade re-writes the record's account through an UPDATE
+        that names the link column too, so the arrival trigger fires -- and
+        must not read the move as the record ARRIVING under the hidden
+        transfer.  The record comes off before COMMIT, so the hiding arm has
+        nothing to refuse; without the early return the endpoint UPDATE itself
+        is refused.
+        """
+        del app
+        checking, savings, van = _accounts(seed_user)
+        xfer = _transfer(seed_user, checking, savings)
+        record = _record(xfer)
+        _db.session.commit()
+        record_id = record.id
+        _hide_transfer(xfer.id)
+        _db.session.execute(
+            text("UPDATE budget.transfers SET from_account_id = :a WHERE id = :t"),
+            {"a": van.id, "t": xfer.id},
+        )
+        assert _db.session.execute(text(
+            "SELECT account_id FROM budget.transaction_entries WHERE id = :e"
+        ), {"e": record_id}).scalar_one() == van.id
+        _db.session.execute(
+            text("DELETE FROM budget.transaction_entries WHERE id = :e"),
+            {"e": record_id},
+        )
+        _db.session.commit()
+
+
 def _hide_transfer(xfer_id):
     """Stage ``UPDATE ... SET is_deleted`` on transfer *xfer_id*; the caller commits."""
     _db.session.execute(
@@ -344,6 +394,25 @@ class TestTheDeletedRowTransferArm:
                 {"h": hidden.id, "l": live.id},
             )
         _db.session.rollback()
+
+    def test_a_record_re_pointed_onto_a_live_transfer_lands(self, app, seed_user):
+        """CONTROL: the same UPDATE onto a live transfer sharing the from-account."""
+        del app
+        checking, savings, van = _accounts(seed_user)
+        first = _transfer(seed_user, checking, savings)
+        _record(first)
+        second = _transfer(seed_user, checking, van)
+        _db.session.commit()
+        _db.session.execute(
+            text("UPDATE budget.transaction_entries "
+                 "SET expense_transfer_id = :s WHERE expense_transfer_id = :f"),
+            {"s": second.id, "f": first.id},
+        )
+        _db.session.commit()
+        assert _db.session.execute(text(
+            "SELECT count(*) FROM budget.transaction_entries "
+            "WHERE expense_transfer_id = :s"
+        ), {"s": second.id}).scalar_one() == 1
 
     def test_hiding_a_transfer_that_holds_a_record_is_refused_at_commit(
         self, app, seed_user,
