@@ -424,8 +424,9 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     # walking off the end of ``date``.
     #
     # **The top half is stated at the SUBMISSION and it was not, until plan step
-    # R7c-c** (``_recurrence._MAX_INTEGER_COLUMN``).  A value above ``int4``
-    # reaches the flush as an unhandled ``NumericValueOutOfRange`` -- a 500 on a
+    # R7c-c** (``app.utils.digit_strings.MAX_INTEGER_COLUMN``, stated there
+    # since balance:X-dj).  A value above ``int4`` reaches the flush as an
+    # unhandled ``NumericValueOutOfRange`` -- a 500 on a
     # door a crafted POST reaches -- and until that step the accident of the
     # closed pattern set covered three of the four units, because
     # ``is_authorable`` refused any MONTH or YEAR interval above 6.

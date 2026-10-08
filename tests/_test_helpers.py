@@ -22,6 +22,10 @@ from datetime import (
 )
 from decimal import Decimal
 from html.parser import HTMLParser
+
+import pytest
+from sqlalchemy import exc as sa_exc
+
 from app.enums import BusinessDayShiftEnum, FilingStatusEnum, TaxTypeEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services import pay_era_write, pay_rhythm, pay_schedule_service
@@ -33,6 +37,7 @@ from app.tax_law import (
     TaxYearLaw,
     ladder,
 )
+from app.utils.db_errors import sqlstate_of
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2813,10 +2818,46 @@ def run_migration_callable(callable_, db_session):
     db_session.commit()
 
 
+#: PostgreSQL's SQLSTATE for ``raise_exception``: what a PL/pgSQL ``RAISE
+#: EXCEPTION`` with no ``ERRCODE`` reports, which is how every trigger and
+#: rule function this schema installs refuses a write.
+RAISE_EXCEPTION_SQLSTATE = "P0001"
+
+
+@contextmanager
+def refused_by_database_rule(match):
+    """Expect the block to be refused by one of the DATABASE's own rules.
+
+    The suite's one statement of "a trigger refused this" (ruling
+    balance:R-BAL210, "Check the error code"): the refusal must carry
+    PostgreSQL's SQLSTATE :data:`RAISE_EXCEPTION_SQLSTATE` and a message
+    matching *match*.  It asserts the code rather than the DB-API exception
+    CLASS because the class is the driver's choice and it moved with the
+    driver: a ``RAISE`` is an ``InternalError`` under psycopg2 and a
+    ``ProgrammingError`` under psycopg 3 (plan step balance:X-dj).  The code
+    is the server's own answer, read through
+    :func:`app.utils.db_errors.sqlstate_of`.
+
+    Args:
+        match: A regular expression the refusal's message must match
+            (``pytest.raises``' ``match``).  Required: the code says a rule
+            refused, the message says WHICH.
+
+    Yields:
+        The ``pytest.ExceptionInfo``, populated once the block has raised.
+    """
+    with pytest.raises(sa_exc.DBAPIError, match=match) as excinfo:
+        yield excinfo
+    assert sqlstate_of(excinfo.value) == RAISE_EXCEPTION_SQLSTATE, (
+        f"refused with SQLSTATE {sqlstate_of(excinfo.value)!r}, not a "
+        f"database rule's {RAISE_EXCEPTION_SQLSTATE}: {excinfo.value}"
+    )
+
+
 def constraint_name_from(exc):
     """Return the named constraint reported on an :class:`IntegrityError`.
 
-    Reads ``exc.orig.diag.constraint_name`` -- the structured field psycopg2
+    Reads ``exc.orig.diag.constraint_name`` -- the structured field psycopg
     surfaces from the PostgreSQL error packet -- so a test asserting WHICH
     CHECK fired does not depend on the brittle prose of the error message.
 
@@ -5924,8 +5965,6 @@ def append_only_guard_lifted(db_session, table):
         f"{table!r} carries no append-only trigger to lift; "
         f"expected one of {APPEND_ONLY_TABLES}"
     )
-    from sqlalchemy import exc as sa_exc
-
     # EVERY arm, not just the update one: since X-f3c-2d the guard is three
     # triggers with three timings, and lifting one would leave a case that
     # means to reach the control underneath still refused by another arm.

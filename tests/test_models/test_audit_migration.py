@@ -28,7 +28,7 @@ import time
 from datetime import date
 from decimal import Decimal
 
-import psycopg2
+import psycopg
 import pytest
 from sqlalchemy.exc import ProgrammingError
 
@@ -154,13 +154,13 @@ def _take_the_role_lock(timeout_seconds: int = 30):
         timeout_seconds: How long to wait before giving up.
 
     Returns:
-        The open ``psycopg2`` connection holding the lock.  The caller MUST
+        The open ``psycopg`` connection holding the lock.  The caller MUST
         close it.
 
     Raises:
         RuntimeError: When another process on this postmaster still holds it.
     """
-    connection = psycopg2.connect(
+    connection = psycopg.connect(
         os.environ.get("TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL),
     )
     connection.autocommit = True
@@ -407,7 +407,13 @@ class TestUserIdCapture:
     def test_set_local_propagates_to_audit_row(
         self, db, seed_user, seed_periods
     ):
-        """SET LOCAL written before INSERT shows up in audit_log.user_id."""
+        """A transaction-local user id set before INSERT shows up in audit_log.user_id.
+
+        Set the way the application sets it (``app.audit_infrastructure``'s
+        ``set_config(..., true)``, ``SET LOCAL``'s function form).  ``SET LOCAL
+        ... = :uid`` itself cannot carry a bound parameter under psycopg 3's
+        server-side binding (plan step balance:X-dj, ruling R-BAL210).
+        """
         # pylint: disable=import-outside-toplevel
         from app.models.ref import TransactionType
 
@@ -416,7 +422,7 @@ class TestUserIdCapture:
         )
 
         db.session.execute(
-            db.text("SET LOCAL app.current_user_id = :uid"),
+            db.text("SELECT set_config('app.current_user_id', :uid, true)"),
             {"uid": str(seed_user["user"].id)},
         )
 

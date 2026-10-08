@@ -31,6 +31,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import bindparam
 
 from app import ref_cache
 from app.enums import (
@@ -102,8 +103,15 @@ def _correction_legs(account_id, source_kind):
             WHERE s.name = :source AND je.id IN :entry_ids
             GROUP BY k.name, c.name
         """).bindparams(
+            # Expanded by SQLAlchemy into one bind per id, the spelling the two
+            # data-boundary migrations use: psycopg 3 binds server-side and
+            # cannot spread one tuple parameter into an ``IN`` list the way
+            # psycopg2's client-side interpolation did (plan step
+            # balance:X-dj).  An empty list is a valid, empty ``IN``.
+            bindparam(
+                "entry_ids", [row[0] for row in entry_ids.all()], expanding=True,
+            ),
             source=source_kind.value,
-            entry_ids=tuple(row[0] for row in entry_ids.all()) or (0,),
         ))
         .all()
     )

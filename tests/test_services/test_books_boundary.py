@@ -64,6 +64,7 @@ from tests._test_helpers import (
     figure_source_columns,
     match_two_lines,
     one_off_row_of,
+    refused_by_database_rule,
     restate_account_opening,
     settle_day_columns,
 )
@@ -417,7 +418,7 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
                 {Transaction.settled_on: _books_open_on(account)},
                 synchronize_session=False,
             )
-            with pytest.raises(sa.exc.InternalError, match="books open"):
+            with refused_by_database_rule("books open"):
                 db.session.commit()
             db.session.rollback()
 
@@ -444,7 +445,7 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
                 opening_equity=Decimal("1000.00"),
                 source_id=account_opening_fact(account.id).source_id,
             ))
-            with pytest.raises(sa.exc.InternalError, match="cannot open its books"):
+            with refused_by_database_rule("cannot open its books"):
                 db.session.commit()
             db.session.rollback()
 
@@ -672,9 +673,7 @@ class TestTheGoverningRowIsWhatIsGraded:
                 db.session.execute(
                     sa.text(_REMOVE_ONE_OPENING), {"i": restatement_id},
                 )
-                with pytest.raises(
-                    sa.exc.InternalError, match="cannot open its books",
-                ):
+                with refused_by_database_rule("cannot open its books"):
                     db.session.commit()
             db.session.rollback()
 
@@ -863,9 +862,7 @@ class TestTheGoverningRowIsWhatIsGraded:
                     ),
                     {"b": recipient.id, "i": moved_id},
                 )
-                with pytest.raises(
-                    sa.exc.InternalError, match="cannot open its books",
-                ) as refusal:
+                with refused_by_database_rule("cannot open its books") as refusal:
                     db.session.commit()
             assert f"account {donor.id} " in str(refusal.value), (
                 "the refusal must name the DONOR, which is the account a "
@@ -923,7 +920,7 @@ class TestTheGoverningRowIsWhatIsGraded:
                 ),
                 {"d": opened_on, "i": entry.id},
             )
-            with pytest.raises(sa.exc.InternalError, match="books open"):
+            with refused_by_database_rule("books open"):
                 db.session.commit()
             db.session.rollback()
 
@@ -1182,9 +1179,7 @@ class TestAMatchedLineBoundsTheBooksToo:
             # matching that phrase could not tell which one refused -- the
             # discrimination the case four down deliberately buys.  Only
             # ``assert_matched_line_holds_books`` names a bank statement line.
-            with pytest.raises(
-                sa.exc.InternalError, match="bank statement line",
-            ):
+            with refused_by_database_rule("bank statement line"):
                 _match_a_group(
                     account, seed_user["user"].id, opened,
                     opened + timedelta(days=10),
@@ -1223,9 +1218,7 @@ class TestAMatchedLineBoundsTheBooksToo:
             # address different readers and a case that matched a phrase they
             # share could not tell which one refused -- which is exactly what
             # a planted defect showed one door over on 2026-08-31.
-            with pytest.raises(
-                sa.exc.InternalError, match="bank line you have matched",
-            ):
+            with refused_by_database_rule("bank line you have matched"):
                 db.session.commit()
             db.session.rollback()
 
@@ -1262,9 +1255,7 @@ class TestAMatchedLineBoundsTheBooksToo:
             ), {"d": opened, "a": account.id, "was": early})
             # The matched-line predicate's own wording, for the reason the
             # member case above states: "books open" is shared by both arms.
-            with pytest.raises(
-                sa.exc.InternalError, match="bank statement line",
-            ):
+            with refused_by_database_rule("bank statement line"):
                 _db.session.commit()
             _db.session.rollback()
 

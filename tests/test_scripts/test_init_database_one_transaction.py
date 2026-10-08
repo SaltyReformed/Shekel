@@ -37,7 +37,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import event, text
-from sqlalchemy.exc import InternalError, InvalidRequestError
+from sqlalchemy.exc import InvalidRequestError
 
 from app import migration_runner, ref_cache
 from app.audit_infrastructure import (
@@ -57,6 +57,7 @@ from tests._test_helpers import (
     load_init_database_module,
     load_migration_module,
     loan_income_shadow,
+    refused_by_database_rule,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -280,9 +281,7 @@ class TestARefusalCommitsNothing:
             _INIT_DB.account_posting_service,
             "backfill_all_account_anchor_postings", _write_one_leg,
         )
-        with pytest.raises(
-            InternalError, match=r"has 1 posting\(s\); >= 2 required",
-        ):
+        with refused_by_database_rule(r"has 1 posting\(s\); >= 2 required"):
             _INIT_DB.initialise_database()
         db.session.rollback()
         # Raised BY the one commit: the line printed after it never ran, and
@@ -755,7 +754,7 @@ class TestEveryStatementRunsOnTheDeploysConnection:
         def _record(conn, _cursor, statement, *_args):
             """Note which backend ran *statement*."""
             statements.append((
-                conn.connection.dbapi_connection.get_backend_pid(), statement,
+                conn.connection.dbapi_connection.info.backend_pid, statement,
             ))
 
         event.listen(db.engine, "before_cursor_execute", _record)

@@ -58,7 +58,7 @@ event stream.
 ``budget.account_openings``, so the state is unstorable by any single
 transaction from any client -- a bulk ``UPDATE``, a raw statement, a psql
 session, a writer nobody enumerated.  These functions exist so an ordinary
-date box gets a sentence instead of a ``psycopg2`` exception at COMMIT: the
+date box gets a sentence instead of a database driver's exception at COMMIT: the
 same pairing ``ck_transaction_entries_positive_amount`` has with
 ``entry_service``'s refusal of a purchase worth nothing (ruling
 ``bank_import:R-II``).

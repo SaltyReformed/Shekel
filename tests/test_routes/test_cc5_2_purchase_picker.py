@@ -607,13 +607,19 @@ class TestTheChipIsOneRuleOverTheRowAndItsMovements:
 def _folded(text):
     """Return *text* with each expanded ``IN (...)`` bind list folded to one spelling.
 
-    SQLAlchemy renders ``column.in_(ids)`` as ``IN (%(name_1)s, %(name_2)s,
-    ...)`` -- one bind per id -- so the SAME statement over more ids has a
-    longer text.  Folded, two renders' statements compare as statements
-    rather than as id counts (plan step credit_card:CC-5-4a-5b).
+    SQLAlchemy renders ``column.in_(ids)`` as ``IN (%(name_1)s::INTEGER,
+    %(name_2)s::INTEGER, ...)`` -- one bind per id, each with the bind cast
+    the psycopg 3 dialect writes (psycopg2's wrote none; plan step
+    balance:X-dj) -- so the SAME statement over more ids has a longer text.
+    Folded, two renders' statements compare as statements rather than as id
+    counts (plan step credit_card:CC-5-4a-5b).  The cast is optional and
+    must repeat on every bind of one list.
     """
     return re.sub(
-        r"IN \(%\((\w+?)_\d+\)s(?:, %\(\1_\d+\)s)*\)", r"IN (%(\1_*)s)", text,
+        r"IN \(%\((\w+?)_\d+\)s((?:::[\w ]+(?:\([\d, ]+\))?)?)"
+        r"(?:, %\(\1_\d+\)s\2)*\)",
+        r"IN (%(\1_*)s\2)",
+        text,
     )
 
 

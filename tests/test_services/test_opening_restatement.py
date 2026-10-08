@@ -15,7 +15,7 @@ stacked on the figure it names.
   one it deliberately does NOT have.  The movement bound is where this suite
   earns its keep: the service has to refuse EXACTLY what
   ``budget.assert_account_books_hold_its_movements`` refuses, or a submission
-  passes the door and aborts at COMMIT with a ``psycopg2`` message no surface
+  passes the door and aborts at COMMIT with a driver message no surface
   can render.
 * :class:`TestTheTwoTiersAgree` -- that equality, graded rather than asserted
   in prose.  Both tiers read ONE SQL statement
@@ -43,7 +43,6 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import InternalError
 
 from app import ref_cache
 from app.enums import (
@@ -72,11 +71,12 @@ from app.services.settle_day import SettleDay, record_settle_day
 from app.utils.dates import display_today
 from app.services.ledger_account_service import find_linked_ledger_account
 from tests._test_helpers import (
-    figure_source_columns,
     account_never_asserted,
-    match_two_lines,
     create_account_of_type,
     create_settled_cash_transaction,
+    figure_source_columns,
+    match_two_lines,
+    refused_by_database_rule,
 )
 
 _ONE_DAY = timedelta(days=1)
@@ -661,7 +661,7 @@ class TestTheTwoTiersAgree:
 
     Graded rather than trusted, and the reason is the failure mode: a service
     predicate NARROWER than the trigger's lets a submission through the door
-    and aborts it at COMMIT with a ``psycopg2`` message no surface can render,
+    and aborts it at COMMIT with a driver message no surface can render,
     while a WIDER one refuses acts the database would allow.  Both tiers read
     one SQL statement (``opening_infrastructure.SETTLED_MOVEMENTS_SQL``); these
     cases plant the rows they could most plausibly disagree about.
@@ -792,7 +792,7 @@ class TestTheTwoTiersAgree:
                     AccountOpeningSourceEnum.USER_DECLARED,
                 ),
             ))
-            with pytest.raises(InternalError, match=r"counted twice"):
+            with refused_by_database_rule(r"counted twice"):
                 db.session.commit()
             db.session.rollback()
 
@@ -802,7 +802,7 @@ class TestTheTwoTiersAgree:
         """The pairing's whole purpose: a sentence, not a COMMIT abort.
 
         ``ValidationError`` is a 400 a date box renders verbatim; the trigger's
-        ``RAISE EXCEPTION`` arrives as a ``psycopg2`` error at COMMIT, after the
+        ``RAISE EXCEPTION`` arrives as a driver error at COMMIT, after the
         request has already decided it succeeded.  Asserting the TYPE is what
         distinguishes the two, and asserting the session is clean afterwards is
         what proves the refusal came first.
@@ -1096,8 +1096,8 @@ class TestTheDoorRefusesAMatchedLineItWouldSwallow:
     database suite graded the TRIGGER and nothing joined them.
 
     What that costs is precisely what the pairing exists to prevent: the
-    constraint would still refuse the restatement, at COMMIT, as a
-    ``psycopg2`` ``RaiseException`` -- so an owner typing a date would meet a
+    constraint would still refuse the restatement, at COMMIT, as the
+    driver's ``RaiseException`` -- so an owner typing a date would meet a
     500 instead of the sentence ``app.opening_infrastructure`` says an
     ordinary date box gets.
     """
@@ -1111,8 +1111,8 @@ class TestTheDoorRefusesAMatchedLineItWouldSwallow:
         counting anything and the matched-line bound is the only thing between
         the owner and a double count.  The refusal must be this module's
         ``ValidationError``, and the assertion on the type is the half that
-        fails when the door stops asking: a ``psycopg2`` abort is an
-        ``InternalError``, not a designed refusal.
+        fails when the door stops asking: the trigger's abort is a database
+        rule's refusal (SQLSTATE ``P0001``), not a designed one.
         """
         with app.app_context():
             account = account_never_asserted(

@@ -51,6 +51,7 @@ from app.extensions import db as _db
 from app.models.amount_ownership import AmountOwnership
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.utils.db_errors import sqlstate_of
 from tests._test_helpers import bare_expense_template
 
 #: The three keys this step installs, spelled once.  Every assertion reads the
@@ -324,7 +325,7 @@ class TestACrossOwnerRowCannotBeWritten:
             # the three keys over this column carries "user_id" in its own
             # violation text, so a looser assertion would pass for a foreign
             # key firing instead.
-            assert exc.value.orig.pgcode == "23502", exc.value.orig.pgcode
+            assert sqlstate_of(exc.value) == "23502", sqlstate_of(exc.value)
             assert 'null value in column "user_id"' in str(exc.value)
             db.session.rollback()
 

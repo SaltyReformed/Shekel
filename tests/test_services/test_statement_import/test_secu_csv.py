@@ -486,11 +486,12 @@ class TestItRefusesAFileItCannotTrust:
             parse_statement(_SOURCE, build.build(rows))
 
     def test_a_NUL_byte_is_refused_as_a_sentence_not_a_500(self):
-        """It survives decode and csv, then fails deep inside psycopg2.
+        """It survives decode and csv, then fails deep inside the driver.
 
-        A ``ValueError`` from the driver is not a ``SQLAlchemyError``, so it
-        escapes the route's handlers and becomes a 500 rather than a message
-        the uploader can act on.
+        psycopg2 raised a ``ValueError``, which is not a ``SQLAlchemyError``,
+        so it escaped the route's handlers as a 500; psycopg 3 (plan step
+        balance:X-dj) raises a ``DataError`` those handlers turn into a
+        generic failure.  Neither is a message the uploader can act on.
         """
         payload, _ = _payload()
 

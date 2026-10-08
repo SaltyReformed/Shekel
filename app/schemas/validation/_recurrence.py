@@ -40,6 +40,7 @@ from app.schemas.validation._helpers import (
     _EFFECTIVE_DATE_RANGE,
     _RefEnumField,
 )
+from app.utils.digit_strings import MAX_INTEGER_COLUMN
 
 
 #: The field error for a chosen cadence with no first occurrence beside it.
@@ -58,13 +59,19 @@ RECURRENCE_NEEDS_A_START: dict[str, list[str]] = {
     ],
 }
 
-# The largest value a Postgres ``integer`` column holds, and the ceiling BOTH
-# of this form's count fields need: ``max_occurrences`` and ``interval_n`` are
-# both ``integer``, so a larger submission dies at the DATABASE with
-# ``psycopg2.errors.NumericValueOutOfRange`` -- an unhandled 500 on a door an
-# ordinary crafted POST reaches, which is the ``MarkDoneSchema`` defect the
-# monetary bound records.  A schema-tier bound AT the column's domain is what
-# keeps an unstorable value a designed 400.
+# THE COUNT FIELDS' CEILING -- the ``max=`` of ``interval_n`` and
+# ``max_occurrences`` below.  This block documents those two declarations; the
+# constant it names lives in ``app.utils.digit_strings``.
+#
+# :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` -- the largest value a
+# Postgres ``integer`` column holds, stated once there since plan step
+# balance:X-dj -- is the ceiling BOTH of this form's count fields need:
+# ``max_occurrences`` and ``interval_n`` are both ``integer``, so a larger
+# submission dies at the DATABASE with ``NumericValueOutOfRange`` (SQLSTATE
+# 22003) -- an unhandled 500 on a door an ordinary crafted POST reaches, which
+# is the ``MarkDoneSchema`` defect the monetary bound records.  A schema-tier
+# bound AT the column's domain is what keeps an unstorable value a designed
+# 400.
 #
 # ``interval_n`` joined it at plan step R7c-c, and that step is what opened the
 # hole on three of the four units: while the closed pattern set was the storage,
@@ -77,7 +84,6 @@ RECURRENCE_NEEDS_A_START: dict[str, list[str]] = {
 # Each field states its own LOWER bound, or deliberately does not: see the two
 # declarations for why ``interval_n`` carries ``min=1`` and ``max_occurrences``
 # leaves that to the shape it composes into.
-_MAX_INTEGER_COLUMN = 2147483647
 
 # The largest value a Postgres ``smallint`` column holds -- ``max_per_month``'s
 # type (plan step salary:R15-a), and the same reasoning one column size down:
@@ -517,7 +523,8 @@ class RecurrenceCadenceFieldsMixin:
     # here.  ``min=1`` mirrors ``ck_recurrence_rules_positive_interval``;
     # ``max`` is the column's own type, which nothing stated until plan step
     # R7c-c freed the interval for every unit -- see
-    # :data:`_MAX_INTEGER_COLUMN`.  It is NOT ``required``, for the reason
+    # :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`.  It is NOT
+    # ``required``, for the reason
     # ``starts_on`` is not: a submission naming no cadence authors no rule and
     # a partial update that omits every recurrence key must stay one.  What
     # makes it required WHEN A CADENCE IS CHOSEN is
@@ -525,7 +532,7 @@ class RecurrenceCadenceFieldsMixin:
     recurrence_unit = RecurrenceUnitField(allow_none=True)
     recurrence_placement = PeriodPlacementField(allow_none=True)
     interval_n = fields.Integer(
-        validate=validate.Range(min=1, max=_MAX_INTEGER_COLUMN),
+        validate=validate.Range(min=1, max=MAX_INTEGER_COLUMN),
     )
 
     # The most occurrences any one calendar month admits -- a month's first N
@@ -710,7 +717,7 @@ class RecurrenceFormFieldsMixin(RecurrenceCadenceFieldsMixin):
     # ``min=`` would put one rule in two places and hand the user marshmallow's
     # generic wording instead.  What the shape has no opinion about is how
     # large a count the COLUMN can hold, so that bound is here -- see
-    # :data:`_MAX_INTEGER_COLUMN`.
+    # :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`.
     #
     # No ``allow_none`` on the mode, deliberately.  An empty select value is
     # dropped by :func:`_normalize_empty_inputs`, so it arrives ABSENT -- and
@@ -724,7 +731,7 @@ class RecurrenceFormFieldsMixin(RecurrenceCadenceFieldsMixin):
     recurrence_end_mode = fields.String()
     end_date = fields.Date(allow_none=True)
     max_occurrences = fields.Integer(
-        validate=validate.Range(max=_MAX_INTEGER_COLUMN),
+        validate=validate.Range(max=MAX_INTEGER_COLUMN),
     )
 
     #: Whether a chosen cadence on THIS schema must come with a first

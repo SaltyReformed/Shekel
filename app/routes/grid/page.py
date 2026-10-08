@@ -40,6 +40,7 @@ from app.services.statement_match import awaiting_review_count
 from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.utils.digit_strings import integer_arg
 from app.utils.period_projections import (
     ONE_YEAR_MONTHS,
     SIX_MONTHS,
@@ -290,16 +291,16 @@ def _resolve_grid_context(user_id, request_args, settings):
     # from, and an override outside the set has just collapsed the view to
     # one account.
     cash_flow_sets = resolve_owner_and_view(
-        user_id, settings, request_args.get("account_id", type=int),
+        user_id, settings, request_args.get("account_id", type=integer_arg),
     )
 
     # Determine the visible period range.
     num_periods = request_args.get(
         "periods",
         default=(settings.grid_default_periods if settings else 6),
-        type=int,
+        type=integer_arg,
     )
-    start_offset = request_args.get("offset", default=0, type=int)
+    start_offset = request_args.get("offset", default=0, type=integer_arg)
 
     resolved = _resolve_visible_window(balance_ctx, num_periods, start_offset)
     if resolved is None:
@@ -789,7 +790,7 @@ def index():
         .order_by(Category.group_name, Category.item_name)
         .all()
     )
-    show_all = request.args.get("show_all", type=int) == 1
+    show_all = request.args.get("show_all", type=integer_arg) == 1
 
     row_data = _build_grid_row_data(
         items.items, ctx.periods, show_all, all_categories,

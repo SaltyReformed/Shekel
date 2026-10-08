@@ -37,6 +37,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.balance_predicates import is_credit
 from app.utils.dates import display_today
+from app.utils.digit_strings import integer_arg
 from app.routes._period_options import period_move_options
 from app.routes._refused_press import RedrawnCard
 from app.routes._render_helpers import (
@@ -474,7 +475,7 @@ class _GridCell(NamedTuple):
             belong to the requester.
         transaction_type_id: Income or expense.  A reference-table id and so
             not ownership-checked; that it is also unvalidated is one of the
-            ``request.args.get(..., type=int)`` sites plan step
+            ``request.args.get(..., type=integer_arg)`` sites plan step
             ``balance:X-ah`` owns.
     """
 
@@ -541,11 +542,11 @@ def _resolve_grid_cell():
             fragments are swapped into derives its own calendar to render at
             all, so an owner who can reach this door has one that derives.
     """
-    category_id = request.args.get("category_id", type=int)
-    period_id = request.args.get("period_id", type=int)
-    account_id = request.args.get("account_id", type=int)
+    category_id = request.args.get("category_id", type=integer_arg)
+    period_id = request.args.get("period_id", type=integer_arg)
+    account_id = request.args.get("account_id", type=integer_arg)
     transaction_type_id = request.args.get(
-        "transaction_type_id", type=int,
+        "transaction_type_id", type=integer_arg,
         default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
 

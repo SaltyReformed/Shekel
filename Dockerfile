@@ -1,5 +1,5 @@
 # Shekel Budget App -- Multi-Stage Dockerfile
-# Stage 1: Build Python dependencies (includes gcc for psycopg2).
+# Stage 1: Build Python dependencies (includes gcc for psycopg's C module).
 # Stage 2: Slim runtime image (no build tools).
 #
 # BASE-IMAGE PINNING (audit findings F-025, F-060, F-062, F-120 / Commit C-36)
@@ -41,8 +41,10 @@
 FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS builder
 
 # Apply Debian security upgrades to the OpenSSL packages and install
-# the build-only deps (libpq headers + a C toolchain) psycopg2 needs
-# to compile from source.  Combined into a single RUN so the apt
+# the build-only deps (libpq headers + ``pg_config`` + a C toolchain)
+# that ``psycopg-c`` -- psycopg 3's C speed-up, the ``[c]`` extra in
+# requirements.txt (ruling balance:R-BAL209) -- needs to compile from
+# source against Debian's libpq.  Combined into a single RUN so the apt
 # cache is removed in the same layer.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
@@ -88,7 +90,7 @@ FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc4243
 # runtime image carries libssl3t64 (pulled in transitively by
 # postgresql-client below); without this upgrade the CVE-fixed
 # package would live only in the builder stage.  Runtime-only deps:
-# libpq5 (psycopg2 runtime) and postgresql-client (psql in
+# libpq5 (the libpq psycopg-c links) and postgresql-client (psql in
 # entrypoint.sh).
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
@@ -110,6 +112,15 @@ WORKDIR /home/shekel/app
 # never invokes pip itself.
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# PSYCOPG'S C IMPLEMENTATION IS REQUIRED, NOT PREFERRED (ruling
+# balance:R-BAL209, plan step balance:X-dj).  psycopg 3 loads the best
+# implementation it can import and falls back to pure Python SILENTLY, so an
+# image without psycopg-c would start and serve every query through the
+# slower fallback with nothing in the logs.
+# With PSYCOPG_IMPL=c the import FAILS instead: ``create_app`` builds the
+# engine, the engine imports the driver, and the app refuses to start.
+ENV PSYCOPG_IMPL=c
 
 # THE PROCESS LOCALE IS PINNED HERE (ruling recurrence:R-R92, extending R-R54;
 # closes finding F-15).  Month and weekday names from ``strftime`` and

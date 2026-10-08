@@ -105,6 +105,31 @@ def _reject_sentinel(uri: str | None, *, var_name: str) -> str | None:
     return uri
 
 
+#: The driver arguments EVERY configuration connects with (plan step
+#: balance:X-dj): one dict, so development, the suite and production cannot
+#: open their connections in different ways.
+#:
+#: ``connect_timeout``: fail in 5 seconds when the database host is
+#: unreachable instead of waiting for the system TCP timeout (120+ seconds).
+#:
+#: ``prepare_threshold=None`` turns OFF psycopg 3's automatic server-side
+#: prepared statements -- by default it prepares a statement once a single
+#: connection has run it five times.  psycopg2 never prepared, and the suite is
+#: not built to grade the path: TestConfig's ``NullPool`` closes a connection
+#: at check-in, so a statement must repeat five times inside ONE checkout to be
+#: prepared there, while production's ``QueuePool`` keeps a connection across
+#: requests for up to ``pool_recycle`` -- the two would run the prepared path
+#: at different rates, and production would own failure modes no test sees (a
+#: generic plan PostgreSQL may choose for a prepared statement, and a prepared
+#: statement whose result columns DDL on another connection has changed, which
+#: PostgreSQL refuses with "cached plan must not change result type" rather
+#: than re-planning).  What it gives up is the parse each REPEAT of a
+#: statement would have skipped once prepared, and the planning too once
+#: PostgreSQL settled on a generic plan for it.  Ruled as an application of
+#: R-BAL207 by the coordinating session, 2026-10-05.
+_DRIVER_CONNECT_ARGS = {"connect_timeout": 5, "prepare_threshold": None}
+
+
 class BaseConfig:
     """Shared configuration defaults across all environments."""
 
@@ -127,6 +152,9 @@ class BaseConfig:
 
     # SQLAlchemy
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Inherited by DevConfig; TestConfig and ProdConfig state their own pool
+    # options and carry the same driver arguments.
+    SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": dict(_DRIVER_CONNECT_ARGS)}
 
     # ---- Session lifetime + idle timeout + step-up auth -----------------
     #
@@ -482,12 +510,11 @@ class TestConfig(BaseConfig):
 
     # NullPool closes connections immediately after use -- no pooling.
     # Prevents stale/leaked connections from holding locks that block
-    # TRUNCATE between tests.
-    # connect_timeout: fail fast (5s) if test-db is unreachable instead
-    # of waiting for the OS TCP timeout (120+ seconds).
+    # TRUNCATE between tests.  The driver arguments are every
+    # configuration's: see ``_DRIVER_CONNECT_ARGS``.
     SQLALCHEMY_ENGINE_OPTIONS = {
         "poolclass": NullPool,
-        "connect_args": {"connect_timeout": 5},
+        "connect_args": dict(_DRIVER_CONNECT_ARGS),
     }
 
 
@@ -527,9 +554,10 @@ class ProdConfig(BaseConfig):
         # between recycle intervals).  Small overhead (~1ms per checkout)
         # but eliminates "server closed the connection unexpectedly" errors.
         "pool_pre_ping": True,
-        # TCP-level connect timeout.  If the database host is unreachable,
-        # fail in 5 seconds instead of waiting for the system TCP timeout.
-        "connect_args": {"connect_timeout": 5},
+        # The driver arguments every configuration connects with -- the
+        # 5-second connect timeout and no server-side prepared statements;
+        # see ``_DRIVER_CONNECT_ARGS``.
+        "connect_args": dict(_DRIVER_CONNECT_ARGS),
     }
 
     SESSION_COOKIE_SECURE = True

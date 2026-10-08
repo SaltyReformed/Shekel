@@ -31,7 +31,12 @@ from app import ref_cache
 from app.services.salary_raises import RAISE_YEAR_MAX, RAISE_YEAR_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.utils.rendered_figure import as_rendered_field
-from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
+from app.utils.digit_strings import (
+    MAX_INTEGER_COLUMN,
+    MIN_ROW_ID,
+    is_ascii_digits,
+    parse_row_id,
+)
 
 
 # ── Shared range validators (commit C-24) ─────────────────────────
@@ -79,7 +84,7 @@ _DAY_OF_MONTH_RANGE = validate.Range(min=1, max=31)
 # **The upper bound is not decoration, and plan step X-f2-c3 measured what
 # omitting it costs.**  ``MarkDoneSchema`` carried the ``>= 0`` half alone, so a
 # figure at or above ``10 ** 10`` passed validation, reached the settle verb and
-# died at the DATABASE (``psycopg2.errors.NumericValueOutOfRange``) -- an
+# died at the DATABASE (``NumericValueOutOfRange``, SQLSTATE 22003) -- an
 # unhandled 500 on a door an ordinary crafted POST reaches.  On the reconcile
 # panel that door commits a whole statement walk at once, so one unstorable box
 # discarded every other tick submitted with it.  A schema-tier bound BELOW the
@@ -307,7 +312,10 @@ class RowId(fields.Integer):
     there is nothing to normalise -- but ``Integer`` would TRUNCATE it, and
     ``1.9`` naming row 1 is the same defect as ``"007"`` naming row 7.  A
     non-integral value is refused rather than rounded, and the
-    :data:`~app.utils.digit_strings.MIN_ROW_ID` floor applies on both paths.
+    :data:`~app.utils.digit_strings.MIN_ROW_ID` floor and the
+    :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN` ceiling apply on both
+    paths -- the ceiling because a number no ``id`` column can hold is refused
+    by a query's bind cast as a 500 (plan step balance:X-dj).
 
     **The strictness is on LOAD only, deliberately.**  It overrides
     ``_deserialize`` rather than ``_format_num`` because marshmallow calls
@@ -336,8 +344,9 @@ class RowId(fields.Integer):
 
         Raises:
             ValidationError: *value* names no row -- a non-canonical
-                spelling, a non-integral number, or a value below
-                :data:`~app.utils.digit_strings.MIN_ROW_ID`.
+                spelling, a non-integral number, or a value outside
+                :data:`~app.utils.digit_strings.MIN_ROW_ID` to
+                :data:`~app.utils.digit_strings.MAX_INTEGER_COLUMN`.
         """
         if isinstance(value, str):
             row_id = parse_row_id(value)
@@ -347,7 +356,7 @@ class RowId(fields.Integer):
         row_id = super()._deserialize(value, attr, data, **kwargs)
         # ``Integer`` has already truncated at this point, so the round-trip
         # is what detects that it did: ``1.9`` arrives here as ``1``.
-        if row_id != value or row_id < MIN_ROW_ID:
+        if row_id != value or not MIN_ROW_ID <= row_id <= MAX_INTEGER_COLUMN:
             raise self.make_error("invalid", input=value)
         return row_id
 

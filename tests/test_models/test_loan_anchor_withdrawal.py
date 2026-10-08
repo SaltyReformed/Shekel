@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, InternalError
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
@@ -37,6 +37,7 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     loan_params_for,
+    refused_by_database_rule,
 )
 
 
@@ -139,7 +140,7 @@ class TestTheAppendOnlyRefusal:
         db.session.execute(text(
             "DELETE FROM budget.loan_anchor_withdrawals WHERE id = :id"
         ), {"id": withdrawal.id})
-        with pytest.raises(InternalError, match="append-only; DELETE rejected"):
+        with refused_by_database_rule("append-only; DELETE rejected"):
             db.session.commit()
         db.session.rollback()
         assert db.session.get(LoanAnchorWithdrawal, withdrawal.id) is not None
@@ -156,7 +157,7 @@ class TestTheAppendOnlyRefusal:
         db.session.commit()
         assert db.session.get(LoanAnchorWithdrawal, withdrawal.id) is not None
 
-        with pytest.raises(InternalError, match="append-only; UPDATE rejected"):
+        with refused_by_database_rule("append-only; UPDATE rejected"):
             db.session.execute(text(
                 "UPDATE budget.loan_anchor_withdrawals "
                 "SET anchor_event_id = :other WHERE id = :id"
@@ -165,7 +166,7 @@ class TestTheAppendOnlyRefusal:
 
     def test_TRUNCATE_is_refused(self, app, db, seed_user):
         """The statement arm, the one spelling no row trigger sees."""
-        with pytest.raises(InternalError, match="TRUNCATE rejected"):
+        with refused_by_database_rule("TRUNCATE rejected"):
             db.session.execute(text("TRUNCATE budget.loan_anchor_withdrawals"))
         db.session.rollback()
 

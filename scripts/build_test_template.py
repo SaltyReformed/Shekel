@@ -150,8 +150,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # above must run before these imports: the app config reads the environment
 # at import time, and ``app`` only resolves once the repo root is on sys.path.
 # pylint: disable=wrong-import-position
-import psycopg2
-from psycopg2 import sql
+import psycopg
+from psycopg import sql
 
 from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
@@ -181,25 +181,23 @@ def _recreate_template_database() -> None:
     ... WITH (FORCE)`` (PostgreSQL 13+) severs any lingering
     connections so a previously-orphaned clone or a stuck pytest
     worker connection does not block the rebuild.  Identifier
-    interpolation goes through :mod:`psycopg2.sql` to defend against
+    interpolation goes through :mod:`psycopg.sql` to defend against
     a future change that sources the template name from user input.
     """
-    conn = psycopg2.connect(ADMIN_URL)
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-                    sql.Identifier(TEMPLATE_DB)
-                )
+    # psycopg 3's own idiom: the connection closes when the block ends, and
+    # autocommit is set at connect because CREATE / DROP DATABASE cannot run
+    # inside a transaction.
+    with psycopg.connect(ADMIN_URL, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                sql.Identifier(TEMPLATE_DB)
             )
-            cur.execute(
-                sql.SQL("CREATE DATABASE {}").format(
-                    sql.Identifier(TEMPLATE_DB)
-                )
+        )
+        cur.execute(
+            sql.SQL("CREATE DATABASE {}").format(
+                sql.Identifier(TEMPLATE_DB)
             )
-    finally:
-        conn.close()
+        )
 
 
 def _populate_template(app) -> None:
@@ -415,43 +413,39 @@ def _verify_template_state() -> None:
             the offending count, the expected value, and a recovery
             hint pointing at the most likely root cause.
     """
-    conn = psycopg2.connect(TEMPLATE_URL)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM ref.account_types")
-            account_type_count = cur.fetchone()[0]
-            if account_type_count != _EXPECTED_ACCOUNT_TYPE_COUNT:
-                raise RuntimeError(
-                    f"Template ref.account_types count is "
-                    f"{account_type_count}, expected "
-                    f"{_EXPECTED_ACCOUNT_TYPE_COUNT}.  Check that "
-                    "app.ref_seeds.ACCT_TYPE_SEEDS still has 19 entries "
-                    "and that seed_reference_data committed cleanly."
-                )
+    with psycopg.connect(TEMPLATE_URL) as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM ref.account_types")
+        account_type_count = cur.fetchone()[0]
+        if account_type_count != _EXPECTED_ACCOUNT_TYPE_COUNT:
+            raise RuntimeError(
+                f"Template ref.account_types count is "
+                f"{account_type_count}, expected "
+                f"{_EXPECTED_ACCOUNT_TYPE_COUNT}.  Check that "
+                "app.ref_seeds.ACCT_TYPE_SEEDS still has 19 entries "
+                "and that seed_reference_data committed cleanly."
+            )
 
-            cur.execute(AUDIT_TRIGGER_COUNT_SQL)
-            trigger_count = cur.fetchone()[0]
-            if trigger_count != EXPECTED_TRIGGER_COUNT:
-                raise RuntimeError(
-                    f"Template audit trigger count is {trigger_count}, "
-                    f"expected {EXPECTED_TRIGGER_COUNT} (from "
-                    "app.audit_infrastructure.AUDITED_TABLES).  A new "
-                    "AUDITED_TABLES entry without a matching table, "
-                    "or a stale trigger left behind, would cause this."
-                )
+        cur.execute(AUDIT_TRIGGER_COUNT_SQL)
+        trigger_count = cur.fetchone()[0]
+        if trigger_count != EXPECTED_TRIGGER_COUNT:
+            raise RuntimeError(
+                f"Template audit trigger count is {trigger_count}, "
+                f"expected {EXPECTED_TRIGGER_COUNT} (from "
+                "app.audit_infrastructure.AUDITED_TABLES).  A new "
+                "AUDITED_TABLES entry without a matching table, "
+                "or a stale trigger left behind, would cause this."
+            )
 
-            cur.execute("SELECT count(*) FROM system.audit_log")
-            audit_log_count = cur.fetchone()[0]
-            if audit_log_count != 0:
-                raise RuntimeError(
-                    f"Template system.audit_log count is "
-                    f"{audit_log_count}, expected 0.  The post-seed "
-                    "TRUNCATE in _populate_template did not commit, or "
-                    "an unaudited write fired a trigger after the "
-                    "truncate."
-                )
-    finally:
-        conn.close()
+        cur.execute("SELECT count(*) FROM system.audit_log")
+        audit_log_count = cur.fetchone()[0]
+        if audit_log_count != 0:
+            raise RuntimeError(
+                f"Template system.audit_log count is "
+                f"{audit_log_count}, expected 0.  The post-seed "
+                "TRUNCATE in _populate_template did not commit, or "
+                "an unaudited write fired a trigger after the "
+                "truncate."
+            )
 
 
 def main() -> int:
@@ -459,7 +453,7 @@ def main() -> int:
 
     Prints progress for each of the three phases plus a final
     summary line.  Exits 0 on success; failures propagate as
-    exceptions (``psycopg2.OperationalError`` on connect issues,
+    exceptions (``psycopg.OperationalError`` on connect issues,
     Alembic errors on migration failure, :class:`RuntimeError` on
     verification failure).
     """
