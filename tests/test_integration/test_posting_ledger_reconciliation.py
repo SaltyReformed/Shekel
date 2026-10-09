@@ -8,9 +8,12 @@ below are exactly plan Section 6:
 
   1. **Per-account reconciliation** (asset AND liability legs): for each real
      account A, the net of A's posting legs equals the net effect of A's
-     settled, non-deleted transfer shadows -- ``+effective`` for an income
-     shadow (money in -> a debit), ``-effective`` for an expense shadow (money
-     out -> a credit), where ``effective = COALESCE(actual, estimated)``.
+     sides of settled, non-deleted transfers -- ``+amount`` for a to-side
+     record (money in -> a debit), ``-amount`` for a from-side record (money
+     out -> a credit), the record being the side's covering movement.  It
+     hung off the side's shadow until plan step ``balance:X-bi-6-4d-2`` and
+     hangs off the transfer since; the oracle keeps the name "settled-shadow
+     effect" (ruling R-BAL167 class 4).
   2. **Per-entry balance**: every journal entry's legs ``SUM(amount) = 0`` and
      ``COUNT(*) >= 2`` (also DB-enforced by ``ck_account_postings_balanced``).
   3. **Trial balance**: ``SUM(account_postings.amount) = 0`` across the whole
@@ -42,7 +45,8 @@ independent ways that must all agree:
   * **independent cross-table reconciliation** -- the ledger side
     (``_independent_ledger_sum``) reads the ``account_postings`` table through a
     different join shape than ``account_posting_total``, and the transaction
-    side (``_independent_txn_effect``) reads the ``transactions`` table;
+    side (``_independent_txn_effect``) reads the ``transfers`` and
+    ``transaction_entries`` tables;
     asserting the two equal reconciles what the producers WROTE against the
     transaction source of truth.  (The transaction side necessarily restates the
     one correct definition of the settled-shadow effect, so it mirrors
@@ -79,7 +83,6 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account
@@ -87,12 +90,11 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
-    independent_settled_figure,
     create_account_of_type,
     create_settled_transfer,
     linked_ledger_account,
@@ -109,8 +111,8 @@ from app.models.amount_ownership import AmountOwnership
 # These deliberately re-derive each side from scratch so the oracle is a
 # genuine second opinion: a bug shared by the two service helpers cannot hide,
 # because the ledger side here reads ``account_postings`` and the transaction
-# side reads ``transactions`` with independently-written SQL, and both are also
-# pinned to hand-computed literals.
+# side reads ``transfers`` and their side records with independently-written
+# SQL, and both are also pinned to hand-computed literals.
 
 
 def _independent_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
@@ -165,36 +167,47 @@ def _opening_anchor(account_id: int) -> Decimal:
 
 
 def _independent_txn_effect(account_id: int, scenario_id: int) -> Decimal:
-    """Sum an account's settled transfer-shadow effect (independent query).
+    """Sum an account's settled transfer-side effect (independent query).
 
-    The balance-side truth the ledger must equal: over the account's settled
-    (``status.is_settled``), non-deleted transfer shadows in *scenario_id*, add
-    ``+effective`` for an income shadow (money in) and ``-effective`` for an
-    expense shadow (money out), where ``effective`` is the shadow's settled
-    figure spelled independently
-    (:func:`~tests._test_helpers.independent_settled_figure`: the sum of its
-    entries, its covering movement; ``COALESCE(settled_amount,
-    estimated_amount)`` through plan step ``balance:X-bi-4b-1``).  Reads the
-    row tables -- different tables than :func:`_independent_ledger_sum` --
-    so asserting the two equal reconciles what the producers wrote against
-    the transaction source of truth.
+    The balance-side truth the ledger must equal: over the RECORDS on the
+    account filed under a side of a settled (``status.is_settled``),
+    non-deleted transfer in *scenario_id*, add ``+amount`` for a to-side
+    record (``income_transfer_id``, money in) and ``-amount`` for a from-side
+    record (``expense_transfer_id``, money out).  A settled transfer holding
+    no record is a ``$0.00`` close and adds nothing (R-BAL82).  It summed the
+    settled transfer SHADOWS' figures by each shadow's status and type until
+    plan step ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and
+    moved the record onto the transfer; it reads the transfer's status and the
+    side links by its own SQL now, never through ``transfer_legs``, the
+    producer ``settled_transfer_effect`` joins (ruling R-BAL167 class 4, plan
+    step balance:X-bi-6-4d-2).  Reads the row tables -- different tables than
+    :func:`_independent_ledger_sum` -- so asserting the two equal reconciles
+    what the producers wrote against the transaction source of truth.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = independent_settled_figure()
     signed = case(
-        (Transaction.transaction_type_id == income_type_id, effective),
-        else_=-effective,
+        (
+            TransactionEntry.income_transfer_id.isnot(None),
+            TransactionEntry.amount,
+        ),
+        else_=-TransactionEntry.amount,
     )
     return (
         _db.session.query(
             _db.func.coalesce(_db.func.sum(signed), Decimal("0"))
         )
+        .select_from(Transfer)
+        .join(
+            TransactionEntry,
+            _db.or_(
+                TransactionEntry.income_transfer_id == Transfer.id,
+                TransactionEntry.expense_transfer_id == Transfer.id,
+            ),
+        )
         .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
+            TransactionEntry.account_id == account_id,
+            Transfer.scenario_id == scenario_id,
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_status_ids()),
         )
         .scalar()
     )
@@ -492,16 +505,17 @@ class TestPerAccountReconciliation:
         """A settled actual that differs from the estimate reconciles on actual.
 
         This exercises the ``effective = COALESCE(actual, estimated)`` property
-        the WHOLE ledger correction rests on: the posted amount is the shadow's
-        effective amount, never ``transfers.amount`` / the estimate.  The two
-        diverge exactly when a settled shadow carries an ``actual_amount`` (the
-        grid shadow-edit path), so without this case every other test -- where
+        the WHOLE ledger correction rests on: the posted amount is the side's
+        recorded figure, never ``transfers.amount`` / the estimate.  The two
+        diverge exactly when a settle records a figure other than the plan
+        (``settled_amount`` here), so without this case every other test -- where
         ``actual`` is NULL and ``effective == estimated == amount`` -- would
         stay green even against a producer that wrongly posted the estimate.
 
         Arithmetic: a $100 nominal Checking -> Savings transfer settles with an
-        actual of $97.50, so the income shadow's effective is
-        COALESCE(97.50, 100.00) = 97.50.  The posting MUST be -97.50 / +97.50,
+        actual of $97.50, so each side's record is 97.50 (on the transfer's
+        side, not its shadow, since plan step balance:X-bi-6-4d-2; ruling
+        R-BAL167 class 4).  The posting MUST be -97.50 / +97.50,
         NOT -100 / +100 -- on the ledger side riding each opening (Savings
         100 + 97.50 = 197.50, Checking 1000 - 97.50 = 902.50).  A producer
         that posted the $100 estimate would leave Savings' ledger at +200
@@ -832,8 +846,11 @@ class TestOracleIsNotVacuous:
         """Tampering a settled shadow makes ledger != settled-shadow effect.
 
         A reconciled $100 Checking -> Savings settle has ledger +100 and
-        settled-shadow effect +100 on Savings.  Forcing the income shadow's
-        RECORD -- its covering movement's figure -- to 999 by raw SQL leaves
+        settled-shadow effect +100 on Savings.  Forcing the Savings side's
+        RECORD -- the movement filed under the transfer's to-side, whose figure
+        is the side's cash (ruling R-BAL167 class 4, plan step
+        balance:X-bi-6-4d-2; the income shadow held it until then) -- to 999
+        by raw SQL leaves
         the ledger at +100 but pushes the settled-shadow effect to +999 -- so
         the per-account reconciliation, which the oracle relies on, now
         FAILS.  This proves the check is a real comparison, not one that
@@ -857,21 +874,19 @@ class TestOracleIsNotVacuous:
                 savings.id, scenario_id,
             )
 
-            # Tamper the income shadow's RECORDED figure, not its estimate
+            # Tamper the Savings side's RECORDED figure, not its estimate
             # (plan step X-au-c3): a settled row's effect is what it recorded as
             # having moved, so moving the plan on one is now inert.  The record
-            # is the shadow's covering movement (plan step balance:X-bi-4b-2).
-            # Entries carry no balance trigger, so the tamper commits.
+            # is the side's covering movement (plan step balance:X-bi-4b-2),
+            # filed under the transfer's to-side on Savings rather than under
+            # the income shadow (ruling R-BAL167 class 4, plan step
+            # balance:X-bi-6-4d-2).  Entries carry no balance trigger, so the
+            # tamper commits.
             _db.session.execute(_db.text(
-                "UPDATE budget.transaction_entries e SET amount = 999 "
-                "FROM budget.transactions t "
-                "WHERE e.transaction_id = t.id AND e.covers_settlement "
-                "  AND t.account_id = :a AND t.transfer_id IS NOT NULL "
-                "  AND t.transaction_type_id = :t"
-            ), {
-                "a": savings.id,
-                "t": ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-            })
+                "UPDATE budget.transaction_entries SET amount = 999 "
+                "WHERE income_transfer_id IS NOT NULL AND covers_settlement "
+                "  AND account_id = :a"
+            ), {"a": savings.id})
             _db.session.commit()
 
             ledger = _independent_ledger_sum(savings.id, scenario_id)

@@ -71,6 +71,7 @@ from tests._test_helpers import (
     loan_correction_entries,
     loan_income_shadow,
     transfer_family_journal_filter,
+    transfer_side_record,
 )
 
 
@@ -593,6 +594,10 @@ class TestDeployHookCommitsBackfill:
             xfer = _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
+            # The split's day is the loan side's RECORD's, off the transfer
+            # since plan step balance:X-bi-6-4d-2; it read the income
+            # shadow's own day until then (ruling R-BAL167 class 1).
+            day = transfer_side_record(db.session, xfer.id, loan.id).settled_on
             loan_payment_source_id = ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT,
             )
@@ -620,7 +625,7 @@ class TestDeployHookCommitsBackfill:
                         "src": loan_payment_source_id,
                         "sid": shadow.scenario_id,
                         "pid": shadow.pay_period_id,
-                        "day": shadow.settled_on,
+                        "day": day,
                     },
                 ).scalar()
             assert committed == 1

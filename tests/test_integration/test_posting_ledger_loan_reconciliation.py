@@ -6,7 +6,7 @@ CORRECTION on each confirmed loan payment's Step-2 cash entry that backs the
 interest / escrow / (payoff) refund off the loan, so the loan-linked ledger nets
 to the REAL principal paid.  Reads still flow through the resolver / ``balance_at``
 seam (Step 4 changes no read path), so -- exactly as in Steps 2 / 3 -- the ledger
-is validated against the SOURCE (the shadow cash rows and the anchor), never
+is validated against the SOURCE (the payments' cash records and the anchor), never
 against a displayed balance.  The invariants below are plan Section 8.
 
   1. **Parallel run vs the resolver (the headline, plan 8.2).**  The ledger's view
@@ -95,7 +95,8 @@ as the Step-2 / Step-3 oracles.  The SPLIT VALUES are pinned by the first and th
     (``_independent_loan_linked_net`` / ``_per_loan_correction_net``) reads
     ``account_postings`` through a different join shape than the
     ``posting_service`` readers, and the source side
-    (``_independent_settled_income_cash``) reads ``transactions``.  This pins the
+    (``_independent_settled_income_cash``) reads ``transfers`` and their loan-side
+    records in ``transaction_entries``.  This pins the
     READERS (a scenario-scope or ledger-resolution bug in ``account_posting_total``
     is caught here), NOT the split value -- which the sweep's identities hold
     regardless of.
@@ -140,7 +141,6 @@ from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account
@@ -150,6 +150,8 @@ from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
 from app.services import balance_at, loan_anchor_service, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
 from app.services import amortization_engine
 from app.services.loan_resolver._periods import _replay_from_anchor
@@ -162,7 +164,6 @@ from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from app.services.liability_sign import owed
 from tests._test_helpers import (
-    independent_settled_figure,
     rhythm_of,
     SPLIT_LOAN,
     amount_basis_for_scenario,
@@ -442,7 +443,8 @@ def _clear_all_loan_postings():
 # opinion: the ledger side reads ``account_postings`` with an independently
 # written join shape (keyed off the REAL loan account / the per-loan discriminator
 # rather than resolving the ledger account first, as ``account_posting_total``
-# does), and the source side reads ``transactions``.  ``_trial_balance`` /
+# does), and the source side reads ``transfers`` and their side records in
+# ``transaction_entries``.  ``_trial_balance`` /
 # ``_entries_violating_balance`` mirror the Step-2 / Step-3 oracles; the
 # duplication is DELIBERATE -- each oracle keeps its OWN independent queries so it
 # stays a self-contained second opinion.
@@ -501,32 +503,42 @@ def _per_loan_correction_net(loan_account_id: int, scenario_id: int) -> Decimal:
 def _independent_settled_income_cash(
     loan_account_id: int, scenario_id: int
 ) -> Decimal:
-    """Sum a loan's settled income-shadow cash (independent query).
+    """Sum a loan's settled payments' loan-side cash (independent query).
 
     The independent restatement of ``settled_transfer_effect`` for a loan: over
-    the loan's settled, non-deleted transfer income shadows in *scenario_id*, sum
-    ``effective``, the shadow's settled figure spelled independently
-    (:func:`~tests._test_helpers.independent_settled_figure`;
-    ``COALESCE(actual, estimated)`` through plan step ``balance:X-bi-4b-1``).
-    A loan's shadows are all income (the to-account leg), so every term is
-    ``+effective`` -- the cash that flowed in.  Reads the row tables,
-    different tables than the ledger queries above, so asserting the ledger
-    reconciles against this ties the postings to the transaction source of
-    truth.
+    the settled, non-deleted transfers INTO the loan in *scenario_id*, sum the
+    amount of each one's loan-side RECORD -- the movement filed under the
+    transfer's to-side (``income_transfer_id``) on the loan.  A settled
+    transfer with no record is a ``$0.00`` close and adds nothing (R-BAL82).
+    Every term is ``+amount`` -- the cash that flowed in.  It summed the
+    loan-side income SHADOWS' settled figures by the shadow's status until plan
+    step ``balance:X-bi-6-4d-2`` stopped keeping a shadow's status and moved
+    the record onto the transfer; it reads the transfer's status and the side
+    link by its own SQL now, never through ``transfer_legs``, the producer the
+    reader under test joins (ruling R-BAL167 class 4, plan step
+    balance:X-bi-6-4d-2).  Reads the row tables, different tables than the
+    ledger queries above, so asserting the ledger reconciles against this ties
+    the postings to the transaction source of truth.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = independent_settled_figure()
     return (
         _db.session.query(
-            _db.func.coalesce(_db.func.sum(effective), Decimal("0"))
+            _db.func.coalesce(
+                _db.func.sum(TransactionEntry.amount), Decimal("0"),
+            )
+        )
+        .select_from(Transfer)
+        .join(
+            TransactionEntry,
+            _db.and_(
+                TransactionEntry.income_transfer_id == Transfer.id,
+                TransactionEntry.account_id == loan_account_id,
+            ),
         )
         .filter(
-            Transaction.account_id == loan_account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
+            Transfer.to_account_id == loan_account_id,
+            Transfer.scenario_id == scenario_id,
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_status_ids()),
         )
         .scalar()
     )
@@ -726,12 +738,20 @@ def _assert_completeness(
         f"loan {loan_account_id} scenario {scenario_id}: the split walk found no "
         f"settled payments to check completeness over -- the sweep would be vacuous"
     )
+    # A split's ``source`` is the payment's loan-side TransferLeg since plan step
+    # balance:X-bi-6-4d-2, not its income shadow; the shared reader keys the
+    # corrections off the transfer and the loan side's record, so the shadow
+    # passed it names only which transfer and side (ruling R-BAL167 class 4).
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
-        entries = loan_correction_entries(_db.session, split.source)
+        transfer_id = split.source.transfer.id
+        entries = loan_correction_entries(
+            _db.session,
+            loan_income_shadow(_db.session, transfer_id, loan_account_id),
+        )
         if non_principal != Decimal("0"):
             assert entries, (
-                f"settled payment shadow {split.source.id} has non-"
+                f"settled payment transfer {transfer_id} has non-"
                 f"principal {non_principal} but no correction -- an uncorrected "
                 f"Step-2 cash entry"
             )
@@ -768,13 +788,13 @@ def _assert_loan_reconciles(
     literal -- which is what actually pins the split; the sweep's job is to catch a
     reader / scenario-scope / routing / balance defect the value checks do not.
     (b)/(c) also assume the loan has NO OUTBOUND transfer:
-    ``_independent_settled_income_cash`` sums income shadows only, which restates
-    ``settled_transfer_effect`` faithfully only while every loan shadow is income (a
-    to-account leg) -- true for a payment, false for a hypothetical disbursement.
+    ``_independent_settled_income_cash`` sums transfers INTO the loan only, which
+    restates ``settled_transfer_effect`` faithfully only while every loan side is a
+    to-side (income) -- true for a payment, false for a hypothetical disbursement.
     That assumption is now ENFORCED, not merely relied on: a transfer OUT of a
     loan is rejected at creation
     (``transfer_service`` / ``_reject_transfer_out_of_loan``, review R6), so every
-    loan shadow is a payment IN by construction.
+    transfer touching a loan is a payment IN by construction.
     """
     loan_id = loan.id
     linked_reader = posting_service.account_posting_total(loan_id, scenario_id)
@@ -1480,8 +1500,10 @@ class TestOracleIsNotVacuous:
 
         A reconciled $1,000 payment has linked net +500, income cash +1,000, and
         non-principal corrections +500, so ``linked == income - non_principal``
-        holds.  Forcing the income shadow's RECORD -- its covering movement's
-        figure -- to 9,999 via raw SQL (no re-sync) pushes the income cash to
+        holds.  Forcing the loan side's RECORD -- the movement filed under the
+        transfer's to-side, whose figure is the cash (ruling R-BAL167 class 4,
+        plan step balance:X-bi-6-4d-2; the income shadow held it until then)
+        -- to 9,999 via raw SQL (no re-sync) pushes the income cash to
         +9,999 while the posted ledger is
         unchanged -- so ``income - non_principal`` becomes 9,499, no longer the
         +500 linked net.  The superseding invariant the sweep relies on now FAILS,
@@ -1494,7 +1516,6 @@ class TestOracleIsNotVacuous:
                 seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"),
             )
             db.session.commit()
-            shadow = loan_income_shadow(db.session, xfer.id, loan.id)
 
             linked = _independent_loan_linked_net(loan.id, scenario_id)
             non_principal = _per_loan_correction_net(loan.id, scenario_id)
@@ -1506,11 +1527,14 @@ class TestOracleIsNotVacuous:
             # this commits); the posted ledger is left untouched.  It is the
             # record and not the plan since plan step X-au-c3: a settled row's
             # cash is what it recorded as having moved, on its covering
-            # movement (plan step balance:X-bi-4b-2).
+            # movement (plan step balance:X-bi-4b-2).  The loan side's record
+            # hangs off the TRANSFER by its to-side link, not off the income
+            # shadow (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-2).
             db.session.execute(_db.text(
                 "UPDATE budget.transaction_entries SET amount = 9999 "
-                "WHERE transaction_id = :i AND covers_settlement"
-            ), {"i": shadow.id})
+                "WHERE income_transfer_id = :t AND account_id = :a "
+                "AND covers_settlement"
+            ), {"t": xfer.id, "a": loan.id})
             db.session.commit()
 
             tampered_income = _independent_settled_income_cash(

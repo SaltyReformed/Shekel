@@ -12,7 +12,9 @@ plan Section 6:
   1. **Per linked account (cash side).**  For each real account A (its linked
      ledger account), the net of A's posting legs equals
      ``settled_transfer_effect(A) + posted_purchase_effect(A)`` -- the
-     combined effect of A's settled, non-deleted transfer shadows AND every
+     combined effect of A's sides of settled, non-deleted transfers (each
+     side's record, off the transfer since plan step ``balance:X-bi-6-4d-2``)
+     AND every
      dated movement of an ordinary transaction (plan step ``balance:X-bi-4a``,
      ruling **R-BAL80**: a plan row posts nothing of its own).  Through
      ``X-bi-3e`` the second term was ``settled_transaction_effect``, the signed
@@ -128,6 +130,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.account import AccountAnchorHistory
 from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
 from app.services import (
     ledger_account_service,
     posting_service,
@@ -139,7 +142,6 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
-    independent_settled_figure,
     family_journal_filter,
     figure_source_columns,
     add_txn,
@@ -163,7 +165,8 @@ from app.services import cash_ledger
 # These deliberately re-derive each side from scratch so the oracle is a genuine
 # second opinion: a bug shared by the two service readers cannot hide, because
 # the ledger side here reads ``account_postings`` and the source side reads
-# ``transactions`` with independently-written SQL/Python, and both are also
+# ``transactions``, ``transfers`` and ``transaction_entries`` with
+# independently-written SQL/Python, and both are also
 # pinned to hand-computed literals.  (The source side necessarily restates the
 # one correct definition of a family's cash effect -- its dated non-card
 # movements, plan step ``balance:X-bi-4a`` -- so it mirrors
@@ -260,34 +263,46 @@ def _ledger_account_sum(ledger_account_id: int, scenario_id: int) -> Decimal:
 def _independent_transfer_shadow_effect(
     account_id: int, scenario_id: int
 ) -> Decimal:
-    """Sum an account's settled transfer-shadow effect (independent query).
+    """Sum an account's settled transfer-side effect (independent query).
 
-    The transfer half of the balance-side truth: over the account's settled
-    (``status.is_settled``), non-deleted transfer shadows
-    (``transfer_id IS NOT NULL``) in *scenario_id*, add ``+effective`` for an
-    income shadow (money in) and ``-effective`` for an expense shadow (money
-    out), where ``effective`` is the shadow's settled figure spelled
-    independently (:func:`~tests._test_helpers.independent_settled_figure`;
-    ``COALESCE(actual, estimated)`` through plan step ``balance:X-bi-4b-1``).
-    The same shape as the Step-2 oracle's transfer reconciliation, read from
-    the row tables.
+    The transfer half of the balance-side truth: over the RECORDS on the
+    account filed under a side of a settled (``status.is_settled``),
+    non-deleted transfer in *scenario_id*, add ``+amount`` for a to-side
+    record (``income_transfer_id``, money in) and ``-amount`` for a from-side
+    record (``expense_transfer_id``, money out).  A settled transfer holding
+    no record is a ``$0.00`` close and adds nothing (R-BAL82).  The same shape
+    as the Step-2 oracle's transfer reconciliation, read from the row tables.
+    It summed the settled transfer SHADOWS' figures by each shadow's status
+    and type until plan step ``balance:X-bi-6-4d-2`` stopped keeping a
+    shadow's status and moved the record onto the transfer; it reads the
+    transfer's status and the side links by its own SQL now, never through
+    ``transfer_legs``, the producer ``settled_transfer_effect`` joins (ruling
+    R-BAL167 class 4, plan step balance:X-bi-6-4d-2).  The name is kept.
     """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = independent_settled_figure()
     signed = case(
-        (Transaction.transaction_type_id == income_type_id, effective),
-        else_=-effective,
+        (
+            TransactionEntry.income_transfer_id.isnot(None),
+            TransactionEntry.amount,
+        ),
+        else_=-TransactionEntry.amount,
     )
     return (
         _db.session.query(
             _db.func.coalesce(_db.func.sum(signed), Decimal("0"))
         )
+        .select_from(Transfer)
+        .join(
+            TransactionEntry,
+            _db.or_(
+                TransactionEntry.income_transfer_id == Transfer.id,
+                TransactionEntry.expense_transfer_id == Transfer.id,
+            ),
+        )
         .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
+            TransactionEntry.account_id == account_id,
+            Transfer.scenario_id == scenario_id,
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_status_ids()),
         )
         .scalar()
     )
@@ -352,7 +367,8 @@ def _independent_combined_source_effect(
     """Sum an account's combined settled transfer + transaction source effect.
 
     The full balance-side truth a linked account's ledger must equal in Step 3:
-    transfer shadows AND every dated movement of an ordinary transaction, both
+    transfer sides' records AND every dated movement of an ordinary
+    transaction, both
     signed debit-positive (plan step ``balance:X-bi-4a``, ruling **R-BAL80**).
     The independent restatement of ``settled_transfer_effect +
     posted_purchase_effect``.
@@ -523,13 +539,19 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
 
     **The owner's Transfers-in-transit account is a counter account too**
     (plan step ``balance:X-bi-6-3``, rulings **R-BAL45** and **R-BAL101**):
-    a transfer SHADOW's covering movement books its cash leg against it, so
-    a shadow's net on transit is the negation of its signed cash effect by
-    the very rule every category row obeys -- the expense shadow's movement
-    lands ``+figure`` on transit, the income shadow's ``-figure`` -- and the
-    routing check for a shadow is that the counter IS the transit row, never
-    a category.  Across a settled pair the two nets cancel, which the
-    trial-balance and per-linked sweeps read as transit at zero.
+    a transfer SIDE's record books its cash leg against it, so a side's net
+    on transit is the negation of its signed cash effect by the very rule
+    every category row obeys -- the from-side record lands ``+figure`` on
+    transit, the to-side record's ``-figure`` -- and the routing check for a
+    side is that the counter IS the transit row, never a category.  Across a
+    settled pair the two nets cancel, which the trial-balance and per-linked
+    sweeps read as transit at zero.  **Each side's legs are grouped by its
+    RECORD** since plan step ``balance:X-bi-6-4d-2``: the record hangs off
+    the transfer and carries no ``transaction_id``, so resolving it to a
+    parent row would drop both sides into the hard-deleted bucket, where the
+    pair nets to zero and neither side's figure nor its routing is read.
+    They resolved to the side's SHADOW, the record's parent, until then
+    (ruling R-BAL167 class 4).
     """
     counters = (
         _db.session.query(LedgerAccount)
@@ -554,9 +576,25 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
         source_transaction_id = _db.func.coalesce(
             JournalEntry.transaction_id, parent_of_purchase,
         )
+        # A transfer side's record carries no parent row at all (it hangs off
+        # the TRANSFER since plan step balance:X-bi-6-4d-2), so its legs group
+        # by the record itself (ruling R-BAL167 class 4).
+        side_record = (
+            _db.session.query(TransactionEntry.id)
+            .filter(
+                TransactionEntry.id == JournalEntry.transaction_entry_id,
+                _db.or_(
+                    TransactionEntry.expense_transfer_id.isnot(None),
+                    TransactionEntry.income_transfer_id.isnot(None),
+                ),
+            )
+            .correlate(JournalEntry)
+            .scalar_subquery()
+        )
         rows = (
             _db.session.query(
                 source_transaction_id,
+                side_record,
                 _db.func.sum(Posting.amount),
             )
             .select_from(Posting)
@@ -565,11 +603,14 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
                 Posting.ledger_account_id == counter.id,
                 JournalEntry.scenario_id == scenario_id,
             )
-            .group_by(source_transaction_id)
+            .group_by(source_transaction_id, side_record)
             .all()
         )
         rhs = Decimal("0")
-        for transaction_id, net in rows:
+        for transaction_id, side_record_id, net in rows:
+            if side_record_id is not None:
+                rhs += _checked_side_counter_net(counter, side_record_id, net)
+                continue
             if transaction_id is None:
                 # Legs whose source transaction was hard-deleted (transaction_id
                 # SET NULL): the reverse-before-delete pair must net to zero.
@@ -590,28 +631,15 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
             # A non-zero net on a counter account comes from an active row
             # with a DATED movement under it -- its covering movement or a
             # purchase -- whatever its status (plan step ``balance:X-bi-4a``);
-            # everything else nets to zero.  A transfer SHADOW's movement
-            # counts against the owner's transit row by the same rule (plan
-            # step ``balance:X-bi-6-3``).
+            # everything else nets to zero.  A transfer side's record counts
+            # against the owner's transit row by the same rule (plan step
+            # ``balance:X-bi-6-3``), checked by ``_checked_side_counter_net``.
             assert txn.is_deleted is False
             expected_counter = -_signed_cash_effect(txn)
             assert net == expected_counter, (
                 f"counter {counter.id}: transaction {transaction_id} net {net} "
                 f"!= expected counter leg {expected_counter}"
             )
-            # Routing: a shadow's leg lands on the transit row and nowhere
-            # else -- a transfer between the owner's own accounts is neither
-            # income nor expense, so a category counter here is the very
-            # mis-post ruling R-BAL45 rejected.
-            if txn.transfer_id is not None:
-                assert counter.kind_id == ref_cache.ledger_account_kind_id(
-                    LedgerAccountKindEnum.TRANSIT,
-                ), (
-                    f"counter {counter.id}: shadow {transaction_id} routed its "
-                    f"counter leg to a non-transit account"
-                )
-                rhs += net
-                continue
             # Routing: a still-categorized transaction's leg must land on the
             # account its CURRENT category resolves to (catches a same-class
             # wrong-category post the magnitude check alone would miss).  A
@@ -633,6 +661,55 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
             f"counter {counter.id}: ledger {lhs} != linkage-summed source "
             f"effect {rhs} in scenario {scenario_id}"
         )
+
+
+def _checked_side_counter_net(counter, record_id: int, net: Decimal) -> Decimal:
+    """Check one transfer side's record's net on a counter account; return it.
+
+    The transfer-side arm of :func:`_assert_counter_accounts_reconcile`: a
+    side's net on the counter is the negation of its record's signed cash
+    effect -- ``+amount`` on transit for a from-side record (money left the
+    account), ``-amount`` for a to-side record -- or zero for a record the
+    ledger holds no money for (an un-dated record, kept across a revert whose
+    settle and reversal cancel).  Routing: a side's leg lands on the transit
+    row and nowhere else -- a transfer between the owner's own accounts is
+    neither income nor expense, so a category counter here is the very
+    mis-post ruling R-BAL45 rejected.  Read off the record's own columns, the
+    side links, not through ``transfer_legs``; it checked the side's SHADOW
+    here until plan step ``balance:X-bi-6-4d-2`` moved the record onto the
+    transfer (ruling R-BAL167 class 4).
+
+    Args:
+        counter: The counter :class:`LedgerAccount` the legs sit on.
+        record_id: The side's ``budget.transaction_entries`` id.
+        net: The record's legs' net on *counter* in the swept scenario.
+
+    Returns:
+        *net*, for the caller's linkage sum.
+    """
+    if net == 0:
+        # A settle and its reversal: contributes nothing.
+        return net
+    record = _db.session.get(TransactionEntry, record_id)
+    assert record.settled_on is not None, (
+        f"counter {counter.id}: transfer side record {record_id} is un-dated "
+        f"but holds a non-zero net {net} -- a revert failed to reverse"
+    )
+    expected_counter = (
+        -record.amount if record.income_transfer_id is not None
+        else record.amount
+    )
+    assert net == expected_counter, (
+        f"counter {counter.id}: transfer side record {record_id} net {net} "
+        f"!= expected counter leg {expected_counter}"
+    )
+    assert counter.kind_id == ref_cache.ledger_account_kind_id(
+        LedgerAccountKindEnum.TRANSIT,
+    ), (
+        f"counter {counter.id}: transfer side record {record_id} routed its "
+        f"counter leg to a non-transit account"
+    )
+    return net
 
 
 def _assert_full_reconciliation(scenario_id: int) -> None:

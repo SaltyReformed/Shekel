@@ -61,7 +61,6 @@ from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.services import (
     loan_ledger,
     loan_loaders,
@@ -72,6 +71,7 @@ from app.services import (
     transfer_service,
 )
 from app.services._posting_write import _emit_balanced_entry, _PostingLeg
+from app.services.transfer_legs import transfer_side_leg
 from tests._test_helpers import (
     SPLIT_LOAN,
     add_escrow_line,
@@ -96,6 +96,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     posted_loan_balance_map,
     transfer_family_journal_filter,
+    transfer_side_record,
     typed,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -217,8 +218,21 @@ def _genesis_entry_count(user_id):
 
 
 def _loan_side_movement(shadow):
-    """Return the loan-side income shadow's covering movement (its record)."""
-    [movement] = shadow.covering_movements
+    """Return the loan side's covering movement (its record).
+
+    The movement filed under the transfer's to-side on the loan, read by its
+    own SQL (:func:`~tests._test_helpers.transfer_side_record`); the shadow
+    names only which transfer and side.  It hung off the income shadow
+    (``shadow.covering_movements``) until plan step ``balance:X-bi-6-4d-2``
+    moved it onto the transfer (ruling R-BAL167 class 4).
+    """
+    movement = transfer_side_record(
+        _db.session, shadow.transfer_id, shadow.account_id,
+    )
+    assert movement is not None, (
+        f"transfer {shadow.transfer_id}'s side on account "
+        f"{shadow.account_id} holds no record"
+    )
     return movement
 
 
@@ -1044,12 +1058,15 @@ class TestSyncLoanPaymentPostings:
             # A DERIVATION links no row (ruling R-BAL102): it is keyed by the
             # payment's period and visible day alone.  It carried
             # ``transaction_id == shadow.id`` through plan step
-            # ``balance:X-bi-6-1b`` (a rule-5 class (a) re-expression).
+            # ``balance:X-bi-6-1b`` (a rule-5 class (a) re-expression).  The
+            # day is the loan side's RECORD's since plan step
+            # balance:X-bi-6-4d-2; it read the income shadow's own day until
+            # then (ruling R-BAL167 class 1).
             assert entry.transfer_id is None
             assert entry.transaction_id is None
             assert entry.transaction_entry_id is None
             assert entry.pay_period_id == shadow.pay_period_id
-            assert entry.entry_date == shadow.settled_on
+            assert entry.entry_date == _loan_side_movement(shadow).settled_on
 
             loan_ledger = _linked_ledger_id(loan)
             interest_ledger = _find_loan_ledger(
@@ -1604,14 +1621,23 @@ class TestTheSplitIsADateKeyedCorrection:
                 loan.id, scenario_id,
             ) == Decimal("-99500.00")
             assert len(_correction_entries(shadow)) == 1
+            # The settle day's key, captured before the act: the record that
+            # carries the day is withdrawn by it.  The day and the record are
+            # the loan SIDE's, off the transfer, since plan step
+            # balance:X-bi-6-4d-2; it read the income shadow's covering
+            # movement and kept day until then (ruling R-BAL167 class 1).
+            settle_day = _loan_side_movement(shadow).settled_on
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, figure=typed(Decimal("0.00")),
             )
             db.session.commit()
 
-            assert shadow.covering_movements == []
-            assert len(_correction_entries(shadow)) == 2, (
+            assert transfer_side_record(db.session, xfer.id, loan.id) is None
+            assert len(loan_correction_entries_at(
+                db.session, loan.id, scenario_id, seed_periods[_P1].id,
+                settle_day,
+            )) == 2, (
                 "the settle day's correction and its reversal"
             )
             assert len(loan_correction_entries_at(
@@ -1722,8 +1748,10 @@ class TestReverseLoanPaymentPostings:
         are Loan +500.00 / Interest -500.00 in P1's period, and the interest
         ledger nets back to zero.  Under the date key the rule is structural
         -- the posted key IS ``(P1, the original day)`` and a revert releases
-        the shadow's day, so the entries are read at the key the split was
-        posted under, captured before the revert.
+        the loan side's day (its record's, off the transfer since plan step
+        balance:X-bi-6-4d-2; the shadow's until then, ruling R-BAL167 class
+        1), so the entries are read at the key the split was posted under,
+        captured before the revert.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1733,7 +1761,9 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
             original_period_id = seed_periods[_P1].id
-            original_day = shadow.settled_on
+            # The day is the loan side's record's (ruling R-BAL167 class 1,
+            # plan step balance:X-bi-6-4d-2; the shadow's own until then).
+            original_day = _loan_side_movement(shadow).settled_on
             moved_to = seed_periods[_P3]
 
             transfer_service.update_transfer(
@@ -1804,7 +1834,10 @@ class TestReverseLoanPaymentPostings:
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             db.session.commit()
-            period_id, day = shadow.pay_period_id, shadow.settled_on
+            # The day is the loan side's record's (ruling R-BAL167 class 1,
+            # plan step balance:X-bi-6-4d-2; the shadow's own until then).
+            period_id = shadow.pay_period_id
+            day = _loan_side_movement(shadow).settled_on
             interest_ledger = _find_loan_ledger(
                 loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
@@ -1889,7 +1922,7 @@ class TestReverseLoanPaymentPostings:
 
         Settle + sync (one correction; loan-linked -99500 = opening -250000 +
         true-up +150000 + principal 500), then revert the pair through the
-        status SEAM alone -- the row's status and its settlement record, with
+        status SEAM alone -- the transfer's status and its sides' records, with
         NO posting sync behind it, standing in for a door that forgot the
         ledger -- and run the one loan sync bare: the now-stale correction's
         key has no target and reverses, the lineage probe finds the cash leg
@@ -1907,6 +1940,16 @@ class TestReverseLoanPaymentPostings:
         posted 1000.00 at the settle day), so the fixture is the honest
         revert and the figure is what the ledger holds after it.  A rule-5
         class (b) re-expression Josh confirmed 2026-09-21.
+
+        **The seam's TRANSFER arm since plan step ``balance:X-bi-6-4d-2``**
+        (ruling R-BAL167 class 2): the sides' records hang off the transfer,
+        so the revert un-dates them through ``status_seam.sync_side_records``
+        -- the call the transfer's status writer makes beside
+        ``apply_status_change`` -- where it applied the seam to each shadow
+        row, whose covering movement held the record, until then.  Reverting
+        the twins and the transfer's status alone now leaves both records
+        dated under a Projected transfer, which the database refuses at
+        commit, so the stale ledger is reached through the arm instead.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1922,21 +1965,23 @@ class TestReverseLoanPaymentPostings:
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-99500.00")
-            period_id, day = shadow.pay_period_id, shadow.settled_on
+            period_id = shadow.pay_period_id
+            day = _loan_side_movement(shadow).settled_on
 
             # Revert through the seam alone (no posting sync): the status and
-            # the settlement record move, the movement is un-dated, the
-            # ledger is left stale on BOTH halves.
+            # both sides' records move, each record is un-dated, the ledger is
+            # left stale on BOTH halves.
             projected = ref_cache.status_id(StatusEnum.PROJECTED)
-            shadows = (
-                db.session.query(Transaction)
-                .filter(Transaction.transfer_id == xfer.id)
-                .all()
+            status_seam.sync_side_records(
+                (
+                    transfer_side_leg(xfer, is_income=False),
+                    transfer_side_leg(xfer, is_income=True),
+                ),
+                projected, days=(None, None), settlement=None, press=None,
             )
-            for row in shadows:
-                status_seam.apply_status_change(row, projected)
             status_seam.apply_status_change(xfer, projected)
             db.session.commit()
+            assert _loan_side_movement(shadow).settled_on is None
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-99500.00")
@@ -3538,13 +3583,17 @@ class TestTheDeployResyncReBooksALoanPayment:
             assert before[date(2026, 1, 20)] == Decimal("500.00")
 
             # Forge the legacy shape (raw SQL, as every legacy forge here).
+            # The per-movement entries are found through the transfer's SIDE
+            # links since plan step balance:X-bi-6-4d-2, where each side's
+            # record hangs; they were found through its shadows' movements
+            # until then (ruling R-BAL167 class 4).
             db.session.execute(sa.text(
                 "DELETE FROM budget.journal_entries WHERE id IN ("
                 "  SELECT je.id FROM budget.journal_entries je"
                 "  JOIN budget.transaction_entries te"
                 "    ON te.id = je.transaction_entry_id"
-                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
-                "  WHERE sh.transfer_id = :t)"
+                "  WHERE te.expense_transfer_id = :t"
+                "     OR te.income_transfer_id = :t)"
             ), {"t": xfer.id})
             legacy = JournalEntry(
                 user_id=seed_user["user"].id,

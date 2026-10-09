@@ -27,8 +27,9 @@ true-up deltas and only a strictly LATER day rides on top.
 
 **Both sides of that comparison are stored DAYS, and this oracle was written in
 INSTANTS end to end until plan step X-f1** (ruling **R-EC**).  The source side
-is ``transactions.settled_on`` -- a transfer's read off its income shadow, equal
-to the expense shadow's by Transfer Invariant 3 -- with NO fallback: an undated
+is ``transactions.settled_on`` -- a transfer side's read off that side's RECORD
+(``transaction_entries.settled_on``; off its shadow until plan step
+``balance:X-bi-6-4d-2``, ruling R-BAL167 class 4) -- with NO fallback: an undated
 settled row is a broken invariant the engine refuses, and this oracle asserts
 the same rather than substituting a pay-period start.  The assertion side is
 ``account_anchor_history.observed_on``, and "latest" orders on
@@ -52,7 +53,8 @@ cash oracle is (``test_posting_ledger_cash_reconciliation.py``):
   * **independent cross-table queries** -- the ledger side
     (``_independent_linked_ledger_sum`` / ``_linked_ledger_sum_as_of``) reads
     ``account_postings`` and the source side
-    (``_independent_post_assertion_source_effect``) reads ``transactions`` with
+    (``_independent_post_assertion_source_effect``) reads ``transactions`` and
+    the transfers' side records with
     independently-written Python / SQL, so asserting the two reconcile checks
     what the producers WROTE against the transaction source of truth;
   * **the production service helpers** -- ``account_posting_total`` and
@@ -98,6 +100,8 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
 from app.services import (
     account_posting_service,
     anchor_service,
@@ -145,7 +149,8 @@ _BOUNDARY_MIGRATION = load_migration_module(
 # These deliberately re-derive each side from scratch so the oracle is a genuine
 # second opinion: a bug shared by the walk and the reconcile cannot hide,
 # because the ledger side reads ``account_postings`` and the source side reads
-# ``transactions`` / ``account_anchor_history`` with independently-written
+# ``transactions`` / the transfers' side records / ``account_anchor_history``
+# with independently-written
 # code, and both are also pinned to hand-computed literals.  Some mirror the
 # Step-2 / Step-3 oracles (``_trial_balance``, ``_entries_violating_balance``);
 # the duplication is DELIBERATE -- each oracle keeps its OWN independent queries
@@ -282,10 +287,10 @@ def _source_settled_day(txn) -> date:
     it, because an oracle that shares the engine's accessor cannot catch the
     engine dating a row it should have refused.
 
-    For a transfer shadow the walk attributes by the INCOME shadow's day; both
-    shadows carry the same day (Transfer Invariant 3 mirrors it), so reading
-    each shadow's own is the same value computed independently of the "income
-    shadow" concept.
+    An ordinary cash transaction's only.  A transfer side's day is its
+    RECORD's, read by :func:`_independent_transfer_side_effects`: it was the
+    side's shadow's own ``settled_on`` until plan step ``balance:X-bi-6-4d-2``
+    stopped keeping a shadow's day (ruling R-BAL167 class 4).
     """
     assert txn.settled_on is not None, (
         f"transaction {txn.id} is settled but carries no settled_on -- the "
@@ -295,18 +300,18 @@ def _source_settled_day(txn) -> date:
 
 
 def _independent_source_effect(txn) -> Decimal:
-    """Return a settled source's signed, debit-positive effect on its account.
+    """Return a settled cash transaction's signed, debit-positive effect.
 
-    The per-source truth the linked ledger must reflect: a transfer shadow
-    contributes ``+effective`` when it is the income shadow (money in) and
-    ``-effective`` when it is the expense shadow (money out); an ordinary cash
+    The per-source truth the linked ledger must reflect: an ordinary cash
     transaction contributes ``effective - Sigma(credit entries)`` signed ``+``
     for income / ``-`` for an expense.  ``effective`` is the model property
     (``actual`` over ``estimated``).  Independent of the posting builder (it
     never imports ``_signed_cash_leg``); the linked leg for *txn* equals this.
+    A transfer side's effect is its record's, read by
+    :func:`_independent_transfer_side_effects` (it was its shadow's settled
+    figure here until plan step ``balance:X-bi-6-4d-2``; ruling R-BAL167
+    class 4).
     """
-    if txn.transfer_id is not None:
-        return settled_contribution(txn) if txn.is_income else -settled_contribution(txn)
     credit_sum = sum(
         (entry.amount for entry in txn.entries if entry.is_credit),
         Decimal("0"),
@@ -315,37 +320,108 @@ def _independent_source_effect(txn) -> Decimal:
     return effect if txn.is_income else -effect
 
 
+def _independent_transfer_side_effects(
+    account_id: int, scenario_id: int,
+) -> list[tuple[date, Decimal]]:
+    """Return ``(settle day, signed effect)`` per settled transfer side on an account.
+
+    Over the RECORDS on *account_id* filed under a side of a settled
+    (``status.is_settled``), non-deleted transfer in *scenario_id*: the
+    record's stored ``settled_on`` and ``+amount`` for a to-side record
+    (``income_transfer_id``, money in) or ``-amount`` for a from-side record
+    (``expense_transfer_id``, money out).  A settled transfer holding no
+    record is a ``$0.00`` close and moves nothing (R-BAL82).  A settled side's
+    record carries its day, and an undated one under a settled transfer is a
+    state the database refuses, so a missing day is REFUSED here as
+    :func:`_source_settled_day` refuses one.  The transfer's status and the
+    side links are read by this oracle's own SQL, never through
+    ``transfer_legs``, the producer the posting writer joins: the record hangs
+    off the transfer since plan step ``balance:X-bi-6-4d-2``, and this read
+    the side's shadow's status, day and figure until then (ruling R-BAL167
+    class 4).
+    """
+    rows = (
+        _db.session.query(
+            TransactionEntry.id,
+            TransactionEntry.settled_on,
+            TransactionEntry.amount,
+            TransactionEntry.income_transfer_id,
+        )
+        .select_from(Transfer)
+        .join(
+            TransactionEntry,
+            _db.or_(
+                TransactionEntry.income_transfer_id == Transfer.id,
+                TransactionEntry.expense_transfer_id == Transfer.id,
+            ),
+        )
+        .filter(
+            TransactionEntry.account_id == account_id,
+            Transfer.scenario_id == scenario_id,
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_status_ids()),
+        )
+        .all()
+    )
+    effects = []
+    for record_id, settled_on, amount, income_transfer_id in rows:
+        assert settled_on is not None, (
+            f"record {record_id} is a settled transfer side's but carries no "
+            "settled_on -- the database refuses this state, so a fixture "
+            "that produced it is broken"
+        )
+        effects.append(
+            (settled_on, amount if income_transfer_id is not None else -amount)
+        )
+    return effects
+
+
 def _independent_post_assertion_source_effect(
     account_id: int, scenario_id: int, latest_asserted_day: date,
 ) -> Decimal:
     """Sum an account's settled source effect dated AFTER the latest anchor's day.
 
-    Over the account's settled (``status.is_settled``), non-deleted
-    transactions AND transfer shadows in *scenario_id*, add each source's signed
-    effect (:func:`_independent_source_effect`) iff its settle day is STRICTLY
+    Over the account's settled (``status.is_settled``), non-deleted ordinary
+    transactions in *scenario_id* (:func:`_independent_source_effect`) AND
+    the sides of its settled transfers there
+    (:func:`_independent_transfer_side_effects`), add each source's signed
+    effect iff its settle day is STRICTLY
     AFTER *latest_asserted_day* -- the sources that ride on top of the asserted
     balance.  An assertion is the CLOSING balance for its own civil day (ruling
     R-DH (a)), so a source dated ON that day is already inside it and is
     absorbed by the opening / true-up delta; only a strictly later day rides.
-    Read from ``transactions`` (a different table than the ledger side), so
-    asserting the equality reconciles what the producers wrote against the
-    transaction source of truth.
+    Read from ``transactions``, ``transfers`` and ``transaction_entries`` (not
+    the ledger side's tables), so asserting the equality reconciles what the
+    producers wrote against the transaction source of truth.  It read the
+    transfer shadows as sources beside the ordinary rows until plan step
+    ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 4).
     """
     txns = (
         _db.session.query(Transaction)
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.is_(None),
             Transaction.is_deleted.is_(False),
             Transaction.status_id.in_(settled_status_ids()),
         )
         .all()
     )
-    return sum(
+    cash = sum(
         (
             _independent_source_effect(txn)
             for txn in txns
             if _source_settled_day(txn) > latest_asserted_day
+        ),
+        Decimal("0"),
+    )
+    return cash + sum(
+        (
+            effect
+            for day, effect in _independent_transfer_side_effects(
+                account_id, scenario_id,
+            )
+            if day > latest_asserted_day
         ),
         Decimal("0"),
     )
@@ -708,7 +784,7 @@ class TestAbsoluteInvariantPerAccount:
 
 
 class TestTransferSourceRidesOnTop:
-    """A settled transfer reconciles on both linked ledgers by its shadow effect."""
+    """A settled transfer reconciles on both linked ledgers by its sides' effect."""
 
     @pytest.mark.server_clock
     def test_transfer_into_savings_reconciles_both_accounts(
@@ -718,14 +794,16 @@ class TestTransferSourceRidesOnTop:
 
         The seeded Checking ($1000.00 opening) transfers $150.00 into a Savings
         anchored $200.00, settled at server-now (after both origination
-        assertions, so it rides on top of each).  The transfer's income shadow
-        lands +150.00 on Savings and its expense shadow -150.00 on Checking:
+        assertions, so it rides on top of each).  The transfer's to-side record
+        lands +150.00 on Savings and its from-side record -150.00 on Checking
+        (the records hang off the transfer, not its shadows, since plan step
+        balance:X-bi-6-4d-2; ruling R-BAL167 class 4):
 
           Savings  = 200 (opening) + 150 = 350.00 = anchor 200 + post (+150.00)
           Checking = 1000 (opening) - 150 = 850.00 = anchor 1000 + post (-150.00)
 
         This exercises the transfer branch of the oracle's independent
-        source-effect helper on BOTH shadow polarities, so the sweep's
+        source-effect helper on BOTH side polarities, so the sweep's
         second-opinion computation is validated for transfers, not only cash.
         """
         with app.app_context():
@@ -750,7 +828,7 @@ class TestTransferSourceRidesOnTop:
                 checking.id, scenario_id,
             ) == Decimal("850.00")
 
-            # The independent transfer-branch effect signs each shadow correctly.
+            # The independent transfer-branch effect signs each side correctly.
             savings_asserted_at, _sa = _latest_assertion(savings.id)
             checking_asserted_at, _ca = _latest_assertion(checking.id)
             assert _independent_post_assertion_source_effect(
