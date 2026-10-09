@@ -28,6 +28,7 @@ rather than re-implementing the folding rule that caused the defect.
 """
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import sys
@@ -41,7 +42,27 @@ from tools.plan_gate import _duplication as duplication
 #: The hook whose job is to RUN this package when a planning document changes.
 GATE_HOOK_ID = "shekel-plan-ledger-gate"
 
+#: The hook that LINTS this package at its 10.00/10 floor.
+PYLINT_HOOK_ID = "pylint-plan-gate"
+
 CONFIG = arcs.REPO / ".pre-commit-config.yaml"
+
+
+def _hook(hook_id: str) -> dict:
+    """Return the hook definition whose ``id`` is *hook_id*.
+
+    Args:
+        hook_id: The hook's ``id`` in the config.
+
+    Returns:
+        The hook's parsed mapping.
+    """
+    config = yaml.safe_load(CONFIG.read_text())
+    for repo in config["repos"]:
+        for hook in repo.get("hooks", []):
+            if hook.get("id") == hook_id:
+                return hook
+    raise AssertionError(f"no hook with id {hook_id!r} in {CONFIG}")
 
 
 def _gate_hook() -> dict:
@@ -54,12 +75,7 @@ def _gate_hook() -> dict:
     Returns:
         The hook's parsed mapping.
     """
-    config = yaml.safe_load(CONFIG.read_text())
-    for repo in config["repos"]:
-        for hook in repo.get("hooks", []):
-            if hook.get("id") == GATE_HOOK_ID:
-                return hook
-    raise AssertionError(f"no hook with id {GATE_HOOK_ID!r} in {CONFIG}")
+    return _hook(GATE_HOOK_ID)
 
 
 def _graded_documents() -> list[pathlib.Path]:
@@ -159,3 +175,113 @@ class TestEveryDocumentTheGateReadsRunsIt:
             "folding the pattern did not introduce whitespace, so this "
             "control is not exercising the defect it names"
         )
+
+
+#: The package whose modules :func:`_imported_ci_modules` reads, for resolving a
+#: relative import.
+_GATE_PACKAGE = "tools.plan_gate"
+
+#: The bottom layer whose modules the census names.
+_CI_PACKAGE = "tools.ci"
+
+
+def _ci_modules_in(source: str, package: str = _GATE_PACKAGE) -> set[str]:
+    """Return the names of the ``tools.ci`` modules one module's *source* imports.
+
+    Every spelling an import takes: ``from tools.ci import arcs``, ``from
+    tools.ci.arc_steps import entries``, ``import tools.ci.arcs``, and a relative
+    import resolved against *package* (``from ..ci import arcs``).  An import of
+    the PACKAGE alone (``from tools import ci``, ``import tools.ci``) is refused:
+    it hides which module is read, so no census could name it.
+
+    Args:
+        source: A module's text.
+        package: The package that module sits in.
+
+    Returns:
+        The module names (``arcs``, ``arc_steps``, ...).
+
+    Raises:
+        AssertionError: The source imports the ``tools.ci`` package itself.
+    """
+    found: set[str] = set()
+    hidden = "imports the tools.ci PACKAGE, which hides which module it reads: import the module"
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".")[:len(package.split(".")) - node.level + 1]
+                base = ".".join(parts + ([base] if base else []))
+            names = [alias.name for alias in node.names]
+            if base == _CI_PACKAGE:
+                found.update(names)
+            elif base.startswith(f"{_CI_PACKAGE}."):
+                found.add(base.split(".")[2])
+            elif f"{base}.ci" == _CI_PACKAGE and "ci" in names:
+                raise AssertionError(hidden)
+        elif isinstance(node, ast.Import):
+            for imported in [alias.name for alias in node.names]:
+                if imported == _CI_PACKAGE:
+                    raise AssertionError(hidden)
+                if imported.startswith(f"{_CI_PACKAGE}."):
+                    found.add(imported.split(".")[2])
+    return found
+
+
+def _imported_ci_modules() -> list[str]:
+    """Return ``tools/ci/<name>.py`` for every ``tools.ci`` module this package imports.
+
+    An AST census of every module here, tests included (:func:`_ci_modules_in`).
+
+    Returns:
+        The repository-relative paths, sorted.
+    """
+    found: set[str] = set()
+    for path in (arcs.REPO / "tools" / "plan_gate").glob("*.py"):
+        found |= _ci_modules_in(path.read_text(encoding="utf-8"))
+    return sorted(f"tools/ci/{name}.py" for name in found)
+
+
+class TestEveryToolsCiModuleTheGateImportsRunsIt:
+    """A ``tools/ci`` module the gate imports is part of the gate.
+
+    Since X-cx's L4 the gate reads the arcs from ``tools/ci/arcs.py``, and since
+    L7 an arc document's checkboxes, fence rule and step entries from
+    ``tools/ci/arc_steps.py``.  Editing either changes what the gate grades, so
+    both hooks must run on it; X-cx L7's A1 review measured that removing
+    ``arc_steps`` from both patterns left every test green.
+    """
+
+    def test_the_census_finds_the_modules_the_gate_reads(self):
+        """A census that finds nothing would pass every case below by grading none."""
+        assert {"tools/ci/arcs.py", "tools/ci/arc_steps.py"} <= set(_imported_ci_modules())
+
+    @pytest.mark.parametrize("hook_id", [GATE_HOOK_ID, PYLINT_HOOK_ID])
+    @pytest.mark.parametrize("module", _imported_ci_modules())
+    def test_both_hooks_match_it(self, module, hook_id):
+        """Editing this module runs the gate's tests and its lint."""
+        assert re.search(_hook(hook_id)["files"], module), (
+            f"tools/plan_gate imports {module} and the {hook_id} hook does not "
+            f"match it, so editing it does not run that hook at commit. Add it to "
+            f"the hook's `files` pattern -- ON ONE LINE"
+        )
+
+    @pytest.mark.parametrize("source, modules", [
+        ("from tools.ci import arcs, gitcmd", {"arcs", "gitcmd"}),
+        ("from tools.ci.arc_steps import entries", {"arc_steps"}),
+        ("import tools.ci.arcs", {"arcs"}),
+        ("from ..ci import gitcmd", {"gitcmd"}),
+        ("from ..ci.arcs import ARCS", {"arcs"}),
+        ("from . import _registry\nfrom tools.quill import check", set()),
+    ])
+    def test_the_census_reads_every_spelling_of_an_import(self, source, modules):
+        """Each spelling, on synthetic source: one a census missed would be ungated."""
+        assert _ci_modules_in(source) == modules
+
+    @pytest.mark.parametrize("source", [
+        "from tools import ci", "import tools.ci", "from .. import ci",
+    ])
+    def test_an_import_of_the_package_alone_is_refused(self, source):
+        """The package hides which module is read, so the census refuses it."""
+        with pytest.raises(AssertionError, match="hides which module"):
+            _ci_modules_in(source)

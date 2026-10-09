@@ -14,7 +14,8 @@ Three registries are graded here:
 ``docs/plans/conventions.md``  the rules, one copy
 
 Neither the owner grammar nor the checkbox grammar is re-implemented:
-:func:`_plan_gate.split_owners`, ``OWNER_RX`` and ``CHECKBOX_RX`` carry
+:func:`_plan_gate.split_owners` and ``OWNER_RX``, and
+:mod:`tools.ci.arc_steps`' ``CHECKBOX_RX`` and fence rule, carry
 false-positive fixes measured against a real ledger, and a second copy of
 either would be the very defect this restructure removes.  Rule 12 reconciles
 this module's reading of a checkbox against the ticked-entry arm's, so two
@@ -26,6 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 
+from tools.ci.arc_steps import checkboxes
 from tools.ci.arcs import ARC_DOCS, PLANS
 from tools.plan_gate._classes import decomposition_leaf_keys
 from tools.plan_gate._tables import (
@@ -38,7 +40,6 @@ from tools.plan_gate._tables import (
     rows_under,
 )
 from tools.plan_gate._plan_gate import (
-    CHECKBOX_RX,
     COMMIT_SHA,
     NON_STEP_OWNERS,
     OWNER_RX,
@@ -111,21 +112,12 @@ def forks() -> list[Fork]:
 def arc_checkboxes(arc: str) -> dict[str, bool]:
     """Return ``{step id: ticked}`` for every checkbox in *arc*'s document.
 
-    Fenced regions are removed first: a ``##``-prefixed line inside a fence
-    would otherwise truncate the scan and silently drop every step after it.
+    The WHOLE document, fence-blanked first (:mod:`tools.ci.arc_steps`, the
+    grammar's and the fence rule's one home), so a checkbox inside a code sample
+    is not a step.  A step listed twice reads as its LAST checkbox, which is all
+    rule 12 sees: a duplicate whose last box agrees with ``steps.md`` passes it.
     """
-    text = ARC_DOCS[arc].read_text()
-    found, fenced = {}, False
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        match = CHECKBOX_RX.match(line)
-        if match:
-            found[match.group("step")] = match.group("tick").lower() == "x"
-    return found
+    return {box.step: box.ticked for box in checkboxes(ARC_DOCS[arc].read_text())}
 
 
 def stated_count_violation() -> str | None:
