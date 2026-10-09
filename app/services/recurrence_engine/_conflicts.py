@@ -56,6 +56,7 @@ took the only safe outcome.  The route reports them with
 retained id cannot reach this module even from a crafted form.
 """
 import logging
+from collections.abc import Sequence
 from typing import NamedTuple
 
 from app.enums import AmountSourceEnum
@@ -64,6 +65,7 @@ from app.models.transaction import Transaction
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.services.amount_ownership import declare_derived
+from app.services.balance_at import BalanceContext
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.definition_unarchive import UseRestore, restored_by_use
 from app.utils.log_events import (
@@ -97,32 +99,37 @@ class ConflictReporting(NamedTuple):
 
 
 def log_use_resolved(
-    reporting: ConflictReporting, ctx, use: UseRestore, skipped_count: int,
+    reporting: ConflictReporting, ctx: BalanceContext, use: UseRestore,
+    skipped_count: int,
 ) -> None:
     """Emit one engine's resolution event for the owner's "use" picks.
 
     **The ONE statement of what a resolution reports**, for both engines'
     ``resolve_conflicts``: the rows handed back to their definition, the ids
-    skipped (gone, not the owner's, or refused a hand-back), and the deleted
-    rows left deleted because their books hold them (ruling **R-BAL253**).
-    The three sum to the ids picked.  Spelled in each resolver, the tail of
-    the two was one block -- pylint's ``duplicate-code`` measured it the
-    moment the second count arrived -- the lesson
-    :meth:`~app.services._recurrence_common.MaintainOutcome.after` records.
+    skipped (gone, not the owner's, or naming no definition: the rule's
+    :attr:`~app.services.definition_unarchive.UseRestore.orphaned`, ledger
+    row **N-440**), and the deleted rows left deleted because the unarchive
+    would not restore them (through the chooser: their books hold them,
+    ruling **R-BAL253**).  The three sum to the ids handed in.  Spelled in
+    each resolver, the tail of the two was one block -- pylint's
+    ``duplicate-code`` measured it the moment the second count arrived --
+    the lesson :meth:`~app.services._recurrence_common.MaintainOutcome.after`
+    records.
 
     Args:
         reporting: The engine's :class:`ConflictReporting`.
         ctx: The edit's read pass; its ``user_id`` is logged.
         use: The rule's answer
             (:func:`~app.services.definition_unarchive.restored_by_use`).
-        skipped_count: The picked ids that never reached the rule.
+        skipped_count: The ids that never reached the rule (gone, or not
+            the owner's); the rule's orphaned rows are added here.
     """
     log_event(
         reporting.logger, logging.INFO, reporting.event, BUSINESS,
         reporting.message,
         user_id=ctx.user_id, action="update",
         resolved_count=len(use.handed_back),
-        skipped_count=skipped_count,
+        skipped_count=skipped_count + len(use.orphaned),
         kept_deleted_count=len(use.left_deleted),
     )
 
@@ -134,7 +141,9 @@ _RESOLVED = ConflictReporting(
 )
 
 
-def resolve_conflicts(transaction_ids, action, ctx):
+def resolve_conflicts(
+    transaction_ids: Sequence[int], action: str, ctx: BalanceContext,
+) -> str | None:
     """Resolve override/delete conflicts after a regeneration.
 
     Called by the route layer after the user responds to the conflict prompt.
@@ -240,38 +249,14 @@ def resolve_conflicts(transaction_ids, action, ctx):
                     "transfer_service."
                 )
 
-            # **A row whose definition is GONE cannot be handed back to
-            # it** (ledger row **N-440**).  ``fk_transactions_template`` is ON
-            # DELETE SET NULL, so a row can outlive its template carrying no
-            # link -- and declaring such a row derived would write exactly the
-            # state that has no rule able to price it:
-            # ``_rule_within_definition`` answers TEMPLATE for a ``None``
-            # template and ``_stated_amount`` then refuses in a money path.
-            # The row keeps the figure it already owns, which is the only
-            # answer left that is true.
-            #
-            # **UNREACHABLE from the route today, and the honest reason is not
-            # the one a first draft gave.**  That comment said it covered "a
-            # row that lost its template between the raise and this call" --
-            # but the only way a row loses its template is that template's
-            # hard delete, and the same delete makes the Apply POST 404 at
-            # ``get_or_404`` before this function runs; the conflict set is
-            # also built by selecting on ``template_id``, so no such id can
-            # reach the allow-list.  What this is is the same DEFENCE IN DEPTH
-            # the ownership check twenty lines up is: ``resolve_conflicts`` is
-            # a published service entry, and a future caller assembling ids
-            # some other way would otherwise write a row no rule can price.
-            # Skipped rather than raised because it is a row to leave alone,
-            # not a caller error, and it is counted in ``skipped_count``.
-            if txn.template_id is None:
-                skipped_count += 1
-                continue
             picked.append(txn)
 
         # **What the unarchive would leave deleted, "use" leaves deleted**
         # (ruling **R-BAL253**): asked once, of every picked row as it stands,
         # through the one rule the transfer twin asks too.  A row the answer
-        # holds is left exactly as found -- flags, figure and all.
+        # holds is left exactly as found -- flags, figure and all -- and so is
+        # a row that names no definition (ledger row **N-440**, a guard this
+        # resolver spelled for itself until it moved into the rule).
         use = restored_by_use(picked, ctx)
         for txn in use.handed_back:
             txn.is_override = False

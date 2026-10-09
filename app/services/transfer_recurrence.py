@@ -48,6 +48,7 @@ Key differences from transaction recurrence:
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import date
 from typing import NamedTuple
 
@@ -56,6 +57,7 @@ from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
 from app.services.amount_ownership import derived_ownership
+from app.services.balance_at import BalanceContext
 from app.services.definition_unarchive import restored_by_use
 from app.services._recurrence_common import (
     TemplateRowSelector,
@@ -819,7 +821,9 @@ _RESOLVED = ConflictReporting(
 )
 
 
-def resolve_conflicts(transfer_ids, action, ctx):
+def resolve_conflicts(
+    transfer_ids: Sequence[int], action: str, ctx: BalanceContext,
+) -> str | None:
     """Resolve override/delete conflicts after a regeneration.
 
     Routes all mutations through the transfer service so shadow
@@ -895,7 +899,9 @@ def resolve_conflicts(transfer_ids, action, ctx):
         # **What the unarchive would leave deleted, "use" leaves deleted**
         # (ruling **R-BAL253**): asked once, of every picked transfer as it
         # stands, through the one rule the transaction twin asks too.  A
-        # transfer the answer holds is left exactly as found.
+        # transfer the answer holds is left exactly as found, and so is one
+        # that names no definition (ledger row **N-440**, which this resolver
+        # lacked until the guard moved into the rule).
         use = restored_by_use(picked, ctx)
         for xfer in use.handed_back:
             # Soft-deleted transfers must be restored before they can

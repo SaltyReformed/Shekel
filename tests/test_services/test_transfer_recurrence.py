@@ -30,6 +30,7 @@ from app.exceptions import (
 )
 from app.utils.log_events import (
     EVT_TRANSFER_HARD_DELETED,
+    EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_TRANSFER_RECURRENCE_REGENERATED,
     EVT_TRANSFER_UPDATED,
 )
@@ -41,6 +42,7 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
     rhythm_of,
     create_account_of_type,
+    create_transfer,
     last_covered_day,
     make_cadence_rule,
     shadow_amount,
@@ -53,6 +55,10 @@ from tests.oracles.recurrence_baseline import (
 from app.services.amount_ownership import state_own_amount
 from tests._test_helpers import state_template_price
 from tests._test_helpers import transfer_amount
+from tests.test_routes.test_the_chooser_restores_what_the_unarchive_would import (
+    _transfer_as_stored,
+)
+from tests.test_services.test_service_log_events import _LogCapture
 
 
 def _assert_shadows_valid(xfer):
@@ -1004,6 +1010,62 @@ class TestTransferResolveConflicts:
             assert transfer_amount(xfer_a) == Decimal("50.00")
             assert xfer_b.is_override is True
             assert transfer_amount(xfer_b) == Decimal("888.88")
+
+    def test_a_transfer_whose_definition_is_gone_is_skipped_and_untouched(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer naming no definition is never handed back (ledger row N-440).
+
+        Ad-hoc ones here: a transfer that never had a definition and one
+        whose definition is gone are the same state to the rule.
+
+        The transaction twin's guard, which this resolver lacked until it
+        moved into the one rule both ask
+        (``definition_unarchive.restored_by_use``, its ``orphaned``): a LIVE
+        one raised ``ck_transfers_adhoc_owns_amount`` on the TEMPLATE
+        declaration, and a DELETED one was counted as held by its books with
+        no notice.  Both are skipped, counted, and left exactly as found.
+        Unreachable from the route (the conflict set selects on the
+        definition), so this drives the service entry directly.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            live = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
+            gone = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[1],
+            )
+            transfer_service.delete_transfer(gone.id, seed_user["user"].id, soft=True)
+            db.session.commit()
+            ids = [live.id, gone.id]
+            assert all(
+                db.session.get(Transfer, xfer_id).transfer_template_id is None
+                for xfer_id in ids
+            )
+            before = [_transfer_as_stored(seed_user, xfer_id) for xfer_id in ids]
+
+            with _LogCapture("app.services.transfer_recurrence") as cap:
+                notice = transfer_recurrence.resolve_conflicts(
+                    ids, "update", BalanceContext.build(seed_user["user"].id),
+                )
+            db.session.commit()
+
+            assert notice is None
+            assert [_transfer_as_stored(seed_user, xfer_id) for xfer_id in ids] == before
+            (event,) = [
+                record for record in cap.records
+                if getattr(record, "event", None)
+                == EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED
+            ]
+            assert (
+                event.resolved_count, event.skipped_count, event.kept_deleted_count,
+            ) == (0, 2, 0)
 
 
 # --- Negative-Path Tests ---------------------------------------------------

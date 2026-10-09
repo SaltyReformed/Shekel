@@ -1,4 +1,6 @@
-"""The conflict chooser's "use the template" restores only what un-archiving would (ruling R-BAL253).
+"""The conflict chooser's "use the template" restores only what un-archiving would.
+
+Ruling R-BAL253.
 
 Plan step ``balance:X-bi-6-4d-2``, the cp5 leaf review's M-1.  A recurring
 definition's edit with an early "effective from" date offers every deleted
@@ -6,7 +8,7 @@ occurrence in its window, and "use the template" brought each one back without
 asking the books -- the day an account's balance starts -- where un-archiving
 the definition leaves a row its books hold deleted and names it (rulings
 **R-PC95** and **R-PC99**).  Measured before the fix through the real routes:
-a $50.00 monthly Checking -> Savings transfer due on Savings' opening day,
+a $50.00 every-paycheck Checking -> Savings transfer due on Savings' opening day,
 marked Paid and then deleted (so returned to a plan and hidden, ruling
 **R-BAL246**), came back from the chooser as a live plan INSIDE the books, its
 $50.00 counted a second time.  Deleted bills had the same hole (ledger row
@@ -19,15 +21,16 @@ Every act runs through its ROUTE -- the edit, the chooser it renders, and the
 Apply that page posts, built from the controls the page renders -- and every
 outcome is graded by re-reading the rows after the request ended.
 """
-import re
 from datetime import timedelta
 from decimal import Decimal
+from html.parser import HTMLParser
+
+from sqlalchemy import text
 
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.utils.log_events import EVT_RECURRENCE_CONFLICTS_RESOLVED
 from tests._test_helpers import repriced_by_the_owner
@@ -47,8 +50,8 @@ from tests.test_services.test_opening_restatement_planned_rows import (
 )
 from tests.test_services.test_service_log_events import _LogCapture
 
-#: Every decision control the chooser renders, one per offered row.
-_DECISION = re.compile(rb'name="conflict_decision_(\d+)"')
+#: The marker the chooser's Apply form carries, which tells it from the page's other forms.
+_APPLY_MARKER = "conflict_apply"
 
 
 class TestADeletedTransferItsBooksHoldStaysDeleted:
@@ -81,11 +84,15 @@ class TestADeletedTransferItsBooksHoldStaysDeleted:
                 # The save has no category: its select posts the empty option.
                 category_id="",
             )
+            as_found = _transfer_as_stored(seed_user, first_id)
 
             resp = _apply_use(auth_client, f"/transfers/{template_id}", edit, first_id)
 
-            _db.session.expire_all()
-            assert _db.session.get(Transfer, first_id).is_deleted
+            # Left exactly as found: the transfer's every column (deleted,
+            # status, owner flag, amount and its source among them), both
+            # twins, and the owner's journal.
+            assert _transfer_as_stored(seed_user, first_id) == as_found
+            assert as_found[0]["is_deleted"]
             assert {row.id for row in _transfers(template_id, deleted=False)} == others
             # The nine live transfers at the new $60.00 from the first
             # paycheck on, and nothing for the deleted one: 9 x $60.00.
@@ -138,7 +145,10 @@ class TestADeletedBillItsBooksHoldStaysDeleted:
     def test_a_re_priced_deleted_row_offered_as_hand_edited_stays_deleted(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A row the owner re-priced and then deleted is offered as OVERRIDDEN; "use" holds it too."""
+        """A row the owner re-priced and then deleted is offered as OVERRIDDEN.
+
+        "Use" holds it too.
+        """
         with app.app_context():
             account, rows = _account_with_projected_rows(seed_user, seed_periods)
             first = min(rows, key=lambda row: row.due_date)
@@ -245,27 +255,84 @@ def _priced_before_its_first_paycheck(column, template_id, seed_periods):
     _db.session.commit()
 
 
-def _apply_use(client, url, edit, *picked):
-    """Submit *edit*, then the chooser's Apply with "use" on *picked*, as a browser posts it.
+def _transfer_as_stored(seed_user, transfer_id):
+    """The transfer's row, its two twins and the owner's journal-entry count, by SQL.
 
-    The first submit must render the chooser offering every picked row (a
-    precondition: a row the chooser never offered would stay deleted for
-    another reason).  The Apply posts the edit again with the page's marker
-    and one decision per row the page offers -- "keep", the control's
-    default, except on *picked* -- and follows the redirect, so the flash is
-    on the page it returns.
+    Every stored column, read after the session is expired, so a write the
+    resolver made to any of them -- or to a twin, or to the ledger -- shows.
+    """
+    _db.session.expire_all()
+    transfer = dict(_db.session.execute(
+        text("SELECT * FROM budget.transfers WHERE id = :id"), {"id": transfer_id},
+    ).mappings().one())
+    twins = [dict(row) for row in _db.session.execute(
+        text("SELECT * FROM budget.transactions WHERE transfer_id = :id ORDER BY id"),
+        {"id": transfer_id},
+    ).mappings()]
+    journal = _db.session.execute(
+        text("SELECT count(*) FROM budget.journal_entries WHERE user_id = :user"),
+        {"user": seed_user["user"].id},
+    ).scalar_one()
+    return transfer, twins, journal
+
+
+class _Forms(HTMLParser):
+    """Every form on a page, as the list of its ``<input>`` elements' attributes."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.forms = []
+        self.actions = []
+        self._open = False
+
+    def handle_starttag(self, tag, attrs):
+        """Open a form, or record an input inside the open one."""
+        if tag == "form":
+            self.forms.append([])
+            self.actions.append(dict(attrs).get("action"))
+            self._open = True
+        elif tag == "input" and self._open:
+            self.forms[-1].append(dict(attrs))
+
+    def handle_endtag(self, tag):
+        """Close the open form."""
+        if tag == "form":
+            self._open = False
+
+
+def _apply_use(client, url, edit, *picked):
+    """Submit *edit*, then the chooser's Apply as a browser posts it with "use" on *picked*.
+
+    The first submit must render the chooser.  The Apply is built from the
+    page's OWN Apply form, never from *edit*: posted to the form's
+    ``action``, with every hidden input it renders (the marker and the
+    echoed edit) and, per offered row, the radio it renders checked --
+    "keep" -- except on *picked*, where the owner clicks "Follow the
+    template".  Each picked row must be offered (a precondition: a row the
+    chooser never offered would stay deleted for another reason).  The
+    redirect is followed, so the flash is on the page it returns.
     """
     chooser = client.post(url, data=edit)
     assert chooser.status_code == 200
-    offered = {int(row_id) for row_id in _DECISION.findall(chooser.data)}
-    assert set(picked) <= offered, "precondition: the chooser offers each picked row"
-    decisions = {
-        f"conflict_decision_{row_id}": "use" if row_id in picked else "keep"
-        for row_id in offered
-    }
-    resp = client.post(
-        url, data={**edit, "conflict_apply": "1", **decisions},
-        follow_redirects=True,
-    )
+    page = _Forms()
+    page.feed(chooser.data.decode())
+    ((action, form),) = [
+        (action, inputs) for action, inputs in zip(page.actions, page.forms)
+        if any(field.get("name") == _APPLY_MARKER for field in inputs)
+    ]
+    payload = {}
+    for field in form:
+        if field.get("type") == "hidden" or (
+            field.get("type") == "radio" and "checked" in field
+        ):
+            payload[field["name"]] = field["value"]
+    for row_id in picked:
+        name = f"conflict_decision_{row_id}"
+        assert any(
+            field.get("name") == name and field.get("value") == "use"
+            for field in form
+        ), "precondition: the chooser offers each picked row"
+        payload[name] = "use"
+    resp = client.post(action, data=payload, follow_redirects=True)
     assert resp.status_code == 200
     return resp
