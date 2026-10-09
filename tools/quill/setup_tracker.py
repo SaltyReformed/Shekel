@@ -3,11 +3,13 @@
 The plan moves out of ``docs/plans/`` into a private repository's Issues
 (ruling ``balance:R-BAL170``): each step, finding, ruling and question is one
 issue -- a "card" -- and one Project board holds the open ones in the order
-the developer drags them.  This module is the one home of that tracker's
-CONFIGURATION: the repository and its settings, the labels, the board, and the
-things only the web can set (the organization's issue types, which need a
-scope the shared token does not carry; the board's automations and its view's
-sort, which the API cannot change; and quill's GitHub App).  The cards
+the developer drags them.  This module is the one home of WHERE that tracker
+lives (:class:`Place`: :data:`PLAN`, and :data:`REHEARSAL`, the throwaway one
+X-cx's migration is rehearsed on) and of its CONFIGURATION: the repository and
+its settings, the labels, the board, and the things only the web can set (the
+organization's issue types, which need a scope the shared token does not carry;
+the board's automations and its view's sort, which the API cannot change; and
+quill's GitHub App).  The cards
 themselves are content, and their home is the tracker; nothing here names one.
 
 Run with no flag it changes nothing: it reads GitHub, prints one line per
@@ -65,9 +67,43 @@ from tools.quill._github import (
     user_token,
 )
 
-ORG = "saltyreformed-labs"
-REPO = "shekel-plan"
-PROJECT_TITLE = "Shekel plan"
+
+@dataclass(frozen=True)
+class Place:
+    """Where a tracker lives: its organization, its repository and its board's title.
+
+    Every reader compares a place's names as whole TOKENS, never as text: the
+    rehearsal's repository name begins with the real one (``shekel-plan`` is a
+    prefix of ``shekel-plan-rehearsal``), so a substring or prefix test would
+    read the one as the other.
+    """
+
+    owner: str
+    name: str
+    board_title: str
+
+    @property
+    def full_name(self) -> str:
+        """``owner/name``: how GitHub names the repository in a link (``nameWithOwner``)."""
+        return f"{self.owner}/{self.name}"
+
+    @property
+    def path(self) -> str:
+        """The repository's REST path, ``/repos/owner/name``."""
+        return f"/repos/{self.full_name}"
+
+
+#: The tracker the plan lives in (ruling ``balance:R-BAL170``): the one place
+#: this module configures and every quill command reads and writes.
+PLAN = Place("saltyreformed-labs", "shekel-plan", "Shekel plan")
+
+#: The throwaway tracker X-cx's migration (L7) is rehearsed on before L8 runs it
+#: on :data:`PLAN`.  Its name holds :data:`PLAN`'s, which is why a place's names
+#: are compared as tokens.
+REHEARSAL = Place("saltyreformed-labs", "shekel-plan-rehearsal", "Shekel plan rehearsal")
+
+#: :data:`PLAN`'s names, which this module's checks configure.
+ORG, REPO, PROJECT_TITLE = PLAN.owner, PLAN.name, PLAN.board_title
 
 #: The four kinds of card.  The organization's issue types are managed only
 #: with the ``admin:org`` scope, which the token every session shares does not
@@ -95,6 +131,11 @@ _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 #: until its filing's last write removes it (ruling ``balance:R-BAL202``).
 FILING = "filing"
 
+#: The two labels a release reads: a step whose release moves money, and a parent
+#: whose leaves ``/release`` ships in one release.  ``quill file step --label`` and X-cx's
+#: migration name them here.
+MOVES_MONEY_LABEL, DEPLOY_TOGETHER_LABEL = "moves-money", "deploy-together"
+
 #: Every label the tracker carries: one per arc, the two a release reads, and
 #: quill's :data:`FILING` mark.
 LABELS = {
@@ -102,10 +143,10 @@ LABELS = {
         arc: (_ARC_COLORS[index % len(_ARC_COLORS)], f"The {arc.replace('_', '-')} arc")
         for index, arc in enumerate(ARCS)
     },
-    "moves-money": (
+    MOVES_MONEY_LABEL: (
         "b60205", "Its release moves money: /release carries at most one such step"
     ),
-    "deploy-together": (
+    DEPLOY_TOGETHER_LABEL: (
         "fbca04", "A parent whose leaves /release ships in one release, never split"
     ),
     FILING: (
@@ -124,6 +165,9 @@ APP_PERMISSIONS = {
     "metadata": "read",
     "organization_projects": "write",
 }
+
+#: What quill reads of the repositories a board is linked to (:func:`linked`).
+LINKED_REPOSITORIES = "repositories(first: 100) { totalCount nodes { nameWithOwner } }"
 
 #: A board field of one of these types STORES a value per card; every other
 #: type (title, labels, parent issue, sub-issue progress, ...) shows a fact
@@ -154,7 +198,7 @@ GITHUB_DEFAULT_VIEW = "View 1"
 
 _PROJECT_FIELDS = """
   id number title public url
-  repositories(first: 20) { nodes { name } }
+  """ + LINKED_REPOSITORIES + """
   fields(first: 50) { nodes { ... on ProjectV2FieldCommon { id name dataType } } }
   workflows(first: 50) { nodes { name enabled } }
   views(first: 20) { nodes {
@@ -299,6 +343,22 @@ def permission_differences(declared: dict, actual: dict) -> list[str]:
     ]
 
 
+def linked(place: Place, repositories: dict) -> bool | None:
+    """Whether a board's linked ``repositories`` (read as :data:`LINKED_REPOSITORIES`) hold
+    ``place``'s repository, by its whole ``owner/name``: the one test, for this module's
+    check and quill's refusal to write to an unlinked board.
+
+    ``True`` when the read names it, which proves the link however short the read; ``False``
+    when a WHOLE read (``totalCount`` nodes) does not; ``None`` when a read GitHub cut short
+    does not, which says nothing either way: the check reports it as unread,
+    ``--apply`` sends no link for it, and quill refuses the board.
+    """
+    names = [node["nameWithOwner"] for node in repositories["nodes"]]
+    if place.full_name in names:
+        return True
+    return False if repositories["totalCount"] <= len(names) else None
+
+
 def stores_values(board_field: dict) -> bool:
     """Whether a board field holds a value per card."""
     return bool(board_field) and board_field["dataType"] in STORED_FIELD_TYPES
@@ -337,8 +397,15 @@ def board_differences(project: dict) -> list[str]:
     differences = []
     if project["public"]:
         differences.append("the board is public")
-    if REPO not in [r["name"] for r in project["repositories"]["nodes"]]:
-        differences.append(f"the board is not linked to {REPO}")
+    link = linked(PLAN, project["repositories"])
+    if link is False:
+        differences.append(f"the board is not linked to {PLAN.full_name}")
+    elif link is None:
+        differences.append(
+            f"the board links {project['repositories']['totalCount']} repositories and the "
+            f"read holds {len(project['repositories']['nodes'])}, none of them "
+            f"{PLAN.full_name}: "
+            "whether it is linked is unread")
     differences += [
         f"the board stores a field, {board_field['name']!r}"
         for board_field in project["fields"]["nodes"]
@@ -382,10 +449,27 @@ def board_differences(project: dict) -> list[str]:
     return differences
 
 
+def allowed_workflow_states(project: dict) -> list[str]:
+    """Each automation the board may run (:data:`ALLOWED_WORKFLOWS`) and whether it is on.
+
+    Either state matches this file, so neither is a difference; the line says which,
+    because a board copied from this one (X-cx's rehearsal tracker) must match it.  GitHub
+    lists a built-in automation only once a board has it, so one it does not list is said
+    to be unlisted, not off.
+    """
+    listed = {workflow["name"]: workflow["enabled"] for workflow in project["workflows"]["nodes"]}
+    return [
+        f"board automation {name!r} may run: it is {'on' if listed[name] else 'off'}"
+        if name in listed else
+        f"board automation {name!r} may run: GitHub lists no such automation on this board"
+        for name in sorted(ALLOWED_WORKFLOWS)
+    ]
+
+
 def check_repository(github: GitHub, apply: bool, report: Report) -> dict | None:
     """Check (and with ``apply``, create or correct) the tracker repository."""
     try:
-        actual = github.rest("GET", f"/repos/{ORG}/{REPO}")
+        actual = github.rest("GET", PLAN.path)
     except GitHubError as error:
         if error.status != 404:
             raise
@@ -398,7 +482,7 @@ def check_repository(github: GitHub, apply: bool, report: Report) -> dict | None
         report.made(f"repository {ORG}/{REPO}")
     drift = repository_drift(REPOSITORY, actual)
     if drift and apply:
-        actual = github.rest("PATCH", f"/repos/{ORG}/{REPO}", drift)
+        actual = github.rest("PATCH", PLAN.path, drift)
         report.made(f"sent repository settings {sorted(drift)}")
         drift = repository_drift(REPOSITORY, actual)
     if drift:
@@ -412,7 +496,7 @@ def check_labels(github: GitHub, apply: bool, report: Report) -> None:
     """Check (and with ``apply``, make, correct or delete) the repository's labels."""
     nodes = github.graphql(_LABELS, owner=ORG, name=REPO)["repository"]["labels"]["nodes"]
     changes = label_changes(LABELS, nodes)
-    base = f"/repos/{ORG}/{REPO}/labels"
+    base = f"{PLAN.path}/labels"
     for name in changes.create:
         if apply:
             color, description = LABELS[name]
@@ -459,24 +543,25 @@ def _project(github: GitHub, project_id: str) -> dict:
     return github.graphql(_PROJECT, id=project_id)["node"]
 
 
-def _board_listing(github: GitHub) -> tuple[str, str | None]:
-    """The organization's node id and the id of the board titled :data:`PROJECT_TITLE`."""
-    organization = github.graphql(_PROJECTS, org=ORG)["organization"]
-    matches = [p for p in organization["projectsV2"]["nodes"] if p["title"] == PROJECT_TITLE]
+def _board_listing(github: GitHub, place: Place) -> tuple[str, str | None]:
+    """The organization's node id and the id of the board titled ``place``'s board title."""
+    organization = github.graphql(_PROJECTS, org=place.owner)["organization"]
+    title = place.board_title
+    matches = [p for p in organization["projectsV2"]["nodes"] if p["title"] == title]
     if len(matches) > 1:
-        raise GitHubError(200, f"{len(matches)} boards are titled {PROJECT_TITLE!r}; keep one")
+        raise GitHubError(200, f"{len(matches)} boards are titled {title!r}; keep one")
     return organization["id"], (matches[0]["id"] if matches else None)
 
 
-def find_board(github: GitHub) -> str | None:
-    """The plan's board's node id (None while there is none): the one lookup both this
-    module and quill make."""
-    return _board_listing(github)[1]
+def find_board(github: GitHub, place: Place) -> str | None:
+    """The node id of ``place``'s board (None while there is none): the one lookup both
+    this module and quill make."""
+    return _board_listing(github, place)[1]
 
 
 def _find_project(github: GitHub) -> tuple[str, dict | None]:
     """The organization's node id and the board titled :data:`PROJECT_TITLE`, if any."""
-    org_id, board_id = _board_listing(github)
+    org_id, board_id = _board_listing(github, PLAN)
     return org_id, (_project(github, board_id) if board_id else None)
 
 
@@ -540,7 +625,7 @@ def _apply_to_board(github: GitHub, project: dict, repository: dict, report: Rep
             id=project["id"],
         )
         report.made("board made private")
-    if REPO not in [r["name"] for r in project["repositories"]["nodes"]]:
+    if linked(PLAN, project["repositories"]) is False:
         github.graphql(
             "mutation($p: ID!, $r: ID!) { linkProjectV2ToRepository("
             "input: {projectId: $p, repositoryId: $r}) { clientMutationId } }",
@@ -602,6 +687,8 @@ def check_board(github: GitHub, repository: dict | None, apply: bool, report: Re
     differences = board_differences(project) + _cards_holding_status(github, project["id"])
     for difference in differences:
         report.differs(difference)
+    for state in allowed_workflow_states(project):
+        report.ok(state)
     if not differences:
         report.ok(
             f"board {PROJECT_TITLE!r} ({project['url']}): no stored field but GitHub's unused "
@@ -631,7 +718,9 @@ def check_app(report: Report) -> None:
     differences = permission_differences(APP_PERMISSIONS, installation["permissions"])
     if installation["repository_selection"] != "selected":
         differences.append("the App is installed on ALL of the organization's repositories")
-    scoped = GitHub(installation_token(installation["id"], token))
+    # The whole installation, never narrowed to one repository: this check is what
+    # sees every repository the App reaches.
+    scoped = GitHub(installation_token(installation["id"], token, repository=None))
     names = [r["name"] for r in scoped.rest("GET", "/installation/repositories")["repositories"]]
     if names != [REPO]:
         differences.append(f"the App reaches {names}, not only {REPO}")

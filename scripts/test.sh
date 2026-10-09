@@ -303,11 +303,23 @@ if command -v pgrep >/dev/null 2>&1; then
     ); do
         if [ -r "/proc/${_peer_pid}/cmdline" ]; then
             _peer_argv="$(tr '\0' '\n' <"/proc/${_peer_pid}/cmdline" 2>/dev/null || true)"
-            if printf '%s\n' "$_peer_argv" | grep -qxE 'pytest|.*/bin/pytest'; then
-                if ! printf '%s\n' "$_peer_argv" | grep -qx -- '--collect-only'; then
-                    _peers="${_peers}[test.sh]   pid ${_peer_pid}  $(readlink "/proc/${_peer_pid}/cwd" 2>/dev/null || echo '(cwd unreadable)')
+            # One pass over the arguments in bash, with no pipe (plan step
+            # balance:X-dm): `printf ... | grep -q` under pipefail could read
+            # a present argument as absent once grep left the pipe early,
+            # dropping a running pytest from this note or naming one that
+            # only collects.
+            _peer_is_pytest=""
+            _peer_collects_only=""
+            while IFS= read -r _peer_arg; do
+                case "$_peer_arg" in
+                    pytest | */bin/pytest) _peer_is_pytest=yes ;;
+                    --collect-only) _peer_collects_only=yes ;;
+                    *) ;;
+                esac
+            done <<<"$_peer_argv"
+            if [ -n "$_peer_is_pytest" ] && [ -z "$_peer_collects_only" ]; then
+                _peers="${_peers}[test.sh]   pid ${_peer_pid}  $(readlink "/proc/${_peer_pid}/cwd" 2>/dev/null || echo '(cwd unreadable)')
 "
-                fi
             fi
         fi
     done
@@ -319,7 +331,7 @@ if command -v pgrep >/dev/null 2>&1; then
             "against ~38% in 13 minutes with three suites running. Consider" \
             "waiting if either run is a gate." >&2
     fi
-    unset _peers _peer_pid _peer_argv
+    unset _peers _peer_pid _peer_argv _peer_arg _peer_is_pytest _peer_collects_only
 fi
 
 # The name carries the PID because the whole point is that two runs can

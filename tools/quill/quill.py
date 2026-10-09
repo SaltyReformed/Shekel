@@ -60,6 +60,7 @@ import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import requests
@@ -106,8 +107,16 @@ from tools.quill._state import (
     unsplit,
 )
 from tools.quill._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
-from tools.quill.check import BODY, TITLE, Draft, in_ruling_shape, normalized, violations
-from tools.quill.setup_tracker import FILING
+from tools.quill.check import (
+    BODY,
+    TITLE,
+    Draft,
+    alias_mark,
+    in_ruling_shape,
+    normalized,
+    violations,
+)
+from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, FILING, MOVES_MONEY_LABEL, PLAN
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
@@ -223,7 +232,7 @@ def _resolve_reference(tracker: Tracker, text: str) -> int:
     except argparse.ArgumentTypeError:
         pass
     arc, _, ident = text.rpartition(":")
-    alias = f"[{ident}]"
+    alias = alias_mark(ident)
     found = [
         number for number, title in tracker.find_titles(ident)
         if title.startswith(alias)
@@ -814,7 +823,8 @@ def _file_parser(commands) -> None:
     step = sub.add_parser("step", parents=[common], help="a step, or a leaf of one")
     step.add_argument("--body-file", required=True, help="its spec")
     step.add_argument("--parent", type=card_number, help="the step this leaf splits")
-    step.add_argument("--label", action="append", choices=("moves-money", "deploy-together"))
+    step.add_argument("--label", action="append",
+                      choices=(MOVES_MONEY_LABEL, DEPLOY_TOGETHER_LABEL))
     finding = sub.add_parser("finding", parents=[common], help="a defect in the code")
     finding.add_argument("--owner", type=card_number, required=True, help="its owner step")
     finding.add_argument("--text", required=True, help="one sentence, at most 400 characters")
@@ -886,7 +896,8 @@ COMMANDS: dict[str, Callable[..., int]] = {
 }
 
 
-def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = Tracker.connect,
+def main(argv: list[str] | None = None,
+         connect: Callable[[], Tracker] = partial(Tracker.connect, PLAN),
          root: Path | None = None) -> int:
     """Run one command; its exit status."""
     args = parser().parse_args(argv)
