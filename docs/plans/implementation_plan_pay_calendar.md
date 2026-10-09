@@ -344,7 +344,7 @@ record.
       `autocomplete` and the ARIA pair reach the browser; a hostile value stays escaped inside the
       quotes. Closed **PC-515**.
 - [ ] **C20-b** -- the month-day clamp's ONE producer where `salary_cockpit_service` still spells it
-      (**PC-516**; the loan engines' copies are `recurrence:R25`'s, **recurrence:R-R106**); the
+      (**PC-516**; the loan engines' copies went at `recurrence:R25`, **recurrence:R-R106**); the
       manage card's hand-written `min` / `max` through the macro (**PC-517**) and its macro-rendered
       inputs given distinct ids per form (**PC-518**). `$0.00`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
