@@ -4,16 +4,25 @@
 write aimed at one tracker off another's board (``_tracker``'s module docstring).  It was
 a fence by CONVENTION: a raw ``mutation`` string sent from :class:`_tracker.Tracker`, or
 from a method of the board that bypasses ``_write``, passed every test (review of X-cx L7
-A2, L2).  This test reads the source instead, so such a write fails here whatever it does.
+A2, L2).  This test reads the source instead.
 
-**Its scope is the App's writes.**  ``_tracker`` is the one module that speaks to the
-tracker as the App, so every mutation it holds must be a module-level constant whose every
-use in it is the first argument of ``self._write`` inside :class:`_tracker.Board`, and no
-call there hands ``graphql`` or ``graphql_lookup`` a mutation; every other module of the
-tool holds no mutation at all.  ``setup_tracker`` is the one module outside that scope: it
-configures the tracker as the DEVELOPER (``main`` connects with ``user_token()``), so its
-mutations are his login's writes, which this fence was never about (``_github``'s
-module docstring: the two identities).
+**What it checks is a mutation spelled as a string literal that begins with
+``mutation``** (any case), and its scope is the App's writes.  ``_tracker`` is the one
+module that speaks to the tracker as the App, so every such literal it holds must be the
+value of a module-level constant (assigned plainly or with a type) whose every use in it
+is the first argument of ``self._write`` inside :class:`_tracker.Board`, and no call there
+hands ``graphql`` or ``graphql_lookup`` one; every other module of the tool holds none.
+``setup_tracker`` is the one module outside that scope: it configures the tracker as the
+DEVELOPER (``main`` connects with ``user_token()``), so its mutations are his login's
+writes, which this fence was never about (``_github``'s module docstring: the two
+identities).
+
+**What it cannot see**, which a reviewer of a new write must (review of A2b): a mutation
+ASSEMBLED rather than spelled -- a concatenation that splits the keyword
+(``"mut" + "ation ..."``), an f-string with no leading literal, ``"".join(...)`` -- and
+one reached through an attribute or a local rather than a module-level constant
+(``self.github.graphql(self.query)``); and any module below ``tools/quill``'s top level,
+since :func:`_modules` reads ``tools/quill/*.py`` alone (the tool has no subpackage).
 """
 from __future__ import annotations
 
@@ -22,8 +31,8 @@ import re
 from pathlib import Path
 
 QUILL = Path(__file__).resolve().parent
-#: A GraphQL mutation's text: the operation keyword first.
-_MUTATION = re.compile(r"^\s*mutation\b")
+#: A GraphQL mutation's text: the operation keyword first, in any case.
+_MUTATION = re.compile(r"^\s*mutation\b", re.IGNORECASE)
 #: The module that sends the App's writes, and the one that writes as the developer.
 _TRACKER, _DEVELOPERS = "_tracker.py", "setup_tracker.py"
 _SENDS = {"graphql", "graphql_lookup"}
@@ -40,6 +49,19 @@ def _is_mutation(node: ast.AST) -> bool:
     """Whether ``node`` is, or is built from, a string constant that is a mutation."""
     return any(isinstance(part, ast.Constant) and isinstance(part.value, str)
                and _MUTATION.match(part.value) for part in ast.walk(node))
+
+
+def _constants(tree: ast.Module) -> list[str]:
+    """The module-level names a mutation is assigned to, plainly or with a type
+    (``BOARD_ADD = "mutation ..."``, ``BOARD_ADD: str = "mutation ..."``)."""
+    names = []
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and _is_mutation(statement.value):
+            names += [target.id for target in statement.targets if isinstance(target, ast.Name)]
+        elif (isinstance(statement, ast.AnnAssign) and statement.value is not None
+              and _is_mutation(statement.value) and isinstance(statement.target, ast.Name)):
+            names.append(statement.target.id)
+    return names
 
 
 def _parents(tree: ast.Module) -> dict[ast.AST, ast.AST]:
@@ -74,9 +96,7 @@ def fence_breaches(name: str, tree: ast.Module) -> list[str]:
                  if isinstance(node, ast.Constant) and _is_mutation(node)]
     if name != _TRACKER:
         return [f"{name}:{node.lineno} holds a mutation outside {_TRACKER}" for node in constants]
-    named = {target.id for statement in tree.body if isinstance(statement, ast.Assign)
-             and _is_mutation(statement.value) for target in statement.targets
-             if isinstance(target, ast.Name)}
+    named = set(_constants(tree))
     breaches = [f"{name}:{node.lineno} holds a mutation that is no module-level constant"
                 for node in constants
                 if not isinstance(parents.get(_statement(node, parents)), ast.Module)]
@@ -124,9 +144,7 @@ def test_every_mutation_the_app_sends_goes_through_board_write():
     modules = _modules()
     assert {name: fence_breaches(name, tree) for name, tree in modules.items()
             if fence_breaches(name, tree)} == {}
-    tracker = modules[_TRACKER]
-    assert sorted(target.id for statement in tracker.body if isinstance(statement, ast.Assign)
-                  and _is_mutation(statement.value) for target in statement.targets) == [
+    assert sorted(_constants(modules[_TRACKER])) == [
         "BOARD_ADD", "BOARD_AFTER", "BOARD_REMOVE", "BOARD_TOP"]
 
 
@@ -165,4 +183,27 @@ def test_a_planted_raw_mutation_is_a_breach_and_board_write_is_not():
         "inside Board",
     ]
     assert fence_breaches("quill.py", ast.parse('Q = "mutation { x }"')) == [
+        "quill.py:1 holds a mutation outside _tracker.py"]
+
+
+_TYPED = '''
+DROP: str = "mutation($id: ID!) { deleteProjectV2(input: {projectId: $id}) { clientMutationId } }"
+
+class Tracker:
+    def drop(self):
+        self.github.graphql(DROP, id="PVT_other")
+'''
+
+
+def test_a_typed_constant_or_an_upper_case_keyword_is_seen_too():
+    """A module-level constant written with a type (``DROP: str = "mutation ..."``), the
+    shape this repository's constants often take, is a constant the fence holds like any
+    other: sent around ``Board._write``, it is a breach (review of A2b: it passed).  The
+    keyword is matched in any case."""
+    assert fence_breaches(_TRACKER, ast.parse(_TYPED)) == [
+        "_tracker.py:6 hands graphql a mutation directly",
+        "_tracker.py:6 uses the mutation DROP other than as self._write's first argument "
+        "inside Board",
+    ]
+    assert fence_breaches("quill.py", ast.parse('Q = "MUTATION { x }"')) == [
         "quill.py:1 holds a mutation outside _tracker.py"]
