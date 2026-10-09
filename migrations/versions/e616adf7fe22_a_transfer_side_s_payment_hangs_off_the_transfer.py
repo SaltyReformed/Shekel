@@ -83,7 +83,7 @@ exist at this revision, which the transfer arm refuses.  Then it drops the new
 constraints and columns and restores ``transaction_id``'s NOT NULL, refusing if
 any row would violate it.
 
-**What the downgrade does NOT restore, and the contract that makes that safe.**
+**What the downgrade does NOT restore, and the refusal that makes that safe.**
 From this revision the app no longer writes a twin's status, settle day, day
 basis or statement link: the status seam's Transfer arm writes each side's
 record alone, and a twin keeps only its mirrored period, category, due date,
@@ -92,13 +92,20 @@ or figure correction made at this revision, a twin's status and day no longer
 say what its transfer and record say, and this downgrade, which moves only the
 records' parent column, would leave a dated record under a twin still saying
 Projected (or an un-dated one under a twin saying Paid) -- what the code below
-this revision reads as a drifted pair.  **This revision is therefore never
-downgraded alone on a database the app has written at it**: it ships with plan
-step ``balance:X-bi-6-4d-3``'s revision in ONE release, and that revision's
+this revision reads as a drifted pair.  **So the downgrade REFUSES, writing
+nothing, while any twin disagrees** (:func:`refuse_drifted_twins`; the
+cp2b-1 review's L-4, fail-closed): this revision is never downgraded alone on
+a database the app has written at it.  It ships with plan step
+``balance:X-bi-6-4d-3``'s revision in ONE release, and that revision's
 downgrade, which rebuilds the twins, rebuilds each twin's status, settle day,
-basis and statement link from its transfer and its side's record first.  The
-stored money is exact either way: no record, posting or match is written by
-the downgrade but each record's parent link.
+basis and statement link from its transfer and its side's record first, after
+which the census reads zero.  **On the 2026-10-08 production dump it reads
+zero before this revision** (358 twins, 102 of them deleted, 44 records: every
+twin's status is its transfer's, and every twin's day, basis and link are its
+record's, NULL where it holds none), so a downgrade straight after the
+upgrade, with no app write between, passes.  The stored money is exact either
+way: no record, posting or match is written by the downgrade but each
+record's parent link.
 
 ``tests/test_models/test_a_transfer_side_s_payment_hangs_off_the_transfer.py``
 drives the shipped ``upgrade`` / ``downgrade`` and each refusal.
@@ -242,6 +249,41 @@ UPDATE budget.transaction_entries e
  WHERE coalesce(e.expense_transfer_id, e.income_transfer_id) IS NOT NULL
 """
 
+#: Every twin whose status, settle day, day basis or statement link is not what
+#: its transfer and its side's record say -- the four facts this revision's
+#: app stops writing on a twin.  A LIVE twin is read against its side's record
+#: (the one the downgrade re-attaches under it; ``NULL`` when the side holds
+#: none) and a deleted twin against none, since a record goes back under its
+#: side's live twin only.  ``(transfer id, twin id, the facts that differ)``.
+_DRIFTED_TWINS_SQL = f"""
+SELECT t.transfer_id, t.id,
+       array_remove(ARRAY[
+           CASE WHEN t.status_id <> x.status_id THEN 'status' END,
+           CASE WHEN t.settled_on IS DISTINCT FROM e.settled_on
+                THEN 'settle day' END,
+           CASE WHEN t.settled_day_basis_id
+                     IS DISTINCT FROM e.settled_day_basis_id
+                THEN 'day basis' END,
+           CASE WHEN t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
+                THEN 'statement link' END
+       ], NULL) AS facts
+  FROM budget.transactions t
+  JOIN budget.transfers x ON x.id = t.transfer_id
+  LEFT JOIN budget.transaction_entries e
+         ON NOT t.is_deleted
+        AND CASE WHEN t.transaction_type_id = {_INCOME}
+                 THEN e.income_transfer_id
+                 ELSE e.expense_transfer_id END = t.transfer_id
+ WHERE t.status_id <> x.status_id
+    OR t.settled_on IS DISTINCT FROM e.settled_on
+    OR t.settled_day_basis_id IS DISTINCT FROM e.settled_day_basis_id
+    OR t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
+ ORDER BY t.transfer_id, t.id
+"""
+
+#: How many drifted twins a refusal names; the diagnostic query finds the rest.
+_NAMED_AT_MOST = 20
+
 #: The two side keys, as ``(name, link column, referenced endpoint column)``.
 #: Every transfer whose side records break the band rule
 #: (:mod:`app.side_band_infrastructure`): settled with an un-dated record or a
@@ -357,6 +399,39 @@ def refuse_twinless_sides(bind) -> None:
         )
 
 
+def refuse_drifted_twins(bind) -> None:
+    """Refuse the downgrade while a twin no longer says what its transfer and record say.
+
+    The module docstring's contract, made a refusal: the code below this
+    revision reads a side's status, day, basis and statement link off its
+    twin, and this revision's app writes them on the transfer and the side's
+    record alone, so a twin it has outlived is a drifted pair below.  Asked
+    BEFORE anything is written.  Module-level so a test can DRIVE it, as
+    :func:`refuse_unlinkable_rows`.
+
+    Args:
+        bind: A SQLAlchemy connection.
+
+    Raises:
+        RuntimeError: Naming how many twins disagree, the first
+            :data:`_NAMED_AT_MOST` with the facts that differ, and the query
+            that finds them all.  Nothing has been written.
+    """
+    drifted = [tuple(row) for row in bind.execute(sa.text(_DRIFTED_TWINS_SQL))]
+    if drifted:
+        raise RuntimeError(
+            f"X-bi-6-4d-2's downgrade refuses: {len(drifted)} twin row(s) no "
+            "longer say what their transfer and its side's payment record say "
+            "(transfer id, twin id, what differs: "
+            f"{drifted[:_NAMED_AT_MOST]}; diagnose with: "
+            f"{_DRIFTED_TWINS_SQL.strip()}).  The app writes those facts on "
+            "the transfer and the record alone from this revision, so the code "
+            "below it would read each as a drifted pair: downgrade through "
+            "plan step balance:X-bi-6-4d-3's revision, whose downgrade "
+            "rebuilds the twins first.  Nothing was written."
+        )
+
+
 def refuse_off_band_transfers(bind) -> None:
     """Refuse the upgrade while a stored transfer's side records break the band rule.
 
@@ -462,6 +537,7 @@ def downgrade():
     """Put every side-linked payment back under its side's twin."""
     bind = op.get_bind()
     refuse_twinless_sides(bind)
+    refuse_drifted_twins(bind)
     # FIRST: the re-attach below would queue the band rule's deferred events,
     # and a queued event blocks the column drops after it.
     remove_side_band_infrastructure(op.execute)

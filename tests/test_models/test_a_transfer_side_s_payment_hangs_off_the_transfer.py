@@ -6,7 +6,8 @@ keys carry a record on an endpoint move).  The revision files every payment
 record under a twin row under its TRANSFER by a side link, moving no figure,
 day, account or link; it REFUSES, writing nothing, while any stored row could
 not take its link; and its downgrade puts each record back under its side's
-twin, refusing while a side has none.
+twin, refusing while a side has none or while a twin no longer says what its
+transfer and its side's record say (the cp2b-1 review's L-4).
 
 Driven against the test database, which is built at head, through the shipped
 ``upgrade`` / ``downgrade``: each case first downgrades, so the pre-step shape
@@ -14,6 +15,13 @@ Driven against the test database, which is built at head, through the shipped
 code under test writes a record under, the downgrade has put it under a twin.
 Between the two the ORM's models name columns the table does not have, so that
 window is raw SQL only.  Every case ends at head.
+
+**A case that settles through the app brings its twins into step before it
+downgrades** (:func:`_twins_rebuilt`): the app writes a settle on the transfer
+and the side's record alone at this revision, so its twins still say Projected,
+and the downgrade refuses that, as it must; plan step
+``balance:X-bi-6-4d-3``'s downgrade rebuilds the twins first in the release
+this revision ships in, and the helper does what it will.
 """
 
 from __future__ import annotations
@@ -122,6 +130,33 @@ def _settled_pair(seed_user):
     )
     _db.session.commit()
     return first, second
+
+
+def _twins_rebuilt():
+    """Rebuild every twin's status, day, basis and statement link from its transfer and record.
+
+    By SQL, at head: each twin takes its transfer's status, and a LIVE twin
+    its side's record's day, basis and link (``NULL`` where the side holds
+    none, and on a deleted twin) -- what the downgrade's
+    ``refuse_drifted_twins`` reads, and what ``X-bi-6-4d-3``'s downgrade
+    promises to write before this revision's runs.  A sub-select returning no
+    row sets its columns ``NULL``.  Staged; the caller's downgrade runs in the
+    same transaction.
+    """
+    _db.session.execute(text(
+        "UPDATE budget.transactions t SET "
+        "status_id = (SELECT x.status_id FROM budget.transfers x "
+        "  WHERE x.id = t.transfer_id), "
+        "(settled_on, settled_day_basis_id, reconciled_by_id) = ("
+        "  SELECT e.settled_on, e.settled_day_basis_id, e.reconciled_by_id "
+        "  FROM budget.transaction_entries e "
+        "  WHERE NOT t.is_deleted "
+        "    AND CASE WHEN t.transaction_type_id = (SELECT id FROM "
+        "             ref.transaction_types WHERE name = 'Income') "
+        "             THEN e.income_transfer_id "
+        "             ELSE e.expense_transfer_id END = t.transfer_id) "
+        "WHERE t.transfer_id IS NOT NULL"
+    ))
 
 
 class TestTheRevision:
@@ -258,6 +293,7 @@ class TestTheRoundTrip:
         before = _records(entry_ids)
         assert len(before) == 4
 
+        _twins_rebuilt()
         run_migration_callable(_MIGRATION.downgrade, _db.session)
         assert not _has_side_links()
         assert _records(entry_ids) == before
@@ -324,6 +360,7 @@ def _downgraded_with(seed_user, plant_sql, params_of):
     caller rolls it back before upgrading.
     """
     first, second = _settled_pair(seed_user)
+    _twins_rebuilt()
     run_migration_callable(_MIGRATION.downgrade, _db.session)
     (entry_id, shadow_id) = _db.session.execute(text(
         "SELECT e.id, t.id FROM budget.transaction_entries e "
@@ -478,6 +515,7 @@ class TestTheDowngradeRefuses:
         """
         del app
         first, _second = _settled_pair(seed_user)
+        _twins_rebuilt()
         run_migration_callable(_MIGRATION.downgrade, _db.session)
         run_migration_callable(_MIGRATION.upgrade, _db.session)
         _db.session.execute(text(
@@ -515,3 +553,93 @@ class TestTheDowngradeRefuses:
         with pytest.raises(RuntimeError, match=rf"\(\d+, {xfer.id}\)"):
             _MIGRATION.refuse_twinless_sides(_db.session.connection())
         _db.session.rollback()
+
+
+def _from_side_twin(xfer):
+    """Return *xfer*'s live from-side twin's id."""
+    return _db.session.execute(text(
+        "SELECT id FROM budget.transactions "
+        "WHERE transfer_id = :t AND account_id = :a AND NOT is_deleted"
+    ), {"t": xfer.id, "a": xfer.from_account_id}).scalar_one()
+
+
+class TestTheDowngradeRefusesADriftedTwin:
+    """A twin that no longer says what its transfer and record say: named, nothing written.
+
+    The cp2b-1 review's L-4: this revision's app writes a side's status, day,
+    basis and statement link on the transfer and the side's record alone, so
+    the code below it would read a twin it outlived as a drifted pair.
+    """
+
+    def test_a_pair_settled_at_this_revision_refuses_the_downgrade_by_name(
+        self, app, seed_user,
+    ):
+        """Two transfers marked Paid by the app: their twins still say Projected."""
+        del app
+        first, second = _settled_pair(seed_user)
+
+        with pytest.raises(RuntimeError, match="no longer say") as refused:
+            run_migration_callable(_MIGRATION.downgrade, _db.session)
+        _db.session.rollback()
+
+        message = str(refused.value)
+        assert f"({first.id}, {_from_side_twin(first)}, ['status'" in message
+        assert f"({second.id}, {_from_side_twin(second)}, ['status'" in message
+        assert "4 twin row(s)" in message
+        assert _has_side_links()
+
+    def test_twins_in_step_pass_the_census(self, app, seed_user):
+        """CONTROL: rebuilt from their transfer and record, the twins agree."""
+        del app
+        _settled_pair(seed_user)
+        _twins_rebuilt()
+
+        _MIGRATION.refuse_drifted_twins(_db.session.connection())
+        _db.session.rollback()
+
+    @pytest.mark.parametrize("drift_sql, fact", [
+        ("UPDATE budget.transactions SET status_id = (SELECT id FROM "
+         "ref.statuses WHERE name = 'Projected') WHERE id = :twin", "status"),
+        ("UPDATE budget.transactions SET settled_on = settled_on - 1 "
+         "WHERE id = :twin", "settle day"),
+        ("UPDATE budget.transactions t SET settled_day_basis_id = (SELECT "
+         "min(b.id) FROM ref.settled_day_bases b "
+         "WHERE b.id <> t.settled_day_basis_id) WHERE id = :twin", "day basis"),
+        ("UPDATE budget.transactions t SET reconciled_by_id = (SELECT "
+         "max(h.id) FROM budget.account_anchor_history h "
+         "WHERE h.account_id = t.account_id) WHERE id = :twin",
+         "statement link"),
+    ])
+    def test_each_fact_is_read(self, app, seed_user, drift_sql, fact):
+        """One fact moved on one in-step twin: that twin is named with that fact alone."""
+        del app
+        first, _second = _settled_pair(seed_user)
+        _twins_rebuilt()
+        twin = _from_side_twin(first)
+        _db.session.execute(text(drift_sql), {"twin": twin})
+
+        with pytest.raises(RuntimeError, match="1 twin row") as refused:
+            _MIGRATION.refuse_drifted_twins(_db.session.connection())
+        _db.session.rollback()
+
+        assert f"({first.id}, {twin}, ['{fact}'])" in str(refused.value)
+
+    def test_a_deleted_twin_is_read_against_no_record(self, app, seed_user):
+        """A hidden copy of a dated twin: its record goes back under the LIVE twin, not it."""
+        del app
+        first, _second = _settled_pair(seed_user)
+        _twins_rebuilt()
+        copy = _db.session.execute(text(
+            f"INSERT INTO budget.transactions (is_deleted, {_TWIN_COLUMNS}) "
+            f"SELECT TRUE, {_TWIN_COLUMNS} FROM budget.transactions "
+            "WHERE id = :twin RETURNING id"
+        ), {"twin": _from_side_twin(first)}).scalar_one()
+
+        with pytest.raises(RuntimeError, match="1 twin row") as refused:
+            _MIGRATION.refuse_drifted_twins(_db.session.connection())
+        _db.session.rollback()
+
+        assert (
+            f"({first.id}, {copy}, ['settle day', 'day basis'"
+            in str(refused.value)
+        )
