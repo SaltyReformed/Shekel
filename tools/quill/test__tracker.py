@@ -33,7 +33,6 @@ from tools.quill._recorded import (
 from tools.quill._state import filing_unfinished
 from tools.quill._tracker import (
     BOARD_WAIT_SECONDS,
-    TRACKER,
     Board,
     ClaimTaken,
     Comment,
@@ -43,7 +42,10 @@ from tools.quill._tracker import (
     card_from,
     claim_message,
 )
-from tools.quill.setup_tracker import FILING, find_board
+from tools.quill.setup_tracker import FILING, PLAN, find_board
+
+#: The real tracker's ``owner/name``, as every recording here names it.
+TRACKER = PLAN.full_name
 
 #: The App's login as these recordings hold it: they were kept 2026-10-04 and -05, before the
 #: App was renamed ``shekel-quill`` (R-BAL227), and a recording keeps GitHub's answer as given.
@@ -61,10 +63,11 @@ MISSING_REPOSITORY = ('query { repository(owner: "saltyreformed-labs", name: '
 
 @pytest.fixture(name="recorded")
 def _recorded():
-    """The tracker over the recording, its board found the way ``connect`` finds it."""
+    """The tracker over the recording, its board found by its title, as ``connect``'s
+    :func:`_tracker.board_of` finds it (the link read that follows is recorded nowhere)."""
     replay = Replay("tracker")
     github = GitHub("token", replay)
-    board = Board(github, find_board(github), sleep=lambda _seconds: None)
+    board = Board(github, PLAN, find_board(github, PLAN), sleep=lambda _seconds: None)
     return Tracker(github, board, APP), replay
 
 
@@ -236,7 +239,7 @@ def _replay_board(tracker, order, parent):
     assert tracker.board.order() == order
     item = tracker.board.add(parent)
     assert tracker.board.place(item, order[0][1])
-    quick = Board(tracker.github, tracker.board_id, sleep=lambda _seconds: None)
+    quick = Board(tracker.github, PLAN, tracker.board_id, sleep=lambda _seconds: None)
     assert quick.shows(item, None) is False, "second on the board is not first"
     assert tracker.board.place(item, None)
     tracker.board.remove(item)
@@ -350,7 +353,7 @@ def test_a_create_naming_a_label_the_tracker_lacks_makes_the_label():
     on a recording made after the label existed."""
     replay = Replay("label_missing")
     github = GitHub("token", replay)
-    tracker = Tracker(github, Board(github, recording("label_missing")["scratch"]["board"]),
+    tracker = Tracker(github, Board(github, PLAN, recording("label_missing")["scratch"]["board"]),
                       APP)
     number = tracker.create("finding", f"{SCRATCH} finding filed before the filing label "
                             "exists (delete me)", "The recorder files this card to record "
@@ -388,9 +391,9 @@ def test_a_type_github_dropped_is_refused_not_trusted():
     included), so the refusal is the dropped type's alone."""
     filed = _recorded_answer("POST", "/shekel-plan/issues")
     assert filed["type"]["name"] == "finding"
-    assert Tracker(_Answers(filed), Board(None, "B"), APP).create(
+    assert Tracker(_Answers(filed), Board(None, PLAN, "B"), APP).create(
         "finding", "t", "b", ["balance"]) == filed["number"]
-    tracker = Tracker(_Answers({**filed, "type": None}), Board(None, "B"), APP)
+    tracker = Tracker(_Answers({**filed, "type": None}), Board(None, PLAN, "B"), APP)
     with pytest.raises(TrackerError, match="not .*'finding'"):
         tracker.create("finding", "t", "b", ["balance"])
 
@@ -403,7 +406,7 @@ def test_a_mark_github_dropped_is_refused_not_trusted():
     filed = _recorded_answer("POST", "/shekel-plan/issues")
     assert FILING in [label["name"] for label in filed["labels"]]
     dropped = {**filed, "labels": [l for l in filed["labels"] if l["name"] != FILING]}
-    tracker = Tracker(_Answers(dropped), Board(None, "B"), APP)
+    tracker = Tracker(_Answers(dropped), Board(None, PLAN, "B"), APP)
     with pytest.raises(TrackerError):
         tracker.create("finding", "t", "b", ["balance"])
 
@@ -429,7 +432,7 @@ def test_the_mark_is_sent_and_read_back_whatever_the_labels_sort_beside_it():
     (``salary``, ``moves-money``, ``pay_calendar``, ``recurrence``).  From the recorded
     answer, its labels made the ones sent."""
     github = _Echo(_recorded_answer("POST", "/shekel-plan/issues"))
-    tracker = Tracker(github, Board(None, "B"), APP)
+    tracker = Tracker(github, Board(None, PLAN, "B"), APP)
     number = tracker.create("finding", "t", "b", ["salary", "moves-money"])
     assert number == github.answer["number"]
     assert sorted(github.sent[0]["labels"]) == [FILING, "moves-money", "salary"]
@@ -447,10 +450,10 @@ def _recorded_node(number):
 def test_a_connection_github_cut_short_is_an_error_not_a_partial_card():
     """A card with more sub-issues than the read holds must not look like fewer."""
     node = _recorded_node(1)
-    assert card_from(node, "board", APP).step_children
+    assert card_from(node, PLAN, "board", APP).step_children
     node["subIssues"]["totalCount"] += 1
     with pytest.raises(TrackerError, match="10 sub-issues; the read holds 9"):
-        card_from(node, "board", APP)
+        card_from(node, PLAN, "board", APP)
 
 
 class _StuckBoard:
@@ -468,7 +471,7 @@ class _StuckBoard:
 def test_a_placement_the_board_never_shows_is_reported_after_the_wait():
     """The writer waits out the lag, then says so instead of waiting forever."""
     slept = []
-    board = Board(_StuckBoard(), "B", sleep=slept.append)
+    board = Board(_StuckBoard(), PLAN, "B", sleep=slept.append)
     assert board.place("MINE", "OTHER") is False
     assert sum(slept) == BOARD_WAIT_SECONDS
 
@@ -478,7 +481,7 @@ def test_a_card_nobody_ever_closed_is_neither_the_tools_display_nor_a_persons():
     person's, sync would only report every card it should close."""
     node = _recorded_node(2)
     assert not node["timelineItems"]["nodes"]
-    card = card_from(node, "board", APP)
+    card = card_from(node, PLAN, "board", APP)
     assert not (card.touched_by_hand or card.closed_by_tool)
 
 
@@ -513,9 +516,9 @@ def test_an_item_on_another_board_is_not_this_boards():
     moved to a board with another id."""
     node = _recorded_node(2)
     board = node["projectItems"]["nodes"][0]["project"]["id"]
-    assert card_from(node, board, APP).board_item
+    assert card_from(node, PLAN, board, APP).board_item
     node["projectItems"]["nodes"][0]["project"]["id"] = "PVT_another_board"
-    assert card_from(node, board, APP).board_item is None
+    assert card_from(node, PLAN, board, APP).board_item is None
 
 
 def test_a_board_item_of_another_repository_is_not_in_the_order():
@@ -524,7 +527,7 @@ def test_a_board_item_of_another_repository_is_not_in_the_order():
     data = _recorded_query("orderBy: {field: POSITION")
     first = data["node"]["items"]["nodes"][0]
     first["content"]["repository"]["nameWithOwner"] = "saltyreformed-labs/Shekel"
-    order = Board(_GraphQLAnswer(data), "B").order()
+    order = Board(_GraphQLAnswer(data), PLAN, "B").order()
     assert [number for number, _ in order] == [3, 4, 5, 6, 9, 7, 8, 10]
 
 
@@ -535,7 +538,7 @@ def test_a_board_item_that_is_not_an_issue_of_the_tracker_is_not_in_the_order():
     data = _recorded_query("orderBy: {field: POSITION")
     nodes = data["node"]["items"]["nodes"]
     nodes[:2] = [{**nodes[0], "content": {}}, {**nodes[1], "content": None}]
-    order = Board(_GraphQLAnswer(data), "B").order()
+    order = Board(_GraphQLAnswer(data), PLAN, "B").order()
     assert [number for number, _ in order] == [4, 5, 6, 9, 7, 8, 10]
 
 
@@ -546,7 +549,7 @@ def test_a_pull_request_a_title_search_finds_is_not_a_card():
                  if "/search/issues?" in exchange["url"])
     found = copy.deepcopy(found)
     found["items"].append({**found["items"][0], "number": 99, "pull_request": {"url": "u"}})
-    tracker = Tracker(_Answers(found), Board(None, "B"), APP)
+    tracker = Tracker(_Answers(found), Board(None, PLAN, "B"), APP)
     assert [number for number, _ in tracker.find_titles("L2 measurement")] == [
         15, 14, 13, 11, 20, 19, 18, 17, 16, 21, 12]
 
@@ -565,7 +568,7 @@ def test_only_a_pull_request_merged_into_dev_shipped_a_commit():
                "head": {**merged["head"], "ref": "release/pending"}}
     released = {**release, "number": 999, "merged_at": merged["merged_at"],
                 "head": {**merged["head"], "ref": "release/done"}}
-    tracker = Tracker(_Answers([merged, open_dev, release, released]), Board(None, "B"), APP)
+    tracker = Tracker(_Answers([merged, open_dev, release, released]), Board(None, PLAN, "B"), APP)
     assert tracker.merged_into_dev("SaltyReformed/Shekel", ON_DEV_ONLY) == {
         "tick/balance-x-bi-6-4d-1"}
 
@@ -584,10 +587,10 @@ def test_a_link_to_an_issue_of_another_repository_is_carried_apart_not_read_as_a
     }[link]({"parent": _recorded_node(2), "sub-issue": _recorded_node(1),
              "blocker": _open_node(7)}[link])
     assert target["repository"]["nameWithOwner"] == TRACKER
-    inside = card_from(node, "board", APP)
+    inside = card_from(node, PLAN, "board", APP)
     assert not inside.outside
     target["repository"]["nameWithOwner"] = "saltyreformed-labs/Shekel"
-    card = card_from(node, "board", APP)
+    card = card_from(node, PLAN, "board", APP)
     assert card.outside == (OutsideLink(link, f"saltyreformed-labs/Shekel#{target['number']}"),)
     if link == "parent":
         assert (inside.parent, card.parent) == (target["number"], None)
@@ -621,7 +624,7 @@ def test_a_ref_refused_for_another_reason_is_not_a_taken_claim(recorded):
         tracker.github.rest("POST", f"/repos/{TRACKER}/git/refs",
                             {"ref": "refs/claims/13", "sha": "1" * 40})
     assert refused.value.status == 422 and "Object does not exist" in str(refused.value)
-    claimer = Tracker(_RefRefused(refused.value), Board(None, "B"), APP)
+    claimer = Tracker(_RefRefused(refused.value), Board(None, PLAN, "B"), APP)
     with pytest.raises(GitHubError, match="Object does not exist"):
         claimer.claim(13, "feat/x")
 
@@ -635,7 +638,7 @@ def test_a_repository_github_cannot_find_is_an_error_not_a_card_read_as_absent()
     assert answer["answer"]["errors"][0]["path"] == ["repository"]
     github = GitHub("token", Sent(200, answer["answer"]))
     with pytest.raises(GitHubError, match="Could not resolve to a Repository"):
-        Tracker(github, Board(github, "B"), APP).cards([1])
+        Tracker(github, Board(github, PLAN, "B"), APP).cards([1])
 
 
 def test_a_second_board_add_is_answered_with_the_item_the_card_has():
@@ -645,7 +648,7 @@ def test_a_second_board_add_is_answered_with_the_item_the_card_has():
     a card that is no sub-issue of the parent named (#24 from #23, then closed): 403."""
     replay = Replay("twice")
     github = GitHub("token", replay)
-    tracker = Tracker(github, Board(github, recording("twice")["scratch"]["board"]), APP)
+    tracker = Tracker(github, Board(github, PLAN, recording("twice")["scratch"]["board"]), APP)
     cards = tracker.cards([23, 24])
     with pytest.raises(GitHubError, match="403.*Resource not accessible by integration"):
         tracker.remove_child(23, cards[24])
@@ -664,7 +667,7 @@ def test_an_unlink_of_a_card_not_linked_is_refused_and_a_closed_parent_is_not_wh
     means "not linked"; the tool reads it as a failed call, never as done."""
     replay = Replay("unlink")
     github = GitHub("token", replay)
-    tracker = Tracker(github, Board(github, recording("unlink")["scratch"]["board"]), APP)
+    tracker = Tracker(github, Board(github, PLAN, recording("unlink")["scratch"]["board"]), APP)
     cards = tracker.cards([23, 24, 25])
     assert not cards[23].is_open and cards[25].parent == 23
     tracker.remove_child(23, cards[25])
@@ -690,7 +693,8 @@ def _comments_recording():
     """The tracker over the comments recording, and the replay."""
     replay = Replay("comments")
     github = GitHub("token", replay)
-    return Tracker(github, Board(github, recording("comments")["scratch"]["board"]), QUILL), replay
+    board = Board(github, PLAN, recording("comments")["scratch"]["board"])
+    return Tracker(github, board, QUILL), replay
 
 
 def test_comments_are_read_oldest_first_each_as_posted():
@@ -737,7 +741,7 @@ def test_comments_are_read_page_by_page_and_an_author_may_be_gone():
         "pageInfo": {"hasNextPage": False, "endCursor": None},
         "nodes": [{**nodes[1], "author": None}]}
     github = _Pages([first, second])
-    comments = Tracker(github, Board(None, "B"), QUILL).comments(S)
+    comments = Tracker(github, Board(None, PLAN, "B"), QUILL).comments(S)
     assert github.afters == [None, "CURSOR"]
     assert [(comment.author, comment.body) for comment in comments] == [
         (QUILL, nodes[0]["body"]), (None, nodes[1]["body"])]

@@ -17,8 +17,10 @@ tracker it reads is private: real production figures are allowed there
 (``R-BAL172``).  So:
 
 - **The scratch cards are fixed before anything is sent** (:class:`Scratch`):
-  the cards the recording session has checked carry a scratch title
-  (:data:`SCRATCH`), and the plan board's id.  The set grows only by what the
+  the tracker they are on (its :class:`setup_tracker.Place`: the real tracker, or
+  X-cx's rehearsal tracker), the cards the recording session has checked carry a
+  scratch title (:data:`SCRATCH`), and that tracker's board's id.  "The tracker"
+  below is that place's.  The set grows only by what the
   session itself makes: a card it files with a scratch title, and the board
   item it adds for a scratch card.
 - **Only a known write to a scratch card is sent** (:func:`refusal`, asked of
@@ -33,8 +35,8 @@ tracker it reads is private: real production figures are allowed there
 - **Every string an answer holds is redacted** (:data:`REDACTED`) unless its
   key is one of :data:`_KEPT` -- ids, states, names of labels, types and
   repositories, dates, error messages -- or it belongs to a scratch card, or it
-  is the plan board's own title (:data:`setup_tracker.PROJECT_TITLE`, already
-  in this repository).  An object carrying a ``number`` is that card of the
+  is the board's own title (the place's ``board_title``, already in this
+  repository).  An object carrying a ``number`` is that card of the
   tracker only when it names the tracker as its repository, or names none and
   sits where the request reads the tracker's own cards: the answer itself to a
   REST request under the tracker, or a field of the tracker's ``repository``
@@ -70,8 +72,8 @@ from pathlib import Path
 import requests
 
 from tools.quill._github import API
-from tools.quill._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from tools.quill.setup_tracker import FILING, ORG, PROJECT_TITLE, REPO
+from tools.quill._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP
+from tools.quill.setup_tracker import FILING, PLAN, Place
 
 #: Where the recordings the tests replay are kept.
 RECORDINGS = Path(__file__).resolve().parent / "recorded"
@@ -92,14 +94,12 @@ _KEPT = frozenset({
 _OWN_CONTENT = frozenset({"userContentEdits", "comments"})
 #: GitHub's node-id prefix for a board (a ProjectV2).
 _BOARD_NODE = "PVT_"
-_REPO_URL = f"{API}/repos/{TRACKER}"
 _GRAPHQL_URL = f"{API}/graphql"
 #: Each GraphQL write a recording may send, and the variable naming what it moves: the
 #: card's node id for an add, its board item for the rest.
 _BOARD_WRITES = {BOARD_ADD: "c", BOARD_REMOVE: "i", BOARD_TOP: "i", BOARD_AFTER: "i"}
 _MUTATION = re.compile(r"\bmutation\b")
 _REPOSITORY_ARGUMENTS = re.compile(r"\brepository\s*\(([^)]*)\)")
-_THE_TRACKER = re.compile(rf'\s*owner:\s*"{ORG}"\s*name:\s*"{REPO}"\s*')
 _REPOSITORY_ALIAS = re.compile(r"\brepository\s*:")
 #: A GraphQL string (a block string, then a one-line one), or what GraphQL reads as
 #: nothing between two tokens: a comment, to the end of its line (``\n`` or ``\r``), a
@@ -112,16 +112,37 @@ _PATCHES = frozenset(frozenset(keys) for keys in (
     {"type"}, {"title"}, {"body"}, {"state", "state_reason"}, {"state"}))
 
 
+def _repo_url(place: Place) -> str:
+    """The REST URL of ``place``'s repository: every path under it, and only those, is the
+    tracker's."""
+    return f"{API}{place.path}"
+
+
+def _the_tracker(place: Place) -> re.Pattern:
+    """A GraphQL ``repository(...)``'s arguments naming ``place``'s repository, whole."""
+    return re.compile(rf'\s*owner:\s*"{re.escape(place.owner)}"\s*'
+                      rf'name:\s*"{re.escape(place.name)}"\s*')
+
+
 @dataclass
 class Scratch:
     """The cards a recording may write to and keep the text of -- each by its number, its
-    REST id and its node id -- the board items added for them, and the plan board."""
+    REST id and its node id -- the board items added for them, the tracker's board, and the
+    tracker's :class:`setup_tracker.Place`.
+
+    ``place`` is :data:`setup_tracker.PLAN` unless a session recording on X-cx's
+    rehearsal tracker names that one.  Named wrongly, a recording fails CLOSED for every
+    REST write (each matched on a path under the place's URL, so the other tracker's are
+    refused unsent) and for every text (redacted as no card's).  A board write is held to
+    ``board`` instead, the id the recording session reads for the board it means to move.
+    """
 
     numbers: set[int] = field(default_factory=set)
     ids: set[int] = field(default_factory=set)
     nodes: set[str] = field(default_factory=set)
     items: set[str] = field(default_factory=set)
     board: str | None = None
+    place: Place = PLAN
 
     def take(self, issue: dict) -> None:
         """Count a card a REST answer describes (``number``, ``id``, ``node_id``) as scratch."""
@@ -132,13 +153,16 @@ class Scratch:
     def as_json(self) -> dict:
         """The set as a recording keeps it."""
         return {"numbers": sorted(self.numbers), "ids": sorted(self.ids),
-                "nodes": sorted(self.nodes), "items": sorted(self.items), "board": self.board}
+                "nodes": sorted(self.nodes), "items": sorted(self.items), "board": self.board,
+                "place": [self.place.owner, self.place.name, self.place.board_title]}
 
     @classmethod
     def from_json(cls, kept: dict) -> Scratch:
-        """The set a recording kept."""
+        """The set a recording kept.  One with no ``place`` was kept before recordings named
+        theirs (X-cx's L7), when every recording session read the real tracker."""
+        place = Place(*kept["place"]) if "place" in kept else PLAN
         return cls(set(kept["numbers"]), set(kept["ids"]), set(kept["nodes"]),
-                   set(kept["items"]), kept["board"])
+                   set(kept["items"]), kept["board"], place)
 
 
 def _scratch_claim(ref: str, scratch: Scratch) -> bool:
@@ -188,8 +212,8 @@ _ROUTES: tuple[tuple[str, re.Pattern, _Allows], ...] = tuple(
 def _rest_allows(method: str, url: str, body: dict, scratch: Scratch) -> bool:
     """Whether a REST write takes a route of :data:`_ROUTES` to scratch cards only.  A route
     is matched on the path under the tracker's URL, so a URL of any other repository, whose
-    prefix stays on, matches none."""
-    path = url.removeprefix(_REPO_URL)
+    prefix stays on (or leaves a rest such as ``-rehearsal/issues``), matches none."""
+    path = url.removeprefix(_repo_url(scratch.place))
     return any(method == route and (found := pattern.fullmatch(path)) is not None
                and allows(found, body, scratch) for route, pattern, allows in _ROUTES)
 
@@ -229,16 +253,17 @@ def _as_graphql_reads_it(query: str) -> str:
         lambda found: found[0] if found[0].startswith('"') else " ", query)
 
 
-def _about_the_tracker(url: str, body) -> bool:
+def _about_the_tracker(url: str, body, place: Place) -> bool:
     """Whether a request's answer holds the tracker's own cards where :func:`_slot` looks:
     a REST path under the tracker, or a GraphQL query with a ``repository(...)``, every one
     the tracker's, and no alias named ``repository`` (:func:`_as_graphql_reads_it`)."""
     if url == _GRAPHQL_URL:
         query = _as_graphql_reads_it(str((body or {}).get("query", "")))
         arguments = _REPOSITORY_ARGUMENTS.findall(query)
-        return (bool(arguments) and all(_THE_TRACKER.fullmatch(each) for each in arguments)
+        tracker = _the_tracker(place)
+        return (bool(arguments) and all(tracker.fullmatch(each) for each in arguments)
                 and not _REPOSITORY_ALIAS.search(query))
-    return url.startswith(_REPO_URL + "/")
+    return url.startswith(_repo_url(place) + "/")
 
 
 def _slot(path: tuple[str, ...], graphql: bool) -> bool:
@@ -252,22 +277,22 @@ def _slot(path: tuple[str, ...], graphql: bool) -> bool:
             or path == ("data", "repository", "issues", "nodes"))
 
 
-def _named_card(url: str) -> int | None:
+def _named_card(url: str, place: Place) -> int | None:
     """The card a REST request about the tracker names in its URL."""
-    found = re.match(rf"{re.escape(_REPO_URL)}/issues/([0-9]+)(?:/|$)", url)
+    found = re.match(rf"{re.escape(_repo_url(place))}/issues/([0-9]+)(?:/|$)", url)
     return int(found[1]) if found else None
 
 
-def _card_of(value: dict, slot: bool) -> int | None:
+def _card_of(value: dict, slot: bool, place: Place) -> int | None:
     """The tracker card an object carrying a ``number`` is: when it names the tracker as its
     repository, or names none and sits in one of the request's card slots (``slot``); None
     otherwise."""
     repository, url = value.get("repository"), value.get("repository_url")
     if isinstance(repository, dict):
         named = repository.get("nameWithOwner") or repository.get("full_name")
-        return value["number"] if named == TRACKER else None
+        return value["number"] if named == place.full_name else None
     if url is not None:
-        return value["number"] if url == _REPO_URL else None
+        return value["number"] if url == _repo_url(place) else None
     return value["number"] if slot else None
 
 
@@ -288,24 +313,24 @@ class _Owner:
     top: bool = False
 
 
-def _redact(value, key: str | None, owner: _Owner, scratch: set[int]):
+def _redact(value, key: str | None, owner: _Owner, scratch: Scratch):
     """``value``, held under ``key`` where ``owner`` places it, with every string redacted
     that is neither a scratch card's nor under a :data:`_KEPT` key."""
     if isinstance(value, list):
         return [_redact(item, key, replace(owner, top=False), scratch) for item in value]
     if isinstance(value, str):
-        return value if key in _KEPT or owner.card in scratch else REDACTED
+        return value if key in _KEPT or owner.card in scratch.numbers else REDACTED
     if not isinstance(value, dict):
         return value
     numbered = "number" in value
     if numbered:
-        card = _card_of(value, owner.scoped and _slot(owner.path, owner.graphql))
+        card = _card_of(value, owner.scoped and _slot(owner.path, owner.graphql), scratch.place)
         owner = replace(owner, card=card, own=False)
     elif any(isinstance(item, str) and name not in _KEPT for name, item in value.items()):
         owner = replace(owner, card=owner.named if owner.top else
                         owner.card if owner.own else None)
     board = (str(value.get("id", "")).startswith(_BOARD_NODE)
-             and value.get("title") == PROJECT_TITLE)
+             and value.get("title") == scratch.place.board_title)
     return {
         name: (item if board and name == "title"
                else _redact(item, name, replace(
@@ -328,10 +353,10 @@ def redacted(exchanges: list[dict], scratch: Scratch) -> list[dict]:
         why = refusal(exchange["method"], url, body, scratch)
         if why:
             raise ValueError(why)
-        named = _named_card(url)
+        named = _named_card(url, scratch.place)
         answer = _redact(exchange["answer"], None,
-                         _Owner(None, named, False, _about_the_tracker(url, body),
-                                url == _GRAPHQL_URL, top=True), scratch.numbers)
+                         _Owner(None, named, False, _about_the_tracker(url, body, scratch.place),
+                                url == _GRAPHQL_URL, top=True), scratch)
         kept.append({**exchange, "answer": answer})
     return kept
 
@@ -347,13 +372,15 @@ def _key(method: str, url: str, body) -> str:
 
 
 class _Answer:
-    """The slice of ``requests.Response`` :class:`_github.GitHub` reads."""
+    """The slice of ``requests.Response`` :class:`_github.GitHub` reads.  A recording keeps
+    no headers (module docstring), so a replayed answer carries none."""
 
     def __init__(self, status: int, answer) -> None:
         """Hold one recorded status and JSON answer (None: an empty body)."""
         self.status_code = status
         self.content = b"" if answer is None else json.dumps(answer).encode()
         self.text = self.content.decode()
+        self.headers: dict[str, str] = {}
         self._answer = answer
 
     def json(self):
@@ -381,7 +408,7 @@ class Recorder:
         """
         body = kwargs.get("json")
         why = refusal(method, url, body, self.scratch)
-        if set(kwargs) - {"json", "headers", "timeout"}:
+        if set(kwargs) - {"json", "headers", "timeout", "allow_redirects"}:
             why = f"a recording sends a body only as JSON: {sorted(kwargs)}"
         if why:
             raise ValueError(f"not sent: {why}")
@@ -396,7 +423,7 @@ class Recorder:
     def _take(self, method: str, url: str, body, answer) -> None:
         """Count what a write just made for a scratch card as scratch: a card filed with a
         scratch title, and a scratch card's board item."""
-        if method == "POST" and url == f"{_REPO_URL}/issues":
+        if method == "POST" and url == f"{_repo_url(self.scratch.place)}/issues":
             self.scratch.take(answer)
         elif url == _GRAPHQL_URL and (body or {}).get("query") == BOARD_ADD:
             added = ((answer or {}).get("data") or {}).get("addProjectV2ItemById")

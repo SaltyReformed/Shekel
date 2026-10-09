@@ -7,10 +7,26 @@ quill's GitHub App instead, a separate identity, so a check can tell a
 tool write from the developer's own edit and never act on his.
 
 An App proves who it is with a JSON Web Token signed by its private key, and
-trades that token for an installation token scoped to the one repository it is
-installed on.  The signing is done here with ``cryptography`` (pinned in
-``requirements.txt``) rather than a JWT package, because RS256 over two JSON
-segments is the whole of what the App flow needs.
+trades that token for an installation token, which quill narrows to the one
+repository it reads and writes (:func:`installation_token`).  The signing is
+done here with ``cryptography`` (pinned in ``requirements.txt``) rather than a
+JWT package, because RS256 over two JSON segments is the whole of what the App
+flow needs.
+
+**A redirect is an error, never followed.**  GitHub answers 301 for an issue
+transferred to another repository and for a renamed repository; followed, a read
+would describe another repository's issue as the tracker's, and a write would
+land where it was not aimed (``requests`` re-sends a 307 or 308 with its body).
+So no request follows one, and any 3xx is raised like a 4xx.
+
+**A rate limit is waited out, as GitHub's documentation directs, and then STOPS.**
+A refusal for a rate limit (:func:`_rate_limited`) is re-sent after the wait the
+answer names -- ``retry-after``; else, with ``x-ratelimit-remaining`` at zero,
+until ``x-ratelimit-reset`` -- or else after a minute doubled per retry, and after
+:data:`RATE_LIMIT_RETRIES` waits quill stops: "Continuing to make requests while
+you are rate limited may result in the banning of your integration" (both REST
+and GraphQL pages, read 2026-10-09).  GitHub's pages do not say whether a request
+refused for a rate limit was performed; they say to retry it, and quill does.
 
 Nothing in this module reads or writes the code repository.  Its tests feed it
 recorded responses and never call GitHub.
@@ -19,7 +35,10 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
@@ -29,6 +48,19 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 API = "https://api.github.com"
 API_VERSION = "2022-11-28"
 TIMEOUT_SECONDS = 30
+_GRAPHQL = API + "/graphql"
+
+#: How many times one request is re-sent after a rate-limit answer before quill stops.
+#: GitHub says to "throw an error after a specific number of retries" and names no
+#: number; five backoff waits from a minute come to 31 minutes, inside the hour an
+#: installation token lives.
+RATE_LIMIT_RETRIES = 5
+#: The wait when GitHub's answer names none: "wait for at least one minute before
+#: retrying", doubled for each further retry of the same request.
+BACKOFF_SECONDS = 60
+#: How GitHub's error message says a rate limit refused the request ("You have exceeded a
+#: secondary rate limit", "API rate limit exceeded").
+_RATE_LIMIT_WORDS = re.compile(r"rate limit", re.IGNORECASE)
 
 #: Where the App's two credentials live: OUTSIDE every repository, readable by
 #: the developer's account only.  ``app.json`` holds the App's client ID (an
@@ -51,16 +83,67 @@ class GitHubError(RuntimeError):
         self.status = status
 
 
+def _graphql_errors_say_rate_limit(response) -> bool:
+    """Whether a 200 GraphQL answer is a rate-limit refusal: it carries ``errors`` and one of
+    them says so, by type or by message.  An answer's DATA is never read for the words: a
+    card's body may hold them."""
+    payload = response.json() if response.content else None
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    return any(error.get("type") == "RATE_LIMITED"
+               or _RATE_LIMIT_WORDS.search(str(error.get("message", "")))
+               for error in errors or ())
+
+
+def _rate_limited(response, url: str) -> bool:
+    """Whether GitHub refused ``response``'s request for a rate limit.
+
+    As GitHub documents it (read 2026-10-09): a primary limit is "a ``403`` or ``429``
+    response, and the ``x-ratelimit-remaining`` header will be ``0``"; a secondary one is
+    "a ``403`` or ``429`` response and an error message that indicates that you exceeded a
+    secondary rate limit".  GraphQL also answers either kind ``200`` "with an error
+    message".  A 403 or 429 saying none of that is a refusal of another kind ("Resource
+    not accessible by integration"), raised at once; one that also carries ``retry-after``
+    is waited out as that header directs.  By the text, ANY 403 with
+    ``x-ratelimit-remaining`` at zero is the primary limit, so it is waited out until the
+    reset, a permission refusal sent with the last request of the hour included.  A 200
+    whose remaining count reached zero is the last request the limit allowed, answered.
+    """
+    status, headers = response.status_code, response.headers
+    if status == 200:
+        return url == _GRAPHQL and _graphql_errors_say_rate_limit(response)
+    if status not in (403, 429):
+        return False
+    return ("retry-after" in headers or headers.get("x-ratelimit-remaining") == "0"
+            or bool(_RATE_LIMIT_WORDS.search(response.text or "")))
+
+
+def _wait_seconds(response, retry: int, now: float) -> float:
+    """How long to wait before re-sending a request refused for a rate limit, the
+    ``retry``-th time (from 0), at ``now`` (epoch seconds): GitHub's three cases, in its
+    order."""
+    headers = response.headers
+    if "retry-after" in headers:
+        return float(headers["retry-after"])
+    if headers.get("x-ratelimit-remaining") == "0" and "x-ratelimit-reset" in headers:
+        return max(0.0, float(headers["x-ratelimit-reset"]) - now) + 1
+    return float(BACKOFF_SECONDS * 2 ** retry)
+
+
 class GitHub:
     """GitHub's REST and GraphQL APIs under one bearer token.
 
     ``session`` is any object with ``requests.Session.request``'s signature;
-    the tests pass one that replays recorded responses.
+    the tests pass one that replays recorded responses.  ``sleep`` and ``clock``
+    wait out a rate limit (the module docstring); tests pass ones that do not wait.
     """
 
-    def __init__(self, token: str, session: requests.Session | None = None) -> None:
+    def __init__(self, token: str, session: requests.Session | None = None,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.time) -> None:
         """Send every request with ``token``, through ``session`` when one is given."""
         self._session = session or requests.Session()
+        self._sleep = sleep
+        self._clock = clock
         self._headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -68,11 +151,24 @@ class GitHub:
         }
 
     def _send(self, method: str, url: str, body: dict | None) -> requests.Response:
-        """Send one request; raise :class:`GitHubError` on any 4xx or 5xx."""
-        response = self._session.request(
-            method, url, headers=self._headers, json=body, timeout=TIMEOUT_SECONDS
-        )
-        if response.status_code >= 400:
+        """Send one request, following no redirect and waiting out a rate limit; raise
+        :class:`GitHubError` on any 3xx, 4xx or 5xx, and on a rate limit that outlasts
+        :data:`RATE_LIMIT_RETRIES` waits."""
+        for retry in range(RATE_LIMIT_RETRIES + 1):
+            response = self._session.request(
+                method, url, headers=self._headers, json=body, timeout=TIMEOUT_SECONDS,
+                allow_redirects=False,
+            )
+            if not _rate_limited(response, url):
+                break
+            if retry == RATE_LIMIT_RETRIES:
+                raise GitHubError(
+                    response.status_code,
+                    f"{method} {url} -> still rate limited after {RATE_LIMIT_RETRIES} waits; "
+                    f"stopped, as GitHub directs: {response.text[:500]}",
+                )
+            self._sleep(_wait_seconds(response, retry, self._clock()))
+        if response.status_code >= 300:
             raise GitHubError(
                 response.status_code,
                 f"{method} {url} -> {response.status_code}: {response.text[:500]}",
@@ -156,9 +252,21 @@ def app_installation(org: str, app_token: str, session=None) -> dict:
     return GitHub(app_token, session).rest("GET", f"/orgs/{org}/installation")
 
 
-def installation_token(installation_id: int, app_token: str, session=None) -> str:
-    """A one-hour token acting as the App, limited to what its installation grants."""
+def installation_token(installation_id: int, app_token: str, *, repository: str | None,
+                       session=None) -> str:
+    """A one-hour token acting as the App, limited to what its installation grants, and,
+    given a ``repository`` (a name in the installation's organization), to that one
+    repository: GitHub's ``repositories`` narrowing, read back from its answer.
+
+    ``None`` keeps every repository the installation reaches, for the one caller that
+    must see them all (``setup_tracker.check_app``).
+    """
+    body = None if repository is None else {"repositories": [repository]}
     response = GitHub(app_token, session).rest(
-        "POST", f"/app/installations/{installation_id}/access_tokens"
+        "POST", f"/app/installations/{installation_id}/access_tokens", body
     )
+    if repository is not None:
+        reached = [each["name"] for each in response.get("repositories") or ()]
+        if reached != [repository]:
+            raise GitHubError(201, f"a token narrowed to {repository!r} reaches {reached}")
     return response["token"]

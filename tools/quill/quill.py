@@ -60,6 +60,7 @@ import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import requests
@@ -107,7 +108,7 @@ from tools.quill._state import (
 )
 from tools.quill._tracker import Card, Claim, ClaimTaken, Tracker, TrackerError
 from tools.quill.check import BODY, TITLE, Draft, in_ruling_shape, normalized, violations
-from tools.quill.setup_tracker import FILING
+from tools.quill.setup_tracker import FILING, PLAN
 
 #: Branches a claim may never name: nothing is built on them directly.
 _SHARED_BRANCHES = ("dev", "main")
@@ -886,7 +887,8 @@ COMMANDS: dict[str, Callable[..., int]] = {
 }
 
 
-def main(argv: list[str] | None = None, connect: Callable[[], Tracker] = Tracker.connect,
+def main(argv: list[str] | None = None,
+         connect: Callable[[], Tracker] = partial(Tracker.connect, PLAN),
          root: Path | None = None) -> int:
     """Run one command; its exit status."""
     args = parser().parse_args(argv)

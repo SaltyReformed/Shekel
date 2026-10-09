@@ -13,7 +13,9 @@ that is no sub-issue of the parent named is refused 403, as GitHub answers both
 (``recorded/twice.json``, ``recorded/unlink.json``) -- and FAILS LOUDLY on a write
 the tool must never send
 (re-parenting a card, under a parent inside the tracker or out), rather than
-guessing GitHub's answer to it.  Its board shows a
+guessing GitHub's answer to it.  A number it was told was deleted (:attr:`FakeTracker.gone`)
+answers a read by number as GitHub answers a deleted issue's, and no create takes it,
+as GitHub's one numbering sequence gives no number out twice.  Its board shows a
 placement at once unless told to lag (:attr:`FakeBoard.lagging`); the lag
 itself is graded against a recording.
 Nothing here calls GitHub.
@@ -28,8 +30,17 @@ from tools.ci.scratch import run as _run
 from tools.ci.trailers import DEV
 from tools.quill import quill
 from tools.quill._github import GitHubError
-from tools.quill._tracker import Card, Child, Claim, ClaimTaken, Comment, Edit
-from tools.quill.setup_tracker import FILING
+from tools.quill._tracker import (
+    Card,
+    Child,
+    Claim,
+    ClaimTaken,
+    Comment,
+    Edit,
+    NumberState,
+    WholeCard,
+)
+from tools.quill.setup_tracker import FILING, PLAN
 
 
 class FakeBoard:
@@ -76,17 +87,19 @@ class FakeBoard:
 class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
     """The tracker in memory: cards, bodies, comments, claims, its board, and every write.
 
-    Pylint: ``too-many-public-methods`` (24/20) -- it stands in for
-    :class:`_tracker.Tracker`, so it has each of that class's 23 reads and
+    Pylint: ``too-many-public-methods`` (26/20) -- it stands in for
+    :class:`_tracker.Tracker`, so it has each of that class's 25 reads and
     writes (its own disable says why there are so many), and ``add``, which
-    puts a card in.  ``too-many-instance-attributes`` (8/7) -- **one per kind
-    of fact it keeps**: seven a command reads back (cards, bodies, saved
-    versions, comments, claims, merged pull requests, the board) and the log
-    of writes the tests read; the comments ``show`` reads (X-cx leaf B) made
-    the eighth.
+    puts a card in.  ``too-many-instance-attributes`` (9/7) -- **one per kind
+    of fact it keeps**: eight a command reads back (cards, bodies, saved
+    versions, comments, claims, merged pull requests, the board, the deleted
+    numbers) and the log of writes the tests read; the comments ``show`` reads
+    (X-cx leaf B) made the eighth and the numbering X-cx's migration reads
+    (L7) the ninth.
     """
 
     app_login = "shekel-quill"
+    place = PLAN
 
     def __init__(self):
         """An empty tracker."""
@@ -96,6 +109,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         self.notes: dict[int, list[Comment]] = {}
         self.held: dict[int, Claim] = {}
         self.pulls: dict[str, set[str]] = {}
+        self.gone: set[int] = set()
         self.writes: list[tuple] = []
         self.board = FakeBoard(self.writes)
 
@@ -141,6 +155,17 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
         """The cards that exist among ``numbers``."""
         return {n: self._view(n) for n in numbers if n in self.cards_by_number}
 
+    def all_cards(self):
+        """Every card, open and closed, with its body and its comments."""
+        return {n: WholeCard(self._view(n), self.bodies[n], tuple(self.notes.get(n, ())))
+                for n in self.cards_by_number}
+
+    def number_state(self, number):
+        """What a read by number finds: a card, a deleted number, or nothing filed."""
+        if number in self.cards_by_number:
+            return NumberState.ISSUE
+        return NumberState.DELETED if number in self.gone else NumberState.NOT_FOUND
+
     def body(self, number):
         """A card's body."""
         return self.bodies[number]
@@ -171,7 +196,7 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
     def create(self, kind, title, body, labels):
         """File a card at the next number, marked :data:`setup_tracker.FILING` beside
         ``labels``, as :meth:`_tracker.Tracker.create` files every card."""
-        number = max(self.cards_by_number, default=0) + 1
+        number = max({*self.cards_by_number, *self.gone}, default=0) + 1
         labels = tuple(sorted({*labels, FILING}))
         self.writes.append(("create", number, kind, title, labels))
         self.add(number, kind, body, on_board=False, title=title, labels=labels)
@@ -281,9 +306,9 @@ class FakeTracker:  # pylint: disable=too-many-public-methods,too-many-instance-
 
 
 class Sent:
-    """A ``requests`` session that answers each request with ``status`` and ``answer``, for
-    a test of what :class:`_github.GitHub` or :class:`_recorded.Recorder` does with one
-    answer."""
+    """A ``requests`` session that answers each request with ``status`` and ``answer`` (and
+    no headers), for a test of what :class:`_github.GitHub` or :class:`_recorded.Recorder`
+    does with one answer."""
 
     def __init__(self, status, answer):
         """Hold the answer; count what is sent."""
@@ -292,8 +317,9 @@ class Sent:
     def request(self, method, url, **kwargs):
         """Answer, and remember what was sent."""
         self.sent.append((method, url, kwargs.get("json")))
-        return type("Response", (), {"status_code": self.status,
-                                     "content": json.dumps(self.answer).encode(),
+        content = json.dumps(self.answer).encode()
+        return type("Response", (), {"status_code": self.status, "content": content,
+                                     "text": content.decode(), "headers": {},
                                      "json": lambda _self: self.answer})()
 
 

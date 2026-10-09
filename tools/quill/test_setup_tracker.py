@@ -258,7 +258,8 @@ def _project(cards=0, public=False, linked=True, views=(("View 1", "", 0),)):
         "title": setup_tracker.PROJECT_TITLE,
         "public": public,
         "url": "https://github.com/orgs/o/projects/1",
-        "repositories": {"nodes": [{"name": setup_tracker.REPO}] if linked else []},
+        "repositories": {"totalCount": int(linked), "nodes": [
+            {"nameWithOwner": setup_tracker.PLAN.full_name}] if linked else []},
         "fields": {"nodes": [
             {"id": "F1", "name": "Title", "dataType": "TITLE"},
             {"id": "F2", "name": "Status", "dataType": "SINGLE_SELECT"},
@@ -346,7 +347,9 @@ class _Board(_GitHub):
         if name == "updateProjectV2":
             board["public"] = False
         elif name == "linkProjectV2ToRepository":
-            board["repositories"]["nodes"].append({"name": setup_tracker.REPO})
+            board["repositories"]["nodes"].append(
+                {"nameWithOwner": setup_tracker.PLAN.full_name})
+            board["repositories"]["totalCount"] += 1
         elif name == "deleteProjectV2Field":
             board["fields"]["nodes"] = [
                 f for f in board["fields"]["nodes"] if f.get("id") != variables["id"]
@@ -581,7 +584,13 @@ def _app_setup(monkeypatch, *, owner="saltyreformed-labs", installation=None, re
     """Point ``check_app`` at a recorded App; nothing reads a key or calls GitHub."""
     monkeypatch.setattr(setup_tracker, "app_credentials", lambda: ("Iv23client", b"pem"))
     monkeypatch.setattr(setup_tracker, "app_jwt", lambda *_: "jwt")
-    monkeypatch.setattr(setup_tracker, "installation_token", lambda *_: "installation")
+    def whole_installation(*_, repository):
+        """The App check audits every repository the App reaches, so its token is never
+        narrowed (review A2 finding 5)."""
+        assert repository is None, f"check_app narrowed its token to {repository!r}"
+        return "installation"
+
+    monkeypatch.setattr(setup_tracker, "installation_token", whole_installation)
 
     def installed(*_):
         if isinstance(installation, Exception):
@@ -656,3 +665,48 @@ def test_main_exits_by_what_it_found(monkeypatch, capsys, differences, refused, 
         monkeypatch.setattr(setup_tracker, name, lambda *_: None)
     assert setup_tracker.main([]) == code
     capsys.readouterr()
+
+
+@pytest.mark.parametrize(("workflows", "said"), [
+    ([{"name": "Auto-archive items", "enabled": True}], "it is on"),
+    ([{"name": "Auto-archive items", "enabled": False}], "it is off"),
+    ([], "GitHub lists no such automation on this board"),
+])
+def test_each_allowed_automation_is_reported_on_off_or_unlisted(workflows, said):
+    """V3-10 (X-cx L7): a board copied from this one must match its allowed automations, so
+    the run says each one's state; either state matches, so neither is a difference."""
+    project = _project(views=(("Plan", "is:open", 0),))
+    project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]
+    project["views"]["nodes"][0]["fields"]["nodes"] = _visible("F1")
+    project["workflows"]["nodes"] = workflows
+    assert setup_tracker.allowed_workflow_states(project) == [
+        f"board automation 'Auto-archive items' may run: {said}"]
+    github = _Board(project)
+    report = Report()
+    setup_tracker.check_board(github, {"node_id": "R"}, apply=False, report=report)
+    assert f"ok      board automation 'Auto-archive items' may run: {said}" in report.lines
+    assert report.differences == 0
+
+
+def test_a_board_link_is_proven_by_a_read_that_names_it_and_unread_when_a_short_one_does_not():
+    """Review A2 rounds 2 and 3: a whole read without the tracker is "not linked"; a read
+    GitHub cut short that names it proves the link (a short read hides, never invents);
+    one that does not name it says nothing either way, and says so -- and ``--apply``
+    links only a board known to be unlinked."""
+    project = _project(views=(("Plan", "is:open", 0),))
+    project["fields"]["nodes"] = [_FIELDS["F1"], _FIELDS["F2"]]
+    project["views"]["nodes"][0]["fields"]["nodes"] = _visible("F1")
+    project["workflows"]["nodes"] = []
+    assert not setup_tracker.board_differences(project)
+    project["repositories"]["totalCount"] = 101
+    assert not setup_tracker.board_differences(project)
+    project["repositories"]["nodes"] = [{"nameWithOwner": "saltyreformed-labs/elsewhere"}]
+    assert setup_tracker.board_differences(project) == [
+        "the board links 101 repositories and the read holds 1, none of them "
+        "saltyreformed-labs/shekel-plan: whether it is linked is unread"]
+    github = _Board(copy.deepcopy(project))
+    setup_tracker.check_board(github, {"node_id": "R"}, apply=True, report=Report())
+    assert "linkProjectV2ToRepository" not in [name for name, _ in github.mutations]
+    project["repositories"]["totalCount"] = 1
+    assert setup_tracker.board_differences(project) == [
+        "the board is not linked to saltyreformed-labs/shekel-plan"]

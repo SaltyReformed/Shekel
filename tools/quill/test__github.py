@@ -9,17 +9,25 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
-from tools.quill._github import API, GitHub, GitHubError, app_jwt
+from tools.quill._github import (
+    API,
+    RATE_LIMIT_RETRIES,
+    GitHub,
+    GitHubError,
+    app_jwt,
+    installation_token,
+)
 
 
 class _Response:
     """The slice of ``requests.Response`` the client reads."""
 
-    def __init__(self, status_code, body=None):
-        """Record one response: its status and JSON body."""
+    def __init__(self, status_code, body=None, headers=None):
+        """Record one response: its status, JSON body and headers (none by default)."""
         self.status_code = status_code
         self.content = b"" if body is None else json.dumps(body).encode()
         self.text = self.content.decode()
+        self.headers = headers or {}
         self._body = body
 
     def json(self):
@@ -137,3 +145,128 @@ def test_graphql_lookup_reads_as_absent_only_a_card_under_the_repository():
         {"type": "NOT_FOUND", "path": ["organization", "x"], "message": "elsewhere"}]}
     with pytest.raises(GitHubError, match="elsewhere"):
         GitHub("t", _Session(_Response(200, other))).graphql_lookup("q")
+
+
+def _client(session, slept=None, now=1_000.0):
+    """A client over ``session`` whose waits are kept in ``slept`` instead of slept."""
+    return GitHub("t", session, sleep=(slept if slept is not None else []).append,
+                  clock=lambda: now)
+
+
+def test_no_redirect_is_followed_and_a_3xx_is_an_error():
+    """A transferred issue or a renamed repository answers 301; followed, a read would
+    describe another repository's issue and a write would land where it was not aimed."""
+    session = _Session(_Response(301, {"message": "Moved Permanently", "url": "elsewhere"}))
+    with pytest.raises(GitHubError) as raised:
+        _client(session).rest("GET", "/repos/o/r/issues/5")
+    assert raised.value.status == 301
+    assert session.sent[0][2]["allow_redirects"] is False
+
+
+_SECONDARY = {"message": "You have exceeded a secondary rate limit. Please wait a few minutes "
+                         "before you try again."}
+
+
+def test_a_secondary_limit_is_waited_out_as_retry_after_says_then_resent():
+    """GitHub: "If the retry-after response header is present, you should not retry your
+    request until after that many seconds has elapsed"."""
+    session = _Session(_Response(403, _SECONDARY, {"retry-after": "7"}), _Response(200, {"ok": 1}))
+    slept = []
+    assert _client(session, slept).rest("POST", "/repos/o/r/issues", {"title": "t"}) == {"ok": 1}
+    assert slept == [7.0]
+    assert [sent[2]["json"] for sent in session.sent] == [{"title": "t"}, {"title": "t"}]
+
+
+def test_a_spent_limit_is_waited_out_until_its_reset():
+    """GitHub: with ``x-ratelimit-remaining`` at 0, not "until after the time, in UTC epoch
+    seconds, specified by the x-ratelimit-reset header"; a 429 too."""
+    session = _Session(_Response(429, {"message": "API rate limit exceeded"},
+                                 {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1100"}),
+                       _Response(200, {"ok": 1}))
+    slept = []
+    _client(session, slept, now=1_000.0).rest("GET", "/repos/o/r")
+    assert slept == [101.0]
+
+
+def test_with_no_header_the_wait_doubles_from_a_minute_and_then_quill_stops():
+    """GitHub: "wait for at least one minute before retrying", then "an exponentially
+    increasing amount of time between retries, and throw an error after a specific number
+    of retries" -- continuing "may result in the banning of your integration"."""
+    session = _Session(*[_Response(403, _SECONDARY) for _ in range(RATE_LIMIT_RETRIES + 1)])
+    slept = []
+    with pytest.raises(GitHubError, match="still rate limited after 5 waits; stopped"):
+        _client(session, slept).rest("GET", "/repos/o/r")
+    assert slept == [60.0, 120.0, 240.0, 480.0, 960.0]
+    assert len(session.sent) == RATE_LIMIT_RETRIES + 1
+
+
+def test_a_403_that_names_no_rate_limit_is_raised_at_once():
+    """The refusal the recordings hold for an unlink of a card that is not linked: a 403
+    saying nothing of a rate limit is no rate limit, so it is neither waited on nor resent."""
+    session = _Session(_Response(403, {"message": "Resource not accessible by integration"}))
+    slept = []
+    with pytest.raises(GitHubError) as raised:
+        _client(session, slept).rest("DELETE", "/repos/o/r/issues/1/sub_issue", {"x": 1})
+    assert (raised.value.status, slept, len(session.sent)) == (403, [], 1)
+
+
+def test_a_graphql_rate_limit_inside_a_200_is_waited_out_and_its_data_never_read_for_it():
+    """GitHub's GraphQL answers a rate limit 200 "with an error message"; that is waited out
+    and resent.  A 200 whose DATA holds the words (a card's body may), or whose remaining
+    count reached zero with no error, is an answer like any other."""
+    limited = _Response(200, {"data": None, "errors": [
+        {"type": "RATE_LIMITED", "message": "API rate limit exceeded for installation."}]})
+    answer = {"data": {"repository": {"body": "the secondary rate limit, explained"}}}
+    session = _Session(limited, _Response(200, answer),
+                       _Response(200, answer, {"x-ratelimit-remaining": "0"}))
+    slept = []
+    client = _client(session, slept)
+    assert client.graphql("query { x }") == answer["data"]
+    assert client.graphql("query { x }") == answer["data"]
+    assert slept == [60.0] and len(session.sent) == 3
+
+
+def test_a_rest_answer_is_never_read_as_a_graphql_rate_limit():
+    """Only a GraphQL answer carries a rate limit inside a 200; a REST 200 whose body has an
+    ``errors`` key saying the words is returned as it came."""
+    body = {"errors": [{"message": "rate limit"}]}
+    assert _client(_Session(_Response(200, body))).rest("GET", "/repos/o/r") == body
+
+
+def test_an_installation_token_is_narrowed_to_one_repository_and_read_back():
+    """GitHub's ``repositories`` narrowing; the answer must name exactly that repository, or
+    the token is refused.  ``None`` keeps the installation's every repository (the check of
+    what the App reaches)."""
+    narrowed = _Session(_Response(201, {"token": "x", "repositories": [{"name": "shekel-plan"}]}))
+    assert installation_token(7, "jwt", repository="shekel-plan", session=narrowed) == "x"
+    assert narrowed.sent[0][1].endswith("/app/installations/7/access_tokens")
+    assert narrowed.sent[0][2]["json"] == {"repositories": ["shekel-plan"]}
+    wider = _Session(_Response(201, {"token": "x", "repositories": [
+        {"name": "shekel-plan"}, {"name": "shekel-plan-rehearsal"}]}))
+    with pytest.raises(GitHubError, match="narrowed to 'shekel-plan' reaches"):
+        installation_token(7, "jwt", repository="shekel-plan", session=wider)
+    whole = _Session(_Response(201, {"token": "y"}))
+    assert installation_token(7, "jwt", repository=None, session=whole) == "y"
+    assert whole.sent[0][2]["json"] is None
+
+
+def test_a_reset_already_past_waits_one_second_not_a_negative_time():
+    """``time.sleep`` refuses a negative wait; a reset the clock has passed waits the one
+    second "until after" it."""
+    session = _Session(_Response(403, {"message": "API rate limit exceeded"},
+                                 {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "900"}),
+                       _Response(200, {"ok": 1}))
+    slept = []
+    _client(session, slept, now=1_000.0).rest("GET", "/repos/o/r")
+    assert slept == [1.0]
+
+
+def test_a_429_that_says_nothing_of_a_rate_limit_is_raised_at_once():
+    """GitHub's text names a 429 a rate limit beside a zero remaining count or an error
+    message saying so; quill reads that, or a retry-after (how long GitHub says to wait),
+    and nothing else."""
+    session = _Session(_Response(429, {"message": "Too many requests"}))
+    slept = []
+    with pytest.raises(GitHubError) as raised:
+        _client(session, slept).rest("GET", "/repos/o/r")
+    assert (raised.value.status, slept) == (429, [])
