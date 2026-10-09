@@ -258,10 +258,11 @@ start_app() {
             return 0
         fi
 
-        # If no health check, just check if it's running.
-        local running
-        running=$(docker inspect --format='{{.State.Running}}' "${APP_CONTAINER}" 2>/dev/null || echo "false")
-        if [[ "${running}" == "true" && "${health}" == "none" ]]; then
+        # If no health check, just check if it's running: the shell scripts'
+        # one running-check (plan step balance:X-dm, ruling R-BAL254), which
+        # _backup_lib.sh loads.
+        # shellcheck disable=SC2310 # container_running is a boolean predicate (one captured docker inspect); its 0/1 is exactly what this if tests.
+        if [[ "${health}" == "none" ]] && container_running "${APP_CONTAINER}"; then
             # Give the entrypoint a moment to finish initialization.
             sleep 3
             log "INFO" "Application container is running"

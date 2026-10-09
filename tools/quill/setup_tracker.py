@@ -131,6 +131,11 @@ _ARC_COLORS = ("0e8a16", "1d76db", "5319e7", "d93f0b", "006b75", "c5a100")
 #: until its filing's last write removes it (ruling ``balance:R-BAL202``).
 FILING = "filing"
 
+#: The two labels a release reads: a step whose release moves money, and a parent
+#: whose leaves ``/release`` ships in one release.  ``quill file step --label`` and X-cx's
+#: migration name them here.
+MOVES_MONEY_LABEL, DEPLOY_TOGETHER_LABEL = "moves-money", "deploy-together"
+
 #: Every label the tracker carries: one per arc, the two a release reads, and
 #: quill's :data:`FILING` mark.
 LABELS = {
@@ -138,10 +143,10 @@ LABELS = {
         arc: (_ARC_COLORS[index % len(_ARC_COLORS)], f"The {arc.replace('_', '-')} arc")
         for index, arc in enumerate(ARCS)
     },
-    "moves-money": (
+    MOVES_MONEY_LABEL: (
         "b60205", "Its release moves money: /release carries at most one such step"
     ),
-    "deploy-together": (
+    DEPLOY_TOGETHER_LABEL: (
         "fbca04", "A parent whose leaves /release ships in one release, never split"
     ),
     FILING: (
