@@ -416,14 +416,17 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
 
     A transfer shadow (``transfer_id`` set) is a row like any other here since
     plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**): its own TRANSACTION
-    source target is empty as every row's is, and its covering movement posts
-    through the movement writer against the owner's transit account, under
-    its transfer LEG since leaf ``X-bi-6-4a`` -- every movement's parent is
-    :func:`~app.services.transfer_legs.movement_parent`'s answer.  The
-    guard that returned ``[]`` for a shadow (ruling **R-BAL45**'s interval)
-    is gone with the interval, so a door that reaches a shadow's family
-    reconciles it rather than skipping it; the pair's own door,
-    :func:`sync_transfer_postings`, reaches both sides from the parent.
+    source target is empty as every row's is.  **It holds no movement since
+    plan step ``balance:X-bi-6-4d-2``**: a transfer side's payment record
+    hangs off the TRANSFER by its side link (ruling **R-BAL88**), so a door
+    that reaches a shadow finds nothing under it to post.  The pair's own
+    door, :func:`sync_transfer_postings`, reaches both sides' records from the
+    parent and books each under its transfer LEG against the owner's transit
+    account (every movement's parent is
+    :func:`~app.services.transfer_legs.movement_parent`'s answer).  Until that
+    step the shadow's covering movement posted here, under its leg since leaf
+    ``X-bi-6-4a``.  The guard that returned ``[]`` for a shadow (ruling
+    **R-BAL45**'s interval) is gone with the interval.
     Idempotency rests on the delta math plus the row's ``version_id``
     optimistic lock (a concurrent double mark-done collides on the version,
     surfacing as a 409).
@@ -581,11 +584,14 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     so every ledger account still nets correctly.  The transaction analog of
     :func:`reverse_transfer_postings_before_delete`, which
     ``transfer_service.delete_transfer`` runs first for the same reason.  A
-    transfer shadow reaching here (``transfer_id`` set) is reversed like any
-    row since plan step ``balance:X-bi-6-3``, its movement typed by its
-    transfer LEG since leaf ``X-bi-6-4a`` (``transfer_legs.movement_parent``);
-    the guard that returned for one (ruling **R-BAL45**'s interval) is gone
-    with the interval.
+    transfer shadow reaching here (``transfer_id`` set) is a row like any
+    since plan step ``balance:X-bi-6-3`` and holds no movement since plan step
+    ``balance:X-bi-6-4d-2``: its side's payment record hangs off the transfer,
+    and :func:`reverse_transfer_postings_before_delete` reverses the pair's.
+    Until then the shadow's movement was reversed here, typed by its transfer
+    LEG since leaf ``X-bi-6-4a`` (``transfer_legs.movement_parent``); the
+    guard that returned for one (ruling **R-BAL45**'s interval) is gone with
+    the interval.
 
     **It is NOT :func:`sync_transaction_postings`, and since plan step X-f3b
     it cannot be.**  That reconcile leaves a DATED movement posted whatever

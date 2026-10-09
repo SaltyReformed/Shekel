@@ -4900,6 +4900,62 @@ def transfer_side_record(db_session, transfer_id, account_id):
     )
 
 
+def transfer_side_figure(db_session, transfer_id, account_id):
+    """Return what a transfer's side on *account_id* RECORDS, or ``None``.
+
+    The side-shaped twin of ``row_valuation.settled_figure(shadow)``, which a
+    test asked of the side's shadow until plan step ``balance:X-bi-6-4d-2``
+    stopped keeping a shadow's status (ruling **R-BAL167** class 4): ``None``
+    while the TRANSFER is not settled, the side's record's ``amount`` once it
+    is, and ``Decimal("0.00")`` for a settled side holding no record (a
+    ``$0.00`` close, ruling **R-BAL82**).  The three answers the shadow gave
+    while its status mirrored its transfer's, so a re-pointed assertion keeps
+    its expected figure.  Independent SQL (:func:`transfer_side_record`), for
+    that helper's reason.
+
+    Args:
+        db_session: The test ``db.session``.
+        transfer_id: The ``budget.transfers`` id.
+        account_id: The account the side is on.
+
+    Returns:
+        The recorded ``Decimal``, or ``None`` when the transfer is not settled.
+    """
+    # pylint: disable=import-outside-toplevel -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.models.transfer import Transfer
+
+    if not db_session.get(Transfer, transfer_id).status.is_settled:
+        return None
+    record = transfer_side_record(db_session, transfer_id, account_id)
+    return Decimal("0.00") if record is None else record.amount
+
+
+def transfer_side_settle_day(db_session, transfer_id, account_id):
+    """Return the settle day a transfer's side on *account_id* records, or ``None``.
+
+    The side-shaped twin of ``settle_day.recorded_settle_day(shadow)`` (ruling
+    **R-BAL167** class 4, plan step ``balance:X-bi-6-4d-2``): the
+    :class:`~app.services.settle_day.SettleDay` on the side's record, or
+    ``None`` when the side holds no record or its record carries no day (a
+    side never paid, a revert's kept record, a ``$0.00`` close).
+
+    Args:
+        db_session: The test ``db.session``.
+        transfer_id: The ``budget.transfers`` id.
+        account_id: The account the side is on.
+
+    Returns:
+        The side's ``SettleDay``, or ``None``.
+    """
+    # pylint: disable=import-outside-toplevel -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.services.settle_day import recorded_settle_day
+
+    record = transfer_side_record(db_session, transfer_id, account_id)
+    return None if record is None else recorded_settle_day(record)
+
+
 def family_journal_filter(txn):
     """Return the SQL clause selecting the journal entries of *txn*'s FAMILY.
 
