@@ -44,7 +44,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
 )
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import NO_TAX_LAW
 from tests._test_helpers import (
     typed,
     amount_basis_for,
@@ -882,7 +882,7 @@ class TestASettleBooksTheFreshestFigure:
         WHO wrote it (the movement's ``figure_source_id``), which is what keeps
         a machine's resolution distinguishable from a human's correction.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
@@ -927,7 +927,7 @@ class TestASettleBooksTheFreshestFigure:
         resolution was invisible here, so nothing could tell a stale projection
         from an accurate one after the fact.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
@@ -1169,7 +1169,7 @@ class TestASettleBooksTheFreshestFigure:
         own module, so patching a package attribute would intercept nothing and
         this control would pass while grading nothing.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()

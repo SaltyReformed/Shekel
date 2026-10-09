@@ -14,7 +14,7 @@ from marshmallow import (
     ValidationError,
 )
 
-from app import ref_cache
+from app import ref_cache, tax_law
 from app.enums import CalcMethodEnum
 from app.services import paycheck_line_kinds
 from app.schemas.validation._helpers import (
@@ -51,6 +51,32 @@ _PAY_AMOUNT_RANGE = validate.Range(
 _PAYDAY_RANGE = validate.Range(min=CALENDAR_DATE_MIN, max=CALENDAR_DATE_MAX)
 
 
+def _require_supported_state(value: str) -> None:
+    """Refuse a profile's state unless the tax law lists it.
+
+    Plan step salary:X-at-3, ruling **salary:R-SAL78**: "the profile form
+    offers only those, and a save naming another state is refused".  Until
+    then the field took any two characters -- ``ZZ``, or ``nc``, which is not
+    ``NC`` to the law -- and the paycheck engine priced that profile's state
+    tax at ``$0.00`` (finding **SAL-575**).  The question is
+    :meth:`app.tax_law.TaxLaw.supports`, asked of the law when the form is
+    validated rather than when this module loads, so the law a release ships
+    -- or a test installs -- is the law that decides.
+
+    Args:
+        value: The submitted state code.
+
+    Raises:
+        ValidationError: The law does not list *value*.
+    """
+    law = tax_law.LAW
+    if not law.supports(value):
+        raise ValidationError(
+            f"Shekel has no tax rules for {value!r}; it supports "
+            f"{tax_law.name_states(law.supported_states)}."
+        )
+
+
 class SalaryProfileCreateSchema(BaseSchema):
     """Validates POST data for creating a salary profile."""
 
@@ -71,9 +97,7 @@ class SalaryProfileCreateSchema(BaseSchema):
     )
     pay_payday = fields.Date(required=True, validate=_PAYDAY_RANGE)
     filing_status_id = RowId(required=True)
-    state_code = fields.String(
-        required=True, validate=validate.Length(min=2, max=2)
-    )
+    state_code = fields.String(required=True, validate=_require_supported_state)
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
         load_default=0, validate=validate.Range(min=0, max=99),
@@ -121,7 +145,7 @@ class SalaryProfileUpdateSchema(BaseSchema):
 
     name = fields.String(validate=validate.Length(min=1, max=200))
     filing_status_id = RowId()
-    state_code = fields.String(validate=validate.Length(min=2, max=2))
+    state_code = fields.String(validate=_require_supported_state)
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
         validate=validate.Range(min=0, max=99),

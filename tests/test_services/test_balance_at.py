@@ -99,7 +99,7 @@ from app.services.balance_at._resolution import (
     resolved_loan,
 )
 from tests.conftest import SEED_USER_BOOTSTRAP_START
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import NO_TAX_LAW
 from tests._test_helpers import (
     account_never_asserted,
     add_txn,
@@ -1785,7 +1785,7 @@ class TestTheSeamOwnsTheIncomeBasis:
         instead of merely absent.
         """
         # pylint: disable=import-outside-toplevel
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,
@@ -1823,7 +1823,7 @@ class TestTheSeamOwnsTheIncomeBasis:
         pure interest rather than an income mismatch.
         """
         # pylint: disable=import-outside-toplevel
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,

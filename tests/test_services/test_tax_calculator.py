@@ -1542,3 +1542,68 @@ class TestAnnualStateBase:
         """
         result = calculate_state_tax(Decimal("10000.00"), _FakeNCStateConfig())
         assert result == Decimal("0.00")
+
+
+class TestStateTaxTypes:
+    """calculate_state_tax prices two tax types and refuses the rest (plan step salary:X-at-3).
+
+    Plan step salary:X-at-3: the engine refuses "a flat state with no rate".
+    Until X-at-3 a flat-rate config with no rate, or a type no formula
+    prices, fell through to $0.00 -- the silent figure finding SAL-575 names.
+    Each case hands the formula the resolver's own value,
+    :class:`~app.services.tax_config_service.StateTaxRules`.
+    """
+
+    @staticmethod
+    def _rules(tax_type, flat_rate):
+        """A made-up state's rules for one filing status: no deduction, no child tiers."""
+        # Pylint: import-outside-toplevel -- ref_cache answers only once the
+        # app has loaded it, which the module's other stand-ins also wait for.
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.services.tax_config_service import (  # pylint: disable=import-outside-toplevel
+            StateTaxRules,
+        )
+        return StateTaxRules(
+            state_code="ZZ",
+            tax_type_id=ref_cache.tax_type_id(TaxTypeEnum[tax_type]),
+            flat_rate=flat_rate,
+            standard_deduction=Decimal("0.00"),
+            child_deduction_tiers=(),
+        )
+
+    def test_a_state_with_no_income_tax_prices_zero(self):
+        """The explicit $0.00 entry: no tax on $78,000.00."""
+        assert calculate_state_tax(
+            Decimal("78000.00"), self._rules("NONE", None),
+        ) == Decimal("0")
+
+    def test_a_flat_state_prices_its_rate(self):
+        """5% flat, no deduction: 78,000.00 x 0.05 = 3,900.00."""
+        assert calculate_state_tax(
+            Decimal("78000.00"), self._rules("FLAT", Decimal("0.0500")),
+        ) == Decimal("3900.00")
+
+    def test_a_flat_state_with_no_rate_is_refused(self):
+        """Not $0.00: the rate is what prices a flat state, so its absence is refused."""
+        with pytest.raises(
+            ValueError,
+            match="a flat-rate state's rules state no rate, so its tax cannot be priced",
+        ):
+            calculate_state_tax(Decimal("78000.00"), self._rules("FLAT", None))
+
+    def test_a_bracket_state_is_refused_rather_than_priced_as_flat(self):
+        """No formula prices a state's ladder; a rate beside one is not priced as flat.
+
+        Until X-at-3 a bracket-type config carrying a rate took the flat
+        branch (``if state_config.flat_rate``) and priced 3,900.00 here.
+        """
+        rules = self._rules("BRACKET", Decimal("0.0500"))
+        with pytest.raises(
+            ValueError,
+            match=(
+                rf"no formula prices state tax type id {rules.tax_type_id}: "
+                r"only a flat rate or no income tax is priced"
+            ),
+        ):
+            calculate_state_tax(Decimal("78000.00"), rules)

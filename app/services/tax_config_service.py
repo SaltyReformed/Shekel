@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app import ref_cache, tax_law
+from app.exceptions import UnsupportedStateError
 from app.tax_law import ChildDeductionTier, FederalRules, FicaRules
 
 logger = logging.getLogger(__name__)
@@ -105,13 +106,15 @@ class ProfileTaxSeries:
 
     The law now carries federal rules and FICA for every year it carries
     (:class:`app.tax_law.TaxYearLaw` refuses a year without them), so that
-    state can no longer arise between those two kinds.  A STATE still can: the
-    law lists a state only for the years the app supports it, so a state added
-    in a later year has no entry for the years before it.  Resolving each kind
-    against its own series confines that gap to the state line -- the years
-    before the state's first entry reach FORWARD to it, the approximation
-    :func:`resolve_tax_year` states -- instead of letting it move the federal
-    and FICA lines too.
+    state can no longer arise between those two kinds.  A STATE still can: a
+    new year may ship before one of its states does (ruling **R-SAL86**), so
+    the state's series lacks that year.  Resolving each kind against its own
+    series confines that gap to the state line -- the state resolves on the
+    latest earlier year that lists it -- instead of letting it move the
+    federal and FICA lines too.  (A state first listed AFTER the law's first
+    year, whose earlier years would reach FORWARD to it, cannot be written
+    since plan step salary:X-at-3: :class:`app.tax_law.TaxLaw` refuses it,
+    ruling **R-SAL129**.)
 
     Attributes:
         bracket_sets: ``{tax_year: FederalRules}`` for the profile's filing
@@ -134,27 +137,47 @@ def profile_tax_series(profile) -> ProfileTaxSeries:
     rule needs no clock: they are the years the law carries.  Reads
     :data:`app.tax_law.LAW` and issues no query.
 
-    **A filing status the law does not model resolves no federal rules**, and a
-    state the law does not list resolves no state rules, which is what the
-    per-user copy answered for a status or state it held no row for.  What
-    follows differs by line: a paycheck prices missing federal rules as zero
-    federal withholding (``paycheck_calculator/_withholding.py``) where the
-    annual liability refuses them
+    **A state the law does not list is REFUSED** (plan step salary:X-at-3:
+    "the engine refuses a state the law lacks"; ruling **R-SAL78**).  Until
+    then it resolved no state rules, which priced zero state tax with no word
+    -- or, where a pay stub priced the paycheck, carried the stub's printed
+    state tax unmoved by any pay change, since the formulas priced both sides
+    at zero (finding **SAL-575**, re-measured at X-at-3).  Both profile doors
+    refuse such a state, so only a row older than a release that dropped one
+    reaches this; the refusal (ruling **R-SAL130**) reaches the owner as one
+    page naming the profile and linking its edit page
+    (:mod:`app.error_handlers`).  Every pricing surface reads
+    the law through here -- the paycheck pricer
+    (:class:`~app.services.income_service.ProfilePaychecks`) and the Taxes
+    tab's :func:`load_tax_configs_for_year` -- so the one check covers them all.
+
+    **A filing status the law does not model resolves no federal or state
+    rules**, which is what the per-user copy answered for a status it held no
+    row for.  A paycheck prices missing federal rules as zero federal
+    withholding (``paycheck_calculator/_withholding.py``) where the annual
+    liability refuses them
     (:func:`~app.services.tax_calculator.calculate_annual_federal_liability`
-    raises ``InvalidFilingStatusError``), and both price missing state rules as
-    zero state tax (:func:`~app.services.tax_calculator.calculate_state_tax`).
-    Plan step **salary:X-at-3** makes the state case unsaveable (ruling
-    **R-SAL78**, finding **SAL-575**).
+    raises ``InvalidFilingStatusError``).  Every member of
+    :class:`~app.enums.FilingStatusEnum` is modelled in every year the law
+    carries (:class:`app.tax_law.TaxYearLaw` refuses a year without one), so
+    only a ``ref.filing_statuses`` row with no member reaches that arm.
 
     Args:
         profile (SalaryProfile): Supplies ``filing_status_id`` and
-            ``state_code``.
+            ``state_code``, and its ``id`` and ``name`` for a refusal.
 
     Returns:
         The profile's :class:`ProfileTaxSeries`.
+
+    Raises:
+        UnsupportedStateError: The law does not list the profile's state.
     """
     status = ref_cache.filing_status_member(profile.filing_status_id)
     law = tax_law.LAW
+    if not law.supports(profile.state_code):
+        raise UnsupportedStateError(
+            profile.id, profile.name, profile.state_code, law.supported_states,
+        )
     return ProfileTaxSeries(
         bracket_sets={
             year.tax_year: year.federal[status]
@@ -315,7 +338,14 @@ def load_tax_configs_for_year(profile, tax_year):
         dict: Keys ``bracket_set``, ``state_config``, ``fica_config``.  A value
             is ``None`` only when the law carries NO year for that kind and
             profile -- never merely because *tax_year* itself is not in the law,
-            and never because a SIBLING kind lacks that year.
+            and never because a SIBLING kind lacks that year.  Since plan step
+            salary:X-at-3 that is only the federal and state rules of a filing
+            status the law does not model: a law with no year lists no state,
+            so it refuses every profile below.
+
+    Raises:
+        UnsupportedStateError: The law does not list the profile's state
+            (:func:`profile_tax_series`).
     """
     return _configs_from_series(profile_tax_series(profile), tax_year)
 
