@@ -10,17 +10,27 @@ import json
 
 import pytest
 
+from tools.ci.arcs import ARC_DOCS, REPO
 from tools.ci.scratch import run
+from tools.plan_gate.registries import (
+    LEDGER,
+    RULINGS,
+    STEPS,
+    ledger_rows,
+    outcome_scopes,
+    ruling_rows,
+    step_rows,
+)
 from tools.quill import _migrate_source, migrate, quill
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
 from tools.quill._migrate_fake import complete_input
-from tools.quill._migrate_source import read_source
+from tools.quill._migrate_source import read_registries, read_source
 
 
 def _run(corpus, code, path, capsys):
     """``migrate check --input path`` on the corpus; its exit status and output."""
     status = migrate.main(["check", "--input", str(path)],
-                          read=lambda commit: corpus, root=code)
+                          read=lambda _root, _commit: corpus, root=code)
     captured = capsys.readouterr()
     return status, captured.out, captured.err
 
@@ -86,18 +96,15 @@ def test_an_unreadable_input_or_git_failure_exits_2_before_any_check(corpus, cod
     assert (status, out) == (2, "") and err.startswith("failed: git rev-parse HEAD")
 
 
-def test_planning_files_that_differ_from_head_are_refused_before_any_check(
+def test_planning_files_that_differ_from_head_are_checked_not_refused(
         corpus, code, tmp_path, capsys):
-    """Every card's As filed block names HEAD's commit, so a checkout whose planning files
-    differ from HEAD would cite a commit that does not hold their text (M1 of B1's
-    review): exit 2, nothing checked."""
+    """The registries are read as HEAD holds them (R-BAL257), so an uncommitted planning
+    file no longer stops the check, as it did before that ruling (B1's review, M1)."""
     path = tmp_path / "input.json"
     path.write_text(json.dumps(complete_input(corpus)))
     (code / "docs" / "plans").mkdir(parents=True)
     (code / "docs" / "plans" / "steps.md").write_text("| an uncommitted edit |\n")
-    status, out, err = _run(corpus, code, path, capsys)
-    assert (status, out) == (2, "")
-    assert err.startswith("failed: the planning files differ from HEAD") and "steps.md" in err
+    assert _run(corpus, code, path, capsys)[0] == 0
 
 
 def test_an_input_file_inside_the_repository_is_refused(corpus, code, capsys):
@@ -124,26 +131,79 @@ def test_a_card_filed_already_is_counted_apart_and_takes_only_its_links(
     assert lines[-2].startswith("writes if every card is new: 4 filing the rulings, then 37 ")
 
 
-@pytest.mark.parametrize("change", ["modified", "staged", "readme"])
-def test_a_tracked_planning_file_changed_since_head_is_refused(corpus, code, tmp_path, capsys,
-                                                               change):
-    """M1's own case, a TRACKED planning file edited since HEAD -- unstaged, staged, and the
-    one arc document outside docs/plans (review of B1's fixes, MEDIUM-2)."""
-    readme = code / "docs" / "audits" / "balance_architecture" / "README.md"
-    steps = code / "docs" / "plans" / "steps.md"
-    for path in (readme, steps):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("committed\n")
+def _without_line(text, opening):
+    """``text`` without its first line opening ``opening``."""
+    lines = text.splitlines(keepends=True)
+    index = next(index for index, line in enumerate(lines) if line.startswith(opening))
+    return "".join(lines[:index] + lines[index + 1:])
+
+
+def _commit_planning_files(code):
+    """Commit the live registries and arc documents into ``code`` at their paths, each
+    registry without its first row (``steps.md`` without its first outcome too) and each arc
+    document with a line of its own added, so the commit's rows and text are no checkout's:
+    the texts by path, and the commit."""
+    texts = {path: f"{path.read_text()}\nCommitted in {path.name}.\n"
+             for path in ARC_DOCS.values()}
+    texts.update({path: _without_line(path.read_text(), f"| {rows[0].arc} | {rows[0].ident} |")
+                  for path, rows in ((STEPS, step_rows()), (LEDGER, ledger_rows()),
+                                     (RULINGS, ruling_rows()))})
+    texts[STEPS] = _without_line(texts[STEPS], f"| {outcome_scopes()[0][0]} |")
+    for path, text in texts.items():
+        target = code / path.relative_to(REPO)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
     run(code, "add", "-A")
     run(code, "commit", "-q", "-m", "planning files")
-    edited = readme if change == "readme" else steps
-    edited.write_text("edited\n")
+    return texts, run(code, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("change", ["modified", "staged", "readme", "untracked"])
+def test_the_registries_are_read_as_the_commit_holds_them_whatever_the_checkout_holds(
+        code, change):
+    """R-BAL257 and R-BAL259: every registry and arc document is read from git at the
+    commit the cards' As filed blocks name, so a planning file changed since -- unstaged,
+    staged, the one arc document outside docs/plans, or a new file beside the registries
+    -- changes nothing read (the four cases B1 refused, review of B1 M1 and MEDIUM-2)."""
+    texts, commit = _commit_planning_files(code)
+    edited = ARC_DOCS["balance"] if change == "readme" else STEPS
+    (code / edited.relative_to(REPO)).write_text("edited\n")
     if change == "staged":
-        run(code, "add", str(edited))
+        run(code, "add", str(code / edited.relative_to(REPO)))
+    if change == "untracked":
+        (code / STEPS.relative_to(REPO)).write_text(texts[STEPS])
+        (code / "docs" / "plans" / "archive").mkdir()
+        (code / "docs" / "plans" / "archive" / "new.md").write_text("HISTORICAL\n")
+    registries = read_registries(code, commit)
+    assert registries.commit == commit
+    assert all(texts[path] != path.read_text() for path in texts)
+    assert registries.steps == tuple(step_rows()[1:]) and registries.steps
+    assert registries.findings == tuple(ledger_rows()[1:]) and registries.findings
+    assert registries.rulings == tuple(ruling_rows()[1:]) and registries.rulings
+    assert registries.outcomes == tuple((name, tuple(scope)) for name, scope in
+                                        outcome_scopes()[1:]) and registries.outcomes
+    assert {arc: registries.documents[arc] for arc in ARC_DOCS} == {
+        arc: texts[path] for arc, path in ARC_DOCS.items()}
+
+
+def test_the_registries_are_read_at_the_commit_named_not_at_head(code):
+    """Read at an earlier commit, the registries are that commit's, though HEAD has moved on
+    (review of B2a, L4: a read of ``HEAD:`` passed every other test)."""
+    texts, commit = _commit_planning_files(code)
+    (code / STEPS.relative_to(REPO)).write_text(STEPS.read_text())
+    run(code, "commit", "-q", "-am", "the next commit")
+    assert run(code, "rev-parse", "HEAD") != commit
+    assert read_registries(code, commit).steps == tuple(step_rows(text=texts[STEPS]))
+
+
+def test_a_planning_file_the_commit_lacks_fails_with_exit_2(code, tmp_path, capsys):
+    """A commit that holds no ``steps.md`` (here, ``code``'s empty base): git cannot read
+    it, so nothing is checked."""
     path = tmp_path / "input.json"
-    path.write_text(json.dumps(complete_input(corpus)))
-    status, out, err = _run(corpus, code, path, capsys)
-    assert (status, out) == (2, "") and edited.name in err
+    path.write_text("{}")
+    status = migrate.main(["check", "--input", str(path)], root=code)
+    captured = capsys.readouterr()
+    assert (status, captured.out) == (2, "") and "docs/plans/steps.md" in captured.err
 
 
 def test_planning_files_that_are_not_utf8_exit_2(corpus, code, tmp_path, capsys):
@@ -151,7 +211,7 @@ def test_planning_files_that_are_not_utf8_exit_2(corpus, code, tmp_path, capsys)
     path = tmp_path / "input.json"
     path.write_text(json.dumps(complete_input(corpus)))
 
-    def unreadable(_commit):
+    def unreadable(_root, _commit):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
     status = migrate.main(["check", "--input", str(path)], read=unreadable, root=code)
     assert (status, capsys.readouterr().out) == (2, "")

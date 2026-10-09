@@ -112,6 +112,17 @@ def card_title(alias: str, name: str) -> str:
     return f"{alias_mark(alias)} {name.strip()}"
 
 
+def title_alias(title: str) -> str | None:
+    """The old id a title carries as :func:`card_title` writes it -- its
+    :func:`alias_mark`, first, then a space -- or None for a title that carries none.
+    X-cx's migration finds each item's card by it (L7 draft 4 s.4).  An alias holds no
+    ``]``: the first one closes the mark."""
+    alias, closed, _ = title.removeprefix("[").partition("] ")
+    if not title.startswith("[") or not closed or not alias or "]" in alias:
+        return None
+    return alias
+
+
 def ruling_body(question: str, answer: str) -> str:
     """A ruling card's body: the developer's question, then his answer, each word for word."""
     return f"{_QUESTION}{question.strip()}{_ANSWER}{answer.strip()}"

@@ -22,6 +22,9 @@ from tools.quill._migrate_bodies import (
     bare_numbers,
     build,
     census,
+    differences,
+    holds_as_filed,
+    masked,
 )
 from tools.quill._migrate_fake import BALANCE, COMMIT, FINDINGS, complete_input
 from tools.quill._migrate_input import grade
@@ -209,10 +212,11 @@ def test_a_title_of_exactly_one_hundred_characters_passes_and_one_more_does_not(
      "census: line 23 of balance's document belongs on balance:A-3's card, and its built "
      "body does not hold it in its place"),
 ], ids=["a-note-leaked", "a-paragraph-on-the-wrong-card", "a-line-doubled", "two-lines-swapped"])
-def test_the_census_is_exact_nothing_extra_moved_or_doubled(corpus, card, old, new, refusal):
+def test_the_census_reads_each_line_back_nothing_extra_moved_or_doubled(corpus, card, old,
+                                                                       new, refusal):
     """H2 of B1's review: a note leaked onto a card, a paragraph given to the wrong card, a
     doubled line and two lines swapped each passed the one-way, find-in-order census;
-    read back exactly, each is refused."""
+    each card's non-blank lines read back region by region, each is refused."""
     inputs = _inputs(corpus)
     built = build(inputs)[0]
     assert old in built[card].body
@@ -288,3 +292,38 @@ def test_a_code_span_starts_at_the_start_of_its_backtick_run():
     fixes, LOW-6).  On one line, the doubled runs would pair and hide #5 as code."""
     assert [bare_numbers(Built("t", text, None)) for text in ("``#5`", "x `` #6 `")] == [1, 1]
     assert bare_numbers(Built("t", "``#5` and x `` #6 `", None)) == 1
+
+
+def test_a_cards_text_is_compared_with_its_commit_left_out_and_nothing_else(corpus):
+    """:func:`masked` leaves out only the As filed block's commit (draft 4 s.5), so the same
+    text at another commit is no difference, and every other change is one: the title
+    exactly, the body and a question's comment (review of B2a, M4)."""
+    built = build(_inputs(corpus))[0]
+    step, question = built["balance:A-3"], built["balance:Q-1"]
+    later = step.body.replace(COMMIT, "f" * 40)
+    assert later != step.body and masked(later) == masked(step.body)
+    assert masked(step.body).count("<commit>") == 1 and COMMIT not in masked(step.body)
+    assert differences(step, step.title, later, None) == []
+    assert differences(step, step.title + " ", step.body.replace("the", "a", 1), None) == [
+        "title", "body"]
+    assert differences(question, question.title, question.body,
+                       question.comment.replace("OPEN", "CLOSED")) == ["comment"]
+    assert differences(question, question.title, question.body, question.comment) == []
+    assert differences(step, step.title, step.body.replace("starts: ", "starts: after ", 1),
+                       None) == ["body"]
+    assert differences(question, question.title, question.body, None) == []
+    assert differences(step, step.title, step.body, question.comment) == ["comment"]
+
+
+def test_every_card_the_migration_files_holds_its_as_filed_block(corpus):
+    """In its body, or a question's in its comment: what lets a run know a card it filed
+    whatever becomes of its title (review of B2a, M3)."""
+    built = build(_inputs(corpus))[0]
+    for item in read_source(corpus).items:
+        card = built[item.key]
+        if item.kind == "question":
+            assert holds_as_filed(card.comment) and not holds_as_filed(card.body), item.key
+        else:
+            assert holds_as_filed(card.body), item.key
+    assert not holds_as_filed("A card of the tracker's own, quoting `filed from: x`.")
+    assert holds_as_filed(built["balance:F-1"].body.replace("\n", "\r\n"))

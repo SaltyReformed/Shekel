@@ -262,15 +262,20 @@ LIFTED_ROWS_OVER_CAP = {
 }
 
 
-def ruling_rows() -> list[RulingRow]:
+def ruling_rows(*, text: str | None = None) -> list[RulingRow]:
     """Return every ruling the registry states, in table order.
+
+    Args:
+        text: The registry's text to read, which X-cx's migration passes as a
+            commit holds it (ruling ``balance:R-BAL257``); None reads the file.
 
     Returns:
         One :class:`_tables.RulingRow` per body row.
     """
     return [
         RulingRow(*cells)
-        for cells in rows_under(RULINGS.read_text(), RULINGS_HEADER)
+        for cells in rows_under(
+            RULINGS.read_text() if text is None else text, RULINGS_HEADER)
     ]
 
 
