@@ -70,7 +70,6 @@ from app.services import (
 )
 from app.services.amount_ownership import state_own_amount
 from app.services.balance_at import BalanceContext
-from app.services.row_valuation import settled_figure
 from app.services.template_amount_service import amount_versions
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -82,6 +81,7 @@ from tests._test_helpers import (
     make_transfer_template,
     state_template_price,
     transfer_amount,
+    transfer_side_figure,
 )
 from tests.oracles.recurrence_baseline import MONTHLY_FIRST
 from tests.test_routes._statement_forms import form_fields
@@ -540,6 +540,9 @@ class TestTheRestate:
         inside the door booked the pre-restate `$500.00` on both legs while
         the plan read `$525.00`.  The restate is the door's own act now
         (``definition_price``, R-BAL96 as amended), ordered before the settle.
+        What each leg books is its side's payment RECORD since plan step
+        ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -557,9 +560,11 @@ class TestTheRestate:
             assert transfer_amount(xfer) == Decimal("525.00")
             assert xfer.template.default_amount == Decimal("525.00")
             assert xfer.is_override is False
-            legs = _shadows(xfer.id)
-            assert len(legs) == 2
-            assert [settled_figure(leg) for leg in legs] == [Decimal("525.00")] * 2
+            assert len(_shadows(xfer.id)) == 2
+            assert [
+                transfer_side_figure(db.session, xfer.id, account_id)
+                for account_id in (xfer.from_account_id, xfer.to_account_id)
+            ] == [Decimal("525.00")] * 2
 
     def test_the_service_refuses_the_act_on_a_recurring_transfer(
         self, app, seed_user, seed_periods_today,

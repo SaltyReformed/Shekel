@@ -25,6 +25,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     settlement_if_settling,
     shadow_amount,
+    transfer_side_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -372,6 +373,11 @@ class TestTransferShadowMarkDoneStateMachine:
         RENDERED there.**  The card partials suppress Mark Paid on
         ``Status.is_settled``, and Cancelled is not settled -- so this refusal
         is reached by an ordinary click rather than by a crafted request.
+
+        The refusal is graded on the TRANSFER, the one status, and on the
+        leg's side, which holds no dated payment record; it was graded on the
+        shadow's status until plan step ``balance:X-bi-6-4d-2`` stopped keeping
+        one (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             xfer = self._create_transfer_with_shadows(
@@ -400,9 +406,12 @@ class TestTransferShadowMarkDoneStateMachine:
             assert f'data-leg-account-id="{shadow.account_id}"' in html
 
             db.session.expire_all()
-            assert db.session.get(Transaction, shadow.id).status_id == (
+            assert db.session.get(Transfer, xfer.id).status_id == (
                 ref_cache.status_id(StatusEnum.CANCELLED)
             )
+            assert transfer_side_settle_day(
+                db.session, xfer.id, shadow.account_id,
+            ) is None
 
     def test_cancel_on_paid_transfer_from_its_leg_returns_400(
         self, app, auth_client, seed_user, seed_periods_today,

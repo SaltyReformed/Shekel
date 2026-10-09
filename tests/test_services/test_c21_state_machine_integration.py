@@ -25,7 +25,7 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import transfer_service
 from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import one_off_row_of
+from tests._test_helpers import one_off_row_of, transfer_side_settle_day
 
 
 UNIQUE_INDEX_NAME = "uq_transactions_transfer_type_active"
@@ -92,7 +92,13 @@ class TestTransferServiceLegalTransitions:
     transactions atomically."""
 
     def test_projected_to_done_propagates(self, app, db, transfer_data):
-        """projected -> done is legal and reaches both shadows."""
+        """projected -> done is legal and reaches both sides.
+
+        The transfer's status is the one status, and each side's payment
+        record is dated by the move, where each shadow said Paid until plan
+        step ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
+        """
         td = transfer_data
         with app.app_context():
             xfer = _create_basic_transfer(td)
@@ -110,8 +116,10 @@ class TestTransferServiceLegalTransitions:
                 transfer_id=xfer.id,
             ).all()
             assert len(shadows) == 2
-            for s in shadows:
-                assert s.status_id == done_id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is not None
 
     def test_done_to_projected_revert_propagates(self, app, db, transfer_data):
         """done -> projected (revert) is legal."""

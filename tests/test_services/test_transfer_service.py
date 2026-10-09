@@ -33,6 +33,7 @@ from app.services import (
     status_seam,
 )
 from app.services.row_valuation import settled_figure
+from app.services.transfer_legs import grid_transfer_leg
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
@@ -46,6 +47,9 @@ from tests._test_helpers import (
     rhythm_of,
     shadow_amount,
     transfer_family_journal_filter,
+    transfer_side_figure,
+    transfer_side_record,
+    transfer_side_settle_day,
     typed,
     write_past_the_amount_seam,
 )
@@ -507,7 +511,13 @@ class TestUpdateTransfer:
                 assert shadow_amount(s) == Decimal("400.00")
 
     def test_status_syncs_shadows(self, app, db, transfer_data):
-        """Updating status propagates to both shadows."""
+        """Updating status moves the transfer and records both its sides.
+
+        The transfer's status is the one status, and each side's payment
+        record is dated by the settle, where each shadow said Paid until plan
+        step ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -518,9 +528,10 @@ class TestUpdateTransfer:
             )
 
             assert xfer.status_id == done_status.id
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.status_id == done_status.id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is not None
 
     def test_period_syncs_shadows(self, app, db, transfer_data):
         """Updating period propagates to both shadows."""
@@ -710,45 +721,51 @@ class TestUpdateTransfer:
         TELLS the user to revert in order to edit, so the app's own instruction
         deleted a figure they had read off a statement.
 
-        Both shadows keep it, which is Transfer Invariant 3 over the record as
-        well as over the amount, and neither is worth it while unsettled --
-        ``row_valuation.settled_figure`` asks the STATUS, so it answers ``None``
-        for a reverted leg whatever the leg still carries.
+        Both sides' payment records keep it, which is Transfer Invariant 3 over
+        the record as well as over the amount, and neither is worth it while
+        unsettled -- a side's figure asks the TRANSFER's status, so it answers
+        ``None`` for a reverted side whatever its record still carries.  Each
+        side is its RECORD, hung off the transfer, since plan step
+        ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            typed_id = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
+            )
+            sides = (xfer.from_account_id, xfer.to_account_id)
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
                 status_id=done_id, figure=typed(Decimal("100")),
             )
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id,
-            ).all()
-            for shadow in shadows:
-                assert settled_figure(shadow) == Decimal("100")
+            for account_id in sides:
+                assert transfer_side_figure(
+                    db.session, xfer.id, account_id,
+                ) == Decimal("100")
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=projected_id,
             )
 
             db.session.expire_all()
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id,
-            ).all()
-            for shadow in shadows:
+            for account_id in sides:
+                record = transfer_side_record(db.session, xfer.id, account_id)
                 # The ASSERTION is withdrawn ...
-                assert shadow.settled_on is None
-                assert shadow.reconciled_by_id is None
-                # ... and WHAT MOVED is kept, on BOTH legs (Invariant 3).
-                assert status_seam.recorded_settlement(shadow) == status_seam.Settlement(
-                    Decimal("100"), MovementFigureSourceEnum.TYPED,
+                assert record.settled_on is None
+                assert record.reconciled_by_id is None
+                # ... and WHAT MOVED is kept, on BOTH sides (Invariant 3).
+                assert (record.amount, record.figure_source_id) == (
+                    Decimal("100"), typed_id,
                 )
                 # Kept, but not counted: the status is what decides.
-                assert settled_figure(shadow) is None
+                assert transfer_side_figure(
+                    db.session, xfer.id, account_id,
+                ) is None
 
     def test_settle_day_defaults_to_today_when_omitted(
         self, app, db, transfer_data
@@ -757,10 +774,12 @@ class TestUpdateTransfer:
 
         Defense-in-depth for the route layer: any caller that
         forgets to pass a settle day when transitioning to a settled
-        status (Paid/Received/Settled) still produces shadows with
+        status (Paid/Received/Settled) still produces side records with
         a recorded ``settled_on`` day -- the dashboard's "paid
-        on time" indicator and ``Transaction.days_paid_before_due``
-        analytics rely on it.
+        on time" indicator and the legs' ``days_paid_before_due``
+        analytics rely on it.  Each side's day is its payment RECORD's
+        since plan step ``balance:X-bi-6-4d-2``; the shadows carried it until
+        then (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
@@ -773,16 +792,12 @@ class TestUpdateTransfer:
             )
             db.session.flush()
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.settled_on is not None, (
-                    f"Shadow {s.id} has no settled_on after settle "
-                    f"without explicit kwarg; defense-in-depth failed."
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                record = transfer_side_record(db.session, xfer.id, account_id)
+                assert record is not None and record.settled_on is not None, (
+                    f"The side on account {account_id} has no settled_on "
+                    f"after settle without explicit kwarg; defense-in-depth "
+                    f"failed."
                 )
 
     def test_an_explicit_day_wins_over_the_default_on_a_settle(
@@ -801,7 +816,9 @@ class TestUpdateTransfer:
         **N-178**'s other half), not a value anything needed.
 
         What the rule really is, and what is pinned here: an explicit day wins
-        over the default, and the default is the user's today.
+        over the default, and the default is the user's today.  Each side's day
+        is read off its payment RECORD since plan step ``balance:X-bi-6-4d-2``
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
@@ -820,16 +837,13 @@ class TestUpdateTransfer:
                 ),
             )
             db.session.flush()
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.settled_on == explicit, (
-                    f"Shadow {s.id} took the default day {s.settled_on} "
-                    f"instead of the explicit {explicit}."
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                day = transfer_side_record(
+                    db.session, xfer.id, account_id,
+                ).settled_on
+                assert day == explicit, (
+                    f"The side on account {account_id} took the default day "
+                    f"{day} instead of the explicit {explicit}."
                 )
 
     def test_settle_day_cleared_on_revert_to_non_settled(
@@ -838,9 +852,12 @@ class TestUpdateTransfer:
         """F-048 / C-22: reverting to non-settled clears the stale settle day.
 
         Maintains the settled-iff-dated invariant: a Paid
-        transfer reverted to Projected must have its shadows'
+        transfer reverted to Projected must have its sides'
         settle day cleared, otherwise a
-        future settle would silently inherit the stale timestamp.
+        future settle would silently inherit the stale timestamp.  Each
+        side's day is its payment RECORD's since plan step
+        ``balance:X-bi-6-4d-2``; the shadows carried it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
@@ -849,35 +866,30 @@ class TestUpdateTransfer:
             projected_status = (
                 db.session.query(Status).filter_by(name="Projected").one()
             )
+            sides = (xfer.from_account_id, xfer.to_account_id)
 
             # Settle (the seam records the user's today).
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=done_status.id,
             )
             db.session.flush()
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            for s in shadows:
-                assert s.settled_on is not None
+            for account_id in sides:
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is not None
 
             # Revert to Projected with no explicit day.
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=projected_status.id,
             )
             db.session.flush()
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id, is_deleted=False)
-                .all()
-            )
-            for s in shadows:
-                assert s.settled_on is None, (
-                    f"Shadow {s.id} retained a stale settled_on after "
-                    f"revert to Projected; the F-048 invariant is "
-                    f"violated."
+            for account_id in sides:
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is None, (
+                    f"The side on account {account_id} retained a stale "
+                    f"settle day after revert to Projected; the F-048 "
+                    f"invariant is violated."
                 )
 
 
@@ -1035,7 +1047,13 @@ class TestInvariants:
                 assert shadow_amount(s) == Decimal("777.77")
 
     def test_statuses_always_match_after_update(self, app, db, transfer_data):
-        """Invariant 4: shadow statuses always equal transfer status."""
+        """Invariant 4: the transfer's status is the one status, and its sides follow.
+
+        A shadow's status is kept and read by nothing since plan step
+        ``balance:X-bi-6-4d-2``: the transfer says Paid and each side's
+        payment record is dated, where each shadow said Paid until then
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -1046,9 +1064,10 @@ class TestInvariants:
             )
 
             assert xfer.status_id == done.id
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.status_id == done.id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is not None
 
     def test_periods_always_match_after_update(self, app, db, transfer_data):
         """Invariant 5: shadow periods always equal transfer period."""
@@ -1067,7 +1086,14 @@ class TestInvariants:
                 assert s.pay_period_id == new_period.id
 
     def test_multiple_updates_maintain_invariants(self, app, db, transfer_data):
-        """Multiple sequential updates do not break any invariant."""
+        """Multiple sequential updates do not break any invariant.
+
+        The status half is the transfer's and its sides' payment records'
+        since plan step ``balance:X-bi-6-4d-2``: the transfer says Paid and
+        each side's record is dated, where each shadow said Paid until then
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The shadows
+        still mirror the amount and the period.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
@@ -1084,8 +1110,12 @@ class TestInvariants:
             assert len(shadows) == 2
             for s in shadows:
                 assert shadow_amount(s) == Decimal("999.99")
-                assert s.status_id == done.id
                 assert s.pay_period_id == td["periods"][4].id
+            assert xfer.status_id == done.id
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is not None
 
 
 # ── Soft-Delete Handling Tests (M2) ──────────────────────────────
@@ -1213,14 +1243,16 @@ class TestRestoreTransfer:
     def test_repairable_status_drift_is_still_repaired(
         self, app, db, transfer_data,
     ):
-        """A shadow drifted to a LEGALLY reachable status is repaired, quietly.
+        """A shadow drifted to another status restores, and nothing reads the drift.
 
-        The positive control for
-        :meth:`test_unrepairable_status_drift_is_refused` below -- without it
-        that test could pass by refusing every drift, which would silently
-        break the repair this function exists for.  Projected -> Paid is a
-        legal transaction transition, so the shadow is pulled back into line
-        with its parent and the restore succeeds.
+        It graded the REPAIR until plan step ``balance:X-bi-6-4d-2``: the
+        restore pulled a shadow drifted to a legally reachable status back
+        into line with its parent.  That step stopped keeping a shadow's
+        status at all -- the transfer's status is the one status, and the side
+        a grid draws reads it -- so the restore repairs none, and the drift is
+        still planted and graded as read by nothing: the restore succeeds and
+        the drifted shadow's side reads the TRANSFER's Paid (ruling R-BAL167
+        class 3, plan step balance:X-bi-6-4d-2).  The name is kept as history.
         """
         with app.app_context():
             td = transfer_data
@@ -1233,9 +1265,8 @@ class TestRestoreTransfer:
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
 
-            # Drift ONE shadow backwards to Projected, which Paid is legally
-            # reachable from.  Written directly, which is what the drift this
-            # repair exists for looks like.
+            # Drift ONE shadow backwards to Projected.  Written directly,
+            # which is what such a drift looks like.
             drifted = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id).first()
@@ -1246,8 +1277,14 @@ class TestRestoreTransfer:
             transfer_service.restore_transfer(xfer_id, td["user"].id)
 
             db.session.refresh(drifted)
-            assert drifted.status_id == paid_id
             assert drifted.is_deleted is False
+            # The plant stands (no restore repairs a shadow's status), so the
+            # read below is not the shadow's.
+            assert drifted.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert xfer.status_id == paid_id
+            assert grid_transfer_leg(
+                xfer, drifted.account_id,
+            ).status_id == paid_id
 
     def test_a_status_repair_takes_the_siblings_instant_never_today(
         self, app, db, transfer_data,
@@ -1411,46 +1448,54 @@ class TestRestoreTransfer:
     def test_a_repair_into_a_projected_status_clears_the_instant(
         self, app, db, transfer_data,
     ):
-        """Repairing a shadow DOWN to Projected drops its stale payment time.
+        """A shadow drifted UP to Paid restores, and no side reads its payment time.
 
-        The other half of the rule above: a row that is not settled must not
-        carry a settle instant, or ``days_paid_before_due`` and the paid-on-time
-        indicator read a payment that has not happened.  Together the two pin
-        both directions of the seam's settle-day maintenance on the repair
-        path, which had none before ruling R-DO routed it through the seam.
+        A side that is not settled must not carry a settle day, or
+        ``days_paid_before_due`` and the paid-on-time indicator read a payment
+        that has not happened.  It graded the restore's REPAIR of the drifted
+        shadow until plan step ``balance:X-bi-6-4d-2``, which stopped keeping
+        a shadow's status and day: the restore repairs neither, and the side a
+        grid draws reads the TRANSFER's status and its side record's day.  So
+        the drift is still planted and graded as read by nothing (ruling
+        R-BAL167 class 3, plan step balance:X-bi-6-4d-2).  The name is kept as
+        history.
+
+        **The shadow no longer holds a payment beside its drift** (ruling
+        R-BAL167 class 2): a side's payment record hangs off the TRANSFER since
+        that step, and a shadow hidden holding one -- the state the soft
+        delete then left -- is refused at commit by the deleted-row rule's row
+        arm (ruling R-CC92; measured: "transaction 2 was deleted while it still
+        holds a recorded payment or purchase").  So the coherent drift is the
+        status and the day alone.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
 
-            # Parent stays Projected; drift ONE shadow up to Paid with a time.
-            # Drifted BEFORE the soft delete: the database refuses a payment
-            # written under a hidden row (ruling R-CC89), and the state the
-            # restore meets -- a hidden shadow drifted to Paid, holding its
-            # payment -- is the same.  Rule-5 re-expression,
-            # developer-confirmed 2026-09-23.
+            # Parent stays Projected; drift ONE shadow up to Paid with a day.
             drifted = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
-            # A dated row carries the whole record (plan step X-au-c3); the
-            # drift under test is the STATUS, so the record is coherent.
             record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
             db.session.flush()
-            cover_bare_settled_row(db.session, drifted, shadow_amount(drifted))
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
-            assert drifted.is_deleted is True and len(drifted.entries) == 1
+            assert drifted.is_deleted is True
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
             db.session.flush()
             db.session.refresh(drifted)
 
-            assert drifted.status_id == xfer.status_id
-            assert drifted.settled_on is None, (
-                f"a Projected shadow kept a payment time: {drifted.settled_on}"
+            # The plant stands (no restore repairs a shadow), so the reads
+            # below are not the shadow's.
+            assert drifted.settled_on == date(2026, 3, 20)
+            side = grid_transfer_leg(xfer, drifted.account_id)
+            assert side.status_id == td["projected_status"].id
+            assert side.settled_on is None, (
+                f"a Projected side kept a payment time: {side.settled_on}"
             )
 
     def test_unrepairable_status_drift_is_refused(
@@ -1637,9 +1682,14 @@ class TestRestoreTransfer:
                 assert shadow_amount(s) == Decimal("250.00")
 
     def test_corrects_drifted_shadow_status(self, app, db, transfer_data):
-        """Verify that restore_transfer detects and corrects shadow
-        status_id values that drifted from the transfer status during the
-        soft-deleted period.
+        """Verify that a shadow status drifted during the soft-deleted period
+        is read by nothing once restore_transfer brings the pair back.
+
+        It graded the restore's CORRECTION of the drifted status until plan
+        step ``balance:X-bi-6-4d-2``, which stopped keeping a shadow's status:
+        the transfer's status is the one status and both sides a grid draws
+        read it, so the restore corrects none (ruling R-BAL167 class 3, plan
+        step balance:X-bi-6-4d-2).  The name is kept as history.
         """
         with app.app_context():
             td = transfer_data
@@ -1659,12 +1709,14 @@ class TestRestoreTransfer:
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
 
-            # Both shadows must match transfer's projected status.
-            shadows = db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id
-            ).all()
-            for s in shadows:
-                assert s.status_id == td["projected_status"].id
+            # The plant stands (no restore corrects a shadow's status), so the
+            # reads below are not the shadow's.
+            assert shadow.status_id == done_status.id
+            # Both sides read the transfer's projected status.
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert grid_transfer_leg(
+                    xfer, account_id,
+                ).status_id == td["projected_status"].id
 
     def test_corrects_drifted_shadow_due_date(self, app, db, transfer_data):
         """Verify that restore_transfer re-syncs a shadow due_date that
@@ -2048,16 +2100,20 @@ class TestDueDateAndSettleDayShadows:
     def test_a_settle_day_correction_lands_on_both_shadows(
         self, app, db, transfer_data,
     ):
-        """A day corrected on ONE side reaches both shadows: the other borrows it.
+        """A day corrected on ONE side reaches both sides: the other borrows it.
 
         The correction door (ruling **R-ED**, per side since plan step
         ``balance:X-bi-6-4c-3``, ruling **R-BAL142**): the user read their
         statement and the money left the source account on a day other than
         the one Paid was pressed on.  They correct that side; the other side
         holds no day of its own -- a Paid press states none -- so it BORROWS
-        the corrected day, and both shadows land on it.  Since plan step
-        ``balance:X-bi-6-3`` the posting writer files each side's entry under
-        that side's own covering movement's day, so the two land together.
+        the corrected day, and both sides' payment records land on it.  Since
+        plan step ``balance:X-bi-6-3`` the posting writer files each side's
+        entry under that side's own covering movement's day, so the two land
+        together.  Each side's day is its RECORD's since plan step
+        ``balance:X-bi-6-4d-2``; the shadows carried it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).  The name is kept
+        as history.
         """
         with app.app_context():
             td = transfer_data
@@ -2078,14 +2134,10 @@ class TestDueDateAndSettleDayShadows:
             )
             db.session.flush()
 
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            )
-            assert len(shadows) == 2
-            for s in shadows:
-                assert s.settled_on == corrected
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_record(
+                    db.session, xfer.id, account_id,
+                ).settled_on == corrected
 
     def test_a_day_on_an_UNSETTLED_transfer_is_refused(
         self, app, db, transfer_data,
@@ -2137,7 +2189,10 @@ class TestDueDateAndSettleDayShadows:
         value's construction.  The legitimate way to remove the day is to move
         the transfer out of the settled band, which the seam does as part of
         the status change -- asserted below so the refusal is not mistaken for
-        "the day can never be removed".
+        "the day can never be removed".  Each side's day is its payment
+        RECORD's since plan step ``balance:X-bi-6-4d-2``; the shadows carried
+        it until then (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
@@ -2148,31 +2203,28 @@ class TestDueDateAndSettleDayShadows:
                 xfer.id, td["user"].id, status_id=done_status.id,
             )
             db.session.flush()
+            sides = (xfer.from_account_id, xfer.to_account_id)
 
             with pytest.raises(ValueError) as exc:
                 transfer_service.SideDay(xfer.from_account_id, None)
             assert "cannot wrap None" in str(exc.value)
 
             # The day survived the refusal.
-            for s in (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            ):
-                assert s.settled_on == display_today()
+            for account_id in sides:
+                assert transfer_side_record(
+                    db.session, xfer.id, account_id,
+                ).settled_on == display_today()
 
-            # And the supported route out clears it on both shadows.
+            # And the supported route out clears it on both sides.
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
                 status_id=td["projected_status"].id,
             )
             db.session.flush()
-            for s in (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .all()
-            ):
-                assert s.settled_on is None
+            for account_id in sides:
+                assert transfer_side_settle_day(
+                    db.session, xfer.id, account_id,
+                ) is None
 
     def test_an_undated_projected_transfer_stays_undated(self, app, db, transfer_data):
         """Stating NO day on a PROJECTED transfer leaves both shadows None.
@@ -2317,44 +2369,64 @@ class TestTheFigureCorrectionDoorOnAPair:
             .all()
         )
 
+    @staticmethod
+    def _records(xfer):
+        """Return the transfer's ``(from-side, to-side)`` payment records.
+
+        What each side RECORDS since plan step ``balance:X-bi-6-4d-2``, read by
+        independent SQL over the side links (ruling R-BAL167 class 4, plan
+        step balance:X-bi-6-4d-2); :meth:`_legs`' shadows held it until then.
+        """
+        return tuple(
+            transfer_side_record(db.session, xfer.id, account_id)
+            for account_id in (xfer.from_account_id, xfer.to_account_id)
+        )
+
     def test_a_correction_records_on_both_legs_and_on_neither_parent(
         self, app, db, transfer_data,
     ):
         """Transfer Invariant 3 for the settlement record.
 
-        A transfer's money moves on its two legs, so each records its own and
+        A transfer's money moves on its two sides, so each records its own and
         the two are equal -- exactly as their settle day is.  The PARENT carries
-        no such column, which is what ``apply_status_to_all_three`` enforces by
-        passing the record only to the shadows.
+        no such column: each side's record hangs off it by a side link.  Read
+        off the sides' records since plan step ``balance:X-bi-6-4d-2``, where
+        the shadows held them until then (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
             xfer = self._settled_transfer(td)
-            day = self._legs(xfer.id)[0].settled_on
+            day = self._records(xfer)[0].settled_on
+            assert day is not None, "setup: the settle dated the pair"
+            typed_id = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
+            )
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, figure=typed(Decimal("263.11")),
             )
             db.session.flush()
 
-            for leg in self._legs(xfer.id):
-                assert status_seam.recorded_settlement(leg) == status_seam.Settlement(
-                    Decimal("263.11"), MovementFigureSourceEnum.TYPED,
+            for record in self._records(xfer):
+                assert (record.amount, record.figure_source_id) == (
+                    Decimal("263.11"), typed_id,
                 )
-                assert leg.settled_on == day, (
+                assert record.settled_on == day, (
                     "a figure correction moved the pair's day"
                 )
-            # The PARENT went through the seam too, and came out on the same
-            # status as its legs (Transfer Invariant 4).  It deliberately does
-            # NOT assert ``not hasattr(xfer, "settled_amount")``: the seam gates
-            # its whole record block on ``isinstance(row, Transaction)``, so
-            # handing the parent a record is a silent no-op and only a SCHEMA
-            # change could fail such an assertion -- the "``hasattr`` is not a
-            # test" shape plan step X-aa already paid for (neutral review,
-            # 2026-08-18).
-            assert all(
-                leg.status_id == xfer.status_id for leg in self._legs(xfer.id)
-            ), "the correction moved the legs' status away from the parent's"
+            # The PARENT went through the seam too, and came out on its status,
+            # Paid -- the one status the pair has, which each shadow mirrored
+            # until plan step ``balance:X-bi-6-4d-2`` (Transfer Invariant 4).
+            # It deliberately does NOT assert ``not hasattr(xfer,
+            # "settled_amount")``: the seam gates its whole record block on
+            # ``isinstance(row, Transaction)``, so handing the parent a record
+            # is a silent no-op and only a SCHEMA change could fail such an
+            # assertion -- the "``hasattr`` is not a test" shape plan step X-aa
+            # already paid for (neutral review, 2026-08-18).
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.DONE), (
+                "the correction moved the pair's status"
+            )
 
     def test_a_figure_on_an_UNSETTLED_transfer_is_refused_untouched(
         self, app, db, transfer_data,
@@ -2417,15 +2489,19 @@ class TestTheFigureCorrectionDoorOnAPair:
 
         The movement's source is the only stored signal that a human read a
         number off a statement, and this form submits every input it renders
-        on every save.
+        on every save.  The movement is each side's payment record, read off
+        the transfer's side links since plan step ``balance:X-bi-6-4d-2``
+        (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
             xfer = self._settled_transfer(td)
-            resolved = MovementFigureSourceEnum.RESOLVED
+            resolved = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.RESOLVED,
+            )
             assert all(
-                status_seam.recorded_settlement(leg).source is resolved
-                for leg in self._legs(xfer.id)
+                record.figure_source_id == resolved
+                for record in self._records(xfer)
             )
 
             transfer_service.update_transfer(
@@ -2433,8 +2509,8 @@ class TestTheFigureCorrectionDoorOnAPair:
             )
             db.session.flush()
 
-            for leg in self._legs(xfer.id):
-                assert status_seam.recorded_settlement(leg).source is resolved
+            for record in self._records(xfer):
+                assert record.figure_source_id == resolved
 
     def test_a_settle_still_owns_a_figure_arriving_with_it(
         self, app, db, transfer_data,
@@ -2446,7 +2522,9 @@ class TestTheFigureCorrectionDoorOnAPair:
         writes the status, the pair's day and the record as ONE act.  If the
         correction arm had taken it instead, the figure would be written twice
         and the freeze would be resolved after the status flip, where it always
-        answers ``None``.
+        answers ``None``.  The record is each side's, read off the transfer's
+        side links since plan step ``balance:X-bi-6-4d-2`` (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             td = transfer_data
@@ -2482,11 +2560,14 @@ class TestTheFigureCorrectionDoorOnAPair:
                 "the SETTLE did not book the figure -- the correction arm took "
                 "it, so the freeze was resolved after the status flip"
             )
-            for leg in self._legs(xfer.id):
-                assert status_seam.recorded_settlement(leg) == status_seam.Settlement(
-                    Decimal("241.00"), MovementFigureSourceEnum.TYPED,
+            typed_id = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
+            )
+            for record in self._records(xfer):
+                assert (record.amount, record.figure_source_id) == (
+                    Decimal("241.00"), typed_id,
                 ), "a figure that differs from the plan IS a correction"
-                assert leg.settled_on is not None
+                assert record.settled_on is not None
 
 
 class TestMovingATransferBetweenAccounts:

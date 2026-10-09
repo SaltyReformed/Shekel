@@ -22,6 +22,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import planned_rows_books
 from app.services.recurrence import RecurrenceResolutionError
+from tests._test_helpers import transfer_side_record
 from tests.test_routes.test_archived_rows_bound_the_books import (
     _forecast,
     _monthly_save_into,
@@ -168,12 +169,18 @@ class TestATransactionsRevert:
 
 
 class TestATransfersRevert:
-    """The transfer's own status door refuses it before either shadow is written."""
+    """The transfer's own status door refuses it before either side is written."""
 
     def test_a_paid_transfer_on_its_books_stays_paid_with_both_shadows(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Atomic: the parent and both shadows keep their status and settle day."""
+        """Atomic: the transfer keeps its status and both sides their settle day.
+
+        The transfer's status is the one status and each side's day is its
+        payment RECORD's since plan step ``balance:X-bi-6-4d-2``; it read both
+        shadows' status and day until then (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).  The name is kept as history.
+        """
         with app.app_context():
             savings = _account_opened_early(seed_user, name="Revert savings")
             template_id = _monthly_save_into(seed_user, seed_periods, savings).id
@@ -184,7 +191,10 @@ class TestATransfersRevert:
             ).status_code == 200
             _restate_directly(savings, first_due)
             _db.session.expire_all()
-            before = _transfer_and_shadows(first_id)
+            before = _transfer_and_sides(first_id)
+            assert all(day is not None for _status, day in before[:2]), (
+                "precondition: both sides dated by the Mark Paid"
+            )
             forecast = _forecast(seed_user, savings)
 
             resp = auth_client.patch(
@@ -198,7 +208,7 @@ class TestATransfersRevert:
                 "Revert savings's books"
             ) in resp.data
             _db.session.expire_all()
-            assert _transfer_and_shadows(first_id) == before
+            assert _transfer_and_sides(first_id) == before
             done = ref_cache.status_id(StatusEnum.DONE)
             assert {status for status, _day in before} == {done}
             assert _forecast(seed_user, savings) == forecast
@@ -237,15 +247,20 @@ def _paybacks_of(source_id):
     ).all()
 
 
-def _transfer_and_shadows(transfer_id):
-    """``(status_id, settled_on)`` of a transfer's two shadows, then the parent's status."""
+def _transfer_and_sides(transfer_id):
+    """``(status_id, settled_on)`` of a transfer's two sides, then the parent's status.
+
+    Each side's status is its TRANSFER's -- the one status -- and its day is
+    its payment record's, read by independent SQL over the side links; the
+    two shadows' own status and day until plan step ``balance:X-bi-6-4d-2``
+    (ruling R-BAL167 class 4, plan step balance:X-bi-6-4d-2).  ``None`` for a
+    side holding no record.
+    """
     transfer = _db.session.get(Transfer, transfer_id)
-    shadows = sorted(
-        _db.session.query(Transaction)
-        .filter(Transaction.transfer_id == transfer_id)
-        .all(),
-        key=lambda row: row.id,
-    )
-    return [(row.status_id, row.settled_on) for row in shadows] + [
-        (transfer.status_id, None),
-    ]
+    sides = []
+    for account_id in (transfer.from_account_id, transfer.to_account_id):
+        record = transfer_side_record(_db.session, transfer_id, account_id)
+        sides.append(
+            (transfer.status_id, None if record is None else record.settled_on),
+        )
+    return sides + [(transfer.status_id, None)]

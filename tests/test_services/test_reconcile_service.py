@@ -65,6 +65,8 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_if_settling,
     state_template_price,
+    transfer_side_figure,
+    transfer_side_record,
 )
 from tests._test_helpers import create_transfer
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -1746,6 +1748,23 @@ class TestTheTransferArm:
         )
         return transfer, shadow
 
+    @staticmethod
+    def _side_records(transfer):
+        """Return ``{account id: payment record}`` for each side that holds one.
+
+        What a tick records on each side since plan step
+        ``balance:X-bi-6-4d-2`` -- the day, the figure, its source and the
+        statement link -- hung off the TRANSFER by a side link, read by
+        independent SQL (ruling R-BAL167 class 4, plan step
+        balance:X-bi-6-4d-2); the shadows carried it until then.
+        """
+        records = {}
+        for account_id in (transfer.from_account_id, transfer.to_account_id):
+            record = transfer_side_record(db.session, transfer.id, account_id)
+            if record is not None:
+                records[account_id] = record
+        return records
+
     _offered = staticmethod(TestTheTransactionArm._offered)
     _settle = staticmethod(TestTheTransactionArm._settle)
 
@@ -1762,10 +1781,15 @@ class TestTheTransferArm:
         be, or ticking a savings sweep off a checking statement would record
         that the savings statement showed the money too.
 
-        This is also what makes the posted walk's per-account shadow read
-        meaningful -- see
+        This is also what makes the posted walk's per-account read of a leg's
+        statement link meaningful -- see
         ``test_account_posting_service.TestWalkAccountLedger``'s own case, which
         measures what reading the wrong leg's link costs.
+
+        Each leg is its side's payment RECORD since plan step
+        ``balance:X-bi-6-4d-2``, which carries the statement link the shadows
+        carried until then (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
@@ -1775,14 +1799,11 @@ class TestTheTransferArm:
             db.session.commit()
             db.session.expire_all()
 
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id)
-                .all()
-            )
-            assert len(legs) == 2
+            records = self._side_records(transfer)
+            assert len(records) == 2
             recorded = {
-                leg.account_id: leg.reconciled_by_id for leg in legs
+                account_id: record.reconciled_by_id
+                for account_id, record in records.items()
             }
             assert recorded[seed_user["account"].id] == statement.anchor_id
             other = next(
@@ -1804,6 +1825,11 @@ class TestTheTransferArm:
         leg would break transfer invariants 3 and 4 silently, because
         ``sync_transaction_postings`` returns nothing for a shadow and the
         ledger would stay flat while the grid showed one side settled.
+
+        The transfer's status is the one status and each side's day is its
+        payment RECORD's since plan step ``balance:X-bi-6-4d-2``; each shadow
+        said Paid and carried the day until then (ruling R-BAL167 class 1,
+        plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
@@ -1812,15 +1838,12 @@ class TestTheTransferArm:
             db.session.commit()
 
             db.session.expire_all()
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id)
-                .all()
-            )
-            assert len(legs) == 2
+            records = self._side_records(transfer)
+            assert len(records) == 2
             settled = ref_cache.status_id(StatusEnum.DONE)
-            assert {leg.status_id for leg in legs} == {settled}
-            assert {leg.settled_on for leg in legs} == {_OBSERVED_ON}
+            assert {
+                record.settled_on for record in records.values()
+            } == {_OBSERVED_ON}
             assert db.session.get(
                 type(transfer), transfer.id,
             ).status_id == settled
@@ -1963,8 +1986,10 @@ class TestTheTransferArm:
 
         ``done -> done`` is a legal identity transition, so nothing downstream
         would refuse a second submission -- the SCOPE is what stops it, and a
-        re-settle would rewrite ``settled_on`` on both legs to a later
-        statement's day.
+        re-settle would rewrite ``settled_on`` on both sides' payment records
+        to a later statement's day.  Each side's day is its record's since plan
+        step ``balance:X-bi-6-4d-2``; the shadows carried it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
@@ -1977,10 +2002,10 @@ class TestTheTransferArm:
             ) == 0
 
             db.session.expire_all()
+            records = self._side_records(transfer)
+            assert len(records) == 2
             assert {
-                leg.settled_on
-                for leg in db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id).all()
+                record.settled_on for record in records.values()
             } == {_OBSERVED_ON}
 
     def test_a_correction_books_on_both_legs_and_counts_as_one(
@@ -1992,7 +2017,9 @@ class TestTheTransferArm:
         branch, and a transfer has no other -- a shadow is never
         purchase-tracked (production: 342 shadows, 0 entries).  The corrected
         figure must reach BOTH legs or the two accounts disagree about how much
-        money moved between them.
+        money moved between them.  Each leg's figure is its side's payment
+        RECORD's since plan step ``balance:X-bi-6-4d-2``; the shadows held it
+        until then (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
@@ -2007,9 +2034,10 @@ class TestTheTransferArm:
 
             db.session.expire_all()
             assert {
-                settled_figure(leg)
-                for leg in db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id).all()
+                transfer_side_figure(db.session, transfer.id, account_id)
+                for account_id in (
+                    transfer.from_account_id, transfer.to_account_id,
+                )
             } == {Decimal("74.11")}
 
             events = [
@@ -2027,7 +2055,10 @@ class TestTheTransferArm:
         The panel prefills every correctable row, so a five-row submit posts
         five figures.  Writing an echo would populate a column that is NULL on
         all 17 settled transfer shadows in production -- the only signal that
-        says a human read one off a statement.
+        says a human read one off a statement.  Each leg's record is its
+        side's, hung off the transfer, since plan step
+        ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, shadow = self._transfer_out(seed_user, seed_periods)
@@ -2044,14 +2075,19 @@ class TestTheTransferArm:
             # source -- an echoed prefill is not a correction, and since plan
             # step X-au-c3 "not a correction" is the record's SOURCE rather
             # than a NULL figure.
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id).all()
-            )
+            records = self._side_records(transfer)
+            assert len(records) == 2
             assert {
-                status_seam.recorded_settlement(leg).source for leg in legs
-            } == {MovementFigureSourceEnum.RESOLVED}
-            assert {settled_figure(leg) for leg in legs} == {Decimal("75.00")}
+                record.figure_source_id for record in records.values()
+            } == {
+                ref_cache.movement_figure_source_id(
+                    MovementFigureSourceEnum.RESOLVED,
+                ),
+            }
+            assert {
+                transfer_side_figure(db.session, transfer.id, account_id)
+                for account_id in records
+            } == {Decimal("75.00")}
 
             events = [
                 record for record in caplog.records

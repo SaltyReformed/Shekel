@@ -51,6 +51,8 @@ from tests._test_helpers import (
     settle_instant_on,
     settlement_if_settling,
     strip_owner_schedule,
+    transfer_side_figure,
+    transfer_side_record,
     typed,
 )
 from app.models.interest_params import InterestParams
@@ -71,8 +73,9 @@ from app.services import (
     transaction_service,
 )
 from app.services.auth_service import hash_password
-from app.services.row_valuation import settled_contribution, settled_figure
+from app.services.row_valuation import leg_settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
+from app.services.transfer_legs import grid_transfer_leg
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -3962,6 +3965,11 @@ class TestTheTransferArmThroughItsROUTE:
         reaches the verb -- that the transfer's id posted in its own
         ``transfer_ids`` field (ruling R-BAL145) lands in the transfer arm
         rather than the transaction one, which would refuse a shadow outright.
+
+        The transfer's status is the one status, and each leg is its side's
+        payment RECORD since plan step ``balance:X-bi-6-4d-2``; each shadow
+        said Paid and carried the record until then (ruling R-BAL167 class 1,
+        plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, _shadow = self._outstanding_transfer(
@@ -3991,16 +3999,19 @@ class TestTheTransferArmThroughItsROUTE:
                 .all()
             )
             assert len(legs) == 2, "Transfer Invariant 1"
-            for leg in legs:
-                assert leg.status_id == done_id
-                assert leg.settled_on == display_today()
+            resolved = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.RESOLVED,
+            )
+            for account_id in (parent.from_account_id, parent.to_account_id):
+                record = transfer_side_record(
+                    db.session, transfer_id, account_id,
+                )
+                assert record.settled_on == display_today()
                 # Nobody typed a figure, so the record's source is
                 # ``resolved`` -- which is where "did a human correct this"
                 # lives since plan step X-au-c3 (on the covering movement since
                 # X-bi-4b-2), rather than in the figure's NULL-ness.
-                assert status_seam.recorded_settlement(leg).source is (
-                    MovementFigureSourceEnum.RESOLVED
-                )
+                assert record.figure_source_id == resolved
 
     def test_a_correction_typed_on_a_transfer_lands_on_BOTH_legs(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4010,6 +4021,10 @@ class TestTheTransferArmThroughItsROUTE:
         Both legs carry it, because Transfer Invariant 3 says the three rows
         state one amount -- a correction recorded on one side only would leave
         the two accounts disagreeing about how much money moved between them.
+        Each leg is its side's payment RECORD since plan step
+        ``balance:X-bi-6-4d-2``, valued as the side the readers fold; the
+        shadows held it until then (ruling R-BAL167 class 1, plan step
+        balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, _shadow = self._outstanding_transfer(
@@ -4028,14 +4043,14 @@ class TestTheTransferArmThroughItsROUTE:
             assert response.status_code == 200
 
             db.session.expire_all()
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer_id)
-                .all()
-            )
-            for leg in legs:
-                assert settled_figure(leg) == Decimal("80.25")
-                assert settled_contribution(leg) == Decimal("80.25")
+            parent = db.session.get(Transfer, transfer_id)
+            for account_id in (parent.from_account_id, parent.to_account_id):
+                assert transfer_side_figure(
+                    db.session, transfer_id, account_id,
+                ) == Decimal("80.25")
+                assert leg_settled_contribution(
+                    grid_transfer_leg(parent, account_id),
+                ) == Decimal("80.25")
 
     def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4046,7 +4061,10 @@ class TestTheTransferArmThroughItsROUTE:
         the figure the row would book anyway.  Without this case the
         correction test is satisfied by a verb that writes whatever it is
         handed, which would populate ``actual_amount`` on every settled
-        transfer and destroy the signal that says a human typed one.
+        transfer and destroy the signal that says a human typed one.  Each
+        leg is its side's payment RECORD since plan step
+        ``balance:X-bi-6-4d-2``; the shadows held it until then (ruling
+        R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             transfer, _shadow = self._outstanding_transfer(
@@ -4065,19 +4083,22 @@ class TestTheTransferArmThroughItsROUTE:
             assert response.status_code == 200
 
             db.session.expire_all()
-            legs = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer_id)
-                .all()
+            parent = db.session.get(Transfer, transfer_id)
+            resolved = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.RESOLVED,
             )
-            for leg in legs:
+            for account_id in (parent.from_account_id, parent.to_account_id):
                 # An ECHOED prefill is not a correction: the record says
                 # ``resolved`` and states the figure the settle booked.
-                assert status_seam.recorded_settlement(leg).source is (
-                    MovementFigureSourceEnum.RESOLVED
-                )
-                assert settled_figure(leg) == Decimal("75.00")
-                assert settled_contribution(leg) == Decimal("75.00")
+                assert transfer_side_record(
+                    db.session, transfer_id, account_id,
+                ).figure_source_id == resolved
+                assert transfer_side_figure(
+                    db.session, transfer_id, account_id,
+                ) == Decimal("75.00")
+                assert leg_settled_contribution(
+                    grid_transfer_leg(parent, account_id),
+                ) == Decimal("75.00")
 
 
 class TestTheCashFigureRendersBesideTheBookedOne:
