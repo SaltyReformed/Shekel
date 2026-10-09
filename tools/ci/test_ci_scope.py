@@ -67,6 +67,7 @@ class TestTheClassifier:
         ["tools/plan_gate_v2/x.py"],
         ["tools/ci/ci_scope.py"],
         ["docs/plans/steps.md", "tools/ci/arcs.py"],
+        ["docs/plans/steps.md", "tools/ci/arc_steps.py"],
         ["tools/pylint/tests/test_x.py"],
         ["/docs/plans/steps.md"],
         ["docs/plans/../../app/x.py"],
