@@ -100,6 +100,18 @@ class Draft:
     owner: Owner | None = None
 
 
+def alias_mark(alias: str) -> str:
+    """How a card's title carries the old id it is known by: ``[alias]``, first.  ``quill
+    show OLD-ID`` finds a card by it; X-cx's migration titles every card with it (draft 4
+    s.3, :func:`card_title`)."""
+    return f"[{alias}]"
+
+
+def card_title(alias: str, name: str) -> str:
+    """A migrated card's title: its :func:`alias_mark`, then its short name (R-BAL237)."""
+    return f"{alias_mark(alias)} {name.strip()}"
+
+
 def ruling_body(question: str, answer: str) -> str:
     """A ruling card's body: the developer's question, then his answer, each word for word."""
     return f"{_QUESTION}{question.strip()}{_ANSWER}{answer.strip()}"
