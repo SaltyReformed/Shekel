@@ -1962,11 +1962,17 @@ def loan_correction_entries(db_session, shadow):
     ``(loan_payment kind, the payment's pay period, its visible day)`` on the
     loan's own chart rows and links NO row, so "the corrections under this
     shadow" is now "the corrections at this payment's key" -- selected by
-    source kind, the shadow's ``pay_period_id``, its settled day and a leg on
-    the loan's chart rows.  Through that step the split carried the shadow's
-    ``transaction_id`` and this read it by that link.  A shadow with no settled
-    day has no key and is REFUSED rather than answered ``[]`` (the leaf-2
-    adversarial review: an empty answer for a reverted shadow would let
+    source kind, the payment's pay period, its settled day and a leg on the
+    loan's chart rows.  Through that step the split carried the shadow's
+    ``transaction_id`` and this read it by that link.  **The key is read off
+    the TRANSFER and the loan side's RECORD since plan step
+    ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 4): the record hangs
+    off the transfer there and the twins' status and day are no longer kept,
+    so the shadow passed in names only which transfer and which side; it read
+    the shadow's own period, scenario and day until then (the loan walk has
+    read the record's day since ``X-bi-6-4b``).  A side with no dated record
+    has no key and is REFUSED rather than answered ``[]`` (the leaf-2
+    adversarial review: an empty answer for a reverted payment would let
     "after the revert the split is gone" pass without reading the ledger);
     a test that holds a reverted or deleted payment reads
     :func:`loan_correction_entries_at` with the key it captured before the
@@ -1976,25 +1982,30 @@ def loan_correction_entries(db_session, shadow):
     Args:
         db_session: The test ``db.session``.
         shadow: The loan-side income shadow :class:`~app.models.transaction.
-            Transaction` whose payment's corrections to fetch (``account_id``,
-            ``pay_period_id`` and ``settled_on`` are read).
+            Transaction` of the payment whose corrections to fetch: its
+            ``transfer_id`` and ``account_id`` are read.
 
     Returns:
         list[:class:`~app.models.journal_entry.JournalEntry`] -- the correction
         entries at the payment's key, ascending by id (empty when none).
 
     Raises:
-        ValueError: If *shadow* carries no settled day (it has no key).
+        ValueError: If the loan side holds no dated record (it has no key).
     """
-    if shadow.settled_on is None:
+    record = transfer_side_record(
+        db_session, shadow.transfer_id, shadow.account_id,
+    )
+    if record is None or record.settled_on is None:
         raise ValueError(
-            f"loan_correction_entries: shadow {shadow.id} carries no settled "
-            f"day and so no split key; read loan_correction_entries_at with "
-            f"the key captured before the act that released the day."
+            f"loan_correction_entries: transfer {shadow.transfer_id}'s side "
+            f"on account {shadow.account_id} holds no dated record and so no "
+            f"split key; read loan_correction_entries_at with the key "
+            f"captured before the act that released the day."
         )
+    transfer = shadow.transfer
     return loan_correction_entries_at(
-        db_session, shadow.account_id, shadow.scenario_id,
-        shadow.pay_period_id, shadow.settled_on,
+        db_session, shadow.account_id, transfer.scenario_id,
+        transfer.pay_period_id, record.settled_on,
     )
 
 
@@ -4847,6 +4858,46 @@ def transfer_side_journal_filter(transfer_id, account_id):
         TransactionEntry.account_id == account_id,
     )
     return JournalEntry.transaction_entry_id.in_(movement_ids)
+
+
+def transfer_side_record(db_session, transfer_id, account_id):
+    """Return the record of a transfer's side on *account_id*, or ``None``.
+
+    The movement filed under that side (plan step ``balance:X-bi-6-4d-2``,
+    ruling **R-BAL88**): it hangs off the TRANSFER by ``expense_transfer_id``
+    / ``income_transfer_id``, on its endpoint, at most one per side.  It hung
+    off the side's shadow row until then (``shadow.covering_movements``).
+    The row-shaped twin of :func:`transfer_side_journal_filter`, and
+    independent SQL over the side links for that helper's reason (ruling
+    **R-BAL167** class 4): a test reading a side's record through
+    ``transfer_legs``, the producer it grades, could not catch its fault.
+
+    Args:
+        db_session: The test ``db.session``.
+        transfer_id: The ``budget.transfers`` id.
+        account_id: The account the side is on.
+
+    Returns:
+        The side's :class:`~app.models.transaction_entry.TransactionEntry`,
+        or ``None`` when the side holds none (an unsettled side never paid,
+        or a ``$0.00`` close, ruling **R-BAL141**).
+    """
+    # pylint: disable=import-outside-toplevel -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.transaction_entry import TransactionEntry
+
+    return (
+        db_session.query(TransactionEntry)
+        .filter(
+            db.or_(
+                TransactionEntry.expense_transfer_id == transfer_id,
+                TransactionEntry.income_transfer_id == transfer_id,
+            ),
+            TransactionEntry.account_id == account_id,
+        )
+        .one_or_none()
+    )
 
 
 def family_journal_filter(txn):
