@@ -374,9 +374,17 @@ class TestTheMigration:
         """A soft-deleted transfer's leg holding its payment is BAL-532's, not this refusal's.
 
         The developer's follow-up to R-CC82 ("Non-transfer rows"): the
-        transfer's soft delete still makes this state after the release, so
+        transfer's soft delete still made this state after the release, so
         the upgrade does not stop over it.  A settled $100.00 transfer, the
         transfer and both shadows flagged hidden with their payments in place.
+
+        **The payments are put back under the shadows first**, the shape this
+        revision ran against: since plan step ``balance:X-bi-6-4d-2`` each
+        side's record hangs off the TRANSFER (ruling **R-BAL88**), and a
+        shadow holds a movement only where it is planted -- both records
+        re-parented under their shadows in one statement, which the status
+        band allows as a ``$0.00`` close's shape (ruling **R-BAL167** class
+        3).  What is asserted is unchanged.
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -386,6 +394,17 @@ class TestTheMigration:
             transfer = create_settled_transfer(
                 seed_user, db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            db.session.commit()
+            db.session.execute(
+                text("UPDATE budget.transaction_entries e "
+                     "SET transaction_id = t.id, expense_transfer_id = NULL, "
+                     "income_transfer_id = NULL "
+                     "FROM budget.transactions t "
+                     "WHERE t.transfer_id = :t AND t.account_id = e.account_id "
+                     "AND (e.expense_transfer_id = :t "
+                     "OR e.income_transfer_id = :t)"),
+                {"t": transfer.id},
             )
             db.session.commit()
             _run(_M.downgrade, db.session)

@@ -69,6 +69,7 @@ from tests._test_helpers import (
     create_savings_account,
     freeze_today,
     record_paydays_across_a_hole,
+    transfer_side_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
 from app.services.pay_rhythm import FixedDays
@@ -1617,13 +1618,17 @@ class TestACoverageWithdrawalIsAccepted:
         """The transfer invariants survive a truncate that strands the pair.
 
         A transfer has no ``settled_on`` COLUMN -- the day lives on its two
-        shadow ``Transaction`` rows (Transfer Invariant 3) -- so a shortening
-        that puts that day outside every paycheck touches BOTH shadows at once.
-        Graded here rather than left to the transaction case because the failure
-        mode is different: a writer that "repaired" a stranded row by moving or
+        sides' payment records, which hang off the transfer since plan step
+        ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**; on its two shadow
+        ``Transaction`` rows until then) -- so a shortening that puts that day
+        outside every paycheck touches BOTH sides at once.  Graded here rather
+        than left to the transaction case because the failure mode is
+        different: a writer that "repaired" a stranded row by moving or
         deleting it would break Invariants 1 and 2 (exactly two shadows, never
         orphaned) on this shape while looking correct on the other.  The writer
-        touches neither, which is what makes that unreachable.
+        touches neither, which is what makes that unreachable.  The day is
+        planted on the two records and read back off them (ruling
+        **R-BAL167** class 1, where the shadows carried it).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1641,9 +1646,13 @@ class TestACoverageWithdrawalIsAccepted:
                 category_id=None,
             ))
             xfer_id = xfer.id
-            db.session.query(Transaction).filter_by(
-                transfer_id=xfer_id,
-            ).update({"settled_on": date(2026, 6, 15)}, synchronize_session=False)
+            db.session.execute(
+                text(
+                    "UPDATE budget.transaction_entries SET settled_on = :day "
+                    "WHERE expense_transfer_id = :t OR income_transfer_id = :t"
+                ),
+                {"day": date(2026, 6, 15), "t": xfer_id},
+            )
             # Seven weeks past the 05-08 record: a hole the writer refuses
             # (plan step C17-c-2a, ruling R-PC67), built through the tree's
             # helper because the subject here is the TRUNCATE that follows.
@@ -1674,7 +1683,10 @@ class TestACoverageWithdrawalIsAccepted:
                 ref_cache.txn_type_id(TxnTypeEnum.INCOME),
                 ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             }
-            assert {shadow.settled_on for shadow in shadows} == {date(2026, 6, 15)}
+            assert {
+                transfer_side_settle_day(db.session, xfer_id, account_id).day
+                for account_id in (seed_user["account"].id, savings.id)
+            } == {date(2026, 6, 15)}
 
     def test_a_REGENERATE_derives_ONCE_over_the_end_state(
         self, app, db, seed_user, seed_periods, monkeypatch, caplog,

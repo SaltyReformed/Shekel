@@ -52,7 +52,11 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.exceptions import PayPeriodRemovalRefused, PayPeriodUnresolved
+from app.exceptions import (
+    PayPeriodRemovalRefused,
+    PayPeriodUnresolved,
+    ValidationError,
+)
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
@@ -102,10 +106,13 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     populate_in_a_fresh_pass,
     reassert_balance_on,
+    refused_by_database_rule,
     restate_account_opening,
     rhythm_of,
     settle_cash_row,
+    settle_day_columns,
     state_template_price,
+    transfer_side_record,
     typed,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -904,16 +911,21 @@ class TestWhatAPaycheckMayHold:
     def test_a_transfer_done_then_set_back_is_refused_once(
         self, app, db, seed_user, seed_periods, deleted,
     ):
-        """Both legs keep their payment; the transfer is named once (R-PC115).
+        """Both sides keep their payment; the transfer is named once (R-PC115).
 
         Measured at X-bn's dev merge, before the ruling: after the revert
         each leg holds one entry and no purchase, and the removal raised the
-        database's refusal.  With ``deleted`` the occurrence is then deleted
-        as the grid's delete does it (``delete_transfer(soft=True)``): its
-        legs are hidden and STILL hold their payments -- finding **BAL-532**,
-        which plan step ``balance:X-bi-6-4`` ends -- so the refusal still
-        names it; the ruling accepted that the owner cannot clear it until
-        then.
+        database's refusal.  Each SIDE keeps its record since plan step
+        ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**; ruling **R-BAL167**
+        class 1).  With ``deleted`` the occurrence was then deleted as the
+        grid's delete did it (``delete_transfer(soft=True)``): its legs
+        hidden and STILL holding their payments -- finding **BAL-532**.  That
+        step ended it: the delete takes the payments off (ruling **R-CC75**)
+        and the database refuses a transfer hidden holding one, so that
+        state is asserted refused (class 2) and its storable remainder is
+        planted instead -- both twins hidden around the service over the
+        live transfer's two kept records -- which the refusal still names
+        once (no reader reads a twin, class 3).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -937,13 +949,37 @@ class TestWhatAPaycheckMayHold:
             )
             db.session.commit()
             if deleted:
-                transfer_service.delete_transfer(transfer.id, user_id, soft=True)
+                hide_twins = _db.text(
+                    "UPDATE budget.transactions SET is_deleted = TRUE "
+                    "WHERE transfer_id = :t"
+                )
+                db.session.execute(hide_twins, {"t": transfer.id})
+                db.session.execute(
+                    _db.text(
+                        "UPDATE budget.transfers SET is_deleted = TRUE "
+                        "WHERE id = :t"
+                    ),
+                    {"t": transfer.id},
+                )
+                with refused_by_database_rule(
+                    "was deleted while it still holds a recorded payment",
+                ):
+                    db.session.commit()
+                db.session.rollback()
+                db.session.execute(hide_twins, {"t": transfer.id})
                 db.session.commit()
+                db.session.expire_all()
             legs = db.session.query(Transaction).filter_by(
                 transfer_id=transfer.id,
             ).all()
-            assert [len(leg.entries) for leg in legs] == [1, 1], (
-                "each leg must keep its payment through the revert"
+            assert [
+                transfer_side_record(db.session, transfer.id, account_id)
+                is not None
+                for account_id in (
+                    transfer.from_account_id, transfer.to_account_id,
+                )
+            ] == [True, True], (
+                "each side must keep its payment through the revert"
             )
             assert not any(leg.purchases for leg in legs)
             assert all(leg.is_deleted is deleted for leg in legs)
@@ -1271,32 +1307,65 @@ class TestMoneyDatedInsideTheHead:
     ):
         """A ``$0.00`` close moved no money, so it dates nothing (ledger row BAL-568).
 
-        Its shadows still carry :attr:`DAY`, and the gate read the shadows
-        until plan step ``balance:X-bi-6-4c-3`` -- so this removal was REFUSED
-        then.  It records no covering movement (ruling **R-BAL90**: a close of
+        Its shadows carried :attr:`DAY`, and the gate read the shadows until
+        plan step ``balance:X-bi-6-4c-3`` -- so this removal was REFUSED then.
+        It records no covering movement (ruling **R-BAL90**: a close of
         nothing has no day of money), and R-PC109 names money dated inside the
         span, so it no longer holds the removal back.
+
+        The close was pressed with :attr:`DAY` typed on both sides until plan
+        step ``balance:X-bi-6-4d-2``, whose door refuses a day beside a
+        ``$0.00`` close (ruling **R-BAL230**), so that press is asserted
+        refused and the close is pressed with no day.  The shadows' day is
+        PLANTED, Paid on :attr:`DAY` as that press wrote them until then: no
+        reader reads a twin since (ruling **R-BAL167** classes 2 and 3).
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _added_head(user_id, 2)
             xfer = self._transfer_to_savings(seed_user, seed_periods)
+            with pytest.raises(
+                ValidationError, match=r"A \$0\.00 close moved no money",
+            ):
+                transfer_service.settle_transfer(
+                    xfer.id, user_id, submitted=typed(Decimal("0.00")),
+                    side_days=on_both_sides(
+                        xfer.from_account_id, xfer.to_account_id,
+                        an_entered_day(self.DAY),
+                    ),
+                )
+            db.session.rollback()
             transfer_service.settle_transfer(
                 xfer.id, user_id, submitted=typed(Decimal("0.00")),
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_entered_day(self.DAY),
+            )
+            db.session.execute(
+                _db.text(
+                    "UPDATE budget.transactions SET status_id = :done, "
+                    "settled_on = :settled_on, "
+                    "settled_day_basis_id = :settled_day_basis_id "
+                    "WHERE transfer_id = :t"
                 ),
+                {
+                    **settle_day_columns(self.DAY),
+                    "done": ref_cache.status_id(StatusEnum.DONE),
+                    "t": xfer.id,
+                },
             )
             db.session.commit()
+            db.session.expire_all()
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer.id, is_deleted=False,
             ).all()
             # The plant's own tell: the shape is the $0.00 close this case is
-            # about -- dated shadows, no covering movement -- or the admit
-            # below would pass for a different reason.
+            # about -- a Paid transfer holding no record on either side, its
+            # shadows dated -- or the admit below would pass for a different
+            # reason.
             assert {shadow.settled_on for shadow in shadows} == {self.DAY}
-            assert all(not shadow.covering_movements for shadow in shadows)
+            assert _db.session.get(Transfer, xfer.id).status.is_settled
+            assert [
+                transfer_side_record(db.session, xfer.id, account_id)
+                for account_id in (xfer.from_account_id, xfer.to_account_id)
+            ] == [None, None]
 
             assert pay_period_admin.remove_earlier_pay_periods(
                 user_id, seed_periods[0].id,

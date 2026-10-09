@@ -109,7 +109,9 @@ from tests._test_helpers import (
     loan_params_for,
     make_investment_account,
     read_pass,
+    refused_by_database_rule,
     settle_day_columns,
+    transfer_side_settle_day,
 )
 
 #: The transfer every DB case below moves: checking -> savings.
@@ -656,8 +658,8 @@ class TestAStatusDriftIsCountedOnce:
     ):  # pylint: disable=unused-argument
         """The fold's one predicate CHANGE at leaf X-bi-6-1, declared and pinned.
 
-        The plan's ``dated_leg`` EXISTS now rides
-        ``transfer_legs._records._covering_movements_query``, which requires
+        The plan's ``dated_leg`` EXISTS then rode
+        ``transfer_legs._records._covering_movements_query``, which required
         the shadow the movement hangs off to be LIVE -- the term the pre-leaf predicate
         did not carry.  On any door-written state the two agree (no door
         soft-deletes one shadow alone).  On the double drift built here -- a
@@ -670,6 +672,15 @@ class TestAStatusDriftIsCountedOnce:
         (the parent decides) and the settled half's own rule applied to the
         plan.  An adversarial review found the change shipped under a
         "no fold read changed" claim; this is the pin the claim owed.
+
+        **Since plan step ``balance:X-bi-6-4d-2`` hiding that shadow is
+        REFUSED at commit** (the deleted-row rule's row arm, its twin
+        exception retired; ruling **R-BAL167** class 2): a side's record
+        hangs off the TRANSFER (ruling **R-BAL88**), and a twin holding a
+        movement can no longer be hidden.  The drift stops at what is
+        storable -- the movement under the LIVE twin, the parent Projected --
+        and a movement under a twin is no side's record, dead or alive, so
+        the three answers are unchanged (class 3: no reader reads a twin).
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -684,11 +695,18 @@ class TestAStatusDriftIsCountedOnce:
             )
             db.session.commit()
             shadow = _shadow_on(transfer, checking)
+            shadow_id = shadow.id
             _settle_shadow_around_the_service(shadow, day, _AMOUNT)
             db.session.flush()
             cover_bare_settled_row(db.session, shadow, _AMOUNT)
-            shadow.is_deleted = True
             db.session.commit()
+            shadow.is_deleted = True
+            with refused_by_database_rule(
+                "was deleted while it still holds a recorded payment or purchase",
+            ) as caught:
+                db.session.commit()
+            db.session.rollback()
+            assert f"transaction {shadow_id} " in str(caught.value)
             db.session.expire_all()
             assert db.session.get(Transfer, transfer.id).status_id == (
                 ref_cache.status_id(StatusEnum.PROJECTED)
@@ -699,7 +717,7 @@ class TestAStatusDriftIsCountedOnce:
             )
             assert [leg.transfer.id for leg in legs] == [transfer.id], (
                 "the plan must emit the leg whose only dated movement hangs "
-                "off a DELETED shadow: that movement is no record"
+                "off its shadow: that movement is no record"
             )
             assert covering_movements_by_leg([transfer.id]) == {}
             assert _balance_on(checking, scenario, day) - checking_before == (
@@ -1239,9 +1257,13 @@ class TestALegsSettleDayAndTimeliness:
     ):  # pylint: disable=unused-argument
         """The leg's day is the movement's, and the arithmetic is the row's.
 
-        Parity with the shadow row is a real check rather than one producer
-        read twice: the row's ``settled_on`` is its own column and the leg's
-        is the covering movement's, two stored days the seam writes together.
+        Parity with the shadow row was a real check rather than one producer
+        read twice: the row's ``settled_on`` was its own column and the leg's
+        the covering movement's, two stored days the seam wrote together.
+        Since plan step ``balance:X-bi-6-4d-2`` no writer keeps a twin's day
+        (ruling **R-BAL88**), so the parity is with the side's RECORD, read
+        by its own SQL, and the row's arithmetic -- the due date less the
+        settle day -- is spelled here (ruling **R-BAL167** class 1).
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1253,11 +1275,13 @@ class TestALegsSettleDayAndTimeliness:
             )
             db.session.commit()
             leg = grid_transfer_leg(settled, checking.id)
-            shadow = _shadow_on(settled, checking)
+            side_day = transfer_side_settle_day(
+                db.session, settled.id, checking.id,
+            ).day
 
             assert leg.settled_on == date(2026, 2, 3)
             assert leg.days_paid_before_due == 3
-            assert leg.days_paid_before_due == shadow.days_paid_before_due
+            assert leg.days_paid_before_due == (settled.due_date - side_day).days
             assert leg.tracks_purchases is False
 
     def test_a_planned_and_an_undated_leg_answer_none(
@@ -1609,11 +1633,15 @@ class TestTheWritersParentIsTheLeg:
 
         Two settled ``$250.00`` Checking -> Savings transfers; the second's
         CHECKING shadow is soft-deleted by SQL (Transfer Invariant 4 drift).
-        The family loader returns all four movements; the three it gives a
-        record are exactly the three the ONE join returns, each on the side
-        the join says, and the fourth -- the dead shadow's -- is recordless on
-        the from-side.  MUTATION: drop the twin's ``not row.is_deleted`` term
-        and the dead movement becomes a record the join never returns.
+        The family loader returns all four movements, and the four it gives a
+        record are exactly the four the ONE join returns, each on the side
+        the join says.  Until plan step ``balance:X-bi-6-4d-2`` the dead
+        shadow's movement was recordless on the from-side (the twin and the
+        join each carried a live-shadow term); since then each side's record
+        hangs off the TRANSFER (ruling **R-BAL88**), both terms are deleted,
+        and the hidden twin is read by neither -- its side's record is still
+        its leg's (ruling **R-BAL167** class 3).  MUTATION: give either a
+        live-twin term back and the two disagree on that movement.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1650,7 +1678,7 @@ class TestTheWritersParentIsTheLeg:
                 for pair in transfer_family_movements(transfer)
             ]
 
-            assert (len(family), len(joined)) == (4, 3)
+            assert (len(family), len(joined)) == (4, 4)
             assert {
                 movement.id for movement, leg in family
                 if leg.record is movement
@@ -1661,11 +1689,12 @@ class TestTheWritersParentIsTheLeg:
             )
             [(dead_movement, dead_leg)] = [
                 (movement, leg) for movement, leg in family
-                if movement.id not in joined
+                if leg.transfer.id == second.id and not leg.is_income
             ]
-            assert dead_movement.transaction_id == dead_shadow_id
+            assert dead_movement.transaction_id is None
+            assert db.session.get(Transaction, dead_shadow_id).is_deleted
             assert (dead_leg.record, dead_leg.is_income, dead_leg.account_id) == (
-                None, False, checking.id,
+                dead_movement, False, checking.id,
             )
             for transfer in transfers:
                 ids = [m.id for m, _leg in transfer_family_movements(transfer)]
@@ -1674,15 +1703,20 @@ class TestTheWritersParentIsTheLeg:
     def test_a_non_covering_entry_under_a_live_shadow_is_no_record(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The twin's ``covers_settlement`` term: the join reads covering movements alone.
+        """A non-covering entry under a live shadow is no record of its transfer.
 
         A settled ``$250.00`` Checking -> Savings transfer, and a ``$5.00``
         purchase-shaped entry written under its LIVE Savings shadow (no door
-        writes one: ``entry_service`` refuses a shadow).  ``movement_parent``
-        books it under the Savings leg with NO record -- so the writer posts
-        nothing for it -- and the join does not return it.  MUTATION: drop
-        the twin's ``covers_settlement`` term and the entry becomes a record
-        the join never returns.
+        writes one: ``entry_service`` refuses a shadow).  Until plan step
+        ``balance:X-bi-6-4d-2`` ``movement_parent`` booked it under the
+        Savings leg with NO record, by the twin's ``covers_settlement`` term.
+        Since then a side's record hangs off the TRANSFER by a side link that
+        is a payment record by ``ck_transaction_entries_side_link_is_a_record``
+        (ruling **R-BAL88**; the term is deleted, finding **BAL-551**), so an
+        entry under a twin is filed under the row it hangs off and is read by
+        no transfer reader: neither the join nor the pair door's family
+        returns it, so the writer posts nothing for it under the transfer
+        (ruling **R-BAL167** class 3).
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1703,14 +1737,13 @@ class TestTheWritersParentIsTheLeg:
             db.session.add(stray)
             db.session.flush()
 
-            leg = movement_parent(stray)
-
-            assert (leg.transfer, leg.account_id, leg.is_income, leg.record) == (
-                settled, savings.id, True, None,
-            )
+            assert movement_parent(stray) is shadow
             assert stray.id not in {
                 movement.id for movement, _transfer, _is_income
                 in transfer_movement_rows(Transfer.id == settled.id)
+            }
+            assert stray.id not in {
+                movement.id for movement, _leg in transfer_family_movements(settled)
             }
 
     def test_the_dated_leg_clause_reads_records_alone(
@@ -1726,8 +1759,12 @@ class TestTheWritersParentIsTheLeg:
         third -- the third's Savings side is still a dated record -- and not
         for the projected one: the stray is no record.  The resync's clause
         before leaf ``X-bi-6-4a`` read every dated entry under a live shadow
-        and held for it.  Narrowed to Checking it holds for the first alone:
-        the third's Checking movement hangs off a dead shadow and is no record.
+        and held for it.  Narrowed to Checking it holds for the first and the
+        third: since plan step ``balance:X-bi-6-4d-2`` the third's Checking
+        record hangs off the TRANSFER (ruling **R-BAL88**), so its hidden
+        shadow is read by no reader (ruling **R-BAL167** class 3); until then
+        that movement hung off the dead shadow and was no record, and the
+        clause held for the first alone.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1772,5 +1809,5 @@ class TestTheWritersParentIsTheLeg:
 
             assert holding() == {settled.id, drifted.id}
             assert holding(TransactionEntry.account_id == checking.id) == {
-                settled.id,
+                settled.id, drifted.id,
             }

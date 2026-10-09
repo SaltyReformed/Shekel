@@ -33,7 +33,6 @@ from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.models.transaction import Transaction
 from app.services import (
     bank_agreement,
     match_press,
@@ -689,7 +688,14 @@ class TestTheRowsRefusalsApplyToItsPayment:
     def test_a_settled_shadow_legs_payment_refuses_a_correction(
         self, app, seed_user,
     ):
-        """Transfer invariant 3: the correction is to the TRANSFER, not this door."""
+        """Transfer invariant 3: the correction is to the TRANSFER, not this door.
+
+        The Checking side's payment is ticked as the transfer's side RECORD
+        (``a_submission``'s ``transfers``), which hangs off the transfer since
+        plan step ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**); the case
+        ticked the Checking shadow, whose ``covering_movements`` held it,
+        until then (ruling **R-BAL167** class 4).
+        """
         with app.app_context():
             checking = seed_user["account"]
             bank_day = _first_day(seed_user)
@@ -710,20 +716,12 @@ class TestTheRowsRefusalsApplyToItsPayment:
                 ),
             )
             db.session.commit()
-            shadow = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.transfer_id == transfer.id,
-                    Transaction.account_id == checking.id,
-                )
-                .one()
-            )
             line = a_bank_line(
                 seed_user, an_import(seed_user), amount="-95.00", posted_on=bank_day,
             )
             db.session.commit()
             scope = a_scope(seed_user, checking)
-            submission = a_submission(scope, lines=[line], transactions=[shadow])
+            submission = a_submission(scope, lines=[line], transfers=[transfer])
             (reviewed,) = submission.rows
             assert reviewed.kind is RowKind.SETTLEMENT
 

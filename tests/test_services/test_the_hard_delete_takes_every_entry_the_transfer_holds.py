@@ -5,11 +5,14 @@ holds, and since leaf ``X-bi-6-4d-1`` it asks
 ``transfer_legs.held_transfer_entries`` for them rather than walking each
 shadow's ``entries`` -- so ``X-bi-6-4d``'s re-parent moves the collection with
 the join.  These cases grade the SCOPE that swap claims to keep, not the swap
-itself (they pass on the old per-shadow walk too, by design): ANY entry under
-ANY shadow, live or dead, because that is what
-``fk_transaction_entries_transaction_id`` (NO ACTION) refuses the cascade for.
-A kept, un-dated record a revert left behind counts, and so does one under a
-shadow an occurrence delete hid (finding **BAL-532**'s state).  A collection
+itself (they pass on the old per-shadow walk too, by design).  Since plan step
+``balance:X-bi-6-4d-2`` the scope is ANY record on either side of the
+transfer, whatever its shadows are, because that is what the side keys (NO
+ACTION, ruling **R-CC64**) refuse the transfer's delete for; it was any entry
+under any shadow, live or dead, under ``fk_transaction_entries_transaction_id``
+until then.  A kept, un-dated record a revert left behind counts, and so does
+one whose shadows are hidden (finding **BAL-532**'s neighbour: a transfer
+hidden holding one is refused by the database since that step).  A collection
 narrowed to dated movements, or to live shadows, leaves such a record behind
 and the delete fails at the flush.  The suite graded neither before this leaf.
 """
@@ -23,7 +26,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import transfer_service
-from tests._test_helpers import create_account_of_type, create_settled_transfer
+from tests._test_helpers import (
+    create_account_of_type,
+    create_settled_transfer,
+    refused_by_database_rule,
+)
 
 
 def _a_reverted_transfer(seed_user, seed_periods):
@@ -31,6 +38,9 @@ def _a_reverted_transfer(seed_user, seed_periods):
 
     The revert keeps each side's covering movement, un-dated (ruling
     **R-BAL61**), so the transfer still holds two entries and no dated one.
+    They are read off the transfer's two side links (plan step
+    ``balance:X-bi-6-4d-2``, ruling **R-BAL88**; ruling **R-BAL167** class
+    4), where they were read under its shadows until then.
 
     Returns:
         ``(transfer_id, the kept movements' ids)``.
@@ -51,8 +61,10 @@ def _a_reverted_transfer(seed_user, seed_periods):
     db.session.commit()
     kept = (
         db.session.query(TransactionEntry)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(Transaction.transfer_id == transfer.id)
+        .filter(
+            (TransactionEntry.expense_transfer_id == transfer.id)
+            | (TransactionEntry.income_transfer_id == transfer.id),
+        )
         .all()
     )
     assert len(kept) == 2
@@ -93,19 +105,42 @@ class TestTheHardDeleteTakesEveryEntryTheTransferHolds:
     def test_records_under_hidden_shadows_leave_with_it(
         self, app, seed_user, seed_periods,
     ):
-        """Soft-deleted first (both shadows hidden), then hard-deleted.
+        """Both shadows hidden over the two kept records, then hard-deleted.
 
-        The soft delete withdraws nothing (``_delete``'s own rule), so the
-        two kept records sit under DEAD shadows -- the state finding
-        **BAL-532** names -- and the hard delete must still find them.
+        The case soft-deleted the transfer first, which withdrew nothing until
+        plan step ``balance:X-bi-6-4d-2``, so the two kept records sat under
+        DEAD shadows -- the state finding **BAL-532** names.  Since that step
+        the soft delete takes the payments off (ruling **R-CC75**) and the
+        database refuses a transfer hidden holding one, so that state --
+        planted as the soft delete left it -- is asserted REFUSED at commit
+        (ruling **R-BAL167** class 2).  The subject left is the storable
+        remainder: both shadows hidden around the service while the live
+        transfer keeps its records, which no reader reads (class 3), and the
+        hard delete must still find them.
         """
         with app.app_context():
             transfer_id, movement_ids = _a_reverted_transfer(
                 seed_user, seed_periods,
             )
-            transfer_service.delete_transfer(
-                transfer_id, seed_user["user"].id, soft=True,
+            hide_shadows = db.text(
+                "UPDATE budget.transactions SET is_deleted = TRUE "
+                "WHERE transfer_id = :t"
             )
+            db.session.execute(hide_shadows, {"t": transfer_id})
+            db.session.execute(
+                db.text(
+                    "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"
+                ),
+                {"t": transfer_id},
+            )
+            with refused_by_database_rule(
+                "was deleted while it still holds a recorded payment",
+            ) as caught:
+                db.session.commit()
+            db.session.rollback()
+            assert f"transfer {transfer_id} " in str(caught.value)
+
+            db.session.execute(hide_shadows, {"t": transfer_id})
             db.session.commit()
             assert (
                 db.session.query(Transaction)

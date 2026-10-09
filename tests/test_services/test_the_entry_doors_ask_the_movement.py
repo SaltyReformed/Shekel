@@ -35,6 +35,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     generate_row_of,
     make_expense_template,
+    transfer_side_record,
     typed,
 )
 
@@ -181,7 +182,11 @@ class TestATransfersPaymentIsNamedByItsLeg:
         a renamed account leaves (the shadow keeps the name it was written
         with; the leg's label reads the endpoints' current names).  The
         from-side payment is then named "Transfer to Rainy Day", the label
-        ``transfer_legs.leg_label`` composes.
+        ``transfer_legs.leg_label`` composes.  The payment is the from-side's
+        record on the TRANSFER since plan step ``balance:X-bi-6-4d-2``
+        (ruling **R-BAL88**), where it hung off the shadow until then (ruling
+        **R-BAL167** class 4); the stale shadow name is still planted and
+        read by no door (class 3).
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -199,10 +204,9 @@ class TestATransfersPaymentIsNamedByItsLeg:
             ), {"id": transfer.id})
             db.session.commit()
             db.session.expire_all()
-            expense_shadow = db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id, account_id=seed_user["account"].id,
-            ).one()
-            (movement,) = expense_shadow.covering_movements
+            movement = transfer_side_record(
+                db.session, transfer.id, seed_user["account"].id,
+            )
 
             with pytest.raises(ValidationError) as refused:
                 if door == "update":
@@ -231,7 +235,12 @@ class TestTheAdviceIsTheParentsOwn:
     def test_a_transfers_payment_is_advised_onto_the_transfer(
         self, app, seed_user, seed_periods,
     ):
-        """A Paid $250.00 transfer checking -> Rainy Day: the transfer's own words."""
+        """A Paid $250.00 transfer checking -> Rainy Day: the transfer's own words.
+
+        The payment is the from-side's record on the TRANSFER since plan step
+        ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**), where it was read off
+        the Checking shadow until then (ruling **R-BAL167** class 4).
+        """
         with app.app_context():
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Rainy Day",
@@ -242,10 +251,9 @@ class TestTheAdviceIsTheParentsOwn:
                 seed_periods[0], amount=Decimal("250.00"),
             )
             db.session.commit()
-            expense_shadow = db.session.query(Transaction).filter_by(
-                transfer_id=transfer.id, account_id=seed_user["account"].id,
-            ).one()
-            (movement,) = expense_shadow.covering_movements
+            movement = transfer_side_record(
+                db.session, transfer.id, seed_user["account"].id,
+            )
 
             with pytest.raises(ValidationError) as refused:
                 entry_service.delete_entry(movement.id, seed_user["user"].id)

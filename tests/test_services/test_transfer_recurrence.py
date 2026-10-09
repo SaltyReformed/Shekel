@@ -24,7 +24,6 @@ from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum
 from app.services import (
     pay_period_write, transfer_recurrence, transfer_service,
-    status_seam,
 )
 from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import (
@@ -48,6 +47,7 @@ from tests._test_helpers import (
     last_covered_day,
     make_cadence_rule,
     shadow_amount,
+    transfer_side_record,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -1839,12 +1839,25 @@ class TestTransferMaintain:
         finally:
             db.session.flush()
 
+    @staticmethod
+    def _side_records(xfer):
+        """Return *xfer*'s from-side and to-side records, read by their own SQL.
+
+        Each side's record hangs off the TRANSFER since plan step
+        ``balance:X-bi-6-4d-2`` (ruling **R-BAL88**), where the class read
+        each leg's covering movement until then (ruling **R-BAL167** class 4).
+        """
+        return [
+            transfer_side_record(db.session, xfer.id, account_id)
+            for account_id in (xfer.from_account_id, xfer.to_account_id)
+        ]
+
     def _settle_then_revert(self, xfer, seed_user, figure):
-        """Leave *xfer* Projected while both legs still record what moved.
+        """Leave *xfer* Projected while both sides still record what moved.
 
         The state ruling X-au-c3 creates deliberately: ``status_seam`` releases
         the ASSERTION on the way out of the settled band (``settled_on``,
-        ``reconciled_by_id``) and KEEPS what moved (each leg's covering
+        ``reconciled_by_id``) and KEEPS what moved (each side's covering
         movement, un-dated), because the full-edit popover instructs the owner
         to revert in order to edit.  So the row is the rule's own again -- and
         it carries a figure read off a bank statement.
@@ -1862,15 +1875,11 @@ class TestTransferMaintain:
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         )
         db.session.flush()
-        legs = db.session.query(Transaction).filter_by(
-            transfer_id=xfer.id, is_deleted=False,
-        ).all()
-        assert [
-            status_seam.recorded_settlement(leg).amount for leg in legs
-        ] == [figure, figure], (
-            "setup: both legs must retain the figure through the revert"
+        records = self._side_records(xfer)
+        assert [record.amount for record in records] == [figure, figure], (
+            "setup: both sides must retain the figure through the revert"
         )
-        assert all(leg.settled_on is None for leg in legs), (
+        assert all(record.settled_on is None for record in records), (
             "setup: the revert must release the assertion"
         )
 
@@ -2097,11 +2106,10 @@ class TestTransferMaintain:
             assert conflict.retained == [recorded.id]
             survivor = db.session.get(Transfer, recorded.id)
             assert survivor is not None
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=recorded.id, is_deleted=False,
-            ).all()
+            # Each SIDE's record since plan step balance:X-bi-6-4d-2, where
+            # each leg's was read (ruling R-BAL167 class 1).
             assert [
-                status_seam.recorded_settlement(leg).amount for leg in legs
+                record.amount for record in self._side_records(survivor)
             ] == [
                 Decimal("321.45"), Decimal("321.45"),
             ]
@@ -2401,15 +2409,17 @@ class TestTransferMaintain:
             held = db.session.get(Transfer, recorded.id)
             assert transfer_amount(held) == Decimal("175.00")
             # The record it kept is untouched by the re-price: what MOVED and
-            # what is PLANNED are different facts (plan step X-au-c3).
-            legs = db.session.query(Transaction).filter_by(
-                transfer_id=recorded.id, is_deleted=False,
-            ).all()
+            # what is PLANNED are different facts (plan step X-au-c3).  Each
+            # SIDE's record since plan step balance:X-bi-6-4d-2, where each
+            # leg's was read (ruling R-BAL167 class 1).
             assert [
-                status_seam.recorded_settlement(leg).amount for leg in legs
+                record.amount for record in self._side_records(held)
             ] == [
                 Decimal("58.00"), Decimal("58.00"),
             ]
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=recorded.id, is_deleted=False,
+            ).all()
             assert all(
                 shadow_amount(leg) == Decimal("175.00") for leg in legs
             )
