@@ -9,28 +9,28 @@ never produce.  No day, figure or link moves.
 
 Driven against the test database, which is built at head, through the
 revision's own module-level pieces: :func:`classify_sides` grades each arm of
-the predicate on states the service writes (with the audit rows its triggers
-write), :func:`refuse_unborrowable` fires on a side whose day is not its
-sibling's, and the whole ``upgrade`` / ``downgrade`` pair is run over the
+the predicate on the states the doors below plan step
+``balance:X-bi-6-4d-2`` wrote (with the audit rows the database's triggers
+write for them), :func:`refuse_unborrowable` fires on a side whose day is not
+its sibling's, and the whole ``upgrade`` / ``downgrade`` pair is run over the
 pre-step shapes, which the downgrade must restore exactly.
 
-**Two arms cannot be told apart by the service alone here**, and are planted
-where that is so: the test database's app writes and the migration run as ONE
-role, so every write onto a settled dateless row reads as the backfill's
-(``entered_guess``) until its audit row's ``db_user`` is re-labelled; and a
-statement member that existed and was later removed is planted as the audit
-INSERT the member's trigger would have written.
+**Every settled pre-step pair is planted by SQL** since that step, which files
+a transfer side's record under the TRANSFER and stops writing a twin's
+status, day, basis and statement link -- so no door at head writes the shape
+this revision reads (the twins settled, each holding a covering movement).
+Each state is written as the pre-step doors wrote it: the parent's status,
+each twin's status, day and basis in ONE UPDATE (the audit row the stamp arm
+reads), a movement under each twin mirroring it, a correction writing twin and
+movement together, and a tick linking both.  Setup only, approved by the
+developer 2026-10-08 (rule 5, ruling **balance:R-BAL234**): no arm, basis or
+day a case checks changed.  Until that step the service wrote these states.
 
-**Every settled pre-step pair is planted by SQL** since plan step
-``balance:X-bi-6-4d-2``, which files a transfer side's record under the
-TRANSFER and stops writing a twin's status, day, basis and statement link --
-so no door writes the shape this revision reads any more (the twins settled,
-each holding a covering movement), and the state each arm grades is written
-as the pre-step doors wrote it: the parent's status, each twin's status, day
-and basis in ONE UPDATE (the audit row the stamp arm reads), a movement under
-each twin mirroring it, a correction writing twin and movement together, and
-a tick linking both.  Setup only, approved by the developer 2026-10-08 (rule
-5, ruling **balance:R-BAL234**): no arm, basis or day a case checks changed.
+**Two arms are told apart by a further plant**: the test database's writes
+and the migration run as ONE role, so every write onto a settled dateless row
+reads as the backfill's (``entered_guess``) until its audit row's ``db_user``
+is re-labelled; and a statement member that existed and was later removed is
+planted as the audit INSERT the member's trigger would have written.
 """
 
 import json

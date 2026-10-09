@@ -99,13 +99,29 @@ a database the app has written at it.  It ships with plan step
 ``balance:X-bi-6-4d-3``'s revision in ONE release, and that revision's
 downgrade, which rebuilds the twins, rebuilds each twin's status, settle day,
 basis and statement link from its transfer and its side's record first, after
-which the census reads zero.  **On the 2026-10-08 production dump it reads
-zero before this revision** (358 twins, 102 of them deleted, 44 records: every
-twin's status is its transfer's, and every twin's day, basis and link are its
-record's, NULL where it holds none), so a downgrade straight after the
-upgrade, with no app write between, passes.  The stored money is exact either
-way: no record, posting or match is written by the downgrade but each
-record's parent link.
+which the census reads zero.  **The census reads what a door below this
+revision wrote as agreeing**, so a downgrade straight after the upgrade, with
+no app write between, passes: each twin's status is its transfer's, and its
+day, basis and link are its side's record's (``NULL`` where it holds none) --
+save a ``$0.00`` close's twins, which that seam dated on the day the close was
+stated with no record beside them, and which are read for status and link
+alone (the cp2c review's M-1).  On the 2026-10-08 production dump it reads
+zero before this revision and after the upgrade (358 twins, 102 of them
+deleted, 44 records; no ``$0.00`` close), and the downgrade through it is
+digest-identical to the pristine restore.
+
+**What a ``$0.00`` close's day becomes.**  Ruling **R-BAL230** gives a
+``$0.00`` close no day at this revision ("a $0.00 close moved no money, so it
+has no day"), and a side closed at ``$0.00`` holds no record, so its day lives
+only on its twins: one closed below this revision keeps the day its twins
+carry, and the downgrade leaves it there; one closed AT this revision has
+none anywhere, so ``X-bi-6-4d-3``'s downgrade rebuilds its twins settled with
+NO day -- the dateless settled pair the code below calls legacy (finding
+N-181), declared here rather than restorable.  ``X-bi-6-4d-3``'s own revision,
+which deletes the twins, owes the same declaration for the older closes' days.
+No money moves in either: a ``$0.00`` close records none.  The stored
+money is exact either way: no record, posting or match is written by the
+downgrade but each record's parent link.
 
 ``tests/test_models/test_a_transfer_side_s_payment_hangs_off_the_transfer.py``
 drives the shipped ``upgrade`` / ``downgrade`` and each refusal.
@@ -254,14 +270,23 @@ UPDATE budget.transaction_entries e
 #: app stops writing on a twin.  A LIVE twin is read against its side's record
 #: (the one the downgrade re-attaches under it; ``NULL`` when the side holds
 #: none) and a deleted twin against none, since a record goes back under its
-#: side's live twin only.  ``(transfer id, twin id, the facts that differ)``.
+#: side's live twin only.  **A recordless twin of a SETTLED transfer is read
+#: for its status and link alone**: that is a ``$0.00`` close, and the seam
+#: below this revision dated both twins of one on the day it was stated while
+#: writing no record, so its day and basis are the close's own, which nothing
+#: at this revision holds (a ``$0.00`` close made AT this revision leaves its
+#: twins Projected, which the status reads).  ``(transfer id, twin id, the
+#: facts that differ)``.
 _DRIFTED_TWINS_SQL = f"""
-SELECT t.transfer_id, t.id,
+SELECT transfer_id, twin_id, facts FROM (
+SELECT t.transfer_id, t.id AS twin_id,
        array_remove(ARRAY[
            CASE WHEN t.status_id <> x.status_id THEN 'status' END,
-           CASE WHEN t.settled_on IS DISTINCT FROM e.settled_on
+           CASE WHEN (e.id IS NOT NULL OR NOT s.is_settled)
+                 AND t.settled_on IS DISTINCT FROM e.settled_on
                 THEN 'settle day' END,
-           CASE WHEN t.settled_day_basis_id
+           CASE WHEN (e.id IS NOT NULL OR NOT s.is_settled)
+                 AND t.settled_day_basis_id
                      IS DISTINCT FROM e.settled_day_basis_id
                 THEN 'day basis' END,
            CASE WHEN t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
@@ -269,16 +294,15 @@ SELECT t.transfer_id, t.id,
        ], NULL) AS facts
   FROM budget.transactions t
   JOIN budget.transfers x ON x.id = t.transfer_id
+  JOIN ref.statuses s ON s.id = x.status_id
   LEFT JOIN budget.transaction_entries e
          ON NOT t.is_deleted
         AND CASE WHEN t.transaction_type_id = {_INCOME}
                  THEN e.income_transfer_id
                  ELSE e.expense_transfer_id END = t.transfer_id
- WHERE t.status_id <> x.status_id
-    OR t.settled_on IS DISTINCT FROM e.settled_on
-    OR t.settled_day_basis_id IS DISTINCT FROM e.settled_day_basis_id
-    OR t.reconciled_by_id IS DISTINCT FROM e.reconciled_by_id
- ORDER BY t.transfer_id, t.id
+) twins
+ WHERE cardinality(facts) > 0
+ ORDER BY transfer_id, twin_id
 """
 
 #: How many drifted twins a refusal names; the diagnostic query finds the rest.

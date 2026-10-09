@@ -128,9 +128,9 @@ class HiddenRow:
         plan of record's wording, never the nullable ``Transfer.name``,
         which would print "None was deleted".  The from-side's and not the
         to-side's because the arm refuses the transfer once, before either
-        side is written, and the from-side comes first wherever the pair's
-        two sides yield one answer (``transfer_service._side_days
-        .repair_fallback``'s order).  The
+        side is written, and the from-side comes first where
+        ``transfer_service._side_days.repair_fallback`` orders the two
+        sides for one answer.  The
         archive writes ``TransferTemplate.is_active`` and soft-deletes
         through ``transfer_service.delete_transfer``, which hands the status
         seam no record, so no caller of this sees an archive it staged

@@ -588,14 +588,115 @@ class TestTheDowngradeRefusesADriftedTwin:
         assert "4 twin row(s)" in message
         assert _has_side_links()
 
-    def test_twins_in_step_pass_the_census(self, app, seed_user):
-        """CONTROL: rebuilt from their transfer and record, the twins agree."""
+    def test_every_shape_a_pre_step_door_wrote_passes_and_downgrades(
+        self, app, seed_user,
+    ):
+        """CONTROL, planted as the doors below this revision wrote it, not as the census reads.
+
+        Two Paid pairs whose twins mirror their records (the design's M4),
+        and a ``$0.00`` close live and soft-deleted: the seam below this
+        revision dated both twins of a close on the day it was stated, with no
+        record beside them, and its soft delete kept them (the cp2c review's
+        M-1, which a control built by :func:`_twins_rebuilt` -- the census's
+        complement -- could never fail on).  The census passes, the whole
+        downgrade runs, and the closes' twins keep their day.
+        """
         del app
-        _settled_pair(seed_user)
+        first, _second = _settled_pair(seed_user)
+        live = create_transfer(
+            seed_user, _db.session, seed_user["account"], first.to_account,
+            seed_user["bootstrap_period"], amount=Decimal("75.00"),
+        )
+        hidden = create_transfer(
+            seed_user, _db.session, seed_user["account"], first.to_account,
+            seed_user["bootstrap_period"], amount=Decimal("80.00"),
+        )
+        _db.session.commit()
         _twins_rebuilt()
+        closed_on = _db.session.execute(text(
+            "SELECT settled_on FROM budget.transaction_entries "
+            "WHERE expense_transfer_id = :t"
+        ), {"t": first.id}).scalar_one()
+        zero_closes = [live.id, hidden.id]
+        _db.session.execute(text(
+            "UPDATE budget.transfers SET status_id = (SELECT id FROM "
+            "ref.statuses WHERE name = 'Paid') WHERE id = ANY(:ids)"
+        ), {"ids": zero_closes})
+        _db.session.execute(text(
+            "UPDATE budget.transactions SET status_id = (SELECT id FROM "
+            "ref.statuses WHERE name = 'Paid'), settled_on = :d, "
+            "settled_day_basis_id = (SELECT id FROM ref.settled_day_bases "
+            "WHERE name = 'borrowed') WHERE transfer_id = ANY(:ids)"
+        ), {"d": closed_on, "ids": zero_closes})
+        _db.session.execute(text(
+            "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :t"
+        ), {"t": hidden.id})
+        _db.session.execute(text(
+            "UPDATE budget.transactions SET is_deleted = TRUE "
+            "WHERE transfer_id = :t"
+        ), {"t": hidden.id})
 
         _MIGRATION.refuse_drifted_twins(_db.session.connection())
+        run_migration_callable(_MIGRATION.downgrade, _db.session)
+
+        assert not _has_side_links()
+        assert _db.session.execute(text(
+            "SELECT DISTINCT settled_on FROM budget.transactions "
+            "WHERE transfer_id = ANY(:ids)"
+        ), {"ids": zero_closes}).scalars().all() == [closed_on]
+        run_migration_callable(_MIGRATION.upgrade, _db.session)
+
+    def test_a_zero_close_made_at_this_revision_refuses(self, app, seed_user):
+        """The carve-out's boundary: a close made HERE leaves its twins Projected."""
+        del app
+        savings = create_account_of_type(
+            seed_user, _db.session, "Savings", "Zero Close Savings",
+        )
+        _db.session.commit()
+        xfer = create_settled_transfer(
+            seed_user, _db.session, seed_user["account"], savings,
+            seed_user["bootstrap_period"], amount=Decimal("90.00"),
+            settled_amount=Decimal("0.00"),
+        )
+        _db.session.commit()
+
+        with pytest.raises(RuntimeError, match="2 twin row") as refused:
+            _MIGRATION.refuse_drifted_twins(_db.session.connection())
         _db.session.rollback()
+
+        assert f"({xfer.id}, {_from_side_twin(xfer)}, ['status'])" in str(
+            refused.value,
+        )
+
+    def test_a_dated_twin_under_an_unsettled_transfer_is_refused(
+        self, app, seed_user,
+    ):
+        """A recordless twin is read for its day while its transfer is not settled."""
+        del app
+        savings = create_account_of_type(
+            seed_user, _db.session, "Savings", "Unsettled Savings",
+        )
+        _db.session.commit()
+        xfer = create_transfer(
+            seed_user, _db.session, seed_user["account"], savings,
+            seed_user["bootstrap_period"], amount=Decimal("60.00"),
+        )
+        _db.session.commit()
+        twin = _from_side_twin(xfer)
+        _db.session.execute(text(
+            "UPDATE budget.transactions SET settled_on = :d, "
+            "settled_day_basis_id = (SELECT id FROM ref.settled_day_bases "
+            "WHERE name = 'entered') WHERE id = :twin"
+        ), {"d": seed_user["bootstrap_period"].start_date, "twin": twin})
+
+        with pytest.raises(RuntimeError, match="1 twin row") as refused:
+            _MIGRATION.refuse_drifted_twins(_db.session.connection())
+        _db.session.rollback()
+
+        assert (
+            f"({xfer.id}, {twin}, ['settle day', 'day basis'])"
+            in str(refused.value)
+        )
 
     @pytest.mark.parametrize("drift_sql, fact", [
         ("UPDATE budget.transactions SET status_id = (SELECT id FROM "
@@ -625,9 +726,21 @@ class TestTheDowngradeRefusesADriftedTwin:
         assert f"({first.id}, {twin}, ['{fact}'])" in str(refused.value)
 
     def test_a_deleted_twin_is_read_against_no_record(self, app, seed_user):
-        """A hidden copy of a dated twin: its record goes back under the LIVE twin, not it."""
+        """A hidden copy of a LINKED twin: its record goes back under the LIVE twin, not it.
+
+        Read through the link, the one fact a deleted twin of a settled
+        transfer is read for besides its status: its day and basis are not,
+        since the seam below this revision left a soft-deleted ``$0.00``
+        close's twins dated (the M-1 carve-out).
+        """
         del app
         first, _second = _settled_pair(seed_user)
+        _db.session.execute(text(
+            "UPDATE budget.transaction_entries e SET reconciled_by_id = ("
+            "SELECT max(h.id) FROM budget.account_anchor_history h "
+            "WHERE h.account_id = e.account_id) "
+            "WHERE e.expense_transfer_id = :t"
+        ), {"t": first.id})
         _twins_rebuilt()
         copy = _db.session.execute(text(
             f"INSERT INTO budget.transactions (is_deleted, {_TWIN_COLUMNS}) "
@@ -640,6 +753,5 @@ class TestTheDowngradeRefusesADriftedTwin:
         _db.session.rollback()
 
         assert (
-            f"({first.id}, {copy}, ['settle day', 'day basis'"
-            in str(refused.value)
+            f"({first.id}, {copy}, ['statement link'])" in str(refused.value)
         )
