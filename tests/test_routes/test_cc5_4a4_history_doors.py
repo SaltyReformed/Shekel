@@ -49,6 +49,7 @@ from app.services import (
     pay_period_admin,
     pay_period_gates,
     transaction_service,
+    transfer_legs,
     transfer_service,
 )
 from app.services.cash_ledger import settled_cash_facts
@@ -318,6 +319,12 @@ def _kept_transfer_payment(seed_user):
 
     The example ruling R-CC65 was asked with.  Returns the template, the
     transfer and the bank line its kept payment is matched to.
+
+    The line is posted on the Checking side's record's day and ticked as the
+    screen offers a paid side, its record; it read and ticked the side's
+    SHADOW row until leaf ``balance:X-bi-6-4d-2``, which hangs a side's
+    record off the transfer (ruling **R-BAL167**'s class 4, a shared helper
+    re-expressed).
     """
     savings = create_account_of_type(
         seed_user, db.session, "Savings", "Savings",
@@ -335,14 +342,14 @@ def _kept_transfer_payment(seed_user):
         status_id=ref_cache.status_id(StatusEnum.DONE),
     )
     db.session.commit()
-    rows = transfer_service.load_transfer_rows(xfer.id, seed_user["user"].id)
+    record = transfer_legs.transfer_side_leg(xfer, is_income=False).record
     line = a_bank_line(
         seed_user, an_import(seed_user), amount="-500.00",
-        posted_on=rows.expense.settled_on, description="TRANSFER OUT",
+        posted_on=record.settled_on, description="TRANSFER OUT",
     )
     db.session.commit()
     scope = a_scope(seed_user)
-    accept_match(a_submission(scope, lines=[line], transactions=[rows.expense]), scope)
+    accept_match(a_submission(scope, lines=[line], transfers=[xfer]), scope)
     db.session.commit()
     transfer_service.update_transfer(
         xfer.id, seed_user["user"].id,

@@ -121,6 +121,15 @@ def _ledger_nets_for_transfer(transfer_id):
     return {key: net for key, net in nets.items() if net != 0}
 
 
+def _the_day_before_today():
+    """Return yesterday in the owner's timezone, a day an account's books can open on.
+
+    Money a settle dates TODAY lands on an account whose books open no later
+    than this.
+    """
+    return display_today() - timedelta(days=1)
+
+
 def _create_basic_transfer(td):
     """Helper: create a transfer using the standard test data."""
     return transfer_service.create_transfer(
@@ -2492,7 +2501,7 @@ class TestMovingATransferBetweenAccounts:
     both sides of the move.
     """
 
-    def _other_savings(self, td, name="Second Savings"):
+    def _other_savings(self, td, name="Second Savings", observed_on=None):
         """Create a second savings account for this owner.
 
         Through ``account_service.create_account`` rather than an ``Account``
@@ -2500,6 +2509,15 @@ class TestMovingATransferBetweenAccounts:
         chart-of-accounts ledger -- and an endpoint move posts to that ledger,
         so a hand-rolled row fails the move with a missing-pairing
         ``PostingError`` rather than exercising it.
+
+        *observed_on* is the day its books open (today when ``None``).  A
+        case that moves money SETTLED today onto it opens them a day earlier
+        (:func:`_the_day_before_today`): the transfer arm refuses a side
+        moving on or before its account's books open, by name, since leaf
+        ``balance:X-bi-6-4d-2`` (the database refused it at commit before,
+        which those cases never reach).  Setup only, approved by the
+        developer 2026-10-08 (rule 5, ruling **balance:R-BAL234**): every
+        figure they check is unchanged.
         """
         savings_type = (
             db.session.query(AccountType).filter_by(name="Savings").one()
@@ -2510,6 +2528,7 @@ class TestMovingATransferBetweenAccounts:
                 account_type_id=savings_type.id,
                 name=name,
                 anchor_balance=Decimal("0.00"),
+                observed_on=observed_on,
             ),
         )
         db.session.flush()
@@ -2885,7 +2904,9 @@ class TestMovingATransferBetweenAccounts:
                 name="Vacated Loan",
                 origination_date=date(2020, 1, 1),
             )
-            elsewhere = self._other_savings(td, name="Not A Loan")
+            elsewhere = self._other_savings(
+                td, name="Not A Loan", observed_on=_the_day_before_today(),
+            )
             xfer = transfer_service.create_transfer(
                 transfer_service.TransferSpec(
                     user_id=td["user"].id,
@@ -3017,7 +3038,9 @@ class TestMovingATransferBetweenAccounts:
                 origination_date=date(2020, 1, 1),
                 principal=Decimal("5000.00"),
             )
-            elsewhere = self._other_savings(td, name="Off The Loan")
+            elsewhere = self._other_savings(
+                td, name="Off The Loan", observed_on=_the_day_before_today(),
+            )
             payments = []
             for index in (0, 1):
                 payment = transfer_service.create_transfer(
@@ -3073,7 +3096,9 @@ class TestMovingATransferBetweenAccounts:
         with app.app_context():
             td = transfer_data
             savings = td["savings_account"]
-            elsewhere = self._other_savings(td, name="Third Savings")
+            elsewhere = self._other_savings(
+                td, name="Third Savings", observed_on=_the_day_before_today(),
+            )
             xfer = _create_basic_transfer(td)
             transfer_service.settle_transfer(
                 xfer.id, td["user"].id,
@@ -3172,7 +3197,9 @@ class TestMovingATransferBetweenAccounts:
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
-            elsewhere = self._other_savings(td)
+            elsewhere = self._other_savings(
+                td, observed_on=_the_day_before_today(),
+            )
             transfer_service.settle_transfer(
                 xfer.id, td["user"].id,
             )

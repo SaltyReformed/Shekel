@@ -20,6 +20,17 @@ role, so every write onto a settled dateless row reads as the backfill's
 (``entered_guess``) until its audit row's ``db_user`` is re-labelled; and a
 statement member that existed and was later removed is planted as the audit
 INSERT the member's trigger would have written.
+
+**Every settled pre-step pair is planted by SQL** since plan step
+``balance:X-bi-6-4d-2``, which files a transfer side's record under the
+TRANSFER and stops writing a twin's status, day, basis and statement link --
+so no door writes the shape this revision reads any more (the twins settled,
+each holding a covering movement), and the state each arm grades is written
+as the pre-step doors wrote it: the parent's status, each twin's status, day
+and basis in ONE UPDATE (the audit row the stamp arm reads), a movement under
+each twin mirroring it, a correction writing twin and movement together, and
+a tick linking both.  Setup only, approved by the developer 2026-10-08 (rule
+5, ruling **balance:R-BAL234**): no arm, basis or day a case checks changed.
 """
 
 import json
@@ -31,12 +42,11 @@ import pytest
 from sqlalchemy import text
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.services import transfer_service
-from app.services.settle_day import record_settle_day
+from app.services.settle_day import SettleDay, record_settle_day
 from app.utils.dates import display_today
 from tests._test_helpers import (
     an_asserted_day,
@@ -45,7 +55,6 @@ from tests._test_helpers import (
     create_savings_account,
     create_transfer,
     load_migration_module,
-    on_both_sides,
     open_books_before_the_first_assertion,
     run_migration_callable,
 )
@@ -64,6 +73,10 @@ class TestTheRevision:
         assert _MIGRATION.down_revision == "c4a4e7d1b9f2"
 
 
+#: Every planted transfer's amount, and so each side's record's.
+_AMOUNT = Decimal("300.00")
+
+
 def _transfer(seed_user, period, name):
     """Return a Projected $300.00 Checking -> Savings transfer named *name*."""
     savings = create_savings_account(
@@ -72,7 +85,7 @@ def _transfer(seed_user, period, name):
     open_books_before_the_first_assertion(db.session, savings)
     xfer = create_transfer(
         seed_user, db.session, seed_user["account"], savings, period,
-        amount=Decimal("300.00"), name=name,
+        amount=_AMOUNT, name=name,
     )
     db.session.commit()
     return xfer
@@ -112,28 +125,98 @@ def _ny_today():
     ).scalar_one()
 
 
-def _paid_press_before_the_step(seed_user, xfer):
-    """Settle *xfer* as the pre-step Paid press did: status and an ``entered`` today, one write."""
-    transfer_service.update_transfer(
-        xfer.id, seed_user["user"].id,
-        status_id=ref_cache.status_id(StatusEnum.DONE),
-        side_days=on_both_sides(
-            xfer.from_account_id, xfer.to_account_id,
-            an_entered_day(_ny_today()),
-        ),
+def _settle_before_the_step(xfer, settle_day):
+    """Settle *xfer* on *settle_day* in the pre-step shape, by SQL (the module docstring).
+
+    The parent's status; each twin's status, day and basis in ONE UPDATE, so
+    its audit row carries the status moving into the band beside the day; and
+    under each twin a covering movement carrying the twin's day and basis
+    (the design's M4) at the transfer's figure.  The transfer stays inside
+    the band rule: it is settled and no record names it by a side link.
+    """
+    done = ref_cache.status_id(StatusEnum.DONE)
+    basis = ref_cache.settled_day_basis_id(settle_day.basis)
+    resolved = ref_cache.movement_figure_source_id(
+        MovementFigureSourceEnum.RESOLVED,
     )
+    twins = _shadows(xfer)
+    db.session.execute(
+        text("UPDATE budget.transfers SET status_id = :s WHERE id = :t"),
+        {"s": done, "t": xfer.id},
+    )
+    for twin in twins:
+        db.session.execute(text(
+            "UPDATE budget.transactions SET status_id = :s, settled_on = :d, "
+            "settled_day_basis_id = :b WHERE id = :id"
+        ), {"s": done, "d": settle_day.day, "b": basis, "id": twin.id})
+        db.session.execute(text(
+            "INSERT INTO budget.transaction_entries (transaction_id, "
+            "account_id, owner_id, user_id, amount, description, "
+            "purchased_on, settled_on, settled_day_basis_id, "
+            "covers_settlement, is_credit, figure_source_id, version_id) "
+            "VALUES (:id, :account, :owner, :owner, :amount, :name, :d, :d, "
+            ":b, TRUE, FALSE, :source, 1)"
+        ), {
+            "id": twin.id, "account": twin.account_id, "owner": twin.user_id,
+            "amount": _AMOUNT, "name": twin.name, "d": settle_day.day,
+            "b": basis, "source": resolved,
+        })
     db.session.commit()
 
 
+def _correct_before_the_step(xfer, settle_day, *, account_id=None):
+    """Write *settle_day* onto *xfer*'s settled twins, by SQL, as a pre-step correction did.
+
+    The twin's day and basis and its covering movement's together (the
+    movement's ``purchased_on`` follows its day, as the seam's does).
+    *account_id* narrows the write to the side on that account.
+    """
+    basis = ref_cache.settled_day_basis_id(settle_day.basis)
+    for twin in _shadows(xfer):
+        if account_id is not None and twin.account_id != account_id:
+            continue
+        values = {"d": settle_day.day, "b": basis, "id": twin.id}
+        db.session.execute(text(
+            "UPDATE budget.transactions SET settled_on = :d, "
+            "settled_day_basis_id = :b WHERE id = :id"
+        ), values)
+        db.session.execute(text(
+            "UPDATE budget.transaction_entries SET settled_on = :d, "
+            "settled_day_basis_id = :b, purchased_on = :d "
+            "WHERE transaction_id = :id AND covers_settlement"
+        ), values)
+    db.session.commit()
+
+
+def _paid_press_before_the_step(xfer):
+    """Settle *xfer* as the pre-step Paid press did: status and an ``entered`` today, one write.
+
+    The day is read in the transaction that writes it, so it is the date of
+    that write's own audit row (:func:`_ny_today`).
+    """
+    _settle_before_the_step(xfer, an_entered_day(_ny_today()))
+
+
 def _link_the_expense_side(xfer):
-    """Tick the expense side against Checking's latest assertion (the reconcile panel's link)."""
+    """Tick the expense side against Checking's latest assertion (the reconcile panel's link).
+
+    As the pre-step tick's door (``transfer_service.record_clearing``) did:
+    the side's twin and its covering movement take the link together.
+    """
     anchor = (
         db.session.query(AccountAnchorHistory)
         .filter_by(account_id=xfer.from_account_id)
         .order_by(AccountAnchorHistory.id.desc())
         .first()
     )
-    transfer_service.record_clearing(_shadows(xfer)[0], anchor.id)
+    values = {"a": anchor.id, "id": _shadows(xfer)[0].id}
+    db.session.execute(text(
+        "UPDATE budget.transactions SET reconciled_by_id = :a WHERE id = :id"
+    ), values)
+    db.session.execute(text(
+        "UPDATE budget.transaction_entries SET reconciled_by_id = :a "
+        "WHERE transaction_id = :id AND covers_settlement"
+    ), values)
     db.session.commit()
 
 
@@ -164,7 +247,7 @@ class TestTheArms:
         """Status into the band AND the write's own day, in one UPDATE: the press, not typing."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Stamp")
-            _paid_press_before_the_step(seed_user, xfer)
+            _paid_press_before_the_step(xfer)
 
             assert _arms(xfer) == ("entered_stamp", "entered_stamp")
 
@@ -175,15 +258,10 @@ class TestTheArms:
         """A later write of another day onto a pair already settled: the owner's own."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Typed")
-            _paid_press_before_the_step(seed_user, xfer)
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_entered_day(display_today() - timedelta(days=4)),
-                ),
+            _paid_press_before_the_step(xfer)
+            _correct_before_the_step(
+                xfer, an_entered_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
 
             assert _arms(xfer) == ("entered_typed", "entered_typed")
 
@@ -194,7 +272,7 @@ class TestTheArms:
         """The backfill's write is a guess; the same write by the APP role is a typed repair."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Dateless")
-            _paid_press_before_the_step(seed_user, xfer)
+            _paid_press_before_the_step(xfer)
             # The legacy shape (finding N-181): settled, no day, behind the
             # seam's back -- each covering movement un-dated with its row.
             for row in _shadows(xfer):
@@ -203,14 +281,9 @@ class TestTheArms:
                     if movement.covers_settlement:
                         record_settle_day(movement, None)
             db.session.commit()
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_entered_day(display_today() - timedelta(days=4)),
-                ),
+            _correct_before_the_step(
+                xfer, an_entered_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
 
             assert _arms(xfer) == ("entered_guess", "entered_guess")
 
@@ -230,14 +303,9 @@ class TestTheArms:
         """The matcher stated the bank's day for BOTH sides; no member ever named either."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Copied")
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
 
             assert _arms(xfer) == ("observed_relabel", "observed_relabel")
 
@@ -247,14 +315,9 @@ class TestTheArms:
         """A member since removed still counts: the predicate reads the member audit INSERTs."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Named")
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
             _a_statement_once_named_the_expense_side(xfer)
 
             assert _arms(xfer) == ("observed_kept", "observed_relabel")
@@ -265,14 +328,9 @@ class TestTheArms:
         """The tick links its own leg; the day copied to the other side borrows."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Ticked")
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_asserted_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_asserted_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
             _link_the_expense_side(xfer)
 
             assert _arms(xfer) == ("asserted_kept", "asserted_relabel")
@@ -281,8 +339,9 @@ class TestTheArms:
         """A side this step's own code wrote is already labelled, and is counted as kept."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Pressed")
-            transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
-            db.session.commit()
+            _settle_before_the_step(xfer, SettleDay(
+                day=display_today(), basis=SettledDayBasisEnum.BORROWED,
+            ))
 
             assert _arms(xfer) == ("borrowed_kept", "borrowed_kept")
 
@@ -299,7 +358,7 @@ class TestTheArms:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unlogged")
-            _paid_press_before_the_step(seed_user, xfer)
+            _paid_press_before_the_step(xfer)
             db.session.execute(text(
                 "DELETE FROM system.audit_log "
                 "WHERE table_schema = 'budget' AND table_name = 'transactions' "
@@ -334,22 +393,13 @@ class TestTheRefusal:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Parted")
-            owner = seed_user["user"].id
-            transfer_service.settle_transfer(
-                xfer.id, owner,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
-            transfer_service.update_transfer(
-                xfer.id, owner,
-                side_days=(transfer_service.SideDay(
-                    xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=2)),
-                ),),
+            _correct_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=2)),
+                account_id=xfer.to_account_id,
             )
-            db.session.commit()
             assert _arms(xfer) == ("observed_relabel", "observed_relabel")
 
             with mock.patch.object(
@@ -378,14 +428,9 @@ class TestTheRefusal:
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unmirrored")
             day = display_today() - timedelta(days=4)
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(day),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(day),
             )
-            db.session.commit()
             income = _shadows(xfer)[1]
             (movement,) = [m for m in income.entries if m.covers_settlement]
             record_settle_day(movement, an_entered_day(day))
@@ -401,14 +446,9 @@ class TestTheRefusal:
         """The control: the same copied day on both sides relabels without a refusal."""
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Together")
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
             relabel = [shadow.id for shadow in _shadows(xfer)]
 
             _MIGRATION.refuse_unborrowable(db.session.connection(), relabel)
@@ -453,15 +493,11 @@ class TestTheRoundTrip:
         with app.app_context():
             period = seed_periods_today[3]
             press = _transfer(seed_user, period, "Press")
-            _paid_press_before_the_step(seed_user, press)
+            _paid_press_before_the_step(press)
             typed = _transfer(seed_user, period, "Typed")
-            _paid_press_before_the_step(seed_user, typed)
-            transfer_service.update_transfer(
-                typed.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    typed.from_account_id, typed.to_account_id,
-                    an_entered_day(display_today() - timedelta(days=4)),
-                ),
+            _paid_press_before_the_step(typed)
+            _correct_before_the_step(
+                typed, an_entered_day(display_today() - timedelta(days=4)),
             )
             copied = _transfer(seed_user, period, "Copied")
             ticked = _transfer(seed_user, period, "Ticked")
@@ -469,13 +505,7 @@ class TestTheRoundTrip:
                 (copied, an_observed_day(display_today() - timedelta(days=3))),
                 (ticked, an_asserted_day(display_today() - timedelta(days=2))),
             ):
-                transfer_service.settle_transfer(
-                    xfer.id, seed_user["user"].id,
-                    side_days=on_both_sides(
-                        xfer.from_account_id, xfer.to_account_id, day,
-                    ),
-                )
-            db.session.commit()
+                _settle_before_the_step(xfer, day)
             _a_statement_once_named_the_expense_side(copied)
             _link_the_expense_side(ticked)
 
@@ -520,14 +550,9 @@ class TestTheRoundTrip:
         """
         with app.app_context():
             xfer = _transfer(seed_user, seed_periods_today[3], "Unnamed")
-            transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id,
-                side_days=on_both_sides(
-                    xfer.from_account_id, xfer.to_account_id,
-                    an_observed_day(display_today() - timedelta(days=4)),
-                ),
+            _settle_before_the_step(
+                xfer, an_observed_day(display_today() - timedelta(days=4)),
             )
-            db.session.commit()
 
             run_migration_callable(_MIGRATION.downgrade, db.session)
             run_migration_callable(_MIGRATION.upgrade, db.session)
