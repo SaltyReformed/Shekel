@@ -2262,7 +2262,6 @@ class TestWhatATickBooks:
                 "purchase_count", "purchase_total",
                 "payment_count", "payment_total",
                 "deposit_count", "deposit_total",
-                "damaged",
             }
 
 

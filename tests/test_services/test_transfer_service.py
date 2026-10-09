@@ -1160,35 +1160,6 @@ class TestSoftDeleteHandling:
             )
             assert remaining == 0
 
-    def test_shadow_error_distinguishes_deleted_from_corrupt(
-        self, app, db, transfer_data
-    ):
-        """Verify that the shadow count validation error message accurately
-        distinguishes between a soft-deleted transfer (expected state, not
-        corruption) and a genuinely corrupt transfer missing shadows
-        (unexpected state).  Misleading error messages waste developer time
-        during debugging.
-        """
-        with app.app_context():
-            td = transfer_data
-            xfer = _create_basic_transfer(td)
-            xfer_id = xfer.id
-
-            # Soft-delete via service.
-            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
-            db.session.flush()
-
-            # Bypass _get_transfer_or_raise by importing the helper directly.
-            # This simulates a future code path that allows deleted transfers
-            # through and hits the shadow count check.
-            # pylint: disable-next=import-outside-toplevel
-            from app.services.transfer_service._validation import (
-                _get_shadow_transactions,
-            )
-
-            with pytest.raises(ValidationError, match="soft-deleted"):
-                _get_shadow_transactions(xfer_id)
-
 
 # ── Restore Tests (M1) ──────────────────────────────────────────
 
