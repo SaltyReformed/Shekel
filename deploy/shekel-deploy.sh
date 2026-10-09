@@ -288,9 +288,25 @@ image_resolves_revisions() {
     # 0 when *listing* carries a migration script for every revision given.
     # Alembic resolves a revision by finding the script whose id it is, so
     # file presence answers the same question without booting anything.
+    #
+    # A `case` over the listing, with NO PIPE (plan step balance:X-dm, finding
+    # BAL-618).  The spelling it replaced, `printf '%s\n' "$listing" | grep -q
+    # "^${rev}_"`, could answer NO for a listed revision: printf writes a
+    # multi-line listing in more than one write(2), `grep -q` exits at its
+    # first match, and a match on an early line could leave printf writing into
+    # a closed pipe.  SIGPIPE killed printf with status 141, and pipefail then
+    # failed the pipeline.  Every caller asks a safety question (the pre-flight,
+    # the re-pin decision, the refusal's diagnosis), so a false NO refused a
+    # deploy, refused a rollback that would have worked, or named only the dump
+    # restore.  The leading newline lets the first line match like every other
+    # line, and the quoted revision matches literally, where grep read it as a
+    # pattern (every revision id is lowercase letters and digits).
     local listing="$1" revisions="$2" rev
     for rev in $revisions; do
-        printf '%s\n' "$listing" | grep -q "^${rev}_" || return 1
+        case $'\n'"${listing}" in
+            *$'\n'"${rev}"_*) : ;;
+            *) return 1 ;;
+        esac
     done
     return 0
 }

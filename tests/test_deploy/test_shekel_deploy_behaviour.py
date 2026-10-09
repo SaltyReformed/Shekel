@@ -25,11 +25,13 @@ status.  None of that can be satisfied by a comment.
 **The stub.**  ``_write_fake_docker`` emits a ``docker`` shell script onto a
 ``PATH`` prefix.  It answers the handful of subcommands the deploy script
 issues, logs every invocation so ordering is observable, and is scripted per
-test through environment variables: which migrations each image "contains",
-whether the database container is "running", whether ``pg_dump`` writes a
-readable archive, and whether the container ever reports healthy.  Nothing
-here touches a real daemon, so these tests are NOT ``@pytest.mark.docker``
-and run in CI like any other.
+test: which migrations each image "contains" (a listing FILE per image, since
+the regression below needs a listing past 128 KiB, the most one environment
+string may hold), and through environment variables whether the database
+container is "running", whether ``pg_dump`` writes a readable archive, and
+whether the container ever reports healthy.  Nothing here touches a real
+daemon, so these tests are NOT ``@pytest.mark.docker`` and run in CI like any
+other.
 """
 from __future__ import annotations
 
@@ -111,11 +113,13 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
             exit 0
             ;;
         run)
-            # The migration pre-flight: one line per migration file.
+            # The migration pre-flight: one line per migration file, read from
+            # a FILE, since the regression's listing is larger than one
+            # environment string may be (128 KiB, MAX_ARG_STRLEN).
             for arg in "$@"; do
                 case "$arg" in
-                *{_OLD[7:19]}*) printf '%s' "$FAKE_OLD_MIGRATIONS"; exit 0 ;;
-                *{_NEW[7:19]}*) printf '%s' "$FAKE_NEW_MIGRATIONS"; exit 0 ;;
+                *{_OLD[7:19]}*) cat "$FAKE_OLD_MIGRATIONS_FILE"; exit 0 ;;
+                *{_NEW[7:19]}*) cat "$FAKE_NEW_MIGRATIONS_FILE"; exit 0 ;;
                 esac
             done
             exit 0
@@ -318,6 +322,10 @@ class _Stack:
         Returns:
             The completed process, with stdout and stderr captured together.
         """
+        old_listing = self.root / "old_migrations.txt"
+        new_listing = self.root / "new_migrations.txt"
+        old_listing.write_text(old_migrations, encoding="utf-8")
+        new_listing.write_text(new_migrations, encoding="utf-8")
         env = dict(os.environ)
         env.update({
             "PATH": f"{self.bin_dir}:{env['PATH']}",
@@ -331,8 +339,8 @@ class _Stack:
             "FAKE_LOG": str(self.log),
             "FAKE_BACKUP_DIR": str(self.backup_dir),
             "FAKE_LATEST_DIGEST": target,
-            "FAKE_OLD_MIGRATIONS": old_migrations,
-            "FAKE_NEW_MIGRATIONS": new_migrations,
+            "FAKE_OLD_MIGRATIONS_FILE": str(old_listing),
+            "FAKE_NEW_MIGRATIONS_FILE": str(new_listing),
             "FAKE_HEALTH": health,
             "FAKE_DB_RUNNING": db_running,
             "FAKE_PGDUMP_RC": pgdump_rc,
@@ -379,6 +387,45 @@ def _flat(text: str) -> str:
         The same text with every run of whitespace reduced to one space.
     """
     return " ".join(text.split())
+
+
+def _said(result: subprocess.CompletedProcess, calls: list[str]) -> str:
+    """Render what a run printed and invoked, for an assertion's message.
+
+    Finding BAL-618's CI failure carried no diagnosis: ``calls.index(...)``
+    raised ``ValueError`` before any assertion's message could run, so the log
+    held neither the script's output nor the stub's calls.  Every read in this
+    module that could raise on a missing call is an assertion whose message
+    renders this instead (plan step balance:X-dm).
+
+    Args:
+        result: The completed run.
+        calls: The stub's invocation log, in order.
+
+    Returns:
+        The exit status, everything the script printed, and every call.
+    """
+    return (
+        f"The script exited {result.returncode} and said:\n"
+        f"{result.stdout}{result.stderr}\nInvocations: {calls}"
+    )
+
+
+def _position(
+    calls: list[str], call: str, result: subprocess.CompletedProcess,
+) -> int:
+    """Return where *call* first sits in *calls*, failing with the diagnosis.
+
+    Args:
+        calls: The stub's invocation log, in order.
+        call: The invocation to find.
+        result: The completed run, rendered if *call* is absent.
+
+    Returns:
+        The index of the first ``call`` in *calls*.
+    """
+    assert call in calls, f"{call!r} was never invoked.  {_said(result, calls)}"
+    return calls.index(call)
 
 
 @pytest.fixture(name="stack")
@@ -599,6 +646,7 @@ class TestThePreflightIsHonest:
         output = result.stdout + result.stderr
         assert "MIGRATION-BEARING release" in output
         assert "0002_b.py" in output and "0003_c.py" in output
+        assert "adds these revisions" in output, output
         assert "0001_a.py" not in output.split("adds these revisions")[1][:200]
 
     def test_dry_run_reports_the_classification_and_changes_nothing(self, stack):
@@ -659,6 +707,7 @@ class TestAStep3RefusalRollsBack:
             f"no failed-container log beside the dump.  The script said:\n"
             f"{output}"
         )
+        assert len(stack.dumps) == 1, output
         assert saved[0].name == stack.dumps[0].name.replace(
             ".dump", ".failed-container.log",
         )
@@ -666,12 +715,10 @@ class TestAStep3RefusalRollsBack:
         assert str(saved[0]) in output
         # Read BEFORE the re-pin's `compose up` replaced the container.
         calls = stack.invocations
-        read_at = calls.index("logs probe-app")
-        compose_ups = [
-            i for i, call in enumerate(calls) if call.startswith("compose up")
-        ]
-        assert len(compose_ups) == 2, calls
-        assert compose_ups[0] < read_at < compose_ups[1], calls
+        read_at = _position(calls, "logs probe-app", result)
+        compose_ups = _compose_ups(calls, result)
+        assert len(compose_ups) == 2, _said(result, calls)
+        assert compose_ups[0] < read_at < compose_ups[1], _said(result, calls)
 
     def test_a_compose_failure_saves_the_log_too(self, stack):
         """The other re-pin path keeps the log as well."""
@@ -699,30 +746,42 @@ class TestAStep3RefusalRollsBack:
         assert list(stack.backup_dir.glob("*.failed-container.log")) == []
 
 
-def _last_stamp_read(calls: list[str]) -> int:
+def _last_stamp_read(
+    calls: list[str], result: subprocess.CompletedProcess,
+) -> int:
     """Return the index of the last ``alembic_version`` read among *calls*.
 
     Args:
         calls: The stub's invocation log, in order.
+        result: The completed run, rendered if no read was made.
 
     Returns:
         The position of the latest stamp read: after a failure, the re-read.
     """
     reads = [i for i, call in enumerate(calls) if "alembic_version" in call]
-    assert reads, calls
+    assert reads, f"the stamp was never read.  {_said(result, calls)}"
     return reads[-1]
 
 
-def _compose_ups(calls: list[str]) -> list[int]:
+def _compose_ups(
+    calls: list[str], result: subprocess.CompletedProcess,
+) -> list[int]:
     """Return the positions of every ``docker compose up`` among *calls*.
+
+    Every caller expects at least the deploy's own, so an empty list fails
+    here with the run's diagnosis rather than as an ``IndexError`` at the
+    caller's subscript.
 
     Args:
         calls: The stub's invocation log, in order.
+        result: The completed run, rendered if compose never ran.
 
     Returns:
         The deploy's own ``compose up`` first, then any re-pin's.
     """
-    return [i for i, call in enumerate(calls) if call.startswith("compose up")]
+    ups = [i for i, call in enumerate(calls) if call.startswith("compose up")]
+    assert ups, f"docker compose up never ran.  {_said(result, calls)}"
+    return ups
 
 
 _FAILURE_PATHS = pytest.mark.parametrize(
@@ -753,12 +812,14 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
         """
         result = stack.run(**failure, **_STEP_3_ROLLED_BACK)
         calls = stack.invocations
-        assert stack.pin == _OLD, result.stdout + result.stderr
-        stopped_at = calls.index("stop probe-app")
-        saved_at = calls.index("logs probe-app")
-        re_pinned_at = _compose_ups(calls)[-1]
-        read_at = _last_stamp_read(calls)
-        assert stopped_at < read_at < saved_at < re_pinned_at, calls
+        assert stack.pin == _OLD, _said(result, calls)
+        stopped_at = _position(calls, "stop probe-app", result)
+        saved_at = _position(calls, "logs probe-app", result)
+        re_pinned_at = _compose_ups(calls, result)[-1]
+        read_at = _last_stamp_read(calls, result)
+        assert stopped_at < read_at < saved_at < re_pinned_at, (
+            _said(result, calls)
+        )
         assert calls[read_at].endswith("FROM public.alembic_version FOR SHARE")
 
     def test_a_target_whose_id_cannot_be_read_is_still_stopped(self, stack):
@@ -767,8 +828,11 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
             health="unhealthy", target_image_id="", **_STEP_3_ROLLED_BACK,
         )
         calls = stack.invocations
-        assert calls.index("stop probe-app") < _last_stamp_read(calls), calls
-        assert stack.pin == _OLD, result.stdout + result.stderr
+        stopped_at = _position(calls, "stop probe-app", result)
+        assert stopped_at < _last_stamp_read(calls, result), (
+            _said(result, calls)
+        )
+        assert stack.pin == _OLD, _said(result, calls)
 
     def test_the_previous_container_compose_never_replaced_keeps_serving(
         self, stack,
@@ -779,9 +843,11 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
             **_STEP_3_ROLLED_BACK,
         )
         calls = stack.invocations
-        assert "stop probe-app" not in calls
-        assert _last_stamp_read(calls) > _compose_ups(calls)[0], calls
-        assert stack.pin == _OLD, result.stdout + result.stderr
+        assert "stop probe-app" not in calls, _said(result, calls)
+        assert (
+            _last_stamp_read(calls, result) > _compose_ups(calls, result)[0]
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
 
     def test_an_absent_container_is_not_stopped(self, stack):
         """No container to stop: the stamp is read and the re-pin runs."""
@@ -789,9 +855,11 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
             compose_rc="1", container_image_id="", **_STEP_3_ROLLED_BACK,
         )
         calls = stack.invocations
-        assert "stop probe-app" not in calls
-        assert _last_stamp_read(calls) > _compose_ups(calls)[0], calls
-        assert stack.pin == _OLD, result.stdout + result.stderr
+        assert "stop probe-app" not in calls, _said(result, calls)
+        assert (
+            _last_stamp_read(calls, result) > _compose_ups(calls, result)[0]
+        ), _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
 
     @_FAILURE_PATHS
     def test_a_target_container_that_will_not_stop_refuses_the_re_pin(
@@ -810,8 +878,11 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
         assert "REFUSING to roll back" in output
         assert "could not be stopped" in output
         assert stack.pin == _NEW
-        assert _last_stamp_read(calls) < calls.index("stop probe-app"), calls
-        assert len(_compose_ups(calls)) == 1, calls
+        assert (
+            _last_stamp_read(calls, result)
+            < _position(calls, "stop probe-app", result)
+        ), _said(result, calls)
+        assert len(_compose_ups(calls, result)) == 1, _said(result, calls)
         assert f"{_DEPLOY_SCRIPT} {_OLD}" in _flat(output)
 
 
@@ -858,7 +929,8 @@ class TestTheRefusalSaysOnlyWhatTheStampShows:
         refusal = _refusal(output)
         assert result.returncode == 1, output
         assert stack.pin == _NEW
-        assert len(_compose_ups(stack.invocations)) == 1, stack.invocations
+        calls = stack.invocations
+        assert len(_compose_ups(calls, result)) == 1, _said(result, calls)
         assert "The stamp could not be re-read after the failure" in refusal
         assert "UNKNOWN" in refusal
         assert "COMMITTED" not in refusal
@@ -877,6 +949,7 @@ class TestTheRefusalSaysOnlyWhatTheStampShows:
         restart = f"cd {stack.shekel_dir} && docker compose up -d app"
         assert restart in refusal
         assert "It resolves this stamp, so" in refusal
+        assert "pg_restore" in refusal, output
         assert refusal.index(restart) < refusal.index("pg_restore")
 
     def test_a_stamp_neither_image_resolves_names_only_the_restore(self, stack):
@@ -912,6 +985,74 @@ class TestTheRefusalSaysOnlyWhatTheStampShows:
         assert len(saved) == 1, output
         assert _REFUSAL_LINE in saved[0].read_text(encoding="utf-8")
         assert str(saved[0]) in _refusal(output)
+
+
+#: Filler that outgrows a pipe, C-sorted after every fixture revision (the
+#: script's ``comm`` needs C-sorted listings): 65,536 lines, 1,245,184 bytes.
+#: Measured 2026-10-09 (GNU grep 3.12, Linux 7.2, 4 KiB pages): before a
+#: ``grep -q`` matching line 1 exited, its writer got at most 131,072 bytes
+#: into the pipe over 300 trials -- grep's one 64 KiB read plus the 64 KiB pipe
+#: refilled behind it (grep itself read exactly 65,536 bytes, 300 of 300).
+_PAST_A_PIPE = "".join(f"f{i:07d}_filler.py\n" for i in range(65536))
+
+
+class TestAListingLargerThanAPipeIsReadWhole:
+    """Finding BAL-618, plan step balance:X-dm: a listed revision read as absent.
+
+    ``image_resolves_revisions`` used to ask ``printf '%s\\n' "$listing" |
+    grep -q "^${rev}_"`` under ``pipefail``.  ``grep -q`` exits at its first
+    match, and printf, if it was still writing, died of SIGPIPE: status 141,
+    so a revision on an early line read as ABSENT.  On a fixture of a few
+    lines that was a race a loaded CI runner lost now and then.  Findings
+    BAL-509 and N-408 recorded this refusal in CI; BAL-618 and N-510 lost
+    their output, and their failures match it.  Holding printf between its
+    writes reproduced all four on demand.  On a listing larger than the pipe
+    plus grep's one read it is no race: printf is still writing when grep
+    leaves, every run.  One test per caller, since each asks a safety
+    question of its own.
+    """
+
+    def test_the_pre_flight_resolves_a_stamp_on_line_one(self, stack):
+        """The deploy is not refused up front for a revision the target lists."""
+        listing = "0001_a.py\n" + _PAST_A_PIPE
+        result = stack.run(
+            health="healthy", old_migrations=listing,
+            new_migrations=listing, stamped="0001",
+        )
+        calls = stack.invocations
+        assert result.returncode == 0, _said(result, calls)
+        assert stack.pin == _NEW, _said(result, calls)
+
+    def test_the_re_pin_decision_resolves_an_unmoved_stamp(self, stack):
+        """A failed release that moved no stamp still rolls back on its own."""
+        listing = "0001_a.py\n0002_b.py\n" + _PAST_A_PIPE
+        result = stack.run(
+            health="unhealthy", old_migrations=listing,
+            new_migrations=listing, stamped="0002",
+        )
+        output = result.stdout + result.stderr
+        calls = stack.invocations
+        assert "REFUSING to roll back" not in output, _said(result, calls)
+        assert "rolling back to" in output, _said(result, calls)
+        assert stack.pin == _OLD, _said(result, calls)
+
+    def test_the_refusal_resolves_the_stamp_the_target_committed(self, stack):
+        """The refusal offers starting the target again, not only the restore."""
+        result = stack.run(
+            health="unhealthy",
+            old_migrations="0001_a.py\n" + _PAST_A_PIPE,
+            new_migrations="0001_a.py\n0002_b.py\n0003_c.py\n" + _PAST_A_PIPE,
+            stamped="0001", stamped_after="0003",
+        )
+        refusal = _refusal(result.stdout + result.stderr)
+        calls = stack.invocations
+        assert stack.pin == _NEW, _said(result, calls)
+        assert f"{_NEW_SHORT}'s step 3 COMMITTED its" in refusal, (
+            _said(result, calls)
+        )
+        assert "cannot resolve that revision either" not in refusal, (
+            _said(result, calls)
+        )
 
 
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:
