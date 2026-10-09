@@ -196,6 +196,10 @@ class ProfilePaychecks:
                 pricer, which :meth:`PaycheckPricing.for_profile` keys on.
 
         Raises:
+            UnsupportedStateError: The tax law does not list *profile*'s state
+                (:func:`~app.services.tax_config_service.profile_tax_series`,
+                plan step salary:X-at-3): the profile is refused rather than
+                priced at $0.00 state tax.
             ValueError: *profile* and *calendar* belong to different owners.
                 **The mispairing is SILENT without this**, which is why it is
                 refused here rather than described: the profile would be
@@ -496,6 +500,10 @@ class PaycheckPricing:
         Returns:
             The profile's pricer under that raise set -- the same object every
             time within one pass, so nothing it has priced is priced again.
+
+        Raises:
+            UnsupportedStateError: The tax law does not list *profile*'s state
+                (:class:`ProfilePaychecks`; plan step salary:X-at-3).
         """
         terms = terms_of(profile.raises if raise_terms is None else raise_terms)
         key = (profile.id, terms)
@@ -664,6 +672,11 @@ class SalaryPricing:
             The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`,
             or ``None`` when no ACTIVE profile in this scenario names that
             template.
+
+        Raises:
+            UnsupportedStateError: The profile is in a state the tax law does
+                not list (:meth:`PaycheckPricing.for_profile`; plan step
+                salary:X-at-3).
         """
         profile = self._profile_by_template().get(template_id)
         if profile is None:
@@ -684,6 +697,10 @@ class SalaryPricing:
             scenario names that template, or when that period is not one the
             owner's saved calendar holds.  Both are the refusals amount rule 2
             raises rather than substituting a stored figure.
+
+        Raises:
+            UnsupportedStateError: The profile is in a state the tax law does
+                not list (:meth:`paycheck_on`; plan step salary:X-at-3).
         """
         # The profile is asked FIRST, before the calendar, so a row on a
         # template no profile names derives nothing (the laziness this class
@@ -815,6 +832,10 @@ def salary_net_for(txn, pricing: SalaryPricing) -> Decimal | None:
         The live net pay for the row's period, or ``None`` when no active
         profile in this scenario names its template, when the projection does
         not cover its period, or when it is not an income row.
+
+    Raises:
+        UnsupportedStateError: The profile is in a state the tax law does not
+            list (:meth:`SalaryPricing.net_for`; plan step salary:X-at-3).
     """
     if not txn.is_income or txn.template_id is None:
         return None

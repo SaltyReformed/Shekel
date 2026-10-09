@@ -54,7 +54,7 @@ from app.services.balance_at._cash_periods import (
     period_view_of,
 )
 from app.services.pay_calendar import PayCalendarError, PeriodWindow
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import NO_TAX_LAW
 from tests._test_helpers import (
     figure_source_columns,
     add_entry,
@@ -1113,7 +1113,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         own column would contribute ``None``; this one asks the amount model.
         """
         # pylint: disable=import-outside-toplevel
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,

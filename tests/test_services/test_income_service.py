@@ -52,7 +52,7 @@ from app.services.tax_config_service import load_tax_configs_for_year
 from app.tax_law import FicaRules, TaxLaw
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    EMPTY_TAX_LAW,
+    NO_TAX_LAW,
     made_up_state,
     made_up_year,
     all_periods,
@@ -297,7 +297,7 @@ class TestSalaryNetFor:
         structural rather than measured -- is graded one tier up, by
         ``test_amount_source`` over the rule this producer is the body of.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -519,7 +519,7 @@ class TestLiveIncomeThroughBalanceResolver:
         rule is the same on both bases -- which is the property this test
         exists to pin.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
@@ -1385,7 +1385,7 @@ class TestTheAmountModelReadsThePassPricer:
         one memo.  On the tree before C12 the basis's own pricer ran the
         engine once more here.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1430,7 +1430,7 @@ class TestTheAmountModelReadsThePassPricer:
         ``None`` too -- the same answer by the wrong door, one calendar
         derivation later.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1474,7 +1474,7 @@ class TestTheAmountModelReadsThePassPricer:
         at ``amounts()``, which put a ``PayCalendarError`` under two ``Raises``
         contracts that promise none; this is the case that keeps it out.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
@@ -1518,7 +1518,7 @@ class TestTheAmountModelReadsThePassPricer:
         lookup runs against it, and a template no profile names stops there.
         Then the first real paycheck derives it, exactly once.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id

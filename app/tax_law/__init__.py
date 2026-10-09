@@ -27,6 +27,16 @@ bracket ladders are checked for gaps, and so are the years (none skipped).
 Which year's law prices a given year is the resolver's rule,
 :func:`app.services.tax_config_service.resolve_tax_year`, not this package's.
 
+**The states the law lists are the states the app supports** (ruling
+salary:R-SAL78, plan step salary:X-at-3): the salary profile form offers only
+those, both profile doors refuse another, and the paycheck engine refuses a
+profile in another rather than pricing its state tax at $0.00.  It lists North
+Carolina alone (ruling salary:R-SAL128).  **Adding a state** lists it from the
+law's first year, or importing fails (ruling salary:R-SAL129), and in every
+later year, or the tax-law alarms name it; its year modules cite where its
+figures come from.  A state with no income tax is an explicit entry of tax
+type ``NONE`` with no rate and nothing to deduct, which prices $0.00.
+
 **Forgetting to add one is loud** (rulings salary:R-SAL74, R-SAL86, R-SAL87):
 from November 1 every owner page shows a banner and a weekly GitHub run fails
 until next year is here, and from December 1 CI refuses every pull request and
@@ -46,6 +56,7 @@ from app.tax_law._types import (
     TaxLaw,
     TaxYearLaw,
     ladder,
+    name_states,
 )
 from app.tax_law._year_2025 import YEAR_2025
 from app.tax_law._year_2026 import YEAR_2026
@@ -63,4 +74,5 @@ __all__ = [
     "TaxLaw",
     "TaxYearLaw",
     "ladder",
+    "name_states",
 ]
