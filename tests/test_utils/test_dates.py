@@ -12,14 +12,22 @@ contract so every caller shares one tested definition:
 - The inclusive ``+ 1`` and zero-floor that individual callers add stay
   the caller's concern (verified here by composing them with the helper).
 """
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
+
+import pytest
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
     add_months,
+    clamped_day,
     day_label,
     display_today,
+    grid_month_after,
+    grid_month_on_or_after,
+    grid_month_on_or_before,
+    grid_months_within,
     has_settled_by,
+    month_ordinal,
     months_between,
     pay_period_label,
     pay_period_range_label,
@@ -66,6 +74,90 @@ class TestAddMonths:
         assert add_months(date(9999, 6, 30), 6) == date(9999, 12, 30)
         assert add_months(date(9999, 6, 30), 7) == date.max
         assert add_months(date(9999, 12, 31), 1) == date.max
+
+
+def _grid_days(nominal_day: int, first: date, last: date) -> list[date]:
+    """Every grid day of *nominal_day* in ``[first, last]``, found by SCANNING days.
+
+    The independent oracle for :class:`TestTheMonthlyGridSet`: a day is on the
+    grid when it is the nominal day, or the month's last day in a month too
+    short to hold it -- stated from the calendar's own month lengths, sharing
+    no code with :func:`~app.utils.dates.clamped_day` or the set.
+    """
+    days = []
+    day = first
+    while day <= last:
+        next_month_first = (day.replace(day=28) + timedelta(days=4)).replace(day=1)
+        last_of_month = next_month_first - timedelta(days=1)
+        if day.day == nominal_day or (day == last_of_month and nominal_day > day.day):
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+class TestTheMonthlyGridSet:
+    """The monthly-grid set beside the clamp (plan step recurrence:R25, ruling R-R122).
+
+    A nominal day's grid is that day clamped into every month.  The loan
+    calendar, the card statement, the pay grid and the recurrence walk each
+    spelled "the latest grid day on or before", "the first on or after", "the
+    first strictly after" and "the grid days between two dates" over the clamp
+    until that step (finding REC-547); these pin the set's answers against a
+    day-by-day scan that shares no code with it, over every day of a span that
+    crosses a leap February, and every nominal day.
+    """
+
+    _FIRST = date(2027, 11, 1)
+    _LAST = date(2028, 5, 31)
+
+    @pytest.mark.parametrize("nominal_day", range(1, 32))
+    def test_each_question_matches_a_scan_of_the_grid(self, nominal_day):
+        """Every day of seven months, leap February inside: all four answers agree."""
+        grid = _grid_days(nominal_day, date(2027, 9, 1), date(2028, 7, 31))
+        day = self._FIRST
+        while day <= self._LAST:
+            on_or_before = max(g for g in grid if g <= day)
+            on_or_after = min(g for g in grid if g >= day)
+            after = min(g for g in grid if g > day)
+            assert clamped_day(
+                grid_month_on_or_before(day, nominal_day), nominal_day,
+            ) == on_or_before
+            assert clamped_day(
+                grid_month_on_or_after(day, nominal_day), nominal_day,
+            ) == on_or_after
+            assert clamped_day(
+                grid_month_after(day, nominal_day), nominal_day,
+            ) == after
+            day += timedelta(days=1)
+        assert [
+            clamped_day(ordinal, nominal_day)
+            for ordinal in grid_months_within(nominal_day, self._FIRST, self._LAST)
+        ] == _grid_days(nominal_day, self._FIRST, self._LAST)
+
+    def test_a_31st_in_a_leap_february_is_the_29th(self):
+        """Due the 31st: the latest grid day on or before Mar 10, 2028 is Feb 29."""
+        ordinal = grid_month_on_or_before(date(2028, 3, 10), 31)
+        assert ordinal == month_ordinal(date(2028, 2, 1))
+        assert clamped_day(ordinal, 31) == date(2028, 2, 29)
+
+    def test_a_day_on_the_grid_is_its_own_on_or_before_and_on_or_after(self):
+        """Feb 29, 2028 for a 31st: both inclusive answers are that day, 'after' is Mar 31."""
+        day = date(2028, 2, 29)
+        assert clamped_day(grid_month_on_or_before(day, 31), 31) == day
+        assert clamped_day(grid_month_on_or_after(day, 31), 31) == day
+        assert clamped_day(grid_month_after(day, 31), 31) == date(2028, 3, 31)
+
+    def test_a_span_holding_no_grid_day_is_empty(self):
+        """The 22nd between Mar 23 and Apr 21 holds none; a reversed span holds none."""
+        assert not grid_months_within(22, date(2026, 3, 23), date(2026, 4, 21))
+        assert not grid_months_within(22, date(2026, 5, 1), date(2026, 3, 1))
+
+    def test_the_span_is_inclusive_at_both_ends(self):
+        """Mar 22 .. May 22 holds Mar 22, Apr 22 and May 22."""
+        assert [
+            clamped_day(ordinal, 22)
+            for ordinal in grid_months_within(22, date(2026, 3, 22), date(2026, 5, 22))
+        ] == [date(2026, 3, 22), date(2026, 4, 22), date(2026, 5, 22)]
 
 
 class TestMonthsBetween:

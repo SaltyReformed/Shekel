@@ -287,10 +287,10 @@ def _planned_from_legs(
     the rows its own price is derived from, because pricing routed
     ``resolve_transaction_amount`` -> ``LoanPricing.derive_cash`` ->
     ``_resolve_loan_basis`` -> ``load_loan_context`` ->
-    ``get_payment_history``.  ``_resolve_loan_basis`` reads the loan's TERMS
-    and nothing else
-    (:func:`~app.services.loan_resolver.compute_monthly_payment_baseline`), so
-    it loads no payment history at all.
+    ``get_payment_history``.  Pricing reads the loan's TERMS and nothing else
+    -- the pass's :class:`~app.services.loan_ledger.LoanCalendar` since plan
+    step recurrence:R25 deleted ``_resolve_loan_basis`` -- so it loads no
+    payment history at all.
 
     **Finding N-266 (a) is CLOSED at plan step X-au-g-2c-1, and its DIAGNOSIS
     was wrong twice before its remedy was right.**  It first recorded an

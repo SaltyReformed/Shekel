@@ -2,15 +2,15 @@
 
 ## Where this stands
 
-**JUST LANDED: `C18-b` (`f23fef7b`), which ticks `C18`, and its undo `C21` (`f73246a3`)**, to reach
-production together (**R-PC108**; **PC-499** closed). **NEXT: `C22`** (**R-PC112**, the purchase
-lock on truncate and regenerate, **PC-524**); `steps.md` carries the order.
+**JUST LANDED: `C22` (`56545c91`)**: truncate and regenerate name each payment and purchase a locked
+paycheck holds, with its amount and its row (**R-PC116**; **PC-524** closed).
+**NEXT by rank: `C20-b`** (the month-day clamp's one producer); `steps.md` carries the order.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C13-a`, `C13-b`; `C14` whole, archived
-2026-09-11; `C17-a`, `C17-b-1`, `C17-d`, `C20-a`, `C18` whole and `C21`. Section 4 carries each
-commit, and `steps.md` alone carries the ORDER. **A cold session starts at section 4**; the shared
-registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+2026-09-11; `C17-a`, `C17-b-1`, `C17-d`, `C20-a`, `C18` whole, `C21` and `C22`. Section 4 carries
+each commit, and `steps.md` alone carries the ORDER. **A cold session starts at section 4**; the
+shared registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
@@ -295,16 +295,12 @@ their only live specimen from them, which both `_staging` docstrings predict and
       stub on its payday or money dated inside it is refused and named (**R-PC109**). The earliest
       era's phase moves up in place, "Refuse, keep one" (**R-PC110**); the ledger is re-filed,
       refused ONLY if a posted total moves (**R-PC114**). `$0.00`.
-- [ ] **C22 -- truncate and regenerate refuse a paycheck holding a purchase** (ruling **R-PC112**;
-      after `C21`, **R-PC113**; closes **PC-524**). Both reach `gate_deletable_tail`, whose discard
-      count asks `_regenerable` alone, so until CC-5-4a-4 a purchase went with its row by cascade:
-      unasked on an untouched template row, after Confirm & discard on an override or rule-less
-      envelope. Each door REFUSES a paycheck holding ANY live row with a payment or purchase,
-      whatever `_regenerable` says: a hard refusal separate from the discard count, naming the rows
-      and deleting nothing ("Paycheck 03-13 holds 1 purchase you entered (Kroger, $87.43). Remove or
-      move it first."), through the doors' one question, `pay_period_locks.items_holding_a_movement`
-      (**R-PC115**, **R-BAL157**), re-measuring **PC-524** first. A purchase's one reading is
-      `Transaction.purchases` (**R-BAL68**), whose query-side twin is `status_seam.covering_clause`.
+- [x] **C22 -- truncate and regenerate name what a locked paycheck holds.** `56545c91` (**R-PC116**,
+      amending `credit_card:R-CC66`'s refusal and **R-PC112**'s example). `movements_held_in` names
+      each payment and purchase over the lock's own query, with its amount and row: "The 2026-03-13
+      paycheck holds 1 purchase you entered (Kroger, $87.43, in Groceries). Remove or move it
+      first." Closed **PC-524**: its 7 cases, re-measured on `5b6a18f1`, were already refused by
+      `credit_card:CC-5-4a-4`'s lock, and are regression tests now. Words only; no money moves.
 - [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
       2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per
       *how I have been paid since* -- `effective_from`, `kind_id`, `cadence_days`, `shift_id` --
@@ -348,7 +344,7 @@ record.
       `autocomplete` and the ARIA pair reach the browser; a hostile value stays escaped inside the
       quotes. Closed **PC-515**.
 - [ ] **C20-b** -- the month-day clamp's ONE producer where `salary_cockpit_service` still spells it
-      (**PC-516**; the loan engines' copies are `recurrence:R25`'s, **recurrence:R-R106**); the
+      (**PC-516**; the loan engines' copies went at `recurrence:R25`, **recurrence:R-R106**); the
       manage card's hand-written `min` / `max` through the macro (**PC-517**) and its macro-rendered
       inputs given distinct ids per form (**PC-518**). `$0.00`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;

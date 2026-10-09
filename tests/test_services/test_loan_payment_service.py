@@ -40,7 +40,8 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     typed,
 )
-from app.services.cash_ledger import _resolve_loan_basis
+from app.services.balance_at import BalanceContext
+from app.services.loan_ledger import LoanCalendars
 from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.loan_payment_service import (
@@ -1231,7 +1232,9 @@ def _statements_issued():
 class TestALoansPriceDoesNotReadItsOwnPayments:
     """A loan's monthly P&I is its TERMS, so the payment feed cannot move it.
 
-    The cycle these tests exist to keep deleted: ``_resolve_loan_basis`` used to
+    The cycle these tests exist to keep deleted: the loan's pricing terms
+    (``_resolve_loan_basis`` until plan step recurrence:R25, the pass's
+    :class:`~app.services.loan_ledger.LoanCalendars` since) used to
     run :func:`load_loan_context` -- and therefore
     :func:`get_payment_history` -- purely to read
     ``resolve_loan(...).monthly_payment`` back out, which put the loan's own
@@ -1285,7 +1288,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 )
             db.session.commit()
 
-            before = _resolve_loan_basis(loan.id)
+            before = LoanCalendars().loan_calendar_of(loan.id)
             assert before is not None
             assert get_payment_history(
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
@@ -1302,7 +1305,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 loan.id, _basis(seed_user), loan_params_for(db.session, loan.id),
             ) == [], "the feed is not empty: one of its two relations survived"
 
-            after = _resolve_loan_basis(loan.id)
+            after = LoanCalendars().loan_calendar_of(loan.id)
             assert after is not None
             # The whole TERM SET, period by period -- not one resolved figure.
             # A producer that read the feed could agree on the period governing
@@ -1341,7 +1344,7 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.expire_all()
 
             with _statements_issued() as seen:
-                basis = _resolve_loan_basis(loan.id)
+                basis = LoanCalendars().loan_calendar_of(loan.id)
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"
@@ -1353,3 +1356,66 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
                 "pricing a loan read its own payment rows: "
                 f"{touching}"
             )
+
+
+#: The tables a loan's CONTRACT TERMS load from: its params, its rate history
+#: and its escrow lines with their versions.
+_TERMS_TABLES = (
+    "budget.loan_params", "budget.rate_history",
+    "budget.escrow_lines", "budget.escrow_component_versions",
+)
+
+
+class TestOnePassReadsOneLoanCalendar:
+    """A loan's charges and its payments' price read ONE calendar per read pass.
+
+    Plan step recurrence:R25 (ruling **R-R105**: "one bundle that pricing and
+    charging both read"; finding **REC-545**).  Pricing kept a second bundle of
+    a loan's terms beside the calendar the walk's charges are built from, so a
+    pass that walked a derive-mode loan and priced its payments loaded the
+    terms twice.  Both now read the pass's one
+    :class:`~app.services.loan_ledger.LoanCalendars`.
+    """
+
+    def test_pricing_after_the_walk_loads_no_terms_again(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The walk loads the terms; the pass's pricer then issues no terms query."""
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            ctx.loan_walk(loan)
+
+            with _statements_issued() as seen:
+                cash = ctx.amounts().loans.derive_cash(
+                    date(2026, 3, 1), date(2026, 2, 20), loan.id, Decimal("0.00"),
+                )
+
+            assert cash is not None
+            touching = [
+                sql for sql in seen if any(table in sql for table in _TERMS_TABLES)
+            ]
+            assert not touching, (
+                f"the pricer loaded the loan's terms a second time: {touching}"
+            )
+
+    def test_the_probe_sees_the_terms_load_without_the_walk(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control: with no walk first, the same price DOES load the terms.
+
+        Without it the case above could pass on a probe that sees nothing.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            with _statements_issued() as seen:
+                ctx.amounts().loans.derive_cash(
+                    date(2026, 3, 1), date(2026, 2, 20), loan.id, Decimal("0.00"),
+                )
+
+            assert any("budget.loan_params" in sql for sql in seen), seen
+            assert any("budget.rate_history" in sql for sql in seen), seen

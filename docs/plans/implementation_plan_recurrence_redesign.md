@@ -12,9 +12,9 @@ on the resolver and the WRITE is gone. **A tie-break is a sign the SEARCH is the
 (R-R35): only ONE tier of three asks "which transfer into a loan is its payment", and **R16**
 deletes the rest (four leaves, **R-R36**): `R16-b-2` (`7e2e6413`), `R20` (`b4da8068`, **R-R72** part
 3), `R16-c-1` (`c88ed6ba`, **R-R90**: ONE event stream) and `R23` (`f3bf8b9d`, **R-R98**) shipped.
-**JUST LANDED: `R16-c-2` (`ea946f33`), the contract calendar** (**R-R89**, **R-R100**..**R-R118**;
-MOVES POSTED MONEY): every contractual installment is charged from origination on ONE calendar rule,
-`app.services.installment_calendar`, so `R16-c` is whole; `R5-a` (`b0e1322a`) landed before.
+**JUST LANDED: `R25` (`52d0316d`)**, the loan code's last copies of its calendar and terms gone
+(**R-R105**, **R-R106**, **R-R122**; `$0.00`), onto `app.services.installment_calendar`, the ONE
+calendar rule `R16-c-2` (`ea946f33`) built; `R5-a` (`b0e1322a`) landed before.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
 the findings (`ledger.md`), the index, the rules and `verification.md` are the shared registries in
@@ -319,13 +319,13 @@ form's "Payment Day of Month" (`templates/loan/setup.html:98-100`) and the dashb
 (`templates/loan/dashboard.html:567-568`), which today store the day the money moves; the Van's
 stored `payment_day` is corrected from 22 to 1 here too.
 **There is no `recurrence_due_dates` table and there will not be.** The files carrying `payment_day`
-in code (census 24 code files `payment_day` in `app/**/*.py`)
+in code (census 25 code files `payment_day` in `app/**/*.py`)
 **already read it as the installment, bar one** -- `loan_recurrence_sync.py` makes it a CASH day
 (`loan_cadence_start`, which READS it at :416-417 as the payment rule's first date), and that is
 D4's mechanism, re-pointed here so the rule keeps the day the money moves while `payment_day` holds
 the contract day; `routes/loan/payment_transfer.py`, which once typed `day_of_month=payment_day`
 itself, now calls that producer and names `payment_day` only in a comment (:190), so it is not among
-the code files. The other files of the (census 33 files `payment_day` in `app/**/*.py`) that name it
+the code files. The other files of the (census 34 files `payment_day` in `app/**/*.py`) that name it
 at all carry it only in comments or string literals, which a code census blanks by construction, and
 not every one of those is prose: `routes/loan/_helpers.py`'s `_PARAM_FIELDS` keys a form field by
 the string. Eight distinct producers of "when is this installment due" collapse into one; the plan
@@ -712,19 +712,12 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       recorded and first tracking start are ruled (**R-R111**..**R-R118**); no migration. Closed
       **D55**, and **REC-555** at birth, no row.
 
-- [ ] **R25 -- the loan code's last copies of its calendar and terms go** (**R-R105**, **R-R106**;
-      findings **REC-545**, **REC-546**, **REC-547**). `$0.00`. Onto the one rule `R16-c-2` built
-      (`app.services.installment_calendar`): the adjustable-rate month step
-      (`rate_period_engine._add_months`) and the payoff and refinance calculators' clamp
-      (`amortization_engine._projection._advance_month`, behind `advance_to_next_payment_date`),
-      both re-spelling `app.utils.dates.clamped_day`; pricing's second bundle of a loan's terms
-      (`cash_ledger._loan_installment._LoanCashBasis` and `_loan_pricing.LoanPricing`'s escrow
-      lines) reads the charges' `loan_ledger.LoanCalendar` instead; and the monthly-grid arithmetic
-      (the first day on or after, the last on or before, the enumeration) becomes ONE set beside
-      `clamped_day` in `app.utils.dates`. **Its trace asks the developer** whether it folds the pay
-      grid's (`pay_calendar/_grid.py`) and the recurrence month walk's (`recurrence/_months.py`)
-      sides too, or only the loan and card sides (`installment_calendar`, `card_statement`):
-      **R-R106** split only the clamp copies.
+- [x] **R25 -- the loan code's last copies of its calendar and terms go.** `52d0316d` -- as built:
+      ONE monthly-grid set beside `clamped_day` in `app.utils.dates` (on or before, on or after,
+      after, within), read by `installment_calendar`, `card_statement`, `pay_calendar/_grid` and
+      `recurrence/_months` (**R-R122**); the rate-period month step reads `add_months` and the
+      calculators `installment_calendar` (**R-R106**); pricing reads the pass's `LoanCalendars`
+      (**R-R105**); `$0.00`. Closed **REC-545**, **REC-546**, **REC-547**; opened **REC-559**.
 
 - [ ] **R24 -- a loan payment's interest PAID is the part its cash covered** (**R-R102**; finding
       **REC-538**). `apply_payment_cash` returns the CHARGED interest as a payment's `interest`
