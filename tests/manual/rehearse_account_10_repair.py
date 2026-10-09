@@ -96,6 +96,7 @@ from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
+from app.models.user import UserSettings
 from app.services import cash_ledger, statement_import
 from app.services.balance_at import BalanceContext, balance_at, cash_balance_at
 from app.services.row_valuation import settled_figure
@@ -170,9 +171,9 @@ BOUNDARY_LINES = (
 #: The one line whose answer is KNOWN to fall short of it (BAL-467).
 _RESIDUE_LINE = next(entry for entry in BOUNDARY_LINES if entry.residue)
 
-#: The line the app records nowhere (finding **BAL-468**), recorded by act 6
+#: The line the app records nowhere (finding **BAL-468**), recorded by act 7
 #: as a new Checking expense in the category the developer ruled (2026-09-06,
-#: ``Family: Birthday``, id 26), under the name he gave it.  Its AMOUNT is the
+#: ``Family: Birthday``, id 26), under the name the developer gave it.  Its AMOUNT is the
 #: line's own, read from the row at run time.
 UNRECORDED_LINE = 133
 UNRECORDED_CATEGORY = 26
@@ -199,6 +200,12 @@ DIVIDEND_CATEGORY = ("Income", "Interest & Dividends")
 DIVIDEND_CATEGORY_ID = 33
 DIVIDEND_CATEGORY_WAS = ("Financial", "Dividend")
 
+#: What each recorded dividend is called.  The one door the owner can reach to
+#: create a row in an EMPTY category -- the grid's Add Transaction modal, since
+#: the grid draws rows only from existing transactions -- requires a name, and
+#: one name for all five keeps them on one grid row.
+DIVIDEND_NAME = "Dividend"
+
 #: The SETTLED status each transaction type takes.  Income settles as
 #: Received and an expense as Paid; submitting the other one is refused by the
 #: status seam, which is how the first draft found out.  Members rather than
@@ -217,12 +224,6 @@ _BANK_AMOUNT = "Amount ($)"
 #: What a received dividend's ``Action`` says.  The REINVESTMENT line beside it
 #: is the same money buying the core position back and is not a second event.
 _DIVIDEND_RX = re.compile(r"\bDIVIDEND RECEIVED\b", re.IGNORECASE)
-
-#: The id of a transaction cell the create door just rendered.  Read from the
-#: response rather than by re-querying for the newest row in that account and
-#: category: that query answers whichever row has the highest id, which is not
-#: necessarily the one this request made.
-_NEW_CELL_RX = re.compile(r'id="txn-cell-(\d+)"')
 
 #: The flash categories that mean a door REFUSED.  Read after every submission,
 #: because two of this repair's doors answer a refusal with ``302`` and a flash
@@ -427,9 +428,9 @@ class _Forms(HTMLParser):
     two review rounds, each of which had this parser posting something no
     browser would.  **Three of the seven cannot be reached on the forms this
     file drives** -- the ``<textarea>`` and the two ``<select multiple>``
-    cases: none of the seven templates it drives renders either (re-censused
-    2026-10-09, when the acts were rewritten for ruling R-BAL3).  They are
-    fixed anyway because
+    cases: none of the eight forms it drives renders either (re-censused
+    2026-10-09, when the creates moved to the grid's Add Transaction modal and
+    the grid's account to Settings > General).  They are fixed anyway because
     the parser is the thing that makes "the payload comes from the page" true,
     and a parser correct only on today's pages is a claim about the pages
     rather than about the parser.
@@ -827,6 +828,9 @@ def _sheet_path(raw: str) -> Path:
     ``git add`` from a commit as one written beside this file.  The folder is
     also required to EXIST now, because the sheet is written last and a bad
     path found then would lose the record of every act already performed.
+    **And the file must NOT exist**: the sheet is saved even when a run stops,
+    so a re-run naming an earlier run's sheet would replace the page a repair
+    is performed from with a STOPPED one (adversarial review, 2026-10-09).
 
     Args:
         raw: The ``--sheet`` argument.
@@ -836,8 +840,8 @@ def _sheet_path(raw: str) -> Path:
 
     Raises:
         SystemExit: When the path is inside a git checkout, where the real
-            figures the sheet carries do not belong (ruling **R-BAL249**), or
-            its folder does not exist.
+            figures the sheet carries do not belong (ruling **R-BAL249**), its
+            folder does not exist, or a file is already there.
     """
     path = Path(raw).expanduser().resolve()
     checkouts = [
@@ -853,6 +857,11 @@ def _sheet_path(raw: str) -> Path:
         raise SystemExit(
             f"--sheet {path} is a folder, or its folder does not exist; it "
             "names the sheet FILE"
+        )
+    if path.exists():
+        raise SystemExit(
+            f"--sheet {path} already exists; every run writes a sheet of its "
+            "own, and an earlier one is never overwritten"
         )
     return path
 
@@ -1011,6 +1020,28 @@ def _side_day(transfer_id: int, account_id: int) -> SettleDay | None:
     return recorded_settle_day(db.session.get(TransactionEntry, entries[0]))
 
 
+def _transfer_named(transfer_id: int, account_id: int) -> str:
+    """Return how the owner tells one transfer from its namesakes.
+
+    Five of the repair's seven transfers share one name, so the sheet adds
+    what one side moved -- the cash fold's own figure for it, the way every
+    figure in this file is read -- and the payday of the column it is filed
+    in.
+
+    Args:
+        transfer_id: The transfer.
+        account_id: The side whose movement to quote.
+
+    Returns:
+        ``"<name>, <moved> on account <id>, column <payday>"``.
+    """
+    transfer = db.session.get(Transfer, transfer_id)
+    _, moved = _moved_by(_facts(account_id))
+    column = _period_holding(account_id, transfer.pay_period.start_date)
+    return (f"{transfer.name}, {moved[transfer_id].delta} on account "
+            f"{account_id}, column {column.label}")
+
+
 def _movement_key(fact) -> "tuple[str, int]":
     """Return what one movement IS, for a census: a transfer side or a row.
 
@@ -1066,10 +1097,10 @@ def _subject_problems(export: _Export) -> "list[str]":
     **Each Checking side**: every mapped transfer but the kept one carries its
     Checking side on the day SECU's import OBSERVED, and that is the day the
     map gives Fidelity's -- these ACHs post at both banks the same day
-    (ruling R-BAL3 for the two in March; the other five measured so on
-    2026-10-09).  It is the arm that separates transfers of EQUAL amounts.  **Each movement**: every one accounts 2 and 10 hold, on
-    or before the export's last day, is a mapped transfer's or the dropped
-    one's.
+    (ruling R-BAL3 for the two in March; the six this arm grades measured so
+    on 2026-10-09).  It is the arm that separates transfers of EQUAL amounts.
+    **Each movement**: every one accounts 2 and 10 hold, on or before the
+    export's last day, is a mapped transfer's or the dropped one's.
 
     Args:
         export: The parsed export.
@@ -1540,8 +1571,11 @@ def _restate_opening(
     form = op.form_posting_to(
         f"/accounts/{account_id}/edit", f"/accounts/{account_id}/opening",
     )
-    op.sheet.typed("Books opening: opened on", opened_on.isoformat())
-    op.sheet.typed("Books opening: balance", equity)
+    op.sheet.typed("When the books opened: Books opened on",
+                   opened_on.isoformat())
+    op.sheet.typed("When the books opened: Opening equity", equity)
+    op.sheet.say("- PRESS 'Restate opening' (NOT the page's 'Update'); the green "
+                 "flash must begin 'Books restated'")
     op.submit(form, {
         "opened_on": opened_on.isoformat(), "opening_equity": str(equity),
     })
@@ -1557,8 +1591,11 @@ def _assert_balance(
 ) -> None:
     """Assert a balance through the account's own true-up editor.
 
+    It writes the two values the owner types onto the sheet itself, so no
+    caller states them a second time.
+
     Args:
-        op: The owner's session.
+        op: The owner's session, which carries the performance sheet.
         account_id: The account.
         balance: What the bank says it held.
         observed_on: The day it held it.
@@ -1572,6 +1609,8 @@ def _assert_balance(
     boxes = {key for key in fields if "balance" in key or "anchor" in key}
     days = {key for key in fields if "observed" in key or key.endswith("_on")}
     assert boxes and days, f"anchor form fields: {sorted(fields)}"
+    op.sheet.typed("Balance", balance)
+    op.sheet.typed("As of", observed_on.isoformat())
     op.submit(form, {
         **{key: str(balance) for key in boxes},
         **{key: observed_on.isoformat() for key in days},
@@ -1602,7 +1641,7 @@ def _category_id(user_id: int, group: str, item: str) -> int:
     ).scalar_one()
 
 
-def _period_holding(account_id: int, day: date) -> int:
+def _period_holding(account_id: int, day: date):
     """Return the pay period whose span contains *day*, for that account's owner.
 
     **It asks the owner's CALENDAR since plan step ``pay_calendar:C4-c``.**  It
@@ -1625,7 +1664,9 @@ def _period_holding(account_id: int, day: date) -> int:
         day: A civil day.
 
     Returns:
-        The ``budget.pay_periods`` id.
+        The :class:`~app.services.pay_calendar.DerivedPeriod`: its
+        ``period_id`` is what the create door is posted, and its
+        ``start_date`` is the payday the owner picks it by.
 
     Raises:
         AssertionError: No paycheck of that owner covers *day*, which would
@@ -1642,26 +1683,75 @@ def _period_holding(account_id: int, day: date) -> int:
         f"no saved paycheck of owner {owner_id} covers {day}, so this row "
         f"has no period to be filed in"
     )
-    return period.period_id
+    return period
 
 
-def _cell(account_id: int, category_id: int, type_id: int, day: date) -> str:
-    """Return the create card's URL for one grid cell: the owner's click.
+def _row_ids(account_id: int, category_id: int) -> "set[int]":
+    """Return every transaction id one account holds in one category.
+
+    The census :func:`_record` takes either side of a create, so the row the
+    create made is the one id that APPEARS -- not the highest id, which
+    answers whichever row is newest whether or not this request made it.
 
     Args:
-        account_id: The account the row will belong to.
-        category_id: Its category -- the grid row.
-        type_id: ``ref.transaction_types`` -- income or expense.
-        day: The day the money moved, whose paycheck is the grid column.
+        account_id: The account.
+        category_id: The category.
 
     Returns:
-        The URL the cell opens.
+        The ids, deleted rows included.
     """
-    return (
-        f"/transactions/new/full?category_id={category_id}"
-        f"&period_id={_period_holding(account_id, day)}&account_id={account_id}"
-        f"&transaction_type_id={type_id}"
-    )
+    db.session.expire_all()
+    return set(db.session.execute(
+        db.select(Transaction.id).filter_by(
+            account_id=account_id, category_id=category_id,
+        )
+    ).scalars())
+
+
+def _set_grid_account(op: _Operator, account_id: "int | None") -> None:
+    """Point the budget grid at *account_id* through Settings > General.
+
+    **The grid's Add Transaction is the act's door, and nothing links to the
+    grid on account 10** (the statement-reconcile pages create rows only from
+    imported bank lines, which this repair does not use): every grid link, its
+    own earlier/later arrows included, renders without ``account_id``, so it
+    opens on the owner's Default Grid Account.  Setting that is the owner's click path to account
+    10's grid, and setting it back is the owner's way home.  It moves no
+    money, which every act's AFTER line shows.
+
+    Args:
+        op: The owner's session, which carries the performance sheet.
+        account_id: The account, or ``None`` for the page's "Auto" choice.
+
+    Raises:
+        AssertionError: When the setting does not then hold *account_id*.
+    """
+    form = op.form_posting_to("/settings?section=general", "/settings")
+    named = "Auto (first checking account)" if account_id is None else \
+        db.session.get(Account, account_id).name
+    op.sheet.typed("Settings > General > Default Grid Account", named)
+    op.submit(form, {
+        "default_grid_account_id": "" if account_id is None else str(account_id),
+    })
+    assert _grid_account(op.user_id) == account_id, \
+        f"the Default Grid Account is not {account_id}"
+
+
+def _grid_account(user_id: int) -> "int | None":
+    """Return the owner's Default Grid Account setting.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The account id, or ``None`` for "Auto".
+    """
+    db.session.expire_all()
+    return db.session.execute(
+        db.select(UserSettings.default_grid_account_id).filter_by(
+            user_id=user_id,
+        )
+    ).scalar_one()
 
 
 def _settled_status_id(txn_id: int) -> str:
@@ -1681,22 +1771,92 @@ def _settled_status_id(txn_id: int) -> str:
     return str(ref_cache.status_id(_SETTLED_STATUS[kind]))
 
 
-def _record(
-    op: _Operator, cell: str, day: date, amount: Decimal,
-    name: "str | None" = None,
-) -> int:
-    """Create a row, settle it, then correct the day -- the owner's own path.
+@dataclass(frozen=True)
+class _NewRow:
+    """One row this repair records that the app holds nowhere.
 
-    **Three submissions, not two, and the third is the one an earlier draft
-    skipped.**  The create card renders no status control and no Actual box,
-    and the full-edit card renders "Money moved on" ONLY for a row that is
-    already settled -- ``grid/_transaction_full_edit.html`` gates it on
+    Act 7's bank line and each of act 9's dividends: what the owner types into
+    the grid's Add Transaction modal, and the day the money moved.
+
+    Attributes:
+        account_id: The account the grid is on, which the row belongs to.
+        category_id: Its category.
+        kind: Income or expense.
+        day: The day the money moved, whose paycheck the row is filed under.
+        amount: What moved.
+        name: What to call it.
+    """
+
+    account_id: int
+    category_id: int
+    kind: TxnTypeEnum
+    day: date
+    amount: Decimal
+    name: str
+
+
+def _record(op: _Operator, row: _NewRow) -> int:
+    """Create *row*, settle it, then correct the day -- the owner's own path.
+
+    **Created through the grid's Add Transaction modal, because a grid CELL
+    exists only on a row that already holds a transaction** (``grid_view_service
+    .build_row_keys`` draws rows from transactions alone; adversarial review
+    2026-10-09).  Category 33 is empty until act 9's first dividend, so it has
+    no row and no cell, and an earlier draft reached the cell's create card by
+    typing its URL -- a door no click opens.  The modal is on every grid page,
+    takes the name, amount, type, category and paycheck, and posts the account
+    the grid is on; it shares its producer with the cell's create door
+    (``routes/transactions/create.py``).  The grid must already be on the
+    row's account, which this asserts rather than types: the owner leaves that
+    control as rendered.  :func:`_settle_new_row` is the rest of the path.
+
+    Args:
+        op: The owner's session, which carries the performance sheet.
+        row: What to record.
+
+    Returns:
+        The new transaction's id.
+
+    Raises:
+        AssertionError: When the grid is on another account, the create makes
+            other than exactly one row, or :func:`_settle_new_row` does.
+    """
+    form = op.form_posting_to("/grid", "/transactions")
+    posted = _payload(form).get("account_id")
+    assert posted == str(row.account_id), \
+        f"the grid's Add Transaction posts account {posted}, not {row.account_id}"
+    period = _period_holding(row.account_id, row.day)
+    category = db.session.get(Category, row.category_id)
+    for label, value in (
+        ("Name", row.name), ("Amount", row.amount), ("Type", row.kind.value),
+        ("Category", f"{category.group_name}: {category.item_name}"),
+        ("Pay Period", period.label),
+    ):
+        op.sheet.typed(f"Add Transaction: {label}", value)
+    before = _row_ids(row.account_id, row.category_id)
+    op.submit(form, {
+        "name": row.name, "estimated_amount": str(row.amount),
+        "transaction_type_id": str(ref_cache.txn_type_id(row.kind)),
+        "category_id": str(row.category_id),
+        "pay_period_id": str(period.period_id),
+    })
+    made = _row_ids(row.account_id, row.category_id) - before
+    assert len(made) == 1, f"the create made rows {sorted(made)}, not one"
+    txn_id = made.pop()
+    _settle_new_row(op, txn_id, row)
+    return txn_id
+
+
+def _settle_new_row(op: _Operator, txn_id: int, row: _NewRow) -> None:
+    """Settle a just-created row, then correct its day: saves two and three.
+
+    **Three submissions in all, and the third is the one an earlier draft
+    skipped.**  The full-edit card renders "Money moved on" ONLY for a row that
+    is already settled -- ``grid/_transaction_full_edit.html`` gates it on
     ``txn.status.is_settled``, and gates the "Actual" box beside it on
     ``is_settled and correctable``.  So a browser cannot state the day while
     the row is Projected; the operator settles first -- **which stamps
     TODAY** -- and then reopens the now-settled card and corrects the day.
-    The create card renders no Name box either, so a NAME is typed in that
-    same third save, where the card renders one for a placed row.
 
     **Between the second and third submissions the row is live in the fold at
     TODAY'S date**, for its full figure.  It is transient and inside one act,
@@ -1705,62 +1865,44 @@ def _record(
 
     Args:
         op: The owner's session, which carries the performance sheet.
-        cell: The grid cell the row is created from (:func:`_cell`).
-        day: The day the money moved.
-        amount: What moved.
-        name: What to call it, or ``None`` to keep the name the create door
-            gives it.
-
-    Returns:
-        The new transaction's id.
+        txn_id: The row :func:`_record` created.
+        row: What it records.
 
     Raises:
-        AssertionError: When the create renders no cell id, when a Projected
-            card already offers a settle-day box (which would mean this
-            three-step path is describing a page that no longer exists), when
-            the settled card renders no Name box for a *name*, or when the
-            settle did not record the day and the figure.
+        AssertionError: When a Projected card already offers a settle-day box
+            (which would mean this path is describing a page that no longer
+            exists), or the row does not end holding the day, the figure and
+            the name.
     """
-    op.sheet.typed("Amount", amount)
-    form = op.form(cell)
-    created = op.submit(form, {"estimated_amount": str(amount)})
-    found = _NEW_CELL_RX.search(created.get_data(as_text=True))
-    assert found, \
-        "the create door rendered no transaction cell to read an id from"
-    txn_id = int(found.group(1))
-
     settle = op.form(f"/transactions/{txn_id}/full-edit")
     assert "settled_on" not in _payload(settle), (
         f"transaction {txn_id} is Projected and its card already renders a "
         "settle-day box; this rehearsal's three-step path assumes it does not"
     )
+    op.sheet.typed("the new row's card: More options > Status, then Save "
+                   "(stamps TODAY)", _SETTLED_STATUS[row.kind].value)
     op.submit(settle, {"status_id": _settled_status_id(txn_id)})
 
     correct = op.form(f"/transactions/{txn_id}/full-edit")
     fields = _payload(correct)
     assert "settled_on" in fields, \
         f"transaction {txn_id} settled but its card renders no settle-day box"
-    # Only the DAY (and a NAME) makes this third save necessary.  The settle
-    # above already stamped the figure from the estimate, so re-posting it
-    # changes nothing -- it is submitted because the card renders it and an
-    # untouched Save posts what it renders.
-    typed = {"settled_on": day.isoformat()}
-    op.sheet.typed("Money moved on", day.isoformat())
+    # Only the DAY makes this third save necessary.  The settle above already
+    # stamped the figure from the estimate, so re-posting it changes nothing
+    # -- it is submitted because the card renders it and an untouched Save
+    # posts what it renders.
+    typed = {"settled_on": row.day.isoformat()}
+    op.sheet.typed("reopened card: Money moved on, then Save",
+                   row.day.isoformat())
     if "settled_amount" in fields:
-        typed["settled_amount"] = str(amount)
-    if name is not None:
-        assert "name" in fields, \
-            f"transaction {txn_id}'s settled card renders no Name box"
-        typed["name"] = name
-        op.sheet.typed("Name", name)
+        typed["settled_amount"] = str(row.amount)
     op.submit(correct, typed)
 
     db.session.expire_all()
     txn = db.session.get(Transaction, txn_id)
-    assert (txn.settled_on, settled_figure(txn)) == (day, amount), \
-        (f"transaction {txn_id} records {settled_figure(txn)} on "
-         f"{txn.settled_on}, not {amount} on {day}")
-    return txn_id
+    held = (txn.settled_on, settled_figure(txn), txn.name)
+    assert held == (row.day, row.amount, row.name), \
+        f"transaction {txn_id} holds {held}, not {(row.day, row.amount, row.name)}"
 
 
 def _redate_row(op: _Operator, txn_id: int, day: date) -> None:
@@ -1778,7 +1920,9 @@ def _redate_row(op: _Operator, txn_id: int, day: date) -> None:
     form = op.form(f"/transactions/{txn_id}/full-edit")
     assert "settled_on" in _payload(form), \
         f"transaction {txn_id}'s card renders no settle-day box"
-    op.sheet.typed(f"transaction {txn_id}: Money moved on", day.isoformat())
+    named = db.session.get(Transaction, txn_id).name
+    op.sheet.typed(f"transaction {txn_id} ({named}): Money moved on",
+                   day.isoformat())
     op.submit(form, {"settled_on": day.isoformat()})
     rows, _ = _moved_by(_facts(db.session.get(Transaction, txn_id).account_id))
     assert rows[txn_id].day == day, \
@@ -1818,6 +1962,7 @@ def _redate_sides(
     form = op.form(f"/transfers/{transfer_id}/full-edit?leg_account_id={leg}")
     fields = _payload(form)
     typed = {}
+    named = _transfer_named(transfer_id, leg)
     for account_id, day in days.items():
         assert boxes[account_id] in fields, (
             f"transfer {transfer_id}'s popover renders no box for account "
@@ -1825,7 +1970,8 @@ def _redate_sides(
         )
         typed[boxes[account_id]] = day.isoformat()
         op.sheet.typed(
-            f"transfer {transfer_id}: Money moved on, account {account_id}",
+            f"transfer {transfer_id} ({named}): Money moved on, account "
+            f"{account_id}",
             day.isoformat(),
         )
     op.submit(form, typed)
@@ -1847,12 +1993,22 @@ def _drop_transfer(op: _Operator, transfer_id: int) -> None:
     to the old account did not happen, because the one real ACH is the kept
     transfer's.  The card offers Cancel only for a Projected transfer, so the
     owner sets Status to Projected and saves -- which CLOSES the card -- then
-    reopens it from Checking's grid and presses the red "Cancel transfer"
-    quick action.  **The reopened card has TWO buttons reading "Cancel"**: the
-    grey one only closes the card, and pressing it leaves transfer 1 a stale
-    Projected plan that no balance check can see (measured by adversarial
-    review 2026-10-09), so :func:`_verify_ledger` asserts Cancelled.  Between
-    the save and the press the row is a PLAN again, so the two are one act.
+    reopens it from Checking's grid and presses the quick action whose
+    accessible name is "Cancel transfer".  **On screen the reopened card has
+    TWO buttons reading "Cancel"** (``transfers/_transfer_full_edit.html``):
+    the grey one with an x beside Save only closes the card, and the
+    red-outlined one with an octagon, beside the green Paid, is the cancel.
+    **And the set-back cell grows a one-click check mark that marks the
+    transfer Paid again, dated today.**  The grey button leaves transfer 1 a
+    Projected plan, which rule R-G counts on the day after the valuation day,
+    so every FORWARD projection of Checking and the twin is off by transfer
+    1's amount while a valuation at any past day reads unchanged (measured by
+    adversarial review 2026-10-09); the check mark moves it again, on today's
+    date.  That is why :func:`_verify_ledger` asserts Cancelled.  What
+    the owner sees on success is the cell DISAPPEARING from Checking's grid,
+    since a cancelled item has no grid row (``grid_view_service``; the same
+    review counted two cells before and none after).  Between the save and
+    the press the row is a PLAN again, so the two are one act.
 
     Args:
         op: The owner's session, which carries the performance sheet.
@@ -1874,9 +2030,12 @@ def _drop_transfer(op: _Operator, transfer_id: int) -> None:
     assert cancel in page, \
         f"transfer {transfer_id}'s reopened card renders no Cancel transfer"
     op.sheet.say(
-        "- REOPEN the card from Checking's grid, then PRESS the red 'Cancel "
-        "transfer' quick action -- NOT the grey Cancel, which only closes the "
-        "card. The cell must then read Cancelled."
+        "- REOPEN the card by clicking the transfer's cell on Checking's grid "
+        "(NOT the check mark the cell now shows: that marks it Paid again, "
+        "dated today). PRESS the red-outlined 'Cancel' with the octagon, in "
+        "the bottom row beside the green 'Paid' -- NOT the grey 'Cancel' with "
+        "the x beside Save, which only closes the card. The transfer's cell "
+        "then DISAPPEARS from Checking's grid: a cancelled transfer has none."
     )
     op.send("post", cancel, {"leg_account_id": str(CHECKING_ACCOUNT)})
     db.session.expire_all()
@@ -1973,8 +2132,10 @@ def _type_fidelity_days(op: _Operator) -> None:
         side = _side_day(transfer_id, SUBJECT_ACCOUNT)
         if side is not None and side.day == day and is_evidence(side):
             op.sheet.say(
-                f"- transfer {transfer_id}: account {SUBJECT_ACCOUNT}'s side "
-                f"already records {day} as its own; nothing to type"
+                f"- transfer {transfer_id} "
+                f"({_transfer_named(transfer_id, SUBJECT_ACCOUNT)}): account "
+                f"{SUBJECT_ACCOUNT}'s side already records {day} as its own; "
+                "nothing to type"
             )
             continue
         _redate_sides(op, transfer_id, {SUBJECT_ACCOUNT: day})
@@ -2007,8 +2168,6 @@ def _consolidate_twin(op: _Operator) -> None:
     _set_archived(op, TWIN_ACCOUNT, archived=False)
     opened_on = cash_ledger.governing_account_opening(TWIN_ACCOUNT).opened_on
     _restate_opening(op, TWIN_ACCOUNT, opened_on, _ZERO_MONEY)
-    op.sheet.typed("Balance", _ZERO_MONEY)
-    op.sheet.typed("As of", TWIN_ASSERTED_ON.isoformat())
     _assert_balance(op, TWIN_ACCOUNT, _ZERO_MONEY, TWIN_ASSERTED_ON)
     _set_archived(op, TWIN_ACCOUNT, archived=True)
 
@@ -2043,12 +2202,10 @@ def _record_dividends(op: _Operator, export: _Export) -> None:
         f"the dividends' category is {category_id}, not the renamed one"
     for day, amount in export.recorded_dividends():
         op.sheet.say(f"- dividend of {day}, account {SUBJECT_ACCOUNT}:")
-        _record(
-            op,
-            _cell(SUBJECT_ACCOUNT, category_id,
-                  ref_cache.txn_type_id(TxnTypeEnum.INCOME), day),
-            day, amount,
-        )
+        _record(op, _NewRow(
+            SUBJECT_ACCOUNT, category_id, TxnTypeEnum.INCOME, day, amount,
+            DIVIDEND_NAME,
+        ))
 
 
 #: What the operator must hold to, on the sheet as well as here.
@@ -2058,6 +2215,8 @@ _STOP_RULES = (
     "Account 10's corrections already stand in, as modelled interest, for "
     "dividends the app never recorded; act 3 enlarges them and act 9 records "
     "the dividends and empties them (both accounts are on every AFTER line). "
+    "Act 9's last dividend is counted twice until act 10 asserts Fidelity's "
+    "close for that day (R-HM). "
     "Finish each row's saves before the next: between a row's settle and its "
     "day correction it counts on TODAY. Do not stop while account 2 is "
     "unarchived (act 2)."
@@ -2151,19 +2310,21 @@ def _perform(
 
     op.sheet.act(2, f"zero the archived twin (account {TWIN_ACCOUNT}) in ONE "
                  "sitting", f"Accounts > archived > account {TWIN_ACCOUNT}: "
-                 "Unarchive; Edit > Books opening; its balance editor; Archive")
+                 "Unarchive; Edit > When the books opened; its balance editor; "
+                 "Archive")
     _consolidate_twin(op)
     _snapshot(export, op.sheet)
 
     op.sheet.act(3, f"restate account {SUBJECT_ACCOUNT}'s books to "
                  f"{BOOKS_OPEN} at Fidelity's close for that day",
-                 f"Accounts > account {SUBJECT_ACCOUNT} > Edit > Books opening")
+                 f"Accounts > account {SUBJECT_ACCOUNT} > Edit > When the books "
+                 "opened")
     _restate_opening(op, SUBJECT_ACCOUNT, BOOKS_OPEN, equities[SUBJECT_ACCOUNT])
     _snapshot(export, op.sheet)
 
     op.sheet.act(4, f"restate Checking's books to {BOOKS_OPEN} at SECU's "
                  "close for that day", f"Accounts > account {CHECKING_ACCOUNT}"
-                 " > Edit > Books opening")
+                 " > Edit > When the books opened")
     _restate_opening(op, CHECKING_ACCOUNT, BOOKS_OPEN,
                      equities[CHECKING_ACCOUNT])
     _snapshot(export, op.sheet)
@@ -2186,36 +2347,42 @@ def _perform(
     _snapshot(export, op.sheet)
 
     op.sheet.act(7, f"record bank line {UNRECORDED_LINE}, which no row answers "
-                 "(BAL-468)", f"Checking's grid, category {UNRECORDED_CATEGORY},"
-                 " new expense; settle; then correct the day and name")
-    created = _record(
-        op,
-        _cell(CHECKING_ACCOUNT, UNRECORDED_CATEGORY,
-              ref_cache.txn_type_id(TxnTypeEnum.EXPENSE), unrecorded.posted_on),
+                 "(BAL-468)", "Checking's grid: Add Transaction; then the new "
+                 "row's card: settle; reopen it: correct the day")
+    created = _record(op, _NewRow(
+        CHECKING_ACCOUNT, UNRECORDED_CATEGORY, TxnTypeEnum.EXPENSE,
         unrecorded.posted_on, -unrecorded.amount, UNRECORDED_NAME,
-    )
+    ))
     op.sheet.say(f"- created transaction {created}")
     _snapshot(export, op.sheet)
 
+    # Acts 8 to 10 are worked from account 10's own grid, which only the
+    # Default Grid Account setting opens (:func:`_set_grid_account`); the
+    # owner's own setting is put back after act 10.
+    owners_grid = _grid_account(op.user_id)
     op.sheet.act(8, f"type Fidelity's day into account {SUBJECT_ACCOUNT}'s box "
                  f"on the {len(FIDELITY_DAYS) - 1} other transfers (R-BAL256)",
-                 f"each transfer's popover, account {SUBJECT_ACCOUNT}'s box only")
+                 f"first Settings > General: put the grid on account "
+                 f"{SUBJECT_ACCOUNT}; then each transfer's popover from that "
+                 f"grid, account {SUBJECT_ACCOUNT}'s box only")
+    _set_grid_account(op, SUBJECT_ACCOUNT)
     _type_fidelity_days(op)
     _snapshot(export, op.sheet)
 
     op.sheet.act(9, "rename the empty category, then record the dividends the "
                  "app has never held (R-HL, R-BAL250)",
                  f"Settings > Categories > category {DIVIDEND_CATEGORY_ID}'s "
-                 "pencil, then account 10's grid per dividend")
+                 f"pencil; then account {SUBJECT_ACCOUNT}'s grid: Add "
+                 "Transaction per dividend, settle, correct the day")
     _record_dividends(op, export)
     _snapshot(export, op.sheet)
 
     last = export.named[-1]
     op.sheet.act(10, f"assert Fidelity's last stated close on {last} (R-HM)",
-                 f"account {SUBJECT_ACCOUNT}'s balance editor")
-    op.sheet.typed("Balance", export.closings[last])
-    op.sheet.typed("As of", last.isoformat())
+                 f"account {SUBJECT_ACCOUNT}'s balance editor; then Settings > "
+                 "General: the grid back on the account it was on")
     _assert_balance(op, SUBJECT_ACCOUNT, export.closings[last], last)
+    _set_grid_account(op, owners_grid)
     _snapshot(export, op.sheet)
     return created, equities
 
@@ -2379,6 +2546,11 @@ def _verify_checking_boundary(
     R-S), so a later day's gap would grade the typed figure, not the rows.
     Between BOUNDARY_DAY and SECU's next posted day neither record moves --
     the census says so for the app, :func:`_next_bank_day` for the bank.
+    **Keyed on :func:`_movement_key`, as :func:`_checking_problems`' census
+    is**: keyed on ``transaction_id``, every transfer side would collapse into
+    one ``None`` once transfer legs lose their rows (plan step
+    ``balance:X-bi-6-4d``), and a re-rehearsal on that code would read another
+    transfer's side as the kept one's (adversarial review, 2026-10-09).
 
     Args:
         sheet: The performance sheet.
@@ -2391,19 +2563,13 @@ def _verify_checking_boundary(
             books stand off SECU's close by anything but the residue.
     """
     next_day = _next_bank_day()
-    facts = _facts(CHECKING_ACCOUNT)
     in_window = {
-        (fact.transaction_id, fact.settled_on)
-        for fact in facts if fact.settled_on < next_day
+        (_movement_key(fact), fact.settled_on)
+        for fact in _facts(CHECKING_ACCOUNT) if fact.settled_on < next_day
     }
-    kept = {
-        fact.transaction_id for fact in facts
-        if fact.transfer_id == KEPT_TRANSFER
-    }
-    wanted = {
-        (txn, BOUNDARY_DAY)
-        for txn in {row for entry in BOUNDARY_LINES for row in entry.rows}
-        | {created} | kept
+    rows = {row for entry in BOUNDARY_LINES for row in entry.rows} | {created}
+    wanted = {(("row", txn), BOUNDARY_DAY) for txn in rows} | {
+        (("transfer", KEPT_TRANSFER), BOUNDARY_DAY),
     }
     assert in_window == wanted, (
         f"Checking's movements before {next_day} are {sorted(in_window)}; the "

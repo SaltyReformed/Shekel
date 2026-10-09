@@ -1,584 +1,595 @@
 # Runbook: the account-10 repair
 
-**STATUS: SUPERSEDED BY RULING `balance:R-BAL3` (2026-09-05). DO NOT PERFORM ANY ACT BELOW.**
-Nothing here has been done to production, and nothing here may be. **Four of its six acts are
-wrong under the new ruling and one of them MOVES MONEY THE WRONG WAY**: act 1 deletes transfer
-102, which R-BAL3 KEEPS as the surviving record of a real `$500` ACH; act 3 opens account 10's
-books on 2026-03-26 at `$5,350.21`, where R-BAL3 opens them 2026-03-25 at `$4,850.21`; act 4a
-drops transfer 1 for the wrong reason; and act 4b books `$500` of `Financial: Emergency Fund`
-expense the developer rejected in writing (*"I don't like faking or hiding money"*).
-
-**BOTH of the blockers this document names have since cleared, which is exactly why the banner is
-needed rather than a note.** The restatement door IS deployed -- production is `9de30bce`, which
-contains `59b485df`, measured 2026-09-05 by the `docker inspect` recipe below -- and act 4b is no
-longer OPEN but DELETED. A reader who checked only those two would conclude the procedure is
-unblocked and work it.
-
-**What replaces it.** `balance:R-BAL3` in `../../plans/rulings.md`: the `$500` ACH left Checking
-and reached Fidelity on 2026-03-26, the day BOTH accounts' books opened, so under **R-HG** it was
-absorbed on both sides and had nowhere true to live. Both accounts now open **2026-03-25** at
-their banks' own closes -- `$1,234.04` for Checking, `$4,850.21` for account 10 -- and the FOUR
-bank lines of 2026-03-26 are RECORDED on 2026-03-26, the `$500` among them as one ordinary
-transfer on the day both banks posted it. Act 4b does not exist. The step also waits on
-`pay_calendar:C18`.
-
-**This document is kept, not deleted, because its INSTRUMENTS and its measurements are still
-true**: the door census, the flash-refusal trap, the stop-rule reasoning, the archive round trip
-and the "what you will and will not see move" table were all measured and all survive. The ACTS
-and their figures are what changed. Read it as evidence, never as instructions.
-
-**The rewrite is owed by `balance:X-f3c-2b-2c`** and has not been done: its rehearsal must run
-after `pay_calendar:C18` ships, so rewriting the acts now would rehearse them twice.
-**Five things the rewrite owes, found by the neutral review of 2026-09-05 and recorded here so
-they are not lost with this document:**
-
-1. **The "what you will and will not see move" table below is FALSE for the new acts.** Under
-   R-BAL3 Checking's own daily balance moves on four days -- 2026-03-26 by `+$2,493.43`, 04-29
-   and 04-30 by `+$1,500.00`, 07-23 by `+$2,000.00` -- and where the bank can grade them they are
-   IMPROVEMENTS: SECU states `$3,409.57` for 04/29 and the app then matches it to the cent. An
-   operator reading today's table would call the `+$2,000.00` jump an error.
-2. **A stop rule is missing for a window the new order opens.** Between the restatements and the
-   dividends, account 10's income statement carries **`+$29.05` of interest income that never
-   happened** -- ruling **R-FO** sends an interest-bearing account's true-up counter leg to
-   `interest_income`. It is the harm R-HL's order exists to prevent, with the opposite sign.
-3. **Transfer 102's re-date needs BOTH openings already at 2026-03-25**, not just its own
-   account's: `settle_day.record_settle_day` asks the books boundary per row, and that one edit
-   touches Checking and account 10. A per-account "restate, then re-date" reads as safe and is
-   one click from a refusal mid-act.
-4. **The `-$108.87` line's CATEGORY is unruled.** The rehearsal booked it to `Family:
-   Subscriptions` (category 17, Audible's) as a placeholder; SECU files it `Shopping/Online` and
-   the owner has no shopping category. The developer names it, not the runbook.
-5. **The opening-day corroboration arm cannot fail in a REHEARSAL** -- both sides come from the
-   same export -- so it grades the human's typing and nothing else. Today's document says this;
-   the rewrite must keep saying it.
-
----
-
-## What the rewrite must encode: the acts, in the order they were driven
-
-**This is the ordered sequence a rehearsal of `R-BAL3` actually performed and verified on a clone
-of production, 2026-09-05 -- 36 door acts.** It is recorded here because the ordered list further
-down is the SUPERSEDED one, and because the session that proved this sequence held it in a
-scratchpad that does not survive. Re-rehearse it; do not trust it.
-
-**The order is FORCED at two points, not chosen.** `budget.books_hold` is a strict
-`p_day > p_opened_on`, so no row can be re-dated onto 2026-03-26 until the books it belongs to
-already open 2026-03-25 -- which is why both restatements precede every re-date. And transfer 102's
-re-date touches BOTH endpoints, so BOTH Checking's and account 10's openings must be at 2026-03-25
-before that single edit; `settle_day.record_settle_day` asks the boundary per row, so a per-account
-"restate, then re-date" walk is one click from a refusal mid-act.
-
-1. **Delete transfer 1** (Checking -> the archived twin, `$500.00`). Template-linked, so a SOFT
-   delete -- **N-386**, whose exposure is now `$500.00` rather than `$1,000.00` because transfer
-   102 survives.
-2. **Restate account 10's books** to **2026-03-25** at **`$4,850.21`** -- Fidelity's carried-forward
-   close, its 03/12 line, nothing moving until 03/26.
-3. **Restate Checking's books** to **2026-03-25** at **`$1,234.04`** -- SECU's own stated close for
-   that day (`~/Downloads/checking/2026_ytd_daily_balances.csv`).
-4. **Re-date transfer 102 onto 2026-03-26.** It already points Checking -> account 10 and already
-   carries `occurs_on` 2026-03-26; only its settle day (2026-04-06) is wrong.
-5. **Re-date the three Checking rows the bank posted on 2026-03-26** from 2026-03-27:
-   **781** (`$100.00` Health Insurance Allowance), **865** (`$2,473.38` Data Manager) and
-   **1069** (`$15.96` Audible). The first two answer ONE bank line and are `$0.04` short of it,
-   which is **BAL-467** and stays open.
-6. **Record the bank line the app holds nowhere**: `$108.87`, 2026-03-26, category
-   **`Family: Birthday` / `Josh's Birthday`** (developer, 2026-09-06) -- **BAL-468**.
-7. **Re-date the five transfers onto the bank's own days** (156, 154, 157, 346, 409; 155 already
-   sits on its day and must be skipped by MEASUREMENT, not by position).
-8. **Consolidate the twin in ONE sitting**: unarchive, restate its opening to `$0.00`, assert
-   `$0.00` observed 2026-04-06, re-archive. Do not stop while it is unarchived.
-9. **Record the five dividends** (**R-HL**), after the restatements and not before.
-10. **Assert `$3,673.90` observed 2026-07-31** (**R-HM**), in the same sitting as act 9.
-
-**What it produced, and what the rewrite's own rehearsal must reproduce**: Checking's books read
-`$1,234.04` on 2026-03-25 (bank exact) and `$3,182.59` on 2026-03-26 against the bank's `$3,182.63`
--- the `$0.04` of **BAL-467** and nothing else; account 10 reads `$4,850.21` and `$5,350.21`, both
-bank exact. Class moves: Asset `-$5,349.17`, Equity `+$5,283.74`, Expense `+$108.87`, Income
-`-$43.44`, Liability and Unrealized `$0.00`. Account 10 scores **15 of 15** exact on the cash-fold
-and cutover arms and 14 of 15 on the rendered arm; Checking's opening corroboration reads `$0.00`.
-
-**Rehearse against the EXTENDED calendar.** Every figure above was measured with the pay calendar
-still opening 2026-03-26, because `pay_calendar:C18` had not shipped. C18 puts a period at
-2026-03-12 and bounds generation by the books, so the rehearsal has to be re-run on that tree
-before anybody clicks -- these numbers are the target, not the evidence.
-
----
-
-## THE SUPERSEDED PROCEDURE FOLLOWS. It is a record of what was rehearsed on 2026-09-01, and it
-## is NOT a set of instructions.
-
----
+**STATUS: REHEARSED, NOT YET PERFORMED.** Rewritten by plan step `balance:X-f3c-2b-2c` (2026-10-09)
+for ruling **R-BAL3** as amended that day, and rehearsed on same-day copies of production. Nothing
+here has been done to production. The procedure this file used to carry (rehearsed 2026-09-01,
+superseded by R-BAL3 on 2026-09-05) is in git history, and so are its measurements; read it there
+as evidence, never as instructions.
 
 ## What this is
 
 Account 10 (*Fidelity Money Market Savings*) and archived account 2 (*Fidelity Savings*) are the
-same real Fidelity account. The app's record of it disagrees with Fidelity's own export in five
-ways -- findings **N-379**, **N-382** and **N-384** in `../../plans/ledger.md`: the books open on the
-wrong day at the wrong figure, one real ACH is recorded as two transfers, five transfers sit on days
-the bank did not post them, five dividends were never recorded at all, and the archived twin still
-carries the whole balance on the balance sheet.
+same real Fidelity account (ruling **R-HK**), and the app's record of it disagrees with Fidelity's
+own export: one real ACH is recorded twice (**N-382**), five dividends were never recorded, account
+10's books open on the wrong day at the wrong figure (**N-379**), and the archived twin still
+carries the whole balance on the balance sheet (**N-384**'s instance). Checking (account 1) is in
+it too: its books open on a plug rather than on its bank's close (**N-275**), and one of its bank
+lines is recorded nowhere (**BAL-468**).
 
-**The repair is performed by an owner clicking through the app**, and that is ruling **R-HJ**: a
-migration writing those money rows would be a second writer beside every door that already performs
-these acts, and would hard-code one owner's account ids and dates into every future deploy. The
-figures, the acts and their order are ruled in `../../plans/rulings.md` at **R-HJ** through
-**R-HM**; this document is how you carry them out, not a second statement of what they are.
+**An owner performs it by clicking through the app**, never by a migration or a script writing
+money rows (ruling **R-HJ**). The acts, their order and their reasons are ruled in
+`../../plans/rulings.md` at **R-HJ**, **R-HK**, **R-HL**, **R-HM** and **R-BAL3**, amended
+2026-10-09 by **R-BAL249** (this file's split), **R-BAL250** (act 9 renames a category),
+**R-BAL255** (act 1 cancels rather than deletes) and **R-BAL256** (every Fidelity side is typed
+its own day). Until the step's tick files those four in `rulings.md`, and **BAL-622** in
+`../../plans/ledger.md`, their verbatim record is the step's handoff folder. This file is how to
+carry them out.
 
-**Every bank figure below is derived, not copied.** The opening equity is the export's own closing
-for the day the books open, the dividends are its `DIVIDEND RECEIVED` lines, and the final assertion
-is its last stated close. `tests/manual/rehearse_account_10_repair.py` re-derives all of them at run
-time and refuses to start if the stated transfer map no longer reconciles -- in both directions:
-against the export AND against the transfer rows themselves.
-
-The export is `~/Downloads/History_for_Account_Z29868989.csv`.
+**Where the amounts are (ruling R-BAL249).** This file names every amount by its ROLE ("Fidelity's
+close for 2026-03-25"), never by its figure. Every figure to type, and every figure to expect after
+each act, is on the PERFORMANCE SHEET the rehearsal writes into the handoff folder, derived at run
+time from the production copy and the banks' own records. **Type amounts from the sheet of the
+same-day rehearsal and from nowhere else.**
 
 ---
 
 ## Before you start
 
-**1. Is the door deployed?** Ask the running container what it is, and git whether that revision
-carries the door:
+**1. Is production running the code that was rehearsed?** A rehearsal is evidence only for the
+app code it ran on. From the checkout the rehearsal runs from:
 
 ```bash
 REV=$(docker inspect shekel-prod-app \
         --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
-git merge-base --is-ancestor 59b485df "$REV" && echo DEPLOYED || echo NOT DEPLOYED
+git diff --quiet "$REV" -- app migrations && [ -z "$(git status --porcelain -- app migrations)" ] \
+  && echo "SAME CODE" || echo "DIFFERENT CODE"
 ```
 
-Measured 2026-09-01: production is `efbffbd5` and the answer is **NOT DEPLOYED**. If it still is,
-stop -- a release has to ship first. The same question by clicking: open any account's **Edit** page;
-if it renders a **Books opening** card, the door is there.
+It compares the deployed revision with the files on disk, uncommitted and untracked ones
+included. `DIFFERENT CODE` means rehearse from a clean checkout of `$REV` instead. Plan step
+`balance:X-bi-6-4d` rewrites how a transfer's sides are stored, which acts 1, 5 and 8 edit, and
+that is why its release waits for this repair; if it ships first, the whole rehearsal is re-run on
+that code.
 
-**2. Take a backup, and verify it.** `scripts/backup.sh`, then `scripts/verify_backup.sh`. This
-procedure has no undo: an opening restatement and a balance assertion are both append-only, so a
-wrong figure is corrected by stating another one, never by removing a row.
+**2. Take a same-day copy, and rehearse on it.** The rehearsal performs every act below through
+the same doors you are about to click, on a copy of production taken the same day, and writes the
+performance sheet. **The dump is also the repair's backup**: restoring it is part of the
+rehearsal, which proves it restores. **If "Add earlier paychecks" is to be performed at all, do it
+before taking the dump**, so the rehearsal measures the repair on top of it. Then make no other
+change in the app between taking the dump and finishing act 10.
 
-**And write these two figures down before you touch anything, because nothing else records them.**
-An opening is restated by stating a NEW one, so going back means typing the old figure -- and after
-act 3 or act 4c the old figure is no longer on any screen. Measured on a production clone
-2026-09-01, and re-read them yourself rather than trusting this table, since a restatement between
-now and the repair would move them:
-
-| account | pre-repair opening day | pre-repair opening equity | source |
-|---|---|---|---|
-| 10 *Fidelity Money Market Savings* | 2026-04-05 | `$4,879.26` | `migration_derived` |
-| 2 *Fidelity Savings* (the twin) | 2026-03-26 | `$4,863.56` | `migration_derived` |
-
-**Act 6 is the one act that is not undoable by restating.** Its figure can be corrected by asserting
-again, but its EFFECT cannot: ruling **R-HM** works by moving the modelled-accrual window to the
-latest assertion, and a later assertion cannot move that window back. "Corrected by stating another
-one" is true of the figure and false of the window.
-
-**3. Rehearse on a clone, and keep the BEFORE.** Clone production into a throwaway database, take it
-to head, then:
+**Run every block from a checkout OUTSIDE `~/projects/Shekel`** (a sibling worktree, such as
+`~/projects/shekel-f3c2b2c`): a checkout inside it loads that folder's `.env`, which configures the
+app differently from every rehearsal measured here, all of which ran from outside it. First the SETUP block. It only defines names and runs
+nothing, so it can be pasted again at any time; fill in the four values in capitals.
 
 ```bash
-DATABASE_URL=postgresql://.../<clone> \
-    .venv/bin/python tests/manual/measure_cutover_against_bank.py \
-    --account 10 --format fidelity \
-    --bank ~/Downloads/History_for_Account_Z29868989.csv
-
-DATABASE_URL=postgresql://.../<clone> \
-    .venv/bin/python tests/manual/rehearse_account_10_repair.py \
-    --clone <clone> \
-    --bank ~/Downloads/History_for_Account_Z29868989.csv
+D=~/projects/shekel-handoffs/FOLDER    # the handoff folder for the day, outside every git checkout
+F=FIDELITY_CSV                         # the Fidelity history export; S, the SECU daily balances:
+S=SECU_CSV                             # both paths are in the handoff record of the step
+RESIDUE=BAL467                         # the figure ledger row BAL-467 states, books less bank
+B=shekel_f3c2b2c_before                # a copy no act touches
+R=shekel_f3c2b2c_rehearsal             # the copy the rehearsal performs on
+P=shekel_f3c2b2c_performed             # the copy of production after the performance
+U=$(docker exec shekel-dev-db sh -c 'echo "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:5432"')
+psql_dev() { docker exec shekel-dev-db sh -c "PGPASSWORD=\"\$POSTGRES_PASSWORD\" psql -U \"\$POSTGRES_USER\" -d postgres -v ON_ERROR_STOP=1 -c '$1'"; }
+dump_prod() { docker exec shekel-prod-db sh -c 'PGPASSWORD="$(cat /run/secrets/postgres_password)" pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$1" &&
+  [ -s "$1" ] || { echo "STOPPED: the dump $1 failed or is empty"; return 1; }; }
+restore() { { psql_dev "DROP DATABASE IF EXISTS $1;" && psql_dev "CREATE DATABASE $1 OWNER shekel_user;" &&
+  docker exec -i shekel-dev-db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore --no-owner --no-privileges -U "$POSTGRES_USER" -d '"$1" < "$2"; } ||
+  { echo "STOPPED: restoring $1 failed"; return 1; }; }
+run() { db=$1 out=$2; shift 2    # $out holds only the output of the program; errors go to $out.err
+  SECRET_KEY=$(python3 -c 'import secrets;print(secrets.token_hex(32))') LC_ALL=C.UTF-8 LOG_LEVEL=ERROR \
+    PYTHONPATH=$PWD DATABASE_URL="$U/$db" ~/projects/Shekel/.venv/bin/python "$@" > "$out" 2> "$out.err" && rc=0 || rc=$?
+  cat "$out"; [ $rc -eq 0 ] || tail -n 20 "$out.err"
+  echo "exit $rc  ($*)"; return $rc; }
 ```
 
-The rehearsal performs everything below through the same doors you are about to click and verifies
-the post-state. **It refuses a clone the repair has already run against**, so re-running it means
-restoring the clone first. If it fails, this document is wrong and the repair does not start.
+Then the REHEARSAL block. Its steps run inside `( set -e ... )`, so the FIRST failure stops them,
+says why, and nothing after it runs. It drops and rebuilds `$B` and `$R`, and nothing else.
+
+```bash
+T=$(date +%F_%H%M%S)                   # names every file this run writes; the sheet carries it
+( set -e
+  [ -d "$D" ] || { echo "STOPPED: no folder $D"; exit 1; }
+  for f in "$F" "$S"; do [ -f "$f" ] || { echo "STOPPED: no file $f"; exit 1; }; done
+  dump_prod "$D/prod_$T.dump"
+  restore $B "$D/prod_$T.dump"; restore $R "$D/prod_$T.dump"
+  run $B "$D/score_before_a10_$T.txt" tests/manual/measure_cutover_against_bank.py --account 10 --format fidelity --bank "$F"
+  run $B "$D/score_before_a1_$T.txt"  tests/manual/measure_cutover_against_bank.py --account 1 --bank "$S"
+  run $B "$D/render_before_$T.txt"    tests/manual/verify_render_surfaces.py "$D/render_before_$T.json"
+  run $R "$D/rehearsal_$T.txt"        tests/manual/rehearse_account_10_repair.py --clone $R --bank "$F" \
+        --residue "$RESIDUE" --sheet "$D/sheet_$T.md"
+  run $R "$D/score_after_a10_$T.txt"  tests/manual/measure_cutover_against_bank.py --account 10 --format fidelity --bank "$F"
+  run $R "$D/score_after_a1_$T.txt"   tests/manual/measure_cutover_against_bank.py --account 1 --bank "$S"
+  run $R "$D/render_after_$T.txt"     tests/manual/verify_render_surfaces.py "$D/render_after_$T.json"
+  run $R "$D/baseline_rehearsed_$T.txt" tests/manual/verify_balance_baseline.py "$D/baseline_rehearsed_$T.json"
+  diff "$D/render_before_$T.json" "$D/render_after_$T.json" || true   # pages DO differ: read them
+)
+```
+
+**The rehearsal must end `rehearsal complete` with exit 0, or the repair does not start.** It
+refuses BEFORE any write, naming every reason:
+
+* a target it was not pointed at, or one named `shekel` (the deployed database's name AND the
+  shared dev runtime's);
+* a copy the repair has already touched (both openings, transfers 1 and 102, category 33);
+* a stated map that does not reconcile with BOTH banks in both directions: every Fidelity day
+  after the books open answered by exactly one transfer or dividend, every settled movement on
+  accounts 2 and 10 answered by an act, Checking's four lines of 2026-03-26 exactly the ones the
+  map answers and none matched yet, and Checking's movements before SECU's next posted day exactly
+  the mapped rows;
+* a payroll residue that is not the figure ledger row **BAL-467** states;
+* a sheet path inside any git checkout, or one where a file already exists.
+
+Then it refuses AFTER the acts if any verification fails (the sheet's last section).
+
+**3. Work in ONE browser tab.** Log out everywhere else first. A second tab holds pages rendered
+before an act, and a save from one would post what it rendered.
+
+**4. Write down Checking's balance for the next paycheck** as the grid shows it. Act 1 is checked
+against it.
 
 ---
 
-## The acts, in order
+## Already true on production, so not an act
 
-**The order is ruling R-HL's, and one step of it is enforced -- but the enforcement catches you
-LATE, so do not lean on it.** Recording the 2026-03-31 dividend before act 3 takes three saves, and
-the first two are accepted: the row is created, and marking it Received succeeds because that stamps
-**today's** date, not the day you mean. Only the third save -- correcting the day to 2026-03-31 --
-meets the books boundary, and the app answers *"Money cannot have moved on 2026-03-31: this
-account's books open on 2026-04-05 holding $4,879.26..."*.
+* **Six transfers' Checking sides already sit on SECU's days.** The superseded procedure re-dated
+  transfers 156, 154, 157, 346 and 409 onto the bank's days. Since SECU's statements were imported,
+  each of those and transfer 155 records, on its Checking side, the day SECU's import OBSERVED,
+  and that is the day Fidelity posted it. The rehearsal MEASURES this on each copy and refuses to
+  start if any side is not on its day, so it is never assumed. Only their Fidelity sides are left,
+  as act 8.
 
-**What that leaves behind is not an inert draft.** Measured: a settled `Received` row for `$13.35`
-on account 10, dated the day you are working, live in every balance. Work the acts in order; if you
-do hit that refusal, delete the settled row before continuing -- deleting it reverses posted journal
-entries, so it is a real act rather than discarding a draft.
+---
 
-**You may stop between acts -- except between 5 and 6, and NOT anywhere inside act 4.** Every other
-boundary leaves the books internally consistent. Act 4 has two windows of its own, and the first is
-worse than the 5-to-6 one:
+## The stop rules
 
-* **Between 4a and 4b** the `$500.00` that genuinely left Checking on 2026-03-27 is recorded
-  NOWHERE. Bounded, and it self-corrects when you come back, but Checking's displayed balance does
-  not move while it lasts (its own later assertion resets the fold), so there is no cue.
-* **Between the UNARCHIVE and 4d the twin's whole balance is counted TWICE, and this is the worst
-  state this procedure can be left in.** Act 3 has by then put that money inside account 10's
-  opening; 4c takes the twin's opening to `$0.00` but its 2026-04-06 assertion still says
-  `$5,363.56`, and the restatement door's own docstring measured that exact case
-  (`routes/accounts/opening.py`): taking a `$4,863.56` opening to `$0.00` "leaves the 2026-04-06
-  assertion booking a `$5,363.56` true-up and the asset returns in full." Archived, only the balance
-  sheet saw it (**N-384**); UNARCHIVED, every dashboard does too. So the twin must not be left
-  unarchived: do 4c, 4d and the re-archive in one sitting.
+**Perform acts 1 to 10 in ONE sitting.** The sheet prints the rule on its own STOP RULES line;
+these are the windows it closes, each measured act by act on the sheet's AFTER lines:
 
-Between 5 and 6 the latest assertion is still 2026-07-16, so the dividend you
-have just recorded on 2026-07-31 sits **inside** the open modelled-accrual window and is counted
-twice: account 10 reads `$3,680.32` against the bank's `$3,673.90`, a **`$6.42`** overstatement, and
-that is the exact shape ruling **R-HM** exists to prevent. Do 5 and 6 in one sitting.
+* **Act 1 to act 2: the twin books interest that never happened.** Dropping transfer 1 takes its
+  arrival off the twin while the twin's 2026-04-06 assertion still stands, so the gap books a
+  correction, and ruling **R-FO** sends an interest-bearing account's correction to its modelled
+  `interest_income` row. Act 2 clears it.
+* **Inside act 2: do not stop while account 2 is unarchived**, nor between its restatement and its
+  assertion. Zeroing the opening while the old assertion stands books the twin's whole asserted
+  balance as the same false interest until the new assertion supersedes it, and unarchived, every
+  dashboard shows it.
+* **Act 3 to act 9: account 10's corrections are enlarged.** They already stand in, as modelled
+  interest, for the dividends the app never recorded; restating the opening (act 3) enlarges them,
+  and recording the dividends (act 9) empties them.
+* **Act 9 to act 10: the last dividend is counted twice.** Until act 10 the latest assertion on
+  account 10 is earlier than Fidelity's last dividend, so that dividend sits inside the open
+  accrual window beside the modelled accrual it replaces (ruling **R-HM**). Act 10 moves the
+  window past it.
+* **Inside every row act 7 and act 9 create: finish all three saves before the next row.** Marking
+  a row Paid or Received stamps TODAY, so between that save and the day correction the row counts
+  in your balances on today's date for its full figure.
 
-### Act 1 -- delete the duplicate ACH
+**A refused save wrote nothing, and every save before it stands. It shows one of four ways**, and
+each means stop and read it:
 
-Open **transfer 102** (*Checking -> Fidelity Money Market Savings Contribution*, `$500.00`, recorded
-as settling 2026-04-06) and delete it.
+* on the Edit, Settings and Categories pages, a RED flash at the top of the page;
+* on a grid card, NO flash: the card closes as it does after a good save, and the CELL redraws in
+  red with a small octagon icon. Its reason is in the cell's tooltip (hover over it). **After
+  every save on a grid card, look at the cell**;
+* in a balance editor (act 2 step 3, act 10), the editor stays OPEN with small red text in it;
+* in the Add Transaction modal (acts 7 and 9), the modal stays OPEN with no message. A good Add
+  closes it and reloads the page.
 
-It is **N-382**: one real `$500` ACH recorded twice, once into the twin and once here, so Checking
-was debited twice for money that left it once. Fidelity's export has no 2026-04-06 line at all.
+**If the refused save is a row's day correction** (the third save in act 7 or act 9), that row
+stands settled on TODAY: do not go on to another act, because the remedy for it has not been
+rehearsed. The order below is what keeps this from happening.
 
-It is template-linked, so the app can only SOFT-delete it -- the row stays restorable through the
-recurrence conflict chooser. That limitation is accepted and is finding **N-386**; the money leaves
-correctly either way, because the fold excludes deleted rows and the posted effect is reversed
-before the row goes.
+---
 
-*What you should see:* the row disappears from the grid. **No displayed balance changes** -- see
-"What you will and will not see move".
+## The order, and where it is FORCED
 
-### Act 2 -- re-date five transfers onto the bank's own days
+**Both restatements (acts 3 and 4) precede every re-date and every new row (acts 5 to 9).** The
+books boundary refuses a movement dated on or before its account's `opened_on` (ruling **R-HG**),
+so nothing can be dated 2026-03-26 until the books it belongs to open 2026-03-25. Act 9 is caught
+by the same rule: account 10's books open 2026-04-05 until act 3, so the 2026-03-31 dividend is
+refused -- **and only at its THIRD save**, after the first two have already left a settled row
+dated today. Act 7 has the same shape against act 4.
 
-For each, open the transfer's full-edit card from its account-10 grid cell and change only
-**Money moved on**. Leave the amount, the status and everything else exactly as rendered.
+**Transfer 102's day (act 5) needs BOTH openings already restated**, not only its own side's: one
+save writes both sides, and the boundary is asked per side. A per-account "restate, then re-date"
+walk is one click from a refusal mid-act.
 
-| transfer | what it is | recorded | the bank posted it |
-|---|---|---|---|
-| 156 | Checking -> account 10, `$500.00` | 2026-04-11 | **2026-04-23** |
-| 154 | account 10 -> Checking, `$1,500.00` | 2026-04-23 | **2026-04-29** |
-| 157 | Checking -> account 10, `$500.00` | 2026-05-10 | **2026-05-07** |
-| 346 | Checking -> account 10, `$250.00` | 2026-05-16 | **2026-05-14** |
-| 409 | account 10 -> Checking, `$2,000.00` | 2026-07-24 | **2026-07-23** |
+The rest is ruled rather than forced: the twin is zeroed directly after act 1 because act 1 opens
+the window act 2 closes; the dividends come after the restatements anyway (ruling **R-HL**); and
+act 10 follows act 9 directly (ruling **R-HM**).
 
-Transfer **155** (`$500.00`, 2026-04-09) already sits on the bank's day. Do not touch it. It is
-listed because the six together account for every movement the export shows after the books open -- a
-list naming only the five would be a set defined by subtraction.
+---
 
-*What you should see:* each card saves without complaint. A settle-day correction is legal on a
-finalised transfer by design: the lock protects budget decisions, and the day the bank moved money
-is an observed fact. The card can also be opened from the **Checking** side -- the rehearsal drives
-the account-10 side, so if you use the Checking cell you are on a path nothing here has exercised.
+## Finding things on screen
 
-**A re-date moves the day and NOT the pay period**, so a transfer can end up filed in a period that
-does not contain its own settle day. Transfer 346 is filed in the period starting 2026-05-21 and
-moves to 2026-05-14, which is outside it. **The re-date does not CAUSE that** (measured on a
-production clone 2026-09-01): its recorded 2026-05-16 was already outside the same period, whose
-neighbour runs 2026-05-07 to 2026-05-20. So the row arrives mis-filed and leaves mis-filed, one day
-further out. That is ordinary in this app -- a settle legitimately falls outside its period, and
-11 of 156 settled rows on an earlier production clone already did -- but it is worth knowing before
-you go looking for the row on the grid.
+* **The grid opens on the account Settings > General > Default Grid Account names**, and no page
+  links to it on any other account: its own earlier and later arrows keep that account. The grid
+  work of acts 1 to 7 is on Checking's grid; act 8 begins by setting that to *Fidelity Money Market
+  Savings* (Save Settings), and act 10 ends by setting it back. Neither moves money.
+* **The grid shows a window of paychecks.** The arrow left of the window ("Show earlier periods")
+  steps back one paycheck at a time; 2026's March and April columns are some way back.
+* **A transfer is drawn on each account's grid under the OTHER account's name**: transfer 1 is in
+  Checking's row named *Fidelity Savings*.
+* **Every new row is created with the grid's "Add Transaction" button** (top of the grid), never by
+  clicking an empty cell: the grid draws a row only for a category that already holds something,
+  so an empty category has no cell to click. The modal asks Name, Amount, Type, Category and Pay
+  Period, and books the row on the account the grid is on. The Pay Period list labels each
+  paycheck by its dates, "03/26 - 04/08". After **Add** the page reloads on the same window; the
+  new row shows once its column is in view.
+* **A restatement is made on the account's Edit page, in the card headed "When the books
+  opened"**, below the account's own form: fields **Books opened on** and **Opening equity**, and
+  the card's own button **Restate opening**. The page's blue **Update** button belongs to the
+  account form and restates NOTHING. **Success is a green flash beginning "Books restated: this
+  account now opens on"** with the day and figure you typed; any other message, or none, means the
+  opening did not move.
 
-### Act 3 -- restate account 10's books
+---
 
-Account 10 -> **Edit** -> the **Books opening** card. Day **2026-03-26**, equity **`$5,350.21`** -- the
-export's own closing for that day. Save.
+## The acts
 
-Ruling **R-HK**: 2026-03-26 is the first day the owner's pay calendar covers, and every bank line on
-or before it is absorbed into the equity rather than recorded -- six lines running back to
-2026-01-30, which the app has no pay period to hold.
+Each act is headed as the sheet heads it, and each typed value is on the sheet under that act.
 
-*What you should see:* a flash saying the books were restated, and a warning that balances recorded
-afterwards are unchanged so the difference shows as a correction against them. That is expected, and
-act 5 is what clears it. **If you see a red flash, the day or the figure was refused and nothing was
-written** -- the door reports a refusal by flashing and returning you to the same page, so read it.
+### Act 1 -- drop transfer 1: set it back, then cancel it (R-BAL3, R-BAL255)
 
-### Act 4 -- consolidate the archived twin onto account 10
+Transfer 1 is the transfer from Checking to the archived twin, settled 2026-03-27, in the column
+of the pay period starting 03/26. Click its cell to open its card, set **Status** to **Projected**
+and **Save**. The card closes, and the cell now shows a check-mark button: **do NOT press it**, it
+marks the transfer Paid again, dated today. **Click the cell itself to reopen the card, and press
+the RED-outlined "Cancel" with the octagon icon, in the bottom row beside the green "Paid"** --
+NOT the grey "Cancel" with the x beside Save, which only closes the card (the two buttons share a
+word: **BAL-622**).
 
-**4a.** Open **transfer 1** (*Emergency Fund*, Checking -> Fidelity Savings, `$500.00`, 2026-03-27)
-and delete it. Also template-linked, so also a soft delete -- **N-386** again, and this second
-instance doubles that finding's standing exposure from `$500.00` to `$1,000.00`.
+*Success:* the transfer's cell DISAPPEARS from Checking's grid (a cancelled transfer has no cell),
+and Checking's balance for the next paycheck reads what you wrote down before act 1. **If it reads
+lower by transfer 1's amount, the transfer was not cancelled**: open its card. If its Status reads
+Paid (the check mark was pressed), set Status to Projected and Save first, which closes the card,
+and reopen it by clicking the cell (not the check mark). Then press the red Cancel.
 
-**4b IS OPEN AND MUST NOT BE PERFORMED AS WRITTEN. STOP HERE UNTIL IT IS RULED.**
+*Why:* one real ACH left Checking and reached Fidelity on 2026-03-26, and the app records it
+twice. Transfer 102, into account 10, is the record KEPT: SECU's and Fidelity's lines for that day
+pair one-for-one (R-BAL3). Cancelled says what is true of transfer 1, that the planned transfer to
+the old account did not happen. No page renders a single-transfer delete, and a cancel is not a
+soft delete, so the soft delete's restore exposure (**N-386**) is not incurred.
 
-The developer rejected this act's method on 2026-09-01, on the principle *"I prefer root cause
-solutions. I prefer the from scratch design. I don't like faking or hiding money."* Booking an
-expense that did not happen is what he is refusing, and the two alternatives so far offered do not
-survive the same principle either: recording NOTHING hides the same real outflow inside an equity
-correction against Checking's next assertion, and opening the books a day earlier was rejected on
-its own grounds by **R-HK**. **The correct double-entry design is owed and has not been written.**
-What is true and not in dispute: the `$500.00` genuinely left Checking on 2026-03-27, it is not
-spending, and account 10's restated opening already holds it -- so the movement is Checking into
-another account's OPENING EQUITY, which is a shape this app has no way to record.
+*After:* no displayed balance moves. The twin's corrections rise by transfer 1's amount and its
+modelled interest falls by the same: the first window is open.
 
-Acts 1, 2, 3, 4a, 4c, 4d, 5 and 6 are unaffected and remain as ruled. **The figures below are what
-was rehearsed, kept so the rehearsal stays reproducible -- they are NOT an instruction.**
+### Act 2 -- zero the archived twin (account 2) in ONE sitting
 
-*The rehearsed method was:* on the grid, in Checking's **Financial: Emergency Fund** row for the pay
-period starting 2026-03-26, create an expense of **`$500.00`**; mark it Paid; then reopen the
-now-settled card and set **Money moved on** to **2026-03-27**.
+1. Accounts, the archived region, account 2: **Unarchive**.
+2. Account 2, **Edit**, the "When the books opened" card: keep the day the sheet gives (its
+   current one), type **0.00** as the **Opening equity**, press **Restate opening**, and see the
+   green "Books restated" flash.
+3. Account 2's balance editor (its cell on the Accounts page, or its details page): balance
+   **0.00**, as of **2026-04-06**, Save.
+4. **Archive** it again.
 
-**Three saves, and finish all three before moving on.** The day box only appears once a row is
-settled, so the day cannot be stated at creation -- and marking it Paid stamps **today**. Between the
-second and third save the `$500.00` is live in your balances on today's date. It is transient, but
-it is real while it lasts, so do not leave a row half-recorded.
+*Why:* the twin's history is consolidated onto account 10, which opens holding that money (R-HK
+as amended by R-BAL3). The 2026-04-06 assertion supersedes the older figure for that day rather
+than editing it: assertions are append-only, and the old figure stays in the account's history as
+what was believed at the time. The unarchive is forced because an archived account reaches no
+balance editor by clicking (**N-453**). The round trip moves no money; the rehearsal grades that
+with a fingerprint of the posted ledger either side of each flip.
 
-**Two things about this act are not what they look like.** *It is not on the bank's day*: SECU
-posted the ACH on 2026-03-26, which is the day Checking's own books open, and ruling **R-HG**
-refuses a movement on or before `opened_on` -- so the app's own 03-27 stands. It is the one date this
-repair does not move onto the bank's. *And it books `$500.00` of EXPENSE that did not exist before*:
-the deleted transfer's Checking leg posted as a `transfer` and touched no expense row, so total
-expenses rise `$25,773.39 -> $26,273.39` and a `Financial: Emergency Fund` line appears in your first
-pay period. The money did not leave your net worth -- it is inside account 10's restated opening -- so
-the income statement now reports spending that did not happen. Ruling **R-HK** names this act but
-not that consequence.
+**Step 2's flash is this act's only visible check of the restatement.** Measured: with step 2
+skipped and step 3 done, the twin still reads 0.00, but its whole asserted balance is booked as a
+loss of interest. The post-performance comparison catches it, as a balance difference on account
+2: such a difference means act 2's restatement did not happen.
 
-**4c and 4d still need the twin UNARCHIVED first, and 4c now needs it for a DIFFERENT REASON.**
-This paragraph used to give one reason for both: while an account is archived the cockpit offers
-only *Unarchive* and *Delete*, so neither door had a click path. That was finding **N-430**, and
-plan step `balance:X-f3c-2b-2d` closed it -- the archived card carries the same **Edit** link the
-live cell's kebab does, so 4c's own instruction below (*Account 2 -> **Edit** -> **Books opening***)
-is clickable while the twin is still archived. **4d is not reachable BY CLICKING, which is not
-the same as unreachable**, and the set is stated by CENSUS rather than by subtraction. Five
-templates open the shared anchor editor: `accounts/_cash_balance_hero.html`,
-`investment/_balance_hero.html`, `loan/_balance_hero.html`, `dashboard/_pulse_balance.html` and
-`savings/_cockpit_balance.html`. Two of the five can never render for an archived account -- the
-dashboard pulse resolves its hero through `account_resolver`, whose
-`_first_active_checking_account` filters `is_active=True`, and the cockpit's live cell is the branch
-an archived account does NOT take, because it renders in this drawer instead. The three that remain
-are detail-page heroes, and the archived card's own figure is static text, so nothing here links
-them. Typed
-directly, `/accounts/2/details` answers **200 with a working balance editor**, so this is a reach
-problem and not a capability one (**N-453**, ruled to `balance:X-f4`). The runbook prescribes clicks,
-so it takes the unarchive.
+*After:* the twin holds **0.00**, and its corrections and modelled interest are **0.00**: the first
+window is closed. This is the act whose effect is plainly visible on a balance.
 
-**The order does not change, and the reason is NOT the double count.** A first draft of this
-paragraph said 4c opens the double-count window and that taking it early would widen it. Both halves
-were wrong, and the stop rules above say so: that window opens at **act 3**, which is what puts the
-money inside account 10's opening while the twin still asserts `$5,363.56` -- 4c neither opens nor
-closes it, and only 4d does. Nor would taking 4c early widen the exposure: the rule ranks ARCHIVED
-as the narrower state (only the balance sheet sees it) and the UNARCHIVE as what puts it on every
-dashboard, so doing 4c while archived is if anything the quieter half. Corrected by adversarial
-review, 2026-09-04.
+### Act 3 -- restate account 10's books to 2026-03-25 at Fidelity's close for that day
 
-**What 4c DOES open is smaller and separate, and it is still a reason to keep the order.** The
-restatement takes the twin's opening to `$0.00` while its 2026-04-06 assertion stands, so the gap
-books a `$5,363.56` correction against that assertion -- and ruling **R-FO** sends an
-interest-bearing account's true-up counter leg to `interest_income`, so the income statement reports
-a gain that never happened until 4d clears it. That window opens at 4c and closes at 4d, and the
-income statement carries no archived-account exclusion to hide it. Since 4d forces the unarchive
-anyway, taking 4c early buys one click and pays for it by running that phantom gain for however long
-separates the two sittings -- against a stop rule that already requires 4c, 4d and the re-archive in
-one sitting.
+Account 10, **Edit**, "When the books opened": **Books opened on** 2026-03-25, **Opening equity**
+Fidelity's close for 2026-03-25 (the sheet's figure; the export carries its 2026-03-12 close
+forward, nothing moving until 2026-03-26). **Restate opening**. The green flash goes on to say the
+difference shows as a correction against your later balances and that restating those balances
+clears it. **Do not restate them**: here the correction stands in for the unrecorded dividends,
+and act 9 is what clears it.
 
-Unarchive it from the cockpit's archived region, do 4c and 4d, then archive it again. **Do not stop
-while it is unarchived** -- see the stop rules above. Each flip moves no money, and that is GRADED
-rather than claimed: the rehearsal digests every posted-ledger row either side of each archive act
-and refuses if the digest moves. `tests/manual/rehearse_account_10_repair.py` rehearses THIS order.
+*After:* displayed balances unchanged; account 10's corrections grow: the third window is wider.
 
-**4c.** Account 2 -> **Edit** -> **Books opening**. Day **2026-03-26**, equity **`$0.00`**.
+### Act 4 -- restate Checking's books to 2026-03-25 at SECU's close for that day
 
-**4d.** Account 2 -> its balance editor. Assert **`$0.00`** observed on **2026-04-06**.
+Account 1, **Edit**, "When the books opened": **Books opened on** 2026-03-25, **Opening equity**
+SECU's close for 2026-03-25 (the sheet's figure, folded from the app's own import of SECU's
+statement). **Restate opening**, and see the green flash.
 
-That day already carries an assertion of `$5,363.56`. You are not editing it -- assertions are
-append-only at the database tier -- you are stating a newer one for the same day, which supersedes it.
-The old figure stays in the account's history, which is correct: it is what you believed at the time.
+*Why:* Checking's current opening is not a fact but the plug that absorbed 2026-03-26's
+movements, the ACH among them (R-BAL3). This is the act that answers **N-275**.
 
-*What you should see:* the twin's balance goes to `$0.00` -- the one act in this repair whose effect
-is immediately visible as a balance -- and the balance sheet stops carrying an asset for an account
-holding nothing. That is **N-384**'s instance discharged.
+**One governing opening per account** (**BAL-498**). A restatement APPENDS a row, and the newest by
+id governs (`app/services/cash_ledger/_events.py`, `governing_account_opening`), so after acts 2
+to 4 each of the three accounts is governed by the row its act wrote. The rows they supersede
+(each of the three holds two from the migration, all with one shared `created_at`) stay as
+history, and no tie-break decides anything.
 
-### Act 5 -- record the five dividends
+*After:* nothing on the sheet's lines moves (Checking's own later assertions govern the day the
+sheet values at).
 
-**First create the category.** Settings -> Categories -> new, group **Income**, item
-**Interest & Dividends**. Ruling **R-HL**: real investment income has never had a category of its
-own, so today it is absorbed by balance true-ups whose counter leg books to the account's modelled
-`interest_income` row. A category is owner data and costs no code.
+### Act 5 -- type transfer 102's day into BOTH sides' boxes, each from its own bank (R-BAL3, R-BAL256)
 
-Then, on account 10, for each dividend: create an `Income: Interest & Dividends` row for the amount,
-mark it Received, then reopen the settled card and set **Money moved on** to the real day. **Finish
-each row's three saves before starting the next** -- between the second and third the amount sits in
-your balances on today's date, exactly as in act 4b.
+Open transfer 102 from Checking's grid, in the column of the pay period starting 03/26 (on each
+grid a transfer's row is labelled with the OTHER account, so on Checking's it reads *Fidelity
+Money Market Savings*; the card's header names the transfer). Its card renders one **Money moved
+on** box per side: type
+**2026-03-26** into Checking's box AND into account 10's box, then ONE Save.
 
-| day | amount | pay period starting |
+*Why:* both banks posted it 2026-03-26, the day both books used to open, which is why it was
+absorbed on both sides (R-HG) and why acts 3 and 4 had to come first. Each side's day then comes
+from its own bank's record (ruling **R-BAL142** gave each side its own day).
+
+*After:* nothing on the sheet's lines moves.
+
+### Act 6 -- re-date Checking's rows onto 2026-03-26, the day SECU posted them
+
+Transactions **781**, **865** and **1069**: each one's card, **Money moved on** **2026-03-26**,
+Save. The app dated them 2026-03-27.
+
+781 and 865 together answer ONE payroll line and fall short of it by **BAL-467**'s residue, which
+stays open: which row is short is the owner's knowledge, and the bank states one line where the app
+states two. 1069 answers its own line exactly.
+
+*After:* nothing on the sheet's lines moves.
+
+### Act 7 -- record bank line 133, which no row answers (BAL-468)
+
+On Checking's grid, **Add Transaction**: the Name the sheet gives, **the bank line's own amount**
+(the sheet's figure), Type **Expense**, Category **Family: Birthday** (category 26, ruled by the
+developer 2026-09-06), Pay Period the one starting **03/26**; **Add**. Then open the new row's
+cell in that column, step back to it if it is out of view, open **More options**, set **Status**
+to **Paid** and Save (which stamps today); reopen it, set
+**Money moved on** to **2026-03-26** and Save. **Three saves; finish all three before act 8.** The
+day box renders only once a row is settled, so the day cannot be typed at creation.
+
+*After:* nothing on the sheet's lines moves; Expense rises by the line's amount (the last section).
+
+### Act 8 -- type Fidelity's day into account 10's box on the 6 other transfers (R-BAL256)
+
+First **Settings > General > Default Grid Account: Fidelity Money Market Savings**, **Save
+Settings**; the grid is now account 10's. Then for each transfer, open its card from that grid and
+type into **account 10's** box only, then Save:
+
+| transfer | its column (pay period starting) | Fidelity posted it |
 |---|---|---|
-| 2026-03-31 | `$13.35` | 2026-03-26 |
-| 2026-04-30 | `$15.70` | 2026-04-23 |
-| 2026-05-29 | `$15.01` | 2026-05-21 |
-| 2026-06-30 | `$15.24` | 2026-06-18 |
-| 2026-07-31 | `$14.39` | 2026-07-30 |
+| 155 | 04/09 | 2026-04-09 |
+| 156 | 04/23 | 2026-04-23 |
+| 154 | 04/23 | 2026-04-29 |
+| 157 | 05/07 | 2026-05-07 |
+| 346 | 05/21 | 2026-05-14 |
+| 409 | 07/16 | 2026-07-23 |
 
-Each is one `DIVIDEND RECEIVED` line in the export. The `REINVESTMENT` line beside it is the same
-money buying the core position back and is not a second event. The export carries seven such lines;
-the 2026-01-30 `$3.82` and 2026-02-27 `$4.47` are on or before the opening day and are inside the
-opening equity.
+**Find each one by its column, not by its name**: five of the seven share one name, and the sheet
+gives each transfer's amount. Transfer 346 is filed in the 05/21 column although Fidelity posted it
+inside 05/07's: the day box moves the day and not the column. On account 10's grid each sits in the
+row labelled *Checking*.
 
-*What you should see:* account 10's modelled `interest_income` row empties -- it carried `-$30.25` of
-corrections, which had been standing in for the **05-29 and 06-30** dividends only -- and
-`Income: Interest & Dividends` carries `$73.69` of income. Total income moves `$43.44`, which is the
-`$73.69` recorded less the `$30.25` of modelled interest it replaces.
+Leave every Checking box as rendered: each is SECU's to state, already observed by its import, and
+plan step `balance:X-bk-2` grades them. A side that already holds its day as its own (not "a
+guess") is skipped, and the sheet then says "nothing to type" for it.
 
-### Act 6 -- assert the bank's last stated close
+*Why:* each side keeps its own day (R-BAL142). Left alone, a Fidelity side borrows Checking's day
+and reads "a guess", and a later correction on the Checking side would move it although Fidelity
+says otherwise (R-BAL256).
 
-Account 10 -> its balance editor. Assert **`$3,673.90`** observed on **2026-07-31**.
+*After:* nothing on the sheet's lines moves; the money was already on these days.
 
-Ruling **R-HM**: the modelled accrual window opens at the latest assertion, so without this the
-2026-07-31 dividend sits inside the open window and is counted twice. Asserting the bank's own close
-for the last day the export covers moves the window past it.
+### Act 9 -- rename the empty category, then record the dividends the app has never held (R-HL, R-BAL250)
+
+**First the category.** Settings, Categories, category **33** (*Financial: Dividend*, created by the
+owner and never used): its pencil, Group **Income**, Item Name **Interest & Dividends**, Save. The
+rehearsal refuses to start unless category 33 is still the owner's, still named so, and holds
+nothing: a rename relabels everything filed under it.
+
+**Then each dividend**, in day order, on account 10's grid: **Add Transaction** with Name
+**Dividend** (one name, so all five share one grid row), **the export's dividend that day** (the
+sheet's figure), Type **Income**, Category **Income: Interest & Dividends**, and the Pay Period
+starting on the date below; **Add**. Then open the new row's cell in that column (step back to
+it if it is out of view), open **More options**, set **Status** to **Received** and Save (which
+stamps today); reopen it, set **Money moved on** to the dividend's day and Save.
+**Three saves per row; finish each row before the next.**
+
+| dividend day | the pay period starting |
+|---|---|
+| 2026-03-31 | 03/26 |
+| 2026-04-30 | 04/23 |
+| 2026-05-29 | 05/21 |
+| 2026-06-30 | 06/18 |
+| 2026-07-31 | 07/30 |
+
+Each is one `DIVIDEND RECEIVED` line in the export; the `REINVESTMENT` line beside it is the same
+money buying the core position back and is not a second event. The export's two earlier dividends
+fall on or before 2026-03-25 and are inside the opening (R-HG).
+
+*After:* account 10's corrections and modelled interest go to **0.00** (the third window closes),
+and account 10 now reads ABOVE Fidelity's last close: the fourth window is open.
+
+### Act 10 -- assert Fidelity's last stated close on 2026-07-31 (R-HM)
+
+Account 10's balance editor: balance **Fidelity's close for 2026-07-31** (the sheet's figure), as of
+**2026-07-31**. Save. Then **Settings > General > Default Grid Account** back to the account the
+sheet names (the one it was on before act 8), **Save Settings**.
+
+*Why:* the modelled accrual window opens at the latest assertion, so asserting the bank's own close
+for the export's last day moves the window past the last dividend (R-HM).
+
+**This is the one act with no undo.** A figure can be corrected by asserting again, but the accrual
+window opens at the LATEST assertion, and no door deletes one.
+
+*After:* account 10 reads one day of modelled accrual above Fidelity's close: R-HM names that
+property of ruling **R-L**, and it is not this repair's. The fourth window is closed.
 
 ---
 
 ## What you will and will not see move
 
-**Most of these acts move a CORRECTION, not a balance, and an operator who does not know that will
-think the repair is doing nothing.** Every account here carries balances you typed, and an assertion
-RESETS the running total on its own day -- so a movement re-dated below the latest assertion changes
-what the records EXPLAIN without changing what the account SHOWS.
+**Most acts move a CORRECTION, not a displayed balance, and an operator who does not know that
+will think the repair is doing nothing.** An assertion RESETS the running total on its own day, so
+a movement re-dated below an account's latest assertion changes what the records EXPLAIN without
+changing what the account SHOWS.
 
-Measured over the rehearsal, valuing at 2026-07-31 (the last day the export states -- a fixed point,
-where "today" would give a different number every day the repair is run):
+The sheet's BEFORE and AFTER lines value all three accounts at the export's last day, 2026-07-31 (a
+fixed point: "today" gives a different figure every day an interest-bearing account is valued),
+and print the twin's and account 10's corrections and modelled interest beside them. **Only three
+acts move a displayed figure on those lines**: act 2 (the twin to 0.00), act 9 (account 10 rises,
+the last dividend counted twice) and act 10 (account 10 falls back to one day of accrual above
+Fidelity's close). **Checking's figure never moves at that date**, because its own later assertions
+govern it, **nor does any of its figures from today forward** (measured at four forward days).
 
-| after | Checking | the twin | account 10 | account 10's corrections |
-|---|---|---|---|---|
-| *before act 1* | `$1,307.66` | `$5,420.42` | `$3,666.11` | `$30.25` |
-| act 1 | `$1,307.66` | `$5,420.42` | `$3,666.11` | `$530.25` |
-| act 2 | `$1,307.66` | `$5,420.42` | `$3,665.93` | `$530.25` |
-| act 3 | `$1,307.66` | `$5,420.42` | `$3,665.93` | `$59.30` |
-| act 4 | `$1,307.66` | **`$0.00`** | `$3,665.93` | `$59.30` |
-| act 5 | `$1,307.66` | `$0.00` | `$3,680.32` | **`$0.00`** |
-| act 6 | `$1,307.66` | `$0.00` | **`$3,674.22`** | `$0.00` |
+**On a daily balance screen, measured day by day over 2026-03-20 to 2026-07-31** (the rehearsal of
+2026-10-09 14:34, before against after; the figures are in the handoff folder):
 
-**Checking's balance never moves at this date** because its own 2026-07-31 assertion governs and
-resets the fold above everything the repair touches. **Its correction on that day does not move
-either -- `-$538.29` before and after.** What moves is Checking's corrections on **eight other days**
-in April and May, by up to `$2,000.00` on a single one. Figures are the ASSET-side leg -- what each
-correction adds to Checking's own balance:
-
-| day | correction before | after | change |
-|---|---|---|---|
-| 2026-04-06 | `+$491.24` | `-$8.76` | `-$500.00` |
-| 2026-04-11 | `+$486.64` | `-$13.36` | `-$500.00` |
-| 2026-04-23 | `+$263.34` | `+$2,263.34` | `+$2,000.00` |
-| 2026-05-01 | `-$588.40` | `-$2,088.40` | `-$1,500.00` |
-| 2026-05-07 | `-$39.89` | `+$460.11` | `+$500.00` |
-| 2026-05-10 | `-$297.64` | `-$797.64` | `-$500.00` |
-| 2026-05-14 | `+$35.49` | `+$285.49` | `+$250.00` |
-| 2026-05-16 | `-$23.05` | `-$273.05` | `-$250.00` |
-
-A ninth entry appears on 2026-03-27, the new expense's own day, and carries `$0.00`. The eight
-changes net to exactly **`-$500.00`**: the records now explain `$500.00` more of Checking than they
-did, which is **N-382**'s whole exposure. If you check Checking at one date and see nothing, that is
-why.
+* **Checking moves only through 2026-03-26**, its new opening stretch. From 2026-03-27 its own first
+  assertion governs, so no later day moves.
+* **The twin moves on every day**, to 0.00.
+* **Account 10 moves on every day through 2026-04-29, then on 2026-05-29 to 06-22, 06-30 to 07-15,
+  and 07-31**: the opening, the dividends and the Fidelity days, each up to the next assertion
+  (2026-05-01, 06-23 and 07-16 reset it). **On 2026-07-16 to 07-30 only the SHOWN figure moves**,
+  down: act 10 strips modelled accrual the bank's own close replaces (R-HM). Every day Fidelity
+  names in those spans now matches its close (the scorer, below).
 
 **Do not use "the trial balance is zero" as a check.** It always is: a deferred database trigger
-refuses any journal entry whose legs do not sum to zero, so that figure measures the trigger, not
-this repair. What the acts actually move is the balance *between* classes:
-
-| class | before | after | change |
-|---|---|---|---|
-| Asset | `$433,356.21` | `$428,007.04` | `-$5,349.17` |
-| Equity | `-$222,997.59` | `-$218,104.98` | `+$4,892.61` |
-| Expense | `$25,773.39` | `$26,273.39` | `+$500.00` |
-| Income | `-$33,763.17` | `-$33,806.61` | `-$43.44` |
-| Liability, Unrealized | -- | -- | `$0.00` |
+refuses any journal entry whose legs do not sum to zero, so it measures the trigger. What the acts
+move is the balance BETWEEN classes, and the sheet's last section prints every class's move and
+asserts the four the repair's own inputs derive: expense rises by act 7's line; the income
+statement gains the dividends recorded, less the modelled interest they replace (the sheet prints
+it in the ledger's own sign, where income is negative); and the Liability and Unrealized classes do
+not move. Asset and Equity move by the restatements, whose figures are the repair's subject.
 
 ---
 
 ## After: what to check
 
-**Run the measurement again**, the same command as step 3. Rehearsed 2026-09-01:
+### On the rehearsal (before anyone clicks)
 
-| what | before | after |
-|---|---|---|
-| the books open | 2026-04-05 | 2026-03-26 |
-| the opening day, books against the bank | `-$484.30` | **`$0.00`** |
-| days scored | 13 | 14 |
-| exact on the cash fold | 4 | **14** |
-| worst gap on the cash fold | `$2,000.00` | **`$0.00`** |
-| exact on the rendered figure | 3 | **13** |
-| worst gap on the rendered figure | `$2,004.01` | **`$0.32`** |
+* **Account 10:** the opening day, 2026-03-25, prints **0.00** against Fidelity on its own line.
+  On the scored days (the bank days above the books plus the days the owner asserted on that the
+  bank never names), **the cutover arm is exact on every one**, and it has no reset, so no day is
+  exact by construction; **the cash fold is exact on every day carrying no assertion** (its
+  assertion days are exact by construction, so its pooled row is the scorer's confounded one); and
+  **the RENDERED figure is exact on every day but 2026-07-31**, R-HM's one day of accrual. Before
+  the repair, fewer days are scored and fewer are exact. The counts are in the handoff folder.
+* **Checking:** the opening day, 2026-03-25, prints **0.00** against SECU on its own line (N-275's
+  opening), and the sheet's last section reads Checking's 2026-03-26 off SECU's close by BAL-467's
+  residue and nothing else, which is what grades acts 5 to 7. Checking's other scored days are not
+  this repair's: what Checking's own assertions disagree with SECU about is plan step
+  `balance:X-bk-2`'s reconcile, which waits on this repair (**R-BAL203**).
+* **The render check:** zero server errors after, and the pages whose size changed are the three
+  accounts' own pages, the grid and the savings page, and no others.
 
-The scored day count RISES by one because the span starts the day after the books open, and the
-repair moves the books back from 2026-04-05 to 2026-03-26.
+**What the rehearsal also verifies, on the sheet's last section**: every class's move; the twin
+holds 0.00; the twin's and account 10's corrections and modelled interest total 0.00; transfer 1
+and its rows are Cancelled (the grey-button trap); both books open 2026-03-25 holding their banks'
+closes; all seven Fidelity sides record Fidelity's day as their own; account 10 reads Fidelity's
+close on 2026-03-26; and Checking reads SECU's close on 2026-03-26 apart by BAL-467's residue and
+nothing else, with every Checking movement before SECU's next posted day one the map names.
 
-**The opening-day row is NOT an independent measurement and the rest of the table is.** For the
-REHEARSAL, both sides of it come from the export: the harness restates the opening to the export's
-own close for that day, and the measurement then compares the stored opening against the same close,
-so the arm can only read `$0.00`. What it does grade is that the two programs parse the same figure
-and that the door stored what was submitted -- and, when a HUMAN performs the repair, that they
-typed it correctly, which is the case that matters here. The 14 scored days are independent: the
-span starts the day AFTER the books open, so no act sets what they compare against.
+### On production, after act 10 (the same day as the rehearsal)
 
-**The `$0.32` is expected and is not a failure.** On 2026-07-31 the cash fold answers the bank's
-`$3,673.90` exactly; the figure the SCREEN shows adds one day of modelled accrual on top of a close
-the bank has already stated. Ruling **R-HM** names it, and today's 2026-07-16 assertion has the same
-property. **It is not a property of this repair** -- it is the accrual window opening on the
-assertion's own day, which is a standing `$20.49` overstatement across all five modelled accounts and
-has its own fix pending.
+**The rehearsal cannot be re-run on production's copy**: it refuses a copy the repair has already
+touched. What grades the MONEY the human moved instead is a comparison of that copy with the
+rehearsal's own: two copies on which the same acts were performed hold the same balances.
+**Measured 2026-10-09: two rehearsals of these acts on one copy, through two different create
+paths, gave byte-identical dumps of every figure the balance seam answers, for every account; and
+before against after differed only on accounts 1, 2 and 10.** The rehearsal block wrote its dump
+of the rehearsed copy beside the sheet, and this block compares against that FILE, so nothing done
+to the rehearsal copies since can change the answer. Paste the SETUP block if this terminal does
+not still hold it, set `T` to the stamp in the rehearsal's sheet name, then paste:
 
-**Five bank days are not compared and never can be.** 2026-01-30, 02-24, 02-26, 02-27 and 03-12 are
-below the books, and ruling **R-HG** puts them inside the opening equity. The measurement prints
-their count and the two endpoints of the range -- not each day -- so this list is the full one.
+```bash
+T=STAMP                                # from the sheet name of the rehearsal: sheet_STAMP.md
+( set -e                               # compares against FILES that rehearsal wrote, never a live copy
+  for f in sheet_$T.md score_after_a10_$T.txt score_after_a1_$T.txt baseline_rehearsed_$T.json; do
+    [ -f "$D/$f" ] || { echo "STOPPED: no $f in $D"; exit 1; }; done
+  dump_prod "$D/prod_after_$T.dump"
+  restore $P "$D/prod_after_$T.dump"     # rebuilds $P only
+  run $P "$D/score_performed_a10_$T.txt" tests/manual/measure_cutover_against_bank.py --account 10 --format fidelity --bank "$F"
+  run $P "$D/score_performed_a1_$T.txt"  tests/manual/measure_cutover_against_bank.py --account 1 --bank "$S"
+  run $P "$D/baseline_performed_$T.txt"  tests/manual/verify_balance_baseline.py "$D/baseline_performed_$T.json"
+  for a in a10 a1; do
+    if diff "$D/score_after_${a}_$T.txt" "$D/score_performed_${a}_$T.txt"; then echo "SCORE $a AS REHEARSED"
+    else echo "SCORE $a DIFFERS (above)"; fi
+  done
+  if cmp "$D/baseline_rehearsed_$T.json" "$D/baseline_performed_$T.json"; then echo "EVERY BALANCE AS REHEARSED"
+  else echo "BALANCES DIFFER: compare the two JSON files"; fi
+)
+```
 
-**Three other things to see:**
+**All three "AS REHEARSED" lines should print.** A difference names the account and the figure
+where the money departed from the rehearsal (a mistyped amount or day, a skipped act, the grey
+Cancel), or a change made in the app after the dump was taken; it is read before anything else is
+done. The two balance dumps are compared on the day they are both taken, since a few of their
+figures are valued at today.
 
-- the twin holds `$0.00` and is archived;
-- account 10's posted corrections total `$0.00` -- every balance you ever typed for it is explained
-  by its own records;
-- account 10's modelled `interest_income` chart row carries `$0.00`.
+**What that comparison CANNOT see, because it moves no balance, is checked on screen.** Measured:
+a twin left unarchived and dividends filed under another income category both pass all three
+lines. So, after them:
 
-**Today's figure for account 10 will RISE.** Rehearsed on 2026-08-31 it rose `$8.14`; ruling R-HM
-quotes `$8.13` from 2026-08-28. Neither simple explanation accounts for the cent -- three days of
-accrual on the account is about `$0.97`, and three days on the `$14.39` the repair adds is under a
-cent -- so it sits at the rounding floor of two separately-quantized folds and no mechanism is
-claimed for it here. **The figure is date-dependent: measure it on the day you perform the repair
-rather than comparing against a quoted one.**
+* **every Fidelity side carries its own day** (act 5's account-10 box and act 8): from Checking's
+  grid, each of transfers 102, 155, 156, 154, 157, 346 and 409 opens (columns in acts 5 and 8)
+  with account 10's Money moved on box FILLED with its day. An EMPTY box with the day only in a
+  caption under it is still borrowing Checking's day (R-BAL256 not applied): type it and Save;
+* **account 2 is archived again** (it is in the Accounts page's archived region);
+* **act 7's row sits on Checking's grid under Family: Birthday**, named as the sheet gives;
+* **the five dividends sit under Income: Interest & Dividends**, named Dividend, one per column of
+  act 9's table: point the grid at account 10 once more to look (Settings > General > Default Grid
+  Account), then back;
+* **Settings > General > Default Grid Account is back** on the account the sheet names.
+
+The acts assert each of these as they go in the rehearsal, and its verification checks the
+Fidelity days; none of them can yet be checked on a performed copy by any instrument. A check mode
+of the rehearsal that runs its own verification on the performed copy is owed by this step
+(`balance:X-f3c-2b-2c`) and would replace this list.
+
+**Five of Fidelity's days are never compared.** 2026-01-30, 02-24, 02-26, 02-27 and 03-12 fall on
+or before the books' opening and are inside the opening equity (R-HG); the scorer prints their
+count and endpoints.
+
+**The opening-day lines grade the typing of the openings.** For account 10, the rehearsal types
+the export's own close and the scorer compares against the same export, so in a rehearsal that
+line cannot fail. For Checking the two come from two of SECU's records, the imported statement and
+the daily-balance export, so it can fail only if they disagree. On production's copy they grade
+what the human typed.
 
 ---
 
 ## What this does NOT fix
 
-- **Checking's own opening is still wrong.** Its books open 2026-03-26 holding `$689.16` where the
-  bank's close for that day is `$3,182.63` -- `$2,493.47` apart, which the measurement prints on its
-  own line. That is **N-275**, a different account's repair, and it needs a statement import first
-  (**N-368**).
-- **Two rows stay restorable.** Transfers 1 and 102 are soft-deleted and the recurrence conflict
-  chooser can put either back. **N-386**, now binding on two rows rather than one.
-- **An archived account still reaches no BALANCE editor, so this procedure still unarchives.** Its
-  RESTATEMENT door has a click path as of `balance:X-f3c-2b-2d`, which closed **N-430** -- but the
-  archived card's figure is static text, the grid resolves only active accounts, and the three
-  anchor editors that remain sit on pages that card links to from nowhere. Reach, not capability:
-  `/accounts/2/details` typed directly answers 200 with a working editor. 4d forces the
-  unarchive, and act 4 keeps 4c inside it deliberately rather than taking the new link. Whether that
-  reach is a defect at all or is what archiving MEANS is **N-453**, ruled to `balance:X-f4` on
-  2026-09-04 because it is the same question about the same state as **N-384** below.
-- **The class behind the twin survives the instance.** An account archived while its ledger still
+* **BAL-467's residue stays.** Checking's 2026-03-26 reads SECU's close less that residue; which of
+  rows 781 and 865 is short is the owner's knowledge.
+* **The class behind the twin survives the instance.** An account archived while its ledger still
   holds a net is a state the app can still reach, and no surface says the balance sheet and the
-  dashboards disagree about it. **N-384**, owned by `balance:X-f4`.
-- **The `$500.00` of expense act 4b books is not spending, and the developer has now REJECTED that
-  method** (2026-09-01) -- so this is no longer a limitation the repair accepts, it is an OPEN act
-  that blocks the procedure. **The blocker this document used to cite was also the wrong one**
-  (adversarial review, 2026-09-01): it named `pay_calendar:C6` and ledger row `P10`,
-  which are both about a payday inserted MID-SCHEDULE, between two existing ones. Neither is a
-  backward extension of the calendar, and neither is what would have to change. Nor does the
-  restatement door impose a calendar floor at all: `opening_service` says in terms that
-  `pay_period_service.earliest_recordable_day` is "deliberately **not** asked" there, because that
-  floor is a rule about ASSERTIONS (**R-ER**), and `PayCalendar.filing_period` CLAMPS a pre-calendar
-  day onto the earliest period rather than refusing it. What actually rejected the 2026-03-25
-  opening is **R-HK**, on its own grounds. A third option nobody has priced: delete transfer 1 and
-  book nothing, letting the `$500.00` land as an equity correction against Checking's next assertion
-  -- net worth identical, income statement TRUE, at the cost of a real outflow going unrecorded on
-  an account whose own records are already `$2,493.47` out (**N-275**).
+  dashboards disagree about it (**N-384**), nor does an archived account reach a balance editor by
+  clicking (**N-453**). Both are owned by `balance:X-f4`.
+* **Checking's 2026-03-26 lines stay unmatched in the statement import.** The repair answers them
+  with rows by hand and makes no match.
+* **`bank_agreement` still compares from an account's first cash fact rather than from the day
+  after its books open (BAL-616).** This step's own code leaf fixes it after the repair is
+  performed.
+* **The transfer card's two buttons reading "Cancel" (BAL-622).** Act 1 names the right one.
 
 ---
 
 ## How this was rehearsed
 
-2026-09-01, on a throwaway clone of production taken to alembic head `e2d7a94f61c3`, driven through
-the same HTTP doors this document describes. Most acts fetch the form the owner opens, change only
-what they type, and submit the rest exactly as rendered; the two deletes, the archive round trip and
-the category create are direct submissions, because those controls are a button with no payload or --
-for the category's group -- a hidden input whose value is set by script rather than rendered.
+On copies of production taken the same day and at the current alembic head, driven through the
+app's own HTTP doors. Each act fetches the page the owner opens, changes only what the owner types,
+and submits the rest as rendered. The exceptions are presses of buttons that carry no form: the
+archive flips post nothing, and act 1's cancel posts only the leg's account id its button carries.
+Act 9's category group is also supplied, because the page sets that field by script.
 
-- `tests/manual/rehearse_account_10_repair.py` -- performs and verifies the acts.
-- `tests/manual/measure_cutover_against_bank.py --format fidelity` -- scores the result.
-- `tests/manual/verify_render_surfaces.py` -- 108 routes, **0 server errors** before and after.
+* `tests/manual/rehearse_account_10_repair.py`: reconciles the map, performs the acts, verifies
+  the post-state and writes the sheet. No production figure or payee is written in it (R-BAL249).
+* `tests/manual/measure_cutover_against_bank.py`: scores an account against its bank's export.
+* `tests/manual/verify_render_surfaces.py`: renders every authenticated page, before and after.
+* `tests/manual/verify_balance_baseline.py`: dumps every balance figure, to compare two copies.
 
-**Six planted defects in the stated transfer map were each refused before any write**: two transfers
-exchanged, a duplicate claim on one bank day, a transfer id that does not exist, a day the export
-does not name, an amount it did not move, and a bank day left unanswered. A seventh planted an
-opening day the door refuses, to confirm the harness notices a refusal the app reports with a
-redirect rather than an error code.
+**Seven planted defects were each refused before any write**: a boundary row dropped from the
+map, a row borrowed from another day, two transfers exchanged on two different pairings, a
+transfer mapped to a day the export does not name, a payroll row moved out of the census window
+(refused by the stated residue), and an export carrying an extra movement. The neutral review of
+2026-10-09 re-ran them, and its own mutations of each control besides.
