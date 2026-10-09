@@ -241,6 +241,17 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
             version on it.  No settle day is consulted on any of the five
             rules' paths.  A stale ``Raises:`` is the quietest kind of false
             claim: nothing executes it, so nothing contradicts it.
+
+        UnsupportedStateError: Another arc's refusal, through the salary rule's
+            pricer (plan step salary:X-at-3): a salary-linked row whose
+            profile is in a state the tax law does not list.  It is a refusal
+            like the one above and is answered app-wide by its own page
+            (:mod:`app.error_handlers`); ``salary_profile_service
+            .archive_profile``, which catches :class:`AmountUnresolvable`
+            alone, lets it through, so such a profile cannot be archived
+            while a row it prices still derives its figure from the profile
+            (the usual case: a template whose rows fall in the saved
+            calendar) until its state is one the law lists.
     """
     if txn.scenario_id != basis.scenario_id:
         raise AmountUnresolvable(
@@ -301,6 +312,9 @@ def amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
     Raises:
         AmountUnresolvable: From the resolver, for a row whose rule cannot
             answer.  A refusal is never a fallback (see the module docstring).
+        UnsupportedStateError: From the resolver, for a salary-linked row
+            whose profile is in a state the tax law does not list (plan step
+            salary:X-at-3).
     """
     return {row.id: resolve_transaction_amount(row, basis) for row in rows}
 
@@ -558,6 +572,8 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
 
     Raises:
         AmountUnresolvable: When the live recompute has no answer for this row.
+        UnsupportedStateError: The row's profile is in a state the tax law
+            does not list (plan step salary:X-at-3), from the pricer.
     """
     # Pylint: ``import-outside-toplevel`` -- the paycheck / tax stack stays off
     # this module's load path, the same reason ``amount_basis`` imports it at

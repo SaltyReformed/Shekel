@@ -105,7 +105,12 @@ def _rendered_form(client, page, action):
 def _create_through_the_form(client, seed_user, pay, payday):
     """POST the create form as ``salary/form.html`` renders it, typing *pay* and *payday*."""
     controls = _rendered_form(client, "/salary/new", "/salary")
-    controls.update({"name": "Day Job", "pay_amount": pay, "pay_payday": payday})
+    # The owner types the name and pay and PICKS the state: the form opens on
+    # "Choose your state" and chooses none (plan step salary:X-at-3).
+    controls.update({
+        "name": "Day Job", "pay_amount": pay, "pay_payday": payday,
+        "state_code": "NC",
+    })
     response = client.post("/salary", data=controls)
     assert response.status_code == 302, response.get_data(as_text=True)
     return db.session.query(SalaryProfile).filter_by(
@@ -171,7 +176,7 @@ class TestCreateByPayPerPaycheck:
             controls = _rendered_form(auth_client, "/salary/new", "/salary")
             controls.update({
                 "name": "Day Job", "pay_amount": "2000.00",
-                "pay_payday": "2026-01-03",
+                "pay_payday": "2026-01-03", "state_code": "NC",
             })
             response = auth_client.post(
                 "/salary", data=controls, follow_redirects=True,
@@ -203,7 +208,7 @@ class TestUpToTheNextPayday:
             controls = _rendered_form(auth_client, "/salary/new", "/salary")
             controls.update({
                 "name": "Day Job", "pay_amount": "2000.00",
-                "pay_payday": "2026-04-10",
+                "pay_payday": "2026-04-10", "state_code": "NC",
             })
             response = auth_client.post(
                 "/salary", data=controls, follow_redirects=True,

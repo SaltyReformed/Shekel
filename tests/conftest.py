@@ -1956,9 +1956,11 @@ def tax_law(monkeypatch):
     law, tests may swap").  Every test prices under :data:`app.tax_law.LAW`,
     the law the app ships, unless it calls ``tax_law(law)``: a test whose
     figures were worked with no tax installs
-    ``tests._test_helpers.EMPTY_TAX_LAW``, and one worked on made-up figures
+    ``tests._test_helpers.NO_TAX_LAW``, and one worked on made-up figures
     installs those (the builders beside it), so its expected figures do not
-    move when a new year of the real law is published.
+    move when a new year of the real law is published.  The law a test
+    installs must list its profiles' state, or the engine refuses them (plan
+    step salary:X-at-3); ``EMPTY_TAX_LAW`` lists none and prices no profile.
 
     The installer replaces the module attribute, which is what the resolver
     (:mod:`app.services.tax_config_service`) and the Settings page read at

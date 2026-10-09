@@ -25,7 +25,7 @@ from app.models.ref import (
     FilingStatus,
     RaiseType,
 )
-from app import ref_cache
+from app import ref_cache, tax_law
 from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.services import (
     account_service,
@@ -149,6 +149,7 @@ def new_profile():
         "salary/form.html",
         profile=None,
         filing_statuses=filing_statuses,
+        supported_states=tax_law.LAW.supported_states,
         raise_types=[],
         calc_methods=[],
         paychecks_per_year=paychecks_per_year,
@@ -449,6 +450,7 @@ def edit_profile(profile_id):
         "salary/form.html",
         profile=profile,
         filing_statuses=filing_statuses,
+        supported_states=tax_law.LAW.supported_states,
         raise_types=raise_types,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,

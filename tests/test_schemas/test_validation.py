@@ -15,10 +15,11 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
+from app import tax_law as tax_law_module
 from app.enums import PaycheckLineKindEnum, RecurrenceUnitEnum
 from app.schemas.validation._helpers import _normalize_empty_inputs
 from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
-from tests._test_helpers import cadence_payload
+from tests._test_helpers import EMPTY_TAX_LAW, cadence_payload
 from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
     RECURRENCE_NEEDS_A_START,
@@ -900,7 +901,7 @@ class TestSalaryProfileCreateSchema:
         assert "pay_periods_per_year" not in data
 
     def test_state_code_length(self):
-        """state_code must be exactly 2 characters."""
+        """A three-character state_code is no state the tax law lists, so it is refused."""
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load({
                 "name": "Bad",
@@ -1545,23 +1546,46 @@ class TestSalaryProfileCreateSchemaBoundary:
         assert "state_code" in exc.value.messages
 
     def test_single_char_state_code_rejected(self):
-        """Single-character state_code fails Length(min=2, max=2) validation."""
+        """A one-character state_code is no state the tax law lists, so it is refused."""
         with pytest.raises(ValidationError) as exc:
             SalaryProfileCreateSchema().load(
                 self._valid_salary_data(state_code="N")
             )
         assert "state_code" in exc.value.messages
 
-    def test_lowercase_state_code_accepted(self):
-        """Lowercase state_code is accepted -- no uppercase normalization in schema.
+    def test_lowercase_state_code_refused(self):
+        """Lower-case ``nc`` is refused: the tax law lists ``NC``, and no other spelling.
 
-        # Schema accepts lowercase state codes. Normalization to uppercase
-        # (if needed) must happen at the route or service level.
+        Until plan step salary:X-at-3 this case pinned ``nc`` as ACCEPTED,
+        stored as typed, leaving normalization to a later layer that never
+        did it -- and the paycheck engine priced that profile's state tax at
+        $0.00, since the law lists ``NC`` (finding SAL-575, measured at
+        X-at-3).  Ruling R-SAL78: a save naming a state the law does not list
+        is refused.  The form offers the law's own codes, so a browser never
+        submits ``nc``.
         """
-        data = SalaryProfileCreateSchema().load(
-            self._valid_salary_data(state_code="nc")
-        )
-        assert data["state_code"] == "nc"
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(
+                self._valid_salary_data(state_code="nc")
+            )
+        assert exc.value.messages["state_code"] == [
+            "Shekel has no tax rules for 'nc'; it supports "
+            f"{', '.join(tax_law_module.LAW.supported_states)}."
+        ]
+
+    def test_the_law_installed_when_validating_decides(self, tax_law):
+        """The schema reads the law when it validates, not when it was imported.
+
+        A law with no year lists no state, so even ``NC`` is refused under
+        it -- the law a release ships (or a test installs) is the one that
+        decides (plan step salary:X-at-3).
+        """
+        tax_law(EMPTY_TAX_LAW)
+        with pytest.raises(ValidationError) as exc:
+            SalaryProfileCreateSchema().load(self._valid_salary_data())
+        assert exc.value.messages["state_code"] == [
+            "Shekel has no tax rules for 'NC'; it supports no state."
+        ]
 
 
 

@@ -14,6 +14,8 @@ deciding it separately is the defect that ruling exists to end.
 
 from datetime import date
 
+from app.tax_law import name_states
+
 
 class ShekelError(Exception):
     """Base exception for all Shekel domain errors."""
@@ -214,6 +216,62 @@ class BaselineMissingError(ShekelError, ValueError):
         """Store the resolved user id alongside the message."""
         super().__init__(message)
         self.user_id = user_id
+
+
+class UnsupportedStateError(ShekelError, ValueError):
+    """A salary profile was priced in a state the tax law does not list.
+
+    Raised by :func:`app.services.tax_config_service.profile_tax_series`, the
+    one read that slices the law for a profile, so the paycheck engine and the
+    Taxes tab refuse the profile alike (plan step salary:X-at-3: "the engine
+    refuses a state the law lacks"; ruling **salary:R-SAL78**).  Until
+    that step the engine priced such a state's tax at ``$0.00`` -- or, for a
+    paycheck a pay stub prices, carried the stub's printed state tax unmoved by
+    any later pay change -- and said nothing (finding **salary:SAL-575**).
+
+    **It is a state no door can produce**: both profile doors refuse a state
+    the law does not list, and no profile held one when X-at-3 shipped (the
+    developer, 2026-10-08).  What remains is a row older than a release that
+    dropped a state, or one written around the doors.  The request cannot be
+    answered correctly, and answering ``$0.00`` is the defect, so it is
+    refused (ruling **salary:R-SAL130**).  **Unlike**
+    :class:`RequiredRecordMissing` it has a repair the owner can make on a
+    page: the profile's edit page prices nothing, so it opens, and its state
+    list offers only the states the law lists.  So ONE handler answers it
+    with a page naming the profile and linking there
+    (:func:`app.error_handlers.register_error_handlers`'s
+    ``salary_state_unsupported``; the developer, 2026-10-08, "One fix-it
+    page", amending R-SAL130's generic error page), and the log names the
+    profile and its state.
+
+    A ``ValueError`` as well as a :class:`ShekelError`, mirroring its
+    neighbours above.
+
+    Args:
+        profile_id: The profile's id, so the log names one row.
+        profile_name: The profile's name, as its owner knows it.
+        state_code: The state the profile holds, exactly as stored.
+        supported: The states the law lists, sorted.
+
+    Attributes:
+        profile_id, profile_name, state_code, supported: As above.
+    """
+
+    def __init__(
+        self, profile_id: int, profile_name: str, state_code: str,
+        supported: tuple[str, ...],
+    ) -> None:
+        """Name the profile, its state and the states the law lists."""
+        super().__init__(
+            f'Salary profile "{profile_name}" (id {profile_id}) is in '
+            f"{state_code!r}, which Shekel's tax law does not list (it lists "
+            f"{name_states(supported)}).  Choose a state the law lists on the "
+            f"profile's edit page."
+        )
+        self.profile_id = profile_id
+        self.profile_name = profile_name
+        self.state_code = state_code
+        self.supported = supported
 
 
 class RecurrenceWindowError(ShekelError):

@@ -79,9 +79,13 @@ class FederalLiability:  # pylint: disable=too-many-instance-attributes
 class StateLiability:
     """The NC (flat) annual tax layer plus its assumption inputs.
 
-    ``flat_rate`` and ``standard_deduction`` are ``None`` when the profile's
-    state has no configured tax (``taxable_base`` is still reported for
-    context, but ``liability`` is zero).  ``child_deduction_per_child`` is the
+    ``flat_rate`` is ``None`` for a state the law lists with no income tax,
+    whose ``standard_deduction`` is ``$0.00`` and ``liability`` zero
+    (``taxable_base`` is still reported for context).  Both would be ``None``
+    only with no state rules at all, which since plan step salary:X-at-3 is a
+    filing status the law does not model -- refused by the federal layer
+    before this one is built -- because a state the law does not list is
+    refused outright (:func:`compute_annual_liability`).  ``child_deduction_per_child`` is the
     resolved AGI-tier per-child deduction (T-P5) and ``child_deduction_total``
     the amount actually subtracted (per-child x qualifying children); both are
     zero for a state with no child deduction or a filer with no children.
@@ -141,6 +145,8 @@ def compute_annual_liability(
         assumption inputs.
 
     Raises:
+        UnsupportedStateError: The law does not list the profile's state
+            (:func:`load_tax_configs_for_year`; plan step salary:X-at-3).
         InvalidFilingStatusError: If no bracket set resolves for *year*
             (raised by :func:`calculate_annual_federal_liability` on a None
             bracket set -- consistent with the withholding engine).
@@ -234,14 +240,15 @@ def _state_layer(
     approximation of federal AGI).  The NC standard deduction is applied
     inside :func:`calculate_state_tax`; the resolved per-child deduction times
     the qualifying-child count is passed as the additional deduction (T-P5).
-    :func:`calculate_state_tax` returns zero for a None or non-taxing config,
-    and an empty ``child_tiers`` (a non-NC state) resolves to a zero child
-    deduction.
+    :func:`calculate_state_tax` returns zero for a state with no income tax,
+    and an empty ``child_tiers`` (a state with no child deduction) resolves to
+    a zero child deduction.
 
     Args:
         state_config: The year's
             :class:`~app.services.tax_config_service.StateTaxRules`, or None
-            (no state tax).
+            -- only for a filing status the law does not model, which the
+            federal layer refuses first (plan step salary:X-at-3).
         taxable_base: The NC base / AGI proxy (Decimal, already floored).
         child_tiers: The state's child-deduction tiers (possibly empty).
         qualifying_children: The primary filer's qualifying-child count.

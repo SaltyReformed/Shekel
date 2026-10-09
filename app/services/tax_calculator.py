@@ -520,11 +520,23 @@ def _refundable_actc(
 def calculate_state_tax(annual_gross, state_config, *, additional_deduction=ZERO):
     """Calculate annual state income tax.
 
+    **Two tax types are priced, and anything else is refused** (plan step
+    salary:X-at-3: the engine refuses "a flat state with no rate"; ruling
+    **salary:R-SAL78**).  A state with no income tax prices ``$0.00``; a flat-rate
+    state prices its rate on the base after its deductions.  Until X-at-3 a
+    flat-rate config with no rate, or a type no formula prices, fell through
+    to ``$0.00`` -- the silent figure finding **SAL-575** names.  The law
+    cannot hold either (:class:`app.tax_law.StateYearLaw` refuses both when it
+    loads); this refusal is what keeps the formula from answering for one
+    handed in from anywhere else.
+
     Args:
         annual_gross:  Total annual gross income (Decimal).
         state_config:  The year's state rules for the filer's status
-                       (:class:`app.services.tax_config_service.StateTaxRules`).
-                       If None or its tax type is 'none', returns 0.
+                       (:class:`app.services.tax_config_service.StateTaxRules`),
+                       or ``None`` when the law resolved none -- a filing
+                       status it does not model, since the resolver refuses a
+                       state it does not list -- which returns 0.
         additional_deduction:  A further deduction subtracted from the base
             alongside the state standard deduction (the resolved NC per-child
             deduction total -- T-P5).  Defaults to ``ZERO`` so the withholding
@@ -533,22 +545,30 @@ def calculate_state_tax(annual_gross, state_config, *, additional_deduction=ZERO
 
     Returns:
         Decimal -- annual state tax owed.
+
+    Raises:
+        ValueError: *state_config* is a flat-rate state's with no rate, or of
+            a tax type no formula here prices.
     """
     if state_config is None:
         return ZERO
-
-
     if state_config.tax_type_id == ref_cache.tax_type_id(TaxTypeEnum.NONE):
         return ZERO
+    if state_config.tax_type_id != ref_cache.tax_type_id(TaxTypeEnum.FLAT):
+        raise ValueError(
+            f"no formula prices state tax type id {state_config.tax_type_id}: "
+            f"only a flat rate or no income tax is priced"
+        )
+    if state_config.flat_rate is None:
+        raise ValueError(
+            "a flat-rate state's rules state no rate, so its tax cannot be priced"
+        )
 
-    if state_config.flat_rate:
-        rate = Decimal(str(state_config.flat_rate))
-        std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
-        taxable = annual_gross - std_ded - Decimal(str(additional_deduction))
-        taxable = max(taxable, ZERO)
-        return round_money(taxable * rate)
-
-    return ZERO
+    rate = Decimal(str(state_config.flat_rate))
+    std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
+    taxable = annual_gross - std_ded - Decimal(str(additional_deduction))
+    taxable = max(taxable, ZERO)
+    return round_money(taxable * rate)
 
 
 def resolve_child_deduction_per_child(agi, tiers):

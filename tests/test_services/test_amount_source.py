@@ -78,7 +78,7 @@ from app.services.cash_ledger._amount_source import (
     _RULE_ANSWERS,
     _TRANSFER_RULE_ANSWERS,
 )
-from tests._test_helpers import EMPTY_TAX_LAW
+from tests._test_helpers import NO_TAX_LAW
 from tests._test_helpers import (
     write_past_the_amount_seam,
     add_escrow_line,
@@ -958,7 +958,7 @@ class TestWhatEachRuleAnswers:
         profile stores, where the test doubled the yearly salary the engine
         divided by 26.
         """
-        tax_law(EMPTY_TAX_LAW)
+        tax_law(NO_TAX_LAW)
         template, profile = _salary_template(seed_user)
         txn = _template_row(seed_periods[0], template)
         assert txn.estimated_amount is None
