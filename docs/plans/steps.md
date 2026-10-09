@@ -48,10 +48,10 @@ pairing two inside one arc, check that neither names a module the other deletes.
 lane takes the first `NOW` row of the highest-ranked outcome whose chain holds one it can work
 without a file collision, else the first `NOW` reward row, else the first `NOW` upkeep row.
 
-**The rank is a DECISION, not a derivation.** 117 of these steps are legal to start right now, so
+**The rank is a DECISION, not a derivation.** 116 of these steps are legal to start right now, so
 the dependency graph alone cannot say which comes next; the sequence below follows the OUTCOME TIERS
 ruled 2026-09-15 (next paragraph) and, within a tier, each arc's own stated sequencing -- the
-balance README's ten blocks, and each plan's section 0.
+balance README's blocks (its section 5.0), and each plan's section 0.
 
 **The order is OUTCOME-SCOPED, in three tiers (developer ruling, 2026-09-15).** An OUTCOME is a
 thing the developer will experience in production, named by the step keys that deliver it; the
@@ -117,7 +117,7 @@ directly after that scope (2026-09-02) and the six open bank_import rows below e
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**383 steps, 193 open.** The dependency graph holds 139 edges over 98 rows.
+**383 steps, 193 open.** The dependency graph holds 140 edges over 99 rows.
 
 ## The order
 
@@ -252,9 +252,9 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-al | -- | Census the live `duplicate-code` disables (census 15 comments lines `pylint: *disable=[^#]*duplicate-code` in `app/**/*.py`), none re-measured, and build the arm that catches a stale one -- `useless-suppression` is blind to them. Closes **N-154**. Carries **N-416**. | #127 | -- | NOW |
 | balance | X-ba | -- | Collapse `app/ref_cache`'s near-identical id accessors (census 28 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`) into one generic lookup, delete the two with no production caller, and migrate the call sites, so the repetition that took the module past its line ceiling stops being paid for by splitting. Closes **N-341**. | #128 | -- | NOW |
 | balance | E2-0 | -- | Trace the super-package membership from the code: which modules are members, what the public re-export surface is, and whether any member imports a non-member. Expect it to DECOMPOSE. Carries **N-33**, **N-35**. | #129 | -- | NOW |
-| balance | E2-n | -- | Make the move and delete the registry, with `_FENCED_MODULE_RULINGS` as the LAST commit rather than the first. Its decomposition is decided from `balance:E2-0`'s trace. | #130 | -- | NOW |
+| balance | E2-n | -- | Make the move and delete the registry, with `_FENCED_MODULE_RULINGS` as the LAST commit rather than the first. Its decomposition is decided from `balance:E2-0`'s trace. | #130 | -- | after #129 / balance:E2-0 (its decomposition is decided from E2-0's trace) |
 | balance | G1 | -- | Trace each allowlist entry to its real cause, then stop the ledger-model and balance-seam fences carrying name lists. Closes **N-147**. | #131 | -- | NOW |
-| balance | G2 | -- | Build the `Money` and `DisplayLabel` value types that retire W9901, W9904 and W9902, taking the small label half first. Phase G runs INSIDE E2 by ruling R-DQ. | #132 | -- | NOW |
+| balance | G2 | -- | Build the `Money` and `DisplayLabel` value types that retire W9901, W9904 and W9902, taking the small label half first. | #132 | -- | NOW |
 | recurrence | R7e | -- | Make the recurrence form's THREE-state fields one typed submission the schema emits, so `stated` / `cleared` / `not mentioned` stops being re-derived by a `KEY in data` read at each route site. Closes **D36**. | #133 | -- | NOW |
 | pay_calendar | C11 | -- | Close the last FIVE service doors that open their own read pass and assert the LAYER predicate in their place -- no module under `app/services/**` calls `BalanceContext.build` -- carving out `loan_recurrence_sync`, which is a writer and takes one by design. Closes **P56**, **P69**. | #134 | -- | NOW |
 | balance | X-i5 | -- | Make every request a QUERY until it DECLARES a write, so the HTTP method stops standing in for "does this write": each non-GET handler (listed by `grep -rnE 'methods=.[^]]*[PD]' app/routes/`) puts its writes in a `write_transaction` block, and its render reads where **X-dc**'s design round decides (**R-BAL156**). Closes **N-358**. | #135 | -- | after #38 / balance:X-i3-a (shipped) / balance:X-dc (R-BAL156: its render follows X-dc's design round) |

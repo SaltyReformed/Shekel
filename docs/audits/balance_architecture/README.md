@@ -188,7 +188,7 @@ group the same work by SUBJECT; this groups it by CAUSE.**
 | 5 | **the bank import** | ABSORBED INTO BLOCK 1 on 2026-08-13. Its 2026-08-03 position -- after the card arc, so one matching rule covers checking and card rows -- rested on the cutover not needing it; measurement refuted that, and the developer's exports carry both accounts anyway, so the one-rule argument survives inside block 1 |
 | 6 | **the read-path residue** | Nothing blocks on it and its footprint is disjoint from the write path: tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26, **zero overlap**, measured. UNGATED, which is what lets `X-l` run early -- and it must, because it is block 10's `C2` and recurrence `R-F12` as well |
 | 7 | **the gate and vocabulary residue** | Shares files with nothing; interleaves anywhere |
-| 8 | **E2 and G** | Runs LAST by ruling. `G2` must not begin before the boundary it rests on is proven |
+| 8 | **E2 and G** | `E2` moves the very modules `G1`'s two allowlists name, so `G1` cuts that boundary once, inside `E2`, rather than re-cutting it after (**R-DQ**, amended by **R-BAL251**); `G2` depends on nothing the move decides (**R-BAL247**) |
 | 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Overlaps every live block of this arc by ONE file (`_recurrence_common.py`, measured against the `xd-attempt-1-parked-n155` tag), so it pauses nothing here. Its own document holds its argument; how its steps interleave with this arc's is `steps.md`'s answer |
 | 10 | **the pay calendar** (own document) -- **NOT part of this arc** | Opened 2026-08-08 out of the recurrence arc's F-10: `budget.pay_periods` stores the payday and DERIVES `end_date` / `period_index`, so a gap, an overlap and an index out of date order all stop being expressible. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, and whoever builds it must satisfy all three specifications, including this arc's N-82 / N-128 / N-79-far |
 | 11 | **the amount model** (ruling **R-FI**) | It is the ROOT CAUSE of block 1's last open finding and of three mechanisms nothing else will delete, so it precedes every step that reads a projected figure. Its first two leaves touch no file block 1 does, which is why they run beside the anchor half rather than after it |
@@ -488,8 +488,8 @@ two disagree -- **N-440**, which `budget.transfers` forbids and `budget.transact
 **What made it look necessary is that the ARC IS INCOMPLETE**: `credit_payback_for_id` has no
 `AmountSourceEnum` member and **N-264**'s finance charge would carry no link at all. N-264 had two
 readings -- a reason to keep the column, or a missing leg -- and **the developer ruled the second**:
-the finance charge is a row of a card-owned definition carrying `template_id` from birth (`credit_card:CC-8`; `CC4d` dissolved at the 2026-09-18 re-mint), `X-au-l` DELETES the column. That is the END STATE; both sit behind
-this phase's cutovers, which create the population it must be true across.
+the finance charge is a row of a card-owned definition carrying `template_id` from birth (`credit_card:CC-8`; `CC4d` dissolved at the 2026-09-18 re-mint), `X-au-l` DELETES the column. That is the END STATE; this phase's cutovers,
+which created the population it must be true across, have all shipped (`X-au-d` .. `X-au-g`).
 
 **The rule is general and its BOUNDARY is part of it** (`R-IY`): *every derivable column is deleted,
 because a stored copy is a stale cache -- which is what started this arc.* It does NOT reach a
