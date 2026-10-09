@@ -17,6 +17,7 @@ from tools.ci.arc_steps import (
     blank_fenced_regions,
     checkboxes,
     entries,
+    fenced_lines,
     section_span,
 )
 
@@ -97,6 +98,16 @@ class TestTheFenceRule:
         assert all(line == "" for line in blanked[start:stop + 1])
         assert blanked[start - 1] == original[start - 1]
         assert blank_fenced_regions(DOC) == "\n".join(blanked)
+
+    def test_a_fence_owns_its_blank_lines_and_an_open_one_runs_to_the_end(self):
+        """:func:`fenced_lines`, the rule's one spelling: the fence lines and every line
+        between, BLANK ones included, belong to the block, which blanking cannot show; an
+        indented fence counts; a fence never closed runs to the end."""
+        lines = ["text", "  ```text", "a", "", "b", "  ```", "", "after", "```", "", "open"]
+        assert fenced_lines(lines) == [False, True, True, True, True, True, False, False,
+                                       True, True, True]
+        assert blank_fenced_lines(lines) == [
+            "text", "", "", "", "", "", "", "after", "", "", ""]
 
     @pytest.mark.parametrize("text", [
         "- [ ] **B-1** spec\n```text\nsample\n```\n",
