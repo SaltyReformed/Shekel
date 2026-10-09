@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import pytest
 
+from tools.ci.arc_steps import checkboxes, entries
+from tools.ci.arcs import STEPS_HEADINGS, STEPS_LABELS
 from tools.plan_gate import _registry as registry
 from tools.plan_gate._tables import cells
 from tools.plan_gate._plan_gate import (
@@ -240,7 +242,7 @@ TICKED_CAPS = {
 SPECS = {
     "balance": PlanSpec(
         path=registry.ARC_DOCS["balance"],
-        steps_heading="## 5.", steps_label="Section 5",
+        steps_heading=STEPS_HEADINGS["balance"], steps_label=STEPS_LABELS["balance"],
         line_cap=CAPS["balance"],
         arc_state_heading="## Where the arc stands",
         arc_state_cap=SIGNPOST_CAPS["balance"],
@@ -248,7 +250,7 @@ SPECS = {
     ),
     "recurrence": PlanSpec(
         path=registry.ARC_DOCS["recurrence"],
-        steps_heading="## 4.", steps_label="section 4",
+        steps_heading=STEPS_HEADINGS["recurrence"], steps_label=STEPS_LABELS["recurrence"],
         line_cap=CAPS["recurrence"],
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["recurrence"],
@@ -256,7 +258,7 @@ SPECS = {
     ),
     "pay_calendar": PlanSpec(
         path=registry.ARC_DOCS["pay_calendar"],
-        steps_heading="## 4.", steps_label="section 4",
+        steps_heading=STEPS_HEADINGS["pay_calendar"], steps_label=STEPS_LABELS["pay_calendar"],
         line_cap=CAPS["pay_calendar"],
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["pay_calendar"],
@@ -264,7 +266,7 @@ SPECS = {
     ),
     "bank_import": PlanSpec(
         path=registry.ARC_DOCS["bank_import"],
-        steps_heading="## The steps", steps_label="The steps",
+        steps_heading=STEPS_HEADINGS["bank_import"], steps_label=STEPS_LABELS["bank_import"],
         line_cap=CAPS["bank_import"],
         arc_state_heading="## Context",
         arc_state_cap=SIGNPOST_CAPS["bank_import"],
@@ -272,7 +274,7 @@ SPECS = {
     ),
     "credit_card": PlanSpec(
         path=registry.ARC_DOCS["credit_card"],
-        steps_heading="## The steps", steps_label="The steps",
+        steps_heading=STEPS_HEADINGS["credit_card"], steps_label=STEPS_LABELS["credit_card"],
         line_cap=CAPS["credit_card"],
         # This document has never had an orientation section.  It is graded for
         # its CAP and its ticked entries, not for a signpost it does not carry --
@@ -284,7 +286,7 @@ SPECS = {
     ),
     "salary": PlanSpec(
         path=registry.ARC_DOCS["salary"],
-        steps_heading="## 4.", steps_label="section 4",
+        steps_heading=STEPS_HEADINGS["salary"], steps_label=STEPS_LABELS["salary"],
         line_cap=CAPS["salary"],
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["salary"],
@@ -425,3 +427,35 @@ class TestTheDocumentsPointAtTheRegistries:
         """The one document that never had rules of its own."""
         text = registry.ARC_DOCS["credit_card"].read_text()
         assert "ledger.md" in text and "conventions.md" in text
+
+
+class TestTheStepsHeadingFindsEveryStep:
+    """The arcs table's steps heading, graded against what the document holds.
+
+    Every other arm grades the heading only against a heading that matches NO
+    line: set salary's ``"## 4."`` to ``"## 5."``, another real section of that
+    document, and every plan-gate test stayed green while salary's ticked-entry
+    arm graded nothing (X-cx L7's A1 review, 2026-10-09).  X-cx's migration
+    lifts each open step's entry through the same table, so a wrong heading
+    there moves the wrong text or none.
+    """
+
+    @pytest.mark.parametrize("arc", ARCS)
+    def test_the_steps_section_holds_every_checkbox_once(self, arc):
+        """The section's entries are the document's checkboxes, in order, each once.
+
+        In order and equal: no checkbox sits outside the steps section, where
+        no entry reads it.  Each once: rule 12 reads only a step's LAST
+        checkbox, so a duplicate whose last box agrees with ``steps.md``
+        passes it, and an entry would be lifted twice.
+        """
+        text = registry.ARC_DOCS[arc].read_text()
+        in_section = [entry.step for entry in entries(text, STEPS_HEADINGS[arc])]
+        everywhere = [box.step for box in checkboxes(text)]
+        assert in_section == everywhere, (
+            f"{arc}: the steps section ({STEPS_HEADINGS[arc]!r}) holds {len(in_section)} "
+            f"entries and the document {len(everywhere)} checkboxes; outside it: "
+            f"{sorted(set(everywhere) - set(in_section))}"
+        )
+        twice = sorted({step for step in in_section if in_section.count(step) > 1})
+        assert not twice, f"{arc}: a step's checkbox appears more than once: {twice}"

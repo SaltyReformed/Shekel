@@ -60,7 +60,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from tools.plan_gate._plan_gate import _blank_fenced_regions
+from tools.ci.arc_steps import blank_fenced_regions
 from tools.plan_gate._registry import ARC_DOCS, PLANS
 from tools.plan_gate._tables import RULINGS_HEADER, RulingRow, is_table_row, rows_under
 
@@ -594,9 +594,9 @@ def _document_side_violations() -> list[str]:
         # written after it were invisible to every arm here; and a fenced
         # EXAMPLE of a forbidden declaration was reported as a declaration, so
         # a document could not illustrate the shape it must not use.
-        # `_registry.arc_checkboxes` and `_plan_gate._section` already carry
-        # this in prose, and `_duplication` already imports the helper.
-        text = _blank_fenced_regions(ARC_DOCS[arc].read_text())
+        # The fence rule's one home is `tools.ci.arc_steps`, which every arm
+        # that blanks fences imports.
+        text = blank_fenced_regions(ARC_DOCS[arc].read_text())
         lines = text.splitlines()
         problems.extend(
             f"{arc}'s document carries a {header!r} table and its rulings are "
