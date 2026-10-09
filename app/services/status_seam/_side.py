@@ -64,9 +64,10 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
+from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
+from app.services.cash_ledger import reject_movement_before_books_open
 from app.services.match_press import Press
 from app.services.settle_day import (
     SettleDay,
@@ -112,7 +113,16 @@ def sync_side_records(
       it, a day correction re-dates it, an identity re-submit moves nothing.
 
     Every refusal runs before the first write, for the seam's reason: a
-    refused act leaves both records untouched.
+    refused act leaves both records untouched.  That includes the books
+    boundary: each day this act will write is graded against its side's
+    endpoint here (``cash_ledger.reject_movement_before_books_open``, the
+    producer ``settle_day.record_settle_day`` asks again at the write), so a
+    day the second side's books do not reach is refused before the first
+    side is written (the cp2a review's L1, measured: a settle naming the
+    from-side's day onto a to-side whose books open later left the new
+    from-side record staged when the to-side was refused).  The removal act
+    a ``$0.00`` close runs refuses a line the press did not name as it
+    starts, and that act is this function's only write in that case.
 
     Args:
         legs: The transfer's ``(expense, income)`` legs, each carrying the
@@ -131,8 +141,8 @@ def sync_side_records(
 
     Raises:
         ValidationError: When a day is stated beside a status that settles
-            nothing, a day is in the future (ruling **R-EJ**) or before the
-            account's books (``record_settle_day``), a record is handed over
+            nothing, a day is in the future (ruling **R-EJ**) or on or before
+            its side's books (graded here, before any write), a record is handed over
             beside a status that settles nothing, a record would be written
             under a deleted transfer (ruling **R-CC89**), or the removal act
             would free a line the press's page did not name.
@@ -156,19 +166,31 @@ def sync_side_records(
         )
     if not was_settled and not now_settled:
         return
-    if now_settled and settlement is not None and settlement.amount:
-        moved = [
-            _cover_side(leg, day, settlement)
-            for leg, day in zip(legs, days)
-        ]
-    elif now_settled and settlement is not None:
+    covers = now_settled and settlement is not None and settlement.amount != 0
+    withdraws = now_settled and settlement is not None and not covers
+    # The sides this act writes a day onto, each with its day: every side
+    # when the act records a figure, none when a ``$0.00`` close takes both
+    # records off, else each side holding a record.  One list, read by the
+    # books grade and by the writes, so the grade asks of exactly the days
+    # the writes write.
+    if covers:
+        written = tuple(zip(legs, days))
+    elif withdraws:
+        written = ()
+    else:
+        written = tuple(
+            (leg, day) for leg, day in zip(legs, days)
+            if leg.record is not None
+        )
+    for leg, day in written:
+        if day is not None and _writes_day(leg.record, day):
+            reject_movement_before_books_open(_endpoint(leg).id, day.day)
+    if covers:
+        moved = [_cover_side(leg, day, settlement) for leg, day in written]
+    elif withdraws:
         moved = [_withdraw_sides(legs, press)]
     else:
-        moved = [
-            _follow_day(leg.record, day)
-            for leg, day in zip(legs, days)
-            if leg.record is not None
-        ]
+        moved = [_follow_day(leg.record, day) for leg, day in written]
     if any(moved):
         # ``status_id`` for the row arm's reason (``_covering._record_moved``):
         # the one column every path here has loaded, re-written at its value.
@@ -184,11 +206,8 @@ def _cover_side(
     the figure written onto it and is (re-)dated, so its id survives and a
     match or a log line naming it still names it.  A side holding none gets a
     new record, filed under the transfer by its side link, on the side's
-    endpoint, owned and authored by the transfer's owner, marked
-    ``covers_settlement``.  The endpoint is read off the transfer's account
-    RELATIONSHIP rather than its id column, because an endpoint move earlier
-    in the same act assigns the relationship and the column reads the old
-    account until a flush.
+    endpoint (:func:`_endpoint`), owned and authored by the transfer's owner,
+    marked ``covers_settlement``.
 
     Returns:
         Whether the side's record or day netted a change.
@@ -198,7 +217,7 @@ def _cover_side(
         changed = record_figure(record, settlement, leg.name)
         return _follow_day(record, day) or changed
     transfer = leg.transfer
-    endpoint = transfer.to_account if leg.is_income else transfer.from_account
+    endpoint = _endpoint(leg)
     record = TransactionEntry(
         expense_transfer_id=None if leg.is_income else transfer.id,
         income_transfer_id=transfer.id if leg.is_income else None,
@@ -236,17 +255,53 @@ def _follow_day(record: TransactionEntry, day: Optional[SettleDay]) -> bool:
     Returns:
         Whether the record's day pair or link netted a change.
     """
-    target = None if day is None else day.day
-    if record.settled_on != target:
-        if day is not None:
-            record.purchased_on = day.day
-        record_settle_day(record, day)
+    if not _writes_day(record, day):
+        return False
+    moves = record.settled_on != (None if day is None else day.day)
+    if moves and day is not None:
+        record.purchased_on = day.day
+    record_settle_day(record, day)
+    if moves:
         record.reconciled_by_id = None
+    return True
+
+
+def _writes_day(
+    record: Optional[TransactionEntry], day: Optional[SettleDay],
+) -> bool:
+    """Return whether this arm writes *day*'s pair onto a side holding *record*.
+
+    The one predicate :func:`_follow_day` writes by and
+    :func:`sync_side_records`' books grade asks by, so the grade is of exactly
+    the days the writes write.  A side holding no record takes *day* with
+    the new record :func:`_cover_side` files; a record whose civil day
+    differs takes it; on the SAME day, only a day that raises the record's
+    basis (:func:`~._covering.raises_basis`) is written.
+
+    Args:
+        record: The side's record, or ``None`` when it holds none.
+        day: The day the act resolved for the side, or ``None`` out of the
+            band.
+
+    Returns:
+        Whether the record's day pair is (re-)written.
+    """
+    if record is None:
+        return day is not None
+    if record.settled_on != (None if day is None else day.day):
         return True
-    if day is not None and raises_basis(day, recorded_settle_day(record)):
-        record_settle_day(record, day)
-        return True
-    return False
+    return day is not None and raises_basis(day, recorded_settle_day(record))
+
+
+def _endpoint(leg: "TransferLeg") -> Account:
+    """Return the account *leg*'s side is on: the transfer's endpoint for it.
+
+    Read off the transfer's account RELATIONSHIP rather than its id column,
+    because an endpoint move earlier in the same act assigns the relationship
+    and the column reads the old account until a flush.
+    """
+    transfer = leg.transfer
+    return transfer.to_account if leg.is_income else transfer.from_account
 
 
 def _withdraw_sides(legs: "tuple[TransferLeg, TransferLeg]", press: Press | None) -> bool:
@@ -337,7 +392,7 @@ def free_moving_side_record(
 
 
 def land_moved_side_record(
-    record: TransactionEntry, account, day: Optional[SettleDay],
+    record: TransactionEntry, account: Account, day: Optional[SettleDay],
 ) -> None:
     """Land a freed side record on its side's NEW endpoint, on its borrowed day.
 

@@ -28,6 +28,13 @@ from dataclasses import dataclass
 
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
+
+#: What a hidden TRANSFER is called when it has no name of its own: the word
+#: every transfer screen titles one by (``xfer.name or 'Transfer'`` in the
+#: cell, quick-edit and full-edit templates).  ``Transfer.name`` is nullable,
+#: and a refusal printing ``None was deleted`` was finding **BAL-547**.
+UNNAMED_TRANSFER = "Transfer"
 
 
 @dataclass(frozen=True)
@@ -48,8 +55,9 @@ class HiddenRow:
     refusal (``app/deleted_row_infrastructure``, which only a writer that
     skips every door meets), which says "was deleted" whether or not the
     item is archived (finding **CC-377**); the transfer service's settle
-    refusal of a deleted transfer shadow (``transfer_service._settle``), a
-    sentence about a transfer's leg, which the transfer's code owns; and Mark
+    refusal of a deleted transfer (``transfer_service._settle``), which no
+    screen reaches because the transfer's door answers "not found" first;
+    and Mark
     Credit's "not found" for a deleted row
     (``credit_workflow.mark_as_credit``), which never reaches a screen --
     the route answers ruling **R-CC89**'s bare "not found" (**R-CC99** (b)).
@@ -74,7 +82,7 @@ class HiddenRow:
         return "was archived" if self.archived else "was deleted"
 
     @classmethod
-    def of(cls, row: Transaction) -> "HiddenRow":
+    def of(cls, row: Transaction | Transfer) -> "HiddenRow":
         """Return what a refusal may say about *row*, a hidden row still in the table.
 
         **The ONE producer of** :attr:`archived`: the row's recurring item is
@@ -116,10 +124,19 @@ class HiddenRow:
         caller of this, directly or through the services they call, before
         their commit (a caller census, 2026-09-24).
 
+        **A transfer is told the same way** (plan step
+        ``balance:X-bi-6-4d-2``, finding **BAL-547**): "was archived" when
+        its recurring transfer is archived -- the archive hides its empty
+        Projected transfers (``routes/transfers/lifecycle``) -- and by its
+        name, or :data:`UNNAMED_TRANSFER` when it has none.  The archive
+        writes ``TransferTemplate.is_active`` and soft-deletes through
+        ``transfer_service.delete_transfer``, which hands the status seam no
+        record, so no caller of this sees an archive it staged itself.
+
         Args:
-            row: A session-attached row the caller has found hidden.  A
-                ``Transaction``: a transfer's words are the status seam's own
-                (``reject_settlement_on_a_deleted_row``).
+            row: A session-attached row the caller has found hidden: a
+                ``Transaction``, or a ``Transfer`` (the status seam's
+                Transfer arm, ``reject_settlement_on_a_deleted_row``).
 
         Returns:
             The row's name, and whether its item is archived.
@@ -127,6 +144,6 @@ class HiddenRow:
         with db.session.no_autoflush:
             template = row.template
             return cls(
-                row.name,
+                row.name if row.name is not None else UNNAMED_TRANSFER,
                 archived=template is not None and not template.is_active,
             )

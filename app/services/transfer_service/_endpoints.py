@@ -215,13 +215,14 @@ def _apply_endpoint_move(
 ) -> None:
     """Move a transfer and both legs onto *endpoints*, carrying each side's record.
 
-    Transfer Invariant 1 read as a write: the parent names the pair of accounts
-    and each shadow LIVES on one of them, so all three move in one act or the
-    pair stops describing the transfer.  The expense leg takes the source and
-    the income leg the destination, which is the pairing
+    The parent names the pair of accounts and each side's record LIVES on one
+    of them (the side key), so the transfer and its records move in one act.
+    The twin rows, mirrors until plan step ``balance:X-bi-6-4d-3`` deletes
+    them, follow by their own TYPE: an expense twin takes the source and an
+    income twin the destination, the pairing
     :func:`app.services.transfer_service._create.create_transfer` establishes
-    and :class:`~app.services.transfer_service._validation.TransferRows`
-    resolves by transaction TYPE rather than by position.
+    -- over every live twin there is (:class:`~app.services.transfer_service.
+    _validation.TransferRows`, ruling **R-BAL235**).
 
     **Applied with the caller-stated facts, ahead of the settle dispatch**, for
     the reason the ``is_override`` arm states: everything between those two
@@ -273,7 +274,7 @@ def _apply_endpoint_move(
        statement link released, and both FLUSHED, because the cascade fires
        inside the transfer's ``UPDATE`` and the keys holding a member and a
        link to the old account would refuse it.
-    2. **The accounts are assigned**, the transfer's and both shadows'.
+    2. **The accounts are assigned**, the transfer's and its twins'.
     3. **Each record lands on its new endpoint** (``status_seam.
        land_moved_side_record``): assigned in the session too, because the ORM
        never learns what a cascade writes; and a DATED record's day becomes
@@ -283,7 +284,7 @@ def _apply_endpoint_move(
        flush (``record_settle_day``).
 
     Args:
-        rows: The transfer and both shadows.
+        rows: The transfer and its live twins.
         endpoints: The resolved :class:`_Endpoints`; a no-op when its *vacated*
             is empty, which is every update that names no account.
         press: The save's :class:`~app.services.match_press.Press`, or ``None``
@@ -318,10 +319,11 @@ def _apply_endpoint_move(
     )
     transfer.from_account = endpoints.from_account
     transfer.to_account = endpoints.to_account
-    rows.expense.account = endpoints.from_account
-    rows.expense.name = expense_name
-    rows.income.account = endpoints.to_account
-    rows.income.name = income_name
+    for shadow in rows.shadows:
+        if shadow.is_income:
+            shadow.account, shadow.name = endpoints.to_account, income_name
+        else:
+            shadow.account, shadow.name = endpoints.from_account, expense_name
     for (leg, account), day in zip(moving, days):
         if leg.record is not None and leg.account_id != account.id:
             status_seam.land_moved_side_record(leg.record, account, day)
@@ -336,8 +338,17 @@ def _moved_days(
     record day, with a MOVING side's evidence dropped (ruling **R-BAL168**:
     the moved payment's date becomes a guess, since the old account's
     statement says nothing about the new one): a moved side borrows a staying
-    side's evidence, and two sides with none share the day they already
-    recorded.  Only a DATED record's day is ever written from this; an
+    side's evidence.  **When neither side holds evidence after the move --
+    both sides moved, or the staying side's day was itself borrowed -- both
+    take ONE day, the EXPENSE side's recorded day** (``repair_fallback``'s
+    order), so a to-side that recorded 01-08 beside a from-side's 01-06 lands
+    on 01-06, two days earlier.  That is ruling **R-BAL142**'s rule that two
+    borrowed sides share one day, and it is the only stable answer: two
+    borrowed sides kept on different days would be pulled onto one by the
+    next save that re-derives them.  Decided under ruling **R-BAL207** (the
+    cp2a review's p1): no door moves a settled transfer's accounts (the
+    definition edit skips a transfer holding a record, R-BAL168's own
+    premise).  Only a DATED record's day is ever written from this; an
     un-dated one (a revert kept it) moves with no day.
 
     Args:

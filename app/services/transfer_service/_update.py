@@ -220,9 +220,11 @@ def _apply_remaining_fields(
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
-    **Transfer Invariants 3-5 are a property of this function**: shadow
-    amounts, statuses and periods equal the parent's because every field a
-    caller may move is mirrored HERE and nowhere else.  That is why the arms
+    **What the twins still mirror is a property of this function**: a twin's
+    period, category and due date equal the parent's because every such field
+    a caller may move is mirrored HERE and nowhere else (its status no longer
+    is: a transfer's status is one column, and each side's record is the
+    status seam's Transfer arm's, plan step ``balance:X-bi-6-4d-2``).  That is why the arms
     stay together rather than being cut into per-field helpers -- the invariant
     is held by the list being in one place, and half a mirroring in a second
     module is how a shadow drifts.
@@ -692,15 +694,16 @@ def settle_transfer(
         False when nobody typed one, and False when the figure was an echo of
         what the row would book anyway.  A transfer ALREADY in the settled band
         is an idempotent no-op that writes nothing and returns False: a settle
-        records that money moved, and it has already been recorded -- save for
-        a side that DRIFTED out of the band, which the repair dates on its
-        stated day (ledger row BAL-578).
+        records that money moved, and it has already been recorded.  (The
+        repair that dated a twin which had DRIFTED out of the band, ledger
+        row BAL-578, went at plan step ``balance:X-bi-6-4d-2``: a transfer
+        has one status.)
 
     Raises:
-        NotFoundError: If the transfer does not exist or does not belong to
-            *user_id*.
-        ValidationError: On an illegal transition, a soft-deleted shadow, a
-            non-positive derivation, or the seam's settle-day refusals.
+        NotFoundError: If the transfer does not exist, does not belong to
+            *user_id*, or is soft-deleted.
+        ValidationError: On an illegal transition, an unresolvable
+            derivation, or the seam's settle-day refusals.
         PostingError: From the ledger reconcile, on a broken invariant.
     """
     updates = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
@@ -741,7 +744,8 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
     Accepted kwargs (``amount`` is NOT one since plan step X-au-f: the plan's
     figure travels as ``amount_ownership`` below, and a bare ``amount`` is
     silently ignored like any other unlisted key):
-        status_id      -- New status for transfer and both shadows.
+        status_id      -- New status for the transfer; each side's record
+                          follows it (dated, un-dated or taken off).
         pay_period_id  -- New period for transfer and both shadows.  On a
                           PLACED transfer (a rule-less definition's one-time
                           transfer) the move RE-PLACES its due date as well
@@ -764,9 +768,10 @@ def update_transfer(transfer_id, user_id, *, press=None, **kwargs):
         figure         -- What MOVED and WHO WROTE the figure, as one
                           :class:`~app.services.stated_figure.StatedFigure`
                           (``typed`` from the transfer and shadow popovers,
-                          plan step X-bi-3e-1), recorded on both shadows only:
-                          a transfer's money moves on its two legs and the
-                          parent carries no such column.  A figure arriving WITH a
+                          plan step X-bi-3e-1), recorded on both sides'
+                          payment records: a transfer's money moves on its
+                          two sides and the parent carries no such column.
+                          A figure arriving WITH a
                           settling ``status_id`` is the settle's own, subject to
                           its echo rule (:data:`_SETTLE_OWNED_FIELDS`).  One
                           arriving on a pair that is ALREADY settled is a

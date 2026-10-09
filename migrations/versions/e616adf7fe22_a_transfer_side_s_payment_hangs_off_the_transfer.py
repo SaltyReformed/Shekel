@@ -83,6 +83,23 @@ exist at this revision, which the transfer arm refuses.  Then it drops the new
 constraints and columns and restores ``transaction_id``'s NOT NULL, refusing if
 any row would violate it.
 
+**What the downgrade does NOT restore, and the contract that makes that safe.**
+From this revision the app no longer writes a twin's status, settle day, day
+basis or statement link: the status seam's Transfer arm writes each side's
+record alone, and a twin keeps only its mirrored period, category, due date,
+override flag, ownership, account and name.  So after any settle, revert, day
+or figure correction made at this revision, a twin's status and day no longer
+say what its transfer and record say, and this downgrade, which moves only the
+records' parent column, would leave a dated record under a twin still saying
+Projected (or an un-dated one under a twin saying Paid) -- what the code below
+this revision reads as a drifted pair.  **This revision is therefore never
+downgraded alone on a database the app has written at it**: it ships with plan
+step ``balance:X-bi-6-4d-3``'s revision in ONE release, and that revision's
+downgrade, which rebuilds the twins, rebuilds each twin's status, settle day,
+basis and statement link from its transfer and its side's record first.  The
+stored money is exact either way: no record, posting or match is written by
+the downgrade but each record's parent link.
+
 ``tests/test_models/test_a_transfer_side_s_payment_hangs_off_the_transfer.py``
 drives the shipped ``upgrade`` / ``downgrade`` and each refusal.
 """

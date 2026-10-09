@@ -520,14 +520,16 @@ def _record_moved(row: Transaction) -> None:
     **The record is part of the row's aggregate, and the row's counter is
     what a stale form is caught by** (developer ruling 2026-08-18 for the
     transfer; the same rule for a plain row).  Both full-edit popovers pin
-    the row's ``version_id`` -- the transfer's through its parent, which
-    ``transfer_service._update`` moves whenever a leg moved -- and since plan
+    the row's ``version_id`` -- the transfer's own, which the seam's
+    Transfer arm moves whenever a side's record moves (``_side``, plan step
+    ``balance:X-bi-6-4d-2``) -- and since plan
     step ``balance:X-bi-4b-2`` the settled FIGURE lives on the covering
     movement alone: a figure correction writes this table and nothing of the
     row, so the row stays clean, its counter never moves, and a second tab
     holding the same pin overwrites the correction and reports success --
-    the two-tab lost update ``_update._bump_parent_version_if_a_leg_moved``
-    measured on the live route, back by another door the moment the row's
+    the two-tab lost update the transfer's counter bump (then
+    ``_update._bump_parent_version_if_a_leg_moved``) measured on the live
+    route, back by another door the moment the row's
     own figure columns went (a ``$214.37`` correction, then a prefilled
     ``$200.00`` saved over it against the same pin, both 200).  Through
     ``X-bi-4b-1`` the seam's write of those columns dirtied the row for
@@ -846,12 +848,10 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
 
     The ONE writer of a transaction's ``reconciled_by_id`` outside the seam's
     own release arms (plan step **X-bi-3a**, ruling **R-FL**), for a plain
-    row and for a transfer shadow alike: the reconcile panel's transaction
-    arm calls it directly, and its transfer arm through
-    ``transfer_service.record_clearing``, the shadow's door under Transfer
-    Invariant 4, which delegates here since plan step **X-bi-3c** (a shadow
-    carries a covering movement from that step, so the door's own one-column
-    write would have left the leg's fact unlinked).  The reconcile panel
+    row: the reconcile panel's transaction arm calls it.  A transfer side's
+    record is linked by the Transfer arm's twin,
+    ``_side.record_side_clearing`` (plan step ``balance:X-bi-6-4d-2``;
+    through a transfer shadow and this function until then).  The reconcile panel
     records the link AFTER the settle verb returns -- the verb is shared with
     the grid's Mark Paid, which no statement has shown -- and the settle has
     by then mirrored the row's money onto its covering movement, whose fact
@@ -901,10 +901,7 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
     already loaded).
 
     Args:
-        row: The settled transaction the statement showed -- a plain row, or
-            the one LEG of a transfer on the account whose statement was read
-            (clearing is per leg; ``transfer_service.record_clearing`` says
-            why the sibling takes none).
+        row: The settled transaction the statement showed.
         anchor_id: The ``account_anchor_history`` row that was being read.
     """
     statement_account_id = db.session.get(

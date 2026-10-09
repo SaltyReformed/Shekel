@@ -131,12 +131,13 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
     # nothing off.
     #
     # **Which movements go is asked of ``transfer_legs``** (leaf
-    # ``balance:X-bi-6-4d-1``): every entry the transfer holds, under any
-    # shadow live or dead -- the scope ``fk_transaction_entries_transaction_id``
-    # would refuse the delete for -- through the one join, so ``X-bi-6-4d``'s
-    # re-parent moves this collection with it.  It read
-    # ``shadow.entries`` per shadow until then.  In movement-id order, so the
-    # act walks them deterministically.
+    # ``balance:X-bi-6-4d-1``): every record either side of the transfer
+    # holds by its side key -- the scope the side keys, NO ACTION on delete,
+    # would refuse the delete for -- through the one join.  It read
+    # ``shadow.entries`` per shadow until ``X-bi-6-4d-1``, and the entries
+    # under any shadow live or dead until ``X-bi-6-4d-2`` moved the join onto
+    # the side links.  In movement-id order, so the act walks them
+    # deterministically.
     shadows = (
         db.session.query(Transaction)
         .filter_by(transfer_id=transfer_id)

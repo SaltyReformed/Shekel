@@ -76,14 +76,12 @@ Architecture (``CLAUDE.md``):
 
 from sqlalchemy.orm import selectinload
 
-from app.exceptions import ValidationError
 from app.models.transfer import Transfer
 from app.services import transfer_legs, transfer_service
-from app.services.cash_ledger import AmountBasis, resolve_transfer_amount
+from app.services.cash_ledger import AmountBasis
 from app.services.match_press import Press
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
-    DamagedTransfer,
     OfferKind,
     OutstandingGroup,
     OutstandingTransaction,
@@ -158,12 +156,11 @@ def _settle_one(
         press=press,
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
-    # service because the leg's money still lands on a SHADOW row through the
-    # interval and ``CLAUDE.md``'s transfer invariant 4 admits no direct
-    # mutation of one.  Only this leg takes it, even though the settle above
-    # moved both: the other leg is on another account, whose own statement
-    # nobody read in this act.  ``transfer_service.record_clearing`` carries why
-    # that asymmetry is correct.
+    # service, the one door onto a side's payment record (``CLAUDE.md``'s
+    # transfer invariant 4).  Only this leg takes it, even though the settle
+    # above moved both: the other leg is on another account, whose own
+    # statement nobody read in this act.  ``status_seam.record_side_clearing``
+    # carries why that asymmetry is correct.
     transfer_service.record_leg_clearing(leg, statement.anchor.anchor_id)
     return corrected
 
@@ -237,8 +234,8 @@ ARM = _rows.Arm(
 
 def outstanding_transfers(
     statement: _rows.Statement, basis: "AmountBasis",
-) -> "tuple[list[OutstandingGroup], list[DamagedTransfer]]":
-    """Return this arm's offers, one childless block per leg, and the legs it cannot offer.
+) -> "list[OutstandingGroup]":
+    """Return this arm's offers, one childless block per leg.
 
     The transfers this account is still holding forward on the day the balance
     was asserted -- a savings sweep the statement shows leaving, a loan payment
@@ -291,50 +288,25 @@ def outstanding_transfers(
             derive-mode payment -- finding **N-269** reintroduced one tier up,
             exactly as N-295's impact column predicted.
 
-    **A leg whose transfer's shadow pair is BROKEN is not offered; it is
-    reported** (ruling **R-BAL148**, *"Show the rest, warn"*).  The leg price
-    asks the transfer service's verified pair and refuses a pair that is not
-    one live expense and one live income shadow (Transfer Invariant 1, which
-    no door breaks and integrity check DC-12 reports); that refusal is caught
-    HERE, for this one call, and the leg becomes a
-    :class:`~._offers.DamagedTransfer` the panel prints as a warning, while
-    every other offer is published as normal.  Letting it propagate was a
-    server error on the account's whole page, which builds this panel inline,
-    and on a true-up's response after its write had committed.  A stale or
-    forged tick naming such a transfer still reaches the settle, which refuses
-    it the same way; the route renders that refusal in the panel's error
-    alert, whose text is the pair loader's own message (it names the transfer
-    by id, a pre-existing wording of ``transfer_service._validation``).
-    **The catch is by TYPE**: every ``ValidationError`` the leg price can raise
-    today is the broken pair's (``_get_shadow_transactions``; its
-    ``_reject_unsettleable`` cannot fire on a pair loaded live), so one added
-    to that chain later would read as "damaged" too -- still a warning, never
-    a silent drop.
+    **Every leg is offered** (ruling **R-BAL235**, developer 2026-10-08,
+    "Offer and settle it", retiring **R-BAL148**'s warning): a leg is priced
+    off its transfer and its side's record (``transfer_service.
+    leg_settle_amount``), never its twin rows, so a transfer whose twin was
+    deleted behind the app's back is priced and ticked like any other.  The
+    warning the panel printed for one went with the refusal it caught (plan
+    step ``balance:X-bi-6-4d-2``).
 
     Returns:
-        ``(blocks, damaged)``: one :class:`~._offers.OutstandingGroup` per
-        offered leg, in landing-day order, each keyed by its leg's
-        ``(transfer id, account id)``, and one
-        :class:`~._offers.DamagedTransfer` per leg that could not be priced.
-        Both empty for an account holding no overdue transfer.
+        One :class:`~._offers.OutstandingGroup` per offered leg, in
+        landing-day order, each keyed by its leg's ``(transfer id, account
+        id)``; empty for an account holding no overdue transfer.
     """
     groups = []
-    damaged = []
     for leg in ARM.load(statement, None).values():
-        attributed_on = _rows.attributed_on(statement, leg.transfer)
-        try:
-            amount = transfer_service.leg_settle_amount(leg, basis)
-        except ValidationError:
-            damaged.append(DamagedTransfer(
-                label=leg.name,
-                amount=resolve_transfer_amount(leg.transfer, basis),
-                attributed_on=attributed_on,
-            ))
-            continue
         offer = OutstandingTransaction(
             key=leg.cell_key,
-            attributed_on=attributed_on,
-            amount=amount,
+            attributed_on=_rows.attributed_on(statement, leg.transfer),
+            amount=transfer_service.leg_settle_amount(leg, basis),
             # Always the whole figure: a leg can hold no PURCHASE (its one
             # possible entry is the seam's covering movement, written when it
             # settles and kept un-dated across a revert), so there is no card
@@ -359,4 +331,4 @@ def outstanding_transfers(
             # Resolved by the assembler once the order is known.
             section=None,
         ))
-    return groups, damaged
+    return groups

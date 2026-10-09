@@ -305,19 +305,21 @@ def reject_settlement_on_a_deleted_row(
     A record of ``None`` writes nothing and passes: a revert of a deleted row,
     and a settle-day correction, move no money.
 
-    **A ``Transfer`` is asked too, and today it cannot arrive with a record: it
-    is the words plan step ``balance:X-bi-6-4`` owes its own arrival arm.**
-    The one caller that hands this seam a ``Transfer``
-    (``transfer_service._status``) hands it no record: a transfer's money is
-    recorded on its two shadows, each a ``Transaction`` that comes through
-    here on its own.  X-bi-6-4 re-parents a transfer's movements onto the
-    transfer itself, and :mod:`app.deleted_row_infrastructure` states what the
-    database must then refuse (a movement arriving under a deleted TRANSFER);
-    a transfer carrying its own record would meet this refusal, by its name.
-    A ``Transaction`` is told "was archived" where its recurring item is
-    archived and "was deleted" otherwise, whichever act hid it (ruling
-    **R-CC107**), and a ``Transfer``, which cannot arrive here with a record
-    today, is named as deleted.
+    **A ``Transfer`` is asked too: the words of the database's transfer
+    arm.**  Since plan step ``balance:X-bi-6-4d-2`` a transfer's money is
+    recorded on its two sides' records, hung off the transfer itself, and the
+    status seam's Transfer arm (``_side.sync_side_records``) asks this before
+    it writes one; :mod:`app.deleted_row_infrastructure`'s transfer arm
+    refuses the same arrival in the database.  Either row is told "was
+    archived" where its recurring item is archived and "was deleted"
+    otherwise, whichever act hid it (ruling **R-CC107**), by its name
+    (:meth:`~app.utils.hidden_row.HiddenRow.of`, which names a transfer with
+    no name of its own as every transfer screen does, finding **BAL-547**).
+    The arm's door refuses a deleted transfer as "not found" first
+    (``transfer_service._validation._get_transfer_or_raise``), so only a
+    service caller that skipped it reaches this.  (A deleted SHADOW, which
+    this sentence named until then -- finding **BAL-550** -- no longer
+    reaches the seam at all: a twin row is written by no status act.)
 
     Args:
         row: The row being written.
@@ -333,10 +335,7 @@ def reject_settlement_on_a_deleted_row(
     """
     if settlement is None or not row.is_deleted:
         return
-    raise ValidationError(deleted_row_payment_refusal(
-        HiddenRow.of(row) if isinstance(row, Transaction)
-        else HiddenRow(row.name),
-    ))
+    raise ValidationError(deleted_row_payment_refusal(HiddenRow.of(row)))
 
 
 def deleted_row_payment_refusal(gone: HiddenRow) -> str:

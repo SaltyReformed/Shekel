@@ -794,8 +794,13 @@ def settled_cash_facts(
     movements (:func:`_movements_of`), and each transfer LEG's
     (:func:`app.services.transfer_legs.recorded_transfer_legs`) under the
     same scope stated over the TRANSFER, its period and side read there and
-    never off the shadow -- which Transfer Invariant 3 holds equal, so the
-    arm moved no figure.
+    never off the shadow.  **The transfer arm states no contributing gate in
+    SQL** (finding **BAL-534**, deleted at plan step ``balance:X-bi-6-4d-2``
+    rather than graded): a DATED side record cannot sit under a deleted
+    transfer (``app.deleted_row_infrastructure``'s transfer arm) nor under
+    one that is not Paid or Received (``app.side_band_infrastructure``), so
+    the filter selected nothing the dated narrowing did not; the walk's
+    :func:`~._cash_leg.movement_cash_leg` still asks the leg's gate.
 
     **Three narrowings, each load-bearing** (:func:`_movements_of` holds the
     account, scenario and contributing gate):
@@ -849,16 +854,14 @@ def settled_cash_facts(
         for leg in recorded_transfer_legs(
             TransactionEntry.account_id == account_id,
             Transfer.scenario_id == scenario_id,
-            balance_contributing_clause(Transfer),
             TransactionEntry.is_credit.is_(False),
             TransactionEntry.settled_on.isnot(None),
         )
     )
     # The movement's own id breaks a same-day tie: it is the fact's identity
     # (a primary key) and the one id every fact carries, where a transfer
-    # leg's ``transaction_id`` names the shadow it still hangs off and is
-    # NULL once ``X-bi-6-4d`` re-parents it -- a ``None`` beside an ``int``
-    # does not sort.
+    # leg's ``transaction_id`` is NULL since ``X-bi-6-4d-2`` re-parented it
+    # onto its transfer -- a ``None`` beside an ``int`` does not sort.
     facts.sort(key=lambda fact: (fact.settled_on, fact.entry_id))
     return facts
 

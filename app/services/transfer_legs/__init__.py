@@ -55,13 +55,13 @@ that movement dated OR kept un-dated across a revert** (ruling **R-BAL61**),
 one word wider than the ruling's, because the grid draws a reverted leg's
 "marking paid records $X" caption off the kept movement exactly as it draws
 a reverted row's (``retained_settle_amounts_by_id``'s rule); a settled leg's
-record is dated, so the ruling's case is unchanged.  Through the interval
-before ``X-bi-6``'s last leaf that movement hangs off the transfer's shadow
-row on that account, so :func:`covering_movements_by_leg` reaches it through
-ONE join -- the join :func:`planned_transfer_legs` already uses to decide
-which relation a leg is in -- and the last leaf moves that join once when
-the movement re-parents onto ``budget.transfers``.  The fold's loader still
-emits only legs whose record is ``None``.
+record is dated, so the ruling's case is unchanged.  That movement hangs off
+the transfer by its side link since plan step ``balance:X-bi-6-4d-2`` (off
+the transfer's shadow row on that account until then), and
+:func:`covering_movements_by_leg` reaches it through ONE join -- the join
+:func:`planned_transfer_legs` already uses to decide which relation a leg is
+in -- which that step moved once.  The fold's loader still emits only legs
+whose record is ``None``.
 
 **One fold PREDICATE did change at 6-1, and it is pinned rather than
 denied**: sharing the join gave :func:`planned_transfer_legs`' ``dated_leg``
@@ -102,7 +102,8 @@ transfer's covering movement with its transfer and side, and since that
 leaf's second half the posting WRITER books every transfer movement under its
 LEG (:func:`movement_parent`, :func:`transfer_family_movements`,
 :func:`dated_leg_exists_clause`).  For THOSE readers and the writer this
-module is the one place a movement is reached through a shadow row, and so
+module is the one place a transfer's movement is reached (through a shadow
+row until plan step ``balance:X-bi-6-4d-2``, by its side link since), and so
 it is since leaf ``X-bi-6-4c-2`` for the reconcile panel
 (:func:`offerable_transfer_legs`) and the recurrence engine's records
 predicate (:func:`transfers_holding_records`), and since leaf
@@ -141,11 +142,7 @@ and names the transfer now, as its owner finds it in the app.
 **Other readers still reach it themselves until their leaf moves them** and
 ``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
 leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which
-DC-11's and BA-06's leg arms read); the transfer service's own mirror,
-which the step rewrites -- ``_endpoints._apply_endpoint_move`` walks each
-shadow's ``covering_movements`` to carry them to a moved endpoint, and
-``_status.apply_status_to_all_three`` repairs a drifted shadow from its
-sibling's ``recorded_settlement``; and statement match's own reads of a
+DC-11's and BA-06's leg arms read); and statement match's own reads of a
 payment member's row -- ``_acts.named_rows`` and
 ``_candidates._claimed_rows`` read a transfer payment's
 ``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
@@ -167,15 +164,16 @@ built from its parent (and the record a loader hands it), whose code is blind
 to where a movement hangs -- :class:`TransferLeg`, its label
 (:func:`leg_label`), its identity (:func:`cell_key`, :func:`key_order`) and its
 construction (:func:`leg_of`).  :mod:`._records` holds the package's code that
-knows a movement hangs off a shadow row: the one join from a transfer to a
-leg's covering movement, its three expressions, every loader in this package
+knows where a movement hangs (off a shadow row until plan step
+``balance:X-bi-6-4d-2``, off the transfer by a side link since): the one join
+from a transfer to a leg's covering movement, its expressions, every loader in this package
 built on it (:func:`planned_transfer_legs` and the grid's
 :func:`grid_transfer_legs` included, since each reads the join), and
 :func:`movement_parent`, the join's Python twin over one loaded movement, with
 the two added after the split that read the same parent,
 :func:`movement_parent_loads` (its loader options) and :func:`parent_entries`
 (the list its parent loaded it into) -- the half of this package whose code
-``X-bi-6-4d`` rewrites when the join moves off the shadows.  ``_records``
+``X-bi-6-4d-2`` rewrote when the join moved off the shadows.  ``_records``
 imports ``_leg`` and never the reverse.  Every public name is re-exported
 here, so no import statement changed.
 

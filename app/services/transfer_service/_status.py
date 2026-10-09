@@ -45,6 +45,7 @@ Transfer arm moves the transfer's counter itself when a record or day moves.)
 
 from datetime import date
 
+from app.exceptions import ValidationError
 from app.models.transfer import Transfer
 from app.services import status_seam
 from app.services.match_press import Press
@@ -122,11 +123,26 @@ def _fallback_day(transfer: Transfer) -> date:
     close** (ruling **R-BAL90**: it stores no day), and a later figure
     correction with no typed day dates it by the transfer's DUE DATE (ruling
     **R-BAL169**, the rule ruling **R-BAL139** gives a ``$0.00`` loan
-    payment): the same answer whenever the correction is made.  A transfer
-    with no due date falls back to today; a due date the account's books no
-    longer reach is refused by ``settle_day.record_settle_day``, naming the
-    day, so the owner types one.  Read before the act writes the transfer's
-    status, so "already settled" is the status the act is leaving.
+    payment): the same answer whenever the correction is made -- **but never
+    a day after today** (ruling **R-BAL231**, amending R-BAL169: a transfer
+    already Paid whose due date is still ahead is dated today, where the
+    future day was refused with the advice to leave it Projected, which is
+    wrong for a transfer already Paid).  A transfer with no due date falls
+    back to today; a due date the account's books no longer reach is refused
+    by the arm's books grade, naming the day, so the owner types one.  Read
+    before the act writes the transfer's status, so "already settled" is the
+    status the act is leaving.
+
+    **It reads the due date the transfer HAS when the act begins.**  An act
+    that moves a ``$0.00`` pair's due date AND corrects its figure would date
+    the pair by the old due date, because ``_update`` applies the status arm
+    before the due-date arm.  No door sends both: the PATCH refuses a
+    due-date edit on a settled transfer (``routes/transfers/mutations``'
+    ``_LOCKED_EDIT_FIELDS``, unlocked only by a revert, which carries no
+    figure), and the service's other callers edit Projected transfers or
+    state only days (the cp2a review's p19, decided under ruling **R-BAL207**
+    and not built: reordering the two arms would move which day ruling
+    **R-PC97**'s revert refusal grades on a revert that moves the date).
 
     Args:
         transfer: The transfer being written.
@@ -136,7 +152,7 @@ def _fallback_day(transfer: Transfer) -> date:
     """
     today = display_today()
     if transfer.status_id in settled_status_ids() and transfer.due_date:
-        return transfer.due_date
+        return min(transfer.due_date, today)
     return today
 
 
@@ -158,6 +174,60 @@ def reject_stated_days_without_settle(status_id: int, stated: PairDays) -> None:
     """
     for day in stated:
         status_seam.reject_settle_day_without_settled_status(status_id, day)
+
+
+#: The refusal of a day stated on a pair the act leaves holding no record, in
+#: the words the developer picked (ruling **R-BAL230**, 2026-10-08).
+ZERO_CLOSE_HAS_NO_DAY = (
+    "A $0.00 close moved no money, so it has no day. Type the amount the "
+    "bank took to date it."
+)
+
+
+def reject_stated_day_on_a_zero_close(
+    legs: "tuple[TransferLeg, TransferLeg]",
+    stated: PairDays,
+    settlement: "status_seam.Settlement | None",
+) -> None:
+    """Refuse a day stated for a pair this act leaves settled with no record.
+
+    Ruling **R-BAL230** (developer 2026-10-08, "Refuse, say why"): a pair
+    closed at ``$0.00`` keeps no record on either side and so no day (rulings
+    **R-BAL82**, **R-BAL141**), and a day typed into its popover's empty
+    day box and saved used to be accepted and dropped: the arm writes a day
+    only onto a side holding a record (the cp2a review's M1).  The act
+    leaves no record when it records ``$0.00`` (both sides' records come
+    off), or when it records nothing on a pair already settled with none --
+    the popover's Save, which posts the Actual box's untouched ``$0.00`` as
+    an echo.  Either way a stated day has nowhere to go, and saying so beats
+    a Save that answers OK and stores nothing.  A figure above ``$0.00`` in
+    the same Save is what dates the pair, so that Save is not refused.
+
+    Asked after :func:`reject_stated_days_without_settle`, so a stated day
+    here sits beside a settled status.  A pair holding no record that is NOT
+    yet settled is a move into the band with no settlement, which the arm
+    refuses as a programming error, so this leaves it to the arm.
+
+    Args:
+        legs: The ``(expense, income)`` legs with their records as they stand.
+        stated: The days the act states, by side.
+        settlement: What the act records, or ``None`` when it records nothing.
+
+    Raises:
+        ValidationError: When a day is stated and the act leaves the pair
+            settled holding no record.
+    """
+    if stated == NO_DAYS:
+        return
+    if settlement is not None:
+        if settlement.amount != 0:
+            return
+    elif (
+        any(leg.record is not None for leg in legs)
+        or legs[0].transfer.status_id not in settled_status_ids()
+    ):
+        return
+    raise ValidationError(ZERO_CLOSE_HAS_NO_DAY)
 
 
 def apply_status_to_all_three(
@@ -191,9 +261,11 @@ def apply_status_to_all_three(
     born-settled create), and an identity move keeps each record's figure.
 
     **Verified in FULL before anything is assigned**: the transfer's own
-    transition, the revert refusal, and every stated day -- then the arm's own
-    refusals, before its first write -- so an illegal request leaves the
-    transfer and both records untouched (F-047 / commit C-21).
+    transition, the revert refusal, every stated day and a day stated on a
+    pair the act leaves at ``$0.00`` (:func:`reject_stated_day_on_a_zero_close`)
+    -- then the arm's own refusals, each side's books included, before its
+    first write -- so an illegal request leaves the transfer and both records
+    untouched (F-047 / commit C-21).
 
     Args:
         rows: The transfer and both shadows being moved; only the transfer is
@@ -219,7 +291,8 @@ def apply_status_to_all_three(
     Raises:
         ValidationError: If the transfer's transition is illegal (propagated
             from the state machine), if a day is stated beside a status that
-            settles nothing, if a day is refused (a future day, ruling R-EJ,
+            settles nothing or on a pair the act leaves at ``$0.00`` (ruling
+            **R-BAL230**), if a day is refused (a future day, ruling R-EJ,
             or one the account's books do not reach), or if a revert to
             Projected lands inside the transfer's books
             (:func:`~app.services.planned_rows_books.reject_revert_below_the_books`,
@@ -234,6 +307,7 @@ def apply_status_to_all_three(
     reject_revert_below_the_books(rows.transfer, new_status_id)
     reject_stated_days_without_settle(new_status_id, stated)
     legs = _side_legs(rows.transfer)
+    reject_stated_day_on_a_zero_close(legs, stated, settlement)
     # Each SIDE's day, resolved before either side is written; out of the
     # band the arm un-dates both, so nothing is resolved there.
     days = (

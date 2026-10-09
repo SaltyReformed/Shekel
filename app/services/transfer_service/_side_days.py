@@ -29,10 +29,9 @@ view into the writer's side view once, before any write.  The ONE writer is
 the born-settled create's identity writer beside it; both call
 :func:`resolve_pair_days`.
 
-Through the interval each side's current day is read off its SHADOW -- the row
-the status seam writes, and the only home of a ``$0.00`` close's day -- and
-plan step ``X-bi-6-4d`` re-plumbs that input to the movements when the shadows
-go.  Nothing here reads either.
+Each side's current day is read off its payment RECORD by the writer (plan
+step ``balance:X-bi-6-4d-2``; off its twin row until then); a ``$0.00`` close
+holds no record and so no day.  Nothing here reads either.
 """
 
 from dataclasses import dataclass
@@ -133,17 +132,18 @@ def repair_fallback(
 ) -> date:
     """Return the day a pair with no evidence on either side shares.
 
-    The first day recorded in the repair order -- a leg still in the settled
-    band before one that drifted out of it, then expense before income
-    (``_status``'s ordering, kept) -- and otherwise *today*.  So a mark-paid
-    borrows today, a repair never invents a day when either leg records one,
-    and two borrowed sides share one day.
+    The first day recorded in the repair order -- expense before income --
+    and otherwise *today*.  So a mark-paid borrows today, a re-derivation
+    never invents a day when either side records one, and two borrowed sides
+    share one day.  (The order put a twin still in the settled band before
+    one that had drifted out of it until plan step ``balance:X-bi-6-4d-2``:
+    a transfer has one status, so there is no drift left to order.)
 
     Args:
-        recorded_in_repair_order: Each leg's recorded day, in repair order,
-            including a leg out of the band (a drifted leg's stale day is the
-            last thing a repair may fall back on, as it was).
-        today: The owner's today (``display_today()``, read by the writer).
+        recorded_in_repair_order: Each side's recorded day, expense then
+            income.
+        today: The fallback when neither records one -- the writer's own
+            (``_status._fallback_day``).
 
     Returns:
         The day to share.

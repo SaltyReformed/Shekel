@@ -60,7 +60,7 @@ shows it, flag or no flag.
 **Where ``gross`` comes from is the CALLER'S, and it must be.**  A projected
 row is worth what settling it would book, which is
 ``transaction_service.settle_amount`` for an ordinary row and
-``transfer_service.settle_amount`` for a shadow leg.  Asking this module to
+``transfer_service.leg_settle_amount`` for a transfer leg.  Asking this module to
 choose between them would put the settle verbs' own partition in a third place,
 and it cannot import either without a cycle.
 
