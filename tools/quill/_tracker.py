@@ -33,6 +33,24 @@ nothing about the plan (``_state`` does), it only reads and writes.
   one sample does not show they never lag.  Removing a mark a card does not
   carry is answered 404 "Label does not exist".
 
+**Every read and write names its tracker's :class:`setup_tracker.Place`**, the one
+the :class:`Board` was resolved for: :data:`setup_tracker.PLAN` for every quill
+command, and the rehearsal tracker for X-cx's migration (L7).  A write cannot
+reach another tracker's cards or board:
+
+- the App's token is minted NARROWED to the place's one repository
+  (:meth:`Tracker.connect`).  That narrows repository access only: the board is an
+  ORGANIZATION project, which the token may still reach by node id;
+- so the board is resolved by its title in the place's organization and refused
+  unless it is linked to the place's repository (:func:`board_of`), and every board
+  write is sent through :meth:`Board._write`, which names that board and no other.
+
+**The numbering** (:func:`numbering`): GitHub numbers issues and pull requests in one
+sequence and answers a DELETED issue's number ``410 Gone`` (#11-#25 and #28-#30 on
+the real tracker), so a listing of the cards that exist shows gaps.  Each gap is
+read by number, which is how X-cx's migration (L7, Code B) is to find a card whose
+create answer was lost rather than file it twice.
+
 **A link to an issue outside the tracker is carried, never followed**
 (ruling ``balance:R-BAL188``).  GitHub lets a parent, sub-issue or blocked-by
 link cross repositories in one organization (Shekel itself joins it at X-cx's
@@ -45,8 +63,9 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from enum import Enum
 from urllib.parse import quote
 
 from tools.quill._github import (
@@ -57,11 +76,8 @@ from tools.quill._github import (
     app_jwt,
     installation_token,
 )
-from tools.quill.setup_tracker import FILING, ORG, REPO, find_board
+from tools.quill.setup_tracker import FILING, LINKED_REPOSITORIES, Place, find_board, linked
 
-_BASE = f"/repos/{ORG}/{REPO}"
-#: The tracker, as GitHub names a repository in a link (``nameWithOwner``).
-TRACKER = f"{ORG}/{REPO}"
 CLAIM_PREFIX = "refs/claims/"
 #: How long a write waits for the board to show what it placed: three times
 #: the ~20 seconds L1 measured, so a slow read is waited out and a stuck one
@@ -70,6 +86,9 @@ BOARD_WAIT_SECONDS = 60
 _POLL_SECONDS = 5
 #: A connection GitHub caps per card (a parent holds at most 100 sub-issues).
 _PAGE = 100
+#: GitHub's issue search serves at most this many results of one query, whatever its
+#: ``total_count`` says.
+_SEARCH_CAP = 1000
 
 _CARD_FIELDS = """
   id number fullDatabaseId title state stateReason
@@ -86,50 +105,81 @@ _CARD_FIELDS = """
     ... on ReopenedEvent { actor { login } } } }
 """
 
-_OPEN_CARDS = (
-    """query($after: String) { repository(owner: "%s", name: "%s") {
+def _open_cards(place: Place) -> str:
+    """The listing of every open card of ``place``."""
+    return (
+        """query($after: String) { repository(owner: "%s", name: "%s") {
   issues(first: 100, after: $after, states: [OPEN]) {
     pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
-    % (ORG, REPO, _CARD_FIELDS)
-)
+        % (place.owner, place.name, _CARD_FIELDS)
+    )
 
-#: Every card carrying the :data:`setup_tracker.FILING` mark, open or closed: a
-#: ruling's filing closes it before its last write removes the mark, and a ruling
-#: closed as completed by anyone is still unfinished (R-BAL206).
-_MARKED_CARDS = (
-    """query($after: String) { repository(owner: "%s", name: "%s") {
+
+def _marked_cards(place: Place) -> str:
+    """The listing of every card of ``place`` carrying the :data:`setup_tracker.FILING`
+    mark, open or closed: a ruling's filing closes it before its last write removes the
+    mark, and a ruling closed as completed by anyone is still unfinished (R-BAL206)."""
+    return (
+        """query($after: String) { repository(owner: "%s", name: "%s") {
   issues(first: 100, after: $after, labels: ["%s"], states: [OPEN, CLOSED]) {
     pageInfo { hasNextPage endCursor } nodes { %s } } } }"""
-    % (ORG, REPO, FILING, _CARD_FIELDS)
-)
+        % (place.owner, place.name, FILING, _CARD_FIELDS)
+    )
+
+
+#: What quill reads of a comment (:func:`_comment`).
+_COMMENT_FIELDS = "author { login } createdAt body"
+
+
+def _all_cards(place: Place) -> str:
+    """The listing of every card of ``place``, open and closed, each with its body and its
+    first hundred comments (and how many it has)."""
+    return (
+        """query($after: String) { repository(owner: "%s", name: "%s") {
+  issues(first: 100, after: $after, states: [OPEN, CLOSED]) {
+    pageInfo { hasNextPage endCursor } nodes { %s body
+      comments(first: 100) { totalCount nodes { %s } } } } } }"""
+        % (place.owner, place.name, _CARD_FIELDS, _COMMENT_FIELDS)
+    )
 
 _BOARD = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 {
   items(first: 100, after: $after, orderBy: {field: POSITION, direction: ASC}) {
     pageInfo { hasNextPage endCursor }
     nodes { id content { ... on Issue { number repository { nameWithOwner } } } } } } } }"""
 
-_EDITS = (
-    """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
+def _edits(place: Place) -> str:
+    """The read of one card's saved versions, a page at a time."""
+    return (
+        """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
   issue(number: $number) { number body createdAt author { login }
     userContentEdits(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes { id editedAt editor { login } diff } } } } }"""
-    % (ORG, REPO)
-)
+        % (place.owner, place.name)
+    )
 
-_COMMENTS = (
-    """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
+
+def _comments(place: Place) -> str:
+    """The read of one card's comments, a page at a time."""
+    return (
+        """query($number: Int!, $after: String) { repository(owner: "%s", name: "%s") {
   issue(number: $number) { number
     comments(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { author { login } createdAt body } } } } }"""
-    % (ORG, REPO)
-)
+      nodes { %s } } } } }"""
+        % (place.owner, place.name, _COMMENT_FIELDS)
+    )
+
+
+#: The repositories a board is linked to, read when quill connects (:func:`board_of`).
+_BOARD_REPOSITORIES = """query($id: ID!) { node(id: $id) { ... on ProjectV2 {
+  %s } } }""" % LINKED_REPOSITORIES
 
 
 #: The board's writes, the only GraphQL mutations quill sends (a recording
-#: sends no other: ``_recorded.refusal``).  ``$p`` is the board, ``$c`` a card's node
-#: id, ``$i`` a board item, ``$a`` the item it goes after.
+#: sends no other: ``_recorded.refusal``), each sent by :meth:`Board._write` alone.
+#: ``$p`` is the board, ``$c`` a card's node id, ``$i`` a board item, ``$a`` the item
+#: it goes after.
 BOARD_ADD = ("mutation($p: ID!, $c: ID!) { addProjectV2ItemById(input: {projectId: $p, "
              "contentId: $c}) { item { id } } }")
 BOARD_REMOVE = ("mutation($p: ID!, $i: ID!) { deleteProjectV2Item(input: {projectId: $p, "
@@ -220,6 +270,38 @@ class Claim:
 
 
 @dataclass(frozen=True)
+class WholeCard:
+    """A card with its text: its :class:`Card`, its body and every comment on it, oldest
+    first (X-cx's migration reads every card this way, L7)."""
+
+    card: Card
+    body: str
+    comments: tuple[Comment, ...]
+
+
+class NumberState(Enum):
+    """What GitHub answers a REST read of an issue number with (:meth:`Tracker.number_state`)."""
+
+    ISSUE = "an issue"
+    PULL_REQUEST = "a pull request"
+    DELETED = "a deleted issue (410)"
+    NOT_FOUND = "nothing this token can read (404)"
+
+
+@dataclass(frozen=True)
+class Numbering:
+    """The numbers a tracker's listing of cards lacks, read one by one (:func:`numbering`):
+    the deleted ones, the pull requests, and ``stopped_at``, the first number above the
+    highest listed that answers 404, where the read stopped.  It is the number the next
+    create takes only when nothing the token cannot read holds it: GitHub answers 404 for
+    that too, whatever it is."""
+
+    deleted: tuple[int, ...]
+    pull_requests: tuple[int, ...]
+    stopped_at: int
+
+
+@dataclass(frozen=True)
 class Edit:
     """One saved version of a card's body, in full."""
 
@@ -249,10 +331,16 @@ def _counted(connection: dict, what: str, number: int) -> list:
     return connection["nodes"]
 
 
-def _is_tracker_issue(node: dict) -> bool:
-    """Whether a link or a board item's content names an issue of the tracker: the one
-    test, for a parent, a sub-issue, a blocker and the board alike."""
-    return (node.get("repository") or {}).get("nameWithOwner") == TRACKER
+def _is_tracker_issue(node: dict, place: Place) -> bool:
+    """Whether a link or a board item's content names an issue of ``place``'s tracker: the
+    one test, for a parent, a sub-issue, a blocker and the board alike, on the whole
+    ``owner/name`` token."""
+    return (node.get("repository") or {}).get("nameWithOwner") == place.full_name
+
+
+def _comment(node: dict) -> Comment:
+    """A :class:`Comment` from one GraphQL comment node (:data:`_COMMENT_FIELDS`)."""
+    return Comment((node["author"] or {}).get("login"), node["createdAt"], node["body"])
 
 
 def _outside(node: dict, what: str) -> OutsideLink:
@@ -260,8 +348,9 @@ def _outside(node: dict, what: str) -> OutsideLink:
     return OutsideLink(what, f"{node['repository']['nameWithOwner']}#{node['number']}")
 
 
-def card_from(node: dict, board_id: str, app_login: str) -> Card:
-    """A :class:`Card` from one GraphQL issue node (:data:`_CARD_FIELDS`)."""
+def card_from(node: dict, place: Place, board_id: str, app_login: str) -> Card:
+    """A :class:`Card` of ``place``'s tracker from one GraphQL issue node
+    (:data:`_CARD_FIELDS`)."""
     number = node["number"]
     items = [
         item["id"] for item in _counted(node["projectItems"], "board items", number)
@@ -274,7 +363,7 @@ def card_from(node: dict, board_id: str, app_login: str) -> Card:
     links += [(child, "sub-issue") for child in _counted(node["subIssues"], "sub-issues", number)]
     links += [(blocker, "blocker")
               for blocker in _counted(node["blockedBy"], "blockers", number)]
-    inside = [(link, what) for link, what in links if _is_tracker_issue(link)]
+    inside = [(link, what) for link, what in links if _is_tracker_issue(link, place)]
     return Card(
         number=number,
         id=int(node["fullDatabaseId"]),
@@ -294,7 +383,7 @@ def card_from(node: dict, board_id: str, app_login: str) -> Card:
         closed_by_tool=not is_open and last_actor == app_login,
         touched_by_hand=bool(events) and last_actor != app_login,
         outside=tuple(_outside(link, what) for link, what in links
-                      if not _is_tracker_issue(link)),
+                      if not _is_tracker_issue(link, place)),
     )
 
 
@@ -306,18 +395,93 @@ def claim_message(card: int, branch: str) -> str:
     return f"claim plan#{card}\n\nbranch: {branch}\n"
 
 
+def numbering(listed: Iterable[int], state_of: Callable[[int], NumberState]) -> Numbering:
+    """Read by number every number from #1 that a listing of every card lacks, up to the
+    first one above the highest listed that answers 404.
+
+    A deleted issue (410) and a pull request are stepped over.  What it REFUSES, naming the
+    number: an issue the listing lacked (GitHub's listing lags a create: read again later);
+    a 404 BELOW the highest listed, which GitHub's one sequence leaves only where something
+    this token cannot read holds the number; and, raised by ``state_of``, an issue moved to
+    another repository (301).
+
+    Args:
+        listed: The numbers of every card the listing holds, open and closed.
+        state_of: How GitHub answers a REST read of one number
+            (:meth:`Tracker.number_state`).
+
+    Returns:
+        The deleted numbers and pull requests among the gaps, and the number the read
+        stopped at (:class:`Numbering`).
+
+    Raises:
+        TrackerError: For each refusal above.
+    """
+    listed = set(listed)
+    highest = max(listed, default=0)
+    deleted, pull_requests, number = [], [], 0
+    while True:
+        number += 1
+        if number in listed:
+            continue
+        state = state_of(number)
+        if state is NumberState.ISSUE:
+            raise TrackerError(f"#{number} is an issue the listing of every card lacks "
+                               "(GitHub's listing lags a create): read it again")
+        if state is NumberState.NOT_FOUND:
+            if number < highest:
+                raise TrackerError(f"#{number} answers 404 below #{highest}, which the "
+                                   "listing holds: GitHub gave it out, to something this "
+                                   "token cannot read")
+            return Numbering(tuple(deleted), tuple(pull_requests), number)
+        (deleted if state is NumberState.DELETED else pull_requests).append(number)
+
+
+def board_of(github: GitHub, place: Place) -> str:
+    """The node id of ``place``'s board: found by its title in the place's organization,
+    and refused unless the read of its links proves it linked to the place's repository
+    (:func:`setup_tracker.linked`), so a board titled like another tracker's is never
+    written as this one's.
+
+    Raises:
+        TrackerError: When no board has the title, or the one that has it is not linked
+            to the place's repository, or a read GitHub cut short leaves that unread.
+    """
+    board_id = find_board(github, place)
+    if board_id is None:
+        raise TrackerError(f"{place.full_name} has no board titled {place.board_title!r}; "
+                           "run python -m tools.quill.setup_tracker")
+    repositories = github.graphql(_BOARD_REPOSITORIES, id=board_id)["node"]["repositories"]
+    link = linked(place, repositories)
+    if link is not True:
+        names = [node["nameWithOwner"] for node in repositories["nodes"]]
+        verdict = (f"not to {place.full_name}" if link is False else
+                   f"a read GitHub cut short of its {repositories['totalCount']}, none of "
+                   f"them {place.full_name}: whether it is linked is unread")
+        raise TrackerError(f"the board titled {place.board_title!r} is linked to {names}, "
+                           f"{verdict}")
+    return board_id
+
+
 class Board:
-    """The board: the steps and questions in the developer's drag order (R-BAL177).
+    """``place``'s board: the steps and questions in the developer's drag order (R-BAL177).
 
     ``sleep`` waits out the board's lag; tests pass one that does not wait.
     """
 
-    def __init__(self, github: GitHub, board_id: str,
+    def __init__(self, github: GitHub, place: Place, board_id: str,
                  sleep: Callable[[float], None] = time.sleep) -> None:
-        """Read and write the board ``board_id`` through ``github``."""
+        """Read and write the board ``board_id`` (``place``'s, :func:`board_of`) through
+        ``github``.  The place is :attr:`location` (:meth:`place` moves a card)."""
         self.github = github
+        self.location = place
         self.board_id = board_id
         self._sleep = sleep
+
+    def _write(self, mutation: str, **variables: str) -> dict:
+        """Send one of the board's writes, naming this board as ``$p`` and no other: the
+        fence every board write passes through."""
+        return self.github.graphql(mutation, p=self.board_id, **variables)
 
     def order(self) -> list[tuple[int, str]]:
         """The board's cards in their drag order: ``(card number, board item id)``."""
@@ -326,7 +490,7 @@ class Board:
             items = self.github.graphql(_BOARD, id=self.board_id, after=after)["node"]["items"]
             order += [
                 (item["content"]["number"], item["id"]) for item in items["nodes"]
-                if _is_tracker_issue(item["content"] or {})
+                if _is_tracker_issue(item["content"] or {}, self.location)
             ]
             if not items["pageInfo"]["hasNextPage"]:
                 return order
@@ -334,20 +498,19 @@ class Board:
 
     def add(self, card: Card) -> str:
         """Put a card on the board (GitHub adds it at the bottom); its board item id."""
-        answer = self.github.graphql(BOARD_ADD, p=self.board_id, c=card.node_id)
-        return answer["addProjectV2ItemById"]["item"]["id"]
+        return self._write(BOARD_ADD, c=card.node_id)["addProjectV2ItemById"]["item"]["id"]
 
     def remove(self, item: str) -> None:
         """Take a card off the board (the card itself is untouched)."""
-        self.github.graphql(BOARD_REMOVE, p=self.board_id, i=item)
+        self._write(BOARD_REMOVE, i=item)
 
     def place(self, item: str, after: str | None) -> bool:
         """Move a board item to just after ``after`` (the top when None); whether the
         board shows it there within :data:`BOARD_WAIT_SECONDS`."""
         if after is None:
-            self.github.graphql(BOARD_TOP, p=self.board_id, i=item)
+            self._write(BOARD_TOP, i=item)
         else:
-            self.github.graphql(BOARD_AFTER, p=self.board_id, i=item, a=after)
+            self._write(BOARD_AFTER, i=item, a=after)
         return self.shows(item, after)
 
     def shows(self, item: str, after: str | None) -> bool:
@@ -367,64 +530,108 @@ class Board:
 
 
 class Tracker:  # pylint: disable=too-many-public-methods
-    """The tracker as the App sees it: its cards and claims, and its :class:`Board`.
+    """A tracker as the App sees it: its cards and claims, and its :class:`Board`.
 
-    Pylint: ``too-many-public-methods`` (24/20) -- ``connect``, then **one
+    Pylint: ``too-many-public-methods`` (26/20) -- ``connect``, then **one
     method per read or write quill makes of the tracker** (most one
     request, ``claim`` four; this module is the one place it speaks to
     GitHub), the board's own writes already apart in :class:`Board`.  Three
     of them, the filing mark's read and its removal (R-BAL202) and a leaf's
     unlink (R-BAL205), took it past 20; ``show``'s read of a card's comments
-    is the fourth.
+    is the fourth; X-cx's migration (L7) reads every card whole and asks GitHub
+    what a number is, the fifth and sixth.
     The claims' three (``claims``, ``claim``, ``release``: git references, not
     cards) could stand apart the same way; that split is not this change's.
 
     ``github`` is any object with :class:`_github.GitHub`'s ``rest``,
-    ``graphql`` and ``graphql_lookup``.
+    ``graphql`` and ``graphql_lookup``.  The tracker's :class:`setup_tracker.Place`
+    is its board's (:attr:`Board.location`), its one home.
     """
 
     def __init__(self, github: GitHub, board: Board, app_login: str) -> None:
-        """Read and write through ``github`` as ``app_login``; ``board`` is the plan's."""
+        """Read and write through ``github`` as ``app_login``, on ``board``'s place."""
         self.github = github
         self.board = board
         self.board_id = board.board_id
+        self.place = board.location
         self.app_login = app_login
 
     @classmethod
-    def connect(cls) -> Tracker:
-        """The tracker, through a fresh installation token of quill's App."""
+    def connect(cls, place: Place) -> Tracker:
+        """``place``'s tracker, through a fresh installation token of quill's App narrowed to
+        the place's repository, and its board (:func:`board_of`)."""
         client_id, key = app_credentials()
         jwt = app_jwt(client_id, key, int(time.time()))
         login = GitHub(jwt).rest("GET", "/app")["slug"]
-        github = GitHub(installation_token(app_installation(ORG, jwt)["id"], jwt))
-        board_id = find_board(github)
-        if board_id is None:
-            raise TrackerError("the tracker has no board; run python -m tools.quill.setup_tracker")
-        return cls(github, Board(github, board_id), login)
+        installation = app_installation(place.owner, jwt)["id"]
+        github = GitHub(installation_token(installation, jwt, repository=place.name))
+        return cls(github, Board(github, place, board_of(github, place)), login)
 
     # -- reads ---------------------------------------------------------------
 
-    def _listing(self, query: str) -> dict[int, Card]:
-        """Every card a listing ``query`` (:data:`_OPEN_CARDS`, :data:`_MARKED_CARDS`)
-        holds, by number, read page by page."""
-        cards, after = {}, None
+    def _nodes(self, query: str) -> Iterator[dict]:
+        """Every issue node a listing ``query`` (:func:`_open_cards`, :func:`_marked_cards`,
+        :func:`_all_cards`) holds, read page by page: the one walk of a listing."""
+        after = None
         while True:
             page = self.github.graphql(query, after=after)["repository"]["issues"]
-            for node in page["nodes"]:
-                cards[node["number"]] = card_from(node, self.board_id, self.app_login)
+            yield from page["nodes"]
             if not page["pageInfo"]["hasNextPage"]:
-                return cards
+                return
             after = page["pageInfo"]["endCursor"]
+
+    def _card(self, node: dict) -> Card:
+        """A :class:`Card` of this tracker from one GraphQL issue node."""
+        return card_from(node, self.place, self.board_id, self.app_login)
+
+    def _listing(self, query: str) -> dict[int, Card]:
+        """Every card a listing ``query`` holds, by number."""
+        return {node["number"]: self._card(node) for node in self._nodes(query)}
 
     def open_cards(self) -> dict[int, Card]:
         """Every open card, by number."""
-        return self._listing(_OPEN_CARDS)
+        return self._listing(_open_cards(self.place))
 
     def marked(self) -> dict[int, Card]:
         """Every card carrying the :data:`setup_tracker.FILING` mark, open or closed, by
         number: each a filing quill began; whether it is still unfinished is
         ``_state.filing_unfinished``'s answer (one dropped while marked is not)."""
-        return self._listing(_MARKED_CARDS)
+        return self._listing(_marked_cards(self.place))
+
+    def all_cards(self) -> dict[int, WholeCard]:
+        """Every card, open and closed, by number, each WHOLE: its body and every comment.
+
+        The listing carries a card's first hundred comments; a card with more has them
+        all read by :meth:`comments`, so no card's comments are cut short.
+        """
+        cards = {}
+        for node in self._nodes(_all_cards(self.place)):
+            number, held = node["number"], node["comments"]
+            comments = ([_comment(each) for each in held["nodes"]]
+                        if held["totalCount"] <= len(held["nodes"]) else self.comments(number))
+            cards[number] = WholeCard(self._card(node), node["body"] or "", tuple(comments))
+        return cards
+
+    def number_state(self, number: int) -> NumberState:
+        """What GitHub answers a REST read of issue ``number`` with (:func:`numbering`).
+
+        Raises:
+            TrackerError: For an issue moved to another repository (GitHub's 301, which
+                :class:`_github.GitHub` never follows).
+            GitHubError: For any other refusal.
+        """
+        try:
+            issue = self.github.rest("GET", f"{self.place.path}/issues/{number}")
+        except GitHubError as error:
+            if error.status == 410:
+                return NumberState.DELETED
+            if error.status == 404:
+                return NumberState.NOT_FOUND
+            if error.status == 301:
+                raise TrackerError(f"#{number} of {self.place.full_name} was moved to another "
+                                   "repository (301)") from error
+            raise
+        return NumberState.PULL_REQUEST if "pull_request" in issue else NumberState.ISSUE
 
     def cards(self, numbers: Iterable[int]) -> dict[int, Card]:
         """The cards numbered ``numbers``, open or closed; one that does not exist is
@@ -435,21 +642,21 @@ class Tracker:  # pylint: disable=too-many-public-methods
             batch = wanted[start:start + _PAGE // 2]
             fields = " ".join(f"c{n}: issue(number: {n}) {{ {_CARD_FIELDS} }}" for n in batch)
             answer = self.github.graphql_lookup(
-                f'query {{ repository(owner: "{ORG}", name: "{REPO}") {{ {fields} }} }}'
+                f'query {{ repository(owner: "{self.place.owner}", name: "{self.place.name}") '
+                f'{{ {fields} }} }}'
             )["repository"]
             for number in batch:
                 if answer[f"c{number}"] is not None:
-                    found[number] = card_from(answer[f"c{number}"], self.board_id,
-                                              self.app_login)
+                    found[number] = self._card(answer[f"c{number}"])
         return found
 
     def body(self, number: int) -> str:
         """A card's body as it stands."""
-        return self.github.rest("GET", f"{_BASE}/issues/{number}")["body"] or ""
+        return self.github.rest("GET", f"{self.place.path}/issues/{number}")["body"] or ""
 
     def claims(self) -> dict[int, Claim]:
         """Every claim, by card: one REST listing, then one read of their commits."""
-        refs = self.github.rest("GET", f"{_BASE}/git/matching-refs/claims/") or []
+        refs = self.github.rest("GET", f"{self.place.path}/git/matching-refs/claims/") or []
         shas = {}
         for ref in refs:
             number = ref["ref"].removeprefix(CLAIM_PREFIX)
@@ -462,7 +669,8 @@ class Tracker:  # pylint: disable=too-many-public-methods
             for n, sha in shas.items()
         )
         answer = self.github.graphql_lookup(
-            f'query {{ repository(owner: "{ORG}", name: "{REPO}") {{ {fields} }} }}'
+            f'query {{ repository(owner: "{self.place.owner}", name: "{self.place.name}") '
+            f'{{ {fields} }} }}'
         )["repository"]
         claims = {}
         for number, sha in shas.items():
@@ -481,7 +689,8 @@ class Tracker:  # pylint: disable=too-many-public-methods
         """
         versions, after = [], None
         while True:
-            issue = self.github.graphql(_EDITS, number=number, after=after)["repository"]["issue"]
+            issue = self.github.graphql(_edits(self.place), number=number,
+                                        after=after)["repository"]["issue"]
             if issue is None:
                 raise TrackerError(f"plan#{number} does not exist")
             page = issue["userContentEdits"]
@@ -503,10 +712,9 @@ class Tracker:  # pylint: disable=too-many-public-methods
         filed is GitHub's NOT_FOUND error, which :meth:`_github.GitHub.graphql` raises."""
         comments, after = [], None
         while True:
-            answer = self.github.graphql(_COMMENTS, number=number, after=after)
+            answer = self.github.graphql(_comments(self.place), number=number, after=after)
             page = answer["repository"]["issue"]["comments"]
-            comments += [Comment((node["author"] or {}).get("login"), node["createdAt"],
-                                 node["body"]) for node in page["nodes"]]
+            comments += [_comment(node) for node in page["nodes"]]
             if not page["pageInfo"]["hasNextPage"]:
                 return comments
             after = page["pageInfo"]["endCursor"]
@@ -516,17 +724,41 @@ class Tracker:  # pylint: disable=too-many-public-methods
         ``sha`` -- the branch that SHIPPED it, which git alone does not record.
 
         ``repository`` is the code repository (``owner/name``); it is public, so
-        the App reads its pull requests (measured 2026-10-04).
+        the App reads its pull requests (measured 2026-10-04; and through a token
+        narrowed to the tracker, 2026-10-09 08:00 EDT, X-cx L7 A2).
         """
         pulls = self.github.rest("GET", f"/repos/{repository}/commits/{sha}/pulls")
         return {pull["head"]["ref"] for pull in pulls
                 if pull.get("merged_at") and pull["base"]["ref"] == "dev"}
 
     def find_titles(self, text: str) -> list[tuple[int, str]]:
-        """Cards whose title holds ``text`` (GitHub's search: words, not characters)."""
-        query = quote(f'repo:{ORG}/{REPO} in:title "{text}"', safe="")
-        found = self.github.rest("GET", f"/search/issues?q={query}&per_page=100")
-        return [(item["number"], item["title"]) for item in found["items"]
+        """Cards whose title holds ``text`` (GitHub's search: words, not characters), read
+        page by page until every hit is read.
+
+        Raises:
+            TrackerError: When GitHub says its search timed out (``incomplete_results``),
+                finds more hits than it serves (:data:`_SEARCH_CAP`), or answers a page
+                empty before every hit is read, so no answer would be every card.
+        """
+        query = quote(f'repo:{self.place.full_name} in:title "{text}"', safe="")
+        items, page = [], 1
+        while True:
+            more = "" if page == 1 else f"&page={page}"
+            found = self.github.rest("GET", f"/search/issues?q={query}&per_page=100{more}")
+            if found["incomplete_results"] or found["total_count"] > _SEARCH_CAP:
+                raise TrackerError(
+                    f"GitHub's title search for {text!r} finds {found['total_count']} "
+                    f"(incomplete: {found['incomplete_results']}); it serves {_SEARCH_CAP} "
+                    "at most and every one: name the card as plan#N")
+            if not found["items"] and len(items) < found["total_count"]:
+                raise TrackerError(
+                    f"GitHub's title search for {text!r} answered page {page} empty after "
+                    f"{len(items)} of {found['total_count']} hits: name the card as plan#N")
+            items += found["items"]
+            if len(items) >= found["total_count"]:
+                break
+            page += 1
+        return [(item["number"], item["title"]) for item in items
                 if "pull_request" not in item]
 
     # -- writes --------------------------------------------------------------
@@ -541,9 +773,15 @@ class Tracker:  # pylint: disable=too-many-public-methods
         measured 2026-10-04 on the mark itself, before it existed; ``setup_tracker.py
         --apply`` then corrected it), so a card filed before the mark exists is still
         born marked.
+
+        **A retry may file a second card.**  A create refused for a rate limit is re-sent
+        on GitHub's word (:mod:`_github`), whose pages do not say whether the refused one
+        was performed.  The extra is born marked like the first, so ``quill file`` run again
+        finds both by kind, title and text and refuses while two stand
+        (``_filing._same_filing``); this answer is the re-sent create's card.
         """
         labels = sorted({*labels, FILING})
-        issue = self.github.rest("POST", f"{_BASE}/issues",
+        issue = self.github.rest("POST", f"{self.place.path}/issues",
                                  {"title": title, "body": body, "type": kind, "labels": labels})
         got = ((issue.get("type") or {}).get("name"), sorted(l["name"] for l in issue["labels"]))
         if got != (kind, labels):
@@ -554,65 +792,69 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def retype(self, number: int, kind: str) -> None:
         """Change a card's kind, reading it back."""
-        issue = self.github.rest("PATCH", f"{_BASE}/issues/{number}", {"type": kind})
+        issue = self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {"type": kind})
         if (issue.get("type") or {}).get("name") != kind:
             raise TrackerError(f"GitHub did not make plan#{number} a {kind}")
 
     def retitle(self, number: int, title: str) -> None:
         """Rename a card."""
-        self.github.rest("PATCH", f"{_BASE}/issues/{number}", {"title": title})
+        self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {"title": title})
 
     def set_body(self, number: int, body: str) -> None:
         """Replace a card's body (its spec, for a step)."""
-        self.github.rest("PATCH", f"{_BASE}/issues/{number}", {"body": body})
+        self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {"body": body})
 
     def comment(self, number: int, text: str) -> None:
-        """Add a comment to a card."""
-        self.github.rest("POST", f"{_BASE}/issues/{number}/comments", {"body": text})
+        """Add a comment to a card.
+
+        A retry may add it twice, as a create may file twice (:meth:`create`); no command
+        reads how many comments a card has, so a doubled note is shown on the card and
+        decides nothing."""
+        self.github.rest("POST", f"{self.place.path}/issues/{number}/comments", {"body": text})
 
     def close(self, number: int, reason: str) -> None:
         """Close a card: ``completed`` (it shipped) or ``not_planned`` (it was dropped)."""
-        self.github.rest("PATCH", f"{_BASE}/issues/{number}",
+        self.github.rest("PATCH", f"{self.place.path}/issues/{number}",
                          {"state": "closed", "state_reason": reason})
 
     def reopen(self, number: int) -> None:
         """Reopen a card."""
-        self.github.rest("PATCH", f"{_BASE}/issues/{number}", {"state": "open"})
+        self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {"state": "open"})
 
     def unmark(self, number: int) -> None:
         """Remove a card's :data:`setup_tracker.FILING` mark: its filing's last write."""
-        self.github.rest("DELETE", f"{_BASE}/issues/{number}/labels/{FILING}")
+        self.github.rest("DELETE", f"{self.place.path}/issues/{number}/labels/{FILING}")
 
     def add_child(self, parent: int, child: Card) -> None:
         """Make ``child`` a sub-issue of ``parent``."""
-        self.github.rest("POST", f"{_BASE}/issues/{parent}/sub_issues",
+        self.github.rest("POST", f"{self.place.path}/issues/{parent}/sub_issues",
                          {"sub_issue_id": child.id})
 
     def remove_child(self, parent: int, child: Card) -> None:
         """Unlink ``child`` from ``parent``, whose sub-issue it is."""
-        self.github.rest("DELETE", f"{_BASE}/issues/{parent}/sub_issue",
+        self.github.rest("DELETE", f"{self.place.path}/issues/{parent}/sub_issue",
                          {"sub_issue_id": child.id})
 
     def block(self, number: int, blocker: Card) -> None:
         """Record that ``number`` is blocked by ``blocker``."""
-        self.github.rest("POST", f"{_BASE}/issues/{number}/dependencies/blocked_by",
+        self.github.rest("POST", f"{self.place.path}/issues/{number}/dependencies/blocked_by",
                          {"issue_id": blocker.id})
 
     def unblock(self, number: int, blocker: Card) -> None:
         """Remove the record that ``number`` is blocked by ``blocker``."""
         self.github.rest(
-            "DELETE", f"{_BASE}/issues/{number}/dependencies/blocked_by/{blocker.id}"
+            "DELETE", f"{self.place.path}/issues/{number}/dependencies/blocked_by/{blocker.id}"
         )
 
     def claim(self, number: int, branch: str) -> Claim:
         """Claim a card for ``branch``; :class:`ClaimTaken` when another session holds it."""
-        main = self.github.rest("GET", f"{_BASE}/git/ref/heads/main")["object"]["sha"]
-        tree = self.github.rest("GET", f"{_BASE}/git/commits/{main}")["tree"]["sha"]
-        commit = self.github.rest("POST", f"{_BASE}/git/commits", {
+        main = self.github.rest("GET", f"{self.place.path}/git/ref/heads/main")["object"]["sha"]
+        tree = self.github.rest("GET", f"{self.place.path}/git/commits/{main}")["tree"]["sha"]
+        commit = self.github.rest("POST", f"{self.place.path}/git/commits", {
             "message": claim_message(number, branch), "tree": tree, "parents": [],
         })
         try:
-            self.github.rest("POST", f"{_BASE}/git/refs",
+            self.github.rest("POST", f"{self.place.path}/git/refs",
                              {"ref": f"{CLAIM_PREFIX}{number}", "sha": commit["sha"]})
         except GitHubError as error:
             if error.status == 422 and "Reference already exists" in str(error):
@@ -622,4 +864,4 @@ class Tracker:  # pylint: disable=too-many-public-methods
 
     def release(self, number: int) -> None:
         """Delete a card's claim."""
-        self.github.rest("DELETE", f"{_BASE}/git/refs/claims/{number}")
+        self.github.rest("DELETE", f"{self.place.path}/git/refs/claims/{number}")

@@ -23,8 +23,11 @@ from tools.quill._recorded import (
     redacted,
     refusal,
 )
-from tools.quill._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP, TRACKER
-from tools.quill.setup_tracker import FILING
+from tools.quill._tracker import BOARD_ADD, BOARD_AFTER, BOARD_REMOVE, BOARD_TOP
+from tools.quill.setup_tracker import FILING, PLAN, REHEARSAL
+
+#: The real tracker's ``owner/name``, as every recording here names it.
+TRACKER = PLAN.full_name
 
 
 def test_a_recording_never_keeps_a_token():
@@ -493,3 +496,77 @@ def test_a_string_in_a_list_takes_no_card_from_the_url():
                 "answer": ["secret A", {"id": 1, "lines": ["secret B"]}]}
     kept = json.dumps(redacted([exchange], _scratch(11)))
     assert "secret A" not in kept and "secret B" not in kept
+
+
+def _rehearsal_scratch(*numbers):
+    """Scratch cards numbered ``numbers`` on X-cx's rehearsal tracker and its board PVT_R."""
+    return Scratch({*numbers}, {900 + n for n in numbers}, {f"S_{n}" for n in numbers},
+                   {f"SI_{n}" for n in numbers}, "PVT_R", REHEARSAL)
+
+
+_REHEARSAL_ISSUES = f"https://api.github.com/repos/{REHEARSAL.full_name}/issues"
+
+
+def test_a_recording_on_the_rehearsal_tracker_keeps_its_scratch_text_and_none_of_the_reals():
+    """X-cx L7: recordings of the rehearsal's reads name its place.  Its own scratch card's
+    text is kept; the real tracker's card of the same number is another repository's, so
+    its text is redacted; the rehearsal board's title is kept."""
+    scratch = _rehearsal_scratch(11)
+    kept = json.dumps(redacted([
+        {"method": "GET", "url": f"{_REHEARSAL_ISSUES}/11", "body": None, "status": 200,
+         "answer": {"number": 11, "title": "rehearsal scratch text"}},
+        {"method": "GET", "url": f"{_ISSUES}/11", "body": None, "status": 200,
+         "answer": {"number": 11, "title": "secret real card"}},
+        _graphql({"data": {"repository": {"c11": {"number": 11, "title": "secret A"}}}}),
+        _graphql({"data": {"organization": {"projectsV2": {"nodes": [
+            {"id": "PVT_R", "title": REHEARSAL.board_title}]}}}}),
+    ], scratch))
+    assert "rehearsal scratch text" in kept and REHEARSAL.board_title in kept
+    assert "secret" not in kept
+
+
+@pytest.mark.parametrize(("scratch", "url"), [
+    (_scratch(11), f"{_REHEARSAL_ISSUES}/11"),
+    (_rehearsal_scratch(11), f"{_ISSUES}/11"),
+])
+def test_a_write_to_the_other_tracker_is_refused_whichever_place_the_scratch_names(scratch, url):
+    """The real tracker's URL is a prefix of the rehearsal's, so a write is matched on the
+    path under the scratch place's URL: the other tracker's issue #11 is never a scratch
+    card, whichever way round."""
+    assert refusal("PATCH", url, {"title": f"{SCRATCH} x"}, scratch) is not None
+    assert refusal("PATCH", url.replace("/11", "/12"), {"title": f"{SCRATCH} x"},
+                   scratch) is not None
+
+
+def test_a_scratch_set_keeps_its_place_and_an_old_recording_reads_as_the_real_trackers():
+    """Every recording kept before L7 named no place and was made on the real tracker."""
+    assert Scratch.from_json(_rehearsal_scratch(11).as_json()) == _rehearsal_scratch(11)
+    old = {key: value for key, value in _scratch(11).as_json().items() if key != "place"}
+    assert Scratch.from_json(old) == _scratch(11) and _scratch(11).place == PLAN
+
+
+class _Kept(Sent):
+    """A session answering as :class:`Sent` does that also keeps each request's keywords."""
+
+    def __init__(self, status, answer):
+        """Hold the answer; keep every request's keywords."""
+        super().__init__(status, answer)
+        self.keywords = []
+
+    def request(self, method, url, **kwargs):
+        """Keep the keywords; answer."""
+        self.keywords.append(kwargs)
+        return super().request(method, url, **kwargs)
+
+
+def test_a_recorder_passes_on_the_no_redirect_flag_every_request_carries():
+    """``_github.GitHub`` sends every request with ``allow_redirects=False``; the recorder
+    passes it on to the session it wraps, so a recording session follows no redirect
+    either, and still refuses a body sent other than as JSON."""
+    session = _Kept(200, {})
+    recorder = Recorder(_scratch(11), session)
+    recorder.request("GET", f"{_ISSUES}/2", allow_redirects=False)
+    assert session.keywords == [{"allow_redirects": False}]
+    with pytest.raises(ValueError, match="only as JSON"):
+        recorder.request("GET", f"{_ISSUES}/2", allow_redirects=False, data="x")
+    assert len(session.sent) == 1
