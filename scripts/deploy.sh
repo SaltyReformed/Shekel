@@ -276,9 +276,14 @@ cosign_resolve_digest() {
     # RepoDigests when present (i.e. after a push); for a freshly
     # built local image, .Id is the manifest digest the local store
     # assigned and is what cosign will sign.
+    #
+    # The first line by parameter expansion, not `| head -n 1` (plan step
+    # balance:X-dm): no reader can leave the pipe early, and `|| true`
+    # makes a failed inspect EMPTY here by construction, not because the
+    # callers' command substitution happens to run without errexit.
     local digest
-    digest=$(docker inspect --format='{{.Id}}' "${IMAGE_REF}" 2>/dev/null \
-        | head -n 1)
+    digest=$(docker inspect --format='{{.Id}}' "${IMAGE_REF}" 2>/dev/null || true)
+    digest=${digest%%$'\n'*}
     # Normalise to bare ``sha256:...`` (docker may print the digest
     # under .Id without the algorithm prefix on some versions).
     if [ -n "$digest" ] && [[ "$digest" != sha256:* ]]; then
