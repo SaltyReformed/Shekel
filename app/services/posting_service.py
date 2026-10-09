@@ -202,13 +202,13 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
     done -> projected (revert)                  both un-dated: reverse to zero
     done -> settled (archive)                   no-op (at target)
     projected -> cancelled                      no-op (nothing posted)
-    restore of a settled, soft-deleted xfer     re-post (legs contributing)
+    restore of a soft-deleted xfer              no-op (holds no movement)
     settled ``settled_on`` edit (N-13)          reverse at the old day, post at
                                                 the new (two keys, one pass)
     ==========================================  ==============================
 
-    A DELETE is not here: it must reverse BEFORE the flag flips, on every
-    shadow deleted or not, and that is
+    A DELETE is not here: it must reverse BEFORE the records come off, on
+    every record either side holds, and that is
     :func:`reverse_transfer_postings_before_delete` -- the teardown twin the
     transaction side has had since plan step X-f3b, for the same reason.
 
@@ -225,15 +225,15 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
     real account's net per day is unchanged and the loan checked-projection
     assert holds through the move.
 
-    **It reads every movement of the transfer's family, a dead shadow's
-    included** (:func:`app.services.transfer_legs.transfer_family_movements`),
-    each booked under its LEG.  A soft-deleted transfer's legs are
-    non-contributing, so their targets are empty and any leg they still hold
-    reverses -- which is what lets the loan lineage probe hand a soft-deleted
-    payment here and get its cash reversed (the E1a review's H2 case); and a
-    movement under a DEAD shadow is no leg's record, so it posts nothing
-    (``purchase_posts``): a shadow deleted around the service (a drift no
-    door writes) has its side's legs reversed while the live side's stay.
+    **It reads every record the transfer's two sides hold**
+    (:func:`app.services.transfer_legs.transfer_family_movements`), each
+    booked under its LEG; since plan step ``balance:X-bi-6-4d-2`` that is the
+    whole family, every record hanging off the transfer by a side link and
+    none under a shadow.  A soft-deleted transfer holds none: its delete
+    takes each side's records off first (ruling **R-CC75**), and the
+    database refuses a transfer hidden holding one or a record arriving
+    under a hidden one (``app/deleted_row_infrastructure``'s transfer arm).
+    So a sync of a hidden transfer, or of one just restored, has none to post.
 
     Flushes but does not commit (the caller owns the transaction).
 
@@ -259,14 +259,15 @@ def reverse_transfer_postings_before_delete(xfer: Transfer) -> None:
     WHOLE posted family to zero FIRST, while every row still exists.  It cannot
     be :func:`sync_transfer_postings`, which reads each movement's own state
     and would find, at the moment the delete door calls it, two live,
-    contributing, dated movements and leave them posted; and it must not stop
-    at the LIVE shadows, because an idempotent hard delete of an already
-    soft-deleted pair (``delete_transfer(allow_deleted=True)``) must find its
-    postings already at zero, and a pair whose shadows were flagged without
-    this reversal (Transfer Invariant 4 drift) must still be reversed rather
-    than stranded when the hard delete SET-NULLs the movement link.  So it
-    reads every covering movement of *xfer*'s family, a dead shadow's
-    included, and reverses each (``posted=False``), plus the legacy
+    contributing, dated movements and leave them posted.  Since plan step
+    ``balance:X-bi-6-4d-2`` the family is every record either side holds by
+    its side link (:func:`app.services.transfer_legs.transfer_family_movements`),
+    which the delete then takes off through the one removal act, the journal
+    links SET-NULL with each (``journal_entries.transaction_entry_id``);
+    reversing first leaves each posted entry and its reversal a net-zero pair.
+    A hidden transfer holds none, so the idempotent hard delete of an already
+    soft-deleted one (``delete_transfer(allow_deleted=True)``) finds nothing
+    to reverse.  It reverses each record (``posted=False``), plus the legacy
     one-entry source.
 
     Idempotent no-op for a transfer that never posted.  Flushes but does not

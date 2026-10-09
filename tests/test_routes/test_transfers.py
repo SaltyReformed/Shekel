@@ -33,7 +33,7 @@ from app.routes._render_helpers import transfer_side_boxes
 from app.services import balance_at, transfer_legs
 from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
-from app.services import transfer_service
+from app.services import posting_service, transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
@@ -94,6 +94,18 @@ def _create_savings_account(seed_user):
     open_books_before_the_first_assertion(db.session, acct)
     db.session.commit()
     return acct
+
+
+def _ledger_of(seed_user, checking_id, savings_id, scenario_id):
+    """``(Checking's posted total, Savings', the owner's journal entry count)``, re-read."""
+    db.session.expire_all()
+    return (
+        posting_service.account_posting_total(checking_id, scenario_id),
+        posting_service.account_posting_total(savings_id, scenario_id),
+        db.session.query(JournalEntry).filter(
+            JournalEntry.user_id == seed_user["user"].id,
+        ).count(),
+    )
 
 
 def _create_template(seed_user, savings_acct, with_rule=True):
@@ -4803,6 +4815,53 @@ class TestTransferTemplateHardDelete:
             # Projected transfer is soft-deleted.
             db.session.refresh(xfer_projected)
             assert xfer_projected.is_deleted is True
+
+    def test_a_deleted_paid_transfer_is_no_history_so_the_template_is_deleted(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Its only Paid transfer deleted, "Permanently delete" deletes the definition.
+
+        Ruling **R-BAL246** ("Back as a plan, now", developer 2026-10-09):
+        the delete that takes a Paid transfer's payments off sets it back to
+        Projected, so nothing settled is left against its recurring transfer
+        and the permanent delete is no longer turned into an archive -- the
+        outcome Josh's answer 17 was promised a test of.  The ledger the
+        transfer's own delete left is the ledger after: the permanent delete
+        removes a plan, which posted nothing.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)
+            xfer = generate_transfer_of(template, seed_periods_today[0])
+            transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
+            db.session.commit()
+            template_id, xfer_id, savings_id = template.id, xfer.id, savings.id
+            checking_id = seed_user["account"].id
+            scenario_id = seed_user["scenario"].id
+            assert auth_client.delete(
+                f"/transfers/instance/{xfer_id}",
+            ).status_code == 200
+            ledger = _ledger_of(seed_user, checking_id, savings_id, scenario_id)
+            # The delete took the payment off: Savings, opened at $0.00,
+            # holds nothing.
+            assert ledger[1] == Decimal("0.00")
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/hard-delete", follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"permanently deleted" in resp.data
+            assert b"archived instead" not in resp.data
+            db.session.expire_all()
+            assert db.session.get(TransferTemplate, template_id) is None
+            assert db.session.get(Transfer, xfer_id) is None
+            assert db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).count() == 0
+            assert _ledger_of(
+                seed_user, checking_id, savings_id, scenario_id,
+            ) == ledger
 
     def test_hard_delete_transfer_template_with_history_already_archived(
         self, app, auth_client, seed_user, seed_periods_today,

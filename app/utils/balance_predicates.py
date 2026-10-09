@@ -314,7 +314,9 @@ def delete_returns_to_plan(row, *, took_off: bool) -> bool:
     brings back a plan -- never a ``$0.00`` close, "the bank took nothing",
     which a loan reads as a missed installment and charges its interest.  A
     settled item that held nothing IS a ``$0.00`` close and keeps its
-    status; an unsettled one is a plan already.  Polymorphic over both
+    status; an unsettled one keeps its status whatever came off -- a
+    Projected item is a plan already, and a Cancelled one stays Cancelled
+    even when kept payment records came off it.  Polymorphic over both
     status-bearing models for the reason :func:`enters_settled_band` states:
     the transfer delete asks it
     (``transfer_service._status.return_to_plan``), and the row delete is owed

@@ -583,11 +583,13 @@ def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
     so a row that does not lock a period cannot block a reset.
 
     **The parent decides, and since plan step ``balance:X-bi-6-4d-2`` it is
-    the only status there is**: a twin's status is no longer kept or read,
-    so the drift ruling **R-JM** settled here (a parent over a shadow whose
-    status differed) cannot be stored.  A movement either side holds still
-    holds its period, whatever the status, through
-    :func:`items_holding_a_movement`.
+    the only status read here**: a settle still STORES its twins Projected
+    under a Paid transfer, until ``balance:X-bi-6-4d-3`` deletes the twins,
+    but the row query excludes every twin (``transfer_id IS NULL``) and the
+    transfer query asks the transfer, so the drift ruling **R-JM** settled
+    here (a parent over a shadow whose status differed) is stored and never
+    read.  A movement either side holds still holds its period, whatever the
+    status, through :func:`items_holding_a_movement`.
 
     Args:
         periods: As :func:`items_holding_a_movement`.

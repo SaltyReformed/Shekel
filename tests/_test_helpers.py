@@ -4940,6 +4940,15 @@ def transfer_side_settle_day(db_session, transfer_id, account_id):
     ``None`` when the side holds no record or its record carries no day (a
     side never paid, a revert's kept record, a ``$0.00`` close).
 
+    **Decoded by its own query, never the app's decoder** (the X-bi-6-4d-2
+    leaf review's L-7): it read the record through
+    ``settle_day.recorded_settle_day``, the column decoder the writer's own
+    day resolution uses, so a decoder that mis-mapped a basis would have
+    agreed with itself here.  It reads the day and the basis's ``ref`` NAME
+    straight off the tables, and :class:`~app.enums.SettledDayBasisEnum`'s
+    values ARE those names, as :func:`transfer_side_record` and
+    :func:`transfer_side_figure` are already independent SQL.
+
     Args:
         db_session: The test ``db.session``.
         transfer_id: The ``budget.transfers`` id.
@@ -4950,10 +4959,32 @@ def transfer_side_settle_day(db_session, transfer_id, account_id):
     """
     # pylint: disable=import-outside-toplevel -- same lazy-app-import
     # convention every helper in this module follows.
-    from app.services.settle_day import recorded_settle_day
+    from app.enums import SettledDayBasisEnum
+    from app.extensions import db
+    from app.models.ref import SettledDayBasis
+    from app.models.transaction_entry import TransactionEntry
+    from app.services.settle_day import SettleDay
 
-    record = transfer_side_record(db_session, transfer_id, account_id)
-    return None if record is None else recorded_settle_day(record)
+    stored = (
+        db_session.query(TransactionEntry.settled_on, SettledDayBasis.name)
+        .outerjoin(
+            SettledDayBasis,
+            SettledDayBasis.id == TransactionEntry.settled_day_basis_id,
+        )
+        .filter(
+            db.or_(
+                TransactionEntry.expense_transfer_id == transfer_id,
+                TransactionEntry.income_transfer_id == transfer_id,
+            ),
+            TransactionEntry.account_id == account_id,
+        )
+        .one_or_none()
+    )
+    if stored is None or stored.settled_on is None:
+        return None
+    return SettleDay(
+        day=stored.settled_on, basis=SettledDayBasisEnum(stored.name),
+    )
 
 
 def family_journal_filter(txn):
