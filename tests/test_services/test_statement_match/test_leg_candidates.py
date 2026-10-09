@@ -21,12 +21,14 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import or_
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services import (
     account_service,
     pay_calendar,
@@ -44,6 +46,7 @@ from app.services.statement_match import (
     candidates_for,
     matched_subjects,
 )
+from app.services.statement_match._acts import acts_of, named_rows
 from app.services.statement_match._candidates import (
     MatchedSubjects,
     unmatched_rows,
@@ -105,6 +108,28 @@ def _shadow(transfer, account_id):
             Transaction.account_id == account_id,
         )
         .one()
+    )
+
+
+def _side_records(transfer, account_id):
+    """Return the records *transfer*'s side on *account_id* holds, by id.
+
+    Read by this file's own SQL over the side links (ruling **R-BAL167**
+    class 4: never through the producer under test): a side's record hangs
+    off the transfer since plan step ``balance:X-bi-6-4d-2`` (ruling
+    **R-BAL88**), where it hung off the side's shadow row until then.
+    """
+    return (
+        db.session.query(TransactionEntry)
+        .filter(
+            or_(
+                TransactionEntry.expense_transfer_id == transfer.id,
+                TransactionEntry.income_transfer_id == transfer.id,
+            ),
+            TransactionEntry.account_id == account_id,
+        )
+        .order_by(TransactionEntry.id)
+        .all()
     )
 
 
@@ -295,8 +320,8 @@ class TestAPaidSideIsItsLegsRecord:
         (out,) = _of_transfer(_offered(seed_user, checking.id).rows, transfer)
         (into,) = _of_transfer(_offered(seed_user, savings.id).rows, transfer)
 
-        out_movement = _shadow(transfer, checking.id).covering_movements[0]
-        into_movement = _shadow(transfer, savings.id).covering_movements[0]
+        out_movement = _side_records(transfer, checking.id)[0]
+        into_movement = _side_records(transfer, savings.id)[0]
         assert (out.kind, out.row_id) == (RowKind.SETTLEMENT, out_movement.id)
         assert (into.kind, into.row_id) == (
             RowKind.SETTLEMENT, into_movement.id,
@@ -347,7 +372,7 @@ class TestAPaidSideIsItsLegsRecord:
         transfer = _a_transfer(seed_user)
         _settle(seed_user, transfer)
         _revert(seed_user, transfer)
-        kept = _shadow(transfer, seed_user["account"].id).covering_movements
+        kept = _side_records(transfer, seed_user["account"].id)
         assert len(kept) == 1 and kept[0].settled_on is None
 
         (only,) = _of_transfer(
@@ -381,8 +406,8 @@ class TestAcceptingALeg:
 
         assert accepted.settled_count == 1
         assert transfer.status.is_settled
-        out = _shadow(transfer, seed_user["account"].id).covering_movements[0]
-        into = _shadow(transfer, savings.id).covering_movements[0]
+        out = _side_records(transfer, seed_user["account"].id)[0]
+        into = _side_records(transfer, savings.id)[0]
         assert out.settled_on == bank_day
         assert into.settled_on == bank_day
         assert out.amount == _AMOUNT and into.amount == _AMOUNT
@@ -433,6 +458,38 @@ class TestAcceptingALeg:
         assert row.label == f"Transfer to {savings.name}"
         assert row.cash_amount == -_AMOUNT
         assert group.agrees
+
+    def test_the_act_names_the_transfer_by_its_LEG(self, app, db, seed_user):
+        """A side's payment member names its leg, ``(transfer id, account id)``.
+
+        Plan step ``balance:X-bi-6-4d-2``: the record hangs off the transfer,
+        so its ``transaction_id`` is ``NULL`` and ``named_rows`` names the
+        member's parent by ``transfer_legs.cell_key`` -- the leg -- where it
+        put the record's ``transaction_id`` (a shadow's id, then ``None``)
+        into the set of row ids.  The register reads that set against the
+        act's creations: an act naming a leg created nothing it names, and
+        the undo plans to remove nothing.
+        """
+        savings = _savings(seed_user)
+        transfer = _a_transfer(seed_user, savings)
+        checking = seed_user["account"]
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-250.00",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        scope = a_scope(seed_user)
+        statement_match.accept_match(
+            a_submission(scope, lines=[line], transfers=[transfer]), scope,
+        )
+        db.session.flush()
+        (act,) = acts_of(seed_user["user"].id, checking.id)
+
+        assert named_rows(act) == ({(transfer.id, checking.id)}, set())
+        (group,) = accepted_register(
+            seed_user["user"].id, checking.id, limit=None,
+        ).shown
+        assert not group.created_every_row
+        assert group.removes.rows == ()
 
     def test_a_reverted_members_kept_movement_is_worth_nothing_in_the_register(
         self, app, db, seed_user,

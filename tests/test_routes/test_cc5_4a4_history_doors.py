@@ -267,16 +267,20 @@ class TestTheAccountDoor:
     ):
         """Ruling R-CC65: the cleanup deleted the hidden row AND its money.
 
-        No live row, no Paid row -- so the history arms say nothing, and step
-        1's transfer delete would take the kept payment off the books.  **The
-        hidden row is a transfer's leg because no other can hold money**
+        No live row, no Paid row -- so the history arms say nothing.  **The
+        hidden row is a transfer's leg because no other could hold money**
         (ruling **R-CC92**): this was a one-off envelope on Savings,
         soft-deleted with its purchase inside, the state an archive left
-        before this step.  A transfer's soft delete still hides its legs
-        holding their payments (finding **balance:BAL-532**, closed by plan
-        step ``balance:X-bi-6-4``); an ad-hoc one, because a recurring
-        transfer's definition refuses the account first (guard 2).
-        Re-expressed under rule 5, developer-confirmed 2026-09-23.
+        before this step.  Re-expressed under rule 5, developer-confirmed
+        2026-09-23.  **Re-expressed again under rule 5, developer-confirmed
+        2026-10-09** ("Change it"): since plan step ``balance:X-bi-6-4d-2``
+        a transfer's soft delete takes both sides' payments off the books
+        too (ruling **credit_card:R-CC75**, "Same as a one-off"; finding
+        **balance:BAL-532** closed), so the hidden transfer holds 0 payments
+        where it held 2, and Savings still archives rather than deletes --
+        now on the history its ledger keeps, not on a hidden payment.  An
+        ad-hoc transfer, because a recurring transfer's definition refuses
+        the account first (guard 2).
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -294,24 +298,20 @@ class TestTheAccountDoor:
                 xfer.id, seed_user["user"].id, soft=True,
             )
             db.session.commit()
-            leg_ids = [
-                leg.id for leg in db.session.query(Transaction).filter_by(
-                    transfer_id=xfer.id,
-                )
-            ]
 
             auth_client.post(f"/accounts/{savings.id}/hard-delete")
 
             assert _flashes(auth_client) == [
-                "'Savings' holds a recorded payment and cannot be permanently "
-                "deleted. It has been archived instead."
+                "'Savings' has posting-ledger history and cannot be "
+                "permanently deleted. It has been archived instead."
             ]
             db.session.expire_all()
             assert db.session.get(Account, savings.id) is not None
             assert db.session.get(Transfer, xfer.id).is_deleted is True
             assert db.session.query(TransactionEntry).filter(
-                TransactionEntry.transaction_id.in_(leg_ids),
-            ).count() == 2
+                (TransactionEntry.expense_transfer_id == xfer.id)
+                | (TransactionEntry.income_transfer_id == xfer.id),
+            ).count() == 0
 
 
 def _kept_transfer_payment(seed_user):

@@ -424,22 +424,28 @@ class TestEveryDoorThatRemovesARowWithdrawsItsMatches:
         """A transfer's two legs move together, and so do their matches.
 
         Measured on the developer's own dev database at 16 matched shadows.
+        The press is shown the lines the Checking side's RECORD holds, read
+        by this test's own query over the side links (ruling **R-BAL167**
+        class 4): the record hangs off the transfer since plan step
+        ``balance:X-bi-6-4d-2``, where it hung off the side's shadow row.
         """
         statement = an_import(seed_user)
         xfer = _a_transfer(seed_user)
-        shadow = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=xfer.id, account_id=seed_user["account"].id)
-            .one()
-        )
         line = a_bank_line(seed_user, statement, amount="-500.00")
-        _submit(seed_user, lines=[line], transfers=[shadow.transfer])
+        _submit(seed_user, lines=[line], transfers=[xfer])
         assert line.id in _matched_line_ids(seed_user)
+        records = (
+            db.session.query(TransactionEntry)
+            .filter(
+                (TransactionEntry.expense_transfer_id == xfer.id)
+                | (TransactionEntry.income_transfer_id == xfer.id),
+                TransactionEntry.account_id == seed_user["account"].id,
+            )
+            .all()
+        )
 
         with match_press.Press(match_press.Shown(
-                match_withdrawal.pending_for_movements(
-                    shadow.covering_movements,
-                ).line_ids,
+                match_withdrawal.pending_for_movements(records).line_ids,
             )) as press:
             transfer_service.delete_transfer(
                 xfer.id, seed_user["user"].id, soft=False,

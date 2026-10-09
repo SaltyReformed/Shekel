@@ -116,8 +116,7 @@ statement match, which offers a still-planned transfer as its LEG
 (:func:`offerable_transfer_legs`), a paid one's movement as its leg's record
 (:func:`transfer_movement_rows` / :func:`recorded_transfer_legs`) and values
 an accepted member through :func:`movement_parent` (loaded by
-:func:`movement_parent_loads`) -- statement match's own reads of a payment's
-ROW excepted, named below -- and since leaf ``X-bi-6-4c-4`` (ruling
+:func:`movement_parent_loads`) -- and since leaf ``X-bi-6-4c-4`` (ruling
 **R-BAL160**) for the purchase doors' payment-record refusal and the match
 withdrawal's event, which name a movement's parent through
 :func:`movement_parent`, and for the one removal act, which takes a movement
@@ -139,15 +138,15 @@ that chain inline.  The loan walk's refusal of an un-dated settle
 (``loan_ledger._visible.payment_visible_on``) stopped reaching a movement
 through a shadow at that leaf too: it named the shadow's ``transaction_id``
 and names the transfer now, as its owner finds it in the app.
-**Other readers still reach it themselves until their leaf moves them** and
-``X-bi-6-4d`` must find each -- among them the integrity sweep's one raw-SQL
-leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``, which
-DC-11's and BA-06's leg arms read); and statement match's own reads of a
-payment member's row -- ``_acts.named_rows`` and
-``_candidates._claimed_rows`` read a transfer payment's
-``transaction_id`` (its shadow's id, ``None`` from ``X-bi-6-4d``) as a row
-id, and ``_acts._WHOLE_ACT`` loads a payment member's row and its
-``entries``, for a transfer's payment its shadow.  (A third reader of that
+**The last readers that reached a transfer's movement themselves moved at
+plan step ``balance:X-bi-6-4d-2``**, with the join: the integrity sweep's one
+raw-SQL leg join (``scripts/_integrity_core.TRANSFER_LEG_RECORDS_JOIN``,
+which DC-11's and BA-06's leg arms read) spells :func:`_records._movement_link`
+again over the side links, since raw SQL cannot call it; statement match's
+``_acts.named_rows`` names a payment's parent by :func:`cell_key` over
+:func:`movement_parent` (a transfer side's record its LEG) where it read the
+record's ``transaction_id`` as a row id, and ``_candidates._claimed_rows``
+asks for a row parent, a side's record naming none.  (A third reader of that
 id, the accept door's refusal of an envelope named beside its own purchase,
 was deleted at ``credit_card:CC-5-4a-5``'s leaf 5c-2c-1, finding
 **CC-386**.)

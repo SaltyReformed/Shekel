@@ -227,18 +227,27 @@ def check_data_consistency(session):
     # same family walk (``_doors._resync_after_entry_change`` ->
     # ``sync_transaction_postings``) and owes the same zero.  Net per ledger
     # account: a reversed leg appears with its reversal and nets to zero, so
-    # a fully-reversed movement does not report.
+    # a fully-reversed movement does not report.  A finding names the
+    # movement's PARENT, which is a row (``transaction_id``) or, since plan
+    # step ``balance:X-bi-6-4d-2``, a transfer whose side the movement is filed
+    # under (``transfer_id``, ruling **R-BAL88**) -- one of the two, never
+    # both (``ck_transaction_entries_one_parent``); a transfer side's record
+    # had named its shadow row until then, which the operator could not act on.
     results.append(run_check(session, CheckSpec(
         "DC-10", "consistency", "critical",
         "Un-dated movements (no settled_on) holding a live journal leg",
         """
-        SELECT e.id AS entry_id, e.transaction_id, e.covers_settlement,
+        SELECT e.id AS entry_id, e.transaction_id,
+               COALESCE(e.expense_transfer_id, e.income_transfer_id)
+                 AS transfer_id,
+               e.covers_settlement,
                p.ledger_account_id, SUM(p.amount) AS net
         FROM budget.transaction_entries e
         JOIN budget.journal_entries je ON je.transaction_entry_id = e.id
         JOIN budget.account_postings p ON p.journal_entry_id = je.id
         WHERE e.settled_on IS NULL
-        GROUP BY e.id, e.transaction_id, e.covers_settlement,
+        GROUP BY e.id, e.transaction_id, e.expense_transfer_id,
+                 e.income_transfer_id, e.covers_settlement,
                  p.ledger_account_id
         HAVING SUM(p.amount) <> 0
         ORDER BY e.id, p.ledger_account_id
@@ -269,10 +278,21 @@ def check_data_consistency(session):
     # A settled TRANSFER's money is graded as its LEGS since leaf ``X-bi-6-4a``
     # (ruling **R-BAL106**; the UNION's second arm, one row per undated leg).
     # Its leg join is ``_integrity_core.TRANSFER_LEG_RECORDS_JOIN`` since plan
-    # step ``balance:X-bi-6-4c-4``, which BA-06 reads too, so ``X-bi-6-4d``
-    # moves the sweep's one raw spelling of it in one place.  A SHADOW's
-    # own missing day stays on the row arm until 6-4d; since ``X-bi-6-4b`` the
-    # loan readers ask the leg's record instead (``loan_ledger._visible``).
+    # step ``balance:X-bi-6-4c-4``, which BA-06 reads too, so plan step
+    # ``balance:X-bi-6-4d-2`` moved the sweep's one raw spelling of it onto
+    # the side links in one place.
+    # **The row arm grades no SHADOW since that step** (``t.transfer_id IS
+    # NULL`` over the whole arm; it graded a shadow's own missing day until
+    # then).  A shadow holds no money from that step -- its side's record hangs
+    # off the transfer, which the leg arm grades -- and no reader reads a
+    # shadow's status or day: the status seam's Transfer arm writes the
+    # transfer and each side's record and leaves the twins as they were.  So
+    # a shadow's day is no fact the fold can miss, and grading it would be
+    # wrong as well as idle: a transfer CREATED settled builds its twins in
+    # its settled status with no day (``transfer_service._create._build_shadow``
+    # states none, and the arm dates the side records instead), which this arm
+    # read as CRITICAL money the fold cannot see.  The twins themselves go at
+    # ``X-bi-6-4d-3`` (ruling **R-BAL166**), with DC-12.
     results.append(run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "
@@ -289,10 +309,10 @@ def check_data_consistency(session):
                  AS undated_covering_movements
         FROM budget.transactions t
         JOIN ref.statuses s ON s.id = t.status_id
-        WHERE s.is_settled AND NOT t.is_deleted
+        WHERE s.is_settled AND NOT t.is_deleted AND t.transfer_id IS NULL
           AND (
             t.settled_on IS NULL
-            OR t.transfer_id IS NULL AND EXISTS (
+            OR EXISTS (
               SELECT 1 FROM budget.transaction_entries e
               WHERE e.transaction_id = t.id AND e.covers_settlement
                 AND e.settled_on IS NULL

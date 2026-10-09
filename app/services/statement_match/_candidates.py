@@ -248,12 +248,13 @@ def _claimed_rows(entries: "frozenset[int]") -> "frozenset[int]":
     migration ``2eabfa596ee0``, ruling **R-CC45**) -- a purchase member's
     parent is NOT a claim on the envelope, whose figure is its purchases.
 
-    **A transfer's payment named by an act adds its shadow's id through the
-    interval** (``None`` from ``balance:X-bi-6-4d``, dropped here), which no
-    candidate's :attr:`~._subjects.CandidateRow.transaction_id` can equal: a
-    transfer's side is a LEG or a leg's payment, whose ``transaction_id`` is
-    ``None``, and it is claimed through :attr:`MatchedSubjects.legs` and its
-    movement's id instead (leaf ``balance:X-bi-6-4c-1``).
+    **A transfer side's payment names no row** -- it is filed under its
+    transfer's side (plan step ``balance:X-bi-6-4d-2``, ruling **R-BAL88**),
+    so its ``transaction_id`` is ``NULL`` and the query asks for a row
+    parent -- and it is claimed through :attr:`MatchedSubjects.legs` and its
+    movement's id instead (leaf ``balance:X-bi-6-4c-1``).  Until that step it
+    hung off a shadow row and added the shadow's id here, which no
+    candidate's :attr:`~._subjects.CandidateRow.transaction_id` could equal.
 
     Args:
         entries: The ``transaction_entries`` ids this account's acts name.
@@ -268,11 +269,12 @@ def _claimed_rows(entries: "frozenset[int]") -> "frozenset[int]":
         db.session.query(TransactionEntry.transaction_id)
         .filter(
             TransactionEntry.id.in_(entries),
+            TransactionEntry.transaction_id.isnot(None),
             status_seam.covering_clause(),
         )
         .all()
     )
-    return frozenset(row[0] for row in rows if row[0] is not None)
+    return frozenset(row[0] for row in rows)
 
 
 def _claimed_legs(entries: "frozenset[int]") -> "frozenset[int]":

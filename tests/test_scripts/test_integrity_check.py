@@ -727,8 +727,12 @@ class TestBalanceAnomalies:
         rows.  Then the shadows' own day is moved inside the schedule while
         their movements keep theirs: still reported, because the money is the
         movement (ruling **R-BAL80**).  A transfer hidden around the service
-        is not reported, and hidden shadows leave no leg record (the
-        live-shadow term of the one join), so nothing is reported either.
+        is not reported.  Hidden shadows are no longer read at all (plan step
+        ``balance:X-bi-6-4d-2``: each side's record hangs off the transfer,
+        ruling **R-BAL88**), so hiding them leaves both legs reported -- the
+        twin plant kept, asserting nothing reads it (ruling **R-BAL167**
+        class 3); until that step the join reached a record through a live
+        shadow, and hiding the shadows reported nothing.
         """
         _first, horizon = self._schedule_bounds(seed_user["user"].id)
         beyond = horizon + timedelta(days=1)
@@ -757,10 +761,14 @@ class TestBalanceAnomalies:
 
         assert reported() == expected
 
+        # The twins hold no day since plan step balance:X-bi-6-4d-2 (the arm
+        # dates the side records), so the plant states the pair the day/basis
+        # CHECK welds; what it asserts is unchanged.
         db.session.execute(db.text(
-            "UPDATE budget.transactions SET settled_on = :day "
+            "UPDATE budget.transactions SET settled_on = :settled_on, "
+            "settled_day_basis_id = :settled_day_basis_id "
             "WHERE transfer_id = :id"
-        ), {"day": horizon, "id": transfer.id})
+        ), {**settle_day_columns(horizon), "id": transfer.id})
         assert reported() == expected
 
         # The TRANSFER's own soft delete ends it, even with its shadows live
@@ -778,7 +786,7 @@ class TestBalanceAnomalies:
             "UPDATE budget.transactions SET is_deleted = TRUE "
             "WHERE transfer_id = :id"
         ), {"id": transfer.id})
-        assert reported() == []
+        assert reported() == expected
 
 # ── Data Consistency ─────────────────────────────────────────────
 
@@ -1325,6 +1333,57 @@ class TestDataConsistency:
         assert dc10.passed
         assert movement.settled_on is None, "the movement is still un-dated and kept"
 
+    def test_dc10_names_a_transfer_sides_record_by_its_transfer(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer side's un-dated record is reported under its TRANSFER.
+
+        Plan step ``balance:X-bi-6-4d-2``: a side's record hangs off the
+        transfer (ruling **R-BAL88**), so its ``transaction_id`` is ``NULL``
+        and the finding names the transfer instead -- it named the record's
+        shadow row until then.  Planted around the doors (the status-band
+        trigger is deferred to COMMIT, which this test never reaches): a paid
+        transfer's to-side record loses its day while its journal legs stay.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        import sqlalchemy
+        from app.models.transaction_entry import TransactionEntry
+
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "DC-10 Savings",
+        )
+        db.session.commit()
+        transfer = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods[0], amount=Decimal("250.00"),
+        )
+        db.session.commit()
+        (record,) = (
+            db.session.query(TransactionEntry)
+            .filter(TransactionEntry.income_transfer_id == transfer.id)
+            .all()
+        )
+
+        def dc10():
+            return next(
+                r for r in check_data_consistency(db.session)
+                if r.check_id == "DC-10"
+            )
+
+        assert dc10().passed
+
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transaction_entries "
+            "SET settled_on = NULL, settled_day_basis_id = NULL, "
+            "reconciled_by_id = NULL WHERE id = :id"
+        ), {"id": record.id})
+        fired = dc10()
+        assert not fired.passed
+        assert {
+            (row["entry_id"], row["transaction_id"], row["transfer_id"])
+            for row in fired.details
+        } == {(record.id, None, transfer.id)}
+
     def test_dc12_detects_a_transfer_missing_a_shadow(
         self, app, db, seed_user, seed_periods,
     ):
@@ -1504,11 +1563,15 @@ class TestDataConsistency:
         The fold reads a paid transfer's money as its legs' movements under
         the TRANSFER's status, so a leg's undated movement fires one row naming
         the transfer and that leg's account, which the fold silently drops.  A
-        shadow's own missing day still fires on the ROW arm until ``X-bi-6-4b``,
-        because the loan readers still read it (``loan_ledger._visible``).
+        shadow's own missing day fired on the ROW arm until plan step
+        ``balance:X-bi-6-4d-2``, which stopped the row arm grading shadows: a
+        shadow holds no money and no reader reads its status or day since that
+        step.  The twin plant is kept, settled with no day, and asserts the
+        check does not read it (ruling **R-BAL167** class 3).
         """
         # pylint: disable=import-outside-toplevel  -- the module convention.
         import sqlalchemy
+        from app import ref_cache
 
         def dc11():
             return next(
@@ -1530,29 +1593,18 @@ class TestDataConsistency:
 
         db.session.execute(sqlalchemy.text(
             "UPDATE budget.transactions "
-            "SET settled_on = NULL, settled_day_basis_id = NULL "
+            "SET status_id = :done, settled_on = NULL, "
+            "settled_day_basis_id = NULL "
             "WHERE transfer_id = :id"
-        ), {"id": transfer.id})
-        fired = dc11()
-        assert sorted(
-            (row["transfer_id"], row["account_id"]) for row in fired.details
-        ) == [(None, checking.id), (None, savings.id)]
-        db.session.execute(sqlalchemy.text(
-            "UPDATE budget.transactions t SET settled_on = e.settled_on, "
-            "settled_day_basis_id = e.settled_day_basis_id "
-            "FROM budget.transaction_entries e WHERE e.transaction_id = t.id "
-            "AND e.covers_settlement AND t.transfer_id = :id"
-        ), {"id": transfer.id})
+        ), {"id": transfer.id, "done": ref_cache.status_id(StatusEnum.DONE)})
         assert dc11().passed
 
         db.session.execute(sqlalchemy.text(
-            "UPDATE budget.transaction_entries e "
+            "UPDATE budget.transaction_entries "
             "SET settled_on = NULL, settled_day_basis_id = NULL, "
             "reconciled_by_id = NULL "
-            "FROM budget.transactions sh "
-            "WHERE e.transaction_id = sh.id AND sh.transfer_id = :id "
-            "AND e.covers_settlement AND e.account_id = :account"
-        ), {"id": transfer.id, "account": savings.id})
+            "WHERE income_transfer_id = :id"
+        ), {"id": transfer.id})
         fired = dc11()
         assert not fired.passed
         assert [
@@ -1560,6 +1612,70 @@ class TestDataConsistency:
              row["settled_on"], row["undated_covering_movements"])
             for row in fired.details
         ] == [(None, transfer.id, savings.id, None, 1)]
+
+    def test_dc11_passes_a_transfer_created_settled(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer born settled is no finding, though its twins have no day.
+
+        Plan step ``balance:X-bi-6-4d-2``: ``transfer_service.create_transfer``
+        builds the twins in the transfer's own settled status with no day
+        (``_create._build_shadow``), and the status seam's Transfer arm dates
+        each side's RECORD instead (``_status.date_born_settled_pair``).  The
+        row arm graded a shadow's own missing day until that step, so it read
+        every such create as CRITICAL money the fold cannot see; it grades no
+        shadow since.  The twins' state is asserted first, so this fails if a
+        later step dates them (the premise gone) rather than passing for the
+        wrong reason.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app import ref_cache
+        from app.models.amount_ownership import AmountOwnership
+        from app.models.transaction_entry import TransactionEntry
+        from app.services import transfer_service
+
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "DC-11 Born Savings",
+        )
+        db.session.commit()
+        transfer = transfer_service.create_transfer(
+            transfer_service.TransferSpec(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=savings.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                amount_ownership=AmountOwnership.own(Decimal("250.00")),
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                category_id=None,
+            ),
+        )
+        db.session.commit()
+
+        twins = (
+            db.session.query(Transaction)
+            .filter(Transaction.transfer_id == transfer.id)
+            .all()
+        )
+        assert len(twins) == 2
+        assert all(twin.status.is_settled for twin in twins)
+        assert all(twin.settled_on is None for twin in twins)
+        records = (
+            db.session.query(TransactionEntry)
+            .filter(
+                (TransactionEntry.expense_transfer_id == transfer.id)
+                | (TransactionEntry.income_transfer_id == transfer.id),
+            )
+            .all()
+        )
+        assert len(records) == 2
+        assert all(record.settled_on is not None for record in records)
+
+        dc11 = next(
+            r for r in check_data_consistency(db.session)
+            if r.check_id == "DC-11"
+        )
+        assert dc11.passed, dc11.details
 
 
 # ── run_all_checks ───────────────────────────────────────────────
