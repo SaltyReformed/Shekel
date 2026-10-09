@@ -59,13 +59,10 @@ from app.services.recorded_contributions import (
 from tests._test_helpers import (
     an_entered_day,
     basis_for,
-    cover_bare_settled_row,
     make_line_cadence_rule,
     pricing_over,
-    shadow_amount,
     start_test_pay_list,
 )
-from app.services.settle_day import record_settle_day
 
 
 def _flat_id():
@@ -1103,7 +1100,11 @@ class TestShadowContributionBoundary:
     from the estimate, and every feed the projection builds -- the averaged
     periodic contribution, the YTD display, the engine seed, and the per-period
     timeline -- has to read the realized one, or the cap/limit accounting
-    charges a different dollar than the growth engine actually applies.
+    charges a different dollar than the growth engine actually applies.  The
+    realized figure is each side's payment RECORD, hanging off the transfer,
+    since plan step ``balance:X-bi-6-4d-2`` (a shadow keeps none, and the
+    transfer's status is the one status; :meth:`_contribution_shadow` settles
+    through the transfer's door, ruling R-BAL167 class 4).
 
     They live at this tier now because it is the only tier that can still fail:
     the projection module consumes a record carrying one ``amount`` field, so
@@ -1127,14 +1128,26 @@ class TestShadowContributionBoundary:
         the multi-period cases need one account across several periods, because
         the per-account arithmetic they grade (the average's distinct-period
         denominator, the two YTD windows) is defined over one account's rows.
+
+        A *settled* contribution is settled through the transfer's own door
+        since plan step ``balance:X-bi-6-4d-2`` (ruling R-BAL167 class 4): the
+        TRANSFER's status is the one status and each side's payment record
+        hangs off the transfer, where this helper wrote the status and day
+        onto both twins and the parent and a covering movement under each
+        twin until then.  Nothing reads a twin now, so those plants left the
+        transfer settled with no side record -- a ``$0.00`` close -- and the
+        loader rightly valued it at ``$0``.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum
         from app.models.transaction import Transaction
+        from app.services import transfer_service
         from tests._test_helpers import (
             basis_for,
             create_transfer,
             make_investment_account,
+            on_both_sides,
+            typed,
         )
 
         if account is None:
@@ -1164,15 +1177,21 @@ class TestShadowContributionBoundary:
             if other.id != shadow.id
         ]
         if settled:
-            # The settle DAY on both legs; the record -- the figure and who
-            # wrote it -- is each leg's covering movement, written after the
-            # flush below.  *actual* is a figure a HUMAN typed (``typed``);
-            # with none the record is the row's own plan (``resolved``).
-            settled_id = ref_cache.status_id(StatusEnum.RECEIVED)
-            for row in rows:
-                row.status_id = settled_id
-                record_settle_day(row, an_entered_day(period.start_date))
-            transfer.status_id = settled_id
+            # The transfer and both sides' records, through the named verb:
+            # the day entered on both sides, the record's figure the
+            # transfer's own plan (``resolved``) or *actual*, a figure a HUMAN
+            # typed (``typed``).  The verb settles a transfer at Paid (DONE);
+            # this planted Received, a status no transfer door writes.
+            transfer_service.settle_transfer(
+                transfer.id, seed_user["user"].id,
+                submitted=None if actual is None else typed(
+                    Decimal(str(actual)),
+                ),
+                side_days=on_both_sides(
+                    transfer.from_account_id, transfer.to_account_id,
+                    an_entered_day(period.start_date),
+                ),
+            )
         elif actual is not None:
             raise AssertionError(
                 "A figure RECORDS a settle (plan step X-au-c3), so an "
@@ -1186,14 +1205,6 @@ class TestShadowContributionBoundary:
                 row.status_id = cancelled_id
             transfer.status_id = cancelled_id
         db_session.flush()
-        if settled:
-            # The record's home is each leg's COVERING MOVEMENT (plan step
-            # balance:X-bi-4b-1; the one home since X-bi-4b-2).
-            for row in rows:
-                cover_bare_settled_row(
-                    db_session, row, shadow_amount(row),
-                    None if actual is None else Decimal(str(actual)),
-                )
         return account, shadow
 
     @staticmethod

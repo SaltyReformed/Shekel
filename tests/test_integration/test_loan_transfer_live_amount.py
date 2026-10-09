@@ -32,6 +32,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     cash_ledger,
     loan_ledger,
+    transfer_legs,
     transfer_recurrence,
 )
 from app.services import escrow_calculator
@@ -49,11 +50,12 @@ from tests._test_helpers import (
     ledger_net,
     loan_params_for,
     make_cadence_rule,
+    transfer_side_figure,
+    transfer_side_record,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import leg_settled_contribution
 from app.services import template_amount_service
-from app.services.row_valuation import settled_figure
 
 
 def _derived_cash(seed_user, rows):
@@ -203,6 +205,23 @@ def _mark_done_from_leg(auth_client, shadow):
     return auth_client.post(
         f"/transfers/instance/{shadow.transfer_id}/mark-done",
         data={"leg_account_id": str(shadow.account_id)},
+    )
+
+
+def _side_leg(transfer_id, account_id):
+    """Return *transfer_id*'s leg on *account_id*, its record read by its own SQL.
+
+    What these cases value a settled side as since plan step
+    ``balance:X-bi-6-4d-2`` (ruling **R-BAL167** class 4): a side's payment
+    record hangs off the TRANSFER and nothing keeps a twin's status or figure,
+    so a settled side is the transfer's status and the side's record
+    (``transfer_side_record``, independent SQL over the side links, never
+    ``transfer_legs``' own join), where these cases read the twin row until
+    then.  ``test_transfer_settle_freeze`` imports it.
+    """
+    return transfer_legs.leg_of(
+        db.session.get(Transfer, transfer_id), account_id,
+        record=transfer_side_record(db.session, transfer_id, account_id),
     )
 
 
@@ -446,6 +465,10 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
     payment to clear (ruling R-R103).  Generation runs over the pay periods
     after the origination only, since the payment door refuses the February
     occurrence as falling on it (ruling R-C).
+
+    The settled payment is read as the transfer and its loan side's record,
+    where it was read off the loan-side twin row (ruling R-BAL167 class 1,
+    plan step balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -492,8 +515,8 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow.id)
-        assert settled_contribution(settled) == Decimal("1699.10")
+        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        assert leg_settled_contribution(settled) == Decimal("1699.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
         assert split.due_date == date(2026, 3, 1)
@@ -505,7 +528,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         assert split.excess == Decimal("0.00")
         assert (
             split.interest + split.escrow + split.principal + split.excess
-            == settled_contribution(settled)
+            == leg_settled_contribution(settled)
         )
 
 
@@ -533,6 +556,10 @@ def test_an_off_day_payment_is_priced_on_its_intervals_installment(
     Generation runs over the pay periods after the origination, since the
     payment door refuses an occurrence at or before it (ruling R-C); the 02-10
     row it writes is an early extra and stays projected.
+
+    The settled payment is read as the transfer and its loan side's record,
+    where it was read off the loan-side twin row (ruling R-BAL167 class 1,
+    plan step balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -573,8 +600,8 @@ def test_an_off_day_payment_is_priced_on_its_intervals_installment(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow.id)
-        assert settled_contribution(settled) == Decimal("1299.10")
+        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        assert leg_settled_contribution(settled) == Decimal("1299.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
         assert split.due_date == date(2026, 3, 10)
@@ -585,7 +612,7 @@ def test_an_off_day_payment_is_priced_on_its_intervals_installment(
         assert split.excess == Decimal("0.00")
         assert (
             split.interest + split.escrow + split.principal + split.excess
-            == settled_contribution(settled)
+            == leg_settled_contribution(settled)
         )
 
 
@@ -606,6 +633,10 @@ def test_an_early_extra_is_charged_nothing_in_the_posted_ledger(
     interest ledger books nothing.  Until plan step recurrence:R16-c-2 the
     settled walk charged a month at the payment's own date; only a hand-built
     stream pinned the new rule before this case.
+
+    The settled payment is read as the transfer and its loan side's record,
+    where it was read off the loan-side twin row (ruling R-BAL167 class 1,
+    plan step balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -637,8 +668,8 @@ def test_an_early_extra_is_charged_nothing_in_the_posted_ledger(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow.id)
-        assert settled_contribution(settled) == Decimal("1299.10")
+        settled = _side_leg(income_shadow.transfer_id, loan.id)
+        assert leg_settled_contribution(settled) == Decimal("1299.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
         assert split.due_date == date(2026, 2, 10)
@@ -682,6 +713,10 @@ def test_settling_derived_loan_payment_captures_live_amount(
     shape).  The column is empty on a derived row, so that hazard has no state
     to occur in, and what a PROJECTED shadow is worth is asked of the amount
     model rather than of the column.
+
+    After the settle, the transfer's status is the one status and each side's
+    record holds the captured figure, where both were read off the twin rows
+    (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -727,24 +762,24 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow_id)
-        assert settled.status.is_settled is True
+        xfer = db.session.get(Transfer, transfer_id)
+        assert xfer.status.is_settled is True
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
-        assert settled_figure(settled) == Decimal("1499.10")
-        assert settled_contribution(settled) == Decimal("1499.10")
+        assert transfer_side_figure(
+            db.session, transfer_id, loan.id,
+        ) == Decimal("1499.10")
+        assert leg_settled_contribution(
+            _side_leg(transfer_id, loan.id),
+        ) == Decimal("1499.10")
         # The PLAN column stays empty: a settle RECORDS what moved beside the
         # plan (plan step X-au-c3) and never writes into it.
-        assert settled.estimated_amount is None
-        # Both legs mirror the captured actual (Transfer Invariant 3).
-        expense = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id == transfer_id,
-                Transaction.id != income_shadow_id,
-            )
-            .one()
-        )
-        assert settled_figure(expense) == Decimal("1499.10")
+        assert db.session.get(
+            Transaction, income_shadow_id,
+        ).estimated_amount is None
+        # Both sides record the captured figure.
+        assert transfer_side_figure(
+            db.session, transfer_id, xfer.from_account_id,
+        ) == Decimal("1499.10")
 
         # cash == split: the genesis split reads the frozen cash and subtracts
         # the same escrow, leaving principal = P&I.
@@ -778,6 +813,10 @@ def test_settled_loan_payment_freeze_is_one_shot(
     ``live_cash(settled) is None``: a ``None`` proved the producer would not
     fire, and what matters is the stronger statement that the recorded cash is
     what the row is worth.
+
+    The settled payment is read as the transfer and its loan side's record,
+    where it was read off the loan-side twin row (ruling R-BAL167 class 1,
+    plan step balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -807,17 +846,23 @@ def test_settled_loan_payment_freeze_is_one_shot(
         )
         assert resp.status_code == 200, resp.data
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow_id)
-        assert settled.status.is_settled is True
-        assert settled_figure(settled) == Decimal("1499.10")
+        twin = db.session.get(Transaction, income_shadow_id)
+        transfer_id = twin.transfer_id
+        assert db.session.get(Transfer, transfer_id).status.is_settled is True
+        assert transfer_side_figure(
+            db.session, transfer_id, loan.id,
+        ) == Decimal("1499.10")
 
-        # The freeze is one-shot: a settled row answers from its own RECORD,
+        # The freeze is one-shot: a settled side answers from its own RECORD,
         # so even asking the model directly cannot produce a fresher figure to
-        # overwrite it with.
-        assert _derived_cash(seed_user, [settled])[settled.id] == Decimal(
+        # overwrite it with.  The model is asked of the loan-side twin row,
+        # which it prices off its transfer; the record is read off the side.
+        assert _derived_cash(seed_user, [twin])[twin.id] == Decimal(
             "1499.10",
         )
-        assert settled_contribution(settled) == Decimal("1499.10")
+        assert leg_settled_contribution(
+            _side_leg(transfer_id, loan.id),
+        ) == Decimal("1499.10")
 
         # A stale-tab re-settle leaves the frozen figure untouched.
         resp2 = _mark_done_from_leg(
@@ -825,9 +870,12 @@ def test_settled_loan_payment_freeze_is_one_shot(
         )
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
-        replayed = db.session.get(Transaction, income_shadow_id)
-        assert settled_figure(replayed) == Decimal("1499.10")
-        assert settled_contribution(replayed) == Decimal("1499.10")
+        assert transfer_side_figure(
+            db.session, transfer_id, loan.id,
+        ) == Decimal("1499.10")
+        assert leg_settled_contribution(
+            _side_leg(transfer_id, loan.id),
+        ) == Decimal("1499.10")
 
 
 def test_a_definitions_standing_extra_is_read_off_its_own_settings_row(
@@ -1096,6 +1144,10 @@ def test_settling_with_extra_lands_the_extra_in_principal(
     which is the scheduled principal 199.10 (P&I 1,199.10 - interest 1,000.00)
     PLUS the 100.00 extra -- the residual split routes it to principal by
     construction, with no excess.
+
+    The frozen cash is read off the loan side's record, where it was read off
+    the loan-side twin row (ruling R-BAL167 class 1, plan step
+    balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1129,9 +1181,12 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow_id)
         # Frozen cash carries P&I + escrow + extra.
-        assert settled_figure(settled) == Decimal("1599.10")
+        assert transfer_side_figure(
+            db.session,
+            db.session.get(Transaction, income_shadow_id).transfer_id,
+            loan.id,
+        ) == Decimal("1599.10")
 
         # The genesis split routes the extra into principal (cash == split).
         splits = loan_ledger.compute_loan_payment_splits(
@@ -1153,6 +1208,10 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
     Manual base $1,499.10 + extra $100.00 -> the settle freezes $1,599.10, so
     the split routes the extra into principal exactly as in derive mode.  A
     manual payment with NO extra would keep its estimate (covered separately).
+
+    The frozen cash is read off the loan side's record, where it was read off
+    the loan-side twin row (ruling R-BAL167 class 1, plan step
+    balance:X-bi-6-4d-2).
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -1194,8 +1253,10 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
-        settled = db.session.get(Transaction, income_shadow_id)
-        assert settled_figure(settled) == Decimal("1599.10")
+        shadow = db.session.get(Transaction, income_shadow_id)
+        assert transfer_side_figure(
+            db.session, shadow.transfer_id, loan.id,
+        ) == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
         # its own output.  **That base is on the DEFINITION since plan step
@@ -1207,10 +1268,10 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         # PARENT's stored figure until X-au-f emptied it (X-au-g-2c-2 had moved
         # it off the shadow first), so the base has moved one row further from
         # anything a settle can touch.
-        assert settled.estimated_amount is None
-        assert settled.transfer.amount is None
+        assert shadow.estimated_amount is None
+        assert shadow.transfer.amount is None
         assert template_amount_service.amount_as_of(
-            settled.transfer.template, settled.transfer.due_date,
+            shadow.transfer.template, shadow.transfer.due_date,
         ) == Decimal("1499.10")
 
 

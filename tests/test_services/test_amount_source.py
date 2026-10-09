@@ -54,6 +54,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     income_service, pay_list_service, status_seam, template_amount_service,
+    transfer_legs,
 )
 from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services.cash_ledger import (
@@ -66,6 +67,7 @@ from app.services.cash_ledger import (
     contributions_by_id,
     definition_cash,
     is_loan_payment_definition,
+    leg_amounts_by_key,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -1989,16 +1991,23 @@ class TestTheBasisIsOneDerivationPerReadPass:
 
         The control is unchanged in kind and stronger in reach -- it now spans
         two packages rather than two callers of one method: what the screen
-        publishes (``amounts_by_id``) and what a tick would book
-        (``transfer_service.settle_amount``) must be the same figure.
+        publishes (``leg_amounts_by_key``) and what a tick would book
+        (``transfer_service.leg_settle_amount``) must be the same figure.
+        Both are asked of the checking-side LEG since plan step
+        ``balance:X-bi-6-4d-2``, which prices a leg off its transfer and its
+        side's record and deleted ``settle_amount(shadow)``; they were asked
+        of the checking-side twin row until then (``amounts_by_id``,
+        ``settle_amount``), and the figure is unchanged (ruling R-BAL167
+        class 1, plan step balance:X-bi-6-4d-2).
         """
         shadow, rows = _loan_payment(seed_user, derive=True)
         db.session.commit()
         basis = _basis_for(seed_user)
         _touch(*rows)
+        leg = transfer_legs.grid_transfer_leg(shadow.transfer, shadow.account_id)
 
-        displayed = amounts_by_id(rows, basis)[shadow.id]
-        booked = transfer_settle.settle_amount(shadow, basis)
+        displayed = leg_amounts_by_key([leg], basis)[leg.cell_key]
+        booked = transfer_settle.leg_settle_amount(leg, basis)
 
         assert booked == displayed == Decimal("1499.10")
 

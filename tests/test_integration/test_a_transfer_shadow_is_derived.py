@@ -53,6 +53,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     open_books_before_the_first_assertion,
     shadow_amount,
+    transfer_side_figure,
 )
 from tests.test_integration.test_transfer_settle_freeze import (
     _derived_loan_transfer,
@@ -64,7 +65,6 @@ from app.services.amount_ownership import derived_ownership
 from tests._test_helpers import rendered_transfer_amount
 from datetime import date
 from app.services import template_amount_service
-from app.services.row_valuation import settled_figure
 
 #: P&I 1,199.10 + escrow 300.00 on the seeded $200k / 6% / 360mo mortgage.
 _CONTRACT = Decimal("1499.10")
@@ -814,6 +814,9 @@ class TestALoanPaymentsLegsReadTheLoan:
         taken in full, and principal absorbs the rest at
         ``1,325.00 - 1,000.00 - 300.00 = 25.00`` instead of the ``$199.10`` a
         full installment would have paid down.
+
+        What each side booked is read off its record, where it was read off
+        each twin row (ruling R-BAL167 class 1, plan step balance:X-bi-6-4d-2).
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
@@ -830,8 +833,10 @@ class TestALoanPaymentsLegsReadTheLoan:
             db.session.commit()
 
             db.session.expire_all()
-            for leg in _shadows(xfer.id):
-                assert settled_figure(leg) == _TYPED
+            for account_id in (xfer.from_account_id, loan_id):
+                assert transfer_side_figure(
+                    db.session, xfer.id, account_id,
+                ) == _TYPED
 
             splits = loan_ledger.compute_loan_payment_splits(
                 loan_id, scenario_id,

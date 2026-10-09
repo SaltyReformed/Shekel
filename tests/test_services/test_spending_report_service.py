@@ -2414,6 +2414,12 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
         ``+$9.81`` on a paycheck -- exactly the size that never looks wrong on a
         page.  So the estimate is pinned to the parent's ``$321.00`` and the
         delta to the ``$79.00`` the settlement actually recorded.
+
+        The reducer is handed the transfer's expense LEG -- what
+        ``query_settled_expenses`` loads for a transfer -- where it was handed
+        the expense twin row, which records nothing since plan step
+        ``balance:X-bi-6-4d-2`` (the side's record hangs off the transfer and
+        the transfer's status is the one status; ruling R-BAL167 class 1).
         """
         with app.app_context():
             savings = create_savings_account(
@@ -2427,7 +2433,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
             )
             db.session.commit()
 
-            expense_leg = (
+            expense_twin = (
                 db.session.query(Transaction)
                 .filter_by(
                     transfer_id=xfer.id,
@@ -2437,10 +2443,11 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
                 )
                 .one()
             )
-            assert expense_leg.estimated_amount is None, (
+            assert expense_twin.estimated_amount is None, (
                 "the precondition this regression needs: the shadow stores no "
                 "plan of its own, so a column read cannot answer it"
             )
+            expense_leg = grid_transfer_leg(xfer, seed_user["account"].id)
 
             surprises = _build_surprises(
                 [expense_leg],
