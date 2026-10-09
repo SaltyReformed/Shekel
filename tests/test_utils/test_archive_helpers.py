@@ -357,13 +357,24 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
 
         The cost is stated rather than hidden: such a template is archived
         instead of permanently deleted.
+
+        **Hidden through the transfer's own delete door since plan step
+        ``balance:X-bi-6-4d-2``** (ruling **R-BAL167** class 2): it was
+        flagged on the ORM row, which the database now refuses at commit for
+        a transfer holding its payments (the deleted-row rule's transfer arm).
+        The door takes both payments off in the same save (ruling
+        **credit_card:R-CC75**) and leaves the transfer hidden in its Paid
+        status -- the soft-deleted settled transfer this predicate counts.
         """
         with app.app_context():
             xfer_template, xfer = _make_transfer_template_with_status(
                 app, db, seed_user, seed_periods_today[0], "Paid",
             )
-            xfer.is_deleted = True
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True,
+            )
             db.session.commit()
+            assert xfer.is_deleted is True and xfer.status.is_settled
             assert transfer_template_has_paid_history(xfer_template.id) is True
 
     def test_soft_deleted_PROJECTED_still_does_not_block(

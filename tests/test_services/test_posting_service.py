@@ -121,6 +121,7 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
+    refused_by_database_rule,
     settlement_if_settling,
 )
 from app.services.settle_day import record_settle_day
@@ -2708,45 +2709,48 @@ class TestTheWriterBooksATransferMovementUnderItsLeg:
     def test_a_transfer_deleted_around_the_service_holds_nothing(
         self, app, db, seed_user, savings,
     ):  # pylint: disable=unused-argument
-        """The gate is the TRANSFER's: its live shadows keep no leg posted.
+        """A paid transfer hidden around the service is REFUSED at commit.
 
         ``$100.00`` Checking -> Savings settled; the TRANSFER row alone is
         flagged deleted by SQL, its two shadows left live (Transfer Invariant
-        4 drift).  The pair's door reverses both legs: Checking is back on its
-        ``$1,000.00`` opening and Savings on its ``$100.00`` one, which is
-        what the cash fold reads too (its leg arm gates on the transfer, so
-        no fact names it).  Before the leaf the writer read each live
-        shadow's gate and left both legs posted (``900.00`` / ``200.00``).
+        4 drift).  Until plan step ``balance:X-bi-6-4d-2`` the state committed
+        and this asked the writer about it: the pair's door reversed both
+        legs (Checking back on its ``$1,000.00`` opening, Savings on its
+        ``$100.00``) and the cash fold named no fact, both gating on the
+        transfer.  Since that step the payments hang off the transfer and the
+        deleted-row rule's transfer arm refuses a transfer hidden holding one,
+        so the drift cannot be stored (ruling **R-BAL167** class 2; the
+        readers' Transfer-level live filters went with it, finding
+        **BAL-534**).  Nothing is hidden and both payments stay.
         """
         with app.app_context():
             checking = seed_user["account"]
-            scenario_id = _scenario_id(seed_user)
             transfer = create_settled_transfer(
                 seed_user, _db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
                 settled_on=display_today(),
             )
             _db.session.commit()
-            _drift(
-                "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :id",
-                id=transfer.id,
+            _db.session.execute(
+                _db.text(
+                    "UPDATE budget.transfers SET is_deleted = TRUE WHERE id = :id"
+                ),
+                {"id": transfer.id},
             )
 
-            reversed_entries = posting_service.sync_transfer_postings(transfer)
-            _db.session.commit()
+            with refused_by_database_rule(
+                "was deleted while it still holds a recorded payment",
+            ) as caught:
+                _db.session.commit()
+            _db.session.rollback()
 
-            assert len(reversed_entries) == 2
-            assert posting_service.account_posting_total(
-                checking.id, scenario_id,
-            ) == Decimal("1000.00")
-            assert posting_service.account_posting_total(
-                savings.id, scenario_id,
-            ) == Decimal("100.00")
-            assert not [
-                fact for account in (checking, savings)
-                for fact in settled_cash_facts(account.id, scenario_id)
-                if fact.transfer_id == transfer.id
-            ]
+            assert f"transfer {transfer.id} " in str(caught.value)
+            _db.session.expire_all()
+            assert transfer.is_deleted is False
+            assert _db.session.query(TransactionEntry).filter(
+                (TransactionEntry.expense_transfer_id == transfer.id)
+                | (TransactionEntry.income_transfer_id == transfer.id),
+            ).count() == 2
 
     def test_a_row_teardown_on_a_shadow_reverses_its_side_under_the_leg(
         self, app, db, seed_user, savings,
