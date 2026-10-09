@@ -245,11 +245,12 @@ def test_a_cut_short_read_that_does_not_name_the_repository_is_refused_as_unread
 
 # -- every card, whole -------------------------------------------------------
 
-def _whole(number, body, comments, total=None):
-    """Card ``number``'s recorded node with a body and comments added, as the whole-card
-    listing reads it."""
+def _whole(number, body, comments, total=None, milestone=None):
+    """Card ``number``'s recorded node with a body, comments and a milestone (its number, or
+    None for none) added, as the whole-card listing reads it."""
     node = _recorded_open_node(number)
     node["body"] = body
+    node["milestone"] = None if milestone is None else {"number": milestone}
     node["comments"] = {"totalCount": len(comments) if total is None else total,
                         "nodes": [{"author": {"login": who}, "createdAt": when, "body": text}
                                   for who, when, text in comments]}
@@ -289,6 +290,22 @@ def test_every_card_is_listed_whole_page_by_page_and_a_long_comment_thread_read_
     assert cards[3].body == "" and len(cards[3].comments) == 101
     assert cards[3].comments[100] == Comment("a", "t100", "c100")
     assert cards[4].comments == ()
+
+
+def test_the_whole_card_listing_reads_each_cards_milestone_by_number():
+    """The listing selects a card's milestone (L7 draft 4 s.12: there, not in the fields
+    every query shares) and a card holds its number, None for none."""
+    page = {"repository": {"issues": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                                      "nodes": [_whole(2, "two", [], milestone=3),
+                                                _whole(3, "three", [])]}}}
+
+    def answer(query, **_variables):
+        assert "milestone { number }" in query
+        return copy.deepcopy(page)
+
+    github = _Scripted(graphql=answer)
+    cards = Tracker(github, Board(github, PLAN, "B"), APP).all_cards()
+    assert (cards[2].milestone, cards[3].milestone) == (3, None)
 
 
 # -- the numbering -----------------------------------------------------------

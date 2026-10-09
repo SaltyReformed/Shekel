@@ -8,7 +8,8 @@ blockers, its labels, its outcome, its place on the board -- and where each step
 spec and each steps-section paragraph lies.  It decides nothing the developer's input
 file decides (:mod:`_migrate_input`: names, rewritten questions, what each paragraph
 is), and it writes no card text (:mod:`_migrate_bodies`).  It is pure: it reads
-nothing but the :class:`Registries` it is handed, which :func:`read_registries` fills.
+nothing but the :class:`Registries` it is handed, which :func:`read_registries` fills
+from git, as one commit holds them (rulings ``balance:R-BAL257``, ``R-BAL259``).
 
 **One producer per fact (CLAUDE.md rule 14).**  The rows are the plan gate's own
 readers, through its read-only door (``tools/plan_gate/registries.py``, ruling
@@ -44,6 +45,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from tools.ci.arc_steps import (
     Entry,
@@ -53,11 +55,15 @@ from tools.ci.arc_steps import (
     fenced_lines,
     section_span,
 )
-from tools.ci.arcs import ARC_DOCS, ARCS, STEPS_HEADINGS
+from tools.ci.arcs import ARC_DOCS, ARCS, REPO, STEPS_HEADINGS
+from tools.ci.gitcmd import git
 from tools.quill.setup_tracker import DEPLOY_TOGETHER_LABEL, MOVES_MONEY_LABEL
 from tools.plan_gate.registries import (
+    LEDGER,
     NON_STEP_OWNERS,
     OWNER_RX,
+    RULINGS,
+    STEPS,
     LedgerRow,
     RulingRow,
     StepRow,
@@ -117,14 +123,27 @@ class Registries:
     commit: str
 
 
-def read_registries(commit: str) -> Registries:
-    """The registries as committed in this checkout, read through the plan gate's door,
-    and each arc document; ``commit`` names the checkout's HEAD for the cards' As filed
-    blocks."""
+def read_registries(root: Path, commit: str) -> Registries:
+    """The registries and each arc document as ``commit`` holds them in the repository at
+    ``root``, read from git and parsed by the plan gate's own readers (its door): every
+    card's As filed block names ``commit``, so its text is that commit's whatever the
+    checkout holds (rulings ``balance:R-BAL257``, ``R-BAL259``).
+
+    Raises:
+        tools.ci.gitcmd.GitError: When git cannot read a file at ``commit``.
+        UnicodeDecodeError: When a file is not text in the locale's encoding, which the
+            plan gate's own read of a checkout decodes it in too (UTF-8 on this host,
+            measured 2026-10-09).
+    """
+    def at_commit(path: Path) -> str:
+        return git(root, "cat-file", "blob", f"{commit}:{path.relative_to(REPO).as_posix()}")
+
+    steps = at_commit(STEPS)
     return Registries(
-        tuple(step_rows()), tuple(ledger_rows()), tuple(ruling_rows()),
-        tuple((name, tuple(scope)) for name, scope in outcome_scopes()),
-        {arc: ARC_DOCS[arc].read_text(encoding="utf-8") for arc in ARCS}, commit)
+        tuple(step_rows(text=steps)), tuple(ledger_rows(text=at_commit(LEDGER))),
+        tuple(ruling_rows(text=at_commit(RULINGS))),
+        tuple((name, tuple(scope)) for name, scope in outcome_scopes(text=steps)),
+        {arc: at_commit(ARC_DOCS[arc]) for arc in ARCS}, commit)
 
 
 def source_hash(text: str) -> str:

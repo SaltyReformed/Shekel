@@ -81,24 +81,33 @@ COMMIT_CELL_RX = re.compile(rf"^`{COMMIT_SHA}`$")
 _WHITE, _GREY, _BLACK = 0, 1, 2
 
 
-def ledger_rows() -> list[LedgerRow]:
-    """Every finding in ``ledger.md``."""
+def ledger_rows(*, text: str | None = None) -> list[LedgerRow]:
+    """Every finding in ``ledger.md``.
+
+    ``text``: the registry's text to read, which X-cx's migration passes as a
+    commit holds it (ruling ``balance:R-BAL257``); None reads the file.
+    """
     return [
         LedgerRow(*cells)
-        for cells in rows_under(LEDGER.read_text(), LEDGER_HEADER)
+        for cells in rows_under(
+            LEDGER.read_text() if text is None else text, LEDGER_HEADER)
     ]
 
 
-def step_rows() -> list[StepRow]:
+def step_rows(*, text: str | None = None) -> list[StepRow]:
     """Every step in ``steps.md``: its order, its containers and its shipped.
 
     Three SECTIONS, one registry, so all three are read -- they share a header
     because they hold the same kind of row.  The forks table in the same file
     carries a different one and is :func:`forks`'s alone (finding **N-234**).
+
+    ``text``: the registry's text to read, which X-cx's migration passes as a
+    commit holds it (ruling ``balance:R-BAL257``); None reads the file.
     """
     return [
         StepRow(*cells)
-        for cells in rows_under(STEPS.read_text(), STEPS_HEADER)
+        for cells in rows_under(
+            STEPS.read_text() if text is None else text, STEPS_HEADER)
     ]
 
 

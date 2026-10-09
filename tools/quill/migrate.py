@@ -2,11 +2,11 @@
 
 The plan in ``docs/plans/`` moves into the tracker as cards (ruling ``balance:R-BAL170``;
 the L7 design's draft 4).  ``check`` is the first of the command's phases and the only
-one built yet (piece L7's leaf B1): it READS the registries and arc documents as
-committed at this checkout's HEAD, whose commit every card's As filed block names, and
-the input file the developer approved; it WRITES NOTHING, anywhere.  A checkout whose
-planning files differ from HEAD is refused before anything is read: its cards would
-cite a commit that does not hold their text.  It prints what would move, arc by arc,
+one built yet (piece L7's leaf B1): it READS the registries and arc documents as this
+checkout's HEAD commit holds them, from git, whatever the checkout's own files say
+(rulings ``balance:R-BAL257``, ``R-BAL259``), so every card quotes the text of the commit
+its As filed block names; and the input file the developer approved.  It WRITES NOTHING,
+anywhere.  It prints what would move, arc by arc,
 and what is filed already (:data:`_migrate_source.MAPPED`); the census of every
 steps-section line
 (:func:`_migrate_bodies.census`); how many cards hold a bare ``#N``, which GitHub would
@@ -24,9 +24,9 @@ quote a real figure, which the tracker allows and the public repository does not
 (``R-BAL172``, ``R-BAL132``; :mod:`_migrate_input`).
 
 Exit status: 0 nothing refused; 1 something refused (each on a ``REFUSED:`` line);
-2 nothing checked: the input file or a planning file could not be read (or is not
-UTF-8), git could not be read, the planning files differ from HEAD, the input file is
-inside the repository, or the command line is not the form above.
+2 nothing checked: the input file could not be read (or is not UTF-8), git could not
+read HEAD or a planning file in it (or the file is not text), the input file is inside
+the repository, or the command line is not the form above.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from tools.ci.arcs import ARC_DOCS, ARCS, PLANS, REPO
+from tools.ci.arcs import ARCS, REPO
 from tools.ci.gitcmd import GitError, git
 from tools.quill._migrate_bodies import ON_A_CARD, Built, Inputs, bare_numbers, build, census
 from tools.quill._migrate_input import InputError, grade, load
@@ -134,8 +134,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None,
-         read: Callable[[str], Registries] = read_registries, root: Path = REPO) -> int:
-    """Run one command; its exit status."""
+         read: Callable[[Path, str], Registries] = read_registries, root: Path = REPO) -> int:
+    """Run one command on the repository at ``root``, reading its registries at HEAD with
+    ``read`` (:func:`_migrate_source.read_registries`); its exit status."""
     args = parser().parse_args(argv)
     try:
         if args.input.resolve().is_relative_to(root.resolve()):
@@ -143,11 +144,7 @@ def main(argv: Sequence[str] | None = None,
                              "quote a real figure, so it lives outside it (R-BAL132)")
         data = load(args.input)
         commit = git(root, "rev-parse", "HEAD").strip()
-        planning = [str(path.relative_to(REPO)) for path in (PLANS, *ARC_DOCS.values())]
-        if changed := git(root, "status", "--porcelain", "--", *planning).strip():
-            raise InputError("the planning files differ from HEAD, whose commit the cards "
-                             f"would cite; commit or discard first:\n{changed}")
-        registries = read(commit)
+        registries = read(root, commit)
     except (InputError, OSError, UnicodeDecodeError, GitError) as error:
         print(f"failed: {error}", file=sys.stderr)
         return 2
