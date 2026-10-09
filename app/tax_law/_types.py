@@ -26,11 +26,15 @@ and climbing from zero without a gap to one open top (a child deduction table
 likewise, when a state has one); no empty bracket (its table allowed an upper
 bound EQUAL to the lower one); a state code of two capital letters; a state's
 standard deduction always stated (``$0.00`` where it has none; the column
-allowed ``NULL``); a figure with more decimal places than its column refused
-where the column silently rounded it, because a transcription that disagrees
-with its scale is a slip to fix, not a figure to reinterpret; a law that
-cannot change once it loads, because every mapping in it is a read-only view;
-and no year skipped between two the law carries (ruling salary:R-SAL86).
+allowed ``NULL``); a state's tax type agreeing with its rate -- a flat-rate
+state states one, a state with no income tax none -- and never a type the app
+has no formula for (plan step salary:X-at-3); a figure with more decimal
+places than its column refused where the column silently rounded it, because
+a transcription that disagrees with its scale is a slip to fix, not a figure
+to reinterpret; a law that cannot change once it loads, because every mapping
+in it is a read-only view; no year skipped between two the law carries
+(ruling salary:R-SAL86); and every state listed from the law's first year
+(ruling salary:R-SAL129).
 
 **The attribute names are the calculator's.**  :mod:`app.services.tax_calculator`
 reads ``standard_deduction``, ``brackets`` (each ``min_income`` / ``max_income``
@@ -199,6 +203,19 @@ class StateYearLaw:
     status.  Every filing status is present in both, or the year does not load.
     A status's tiers are empty for a state with no child deduction; otherwise
     they climb from zero without a gap, lowest AGI first.
+
+    **The tax type and the figures agree, and the type is one the app prices**
+    (plan step salary:X-at-3; the developer, 2026-10-08, "Strict").  A
+    ``FLAT`` state states a rate above zero.  A state with no income tax
+    (``NONE``) states no rate, a ``$0.00`` standard deduction for every status
+    and no child deduction, and prices ``$0.00``: the explicit entry ruling
+    **salary:R-SAL78** asks for, and the ONE way to write it -- a flat 0% or
+    an untaxed state carrying deductions would be a second spelling of the
+    same ``$0.00``.  A ``BRACKET`` state is refused: no formula in the app
+    prices a state's bracket ladder
+    (:func:`app.services.tax_calculator.calculate_state_tax`), so it would
+    price ``$0.00`` without a word -- finding **SAL-575**'s defect by another
+    door.
     """
 
     tax_type: TaxTypeEnum
@@ -211,8 +228,24 @@ class StateYearLaw:
         _freeze(self, "standard_deduction", "child_deduction_tiers")
         if not isinstance(self.tax_type, TaxTypeEnum):
             raise ValueError(f"a state's tax_type is a TaxTypeEnum, not {self.tax_type!r}")
+        if self.tax_type is TaxTypeEnum.BRACKET:
+            raise ValueError(
+                "a state taxed on a bracket ladder cannot be written: no formula "
+                "in the app prices one, so it would price $0.00"
+            )
+        if self.tax_type is TaxTypeEnum.FLAT and self.flat_rate is None:
+            raise ValueError("a flat-rate state states its rate")
+        if self.tax_type is TaxTypeEnum.NONE and self.flat_rate is not None:
+            raise ValueError(
+                f"a state with no income tax states no rate, not {self.flat_rate}"
+            )
         if self.flat_rate is not None:
             _require_rate(self.flat_rate, "state flat_rate")
+            if self.flat_rate == _ZERO:
+                raise ValueError(
+                    "a flat-rate state's rate is above zero: a state with no "
+                    "income tax is written as one, tax type NONE"
+                )
         _require_every_status(self.standard_deduction, "state standard deduction")
         for status, deduction in self.standard_deduction.items():
             _require_amount(deduction, f"{status.value} state standard deduction")
@@ -222,6 +255,8 @@ class StateYearLaw:
             _require_rungs(tiers, ChildDeductionTier, what)
             if tiers:
                 _require_climb([(tier.agi_min, tier.agi_max) for tier in tiers], what)
+        if self.tax_type is TaxTypeEnum.NONE:
+            _require_nothing_to_deduct(self)
 
 
 @dataclass(frozen=True)
@@ -232,7 +267,8 @@ class TaxYearLaw:
     transcribed from, so a reader checking a figure knows where to look and a
     reader adding next year knows what to look for.  The federal rules cover
     every filing status and FICA is always present, or the year does not load;
-    a state appears only where the app supports it.
+    a state appears only where the app supports it, and a state the app
+    supports is one the law lists (:attr:`TaxLaw.supported_states`).
     """
 
     tax_year: int
@@ -294,12 +330,22 @@ class TaxLaw:
     reaches the year a date calls for (:mod:`app.services.tax_law_alarm`).
     Refusing the gap here is what lets "the law carries the due year" mean
     "and every year before it back to the first".
+
+    **Every state is listed from the law's first year (ruling
+    salary:R-SAL129, plan step salary:X-at-3).**  A state the law listed only
+    from a later year would be priced, for the years before it, on that later
+    year's rules -- the resolver reaches forward when nothing precedes -- and
+    nothing would say so.  So a state missing from the first year does not
+    load.  A later year may still lack one (ruling R-SAL86: a new year ships
+    before its state); the tax-law alarms name that state until it lands
+    (:mod:`app.services.tax_law_alarm`), so a state added to the first year
+    alone loads and is named for every later year.
     """
 
     years: tuple[TaxYearLaw, ...]
 
     def __post_init__(self):
-        """Refuse a year that is not a TaxYearLaw, or years out of order, repeated or skipped."""
+        """Refuse a non-year, years misordered, repeated or skipped, or a late state."""
         if not isinstance(self.years, tuple):
             raise ValueError("the tax law's years are a tuple")
         for year in self.years:
@@ -310,6 +356,46 @@ class TaxLaw:
             raise ValueError(f"tax years must be distinct and ascending: {numbers}")
         if numbers and numbers != list(range(numbers[0], numbers[-1] + 1)):
             raise ValueError(f"the tax law skips a year: {numbers}")
+        for year in self.years[1:]:
+            late = sorted(set(year.states) - set(self.years[0].states))
+            if late:
+                raise ValueError(
+                    f"the tax law lists {name_states(tuple(late))} from "
+                    f"{year.tax_year} but not in its first year, "
+                    f"{self.years[0].tax_year}: a state is listed from the law's "
+                    f"first year"
+                )
+
+    @property
+    def supported_states(self) -> tuple[str, ...]:
+        """Every state the law lists, alphabetically: the states the app supports.
+
+        The ONE spelling of that set (ruling **salary:R-SAL78**, plan step
+        salary:X-at-3): the salary profile form offers exactly these, and
+        :meth:`supports` -- which both profile doors and the paycheck engine
+        ask -- is membership in it.  Empty for a law with no year, which
+        supports no state.
+
+        Returns:
+            The two-letter state codes.
+        """
+        return tuple(sorted({code for year in self.years for code in year.states}))
+
+    def supports(self, state_code: str) -> bool:
+        """Whether the app supports *state_code*: the law lists it.
+
+        The one question both profile doors
+        (:mod:`app.schemas.validation.salary`) and the paycheck engine
+        (:func:`app.services.tax_config_service.profile_tax_series`) ask,
+        answered from :attr:`supported_states`.  Exact: ``nc`` is not ``NC``.
+
+        Args:
+            state_code: The state as a profile stores or a form submits it.
+
+        Returns:
+            ``True`` when the law lists *state_code*.
+        """
+        return state_code in self.supported_states
 
     def years_listing(self, state_code: str) -> tuple[TaxYearLaw, ...]:
         """Return the years whose law lists *state_code*, oldest first.
@@ -327,6 +413,22 @@ class TaxLaw:
             no year does.
         """
         return tuple(year for year in self.years if state_code in year.states)
+
+
+def name_states(state_codes: tuple[str, ...]) -> str:
+    """Name *state_codes* for a sentence: ``"NC, ZZ"``, or ``"no state"`` when empty.
+
+    The one wording of a list of states in a refusal (plan step
+    salary:X-at-3): the law's own, the profile doors' and the engine's
+    (:class:`app.exceptions.UnsupportedStateError`).
+
+    Args:
+        state_codes: Two-letter state codes, in the order to name them.
+
+    Returns:
+        The phrase.
+    """
+    return ", ".join(state_codes) if state_codes else "no state"
 
 
 def _require_number(value, what: str) -> None:
@@ -472,6 +574,35 @@ def _require_climb(bounds: list[tuple[Decimal, Decimal | None]], what: str) -> N
             )
     if bounds[-1][1] is not None:
         raise ValueError(f"{what}: the top rung is open-ended")
+
+
+def _require_nothing_to_deduct(state: StateYearLaw) -> None:
+    """Raise unless a state with no income tax deducts nothing from anyone.
+
+    The explicit ``$0.00`` entry (ruling salary:R-SAL78) states no rate, and a
+    deduction or a child deduction beside it would be a figure that prices
+    nothing: the Taxes tab would show it and no tax would move.
+
+    Args:
+        state: A :class:`StateYearLaw` of tax type ``NONE``, its other checks
+            already passed.
+
+    Raises:
+        ValueError: A filing status states a standard deduction above
+            ``$0.00``, or any child deduction tiers.
+    """
+    for status, deduction in state.standard_deduction.items():
+        if deduction != _ZERO:
+            raise ValueError(
+                f"a state with no income tax deducts nothing, not {deduction} "
+                f"for {status.value}"
+            )
+    for status, tiers in state.child_deduction_tiers.items():
+        if tiers:
+            raise ValueError(
+                f"a state with no income tax has no child deduction, not tiers "
+                f"for {status.value}"
+            )
 
 
 def _freeze(law, *names: str) -> None:

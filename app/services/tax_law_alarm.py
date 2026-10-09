@@ -32,13 +32,13 @@ because :class:`app.tax_law.TaxYearLaw` refuses a year without them and
 has both.  A year MAY ship in parts -- federal before a state that publishes
 later -- and every alarm keeps naming the missing state until it lands.
 
-**One reading this module adds, which the ruling does not state:** a state
-first listed in a later year owes nothing to the years before it, so adding a
-state never raises an alarm about the past.  A profile in that state is priced
-for those earlier years on the state's first listed year (the resolver's
-forward reach, :func:`~app.services.tax_config_service.resolve_tax_year`);
-plan step salary:X-at-3, which decides the supported states, is where that is
-asked.
+**A state is listed from the law's first year** (ruling **R-SAL129**, plan
+step salary:X-at-3): :class:`app.tax_law.TaxLaw` refuses a state first listed
+in a later year, so no profile's earlier years reach FORWARD to a later year's
+rules.  Every state the law lists is therefore owed by every year after the
+first, and a gap is only ever a later year that lacks one.  (Until X-at-3
+this module read the opposite -- a state first listed later owed nothing to
+the years before it -- and left the question to that step.)
 
 The check reads no clock: every caller passes the day it means, which is what
 lets the tests drive it to any date.  What keeps the weekly calendar sweep's
@@ -116,9 +116,10 @@ def gaps(law, through_year: int) -> tuple[Gap, ...]:
     Each year after the law's first, up to *through_year*, is judged: a year
     the law does not carry is one whole-year :class:`Gap` -- carrying, in
     ``priced_older``, each listed state its newest year lacks -- and a carried
-    year lacking a state an earlier year lists is one :class:`Gap` per state.
-    The law's first year owes nothing -- there is no earlier year to measure
-    it by -- and a law with no years at all lacks *through_year* whole.
+    year lacking a state the law lists is one :class:`Gap` per state.  The
+    law's first year lists every state (:class:`app.tax_law.TaxLaw` refuses a
+    law whose first year does not, ruling R-SAL129), so it owes nothing; a
+    law with no years at all lacks *through_year* whole.
 
     Args:
         law: The :class:`app.tax_law.TaxLaw` to judge.
@@ -132,7 +133,7 @@ def gaps(law, through_year: int) -> tuple[Gap, ...]:
         return (Gap(tax_year=through_year, state=None, fallback_year=None),)
     first = min(carried)
     found = []
-    listed = set(carried[first].states)
+    listed = set(law.supported_states)
     for tax_year in range(first + 1, through_year + 1):
         year = carried.get(tax_year)
         if year is None:
@@ -143,7 +144,6 @@ def gaps(law, through_year: int) -> tuple[Gap, ...]:
             )))
             continue
         found.extend(_state_gaps(law, listed - set(year.states), tax_year))
-        listed |= set(year.states)
     return tuple(found)
 
 

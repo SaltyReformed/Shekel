@@ -8291,8 +8291,11 @@ def linked_ledger_total(account_id):
 #: A made-up law's one source line: a test's figures cite no document.
 MADE_UP_SOURCES = ("A test's made-up figures, not a published law",)
 
-#: No tax at all: every kind resolves no rules, so every tax line is $0.00 --
-#: what a test that seeded no tax rows priced.
+#: No year at all: every kind resolves no rules.  It lists no state either,
+#: so since plan step salary:X-at-3 it prices no PROFILE -- the engine refuses
+#: a state the law does not list (ruling salary:R-SAL78) -- and is what the
+#: tax-law alarms' tests judge.  A test pricing a profile with no tax installs
+#: :data:`NO_TAX_LAW`.
 EMPTY_TAX_LAW = TaxLaw(years=())
 
 
@@ -8402,6 +8405,26 @@ def made_up_state(rate, standard_deduction=Decimal("25500.00")):
     )
 
 
+def no_income_tax_state():
+    """Return a state with no income tax: the explicit ``$0.00`` entry (ruling salary:R-SAL78).
+
+    Tax type ``NONE``, no rate, a ``$0.00`` standard deduction and no child
+    deduction for every filing status.  Since plan step salary:X-at-3 the law
+    must LIST a profile's state or the engine refuses the profile, so a test
+    whose figures carry no state tax lists the profile's state this way rather
+    than leaving it out.
+
+    Returns:
+        StateYearLaw: The made-up untaxed state.
+    """
+    return StateYearLaw(
+        tax_type=TaxTypeEnum.NONE,
+        flat_rate=None,
+        standard_deduction={status: Decimal("0.00") for status in FilingStatusEnum},
+        child_deduction_tiers={status: () for status in FilingStatusEnum},
+    )
+
+
 def made_up_year(tax_year=2026, *, federal=None, fica=None, states=None):
     """Return one made-up tax year, one set of federal rules for every status.
 
@@ -8446,11 +8469,31 @@ def bracket_set_law(*tax_years):
     ))
 
 
-def fica_only_law(tax_year=2026):
-    """Return the law ``seed_fica_config`` alone wrote: made-up FICA, nothing else.
+#: No tax on any line, and North Carolina listed: one made-up year whose
+#: federal rules and FICA price $0.00 (:func:`zero_federal`,
+#: :func:`zero_fica`) and whose one state has no income tax
+#: (:func:`no_income_tax_state`).  What a test pricing a profile with no tax
+#: installs since plan step salary:X-at-3, where it installed
+#: :data:`EMPTY_TAX_LAW` until the engine began refusing a state the law does
+#: not list.  It prices every paycheck line at $0.00 as the empty law did,
+#: with the two differences :func:`zero_federal` names -- a W-4's extra
+#: withholding is added to federal, and the annual liability prices $0.00
+#: where it refused -- and a third: the tax-law banner, which the empty law
+#: shows on every page, shows under this one only from November 1, 2026,
+#: when 2027 falls due.  It also lists NC on the Settings tax-law card where
+#: the empty law listed nothing.  None of the tests that moved to it asserts
+#: on any of these (each passed unchanged on it, 2026-10-08).
+NO_TAX_LAW = TaxLaw(years=(made_up_year(2026, states={"NC": no_income_tax_state()}),))
 
-    Federal prices $0.00 on the zero rules a year cannot lack, and no state
-    is listed.
+
+def fica_only_law(tax_year=2026):
+    """Return the law ``seed_fica_config`` alone wrote: made-up FICA, and NC untaxed.
+
+    Federal prices $0.00 on the zero rules a year cannot lack.  The row held
+    no state, which priced no state tax; since plan step salary:X-at-3 the
+    engine refuses a state the law does not list (ruling salary:R-SAL78), so
+    North Carolina -- every caller's profile's state -- is listed with no
+    income tax (:func:`no_income_tax_state`), which prices the same $0.00.
 
     Args:
         tax_year: The one year the row was written for.
@@ -8458,7 +8501,11 @@ def fica_only_law(tax_year=2026):
     Returns:
         TaxLaw: That one year.
     """
-    return TaxLaw(years=(made_up_year(tax_year, fica=made_up_fica()),))
+    return TaxLaw(years=(
+        made_up_year(
+            tax_year, fica=made_up_fica(), states={"NC": no_income_tax_state()},
+        ),
+    ))
 
 
 def state_and_fica_law(rate=Decimal("0.0399"), tax_year=2026):

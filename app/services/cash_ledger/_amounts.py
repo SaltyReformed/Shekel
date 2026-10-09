@@ -350,6 +350,9 @@ def contributions_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
         AmountUnresolvable: From the resolver, for a row whose rule cannot
             answer.  A refusal is never a fallback (see
             :mod:`app.services.cash_ledger._amount_source`).
+        UnsupportedStateError: From the resolver, for a salary-linked row
+            whose profile is in a state the tax law does not list (plan step
+            salary:X-at-3).
     """
     return {row.id: contribution_of(row, basis) for row in rows}
 

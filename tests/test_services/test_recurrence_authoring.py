@@ -809,9 +809,14 @@ class TestSalaryProfileWriter:
             "pay_amount": "4000.00",  # $104,000.00 a year / 26
             "pay_payday": seed_periods[0].start_date.isoformat(),
             "filing_status_id": str(filing_status.id),
-            "state_code": "PA",
+            # A state the law lists: since plan step salary:X-at-3 the create
+            # door refuses any other (it posted "PA" until then).
+            "state_code": "NC",
         })
+        # A refused create redirects too, so the 302 alone cannot tell the two
+        # apart: the profile must exist.
         assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/edit"), resp.headers["Location"]
 
         rule = sole_rule_owned_by(seed_user["user"].id)
         assert_resolves_completely(rule)

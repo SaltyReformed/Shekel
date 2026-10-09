@@ -17,10 +17,11 @@ from decimal import Decimal
 
 import pytest
 
+from app import tax_law as tax_law_module
+from app.exceptions import UnsupportedStateError
 from app.extensions import db as _db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services.exceptions import InvalidFilingStatusError
 from app.services.tax_liability_service import AnnualLiability, compute_annual_liability
 from tests._test_helpers import EMPTY_TAX_LAW, start_test_pay_list
 
@@ -371,7 +372,7 @@ class TestNCChildDeductionTierBoundary:
 
 
 class TestClampAndMissingConfigs:
-    """Zero-clamp, None-state, and missing-bracket-set contracts."""
+    """The zero clamp, and the refusal of a state the law does not list (salary:X-at-3)."""
 
     def test_low_income_clamps_both_layers_to_zero(self, app, db, seed_user):
         """Income below both standard deductions -> zero federal and state.
@@ -390,40 +391,42 @@ class TestClampAndMissingConfigs:
         assert result.state.taxable_base == Decimal("10000.00")
         assert result.state.liability == Decimal("0.00")
 
-    def test_none_state_config_zero_state_liability(self, app, db, seed_user):
-        """A state with no configured tax yields zero state liability.
+    def test_a_state_the_law_does_not_list_is_refused(self, app, db, seed_user):
+        """A PA profile is refused, not priced at $0.00 state liability.
 
-        Only NC is seeded, so a PA profile resolves state_config None:
-        state liability 0.00, rate/std-ded None; federal is unaffected
-        (bracket sets are state-independent -> anchor liability 12,994.00).
+        The shipped law does not list Pennsylvania.  Until plan step
+        salary:X-at-3 this case pinned the defect finding SAL-575 names: the
+        state resolved no rules and the liability priced $0.00 state tax
+        beside a full federal figure.  Plan step salary:X-at-3: "the engine
+        refuses a state the law lacks" (ruling R-SAL78), with an error naming
+        the profile (ruling R-SAL130).
         """
         profile = _committed_profile(
             seed_user, state_code="PA", additional_income="1200.00",
         )
-        result = compute_annual_liability(
-            profile, 2026,
-            Decimal("110000.00"), Decimal("12000.00"),
-        )
-        assert result.federal.liability == Decimal("12994.00")
-        assert result.state.liability == Decimal("0")
-        assert result.state.flat_rate is None
-        assert result.state.standard_deduction is None
-        # The base is still reported for context.
-        assert result.state.taxable_base == Decimal("99200.00")
+        with pytest.raises(UnsupportedStateError) as refused:
+            compute_annual_liability(
+                profile, 2026,
+                Decimal("110000.00"), Decimal("12000.00"),
+            )
+        assert refused.value.state_code == "PA"
+        assert refused.value.profile_id == profile.id
+        assert refused.value.supported == tax_law_module.LAW.supported_states
 
-    def test_missing_bracket_set_raises(self, app, db, seed_user, tax_law):
-        """No bracket set for the year -> InvalidFilingStatusError.
+    def test_an_empty_law_refuses_the_profile_before_its_federal_rules(
+        self, app, db, seed_user, tax_law,
+    ):
+        """A law with no year lists no state, so the profile is refused first.
 
-        The empty law is installed, so no year has a bracket set and no
-        fallback applies -- the engine raises, consistent with
-        calculate_federal_withholding on a None bracket set.
+        Until plan step salary:X-at-3 this raised InvalidFilingStatusError: no
+        year held a bracket set.  The law's state check now runs before any
+        year is resolved, and an empty law supports no state.
         """
         tax_law(EMPTY_TAX_LAW)
         profile = _make_profile(seed_user, additional_income="1200.00")
         db.session.commit()
-        current_year = date.today().year
-        with pytest.raises(InvalidFilingStatusError):
+        with pytest.raises(UnsupportedStateError, match=r"\(it lists no state\)"):
             compute_annual_liability(
-                profile, current_year,
+                profile, date.today().year,
                 Decimal("110000.00"), Decimal("12000.00"),
             )
