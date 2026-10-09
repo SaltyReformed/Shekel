@@ -39,9 +39,11 @@ endpoints' CURRENT names, where it printed the shadow's stored copy (leaf
 ``X-bi-6-1``'s same change on the grid) -- 0 of 354 shadows disagreed on the
 2026-09-24 production dump; two same-day transfer blocks order by transfer id
 where they ordered by shadow id (``_assemble._block_order``); a transfer whose
-shadow pair is broken is warned about rather than offered (ruling
-**R-BAL148**); and a shadow drifted from its parent is offered by the
-parent's state (``transfer_legs.offerable_transfer_legs``).
+shadow pair is broken was warned about rather than offered (ruling
+**R-BAL148**) until plan step ``balance:X-bi-6-4d-2`` priced a leg off its
+transfer alone and ruling **R-BAL235** offered it like any other; and a
+shadow drifted from its parent is offered by the parent's state
+(``transfer_legs.offerable_transfer_legs``).
 
 **Its settle is ``transfer_service.settle_transfer``, and that is the whole
 reason it is a separate arm** (ruling **R-FA**).  A transfer is THREE rows -- a
@@ -129,8 +131,12 @@ def _settle_one(
             shadows holding no purchase to settle from; ruling **R-CC125**
             refuses a typed one before this runs, and any other figure books
             each side's payment where it already is.  A leg whose own price
-            resolved to ``$0.00`` ticked with its box CLEARED would record
-            one unrefused -- a plain transfer's amount is positive
+            resolved to ``$0.00`` ticked with its box CLEARED is refused
+            too, since plan step ``balance:X-bi-6-4d-2``: the tick states the
+            statement's day for a settle that records no money, and ruling
+            **R-BAL230** refuses a day on a ``$0.00`` close
+            (``transfer_service._status.reject_stated_day_on_a_zero_close``)
+            -- a plain transfer's amount is positive
             (``ck_transfers_positive_amount``) and so is a recurring
             series' (``ck_template_amount_versions_transfer_positive_amount``);
             whether a derive-mode loan payment's price can reach ``$0.00`` is

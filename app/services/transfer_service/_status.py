@@ -203,6 +203,15 @@ def reject_stated_day_on_a_zero_close(
     a Save that answers OK and stores nothing.  A figure above ``$0.00`` in
     the same Save is what dates the pair, so that Save is not refused.
 
+    **Wider than the question the developer was asked, deliberately, and
+    fail-closed**: the rule is "a stated day on an act that records no
+    money", so it also refuses a settle INTO the band at ``$0.00`` beside a
+    stated day -- a typed ``$0.00`` with a typed day on a Projected pair,
+    and a door-supplied day: the reconcile tick's statement day on a leg
+    priced ``$0.00`` with its box cleared (ledger row **BAL-596**'s hole,
+    which recorded the close and dropped the day).  The same day is dropped
+    the same way in each, so one sentence answers all of them.
+
     Asked after :func:`reject_stated_days_without_settle`, so a stated day
     here sits beside a settled status.  A pair holding no record that is NOT
     yet settled is a move into the band with no settlement, which the arm
@@ -268,8 +277,8 @@ def apply_status_to_all_three(
     untouched (F-047 / commit C-21).
 
     Args:
-        rows: The transfer and both shadows being moved; only the transfer is
-            written.
+        rows: The transfer and its live twins; only the transfer and its
+            sides' records are written, never a twin.
         new_status_id: The ``ref.statuses.id`` the transfer moves to.  The
             pair's CURRENT status for a correction.
         stated: The days the act STATES, by side

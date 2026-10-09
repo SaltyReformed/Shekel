@@ -233,6 +233,27 @@ class TestADayTypedOnAZeroCloseIsRefused:
             assert all(record.amount == _AMOUNT for record in _records(xfer.id))
             assert _stored(xfer.id) == before
 
+    def test_a_zero_settle_from_projected_beside_a_day_is_refused(
+        self, app, seed_user,
+    ):
+        """The rule's deliberate width (review L-1): a settle INTO the band at $0.00 with a day."""
+        with app.app_context():
+            xfer = _transfer(seed_user)
+            before = _stored(xfer.id)
+
+            with pytest.raises(ValidationError, match=_ZERO_CLOSE):
+                transfer_service.settle_transfer(
+                    xfer.id, _owner(seed_user),
+                    submitted=typed(Decimal("0.00")),
+                    side_days=(transfer_service.SideDay(
+                        xfer.from_account_id, an_entered_day(_day(seed_user)),
+                    ),),
+                )
+            db.session.rollback()
+
+            assert _records(xfer.id) == (None, None)
+            assert _stored(xfer.id) == before
+
     def test_the_amount_the_bank_took_beside_a_day_dates_the_pair_by_it(
         self, app, seed_user,
     ):

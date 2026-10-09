@@ -637,9 +637,10 @@ def _leg_candidates(
     On every door-written state it offers exactly the transfers whose shadow
     the row arm offered (a Projected parent's two shadows are Projected, live
     and filed in its period -- Transfer Invariants 1, 3 and 4).  Priced by
-    :func:`~._leg_valuation.leg_price`; a DAMAGED transfer, whose shadow pair
-    the price refuses, is reported among the unpriceable and its still-planned
-    side is not offered (ruling **R-BAL158**).  Not scoped by scenario, for
+    :func:`~._leg_valuation.leg_price`, off the transfer alone: a transfer
+    whose twin pair is DAMAGED is offered like any other (ruling
+    **R-BAL235**; it was counted among the unpriceable and not offered,
+    ruling **R-BAL158**, until plan step ``balance:X-bi-6-4d-2``).  Not scoped by scenario, for
     :func:`_transaction_candidates`' reason.
 
     Args:

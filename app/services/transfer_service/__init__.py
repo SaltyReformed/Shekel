@@ -66,8 +66,9 @@ reconcile panel's offer and the statement matcher's), as
 itself answers whether a human's figure was booked, so the panel's count and
 the column's contents come from one act rather than from two askings.
 
-:func:`load_transfer_rows` publishes the pair itself, for the READ surfaces that
-must agree with the write paths about what a transfer IS: the full-edit popover
+:func:`load_transfer_rows` publishes the transfer and its live twin rows, for the
+READ surfaces that must agree with the write paths about what a transfer IS (no
+twin-pair check since ruling **R-BAL235**): the full-edit popover
 shows what the pair recorded and what a re-settle would re-book, and a template
 resolving "which shadow, and what if it is missing" for itself is how a screen
 comes to disagree with the verb it is a control for.
