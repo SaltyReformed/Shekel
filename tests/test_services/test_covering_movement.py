@@ -1473,6 +1473,17 @@ class TestATransfersMovementsFollowItsLifecycle:
     def test_a_soft_deleted_transfer_keeps_its_movements_worth_nothing_and_restore_revives_them(
         self, app, seed_user, seed_periods,
     ):
+        """A soft delete takes both $500.00 movements off; a restore brings back a plan.
+
+        It kept both movements worth nothing while hidden and revived them on
+        the restore until plan step ``balance:X-bi-6-4d-2``, whose soft
+        delete takes both sides' records off the books (ruling
+        **credit_card:R-CC75**) and sets the Paid transfer back to Projected
+        (ruling **R-BAL246**, "Back as a plan, now", developer 2026-10-09).
+        So the restore returns a plan holding no movement, and neither
+        account reads a settled fact either side of it.  The name is kept as
+        history.
+        """
         with app.app_context():
             xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
             movement_ids = {leg.cell_key: _only_movement(leg).id for leg in (expense, income)}
@@ -1480,26 +1491,30 @@ class TestATransfersMovementsFollowItsLifecycle:
             transfer_service.delete_transfer(xfer.id, user_id, soft=True)
             db.session.flush()
             for leg in (expense, income):
-                movement = db.session.get(TransactionEntry, movement_ids[leg.cell_key])
-                assert movement is not None
-                assert cash_ledger.movement_cash_leg(leg, movement) == Decimal("0.00")
+                assert db.session.get(TransactionEntry, movement_ids[leg.cell_key]) is None
                 assert settled_cash_facts(leg.account_id, leg.scenario_id) == []
             transfer_service.restore_transfer(xfer.id, user_id)
             db.session.flush()
-            for leg, figure in ((expense, Decimal("-500.00")), (income, Decimal("500.00"))):
-                assert _only_movement(leg).id == movement_ids[leg.cell_key]
-                assert _per_day(settled_cash_facts(leg.account_id, leg.scenario_id)) == {
-                    leg.settled_on: figure,
-                }
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            for leg in _legs_of(xfer):
+                assert leg.record is None
+                assert settled_cash_facts(leg.account_id, leg.scenario_id) == []
 
     def test_a_reverted_then_soft_deleted_then_restored_transfer_keeps_both_survivors(
         self, app, seed_user, seed_periods,
     ):
-        """The restore's identity pass moves nothing: same ids, un-dated, same labels.
+        """A reverted transfer's kept un-dated records leave with its delete.
 
-        Each side is read as its transfer and its kept record since plan step
+        Each side is read as its transfer and its record since plan step
         balance:X-bi-6-4d-2, its shadow row until then (ruling R-BAL167
-        classes 1 and 4): the transfer says Projected, each record un-dated.
+        classes 1 and 4).  A revert keeps each side's record un-dated (ruling
+        R-BAL61), and the restore's identity pass kept both survivors (same
+        ids, un-dated, same labels) until that step's soft delete took every
+        record either side holds off the books (ruling
+        **credit_card:R-CC75**).  The transfer was Projected already, so it
+        stays Projected (ruling **R-BAL246** sets back only a settled one) and
+        the restore returns a plan holding no record.  The name is kept as
+        history.
         """
         with app.app_context():
             xfer, _, _ = _settled_pair(seed_user, seed_periods[0])
@@ -1512,18 +1527,13 @@ class TestATransfersMovementsFollowItsLifecycle:
             movement_ids = {leg.cell_key: _only_movement(leg).id for leg in _legs_of(xfer)}
             transfer_service.delete_transfer(xfer.id, user_id, soft=True)
             db.session.flush()
+            for movement_id in movement_ids.values():
+                assert db.session.get(TransactionEntry, movement_id) is None
             transfer_service.restore_transfer(xfer.id, user_id)
             db.session.flush()
             for leg in _legs_of(xfer):
                 assert not leg.status.is_settled
-                survivor = _only_movement(leg)
-                assert survivor.id == movement_ids[leg.cell_key]
-                assert survivor.settled_on is None
-                assert survivor.reconciled_by_id is None
-                assert survivor.amount == Decimal("500.00")
-                assert survivor.figure_source_id == _source(
-                    MovementFigureSourceEnum.RESOLVED,
-                )
+                assert leg.record is None
 
     def test_a_hard_deleted_transfer_takes_its_movements_with_it(
         self, app, seed_user, seed_periods,

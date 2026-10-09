@@ -1197,6 +1197,126 @@ class TestSoftDeleteHandling:
             assert remaining == 0
 
 
+class TestADeleteReturnsAPaidTransferToAPlan:
+    """The soft delete's set-back to Projected (ruling R-BAL246).
+
+    Developer 2026-10-09, "Back as a plan, now": the delete that takes a Paid
+    transfer's payment records off (ruling credit_card:R-CC75) also sets it
+    back to Projected, so a restore brings back a plan -- never a ``$0.00``
+    close, which a loan reads as a missed installment.  A ``$0.00`` close
+    held nothing and keeps Paid; a hard delete removes the row and sets no
+    status.  Every case reads each side's record by its own SQL
+    (:func:`tests._test_helpers.transfer_side_record`), never the producer.
+    """
+
+    @staticmethod
+    def _sides(td, xfer_id):
+        """Each side's record ``(amount, settled_on)``, or ``None``, from Checking then Savings."""
+        db.session.expire_all()
+        sides = []
+        for account in (td["account"], td["savings_account"]):
+            record = transfer_side_record(db.session, xfer_id, account.id)
+            sides.append(
+                None if record is None else (record.amount, record.settled_on),
+            )
+        return tuple(sides)
+
+    def test_a_paid_transfer_comes_off_as_a_hidden_plan_and_restores_as_one(
+        self, app, db, transfer_data,
+    ):
+        """Paid with $250.00 on both sides: deleted Projected, restored Projected, empty."""
+        with app.app_context():
+            td = transfer_data
+            xfer_id = _create_basic_transfer(td).id
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            paid_sides = self._sides(td, xfer_id)
+            assert [side[0] for side in paid_sides] == [
+                Decimal("250.00"), Decimal("250.00"),
+            ], "precondition: the Paid transfer holds both $250.00 records"
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            xfer = db.session.get(Transfer, xfer_id)
+            assert xfer.is_deleted is True
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert self._sides(td, xfer_id) == (None, None)
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            db.session.commit()
+
+            xfer = db.session.get(Transfer, xfer_id)
+            assert xfer.is_deleted is False
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert self._sides(td, xfer_id) == (None, None)
+
+    def test_a_zero_close_held_nothing_and_keeps_paid(
+        self, app, db, transfer_data,
+    ):
+        """Paid at $0.00 (no record either side): deleted Paid, restored Paid."""
+        with app.app_context():
+            td = transfer_data
+            xfer_id = _create_basic_transfer(td).id
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, status_id=paid_id,
+            )
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, figure=typed(Decimal("0")),
+            )
+            db.session.commit()
+            assert self._sides(td, xfer_id) == (None, None), (
+                "precondition: a $0.00 close keeps no record"
+            )
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            xfer = db.session.get(Transfer, xfer_id)
+            assert xfer.is_deleted is True
+            assert xfer.status_id == paid_id
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            db.session.commit()
+
+            assert db.session.get(Transfer, xfer_id).status_id == paid_id
+            assert self._sides(td, xfer_id) == (None, None)
+
+    def test_a_cancelled_transfer_whose_kept_records_came_off_stays_cancelled(
+        self, app, db, transfer_data,
+    ):
+        """Only a SETTLED transfer is set back: a Cancelled one keeps its status.
+
+        Paid, reverted (each side keeps its $250.00 record un-dated, ruling
+        R-BAL61), then cancelled: the delete takes both records off, and the
+        transfer it hides is still Cancelled.  The case a set-back keyed on
+        the records alone would move to Projected.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer_id = _create_basic_transfer(td).id
+            for status in (StatusEnum.DONE, StatusEnum.PROJECTED, StatusEnum.CANCELLED):
+                transfer_service.update_transfer(
+                    xfer_id, td["user"].id, status_id=ref_cache.status_id(status),
+                )
+            db.session.commit()
+            assert self._sides(td, xfer_id) == (
+                (Decimal("250.00"), None), (Decimal("250.00"), None),
+            ), "precondition: the cancelled transfer kept both records un-dated"
+
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.commit()
+
+            xfer = db.session.get(Transfer, xfer_id)
+            assert xfer.is_deleted is True
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
+            assert self._sides(td, xfer_id) == (None, None)
+
+
 # ── Restore Tests (M1) ──────────────────────────────────────────
 
 
@@ -1250,6 +1370,14 @@ class TestRestoreTransfer:
         still planted and graded as read by nothing: the restore succeeds and
         the drifted shadow's side reads the TRANSFER's Paid (ruling R-BAL167
         class 3, plan step balance:X-bi-6-4d-2).  The name is kept as history.
+
+        **The Paid transfer is a ``$0.00`` close**, a typed ``$0.00`` taking
+        both sides' records off before the delete: a delete that takes a
+        Paid transfer's payments off sets it back to Projected (ruling
+        R-BAL246), and a ``$0.00`` close held none, so it stays Paid hidden
+        and comes back Paid.  A setup change only, every assertion unchanged
+        (a rule-5 re-expression the developer approved 2026-10-09, "Approve
+        both").
         """
         with app.app_context():
             td = transfer_data
@@ -1258,6 +1386,9 @@ class TestRestoreTransfer:
             paid_id = ref_cache.status_id(StatusEnum.DONE)
             transfer_service.update_transfer(
                 xfer_id, td["user"].id, status_id=paid_id,
+            )
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, figure=typed(Decimal("0")),
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()

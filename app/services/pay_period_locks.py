@@ -274,8 +274,9 @@ def items_holding_a_movement(periods: "list[int] | Query") -> "tuple[Query, Quer
     one the database now refuses to lose.  Dated or not: an un-dated
     purchase is money in flight, as recorded as a dated one.  A transfer is
     asked the ONE ``transfer_legs`` question (rulings **R-BAL125**,
-    **R-BAL157**), which reaches a DEAD shadow's kept payment too (finding
-    **BAL-532**); the cascade takes those.
+    **R-BAL157**), which reads each side's records off the TRANSFER by its
+    side links (plan step ``balance:X-bi-6-4d-2``); a hidden transfer holds
+    none (ruling **credit_card:R-CC75**, finding **BAL-532**).
 
     The pay-period doors' one reading of it: the lock classifier's
     ``HOLDS_MOVEMENT`` (per period), the reset gate's second count
@@ -581,13 +582,12 @@ def settled_items(periods: "list[int] | Query") -> "tuple[Query, Query]":
     count (``pay_period_gates.settled_transaction_count``) both read this,
     so a row that does not lock a period cannot block a reset.
 
-    **On the drift Transfer Invariant 3 forbids, the parent decides**
-    (ruling **R-JM**): a settled parent over Projected shadows is settled
-    here, where the shadow read said it was not, and a Projected parent
-    over a settled shadow is not -- though any movement that shadow holds
-    still holds its period, through :func:`items_holding_a_movement`.  No
-    door writes either state; production held neither on the 2026-09-30
-    00:11 dump (0 shadows whose status differs from their parent's).
+    **The parent decides, and since plan step ``balance:X-bi-6-4d-2`` it is
+    the only status there is**: a twin's status is no longer kept or read,
+    so the drift ruling **R-JM** settled here (a parent over a shadow whose
+    status differed) cannot be stored.  A movement either side holds still
+    holds its period, whatever the status, through
+    :func:`items_holding_a_movement`.
 
     Args:
         periods: As :func:`items_holding_a_movement`.

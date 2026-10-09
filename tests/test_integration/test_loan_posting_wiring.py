@@ -52,6 +52,7 @@ from tests._test_helpers import (
     loan_correction_entries,
     loan_income_shadow,
     SPLIT_LOAN,
+    transfer_side_record,
 )
 
 # The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
@@ -329,17 +330,30 @@ class TestRevertAndDeletePostFullCashReversal:
 
 
 class TestRestoreWiring:
-    """Restoring a soft-deleted, settled loan payment re-posts its correction."""
+    """Restoring a soft-deleted loan payment that was Paid brings back a plan."""
 
     def test_restore_reposts_correction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Settle (-99500), soft-delete (baseline -100000), restore (-99500 again).
+        """Settle (-99500), soft-delete (baseline -100000), restore (-100000: a plan).
 
         The loan-linked ledger carries the opening (-250000) + true-up (+150000)
-        throughout; the payment correction (+500 principal) is reversed on delete
-        and re-posted on restore, so the linked total moves -99500 -> -100000 ->
-        -99500 (the -100000 baseline is the trued-up balance with no payment).
+        throughout; the payment correction (+500 principal) is reversed on
+        delete, and the restore brings the payment back as a PLAN, so the
+        linked total moves -99500 -> -100000 -> -100000 (the -100000 baseline
+        is the trued-up balance with no payment).
+
+        It re-posted the correction (-99500 after the restore) until plan step
+        ``balance:X-bi-6-4d-2``.  That step's delete takes both payment
+        records off (ruling **credit_card:R-CC75**), so nothing was left to
+        re-post, and as first built the restore brought back a Paid payment
+        holding nothing: a ``$0.00`` close, which the loan walk read as a
+        missed installment, its ``$500.00`` interest charged (-100500,
+        measured).  The developer ruled the delete sets the payment back to
+        Projected (ruling **R-BAL246**, "Back as a plan, now", 2026-10-09:
+        "the loan reads $100,000.00 owed and no missed installment is
+        charged"), so the restore returns a planned payment and the figure
+        stays at the no-payment baseline.  The name is kept as history.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -360,9 +374,15 @@ class TestRestoreWiring:
 
             transfer_service.restore_transfer(xfer.id, seed_user["user"].id)
             db.session.commit()
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert xfer.is_deleted is False
+            for account_id in (xfer.from_account_id, xfer.to_account_id):
+                assert transfer_side_record(
+                    _db.session, xfer.id, account_id,
+                ) is None, "a restored plan holds no payment record"
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("-99500.00")
+            ) == Decimal("-100000.00")
 
 
 class TestTrueUpWiring:

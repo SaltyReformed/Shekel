@@ -50,7 +50,11 @@ def restore_transfer(transfer_id, user_id):
     payment record's.  Nor is there a record to bring back: the soft delete
     took each side's records off the books (ruling **R-CC75**, "un-archiving
     brings a deleted occurrence back empty"), and the database refuses to
-    hide a transfer still holding one.  Until that step this verb re-applied
+    hide a transfer still holding one.  **What comes back is a PLAN**: the
+    delete set a settled transfer whose records it took off back to
+    Projected (ruling **R-BAL246**, "Back as a plan, now"), so a loan reads
+    a planned payment rather than a missed installment; a ``$0.00`` close
+    held nothing and comes back as it was.  Until that step this verb re-applied
     the pair's status through the seam, repairing a drifted shadow's status
     and borrowing its day from the sibling (ruling **R-BAL142**).
 
@@ -181,20 +185,19 @@ def restore_transfer(transfer_id, user_id):
     db.session.flush()
 
     # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
-    # Re-post the confirmed effect when the restored transfer is settled: a
-    # settled transfer that was soft-deleted had its effect reversed by
-    # ``delete_transfer``, so restoring re-syncs the ledger to what its
-    # movements now say.  Runs AFTER the transfer and its shadows are
-    # un-deleted above, so each covering movement is its leg's record again
-    # under a contributing transfer and a dated one posts (plan step
+    # Re-sync the ledger to what the restored transfer's movements say, AFTER
+    # the transfer and its shadows are un-deleted (plan step
     # ``balance:X-bi-6-3``, ruling **R-BAL101**: the door reads the
-    # movements, it is told no settled sense; the leg's gate is the
-    # transfer's since leaf ``X-bi-6-4a``).  A no-op for a restored
-    # projected transfer (the common path -- its movements are un-dated).
+    # movements, it is told no settled sense).  Since plan step
+    # ``balance:X-bi-6-4d-2`` a hidden transfer holds no movement (ruling
+    # **R-CC75**) and returns as a plan or a ``$0.00`` close (ruling
+    # **R-BAL246**), so this posts nothing.
     posting_service.sync_transfer_postings(xfer)
-    # Posting ledger: re-reconcile the loan's genesis ledger for a restored,
-    # settled loan payment -- its split correction plus the opening / true-up
-    # corrections (a no-op for a restored projected or non-loan transfer).
+    # Posting ledger: re-reconcile the loan's genesis ledger -- its split
+    # correction plus the opening / true-up corrections.  A restored
+    # ``$0.00`` close is a settled loan payment holding no cash (ruling
+    # **R-BAL140**), which moves the split; a restored plan or a non-loan
+    # transfer moves nothing.
     _sync_loan_postings_if_loan(xfer)
 
     log_event(

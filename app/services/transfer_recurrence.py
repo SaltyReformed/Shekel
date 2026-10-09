@@ -564,29 +564,19 @@ def _rows_holding_owner_records(existing) -> "set[int]":
         ``balance:X-bi-4b-2`` deleted that column (ruling **R-BAL80**): the
         same fact in two homes, and this was one of the readers keeping them
         in step.
-    **A STATEMENT LINK is its own arm again** (plan step
-    ``balance:X-bi-4b-2``).  ``reconciled_by_id`` records which statement was
-    seen to show a leg's money, and it is what makes an ACCOUNT move unsafe
-    (``fk_transactions_reconciled_by`` scopes the link BY ACCOUNT) -- so it
-    belongs in this answer.  Plan step R10-b MEASURED that it needed no
-    condition of its own: ``ck_transactions_cleared_needs_settle_day`` said a
-    link needs a settle day, ``ck_transactions_settle_day_needs_a_record``
-    said a settle day needs a ``settled_basis_id``, so the record arm caught
-    every linked leg, verified against PostgreSQL, and its docstring said a
-    dropped CHECK was the signal to put the arm back.  X-bi-4b-2 dropped the
-    second CHECK with the column: a leg's record is its covering movement,
-    and a ``$0.00`` close holds none (ruling **R-BAL82**) while a statement
-    may still have shown it -- a linked leg the movement arm cannot see.  The
-    pass reaches such a leg only through DRIFT (a leg settled under a
-    Projected parent, which no door writes).  On the endpoint-move branch the
-    composite key would refuse the account move rather than apply it, and
-    the arm makes that a reported CONFLICT instead of an ``IntegrityError``;
-    on the RETIRE branch nothing else stands between the leg and a DELETE --
-    no key references the observing side -- so the arm is what keeps a
-    drifted linked leg, and the statement observation it carries, from being
-    destroyed in silence.  Testable now exactly because the state is storable.  The DAY's basis
+    **A STATEMENT LINK is no arm of its own since plan step
+    ``balance:X-bi-6-4d-2``.**  ``reconciled_by_id`` records which statement
+    was seen to show a side's money, and it makes an ACCOUNT move unsafe
+    (``fk_transaction_entries_reconciled_by`` scopes it BY ACCOUNT) -- but a
+    statement links a side's payment RECORD
+    (``transfer_service.record_leg_clearing``), so every linked side holds a
+    record, which the record arm above already keeps, and a ``$0.00`` close
+    holds neither (ruling **R-BAL141**).  The arm plan step
+    ``balance:X-bi-4b-2`` put back read a link on a twin row, which
+    ``X-bi-6-4d-2`` stopped storing; its test went with it (the developer's
+    2026-10-09 rule-5 answer).  The DAY's basis
     needs no arm of its own: its pairing is a BICONDITIONAL over
-    ``settled_on`` (``ck_transactions_settle_day_basis_pairing``), so any row
+    ``settled_on`` (``ck_transaction_entries_settle_day_basis_pairing``), so any row
     this predicate can see carries it, and a condition no row can satisfy
     alone is untestable by construction -- the kind of guard this project
     has repeatedly found sitting green over nothing.
@@ -606,8 +596,8 @@ def _rows_holding_owner_records(existing) -> "set[int]":
         existing: The transfers this pass is considering.
 
     Returns:
-        The subset of their ids that hold a note, or on either leg a covering
-        movement or a statement link.
+        The subset of their ids that hold a note, or a payment record on
+        either side (which carries any statement link).
     """
     holding = transfer_legs.transfers_holding_records(
         xfer.id for xfer in existing

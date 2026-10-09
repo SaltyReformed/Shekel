@@ -8,7 +8,11 @@ a shadow is never orphaned, applied in the one direction that could orphan one.
 The ORDER inside is the whole of the module: the posted cash effect is
 reversed while the rows still exist to link against, because a hard delete
 SET-NULLs those links on its way out; the loan-payment split links no row
-(ruling **R-BAL102**) and is re-derived AFTER the payment is gone.
+(ruling **R-BAL102**) and is re-derived AFTER the payment is gone; and a soft
+delete that took a settled transfer's payments off returns it to a plan only
+once it is hidden (ruling **R-BAL246**, through ``_status.return_to_plan``),
+because the books' revert refusal does not reach a hidden row (ruling
+**R-BAL248**).
 
 Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 ``request`` / ``session`` imports.  Flushes; does NOT commit.
@@ -30,6 +34,7 @@ from app.services.transfer_service._loan_posting import (
     _pays_a_loan,
     _resync_loan_after_payment_left,
 )
+from app.services.transfer_service._status import return_to_plan
 from app.services.transfer_service._validation import _get_transfer_or_raise
 from app.utils.log_events import (
     BUSINESS,
@@ -49,7 +54,11 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         user_id:     The expected owner (defense-in-depth).
         soft:        If True, set is_deleted=True on the transfer and
                      both shadows -- a tombstone that keeps its place and
-                     none of its sides' payment records (ruling R-CC75).  If False,
+                     none of its sides' payment records (ruling R-CC75);
+                     a settled transfer that held one goes back to
+                     Projected, so a restore brings back a plan, while a
+                     ``$0.00`` close keeps its status (ruling R-BAL246).
+                     If False,
                      physically remove the transfer; the ON DELETE
                      CASCADE FK on transactions.transfer_id removes
                      both shadows automatically.
@@ -143,11 +152,13 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         .filter_by(transfer_id=transfer_id)
         .all()
     )
-    movement_removal.remove_movements(
+    held = (
         transfer_legs.held_transfer_entries(Transfer.id == transfer_id)
         .order_by(TransactionEntry.id)
-        .all(),
-        user_id, because=match_withdrawal.LEFT_THE_BOOKS, press=press,
+        .all()
+    )
+    movement_removal.remove_movements(
+        held, user_id, because=match_withdrawal.LEFT_THE_BOOKS, press=press,
         rows_leaving=shadows,
     )
     db.session.flush()
@@ -158,6 +169,13 @@ def delete_transfer(transfer_id, user_id, soft=False, *, press=None):
         # CASCADE only fires on physical deletes, not flag changes.
         for shadow in shadows:
             shadow.is_deleted = True
+        # **A settled transfer whose payments just came off returns as a
+        # PLAN** (ruling **R-BAL246**, "Back as a plan, now"); a ``$0.00``
+        # close held nothing and keeps Paid.  After the hide, because the
+        # books' revert refusal does not reach a hidden row (ruling
+        # **R-BAL248**, "Plan, kept deleted"); the hard arm below removes
+        # the row and has no status to set.
+        return_to_plan(xfer, took_off=bool(held))
         db.session.flush()
         log_event(
             logger, logging.INFO, EVT_TRANSFER_SOFT_DELETED, BUSINESS,

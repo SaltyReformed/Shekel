@@ -769,10 +769,10 @@ def reject_revert_below_the_books(row, new_status_id: int) -> None:
     round-4 review's H2), asked by each row type's one status door ahead of
     any write -- ``status_seam.apply_status_change`` for a transaction,
     ``transfer_service.apply_status_to_all_three`` for a transfer, before
-    either shadow is written -- and acting only on a REVERT: a paid,
-    received, credited or cancelled row about to go back to Projected.  A
-    row whose occurrence its definition's books drop may not:
-    unpaid, it would sit inside the opening balance, and the maintain pass
+    either shadow is written -- and acting only on a REVERT of a LIVE row (a hidden one is no
+    plan, ruling **balance:R-BAL248**): a paid, received, credited or cancelled row about to go
+    back to Projected.  A row whose occurrence its definition's books drop may not: unpaid, it
+    would sit inside the opening balance, and the maintain pass
     deletes a still-Projected row its rule no longer names without a word
     once a pass reaches its paycheck (plan step R10-a).  The questions are
     the two the books refusals above ask (ruling **R-PC99**): whether the
@@ -828,10 +828,10 @@ def reject_revert_below_the_books(row, new_status_id: int) -> None:
             names (a rule-less item's row, a link-less row: ledger row
             **PC-519**'s, bounded at no door but the unarchive), for an
             undated row (``occurs_on`` ``NULL``, which ruling **R-PC96**
-            judges at the unarchive alone), for an owner with no pay
-            periods, or for a row the books do not hold.
+            judges at the unarchive alone), for a HIDDEN row (R-BAL248), for an owner
+            with no pay periods, or for a row the books do not hold.
     """
-    if not reverts_to_projected(row, new_status_id):
+    if not reverts_to_projected(row, new_status_id) or row.is_deleted:
         return
     refusal = _revert_refusal(row)
     if refusal is not None:

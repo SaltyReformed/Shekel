@@ -3,8 +3,10 @@ Shekel Budget App -- Transfer Service status and settle-day writers
 
 The writers that move a transfer and its two SIDES together: the status
 applier (the transfer to its status through the one seam, and each side's
-payment record, dated with ITS OWN side's day, through the seam's Transfer arm)
-and the born-settled create's writer beside it.
+payment record, dated with ITS OWN side's day, through the seam's Transfer arm),
+the born-settled create's writer beside it, and the soft delete's return of a
+transfer to a plan (:func:`return_to_plan`, ruling **R-BAL246**), which goes
+through the applier.
 
 Extracted from ``transfer_service`` at plan step **X-f1b**, on the same ground
 every earlier split from that module used -- it was at the 1000-line ceiling and
@@ -45,6 +47,8 @@ Transfer arm moves the transfer's counter itself when a record or day moves.)
 
 from datetime import date
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.models.transfer import Transfer
 from app.services import status_seam
@@ -60,7 +64,10 @@ from app.services.transfer_service._side_days import (
     resolve_pair_days,
 )
 from app.services.transfer_service._validation import TransferRows
-from app.utils.balance_predicates import settled_status_ids
+from app.utils.balance_predicates import (
+    delete_returns_to_plan,
+    settled_status_ids,
+)
 from app.utils.dates import display_today
 
 
@@ -330,6 +337,58 @@ def apply_status_to_all_three(
         press=press,
     )
     status_seam.apply_status_change(rows.transfer, new_status_id)
+
+
+def return_to_plan(transfer: Transfer, *, took_off: bool) -> None:
+    """Set a hidden transfer whose delete took its payments off back to Projected.
+
+    **Ruling R-BAL246's act for a transfer** (developer 2026-10-09, "Back as
+    a plan, now"), called by the soft delete AFTER the one removal act has
+    taken both sides' records off (ruling **credit_card:R-CC75**) and AFTER
+    the transfer is hidden.  Until then a deleted Paid transfer stayed Paid
+    holding nothing -- a ``$0.00`` close, the bank took nothing -- so a
+    restore brought back a payment a loan reads as a MISSED installment, its
+    interest charged with no cash.  Whether the delete returns the transfer
+    to a plan is :func:`~app.utils.balance_predicates.delete_returns_to_plan`,
+    the rule's one statement, which the row delete is owed through its own
+    status door (ledger row **credit_card:CC-387**): a ``$0.00`` close held
+    nothing, so it keeps Paid.
+
+    **Through the transfer's one status writer** (:func:`apply_status_to_all_three`),
+    never a status write in the door: the writer's transition check and
+    revert refusal stand.  The sides hold no record by now, so the writer
+    writes the transfer's status alone; it is handed no twin, since it
+    writes none.
+
+    **The books' revert refusal does not reach a HIDDEN row** (ruling
+    **R-BAL248**, developer 2026-10-09, "Plan, kept deleted", narrowing
+    ruling **R-PC97**; the one condition is
+    :func:`~app.services.planned_rows_books.reject_revert_below_the_books`'
+    ``row.is_deleted``), which is why this act runs AFTER the hide.  A
+    transfer due on or before its books but paid after them is set back
+    like any other: measured before the ruling, the set-back through this
+    writer was refused with R-PC97's "cannot be planned as unpaid", which
+    would have refused a delete that went through.  A hidden row sits in
+    no balance, so it is no plan; where one could come back the books are
+    asked again -- the unarchive leaves deleted, and names, a hidden row its
+    books hold (:class:`~app.services.definition_unarchive.UnarchiveScope`,
+    rulings **R-PC95** and **R-PC99**), and the conflict chooser's restore
+    asks neither (ledger row **REC-535**).  The condition is written for
+    any row, not for a transfer alone: no transaction door reaches a hidden
+    row (``auth_helpers.is_not_found_to_transaction_doors``), so today this
+    act is the one it serves, and the row set-back owed by ledger row
+    **credit_card:CC-387** inherits it.
+
+    Args:
+        transfer: The transfer the soft delete has just hidden.
+        took_off: Whether the removal act took at least one payment record
+            off either side.
+    """
+    if not delete_returns_to_plan(transfer, took_off=took_off):
+        return
+    apply_status_to_all_three(
+        TransferRows(transfer, ()), ref_cache.status_id(StatusEnum.PROJECTED),
+    )
 
 
 def date_born_settled_pair(

@@ -34,6 +34,7 @@ from tests._test_helpers import (
     make_expense_template,
     make_income_template,
     make_transfer_template,
+    typed,
 )
 
 
@@ -363,8 +364,42 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
         flagged on the ORM row, which the database now refuses at commit for
         a transfer holding its payments (the deleted-row rule's transfer arm).
         The door takes both payments off in the same save (ruling
-        **credit_card:R-CC75**) and leaves the transfer hidden in its Paid
-        status -- the soft-deleted settled transfer this predicate counts.
+        **credit_card:R-CC75**).
+
+        **The Paid transfer is a ``$0.00`` close**, a typed ``$0.00`` taking
+        both payments off before the delete: a delete that takes a Paid
+        transfer's payments off sets it back to Projected (ruling
+        **R-BAL246**; :meth:`test_a_deleted_transfer_that_held_payments_is_no_history`
+        grades that), and a ``$0.00`` close held none, so it stays hidden in
+        its Paid status -- the soft-deleted settled transfer this predicate
+        counts.  A setup change only, every assertion unchanged (a rule-5
+        re-expression the developer approved 2026-10-09, "Approve both").
+        """
+        with app.app_context():
+            xfer_template, xfer = _make_transfer_template_with_status(
+                app, db, seed_user, seed_periods_today[0], "Paid",
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("0")),
+            )
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            assert xfer.is_deleted is True and xfer.status.is_settled
+            assert transfer_template_has_paid_history(xfer_template.id) is True
+
+    def test_a_deleted_transfer_that_held_payments_is_no_history(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A deleted Paid transfer whose payments came off is a PLAN, not history.
+
+        Ruling **R-BAL246** ("Back as a plan, now", developer 2026-10-09):
+        the delete that takes a Paid transfer's ``$100.00`` payments off sets
+        it back to Projected, so nothing settled is left against the
+        definition and its permanent delete is no longer turned into an
+        archive.  The control for the ``$0.00`` close above, which held
+        nothing and keeps Paid.
         """
         with app.app_context():
             xfer_template, xfer = _make_transfer_template_with_status(
@@ -374,8 +409,9 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
                 xfer.id, seed_user["user"].id, soft=True,
             )
             db.session.commit()
-            assert xfer.is_deleted is True and xfer.status.is_settled
-            assert transfer_template_has_paid_history(xfer_template.id) is True
+            assert xfer.is_deleted is True
+            assert not xfer.status.is_settled
+            assert transfer_template_has_paid_history(xfer_template.id) is False
 
     def test_soft_deleted_PROJECTED_still_does_not_block(
         self, app, db, seed_user, seed_periods_today,

@@ -123,9 +123,12 @@ def _build_shadow(
 
     Both shadows are transfer-generated (``template_id=None``,
     ``credit_payback_for_id=None``, no independent ``notes``) and inherit
-    period / scenario / status / category / due_date from the just-created
-    ``xfer`` so the three rows stay equal (Transfer Invariants 1 and 5).  Only
-    the per-side fields vary.
+    period / scenario / category / due_date from the just-created ``xfer``
+    (Transfer Invariants 1 and 5).  Only the per-side fields vary.  It is
+    written the transfer's status too, because the column is NOT NULL, but
+    since plan step ``balance:X-bi-6-4d-2`` no reader asks a twin for its
+    status or day and no writer keeps them in step: the transfer's status
+    is the one status, and each side's day is its payment record's.
 
     **A shadow is BORN DERIVED and stores no figure at all, which is what makes
     Transfer Invariant 3 STRUCTURAL rather than maintained** (plan step
