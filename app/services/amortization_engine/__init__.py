@@ -31,7 +31,11 @@ shape as the ``loan_resolver`` package) so existing imports from
   :class:`~app.services.loan_ledger.PaymentInstallment` (plan step
   **balance:X-bl-2b**).
 * :mod:`._projection` -- the value records, the standard payment
-  formula, the date helpers, and :func:`project_forward` itself.
+  formula, the schedule-slot helpers, and :func:`project_forward` itself.
+  It writes no date arithmetic of its own since plan step recurrence:R25,
+  which deleted its month step and clamp: a projected row's date is
+  :func:`app.utils.dates.clamped_day`'s, and a slot's step past a contested
+  month is :mod:`app.services.installment_calendar`'s.
   Per-month rate and contractual P&I come from the projection's
   :class:`PeriodTerms` schedule (mapped from the rate-period engine's
   periods), so projected rows pay the same single-source-of-truth
@@ -54,7 +58,6 @@ from ._projection import (
     PeriodTerms,
     ProjectionInputs,
     RateChangeRecord,
-    advance_to_next_payment_date,
     calculate_monthly_payment,
     calculate_remaining_months,
     project_forward,
@@ -71,7 +74,6 @@ __all__ = [
     "PeriodTerms",
     "ProjectionInputs",
     "RateChangeRecord",
-    "advance_to_next_payment_date",
     "calculate_monthly_payment",
     "calculate_payoff_by_date",
     "calculate_remaining_months",

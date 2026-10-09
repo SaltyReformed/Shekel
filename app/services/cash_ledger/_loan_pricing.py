@@ -39,9 +39,11 @@ terms, never its payment rows.*
 
 **It takes no SCENARIO either, and that is the same deletion one level down.**
 The scenario only ever scoped the config map; a loan's terms are not
-scenario-scoped, which :func:`._loan_installment._resolve_loan_basis` already
+scenario-scoped, which ``_loan_installment._resolve_loan_basis`` already
 recorded when it lost its own scenario argument at plan step X-au-g-1 (*"the
-parameter only ever existed to scope the payment rows this no longer reads"*).
+parameter only ever existed to scope the payment rows this no longer reads"*);
+the terms are the pass's :class:`~app.services.loan_ledger.LoanCalendars`
+since plan step recurrence:R25 deleted that resolver.
 The pin a caller can still get wrong -- pricing a row against another
 scenario's basis -- is refused by
 :func:`._amount_source.resolve_transaction_amount`, which asks the row's own
@@ -51,12 +53,8 @@ scenario's basis -- is refused by
 from datetime import date
 from decimal import Decimal
 
-from app.services.loan_loaders import load_escrow_lines
-from ._loan_installment import (
-    _LoanCashBasis,
-    _installment_cash,
-    _resolve_loan_basis,
-)
+from app.services.loan_ledger import LoanCalendars
+from ._loan_installment import _installment_cash
 
 
 class LoanPricing:
@@ -85,16 +83,27 @@ class LoanPricing:
     actually names.  That is the "no query when there are no candidates"
     property the row-set producers had, kept rather than traded away.
 
+    **It holds no terms of its own since plan step recurrence:R25** (ruling
+    **R-R105**, finding **REC-545**): each loan's terms are the read pass's
+    :class:`~app.services.loan_ledger.LoanCalendars` -- the memo the pass's
+    loan walk builds its charges from -- so the price and the charges read
+    one calendar, loaded once for both.  (The loan resolver's bundle and the
+    payoff calculator still load the terms on their own paths in the same
+    pass: finding **REC-559**, owned by plan step recurrence:R16-f.)  It
+    memoized a second bundle per loan here (``_LoanCashBasis`` and the escrow
+    lines) until then.
+
     **IT READS NO CLOCK, and plan step X-au-g-2b is what deleted the one it
     used to read.**  It took an ``as_of`` and resolved each loan's rate-period
     P&I against it -- one figure per pass, applied to every installment the
     pass priced, which is finding **N-40**.  Ruling **R-IJ** put a loan's
     contractual terms on the INSTALLMENT they govern, as ruling D5 had already
     put a payment's escrow, so there is no pass-level date left to pin: the
-    per-loan resolve (:func:`._loan_installment._resolve_loan_basis`) answers
-    the loan's term SET, which no date parameterises, and each payment reads the
-    period governing its own due date.  What a whole pass now shares is the
-    derivation rather than an answer.
+    per-loan resolve (the pass's
+    :class:`~app.services.loan_ledger.LoanCalendar` since plan step
+    recurrence:R25) answers the loan's term SET, which no date parameterises,
+    and each payment reads the period governing its own due date.  What a
+    whole pass now shares is the derivation rather than an answer.
 
     **It states no ownership rule and reads no status, which is where it
     differs from the ``live_cash`` it replaced** (plan step X-au-g-2c-2).  That
@@ -105,29 +114,14 @@ class LoanPricing:
     separate question, answered above this tier.
     """
 
-    def __init__(self) -> None:
-        """Resolve nothing; each loan is loaded on first use and kept."""
-        self._loans: "dict[int, tuple[_LoanCashBasis | None, list]]" = {}
-
-    def _loan(self, loan_account_id: int) -> "tuple[_LoanCashBasis | None, list]":
-        """Return ``(basis, escrow lines)`` for one loan, resolving it at most once.
-
-        Membership, never truthiness: the basis is legitimately ``None`` for an
-        account carrying no ``LoanParams``, and a truthiness check would
-        re-resolve that on every payment of every pass.
+    def __init__(self, terms: LoanCalendars) -> None:
+        """Hold the pass's loan terms; resolve nothing until a payment asks.
 
         Args:
-            loan_account_id: The destination loan account to resolve.
-
-        Returns:
-            The loan's :class:`_LoanCashBasis` (``None`` when it is not a
-            configured loan) paired with its escrow lines (empty then).
+            terms: The read pass's
+                :class:`~app.services.loan_ledger.LoanCalendars`.
         """
-        if loan_account_id not in self._loans:
-            basis = _resolve_loan_basis(loan_account_id)
-            lines = [] if basis is None else load_escrow_lines(loan_account_id)
-            self._loans[loan_account_id] = (basis, lines)
-        return self._loans[loan_account_id]
+        self._terms = terms
 
     def derive_cash(
         self,
@@ -167,16 +161,16 @@ class LoanPricing:
             account carrying no ``LoanParams``, which rule 4 turns into a
             refusal rather than a fallback to a stored snapshot.
         """
-        basis, escrow_lines = self._loan(loan_account_id)
-        if basis is None:
+        calendar = self._terms.loan_calendar_of(loan_account_id)
+        if calendar is None:
             return None
         return _installment_cash(
-            basis, escrow_lines, due_date, period_start, extra_principal,
+            calendar, due_date, period_start, extra_principal,
         )
 
 
-def loan_pricing() -> LoanPricing:
-    """Return a read pass's :class:`LoanPricing`.
+def loan_pricing(terms: LoanCalendars) -> LoanPricing:
+    """Return a read pass's :class:`LoanPricing` over its loan terms.
 
     The named constructor the amount model calls, so no caller reaches for the
     class directly.  Resolves nothing: the derivation behind it is lazy, so a
@@ -188,7 +182,12 @@ def loan_pricing() -> LoanPricing:
     they govern (ruling **R-IJ**) and are not scenario-scoped, so a read pass
     has neither a date nor a scenario to hand this.
 
+    Args:
+        terms: The read pass's
+            :class:`~app.services.loan_ledger.LoanCalendars`, shared with the
+            pass's loan walk (plan step recurrence:R25).
+
     Returns:
         The unresolved :class:`LoanPricing` handle.
     """
-    return LoanPricing()
+    return LoanPricing(terms)

@@ -216,10 +216,12 @@ class TestScheduleDates:
         to February and never enters the rollover branch at all -- spliced with
         that branch replaced by a raise, the draft still passed while the
         December case raised.  The rollover moved out of the old inline
-        ``if m > 12`` into
-        :func:`~app.services.amortization_engine.advance_to_next_payment_date`
-        at plan step **balance:X-bl-2a**, so it is a branch this file owns the
-        only slot-level coverage of.
+        ``if m > 12`` into ``amortization_engine.advance_to_next_payment_date``
+        at plan step **balance:X-bl-2a**, and since plan step recurrence:R25
+        it is the loan calendar's month step
+        (:func:`~app.services.installment_calendar.due_in_following_month`),
+        whose year carry is month-ordinal arithmetic rather than a branch;
+        this case still grades the slot walk across the year.
         """
         due = [date(2026, 12, 1), date(2026, 12, 1)]
 
@@ -247,10 +249,11 @@ class TestScheduleDates:
 
         Two payments due 2026-01-31; the second is pushed into February, which
         has 28 days in 2026.  ``date(2026, 2, 31)`` does not exist, so the day
-        is clamped -- through the same
-        :func:`~app.services.amortization_engine.advance_to_next_payment_date`
-        a forward projection clamps with, so a loan due on the 31st reads the
-        same February date wherever it is asked.
+        is clamped -- through the loan calendar's one month step
+        (:func:`~app.services.installment_calendar.due_in_following_month`,
+        plan step recurrence:R25) over the clamp a forward projection lands
+        its dates with, so a loan due on the 31st reads the same February date
+        wherever it is asked.
         """
         due = [date(2026, 1, 31), date(2026, 1, 31)]
 
