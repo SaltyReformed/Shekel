@@ -8,8 +8,9 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S11-c-2c` (`4447238b`, 2026-10-05) prices each paycheck's taxes from its pay stub**, which moves
-money; `X-at-8`, the 2027 law, is due before 2026-12-01. Archived: `historical/salary_*`.
+**`X-at-3` (`6f291f8f`, 2026-10-08) made the tax law list the states the app supports, NC alone**,
+and both profile doors and the engine refuse any other; `X-at-8`, the 2027 law, is due before
+2026-12-01. Archived: `historical/salary_*`.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -239,14 +240,10 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         `state_tax_configs`, `fica_configs`, `state_child_deductions`, their models and audit
         triggers, REFUSING while a row differs from the law, its downgrade recreating them; the
         docstrings still naming those classes go too. `$0.00`; its own PR.
-  - [ ] **X-at-3 -- the supported states** (**R-SAL78**): the law lists each one, a no-income-tax
-        state as an explicit `$0.00` entry checked against a primary source (the developer names
-        which); the profile form offers only those and refuses another, and the engine refuses a
-        state the law lacks or a flat state with no rate. R-SAL91's one-sentence wording was ruled
-        for ONE state; its two-state form ('... and NC tax uses 2026's and SC tax uses 2026's, ...',
-        and the script's '..., except NC on 2026's and SC on 2026's.') is extrapolated and pinned by
-        tests. X-at-3 puts it to the developer before a second state lands. In that form a state
-        priced on the newest year is named nowhere. Closes **SAL-575**.
+  - [x] **X-at-3** `6f291f8f` -- the supported states, NC alone (**R-SAL78**, **R-SAL128**): each
+        listed from the law's first year (**R-SAL129**) in a strict shape (**R-SAL135**); a "Choose
+        your state" form (**R-SAL131**); one fix-it page (**R-SAL130**, **R-SAL132**, **R-SAL137**);
+        closed **SAL-575**; the two-state wording is **SAL-599**'s (**R-SAL134**).
   - [ ] **X-at-5 -- the Taxes tab says which year's rules** (**R-SAL75**'s first half, **R-SAL76**):
         the resolver returns each part's own year (derived, not stored); the liability and report
         carry it to one tab line, the year row and state named. Closes **N-235**'s report half.
