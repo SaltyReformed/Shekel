@@ -486,13 +486,18 @@ class TestAcceptingALeg:
         ]
 
 
-class TestADamagedTransferIsSkippedAndCounted:
-    """Ruling **R-BAL158** ("Skip it and say so"): not offered, counted as unpriceable."""
+class TestADamagedTransferIsOfferedLikeAnyOther:
+    """Ruling **R-BAL235** ("Offer and settle it"), reversing **R-BAL158**'s skip and count."""
 
-    def test_a_broken_shadow_pair_is_counted_and_everything_else_is_offered(
+    def test_a_broken_shadow_pair_is_offered_at_its_price_and_counted_nowhere(
         self, app, db, seed_user,
     ):
-        """The Savings-side shadow deleted around the service -- a state no door writes."""
+        """The Savings-side shadow deleted around the service -- a state no door writes.
+
+        Until plan step ``balance:X-bi-6-4d-2`` the leg price refused the
+        broken pair and the leg was counted in the "could not be priced"
+        note; it is priced off its transfer now and offered as its LEG.
+        """
         savings = _savings(seed_user)
         transfer = _a_transfer(seed_user, savings)
         bill = a_transaction(seed_user, name="Power", amount="80.00")
@@ -501,19 +506,22 @@ class TestADamagedTransferIsSkippedAndCounted:
 
         offered = _offered(seed_user, seed_user["account"].id)
 
-        assert _of_transfer(offered.rows, transfer) == []
-        assert (RowKind.LEG, transfer.id) in offered.unpriceable
+        assert [
+            (row.kind, row.cash_amount)
+            for row in _of_transfer(offered.rows, transfer)
+        ] == [(RowKind.LEG, -_AMOUNT)]
+        assert offered.unpriceable == ()
         assert [
             row.row_id for row in offered.rows
             if row.kind is RowKind.TRANSACTION
         ] == [bill.id]
         review = statement_match.review_set(a_scope(seed_user))
-        assert review.bounds.unpriceable_count == 1
+        assert review.bounds.unpriceable_count == 0
 
-    def test_a_damaged_reverted_transfer_is_counted_once(
+    def test_a_damaged_reverted_transfer_is_offered_once(
         self, app, db, seed_user,
     ):
-        """Its kept, un-dated record is never priced, so the note counts ONE transfer, not two."""
+        """Its kept, un-dated record is not a payment: ONE leg, at its figure."""
         savings = _savings(seed_user)
         transfer = _a_transfer(seed_user, savings)
         _settle(seed_user, transfer)
@@ -523,10 +531,13 @@ class TestADamagedTransferIsSkippedAndCounted:
 
         offered = _offered(seed_user, seed_user["account"].id)
 
-        assert offered.unpriceable == ((RowKind.LEG, transfer.id),)
-        assert _of_transfer(offered.rows, transfer) == []
+        assert [
+            (row.kind, row.cash_amount)
+            for row in _of_transfer(offered.rows, transfer)
+        ] == [(RowKind.LEG, -_AMOUNT)]
+        assert offered.unpriceable == ()
         review = statement_match.review_set(a_scope(seed_user))
-        assert review.bounds.unpriceable_count == 1
+        assert review.bounds.unpriceable_count == 0
 
 
 class TestTheParentDecidesADriftedSide:

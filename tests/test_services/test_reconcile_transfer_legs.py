@@ -441,18 +441,17 @@ class TestTheBlockReadsTheLeg:
                 "Transfer to Savings"
             ), "the control: the shadow's stored copy did not follow"
 
-    def test_a_damaged_transfer_is_named_not_offered_and_the_rest_is_listed(
+    def test_a_transfer_whose_twin_was_deleted_is_offered_and_settles(
         self, app, db, seed_user, seed_periods,
     ):
-        """Ruling R-BAL148: a broken shadow pair is WARNED about, never offered.
+        """Ruling R-BAL235 ("Offer and settle it"), reversing R-BAL148's warning.
 
-        Transfer Invariant 1 broken around the service (no door writes it;
-        integrity check DC-12 reports it).  The leg price asks the verified
-        pair and refuses; the panel catches that one refusal, lists the bill
-        beside it as normal, and names the transfer by label, figure and day.
-        As first built the refusal propagated -- a server error on the account
-        page that builds this panel inline.  A tick of it still refuses at the
-        settle, which the route renders as the panel's designed refusal.
+        Transfer Invariant 1 broken around the service (no door writes it).
+        Through plan step ``balance:X-bi-6-4d-2``'s first checkpoint the leg
+        price asked the verified twin pair, refused it, and the panel named
+        the transfer in a warning and offered no tick.  The leg is priced off
+        its transfer now, so it is offered at its figure beside the bill, and
+        a tick of it settles both sides like any other.
         """
         with app.app_context():
             bill = _bill(seed_user, seed_periods[0])
@@ -467,26 +466,30 @@ class TestTheBlockReadsTheLeg:
 
             offered = reconcile_service.outstanding_set(_reconciled(seed_user))
 
-            assert {group.key for group in offered.groups} == {bill.id}
-            (damaged,) = offered.damaged
-            assert damaged.label == "Transfer to Savings"
-            assert damaged.amount == Decimal("500.00")
-            assert damaged.attributed_on == seed_periods[0].start_date
-            assert offered.payment_count == 1, "the damaged transfer is counted"
-            with pytest.raises(ValidationError):
-                _settle(seed_user, transfer_ids=[transfer.id])
+            leg_key = (transfer.id, seed_user["account"].id)
+            by_key = {group.key: group for group in offered.groups}
+            assert set(by_key) == {bill.id, leg_key}
+            assert by_key[leg_key].settle.amount == Decimal("500.00")
+            assert by_key[leg_key].settle.attributed_on == (
+                seed_periods[0].start_date
+            )
+            assert offered.payment_count == 2, "the transfer is a payment now"
+            assert _settle(seed_user, transfer_ids=[transfer.id]) == 1
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transfer, transfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.DONE)
+            )
 
-    def test_the_panel_prints_the_warning_and_no_tick_for_it(
+    def test_the_panel_offers_its_tick_and_warns_of_nothing(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Every door that builds the panel answers 200; the permanent ones warn.
+        """Every door that builds the panel offers the transfer's tick; none warns.
 
         The true-up (whose response builds the prompt after its write), the
         cash detail page (which builds the panel inline), and the panel's own
-        fragment -- each a server error while the pair's refusal propagated.
-        With the damaged transfer ALL that is outstanding there is nothing to
-        tick, so the true-up opens no modal (``prompt_fragment`` gates on
-        ticks); the detail page and the fragment carry the warning.
+        fragment.  With the transfer offerable there IS something to tick, so
+        the true-up opens its modal (``prompt_fragment`` gates on ticks).
         """
         with app.app_context():
             savings = _savings(seed_user)
@@ -508,26 +511,22 @@ class TestTheBlockReadsTheLeg:
             },
         )
         assert response.status_code == 200, response.data
-        assert b"reconcileModal" not in response.data
-        warning = (
-            "Transfer to Savings, $500.00, Jan 2 is damaged and can't be "
-            "reconciled here."
-        )
+        assert b"reconcileModal" in response.data
+        tick = f'name="transfer_ids" value="{transfer_id}"'
         page = auth_client.get(f"/accounts/{account_id}/details")
         assert page.status_code == 200, page.data
-        assert warning in page.data.decode()
+        assert tick in page.data.decode()
+        assert "damaged" not in page.data.decode()
         response = auth_client.get(f"/accounts/{account_id}/reconcile")
         assert response.status_code == 200, response.data
         body = response.data.decode()
-        assert warning in body, body
-        assert f'name="transfer_ids" value="{transfer_id}"' not in body
-        assert "has been matched to your bank" not in body
+        assert tick in body, body
+        assert "damaged" not in body
 
-
-    def test_the_true_up_modal_carries_the_warning_beside_a_tickable_row(
+    def test_the_true_up_modal_offers_the_transfer_beside_a_bill(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """With a bill to tick, the post-true-up modal opens and warns too."""
+        """With a bill to tick too, the post-true-up modal offers both and warns of nothing."""
         with app.app_context():
             _bill(seed_user, seed_periods[0])
             savings = _savings(seed_user)
@@ -539,6 +538,7 @@ class TestTheBlockReadsTheLeg:
             _shadow_on(transfer, savings).is_deleted = True
             db.session.commit()
             account_id = seed_user["account"].id
+            transfer_id = transfer.id
 
         response = auth_client.patch(
             f"/accounts/{account_id}/true-up",
@@ -550,10 +550,8 @@ class TestTheBlockReadsTheLeg:
         assert response.status_code == 200, response.data
         body = response.data.decode()
         assert "reconcileModal" in body
-        assert (
-            "Transfer to Savings, $500.00, Jan 2 is damaged and can't be "
-            "reconciled here." in body
-        )
+        assert f'name="transfer_ids" value="{transfer_id}"' in body
+        assert "damaged" not in body
 
 
 class TestTheRecordsPredicateKeptItsBody:
