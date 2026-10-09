@@ -434,11 +434,12 @@ def clamped_day(ordinal: int, nominal_day: int) -> date:
     """Return the date *nominal_day* names in the month *ordinal* numbers.
 
     :func:`month_ordinal`'s companion, moved here with it for the reason
-    that function gives: the ONE clamp both the recurrence walk and the pay
-    grid's day-of-month kinds land a meant day with.  A day-31 rule -- or
-    a day-31 payday -- is the 31st in January and the 30th in April, rather
-    than decaying to the 30th forever (recurrence ruling **R-R3**;
-    pay_calendar ruling **R-PC79**).
+    that function gives: the ONE clamp the recurrence walk, the pay grid's
+    day-of-month kinds, the card statement and the loan calendar land a meant
+    day with.  A day-31 rule -- or a day-31 payday -- is the 31st in January
+    and the 30th in April, rather than decaying to the 30th forever
+    (recurrence ruling **R-R3**; pay_calendar ruling **R-PC79**).  The
+    questions each of them asks of the grid it makes are the set below it.
 
     Args:
         ordinal: An absolute month ordinal, from :func:`month_ordinal`.
@@ -457,6 +458,117 @@ def clamped_day(ordinal: int, nominal_day: int) -> date:
     month = month_index + 1
     last_day = calendar.monthrange(year, month)[1]
     return date(year, month, min(nominal_day, last_day))
+
+
+# A nominal day's MONTHLY GRID is that day clamped into every month -- one date
+# per month, :func:`clamped_day`'s image.  A loan's installments, a card's close
+# and due dates, a once-a-month payday and a monthly recurrence each fall on
+# one; a twice-a-month payday falls on the union of two.  The four functions
+# below are the ONE set of questions every one of them asks of its grid (plan
+# step recurrence:R25, ruling **R-R122**, closing ledger row **REC-547**): the
+# latest grid day on or before a date, the first on or after it, the first
+# strictly after it, and the grid days between two dates.  Until that step the
+# loan calendar (:mod:`app.services.installment_calendar`), the card statement
+# (:mod:`app.services.card_statement`) and the pay grid
+# (:mod:`app.services.pay_calendar._grid`) each wrote the comparisons out over
+# the one clamp, and the recurrence walk
+# (:mod:`app.services.recurrence._months`) bounded itself by a month constant
+# of its own; its stop is the last grid day on or before the calendar's last
+# day now.  Each answers a month ORDINAL rather than a date, because
+# every caller steps or bounds by the ordinal (an installment's number, a
+# statement's month, a payday's step count) and lands the day with
+# :func:`clamped_day` itself.
+
+
+def grid_month_on_or_before(day: date, nominal_day: int) -> int:
+    """Return the month whose *nominal_day* is the LATEST grid day on or before *day*.
+
+    *day*'s own month when its clamped *nominal_day* has fallen by *day*, the
+    month before otherwise -- the installment a payment due on the 10th of a
+    loan due on the 22nd pays (ruling ``recurrence:R-R89``), the last payday a
+    day sits after on a monthly grid, the last statement close a day is on or
+    after.
+
+    Args:
+        day: The date to place.
+        nominal_day: The day of the month the grid MEANS, 1-31, before
+            clamping.
+
+    Returns:
+        A month ordinal (:func:`month_ordinal`) whose ``clamped_day`` is on or
+        before *day*, and whose next month's is after it.
+    """
+    ordinal = month_ordinal(day)
+    if clamped_day(ordinal, nominal_day) <= day:
+        return ordinal
+    return ordinal - 1
+
+
+def grid_month_on_or_after(day: date, nominal_day: int) -> int:
+    """Return the month whose *nominal_day* is the FIRST grid day on or after *day*.
+
+    *day*'s own month when its clamped *nominal_day* has not yet passed, the
+    month after otherwise -- the due date a pay period opening on *day*
+    contains, the first statement close a span reaches.
+
+    Args:
+        day: The date to place.
+        nominal_day: The day of the month the grid MEANS, 1-31, before
+            clamping.
+
+    Returns:
+        A month ordinal whose ``clamped_day`` is on or after *day*, and whose
+        previous month's is before it.
+    """
+    ordinal = month_ordinal(day)
+    if clamped_day(ordinal, nominal_day) >= day:
+        return ordinal
+    return ordinal + 1
+
+
+def grid_month_after(day: date, nominal_day: int) -> int:
+    """Return the month whose *nominal_day* is the FIRST grid day strictly after *day*.
+
+    The grid day following :func:`grid_month_on_or_before`'s, so a *day* ON
+    the grid answers the NEXT month -- a statement closing on the 20th is in
+    the cycle that closes next month (closed-open), and its payment is due on
+    the first due day strictly after the close (ruling ``credit_card:R-CC26``).
+
+    Args:
+        day: The date to place.
+        nominal_day: The day of the month the grid MEANS, 1-31, before
+            clamping.
+
+    Returns:
+        A month ordinal whose ``clamped_day`` is after *day*, and whose
+        previous month's is on or before it.
+    """
+    return grid_month_on_or_before(day, nominal_day) + 1
+
+
+def grid_months_within(nominal_day: int, first: date, last: date) -> range:
+    """Return the months whose *nominal_day* grid day falls in ``[first, last]``.
+
+    The grid enumerated between two dates: from :func:`grid_month_on_or_after`
+    *first* through :func:`grid_month_on_or_before` *last*, ascending, one per
+    month.  Empty when no grid day lies in the span, including when *last*
+    precedes *first*.  A caller lands each day with :func:`clamped_day`, so the
+    MEANT day is re-clamped in every month and a 31st never decays to the 28th
+    after a February.
+
+    Args:
+        nominal_day: The day of the month the grid MEANS, 1-31, before
+            clamping.
+        first: The earliest grid day to include.
+        last: The latest grid day to include.
+
+    Returns:
+        The month ordinals, as a ``range``.
+    """
+    return range(
+        grid_month_on_or_after(first, nominal_day),
+        grid_month_on_or_before(last, nominal_day) + 1,
+    )
 
 
 def add_months(start: date, months: int) -> date:

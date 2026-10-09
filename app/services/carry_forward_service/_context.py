@@ -27,6 +27,7 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.loan_ledger import LoanCalendars
 from app.services.one_off import another_row_answers, due_date_for
 from app.services.pay_calendar import DerivedPeriod
 from app.utils.amount_relationships import transfer_pricing_load_options
@@ -167,7 +168,10 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     # resolves nothing until the first row asks.  Built OVER the pass's pricer
     # (plan step salary:C12) under the CARRIED scenario, which is why it is not
     # ``balance_ctx.amounts()`` -- see the docstring on *scenario_id*.
-    basis = amount_basis(balance_ctx.paychecks(), scenario_id)
+    # Its loan calendars are its own, as its pricer's memo was before plan step
+    # recurrence:R25: the pass's are private to it, with no accessor that
+    # would hand out a memo keyed by a bare loan id (BalanceContext).
+    basis = amount_basis(balance_ctx.paychecks(), scenario_id, LoanCalendars())
 
     if source_period_id == target_period_id:
         return _CarryForwardContext(

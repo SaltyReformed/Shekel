@@ -86,7 +86,11 @@ def _memoize_once(
     against a ``user_id`` and a ``scenario_id``, which is a residue this step
     did not remove -- taking the ``Account`` narrowed the primitive, so those
     two can no longer adopt it.  Neither is per-account, so neither is a
-    pairing a caller can state at all.
+    pairing a caller can state at all.  **One per-loan memo is not created
+    here**: the loan calendars the pass's walk and its amount basis share
+    (plan step recurrence:R25), keyed by a bare loan id as the pricer's own
+    memo was before it, holding contract terms and no balance; the context's
+    docstring says how each of its two readers is bound.
 
     **Membership, never truthiness.**  The check is ``account.id not in cache``, not a
     truthiness test on the value, because a derivation may have a legitimately
