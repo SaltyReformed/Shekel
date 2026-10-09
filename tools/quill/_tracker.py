@@ -773,6 +773,12 @@ class Tracker:  # pylint: disable=too-many-public-methods
         measured 2026-10-04 on the mark itself, before it existed; ``setup_tracker.py
         --apply`` then corrected it), so a card filed before the mark exists is still
         born marked.
+
+        **A retry may file a second card.**  A create refused for a rate limit is re-sent
+        on GitHub's word (:mod:`_github`), whose pages do not say whether the refused one
+        was performed.  The extra is born marked like the first, so ``quill file`` run again
+        finds both by kind, title and text and refuses while two stand
+        (``_filing._same_filing``); this answer is the re-sent create's card.
         """
         labels = sorted({*labels, FILING})
         issue = self.github.rest("POST", f"{self.place.path}/issues",
@@ -799,7 +805,11 @@ class Tracker:  # pylint: disable=too-many-public-methods
         self.github.rest("PATCH", f"{self.place.path}/issues/{number}", {"body": body})
 
     def comment(self, number: int, text: str) -> None:
-        """Add a comment to a card."""
+        """Add a comment to a card.
+
+        A retry may add it twice, as a create may file twice (:meth:`create`); no command
+        reads how many comments a card has, so a doubled note is shown on the card and
+        decides nothing."""
         self.github.rest("POST", f"{self.place.path}/issues/{number}/comments", {"body": text})
 
     def close(self, number: int, reason: str) -> None:

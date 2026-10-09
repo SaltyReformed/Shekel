@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from tools.quill._github import (
     API,
+    RATE_LIMIT_BUDGET_SECONDS,
     RATE_LIMIT_RETRIES,
     GitHub,
     GitHubError,
@@ -270,3 +271,71 @@ def test_a_429_that_says_nothing_of_a_rate_limit_is_raised_at_once():
     with pytest.raises(GitHubError) as raised:
         _client(session, slept).rest("GET", "/repos/o/r")
     assert (raised.value.status, slept) == (429, [])
+
+
+def test_a_403_carrying_only_retry_after_is_a_rate_limit_waited_out_as_it_says():
+    """GitHub names a secondary limit by ``retry-after`` alone too: a 403 whose message says
+    nothing of a limit but carries the header waits exactly what it says, once, then
+    succeeds (review of A2, M1: with the header's test dropped, no other test failed)."""
+    session = _Session(_Response(403, {"message": "Forbidden"}, {"retry-after": "2"}),
+                       _Response(200, {"ok": 1}))
+    slept = []
+    assert _client(session, slept).rest("GET", "/repos/o/r") == {"ok": 1}
+    assert slept == [2.0] and len(session.sent) == 2
+
+
+def test_a_retry_after_written_as_an_http_date_waits_until_that_date():
+    """RFC 9110's other form of ``retry-after``: 00:17:00 on 1970-01-01 is epoch 1,020, so
+    at epoch 1,000 the wait is 20 seconds."""
+    dated = {"retry-after": "Thu, 01 Jan 1970 00:17:00 GMT"}
+    session = _Session(_Response(403, _SECONDARY, dated), _Response(200, {"ok": 1}))
+    slept = []
+    _client(session, slept, now=1_000.0).rest("GET", "/repos/o/r")
+    assert slept == [20.0]
+
+
+@pytest.mark.parametrize("headers", [
+    {"retry-after": "-1"},
+    {"retry-after": "nan"},
+    {"retry-after": "inf"},
+    {"retry-after": "soon"},
+    {"retry-after": "Thu, 01 Jan 1970 00:17:00"},
+    {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "never"},
+    {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "inf"},
+], ids=["negative", "nan", "infinite", "words", "date-without-zone", "reset-words",
+        "reset-infinite"])
+def test_a_wait_quill_cannot_read_stops_it_unslept_and_unsent(headers):
+    """A wait that is no time quill can read cannot be honoured, and re-sending sooner than
+    GitHub asks is what its documentation warns can ban the integration: quill stops,
+    sleeping nothing and re-sending nothing (review of A2, M2: ``time.sleep`` raised on a
+    negative, hung on an infinity, and a date raised a ValueError no command caught)."""
+    session = _Session(_Response(403, _SECONDARY, headers), _Response(200, {"ok": 1}))
+    slept = []
+    with pytest.raises(GitHubError, match="no time quill can read.*stopped rather than "
+                                          "re-sent early") as raised:
+        _client(session, slept).rest("GET", "/repos/o/r")
+    assert (raised.value.status, slept, len(session.sent)) == (403, [], 1)
+
+
+def test_a_wait_past_the_budget_stops_quill_rather_than_being_shortened():
+    """``retry-after: 100000`` (about 28 hours) is not slept, nor cut short: quill stops at
+    once.  Waits add up per request, so a second 3,000 s wait after a first is refused too,
+    and :data:`_github.RATE_LIMIT_BUDGET_SECONDS` bounds the whole."""
+    assert RATE_LIMIT_BUDGET_SECONDS == 3600
+    huge = _Session(_Response(403, _SECONDARY, {"retry-after": "100000"}))
+    slept = []
+    with pytest.raises(GitHubError, match="wait of 100000 s after 0 s waited, past the 3600 s"):
+        _client(huge, slept).rest("POST", "/repos/o/r/issues", {"title": "t"})
+    assert (slept, len(huge.sent)) == ([], 1)
+    twice = _Session(_Response(403, _SECONDARY, {"retry-after": "3000"}),
+                     _Response(403, _SECONDARY, {"retry-after": "3000"}),
+                     _Response(200, {"ok": 1}))
+    slept = []
+    with pytest.raises(GitHubError, match="wait of 3000 s after 3000 s waited"):
+        _client(twice, slept).rest("GET", "/repos/o/r")
+    assert (slept, len(twice.sent)) == ([3000.0], 2)
+    whole = _Session(_Response(403, _SECONDARY, {"retry-after": "3600"}),
+                     _Response(200, {"ok": 1}))
+    slept = []
+    assert _client(whole, slept).rest("GET", "/repos/o/r") == {"ok": 1}
+    assert slept == [3600.0]

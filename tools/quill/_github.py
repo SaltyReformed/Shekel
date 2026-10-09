@@ -28,6 +28,13 @@ you are rate limited may result in the banning of your integration" (both REST
 and GraphQL pages, read 2026-10-09).  GitHub's pages do not say whether a request
 refused for a rate limit was performed; they say to retry it, and quill does.
 
+**Quill never re-sends sooner than GitHub's answer asks, so a wait it cannot honour
+STOPS it instead** (:func:`_wait_seconds`): a ``retry-after`` or reset it cannot
+read as a time (not a number of seconds or an HTTP date, negative, or not finite),
+and a wait that would carry one request's waits past :data:`RATE_LIMIT_BUDGET_SECONDS`.
+Shortening the wait would be the early retry GitHub warns can ban the integration;
+a stop costs a re-run, and every quill command finishes what a stopped run left.
+
 Nothing in this module reads or writes the code repository.  Its tests feed it
 recorded responses and never call GitHub.
 """
@@ -35,10 +42,12 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import subprocess
 import time
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import requests
@@ -58,6 +67,11 @@ RATE_LIMIT_RETRIES = 5
 #: The wait when GitHub's answer names none: "wait for at least one minute before
 #: retrying", doubled for each further retry of the same request.
 BACKOFF_SECONDS = 60
+#: The most one request waits in all before quill stops: the hour an installation token
+#: lives, past which the re-sent request would go with a dead token.  The five backoff
+#: waits come to 1,860 seconds, inside it; a wait GitHub names that would cross it
+#: stops quill rather than being shortened (the module docstring).
+RATE_LIMIT_BUDGET_SECONDS = 3600
 #: How GitHub's error message says a rate limit refused the request ("You have exceeded a
 #: secondary rate limit", "API rate limit exceeded").
 _RATE_LIMIT_WORDS = re.compile(r"rate limit", re.IGNORECASE)
@@ -117,16 +131,48 @@ def _rate_limited(response, url: str) -> bool:
             or bool(_RATE_LIMIT_WORDS.search(response.text or "")))
 
 
+def _readable(value: str, now: float, *, epoch: bool) -> float | None:
+    """A header's time as epoch seconds (``epoch``) or as seconds from ``now``: a finite,
+    non-negative number, or (``retry-after``'s other form, RFC 9110) an HTTP date, read
+    as the seconds from ``now`` to it; None for anything else."""
+    try:
+        number = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if epoch or when.tzinfo is None:
+            return None
+        return max(0.0, when.timestamp() - now)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
 def _wait_seconds(response, retry: int, now: float) -> float:
     """How long to wait before re-sending a request refused for a rate limit, the
     ``retry``-th time (from 0), at ``now`` (epoch seconds): GitHub's three cases, in its
-    order."""
+    order.
+
+    Raises:
+        GitHubError: When the case that applies names a time that cannot be read
+            (:func:`_readable`): quill cannot honour it, and never retries sooner than
+            GitHub asks (the module docstring).
+    """
     headers = response.headers
     if "retry-after" in headers:
-        return float(headers["retry-after"])
-    if headers.get("x-ratelimit-remaining") == "0" and "x-ratelimit-reset" in headers:
-        return max(0.0, float(headers["x-ratelimit-reset"]) - now) + 1
-    return float(BACKOFF_SECONDS * 2 ** retry)
+        wait = _readable(headers["retry-after"], now, epoch=False)
+        named = f"retry-after {headers['retry-after']!r}"
+    elif headers.get("x-ratelimit-remaining") == "0" and "x-ratelimit-reset" in headers:
+        reset = _readable(headers["x-ratelimit-reset"], now, epoch=True)
+        wait = None if reset is None else max(0.0, reset - now) + 1
+        named = f"x-ratelimit-reset {headers['x-ratelimit-reset']!r}"
+    else:
+        return float(BACKOFF_SECONDS * 2 ** retry)
+    if wait is None:
+        raise GitHubError(response.status_code,
+                          f"rate limited, and GitHub's {named} is no time quill can read, so "
+                          "it cannot wait as asked; stopped rather than re-sent early")
+    return wait
 
 
 class GitHub:
@@ -152,8 +198,11 @@ class GitHub:
 
     def _send(self, method: str, url: str, body: dict | None) -> requests.Response:
         """Send one request, following no redirect and waiting out a rate limit; raise
-        :class:`GitHubError` on any 3xx, 4xx or 5xx, and on a rate limit that outlasts
-        :data:`RATE_LIMIT_RETRIES` waits."""
+        :class:`GitHubError` on any 3xx, 4xx or 5xx, on a rate limit that outlasts
+        :data:`RATE_LIMIT_RETRIES` waits, and on a wait it cannot honour: one it cannot
+        read (:func:`_wait_seconds`), or one that would carry this request's waits past
+        :data:`RATE_LIMIT_BUDGET_SECONDS`."""
+        waited = 0.0
         for retry in range(RATE_LIMIT_RETRIES + 1):
             response = self._session.request(
                 method, url, headers=self._headers, json=body, timeout=TIMEOUT_SECONDS,
@@ -167,7 +216,15 @@ class GitHub:
                     f"{method} {url} -> still rate limited after {RATE_LIMIT_RETRIES} waits; "
                     f"stopped, as GitHub directs: {response.text[:500]}",
                 )
-            self._sleep(_wait_seconds(response, retry, self._clock()))
+            wait = _wait_seconds(response, retry, self._clock())
+            if waited + wait > RATE_LIMIT_BUDGET_SECONDS:
+                raise GitHubError(
+                    response.status_code,
+                    f"{method} {url} -> rate limited, and GitHub asks a wait of {wait:.0f} s "
+                    f"after {waited:.0f} s waited, past the {RATE_LIMIT_BUDGET_SECONDS} s one "
+                    "request may wait; stopped rather than re-sent early")
+            self._sleep(wait)
+            waited += wait
         if response.status_code >= 300:
             raise GitHubError(
                 response.status_code,
